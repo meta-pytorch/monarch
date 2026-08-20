@@ -221,10 +221,21 @@ pub(crate) fn proc_name(proc_mesh_id: &ProcMeshId, rank: usize) -> ResourceId {
     }
 }
 
+pub(crate) fn proc_slots(
+    proc_mesh_id: &ProcMeshId,
+    host_rank: usize,
+    num_per_host: usize,
+) -> impl Iterator<Item = (usize, usize, ResourceId)> + '_ {
+    (0..num_per_host).map(move |per_host_rank| {
+        let rank = num_per_host * host_rank + per_host_rank;
+        (per_host_rank, rank, proc_name(proc_mesh_id, rank))
+    })
+}
+
 #[derive(Debug)]
-pub(crate) struct ProcCreationState {
-    pub(crate) rank: usize,
-    pub(crate) host_mesh_id: Option<HostMeshId>,
+pub(crate) struct ProcMetadata {
+    rank: usize,
+    host_mesh_id: Option<HostMeshId>,
     /// The proc mesh this proc belongs to. Used to scope per-mesh queries like
     /// `StreamState`, since a host agent can hold procs from multiple meshes.
     /// Always set for procs spawned through a proc mesh (the cast `SpawnProcs`
@@ -232,12 +243,60 @@ pub(crate) struct ProcCreationState {
     /// path (e.g. the point-to-point `CreateOrUpdate` used by tests/admin),
     /// which belong to no queryable mesh and are intentionally excluded from
     /// per-mesh queries.
-    pub(crate) proc_mesh_id: Option<ProcMeshId>,
+    proc_mesh_id: Option<ProcMeshId>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ProcCreationState {
+    metadata: ProcMetadata,
     pub(crate) created: Result<(ProcAddr, ActorRef<ProcAgent>), HostError>,
     /// "Owner is alive" deadline communicated by the controller via
     /// `KeepaliveGetState`. The host's `SelfCheck` reaper compares against this
     /// and tears down procs whose owner has stopped extending the keepalive.
     pub(crate) expiry_time: Option<std::time::SystemTime>,
+}
+
+enum PendingDrainKind {
+    Full,
+    Selective(HostMeshId),
+}
+
+impl PendingDrainKind {
+    fn blocks_create(&self, host_mesh_id: Option<&HostMeshId>) -> bool {
+        match self {
+            Self::Full => true,
+            Self::Selective(draining_host_mesh_id) => host_mesh_id == Some(draining_host_mesh_id),
+        }
+    }
+}
+
+struct PendingDrain {
+    kind: PendingDrainKind,
+    remaining: usize,
+    failures: Vec<String>,
+    timeout: Duration,
+    max_in_flight: usize,
+    rank: usize,
+    reply: PortRef<crate::StatusOverlay>,
+}
+
+impl PendingDrain {
+    fn overlay(&self) -> crate::StatusOverlay {
+        let status = if self.failures.is_empty() {
+            resource::Status::Stopped
+        } else {
+            resource::Status::Failed(self.failures.join("; "))
+        };
+        crate::StatusOverlay::try_from_runs(vec![(self.rank..(self.rank + 1), status)])
+            .expect("valid single-run overlay")
+    }
+}
+
+struct PendingShutdown {
+    remaining: usize,
+    timeout: Duration,
+    max_in_flight: usize,
+    acknowledgements: Vec<(usize, PortRef<usize>)>,
 }
 
 /// Actor name used when spawning the host mesh agent on the system proc.
@@ -344,6 +403,7 @@ impl fmt::Debug for DrainWorker {
     handlers=[
         resource::CreateOrUpdate<ProcSpec>,
         SpawnProcs,
+        WaitProcs,
         resource::Stop,
         resource::GetState<ProcState>,
         resource::KeepaliveGetState<ProcState>,
@@ -365,6 +425,8 @@ impl fmt::Debug for DrainWorker {
 pub struct HostAgent {
     state: HostAgentState,
     pub(crate) created: HashMap<ResourceId, ProcCreationState>,
+    pending_drain: Option<PendingDrain>,
+    pending_shutdown: Option<PendingShutdown>,
     /// Pending `WaitRankStatus` waiters, keyed by resource name.
     /// Each entry is `(min_status, rank, reply_port)`. Only touched
     /// from `&mut self` handlers.
@@ -398,6 +460,8 @@ impl HostAgent {
         Self {
             state: HostAgentState::Detached(host),
             created: HashMap::new(),
+            pending_drain: None,
+            pending_shutdown: None,
             pending_proc_waiters: HashMap::new(),
             watching: HashSet::new(),
             proc_status_port: None,
@@ -433,6 +497,9 @@ impl HostAgent {
     /// Minimum status floor derived from the host agent's lifecycle.
     /// Procs on this host cannot be healthier than this.
     fn min_proc_status(&self) -> resource::Status {
+        if self.pending_shutdown.is_some() {
+            return resource::Status::Stopping;
+        }
         match &self.state {
             HostAgentState::Detached(_) | HostAgentState::Attached(_) => resource::Status::Running,
             HostAgentState::Draining => resource::Status::Stopping,
@@ -496,7 +563,7 @@ impl HostAgent {
         let matching_ids: Vec<ResourceId> = self
             .created
             .iter()
-            .filter(|(_, state)| state.host_mesh_id.as_ref() == filter)
+            .filter(|(_, state)| state.metadata.host_mesh_id.as_ref() == filter)
             .map(|(id, _)| id.clone())
             .collect();
 
@@ -788,11 +855,6 @@ pub struct SpawnProcs {
     /// Optional per-rank bootstrap overrides, indexed by absolute proc rank
     /// (`num_per_host * host_rank + per_host_rank`).
     pub bootstrap_commands: Option<Vec<Option<BootstrapCommand>>>,
-    /// Spawn ack: the host posts one multi-rank overlay covering all of its
-    /// procs; the caller reduces these per-host overlays into a `StatusMesh`
-    /// barrier.
-    #[serde(default)]
-    pub status_reply: Option<PortRef<crate::StatusOverlay>>,
 }
 wirevalue::register_type!(SpawnProcs);
 
@@ -807,13 +869,9 @@ impl Handler<SpawnProcs> for HostAgent {
 
         tracing::Span::current().record("host_rank", host_rank);
 
-        let mut spawn_result = Ok(());
-
-        for per_host_rank in 0..spawn.num_per_host {
-            let rank = spawn.num_per_host * host_rank + per_host_rank;
-
-            let id = proc_name(&spawn.proc_mesh_id, rank);
-
+        for (per_host_rank, rank, id) in
+            proc_slots(&spawn.proc_mesh_id, host_rank, spawn.num_per_host)
+        {
             let bootstrap_command = spawn
                 .bootstrap_commands
                 .as_ref()
@@ -825,7 +883,7 @@ impl Handler<SpawnProcs> for HostAgent {
                 .as_ref()
                 .and_then(|binds| binds.get(per_host_rank).cloned());
 
-            if let Err(e) = <Self as Handler<resource::CreateOrUpdate<ProcSpec>>>::handle(
+            if let Err(error) = <Self as Handler<resource::CreateOrUpdate<ProcSpec>>>::handle(
                 self,
                 cx,
                 resource::CreateOrUpdate {
@@ -842,43 +900,83 @@ impl Handler<SpawnProcs> for HostAgent {
             )
             .await
             {
-                // Stop spawning, but fall through to report the result below.
-                spawn_result = Err(e);
+                tracing::error!(%error, "failed to request proc creation");
                 break;
             }
         }
 
-        // Report this host's full rank range in a single multi-rank overlay. The
-        // caller's readiness barrier only completes once *every* rank has moved
-        // off NotExist, so on the error path the ranks we never created are
-        // reported as Failed too — otherwise the caller would wait out its whole
-        // idle timeout instead of failing fast on the error we return below.
-        if let Some(reply) = &spawn.status_reply {
-            let mut runs = Vec::with_capacity(spawn.num_per_host);
+        Ok(())
+    }
+}
 
-            for per_host_rank in 0..spawn.num_per_host {
-                let rank = spawn.num_per_host * host_rank + per_host_rank;
+/// Cast after [`SpawnProcs`] to report when each derived proc reaches
+/// [`Status::Running`]. Hyperactor delivers the two casts in order for each
+/// sender-destination stream, so an absent proc means its create was rejected.
+#[derive(
+    Serialize,
+    Deserialize,
+    Clone,
+    Debug,
+    Named,
+    Handler,
+    RefClient,
+    HandleClient
+)]
+pub struct WaitProcs {
+    /// This host's ordinal within the cast region, stamped by the cast layer.
+    pub rank: resource::Rank,
+    /// Proc mesh id used to derive the same proc ids as [`SpawnProcs`].
+    pub proc_mesh_id: ProcMeshId,
+    /// Number of procs spawned on this host.
+    pub num_per_host: usize,
+    /// Sparse readiness updates for the caller's status barrier.
+    pub status_reply: PortRef<crate::StatusOverlay>,
+}
+wirevalue::register_type!(WaitProcs);
 
-                let id = proc_name(&spawn.proc_mesh_id, rank);
+#[async_trait]
+impl Handler<WaitProcs> for HostAgent {
+    async fn handle(&mut self, cx: &Context<Self>, wait: WaitProcs) -> anyhow::Result<()> {
+        let host_rank = wait
+            .rank
+            .0
+            .expect("cast layer stamps the rank before delivery");
+        let mut failed = Vec::new();
 
-                let status = match self.proc_rank_status(&id).await {
-                    (resolved, status) if resolved != usize::MAX => status,
-                    // Unknown to this host: not yet attempted, or its creation
-                    // errored before being recorded. Mark Failed on the error
-                    // path; on success every rank is created so this is moot.
-                    _ => match &spawn_result {
-                        Err(e) => Status::Failed(e.to_string()),
-                        Ok(()) => continue,
+        for (_, rank, id) in proc_slots(&wait.proc_mesh_id, host_rank, wait.num_per_host) {
+            if self.created.contains_key(&id) {
+                if let Err(error) = <Self as Handler<resource::WaitRankStatus>>::handle(
+                    self,
+                    cx,
+                    resource::WaitRankStatus {
+                        id,
+                        rank: resource::Rank::new(rank),
+                        min_status: Status::Running,
+                        reply: wait.status_reply.clone(),
                     },
-                };
-
-                runs.push((rank..(rank + 1), status));
+                )
+                .await
+                {
+                    failed.push((
+                        rank..(rank + 1),
+                        Status::Failed(format!("failed to wait for proc status: {error}")),
+                    ));
+                }
+            } else {
+                failed.push((
+                    rank..(rank + 1),
+                    Status::Failed("proc creation was not accepted".to_string()),
+                ));
             }
-
-            reply.post(cx, crate::StatusOverlay::try_from_runs(runs)?);
         }
 
-        spawn_result
+        if !failed.is_empty() {
+            let overlay = crate::StatusOverlay::try_from_runs(failed)
+                .expect("proc slots produce ordered non-overlapping ranks");
+            wait.status_reply.post(cx, overlay);
+        }
+
+        Ok(())
     }
 }
 
@@ -895,6 +993,24 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
     ) -> anyhow::Result<()> {
         if self.created.contains_key(&create_or_update.id) {
             // Already created: there is no update.
+            return Ok(());
+        }
+        if self.pending_shutdown.is_some() {
+            tracing::warn!(
+                id = %create_or_update.id,
+                "ignoring CreateOrUpdate: HostAgent is shutting down"
+            );
+            return Ok(());
+        }
+        if self.pending_drain.as_ref().is_some_and(|drain| {
+            drain
+                .kind
+                .blocks_create(create_or_update.spec.host_mesh_id.as_ref())
+        }) {
+            tracing::warn!(
+                id = %create_or_update.id,
+                "ignoring CreateOrUpdate: HostAgent is draining"
+            );
             return Ok(());
         }
 
@@ -936,9 +1052,11 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         self.created.insert(
             create_or_update.id.clone(),
             ProcCreationState {
-                rank,
-                host_mesh_id: create_or_update.spec.host_mesh_id.clone(),
-                proc_mesh_id: create_or_update.spec.proc_mesh_id.clone(),
+                metadata: ProcMetadata {
+                    rank,
+                    host_mesh_id: create_or_update.spec.host_mesh_id.clone(),
+                    proc_mesh_id: create_or_update.spec.proc_mesh_id.clone(),
+                },
                 created,
                 expiry_time: None,
             },
@@ -1018,22 +1136,19 @@ impl HostAgent {
     /// status. `rank == usize::MAX` means the proc is unknown to this host.
     async fn proc_rank_status(&self, id: &ResourceId) -> (usize, Status) {
         match self.created.get(id) {
-            Some(ProcCreationState {
-                rank,
-                created: Ok((proc_id, _mesh_agent)),
-                ..
-            }) => {
-                let raw_status = match self.host() {
-                    Some(host) => host.proc_status(proc_id).await.0,
-                    None => resource::Status::Unknown,
-                };
-                (*rank, raw_status.clamp_min(self.min_proc_status()))
-            }
-            Some(ProcCreationState {
-                rank,
-                created: Err(e),
-                ..
-            }) => (*rank, Status::Failed(e.to_string())),
+            Some(state) => match &state.created {
+                Ok((proc_id, _mesh_agent)) => {
+                    let raw_status = match self.host() {
+                        Some(host) => host.proc_status(proc_id).await.0,
+                        None => resource::Status::Unknown,
+                    };
+                    (
+                        state.metadata.rank,
+                        raw_status.clamp_min(self.min_proc_status()),
+                    )
+                }
+                Err(e) => (state.metadata.rank, Status::Failed(e.to_string())),
+            },
             None => (usize::MAX, Status::NotExist),
         }
     }
@@ -1314,60 +1429,113 @@ wirevalue::register_type!(DrainHost);
 impl Handler<DrainHost> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: DrainHost) -> anyhow::Result<()> {
         let rank = msg.rank.unwrap();
-        // This host's drain completion, as a single-rank `Stopped` overlay at
-        // its ordinal. The caller reduces these into a StatusMesh barrier.
-        let drained_overlay = || {
-            crate::StatusOverlay::try_from_runs(vec![(rank..(rank + 1), resource::Status::Stopped)])
-                .expect("valid single-run overlay")
-        };
-
-        if msg.host_mesh_id.is_some() {
-            // Selective drain: stop only procs belonging to the named mesh.
-            self.drain_by_mesh_name(cx, msg.timeout, msg.host_mesh_id.as_ref())
-                .await;
-            msg.reply.post(cx, drained_overlay());
+        if self.pending_shutdown.is_some() {
+            let overlay = crate::StatusOverlay::try_from_runs(vec![(
+                rank..(rank + 1),
+                resource::Status::Failed("host shutdown is pending".to_string()),
+            )])
+            .expect("valid single-run overlay");
+            msg.reply.post(cx, overlay);
+            return Ok(());
+        }
+        if self.pending_drain.is_some() {
+            let overlay = crate::StatusOverlay::try_from_runs(vec![(
+                rank..(rank + 1),
+                resource::Status::Failed("another drain is already pending".to_string()),
+            )])
+            .expect("valid single-run overlay");
+            msg.reply.post(cx, overlay);
             return Ok(());
         }
 
-        // Full drain: terminate all children.
+        let kind = match &msg.host_mesh_id {
+            Some(host_mesh_id) => PendingDrainKind::Selective(host_mesh_id.clone()),
+            None => PendingDrainKind::Full,
+        };
+        let selective = matches!(&kind, PendingDrainKind::Selective(_));
+        // CreateOrUpdate still waits for Host::spawn, so a drain cannot observe
+        // an in-progress proc creation in this revision.
+        let remaining = 0;
+        let drain = PendingDrain {
+            kind,
+            remaining,
+            failures: Vec::new(),
+            timeout: msg.timeout,
+            max_in_flight: msg.max_in_flight,
+            rank,
+            reply: msg.reply,
+        };
+
+        if selective {
+            self.drain_by_mesh_name(cx, msg.timeout, msg.host_mesh_id.as_ref())
+                .await;
+            if remaining == 0 {
+                let overlay = drain.overlay();
+                drain.reply.post(cx, overlay);
+            } else {
+                self.pending_drain = Some(drain);
+            }
+            return Ok(());
+        }
+
+        if remaining == 0 {
+            self.start_full_drain(cx, drain);
+        } else {
+            self.pending_drain = Some(drain);
+        }
+
+        Ok(())
+    }
+}
+
+impl HostAgent {
+    fn start_full_drain(&mut self, cx: &Context<'_, Self>, drain: PendingDrain) {
+        let PendingDrain {
+            kind: PendingDrainKind::Full,
+            remaining: 0,
+            failures: _,
+            timeout,
+            max_in_flight,
+            rank,
+            reply,
+        } = drain
+        else {
+            unreachable!("full drain requires no remaining proc creations");
+        };
+
         let host = match std::mem::replace(&mut self.state, HostAgentState::Draining) {
-            HostAgentState::Attached(h) => h,
+            HostAgentState::Attached(host) => host,
             other @ (HostAgentState::Detached(_) | HostAgentState::Draining) => {
-                // Nothing to drain — report immediately.
                 self.state = other;
-                msg.reply.post(cx, drained_overlay());
-                return Ok(());
+                reply.post(cx, Self::drained_overlay(rank));
+                return;
             }
             HostAgentState::Shutdown => {
                 self.state = HostAgentState::Shutdown;
-                msg.reply.post(cx, drained_overlay());
-                return Ok(());
+                reply.post(cx, Self::drained_overlay(rank));
+                return;
             }
         };
 
-        // Do NOT clear `self.created` here: the DrainWorker
-        // terminates procs asynchronously, and concurrent GetState /
-        // GetRankStatus queries must still find the entries. With the
-        // host in Draining state (`self.host()` returns None), those
-        // handlers already report Status::Stopped for every known
-        // proc, which is the correct answer while draining is
-        // in progress.
-
+        // Do not clear `self.created` here. The DrainWorker terminates procs
+        // asynchronously, and status queries must still find their entries.
         let done_port = cx.port::<DrainComplete>();
-
         cx.spawn_with_label(
             "drain_worker",
             DrainWorker {
                 host: Some(host),
-                timeout: msg.timeout,
-                max_in_flight: msg.max_in_flight,
+                timeout,
+                max_in_flight,
                 rank,
-                reply: Some(msg.reply),
+                reply: Some(reply),
                 done_notify: done_port,
             },
         );
+    }
 
-        Ok(())
+    fn drained_overlay(rank: usize) -> crate::StatusOverlay {
+        crate::StatusOverlay::try_from_runs(vec![(rank..(rank + 1), resource::Status::Stopped)])
+            .expect("valid single-run overlay")
     }
 }
 
@@ -1382,6 +1550,18 @@ impl Handler<DrainComplete> for HostAgent {
         )])
         .expect("valid single-run overlay");
         msg.reply.post(cx, overlay);
+
+        if self
+            .pending_shutdown
+            .as_ref()
+            .is_some_and(|shutdown| shutdown.remaining == 0)
+        {
+            let shutdown = self
+                .pending_shutdown
+                .take()
+                .expect("pending shutdown exists");
+            self.finish_shutdown(cx, shutdown).await;
+        }
         Ok(())
     }
 }
@@ -1390,6 +1570,62 @@ impl Handler<DrainComplete> for HostAgent {
 impl Handler<ShutdownHost> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: ShutdownHost) -> anyhow::Result<()> {
         let rank = msg.rank.unwrap();
+        if matches!(&self.state, HostAgentState::Shutdown) {
+            msg.ack.post(cx, rank);
+            return Ok(());
+        }
+
+        if let Some(shutdown) = self.pending_shutdown.as_mut() {
+            shutdown.acknowledgements.push((rank, msg.ack));
+            return Ok(());
+        }
+
+        if let Some(drain) = self.pending_drain.take() {
+            let overlay = crate::StatusOverlay::try_from_runs(vec![(
+                drain.rank..(drain.rank + 1),
+                resource::Status::Failed("host shutdown superseded drain".to_string()),
+            )])
+            .expect("valid single-run overlay");
+            drain.reply.post(cx, overlay);
+        }
+
+        // CreateOrUpdate still waits for Host::spawn, so shutdown cannot
+        // observe an in-progress proc creation in this revision.
+        let remaining = 0;
+        let shutdown = PendingShutdown {
+            remaining,
+            timeout: msg.timeout,
+            max_in_flight: msg.max_in_flight,
+            acknowledgements: vec![(rank, msg.ack)],
+        };
+
+        if remaining == 0 {
+            self.finish_shutdown(cx, shutdown).await;
+        } else {
+            self.pending_shutdown = Some(shutdown);
+        }
+
+        Ok(())
+    }
+}
+
+impl HostAgent {
+    async fn finish_shutdown(&mut self, cx: &Context<'_, Self>, shutdown: PendingShutdown) {
+        if matches!(&self.state, HostAgentState::Draining) {
+            self.pending_shutdown = Some(shutdown);
+            return;
+        }
+
+        let PendingShutdown {
+            remaining: 0,
+            timeout,
+            max_in_flight,
+            acknowledgements,
+        } = shutdown
+        else {
+            unreachable!("shutdown cannot finish while proc creation is pending");
+        };
+
         // Terminate children BEFORE acking, so the caller's networking
         // stays alive while children flush their forwarders during
         // teardown. If we ack first, the caller proceeds to tear down
@@ -1397,7 +1633,7 @@ impl Handler<ShutdownHost> for HostAgent {
         // causing their forwarder flushes to hang until
         // MESSAGE_DELIVERY_TIMEOUT expires.
         if !self.created.is_empty() {
-            self.drain(cx, msg.timeout, msg.max_in_flight).await;
+            self.drain(cx, timeout, max_in_flight).await;
         }
 
         // Drop the host and signal the bootstrap loop to drain the
@@ -1412,10 +1648,12 @@ impl Handler<ShutdownHost> for HostAgent {
                 shutdown_tx: Some(tx),
             }) => {
                 // Keep the host's outbound gateway alive until the direct
-                // shutdown acknowledgment has been flushed. The bootstrap
+                // shutdown acknowledgments have been flushed. The bootstrap
                 // task may stop the frontend as soon as it receives the
                 // handle below.
-                msg.ack.post(cx, rank);
+                for (rank, ack) in acknowledgements {
+                    ack.post(cx, rank);
+                }
                 let flush_timeout =
                     hyperactor_config::global::get(hyperactor::config::FORWARDER_FLUSH_TIMEOUT);
                 match tokio::time::timeout(flush_timeout, host.gateway().flush()).await {
@@ -1445,18 +1683,20 @@ impl Handler<ShutdownHost> for HostAgent {
                 // after that proc has stopped.
                 tokio::spawn(async move {
                     for mut proc in procs {
-                        let _ = proc
-                            .destroy_and_wait(msg.timeout, "local host shutdown")
-                            .await;
+                        let _ = proc.destroy_and_wait(timeout, "local host shutdown").await;
                     }
                     host.shutdown_servers().await;
-                    msg.ack.post(&shutdown_client, rank);
+                    for (rank, ack) in acknowledgements {
+                        ack.post(&shutdown_client, rank);
+                    }
                 });
             }
-            _ => msg.ack.post(cx, rank),
+            _ => {
+                for (rank, ack) in acknowledgements {
+                    ack.post(cx, rank);
+                }
+            }
         }
-
-        Ok(())
     }
 }
 
@@ -1494,12 +1734,8 @@ impl HostAgent {
         id: &ResourceId,
         state: &ProcCreationState,
     ) -> resource::State<ProcState> {
-        match state {
-            ProcCreationState {
-                rank,
-                created: Ok((proc_id, mesh_agent)),
-                ..
-            } => {
+        match &state.created {
+            Ok((proc_id, mesh_agent)) => {
                 let (raw_status, proc_status, bootstrap_command) = match self.host() {
                     Some(host) => {
                         let (status, proc_status) = host.proc_status(proc_id).await;
@@ -1513,7 +1749,7 @@ impl HostAgent {
                     status,
                     state: Some(ProcState {
                         proc_id: proc_id.clone(),
-                        create_rank: *rank,
+                        create_rank: state.metadata.rank,
                         mesh_agent: mesh_agent.clone(),
                         bootstrap_command,
                         proc_status,
@@ -1522,9 +1758,7 @@ impl HostAgent {
                     timestamp: std::time::SystemTime::now(),
                 }
             }
-            ProcCreationState {
-                created: Err(e), ..
-            } => resource::State {
+            Err(e) => resource::State {
                 id: id.clone(),
                 status: resource::Status::Failed(e.to_string()),
                 state: None,
@@ -1590,8 +1824,8 @@ impl Handler<GetHostProcStates> for HostAgent {
         message: GetHostProcStates,
     ) -> anyhow::Result<()> {
         let selects = |state: &ProcCreationState| {
-            state.proc_mesh_id.as_ref() == Some(&message.proc_mesh_id)
-                && message.region.slice().contains(state.rank)
+            state.metadata.proc_mesh_id.as_ref() == Some(&message.proc_mesh_id)
+                && message.region.slice().contains(state.metadata.rank)
         };
 
         // Bump keepalive (if requested) in a separate mutable pass, so the read
@@ -1614,7 +1848,7 @@ impl Handler<GetHostProcStates> for HostAgent {
         let mut runs = Vec::new();
         for (id, state) in self.created.iter() {
             if selects(state) {
-                let base = message.region.slice().index(state.rank)?;
+                let base = message.region.slice().index(state.metadata.rank)?;
                 runs.push((base..(base + 1), self.proc_state_from(id, state).await));
             }
         }
@@ -1728,6 +1962,7 @@ impl Handler<resource::StreamState<ProcState>> for HostAgent {
         for (id, proc) in self.created.iter() {
             // Skip procs that don't belong to the subscribing proc mesh.
             if proc
+                .metadata
                 .proc_mesh_id
                 .as_ref()
                 .is_none_or(|mesh| mesh.resource_id() != &stream_state.id)
@@ -1750,7 +1985,7 @@ impl Handler<resource::StreamState<ProcState>> for HostAgent {
                         status,
                         state: Some(ProcState {
                             proc_id: proc_id.clone(),
-                            create_rank: proc.rank,
+                            create_rank: proc.metadata.rank,
                             mesh_agent: mesh_agent.clone(),
                             bootstrap_command,
                             proc_status,
@@ -1772,7 +2007,7 @@ impl Handler<resource::StreamState<ProcState>> for HostAgent {
                 cx,
                 headers.clone(),
                 resource::RankedState {
-                    rank: resource::Rank::new(proc.rank),
+                    rank: resource::Rank::new(proc.metadata.rank),
                     state,
                 },
             );
@@ -1929,6 +2164,7 @@ mod tests {
     use hyperactor::channel::ChannelTransport;
     use hyperactor::id::Label;
     use hyperactor::id::Uid;
+    use timed_test::async_timed_test;
 
     use super::*;
     use crate::bootstrap::ProcStatus;
@@ -2697,7 +2933,7 @@ mod tests {
     /// A single `SpawnProcs` message at host rank 0 fans out into
     /// `num_per_host` procs, each created under the id derived from
     /// `proc_name(&proc_mesh_id, rank)`. All of them should come up Running.
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_procs_many_per_host() {
         let host = Host::new(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
@@ -2722,9 +2958,10 @@ mod tests {
 
         let proc_mesh_id = ProcMeshId::singleton(Label::new("spawn-many").unwrap());
         let num_per_host = 4;
+        let (spawn_status_reply, mut spawn_status_rx) = client.open_port::<crate::StatusOverlay>();
 
-        // Send a single point-to-point SpawnProcs (not a cast) to the host
-        // agent at host rank 0.
+        // Send the command and wait messages in the same order used by
+        // HostMesh::spawn.
         let agent_ref: ActorRef<HostAgent> = host_agent.bind();
         agent_ref.post(
             &client,
@@ -2737,40 +2974,30 @@ mod tests {
                 default_bootstrap_command: None,
                 proc_bind: None,
                 bootstrap_commands: None,
-                status_reply: None,
+            },
+        );
+        agent_ref.post(
+            &client,
+            WaitProcs {
+                rank: resource::Rank::new(0),
+                proc_mesh_id: proc_mesh_id.clone(),
+                num_per_host,
+                status_reply: spawn_status_reply.bind(),
             },
         );
 
-        // Each of the num_per_host procs should reach Running. Query each at a
-        // message rank distinct from its creation rank to prove positioning
-        // follows the message.
-        for rank in 0..num_per_host {
-            let id = proc_name(&proc_mesh_id, rank);
-            let message_rank = rank + 100;
-            let (port, mut rx) = client.open_port::<crate::StatusOverlay>();
-            host_agent
-                .wait_rank_status(
-                    &client,
-                    id.clone(),
-                    resource::Rank::new(message_rank),
-                    resource::Status::Running,
-                    port.bind(),
-                )
+        let mut reported = vec![false; num_per_host];
+        for _ in 0..num_per_host {
+            let overlay = spawn_status_rx
+                .recv()
                 .await
-                .unwrap();
-            let overlay = tokio::time::timeout(Duration::from_secs(30), rx.recv())
-                .await
-                .unwrap_or_else(|_| panic!("proc {rank} did not reach Running"))
-                .expect("reply channel closed");
-            assert_overlay_at_rank(&overlay, message_rank);
-
-            assert_matches!(
-                host_agent.get_state(&client, id).await.unwrap(),
-                resource::State {
-                    status: resource::Status::Running,
-                    ..
-                }
-            );
+                .expect("WaitProcs status reply channel closed");
+            assert_eq!(overlay.len(), 1, "expected one proc status per reply");
+            let (range, status) = overlay.runs().next().expect("status overlay has a run");
+            assert_eq!(range.end, range.start + 1);
+            assert_eq!(status, &resource::Status::Running);
+            reported[range.start] = true;
         }
+        assert!(reported.into_iter().all(|reported| reported));
     }
 }
