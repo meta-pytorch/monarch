@@ -20,6 +20,7 @@ use std::fs::OpenOptions;
 use std::future;
 use std::io;
 use std::io::Write;
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -33,6 +34,7 @@ use std::time::SystemTime;
 use anyhow::Context;
 use async_trait::async_trait;
 use base64::prelude::*;
+use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream;
 use humantime::format_duration;
@@ -1995,6 +1997,32 @@ pub struct BootstrapProcConfig {
     pub bootstrap_command: Option<BootstrapCommand>,
 }
 
+struct LaunchCleanup {
+    launcher: Arc<dyn ProcLauncher>,
+    proc_id: Option<ProcAddr>,
+}
+
+impl LaunchCleanup {
+    fn disarm(mut self) {
+        self.proc_id = None;
+    }
+}
+
+impl Drop for LaunchCleanup {
+    fn drop(&mut self) {
+        let Some(proc_id) = self.proc_id.take() else {
+            return;
+        };
+        let launcher = Arc::clone(&self.launcher);
+
+        tokio::spawn(async move {
+            if let Err(error) = launcher.kill(&proc_id).await {
+                tracing::warn!(%proc_id, %error, "failed to clean up interrupted proc launch");
+            }
+        });
+    }
+}
+
 #[async_trait]
 impl ProcManager for BootstrapProcManager {
     type Handle = BootstrapProcHandle;
@@ -2089,21 +2117,34 @@ impl ProcManager for BootstrapProcManager {
         // Launch via the configured launcher backend.
         tracing::info!(proc_id = %proc_id, "launching proc with opts={opts:?}");
         let ref_proc_id: ProcAddr = proc_id.clone();
-        let launch_result = self
-            .launcher()
-            .launch(&ref_proc_id, opts.clone())
+        let launcher = Arc::clone(self.launcher());
+        let launch_result = match AssertUnwindSafe(launcher.launch(&ref_proc_id, opts.clone()))
+            .catch_unwind()
             .await
-            .map_err(|e| {
-                let io_err = match e {
+        {
+            Ok(Ok(launch_result)) => launch_result,
+            Ok(Err(error)) => {
+                let io_err = match error {
                     ProcLauncherError::Launch(io_err) => io_err,
                     other => std::io::Error::other(other.to_string()),
                 };
-                HostError::ProcessSpawnFailure(
+                return Err(HostError::ProcessSpawnFailure(
                     proc_id.clone(),
                     format!("{:?}", opts.command),
                     io_err,
-                )
-            })?;
+                ));
+            }
+            Err(panic) => {
+                if let Err(error) = launcher.kill(&ref_proc_id).await {
+                    tracing::warn!(proc_id = %ref_proc_id, %error, "failed to clean up panicked proc launch");
+                }
+                std::panic::resume_unwind(panic);
+            }
+        };
+        let cleanup = LaunchCleanup {
+            launcher,
+            proc_id: Some(proc_id.clone()),
+        };
 
         // Wire up StreamFwders if stdio was captured.
         let (out_fwder, err_fwder) = match launch_result.stdio {
@@ -2184,6 +2225,7 @@ impl ProcManager for BootstrapProcManager {
         });
 
         // Callers do `handle.read().await` for mesh readiness.
+        cleanup.disarm();
         Ok(handle)
     }
 }
@@ -2469,6 +2511,49 @@ mod tests {
     use hyperactor_config::Flattrs;
 
     use super::*;
+
+    struct CleanupLauncher {
+        killed: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl ProcLauncher for CleanupLauncher {
+        async fn launch(
+            &self,
+            _proc_id: &ProcAddr,
+            _opts: LaunchOptions,
+        ) -> Result<crate::proc_launcher::LaunchResult, ProcLauncherError> {
+            unreachable!("cleanup guard test does not launch a proc")
+        }
+
+        async fn terminate(
+            &self,
+            _proc_id: &ProcAddr,
+            _timeout: Duration,
+        ) -> Result<(), ProcLauncherError> {
+            unreachable!("cleanup guard test does not terminate a proc")
+        }
+
+        async fn kill(&self, _proc_id: &ProcAddr) -> Result<(), ProcLauncherError> {
+            self.killed.notify_one();
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn launch_cleanup_kills_an_uncommitted_proc() {
+        let killed = Arc::new(tokio::sync::Notify::new());
+        let launcher: Arc<dyn ProcLauncher> = Arc::new(CleanupLauncher {
+            killed: Arc::clone(&killed),
+        });
+
+        drop(LaunchCleanup {
+            launcher,
+            proc_id: Some(test_proc_id("cleanup")),
+        });
+
+        killed.notified().await;
+    }
 
     struct ShutdownFlushProbe {
         gateway: Gateway,
