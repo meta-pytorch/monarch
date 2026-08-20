@@ -12,6 +12,7 @@ use hyperactor::ActorRef;
 use hyperactor::actor::Referable;
 use typeuri::Named;
 
+mod cq_actor;
 mod cq_pool;
 pub mod device;
 pub mod device_selection;
