@@ -25,15 +25,14 @@ destination pulls from the source's buffers. Both move the same bytes over the
 same edges, so a pattern and a direction compose freely.
 
 Memory follows from the graph, and :py:class:`SlotValues` is its shape. A slot
-that sends allocates one *outgoing* pool of ``concurrent_ops`` tensors shared by
-all of its out-edges, which is legal because an ``RDMAAction`` treats a
-write-from-local as a *read* claim on local memory and merges overlapping read
-claims. A slot that receives allocates one *incoming* pool per peer that sends
-to it, which is mandatory: an ``RDMAAction`` does not track remote ranges, so
-two initiators writing one remote buffer would corrupt it silently. Since an
-edge is exactly a pair of slots, incoming pools are keyed by the sending peer
-and no separate index is needed. :py:func:`allocation_for` is the single source
-of truth for what a slot allocates, so what the actors allocate and what
+that sends allocates ``concurrent_ops`` *outgoing* tensors, shared by all of its
+out-edges: sharing is legal because an ``RDMAAction`` treats a write-from-local
+as a *read* claim on local memory and merges overlapping read claims. A slot
+that receives allocates that many *incoming* tensors for each peer that sends to
+it, and keeping them separate per peer is mandatory: an ``RDMAAction`` does not
+track remote ranges, so two initiators writing the same remote buffer would
+corrupt it silently. :py:func:`allocation_for` is the single source of truth for
+what a slot allocates, so what the actors allocate and what
 :py:func:`plan_memory` charges them for cannot drift.
 
 This module imports only the standard library. It holds no monarch, torch, or
@@ -46,7 +45,11 @@ cluster. Buffer handles are opaque: :py:func:`plan_for` and
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Generic, Iterator, Mapping, Sequence, TypeVar
+
+
+T = TypeVar("T")
+U = TypeVar("U")
 
 
 P2P: str = "p2p"
@@ -418,17 +421,38 @@ def initiator_bytes(
 
 
 @dataclass(frozen=True)
-class SlotValues:
-    """One value per tensor one slot holds, grouped by role and keyed by peer.
+class SlotValues(Generic[T]):
+    """One value per tensor a slot holds, grouped by role and keyed by peer.
 
-    ``outgoing`` covers the pool every out-edge sends from; ``incoming`` holds
-    one pool per peer that sends to this slot. The values are opaque: RDMA
-    buffers when the driver collects them from the actors, digests when it
-    collects them to check integrity.
+    ``outgoing`` covers the tensors every out-edge sends from; ``incoming``
+    holds one group per peer that sends to this slot. The element type varies
+    with what is being carried -- the tensors themselves, the RDMA buffers
+    registered over them, or digests of their bytes.
     """
 
-    outgoing: tuple[Any, ...]
-    incoming: dict[Slot, tuple[Any, ...]]
+    outgoing: tuple[T, ...]
+    incoming: dict[Slot, tuple[T, ...]]
+
+    def map(self, fn: Callable[[T], U]) -> "SlotValues[U]":
+        """Apply ``fn`` to every value, keeping the shape.
+
+        How a slot's tensors become its registered buffers, and how their
+        contents become digests, without either conversion being able to drop or
+        reorder a group.
+        """
+        return SlotValues(
+            outgoing=tuple(fn(value) for value in self.outgoing),
+            incoming={
+                peer: tuple(fn(value) for value in values)
+                for peer, values in self.incoming.items()
+            },
+        )
+
+    def flat(self) -> Iterator[T]:
+        """Every value, for when the grouping does not matter."""
+        yield from self.outgoing
+        for values in self.incoming.values():
+            yield from values
 
 
 @dataclass(frozen=True)
@@ -467,7 +491,7 @@ class InitiatorPlan:
 def plan_for(
     topo: Topology,
     direction: str,
-    values: Mapping[Slot, SlotValues],
+    values: Mapping[Slot, SlotValues[Any]],
     *,
     ops: int,
 ) -> dict[Slot, InitiatorPlan]:
@@ -489,7 +513,7 @@ def plan_for(
 
 
 def _push_plan(
-    topo: Topology, slot: Slot, values: Mapping[Slot, SlotValues], ops: int
+    topo: Topology, slot: Slot, values: Mapping[Slot, SlotValues[Any]], ops: int
 ) -> InitiatorPlan:
     push: list[PushOp] = []
     for edge in topo.out_edges(slot):
@@ -503,7 +527,7 @@ def _push_plan(
 
 
 def _pull_plan(
-    topo: Topology, slot: Slot, values: Mapping[Slot, SlotValues], ops: int
+    topo: Topology, slot: Slot, values: Mapping[Slot, SlotValues[Any]], ops: int
 ) -> InitiatorPlan:
     pull: list[PullOp] = []
     for edge in topo.in_edges(slot):
@@ -519,7 +543,7 @@ def _pull_plan(
 
 
 def compare_digests(
-    topo: Topology, digests: Mapping[Slot, SlotValues]
+    topo: Topology, digests: Mapping[Slot, SlotValues[str]]
 ) -> tuple[int, list[str]]:
     """Compare each edge's incoming pool against the pool it was sent from.
 

@@ -67,16 +67,13 @@ class Sample:
     only part that measures the fabric. They are reported separately and only
     ``submit_ms`` is ever a throughput denominator.
 
-    ``error`` carries a failure back to the driver rather than raising inside
-    the actor, so a broken configuration aborts instead of leaving the driver
-    waiting for a reply that will never come.
+    The slot travels with the measurement because how many bytes it stands for
+    depends on how that slot fits into the topology of the run.
     """
 
     slot: Slot
-    iteration: int
     build_ms: float
     submit_ms: float
-    error: str | None = None
 
     @property
     def total_ms(self) -> float:
