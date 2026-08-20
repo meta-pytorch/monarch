@@ -63,6 +63,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.pickle import (
+    _current_receiver_instance,
     PendingMessage,
     pickle,
     PicklingState,
@@ -1106,8 +1107,15 @@ class Port(Generic[R]):
         def _reconstruct_port(
             port_ref: PortRef | OncePortRef, rank: Optional[int]
         ) -> "Port[R]":
-            instance = context().actor_instance._as_rust()
-            return Port(port_ref, instance, rank)
+            # Prefer the receiver the decoder installed. An eager reply decode
+            # runs on a Tokio worker with no Monarch context, where `context()`
+            # would bootstrap a client inside the receiving actor's process.
+            # Outside such a decode -- ordinary client-side reconstruction --
+            # there is no receiver and the context path is unchanged.
+            receiver = _current_receiver_instance()
+            if receiver is not None:
+                return Port(port_ref, receiver, rank)
+            return Port(port_ref, context().actor_instance._as_rust(), rank)
 
         return (
             _reconstruct_port,

@@ -51,6 +51,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use hyperactor::Instance;
 use monarch_types::py_global;
 use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
@@ -60,9 +61,11 @@ use serde_multipart::Part;
 
 use crate::actor::MeshRef;
 use crate::actor::PyMeshRef;
+use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::buffers::Buffer;
+use crate::context::PyInstance;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
 use crate::runtime::GilSite;
@@ -149,6 +152,71 @@ impl Drop for ActivePicklingGuard {
             *cell.borrow_mut() = self.previous.take();
         });
     }
+}
+
+thread_local! {
+    /// The actor that is *receiving* the payload currently being decoded.
+    ///
+    /// A reply is decoded on a Tokio worker with no Monarch context, so
+    /// `Port._reconstruct_port` cannot recover the receiver from `context()`
+    /// without bootstrapping a client in a worker process. The eager decoders
+    /// install the caller instance they already hold here for the duration of
+    /// the decode.
+    ///
+    /// Deliberately a sibling of `ACTIVE_PICKLING_STATE` rather than a field
+    /// on it: the receiver is decode context, not pickling payload state, and
+    /// must never reach `PicklingStateInner` or the serialized bytes.
+    static RECEIVER_INSTANCE: RefCell<Option<Instance<PythonActor>>> =
+        const { RefCell::new(None) };
+}
+
+/// RAII guard installing the receiver for the current decode, restoring the
+/// previous value on drop -- on success, on error, and on panic.
+///
+/// Private: the only way to install a receiver is
+/// [`PicklingState::unpickle_with_receiver`], which cannot span an `await`.
+struct ReceiverInstanceGuard {
+    previous: Option<Instance<PythonActor>>,
+}
+
+impl ReceiverInstanceGuard {
+    /// Install `instance` as the receiver, saving any existing one.
+    ///
+    /// Takes a reference and clones internally so callers keep ownership of
+    /// the instance they are already holding across the collector.
+    fn enter(instance: &Instance<PythonActor>) -> Self {
+        let previous =
+            RECEIVER_INSTANCE.with(|cell| cell.borrow_mut().replace(instance.clone_for_py()));
+        Self { previous }
+    }
+}
+
+impl Drop for ReceiverInstanceGuard {
+    fn drop(&mut self) {
+        RECEIVER_INSTANCE.with(|cell| {
+            *cell.borrow_mut() = self.previous.take();
+        });
+    }
+}
+
+/// Clone of the receiver installed for the current decode, if any.
+///
+/// Clones rather than consumes: one payload may carry several `Port`s and each
+/// must reconstruct against the same receiver.
+fn current_receiver_instance_raw() -> Option<Instance<PythonActor>> {
+    RECEIVER_INSTANCE.with(|cell| cell.borrow().as_ref().map(|i| i.clone_for_py()))
+}
+
+/// The receiver for the decode in progress, or `None` outside one.
+///
+/// `Port._reconstruct_port` prefers this and falls back to `context()`, which
+/// keeps reconstruction outside an endpoint reply decode unchanged.
+#[pyfunction]
+fn _current_receiver_instance() -> Option<PyInstance> {
+    // Clone out of the `RefCell` before building the Python wrapper: the
+    // conversion allocates a Python object, and holding the borrow across that
+    // risks a re-entrant borrow.
+    current_receiver_instance_raw().map(PyInstance::from)
 }
 
 /// State maintained during active pickling/unpickling operations.
@@ -361,6 +429,21 @@ impl PicklingState {
 }
 
 impl PicklingState {
+    /// [`unpickle`](Self::unpickle) with `instance` installed as the receiver.
+    ///
+    /// Rust-only and deliberately unexposed to Python: the guard must not
+    /// outlive the synchronous decode. Every caller is the body of a
+    /// `monarch_with_gil_blocking` closure, so the guard never spans an
+    /// `await` and the thread-local cannot leak to another task.
+    pub(crate) fn unpickle_with_receiver(
+        &mut self,
+        py: Python<'_>,
+        instance: &Instance<PythonActor>,
+    ) -> PyResult<Py<PyAny>> {
+        let _guard = ReceiverInstanceGuard::enter(instance);
+        self.unpickle(py)
+    }
+
     /// Fill the reserved mesh slots from their pending handles, producing a
     /// PicklingState whose out-of-band `refs` table is fully populated.
     ///
@@ -797,6 +880,7 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     module.add_function(wrap_pyfunction!(pop_tensor_engine_reference, module)?)?;
     module.add_function(wrap_pyfunction!(pop_mesh_reference, module)?)?;
+    module.add_function(wrap_pyfunction!(_current_receiver_instance, module)?)?;
     module.add_function(wrap_pyfunction!(reserve_mesh_reference, module)?)?;
     module.add_function(wrap_pyfunction!(_get_pending_reserve_count, module)?)?;
     module.add_function(wrap_pyfunction!(_reset_pending_reserve_count, module)?)?;
@@ -871,6 +955,74 @@ mod tests {
                 "payload_len should be the length of the pickled buffer"
             );
         }
+    }
+
+    /// The receiver guard's three contracts: a lookup clones rather than
+    /// consumes, a nested guard overrides and then restores, and a guard
+    /// dropped by an unwinding error restores too.
+    // `#[tokio::test]` because `Proc::direct` needs a runtime. The body has no
+    // await, so it stays on one thread and the thread-local is observed there.
+    #[tokio::test]
+    async fn receiver_instance_guard_clones_nests_and_restores() {
+        use std::panic::AssertUnwindSafe;
+
+        use hyperactor::Proc;
+        use hyperactor::channel::ChannelTransport;
+
+        fn instance(name: &str) -> Instance<PythonActor> {
+            Proc::direct(ChannelTransport::Unix.any(), format!("{name}_proc"))
+                .unwrap()
+                .actor_instance::<PythonActor>(name)
+                .unwrap()
+                .instance
+        }
+
+        let outer = instance("outer");
+        let inner = instance("inner");
+        let outer_id = outer.self_addr().clone();
+        let inner_id = inner.self_addr().clone();
+
+        assert!(current_receiver_instance_raw().is_none(), "clean to start");
+
+        {
+            let _g = ReceiverInstanceGuard::enter(&outer);
+
+            // Non-consuming: a payload with several Ports looks up repeatedly.
+            for _ in 0..3 {
+                let got = current_receiver_instance_raw().expect("receiver installed");
+                assert_eq!(got.self_addr(), &outer_id);
+            }
+
+            {
+                let _nested = ReceiverInstanceGuard::enter(&inner);
+                assert_eq!(
+                    current_receiver_instance_raw().unwrap().self_addr(),
+                    &inner_id,
+                );
+            }
+            assert_eq!(
+                current_receiver_instance_raw().unwrap().self_addr(),
+                &outer_id,
+                "nested guard must restore its parent",
+            );
+
+            // Drop on unwind restores the parent, not `None`.
+            let unwound = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let _failing = ReceiverInstanceGuard::enter(&inner);
+                panic!("decode blew up");
+            }));
+            assert!(unwound.is_err());
+            assert_eq!(
+                current_receiver_instance_raw().unwrap().self_addr(),
+                &outer_id,
+                "a guard dropped while unwinding must restore",
+            );
+        }
+
+        assert!(
+            current_receiver_instance_raw().is_none(),
+            "outermost guard must clear the receiver",
+        );
     }
 
     #[tokio::test]

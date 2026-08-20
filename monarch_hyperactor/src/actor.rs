@@ -172,14 +172,22 @@ impl PythonResponseMessage {
     /// Decode this response's payload, reuniting its out-of-band `refs` table
     /// so mesh references reconstruct. Mirrors [`PythonMessage::decode`] for the
     /// accumulated (valuemesh / `.call()`) path.
-    pub(crate) fn decode(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    /// `instance` is the receiving actor, required so a `Port` in the payload
+    /// reconstructs against it rather than falling back to `context()` on a
+    /// Tokio worker. Mandatory rather than optional: this is only ever called
+    /// from an eager collector, all of which hold the caller instance.
+    pub(crate) fn decode(
+        &self,
+        py: Python<'_>,
+        instance: &Instance<PythonActor>,
+    ) -> PyResult<Py<PyAny>> {
         let (part, refs) = match self {
             PythonResponseMessage::Result { part, refs }
             | PythonResponseMessage::Exception { part, refs } => (part, refs),
         };
         let mesh_references = refs.iter().cloned().map(Some).collect();
         let mut state = PicklingState::from_parts(part.clone(), VecDeque::new(), mesh_references);
-        state.unpickle(py)
+        state.unpickle_with_receiver(py, instance)
     }
 }
 
