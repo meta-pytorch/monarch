@@ -247,10 +247,20 @@ pub(crate) struct ProcMetadata {
 }
 
 #[derive(Debug)]
+#[expect(dead_code)]
+pub(crate) enum CompletionAction {
+    Keep,
+    Stop { timeout: Duration, reason: String },
+    Drain,
+    Shutdown,
+}
+
+#[derive(Debug)]
 pub(crate) enum ProcCreationState {
     #[expect(dead_code)]
     Pending {
         metadata: ProcMetadata,
+        on_completion: CompletionAction,
         expiry_time: Option<std::time::SystemTime>,
     },
     Created {
@@ -1164,6 +1174,22 @@ impl Handler<resource::Stop> for HostAgent {
             reason = %message.reason,
             "stopping proc"
         );
+        let timeout = hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
+
+        if let Some(ProcCreationState::Pending { on_completion, .. }) =
+            self.created.get_mut(&message.id)
+        {
+            if matches!(&*on_completion, CompletionAction::Keep) {
+                *on_completion = CompletionAction::Stop {
+                    timeout,
+                    reason: message.reason.clone(),
+                };
+            }
+            self.flush_proc_waiters(cx, &message.id).await;
+            self.publish_introspect_properties(cx);
+            return Ok(());
+        }
+
         let host = match self.host() {
             Some(h) => h,
             None => {
@@ -1175,7 +1201,6 @@ impl Handler<resource::Stop> for HostAgent {
                 return Ok(());
             }
         };
-        let timeout = hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
 
         if let Some(ProcCreationState::Created { proc_id, .. }) = self.created.get(&message.id) {
             host.request_stop(cx, proc_id, timeout, &message.reason)
@@ -1195,9 +1220,12 @@ impl HostAgent {
     /// status. `rank == usize::MAX` means the proc is unknown to this host.
     async fn proc_rank_status(&self, id: &ResourceId) -> (usize, Status) {
         match self.created.get(id) {
-            Some(ProcCreationState::Pending { metadata, .. }) => {
-                (metadata.rank, Status::Initializing)
-            }
+            Some(ProcCreationState::Pending {
+                metadata,
+                on_completion: CompletionAction::Keep,
+                ..
+            }) => (metadata.rank, Status::Initializing),
+            Some(ProcCreationState::Pending { metadata, .. }) => (metadata.rank, Status::Stopping),
             Some(ProcCreationState::Created {
                 metadata, proc_id, ..
             }) => {
@@ -1315,7 +1343,11 @@ impl HostAgent {
         use crate::resource::Status;
 
         let status = match self.created.get(id) {
-            Some(ProcCreationState::Pending { .. }) => Status::Initializing,
+            Some(ProcCreationState::Pending {
+                on_completion: CompletionAction::Keep,
+                ..
+            }) => Status::Initializing,
+            Some(ProcCreationState::Pending { .. }) => Status::Stopping,
             Some(ProcCreationState::Created { proc_id, .. }) => match self.host() {
                 Some(host) => host.proc_status(proc_id).await.0,
                 None => Status::Stopped,
@@ -1505,7 +1537,7 @@ impl Handler<DrainHost> for HostAgent {
         let selective = matches!(&kind, PendingDrainKind::Selective(_));
         // CreateOrUpdate still waits for Host::spawn, so a drain cannot observe
         // an in-progress proc creation in this revision.
-        let remaining = 0;
+        let remaining = self.mark_requests_for_drain(msg.host_mesh_id.as_ref());
         let drain = PendingDrain {
             kind,
             remaining,
@@ -1587,6 +1619,23 @@ impl HostAgent {
         crate::StatusOverlay::try_from_runs(vec![(rank..(rank + 1), resource::Status::Stopped)])
             .expect("valid single-run overlay")
     }
+
+    fn mark_requests_for_drain(&mut self, filter: Option<&HostMeshId>) -> usize {
+        let mut remaining = 0;
+        for state in self.created.values_mut() {
+            if filter.is_some_and(|filter| state.host_mesh_id() != Some(filter)) {
+                continue;
+            }
+
+            if let ProcCreationState::Pending { on_completion, .. } = state
+                && !matches!(on_completion, CompletionAction::Shutdown)
+            {
+                *on_completion = CompletionAction::Drain;
+                remaining += 1;
+            }
+        }
+        remaining
+    }
 }
 
 #[async_trait]
@@ -1641,18 +1690,20 @@ impl Handler<ShutdownHost> for HostAgent {
 
         // CreateOrUpdate still waits for Host::spawn, so shutdown cannot
         // observe an in-progress proc creation in this revision.
-        let remaining = 0;
-        let shutdown = PendingShutdown {
+        let remaining = self.mark_requests_for_shutdown();
+        self.pending_shutdown = Some(PendingShutdown {
             remaining,
             timeout: msg.timeout,
             max_in_flight: msg.max_in_flight,
             acknowledgements: vec![(rank, msg.ack)],
-        };
+        });
 
         if remaining == 0 {
+            let shutdown = self
+                .pending_shutdown
+                .take()
+                .expect("pending shutdown exists");
             self.finish_shutdown(cx, shutdown).await;
-        } else {
-            self.pending_shutdown = Some(shutdown);
         }
 
         Ok(())
@@ -1748,6 +1799,17 @@ impl HostAgent {
             }
         }
     }
+
+    fn mark_requests_for_shutdown(&mut self) -> usize {
+        let mut remaining = 0;
+        for state in self.created.values_mut() {
+            if let ProcCreationState::Pending { on_completion, .. } = state {
+                *on_completion = CompletionAction::Shutdown;
+                remaining += 1;
+            }
+        }
+        remaining
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Named, Serialize, Deserialize)]
@@ -1785,9 +1847,19 @@ impl HostAgent {
         state: &ProcCreationState,
     ) -> resource::State<ProcState> {
         match state {
-            ProcCreationState::Pending { .. } => resource::State {
+            ProcCreationState::Pending {
+                on_completion: CompletionAction::Keep,
+                ..
+            } => resource::State {
                 id: id.clone(),
                 status: resource::Status::Initializing,
+                state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
+            },
+            ProcCreationState::Pending { .. } => resource::State {
+                id: id.clone(),
+                status: resource::Status::Stopping,
                 state: None,
                 generation: 0,
                 timestamp: std::time::SystemTime::now(),
