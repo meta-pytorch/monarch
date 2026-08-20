@@ -154,6 +154,36 @@ impl HostAgentMode {
         }
     }
 
+    async fn terminate_proc(
+        &self,
+        cx: &impl context::Actor,
+        id: &ResourceId,
+        proc: &ProcAddr,
+        timeout: Duration,
+        reason: &str,
+    ) -> anyhow::Result<()> {
+        let result = match self {
+            HostAgentMode::Process { host, .. } => {
+                host.terminate_proc(cx, proc, timeout, reason).await
+            }
+            HostAgentMode::Local(host) => host.terminate_proc(cx, proc, timeout, reason).await,
+        };
+
+        match result {
+            Ok(_) => {
+                match self {
+                    HostAgentMode::Process { host, .. } => host.remove_proc(&id.to_string()),
+                    HostAgentMode::Local(host) => host.remove_proc(&id.to_string()),
+                }
+                Ok(())
+            }
+            Err(error) => {
+                tracing::warn!(%id, %error, "failed to terminate proc");
+                Err(error)
+            }
+        }
+    }
+
     /// Query a proc's lifecycle state, returning both the coarse
     /// `resource::Status` used by the resource protocol and the
     /// detailed `bootstrap::ProcStatus` (when available) for callers
@@ -350,6 +380,10 @@ struct PendingDrain {
 }
 
 impl PendingDrain {
+    fn record_failure(&mut self, error: String) {
+        self.failures.push(error);
+    }
+
     fn overlay(&self) -> crate::StatusOverlay {
         let status = if self.failures.is_empty() {
             resource::Status::Stopped
@@ -628,7 +662,7 @@ impl HostAgent {
         cx: &Context<'_, Self>,
         timeout: std::time::Duration,
         filter: Option<&HostMeshId>,
-    ) {
+    ) -> Option<String> {
         let matching_ids: Vec<ResourceId> = self
             .created
             .iter()
@@ -642,38 +676,53 @@ impl HostAgent {
             .map(|(id, _)| id.clone())
             .collect();
 
-        if let Some(host_mode) = self.host() {
-            for id in &matching_ids {
-                if let Some(ProcCreationState::Created { proc_id, .. }) = self.created.get(id) {
-                    match host_mode {
-                        HostAgentMode::Process { host, .. } => {
-                            let _ = host
-                                .terminate_proc(cx, proc_id, timeout, "selective drain")
-                                .await;
-                        }
-                        HostAgentMode::Local(host) => {
-                            let _ = host
-                                .terminate_proc(cx, proc_id, timeout, "selective drain")
-                                .await;
-                        }
-                    }
+        let mut drained_ids = Vec::new();
+        let mut failures = Vec::new();
+
+        for id in &matching_ids {
+            let proc_id = match self.created.get(id) {
+                Some(ProcCreationState::Created { proc_id, .. }) => proc_id.clone(),
+                Some(ProcCreationState::Failed { .. }) => {
+                    drained_ids.push(id.clone());
+                    continue;
                 }
+                _ => continue,
+            };
+
+            let Some(host_mode) = self.host() else {
+                failures.push(format!("host unavailable while terminating {id}"));
+                continue;
+            };
+
+            match host_mode
+                .terminate_proc(cx, id, &proc_id, timeout, "selective drain")
+                .await
+            {
+                Ok(()) => drained_ids.push(id.clone()),
+                Err(error) => failures.push(format!("{id}: {error}")),
             }
         }
 
         // Remove drained entries and associated state so that
         // future spawns with the same proc names get fresh watch bridges.
-        for id in &matching_ids {
+        for id in &drained_ids {
             self.created.remove(id);
             self.watching.remove(id);
             self.pending_proc_waiters.remove(id);
         }
 
         tracing::info!(
-            count = matching_ids.len(),
+            count = drained_ids.len(),
+            failed = failures.len(),
             filter = ?filter,
             "selectively drained procs",
         );
+
+        if failures.is_empty() {
+            None
+        } else {
+            Some(failures.join("; "))
+        }
     }
 
     /// Publish the current host properties and child list for
@@ -1552,7 +1601,7 @@ impl Handler<DrainHost> for HostAgent {
         // CreateOrUpdate still waits for Host::spawn, so a drain cannot observe
         // an in-progress proc creation in this revision.
         let remaining = self.mark_requests_for_drain(msg.host_mesh_id.as_ref());
-        let drain = PendingDrain {
+        let mut drain = PendingDrain {
             kind,
             remaining,
             failures: Vec::new(),
@@ -1563,8 +1612,12 @@ impl Handler<DrainHost> for HostAgent {
         };
 
         if selective {
-            self.drain_by_mesh_name(cx, msg.timeout, msg.host_mesh_id.as_ref())
-                .await;
+            if let Some(error) = self
+                .drain_by_mesh_name(cx, msg.timeout, msg.host_mesh_id.as_ref())
+                .await
+            {
+                drain.record_failure(error);
+            }
             if remaining == 0 {
                 let overlay = drain.overlay();
                 drain.reply.post(cx, overlay);
