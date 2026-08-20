@@ -221,6 +221,17 @@ pub(crate) fn proc_name(proc_mesh_id: &ProcMeshId, rank: usize) -> ResourceId {
     }
 }
 
+pub(crate) fn proc_slots(
+    proc_mesh_id: &ProcMeshId,
+    host_rank: usize,
+    num_per_host: usize,
+) -> impl Iterator<Item = (usize, usize, ResourceId)> + '_ {
+    (0..num_per_host).map(move |per_host_rank| {
+        let rank = num_per_host * host_rank + per_host_rank;
+        (per_host_rank, rank, proc_name(proc_mesh_id, rank))
+    })
+}
+
 #[derive(Debug)]
 pub(crate) struct ProcCreationState {
     pub(crate) rank: usize,
@@ -344,6 +355,7 @@ impl fmt::Debug for DrainWorker {
     handlers=[
         resource::CreateOrUpdate<ProcSpec>,
         SpawnProcs,
+        WaitProcs,
         resource::Stop,
         resource::GetState<ProcState>,
         resource::KeepaliveGetState<ProcState>,
@@ -788,11 +800,6 @@ pub struct SpawnProcs {
     /// Optional per-rank bootstrap overrides, indexed by absolute proc rank
     /// (`num_per_host * host_rank + per_host_rank`).
     pub bootstrap_commands: Option<Vec<Option<BootstrapCommand>>>,
-    /// Spawn ack: the host posts one multi-rank overlay covering all of its
-    /// procs; the caller reduces these per-host overlays into a `StatusMesh`
-    /// barrier.
-    #[serde(default)]
-    pub status_reply: Option<PortRef<crate::StatusOverlay>>,
 }
 wirevalue::register_type!(SpawnProcs);
 
@@ -807,13 +814,9 @@ impl Handler<SpawnProcs> for HostAgent {
 
         tracing::Span::current().record("host_rank", host_rank);
 
-        let mut spawn_result = Ok(());
-
-        for per_host_rank in 0..spawn.num_per_host {
-            let rank = spawn.num_per_host * host_rank + per_host_rank;
-
-            let id = proc_name(&spawn.proc_mesh_id, rank);
-
+        for (per_host_rank, rank, id) in
+            proc_slots(&spawn.proc_mesh_id, host_rank, spawn.num_per_host)
+        {
             let bootstrap_command = spawn
                 .bootstrap_commands
                 .as_ref()
@@ -825,7 +828,7 @@ impl Handler<SpawnProcs> for HostAgent {
                 .as_ref()
                 .and_then(|binds| binds.get(per_host_rank).cloned());
 
-            if let Err(e) = <Self as Handler<resource::CreateOrUpdate<ProcSpec>>>::handle(
+            if let Err(error) = <Self as Handler<resource::CreateOrUpdate<ProcSpec>>>::handle(
                 self,
                 cx,
                 resource::CreateOrUpdate {
@@ -842,43 +845,83 @@ impl Handler<SpawnProcs> for HostAgent {
             )
             .await
             {
-                // Stop spawning, but fall through to report the result below.
-                spawn_result = Err(e);
+                tracing::error!(%error, "failed to request proc creation");
                 break;
             }
         }
 
-        // Report this host's full rank range in a single multi-rank overlay. The
-        // caller's readiness barrier only completes once *every* rank has moved
-        // off NotExist, so on the error path the ranks we never created are
-        // reported as Failed too — otherwise the caller would wait out its whole
-        // idle timeout instead of failing fast on the error we return below.
-        if let Some(reply) = &spawn.status_reply {
-            let mut runs = Vec::with_capacity(spawn.num_per_host);
+        Ok(())
+    }
+}
 
-            for per_host_rank in 0..spawn.num_per_host {
-                let rank = spawn.num_per_host * host_rank + per_host_rank;
+/// Cast after [`SpawnProcs`] to report when each derived proc reaches
+/// [`Status::Running`]. Hyperactor delivers the two casts in order for each
+/// sender-destination stream, so an absent proc means its create was rejected.
+#[derive(
+    Serialize,
+    Deserialize,
+    Clone,
+    Debug,
+    Named,
+    Handler,
+    RefClient,
+    HandleClient
+)]
+pub struct WaitProcs {
+    /// This host's ordinal within the cast region, stamped by the cast layer.
+    pub rank: resource::Rank,
+    /// Proc mesh id used to derive the same proc ids as [`SpawnProcs`].
+    pub proc_mesh_id: ProcMeshId,
+    /// Number of procs spawned on this host.
+    pub num_per_host: usize,
+    /// Sparse readiness updates for the caller's status barrier.
+    pub status_reply: PortRef<crate::StatusOverlay>,
+}
+wirevalue::register_type!(WaitProcs);
 
-                let id = proc_name(&spawn.proc_mesh_id, rank);
+#[async_trait]
+impl Handler<WaitProcs> for HostAgent {
+    async fn handle(&mut self, cx: &Context<Self>, wait: WaitProcs) -> anyhow::Result<()> {
+        let host_rank = wait
+            .rank
+            .0
+            .expect("cast layer stamps the rank before delivery");
+        let mut failed = Vec::new();
 
-                let status = match self.proc_rank_status(&id).await {
-                    (resolved, status) if resolved != usize::MAX => status,
-                    // Unknown to this host: not yet attempted, or its creation
-                    // errored before being recorded. Mark Failed on the error
-                    // path; on success every rank is created so this is moot.
-                    _ => match &spawn_result {
-                        Err(e) => Status::Failed(e.to_string()),
-                        Ok(()) => continue,
+        for (_, rank, id) in proc_slots(&wait.proc_mesh_id, host_rank, wait.num_per_host) {
+            if self.created.contains_key(&id) {
+                if let Err(error) = <Self as Handler<resource::WaitRankStatus>>::handle(
+                    self,
+                    cx,
+                    resource::WaitRankStatus {
+                        id,
+                        rank: resource::Rank::new(rank),
+                        min_status: Status::Running,
+                        reply: wait.status_reply.clone(),
                     },
-                };
-
-                runs.push((rank..(rank + 1), status));
+                )
+                .await
+                {
+                    failed.push((
+                        rank..(rank + 1),
+                        Status::Failed(format!("failed to wait for proc status: {error}")),
+                    ));
+                }
+            } else {
+                failed.push((
+                    rank..(rank + 1),
+                    Status::Failed("proc creation was not accepted".to_string()),
+                ));
             }
-
-            reply.post(cx, crate::StatusOverlay::try_from_runs(runs)?);
         }
 
-        spawn_result
+        if !failed.is_empty() {
+            let overlay = crate::StatusOverlay::try_from_runs(failed)
+                .expect("proc slots produce ordered non-overlapping ranks");
+            wait.status_reply.post(cx, overlay);
+        }
+
+        Ok(())
     }
 }
 
@@ -1929,6 +1972,7 @@ mod tests {
     use hyperactor::channel::ChannelTransport;
     use hyperactor::id::Label;
     use hyperactor::id::Uid;
+    use timed_test::async_timed_test;
 
     use super::*;
     use crate::bootstrap::ProcStatus;
@@ -2697,7 +2741,7 @@ mod tests {
     /// A single `SpawnProcs` message at host rank 0 fans out into
     /// `num_per_host` procs, each created under the id derived from
     /// `proc_name(&proc_mesh_id, rank)`. All of them should come up Running.
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_procs_many_per_host() {
         let host = Host::new(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
@@ -2722,9 +2766,10 @@ mod tests {
 
         let proc_mesh_id = ProcMeshId::singleton(Label::new("spawn-many").unwrap());
         let num_per_host = 4;
+        let (spawn_status_reply, mut spawn_status_rx) = client.open_port::<crate::StatusOverlay>();
 
-        // Send a single point-to-point SpawnProcs (not a cast) to the host
-        // agent at host rank 0.
+        // Send the command and wait messages in the same order used by
+        // HostMesh::spawn.
         let agent_ref: ActorRef<HostAgent> = host_agent.bind();
         agent_ref.post(
             &client,
@@ -2737,40 +2782,30 @@ mod tests {
                 default_bootstrap_command: None,
                 proc_bind: None,
                 bootstrap_commands: None,
-                status_reply: None,
+            },
+        );
+        agent_ref.post(
+            &client,
+            WaitProcs {
+                rank: resource::Rank::new(0),
+                proc_mesh_id: proc_mesh_id.clone(),
+                num_per_host,
+                status_reply: spawn_status_reply.bind(),
             },
         );
 
-        // Each of the num_per_host procs should reach Running. Query each at a
-        // message rank distinct from its creation rank to prove positioning
-        // follows the message.
-        for rank in 0..num_per_host {
-            let id = proc_name(&proc_mesh_id, rank);
-            let message_rank = rank + 100;
-            let (port, mut rx) = client.open_port::<crate::StatusOverlay>();
-            host_agent
-                .wait_rank_status(
-                    &client,
-                    id.clone(),
-                    resource::Rank::new(message_rank),
-                    resource::Status::Running,
-                    port.bind(),
-                )
+        let mut reported = vec![false; num_per_host];
+        for _ in 0..num_per_host {
+            let overlay = spawn_status_rx
+                .recv()
                 .await
-                .unwrap();
-            let overlay = tokio::time::timeout(Duration::from_secs(30), rx.recv())
-                .await
-                .unwrap_or_else(|_| panic!("proc {rank} did not reach Running"))
-                .expect("reply channel closed");
-            assert_overlay_at_rank(&overlay, message_rank);
-
-            assert_matches!(
-                host_agent.get_state(&client, id).await.unwrap(),
-                resource::State {
-                    status: resource::Status::Running,
-                    ..
-                }
-            );
+                .expect("WaitProcs status reply channel closed");
+            assert_eq!(overlay.len(), 1, "expected one proc status per reply");
+            let (range, status) = overlay.runs().next().expect("status overlay has a run");
+            assert_eq!(range.end, range.start + 1);
+            assert_eq!(status, &resource::Status::Running);
+            reported[range.start] = true;
         }
+        assert!(reported.into_iter().all(|reported| reported));
     }
 }
