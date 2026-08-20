@@ -13,6 +13,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
+from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.pytokio import Shared
 
 class PicklingState:
@@ -183,4 +184,19 @@ def _get_mesh_pop_count() -> int:
 
 def _reset_mesh_pop_count() -> None:
     """Test helper: reset the mesh-pop counter to zero."""
+    ...
+
+def _current_receiver_instance() -> Instance | None:
+    """
+    The actor receiving the payload currently being decoded, or ``None``
+    outside an eager reply decode.
+
+    Set by the endpoint response collectors for the duration of a decode, so a
+    ``Port`` in a reply reconstructs against the caller actor rather than
+    falling back to ``context()`` on a Tokio worker, which would bootstrap a
+    client inside a worker process.
+
+    Non-consuming: repeated calls within one decode all return the same
+    receiver, so a payload carrying several ``Port`` values works.
+    """
     ...

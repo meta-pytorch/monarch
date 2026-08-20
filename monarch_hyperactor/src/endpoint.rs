@@ -322,7 +322,9 @@ async fn collect_value(
                             refs.into_iter().map(Some).collect();
                         let mut state =
                             PicklingState::from_parts(message, VecDeque::new(), mesh_references);
-                        Err(PyErr::from_value(state.unpickle(py)?.into_bound(py)))
+                        Err(PyErr::from_value(
+                            state.unpickle_with_receiver(py, instance)?.into_bound(py),
+                        ))
                     })
                 }
                 other => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -428,7 +430,9 @@ async fn collect_valuemesh(
                             }
                             PythonResponseMessage::Exception { .. } => {
                                 record_guard.mark_error();
-                                return Err(PyErr::from_value(payload.decode(py)?.into_bound(py)));
+                                return Err(PyErr::from_value(
+                                    payload.decode(py, instance)?.into_bound(py),
+                                ));
                             }
                         }
                     }
@@ -442,12 +446,14 @@ async fn collect_valuemesh(
                 for (range, payload) in overlay.runs() {
                     match payload {
                         PythonResponseMessage::Result { .. } => {
-                            let obj = payload.decode(py)?;
+                            let obj = payload.decode(py, instance)?;
                             objects.extend(range.clone().map(|_| obj.clone_ref(py)));
                         }
                         PythonResponseMessage::Exception { .. } => {
                             record_guard.mark_error();
-                            return Err(PyErr::from_value(payload.decode(py)?.into_bound(py)));
+                            return Err(PyErr::from_value(
+                                payload.decode(py, instance)?.into_bound(py),
+                            ));
                         }
                     }
                 }
@@ -499,7 +505,7 @@ fn value_collector(
                     refs.into_iter().map(Some).collect();
                 let mut state =
                     PicklingState::from_parts(message, VecDeque::new(), mesh_references);
-                state.unpickle(py)
+                state.unpickle_with_receiver(py, &instance)
             }),
             Err(e) => {
                 record_guard.mark_error();
@@ -568,7 +574,7 @@ impl PyValueStream {
                         refs.into_iter().map(Some).collect();
                     let mut state =
                         PicklingState::from_parts(message, VecDeque::new(), mesh_references);
-                    state.unpickle(py)
+                    state.unpickle_with_receiver(py, &instance)
                 }),
                 Err(e) => {
                     record_guard.mark_error();
