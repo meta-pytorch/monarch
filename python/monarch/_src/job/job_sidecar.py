@@ -23,7 +23,7 @@ from typing import Any
 
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec
 from monarch._src.job.process_guard import find_process, ProcessGuard
-from monarch.actor import enable_transport, HostMesh
+from monarch.actor import attach, enable_transport, HostMesh
 from monarch.config import get_runtime_config
 
 _JOB_SIDECAR_WORKER_MODULE = "monarch._src.job._job_sidecar_worker"
@@ -46,6 +46,7 @@ def spawn_module(
     config_key: object,
     module_name: str,
     runtime_transport: str | None = None,
+    attach_to: str | None = None,
 ) -> ProcessGuard:
     """Launch a Python module as a ``ProcessGuard``-managed background process."""
     if _IN_PAR:
@@ -58,10 +59,15 @@ def spawn_module(
         env = None
     if runtime_transport is not None:
         command.extend(["--runtime-transport", runtime_transport])
+    if attach_to is not None:
+        command.extend(["--attach-to", attach_to])
     return ProcessGuard.create(lock_path, config_key, command, env=env)
 
 
-def create_job_sidecar(apply_id: str) -> ProcessGuard:
+def create_job_sidecar(
+    apply_id: str,
+    attach_to: str | None = None,
+) -> ProcessGuard:
     """Ensure the per-job sidecar process is running and return its guard."""
     runtime_transport = sidecar_transport_from_runtime()
     return spawn_module(
@@ -69,6 +75,7 @@ def create_job_sidecar(apply_id: str) -> ProcessGuard:
         apply_id,
         _JOB_SIDECAR_WORKER_MODULE,
         runtime_transport=runtime_transport,
+        attach_to=attach_to,
     )
 
 
@@ -211,7 +218,11 @@ def _dbg(msg: str) -> None:
     print(f"[job_sidecar pid={os.getpid()}] {msg}", file=sys.stderr, flush=True)
 
 
-def _run_job_sidecar(socket_path: str, runtime_transport: str | None = None) -> None:
+def _run_job_sidecar(
+    socket_path: str,
+    runtime_transport: str | None = None,
+    attach_to: str | None = None,
+) -> None:
     """Run in the child process: bind socket then serve refresh/shutdown requests."""
     import signal as _signal
 
@@ -221,6 +232,8 @@ def _run_job_sidecar(socket_path: str, runtime_transport: str | None = None) -> 
         _signal.signal(_signal.SIGTERM, _signal.SIG_DFL)
 
     configure_sidecar_transport(runtime_transport)
+    if attach_to is not None:
+        attach(attach_to)
 
     from monarch._src.job.process_guard import _Shutdown
 

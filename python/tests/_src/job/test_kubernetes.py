@@ -1369,6 +1369,53 @@ class TestStateOutOfCluster(unittest.TestCase):
         mock_port_forward.assert_not_called()
         mock_attach.assert_called_once_with("tcp://127.0.0.1:34000")
 
+    def test_components_bootstrap_before_host_mesh_materialization(self) -> None:
+        job = self._make_job()
+        job._status = "running"
+        job._apply_id = "apply"
+        raw_host = MagicMock()
+        raw_state = MagicMock()
+        raw_state._hosts = {"mesh1": raw_host}
+        events = []
+
+        def prepare_client_gateway() -> None:
+            events.append("prepare")
+            job._client_attached_to = "tcp://127.0.0.1:45678"
+
+        def materialize_state() -> MagicMock:
+            events.append("state")
+            return raw_state
+
+        job._components = MagicMock()
+        job._components.needs_sidecar.return_value = True
+        job._components.before_connect.side_effect = lambda _job: events.append(
+            "before_connect"
+        )
+        job._components.connect.side_effect = (
+            lambda _job, host_meshes: events.append("connect") or host_meshes
+        )
+
+        with (
+            patch.object(
+                job,
+                "_prepare_client_gateway",
+                side_effect=prepare_client_gateway,
+            ),
+            patch.object(job, "_state", side_effect=materialize_state),
+            patch(
+                "monarch._src.job.job.create_job_sidecar",
+                side_effect=lambda *_args, **_kwargs: events.append("sidecar"),
+            ),
+        ):
+            host_meshes = job._connect_host_meshes(job)
+
+        self.assertEqual(
+            events,
+            ["prepare", "sidecar", "before_connect", "state", "connect"],
+        )
+        self.assertEqual(host_meshes, {"mesh1": raw_host})
+        self.assertEqual(job._sidecar_attach_to(), "tcp://127.0.0.1:45678")
+
 
 if __name__ == "__main__":
     unittest.main()

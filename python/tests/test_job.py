@@ -219,17 +219,28 @@ def test_spawn_module_reenters_parent_binary_inside_par():
 
 def test_create_job_sidecar_spawns_job_sidecar_worker_module():
     with (
+        patch.object(js, "_IN_PAR", False),
         patch.object(js, "sidecar_transport_from_runtime", return_value="metatls"),
-        patch.object(js, "spawn_module") as spawn_module,
+        patch("monarch._src.job.process_guard.ProcessGuard.create") as create,
     ):
-        js.create_job_sidecar("apply_id")
+        js.create_job_sidecar(
+            "apply_id",
+            attach_to="tcp://127.0.0.1:45678",
+        )
 
-    spawn_module.assert_called_once_with(
-        js.job_sidecar_lock_path("apply_id"),
-        "apply_id",
+    lock_path, config_key, command = create.call_args.args
+    assert lock_path == js.job_sidecar_lock_path("apply_id")
+    assert config_key == "apply_id"
+    assert command == [
+        sys.executable,
+        "-m",
         "monarch._src.job._job_sidecar_worker",
-        runtime_transport="metatls",
-    )
+        "--runtime-transport",
+        "metatls",
+        "--attach-to",
+        "tcp://127.0.0.1:45678",
+    ]
+    assert create.call_args.kwargs == {"env": None}
 
 
 def test_mounts_ensure_open_clears_existing_sidecar_when_empty():
@@ -277,7 +288,7 @@ def test_mounts_ensure_open_sends_mounts_request():
     guard.send.return_value.get.assert_called_once_with()
 
 
-def test_job_sidecar_worker_passes_transport_arg_to_server():
+def test_job_sidecar_worker_passes_startup_args_to_server():
     with (
         patch.object(
             sys,
@@ -286,6 +297,8 @@ def test_job_sidecar_worker_passes_transport_arg_to_server():
                 "worker",
                 "--runtime-transport",
                 "metatls",
+                "--attach-to",
+                "tcp://127.0.0.1:45678",
                 "/tmp/socket",
                 "123",
             ],
@@ -294,7 +307,28 @@ def test_job_sidecar_worker_passes_transport_arg_to_server():
     ):
         js_worker.main()
 
-    run_sidecar.assert_called_once_with("/tmp/socket", runtime_transport="metatls")
+    run_sidecar.assert_called_once_with(
+        "/tmp/socket",
+        runtime_transport="metatls",
+        attach_to="tcp://127.0.0.1:45678",
+    )
+
+
+def test_run_job_sidecar_attaches_gateway_once_before_serving():
+    server = MagicMock()
+    server.accept.side_effect = OSError
+    with (
+        patch("signal.signal"),
+        patch.object(js, "attach") as attach,
+        patch.object(js.socket, "socket", return_value=server),
+    ):
+        js._run_job_sidecar(
+            "/tmp/socket",
+            attach_to="tcp://127.0.0.1:45678",
+        )
+
+    attach.assert_called_once_with("tcp://127.0.0.1:45678")
+    server.bind.assert_called_once_with("/tmp/socket")
 
 
 def test_run_job_sidecar_manages_mount_lifecycle():

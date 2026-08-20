@@ -233,8 +233,47 @@ class KubernetesJob(JobTrait):
         self._kubeconfig: KubeConfig = kubeconfig or KubeConfig()
         self._attach_to = attach_to
         self._meshes: dict[str, _MeshConfig] = {}
+        self._prepared_mesh_pods: dict[str, list[_MonarchMeshPod]] | None = None
         self._port_forward_processes: list[subprocess.Popen[str]] = []
         super().__init__()
+
+    def _requires_sidecar_gateway(self) -> bool:
+        # Out-of-cluster mode resolves an automatic port-forward when no
+        # address is supplied; an explicit address requires the same ordering.
+        return self._kubeconfig.out_of_cluster or self._attach_to is not None
+
+    def _prepare_client_gateway(self) -> None:
+        if self._prepared_mesh_pods is not None:
+            return
+
+        all_mesh_pods: dict[str, list[_MonarchMeshPod]] = {}
+        for mesh_name, mesh_config in self._meshes.items():
+            all_mesh_pods[mesh_name] = self._wait_for_ready_pods(
+                mesh_config["label_selector"],
+                mesh_config["num_replicas"],
+                mesh_config["pod_rank_label"],
+                timeout=self._timeout,
+            )
+
+        attach_to = self._attach_to
+        try:
+            if self._kubeconfig.out_of_cluster and attach_to is None:
+                for pods in all_mesh_pods.values():
+                    if pods:
+                        attach_to = self._port_forward_to_pod(pods[0])
+                        break
+                if attach_to is None:
+                    raise RuntimeError(
+                        "out-of-cluster mode requires at least one ready pod "
+                        "and no attach_to was provided"
+                    )
+
+            self._attach_client(attach_to)
+        except Exception:
+            self._terminate_port_forwards()
+            raise
+
+        self._prepared_mesh_pods = all_mesh_pods
 
     # TODO: Consider adding monarch-rank label instead of relying on StatefulSet index by default if using MonarchMesh CRD.
     def add_mesh(
@@ -736,42 +775,14 @@ class KubernetesJob(JobTrait):
         Returns:
             JobState containing HostMesh objects for each configured mesh
         """
+        self._prepare_client_gateway()
+        all_mesh_pods = self._prepared_mesh_pods
+        if all_mesh_pods is None:
+            raise RuntimeError("Kubernetes connection was not prepared")
+        self._prepared_mesh_pods = None
+
         host_meshes = {}
-        attach_to = self._attach_to
-
-        # Discover all mesh pods first so we can set up port-forwarding
-        # before attaching to any workers.
-        all_mesh_pods: dict[str, list[_MonarchMeshPod]] = {}
-        for mesh_name, mesh_config in self._meshes.items():
-            # Wait for pods to be ready and discover their ports
-            pods = self._wait_for_ready_pods(
-                mesh_config["label_selector"],
-                mesh_config["num_replicas"],
-                mesh_config["pod_rank_label"],
-                timeout=self._timeout,
-            )
-            all_mesh_pods[mesh_name] = pods
-
-        # Set up out-of-cluster client attachment before connecting to workers.
-        # If anything below fails after a port-forward subprocess is started,
-        # terminate it so we do not leak kubectl processes and bound ports.
         try:
-            if self._kubeconfig.out_of_cluster and attach_to is None:
-                # No explicit attach_to — auto-forward to the first pod's
-                # monarch port (which doubles as the duplex attach address).
-                for pods in all_mesh_pods.values():
-                    if pods:
-                        attach_to = self._port_forward_to_pod(pods[0])
-                        break
-                if attach_to is None:
-                    raise RuntimeError(
-                        "out-of-cluster mode requires at least one ready pod "
-                        "and no attach_to was provided"
-                    )
-
-            if attach_to is not None:
-                self._attach_client(attach_to)
-
             for mesh_name, pods in all_mesh_pods.items():
                 # Create worker addresses using discovered IPs and ports
                 workers = [f"tcp://{pod.ip}:{pod.port}" for pod in pods]
@@ -833,6 +844,7 @@ class KubernetesJob(JobTrait):
         # Close local forwarding even when attach-only meshes make remote
         # teardown unsupported.
         self._terminate_port_forwards()
+        self._prepared_mesh_pods = None
 
         provisioned = [
             name for name, cfg in self._meshes.items() if cfg.get("provisioned")
