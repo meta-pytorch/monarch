@@ -59,14 +59,18 @@
 //! `HostMeshAgent::handle(GetLocalProc)` first asks for it.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt;
 use std::marker::PhantomData;
+use std::panic::AssertUnwindSafe;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::Future;
+use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream;
 use hyperactor::Actor;
@@ -87,6 +91,7 @@ use hyperactor::channel::ServerError;
 use hyperactor::channel::Tx;
 use hyperactor::context;
 use hyperactor::gateway::GatewayServeHandle;
+use hyperactor::gateway::PeerAttachError;
 use hyperactor::gateway::PeerAttachGuard;
 use hyperactor::mailbox::IntoBoxedMailboxSender as _;
 use hyperactor::mailbox::MailboxClient;
@@ -124,6 +129,18 @@ pub enum HostError {
     /// The named proc already exists and cannot be spawned.
     #[error("proc '{0}' already exists")]
     ProcExists(String),
+
+    /// The host's proc-name registry cannot be used safely.
+    #[error("host proc-name registry is poisoned")]
+    ProcRegistryPoisoned,
+
+    /// Attaching a spawned proc to the host gateway failed.
+    #[error("failed to attach proc '{0}' to the host gateway: {1}")]
+    PeerAttachFailure(ProcAddr, #[source] PeerAttachError),
+
+    /// The detached task spawning a proc panicked.
+    #[error("proc '{0}' spawn panicked: {1}")]
+    SpawnPanicked(String, String),
 
     /// Failures occuring while spawning a subprocess.
     #[error("proc '{0}' (command: {1}) failed to spawn process: {2}")]
@@ -195,6 +212,46 @@ impl Drop for HostShutdownHandles {
     }
 }
 
+struct ProcHandleKillGuard<H: ProcHandle> {
+    handle: Option<H>,
+}
+
+impl<H: ProcHandle> ProcHandleKillGuard<H> {
+    fn handle(&self) -> &H {
+        self.handle
+            .as_ref()
+            .expect("active spawn cleanup owns the proc handle")
+    }
+
+    fn disarm(mut self) {
+        self.handle = None;
+    }
+
+    fn maybe_kill(&mut self) -> impl Future<Output = ()> + Send + 'static {
+        let handle = self.handle.take();
+
+        async move {
+            let Some(handle) = handle else {
+                return;
+            };
+            match handle.kill().await {
+                Ok(_) | Err(TerminateError::AlreadyTerminated(_)) => {}
+                Err(error) => {
+                    tracing::warn!(proc = %handle.proc_addr(), %error, "failed to clean up proc spawn");
+                }
+            }
+        }
+    }
+}
+
+impl<H: ProcHandle> Drop for ProcHandleKillGuard<H> {
+    fn drop(&mut self) {
+        if self.handle.is_some() {
+            tokio::spawn(self.maybe_kill());
+        }
+    }
+}
+
 /// Lifecycle manager for the procs on one machine.
 ///
 /// The host delegates all connectivity to its [`Gateway`]. It creates
@@ -205,7 +262,7 @@ pub struct Host<M> {
     /// [`PeerAttachGuard`] keeps the gateway peer route for the child
     /// alive; dropping it removes the entry (used by
     /// [`Host::terminate_children`] to free slots).
-    procs: HashMap<String, PeerAttachGuard>,
+    procs: Arc<StdMutex<HashMap<String, PeerAttachGuard>>>,
     frontend_addr: ChannelAddr,
     backend_addr: ChannelAddr,
     /// Connectivity for every proc owned by this host.
@@ -220,7 +277,7 @@ pub struct Host<M> {
     /// host was bootstrapped out-of-cluster. Kept alive for the host's
     /// lifetime so the cluster route and outbound forwarder persist.
     via_handle: Option<GatewayServeHandle>,
-    manager: M,
+    manager: Arc<M>,
     service_proc: Proc,
     local_proc: Proc,
 }
@@ -355,14 +412,14 @@ impl<M: ProcManager> Host<M> {
         );
 
         Ok(Host {
-            procs: HashMap::new(),
+            procs: Arc::new(StdMutex::new(HashMap::new())),
             frontend_addr,
             backend_addr,
             gateway,
             frontend_handle: Some(frontend_handle),
             backend_handle: Some(backend_handle),
             via_handle,
-            manager,
+            manager: Arc::new(manager),
             service_proc,
             local_proc,
         })
@@ -370,7 +427,7 @@ impl<M: ProcManager> Host<M> {
 
     /// The underlying proc manager.
     pub fn manager(&self) -> &M {
-        &self.manager
+        self.manager.as_ref()
     }
 
     /// The address which accepts messages destined for this host.
@@ -398,61 +455,108 @@ impl<M: ProcManager> Host<M> {
     /// [`ProcAddr`]. The proc id is derived from `name`; its location is
     /// advertised through this host's frontend gateway using a `Via(child_uid,
     /// host_location)` source route.
-    pub async fn spawn(
-        &mut self,
+    /// The caller must ensure that no other spawn with the same `name` is in
+    /// flight. This method only rejects names that are already registered with the host.
+    pub(crate) fn spawn(
+        &self,
         name: String,
         config: M::Config,
-    ) -> Result<(ProcAddr, ActorRef<ManagerAgent<M>>), HostError> {
-        if self.procs.contains_key(&name) {
-            return Err(HostError::ProcExists(name));
-        }
+    ) -> impl Future<Output = Result<(ProcAddr, ActorRef<ManagerAgent<M>>), HostError>> + Send + 'static
+    where
+        M: Send + Sync + 'static,
+        M::Config: Send + 'static,
+    {
+        let procs = Arc::clone(&self.procs);
+        let backend_addr = self.backend_addr.clone();
+        let gateway = self.gateway.clone();
+        let manager = Arc::clone(&self.manager);
 
-        // Advertise the child with a `Via(child_uid, host_location)`
-        // location so peers source-route through this host: the outer
-        // hop matches the peer entry installed below, and gets peeled
-        // to deliver to the child's gateway. The host location comes
-        // from the gateway's active routing state, so a later
-        // `serve`/`serve_via` controls newly spawned child refs.
-        let resource_id = ResourceId::from_name(&name);
-        let proc_uid = resource_id.uid().clone();
-        let host_location = self.gateway.default_location();
-        let location = host_location.with_via(proc_uid.clone());
-        let proc_id = resource_id.proc_addr(location);
-        let handle = self
-            .manager
-            .spawn(proc_id.clone(), self.backend_addr.clone(), config)
-            .await?;
+        async move {
+            if procs
+                .lock()
+                .map_err(|_| HostError::ProcRegistryPoisoned)?
+                .contains_key(&name)
+            {
+                return Err(HostError::ProcExists(name));
+            }
 
-        // Await readiness (config-driven; 0s disables timeout).
-        let to: Duration =
-            hyperactor_config::global::get(hyperactor::config::HOST_SPAWN_READY_TIMEOUT);
-        let ready = if to == Duration::from_secs(0) {
-            ReadyProc::ensure(&handle).await
-        } else {
-            match tokio::time::timeout(to, ReadyProc::ensure(&handle)).await {
-                Ok(result) => result,
-                Err(_elapsed) => Err(ReadyProcError::Timeout),
+            // Advertise the child with a `Via(child_uid, host_location)`
+            // location so peers source-route through this host: the outer
+            // hop matches the peer entry installed below, and gets peeled
+            // to deliver to the child's gateway. The host location comes
+            // from the gateway's active routing state, so a later
+            // `serve`/`serve_via` controls newly spawned child refs.
+            let resource_id = ResourceId::from_name(&name);
+            let proc_uid = resource_id.uid().clone();
+            let proc_id =
+                resource_id.proc_addr(gateway.default_location().with_via(proc_uid.clone()));
+            let handle = manager.spawn(proc_id.clone(), backend_addr, config).await?;
+            let mut proc_handle_guard = ProcHandleKillGuard {
+                handle: Some(handle),
+            };
+
+            let created = async {
+                let timeout: Duration =
+                    hyperactor_config::global::get(hyperactor::config::HOST_SPAWN_READY_TIMEOUT);
+
+                let ready = if timeout == Duration::from_secs(0) {
+                    ReadyProc::ensure(proc_handle_guard.handle()).await
+                } else {
+                    match tokio::time::timeout(
+                        timeout,
+                        ReadyProc::ensure(proc_handle_guard.handle()),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_elapsed) => Err(ReadyProcError::Timeout),
+                    }
+                }
+                .map_err(|e| {
+                    HostError::ProcessConfigurationFailure(
+                        proc_id.clone(),
+                        anyhow::anyhow!("{e:?}"),
+                    )
+                })?;
+
+                let child_sender = MailboxClient::dial(ready.addr().clone()).map_err(|e| {
+                    HostError::ProcessConfigurationFailure(
+                        proc_id.clone(),
+                        anyhow::anyhow!("failed to dial spawned proc at {}: {}", ready.addr(), e),
+                    )
+                })?;
+                let agent_ref = ready.agent_ref().clone();
+                drop(ready);
+
+                let guard = gateway
+                    .attach_peer(proc_uid.clone(), child_sender.into_boxed())
+                    .map_err(|error| HostError::PeerAttachFailure(proc_id.clone(), error))?;
+                match procs
+                    .lock()
+                    .map_err(|_| HostError::ProcRegistryPoisoned)?
+                    .entry(name.clone())
+                {
+                    Entry::Vacant(entry) => {
+                        entry.insert(guard);
+                    }
+                    Entry::Occupied(_) => return Err(HostError::ProcExists(name.clone())),
+                }
+
+                Ok((proc_id.clone(), agent_ref))
+            }
+            .await;
+
+            match created {
+                Ok(created) => {
+                    proc_handle_guard.disarm();
+                    Ok(created)
+                }
+                Err(error) => {
+                    proc_handle_guard.maybe_kill().await;
+                    Err(error)
+                }
             }
         }
-        .map_err(|e| {
-            HostError::ProcessConfigurationFailure(proc_id.clone(), anyhow::anyhow!("{e:?}"))
-        })?;
-
-        let child_sender = MailboxClient::dial(ready.addr().clone()).map_err(|e| {
-            HostError::ProcessConfigurationFailure(
-                proc_id.clone(),
-                anyhow::anyhow!("failed to dial spawned proc at {}: {}", ready.addr(), e),
-            )
-        })?;
-        // The proc id derives from `name`, and we rejected a duplicate
-        // `name` above, so this peer uid is unique.
-        let guard = self
-            .gateway
-            .attach_peer(proc_uid, child_sender.into_boxed())
-            .expect("spawned proc uid is unique: duplicate name rejected above");
-        self.procs.insert(name.clone(), guard);
-
-        Ok((proc_id, ready.agent_ref().clone()))
     }
 
     /// The host's [`Gateway`]. All incoming traffic addressed to this
@@ -462,6 +566,16 @@ impl<M: ProcManager> Host<M> {
     /// [`Gateway::attach_peer`].
     pub fn gateway(&self) -> &Gateway {
         &self.gateway
+    }
+
+    /// Remove a child proc's gateway registration and release its name.
+    pub(crate) fn remove_proc(&self, name: &str) {
+        let guard = self
+            .procs
+            .lock()
+            .expect("procs mutex poisoned")
+            .remove(name);
+        drop(guard);
     }
 
     /// Take ownership of the frontend server handle.
@@ -741,9 +855,12 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
             .manager
             .terminate_all(cx, timeout, max_in_flight, reason)
             .await;
-        // Detach procs from the gateway by dropping their attach
-        // guards, freeing the name slots for any future respawns.
-        self.procs.clear();
+        {
+            let _guards = {
+                let mut entries = self.procs.lock().expect("procs mutex poisoned");
+                std::mem::take(&mut *entries)
+            };
+        }
         summary
     }
 }
@@ -1001,6 +1118,15 @@ impl<S> LocalProcManager<S> {
             procs: Arc::new(Mutex::new(HashMap::new())),
             stopping: Arc::new(Mutex::new(HashMap::new())),
             spawn,
+        }
+    }
+
+    async fn discard_proc(&self, proc_id: &ProcAddr, reason: &str) {
+        let proc = self.procs.lock().await.remove(proc_id);
+        if let Some(mut proc) = proc
+            && let Err(error) = proc.destroy_and_wait(Duration::ZERO, reason).await
+        {
+            tracing::warn!(%proc_id, %error, "failed to discard local proc");
         }
     }
 
@@ -1296,9 +1422,19 @@ where
             .await
             .insert(proc_id.clone(), proc.clone());
         let _handle = proc.clone().serve(rx);
-        let agent_handle = (self.spawn)(proc)
-            .await
-            .map_err(|e| HostError::AgentSpawnFailure(proc_id.clone(), e))?;
+        let agent_handle = match AssertUnwindSafe((self.spawn)(proc)).catch_unwind().await {
+            Ok(Ok(agent_handle)) => agent_handle,
+            Ok(Err(error)) => {
+                self.discard_proc(&proc_id, "proc agent failed to spawn")
+                    .await;
+                return Err(HostError::AgentSpawnFailure(proc_id, error));
+            }
+            Err(panic) => {
+                self.discard_proc(&proc_id, "proc agent spawn panicked")
+                    .await;
+                std::panic::resume_unwind(panic);
+            }
+        };
 
         Ok(LocalHandle {
             proc_id,
@@ -1314,11 +1450,10 @@ where
 ///
 /// This implementation launches a child via `Command` and relies on
 /// `kill_on_drop(true)` so that children are SIGKILLed if the manager
-/// (or host) drops. There is **no** proc control plane (no RPC to a
-/// proc agent for shutdown) and **no** exit monitor wired here.
-/// Consequently:
-/// - `terminate()` and `kill()` return `Unsupported`.
-/// - `wait()` is trivial (no lifecycle observation).
+/// (or host) drops. There is **no** graceful proc control plane or
+/// exit monitor wired here. `terminate()` and `kill()` therefore
+/// remove and force-kill the child directly, while `wait()` remains
+/// trivial and does not report real lifecycle state.
 ///
 /// It follows a simple protocol:
 ///
@@ -1336,6 +1471,40 @@ pub struct ProcessProcManager<A> {
     program: std::path::PathBuf,
     children: Arc<Mutex<HashMap<ProcAddr, Child>>>,
     _phantom: PhantomData<A>,
+}
+
+struct ProcessChildCleanup {
+    children: Arc<Mutex<HashMap<ProcAddr, Child>>>,
+    proc_id: Option<ProcAddr>,
+}
+
+impl ProcessChildCleanup {
+    fn disarm(mut self) {
+        self.proc_id = None;
+    }
+}
+
+impl Drop for ProcessChildCleanup {
+    fn drop(&mut self) {
+        let Some(proc_id) = self.proc_id.take() else {
+            return;
+        };
+        let children = Arc::clone(&self.children);
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::error!(%proc_id, "cannot clean up interrupted process spawn without a Tokio runtime");
+            return;
+        };
+        runtime.spawn(async move {
+            if let Some(mut child) = children.lock().await.remove(&proc_id) {
+                if let Err(error) = child.kill().await {
+                    tracing::warn!(%proc_id, %error, "failed to kill interrupted process spawn");
+                }
+                if let Err(error) = child.wait().await {
+                    tracing::warn!(%proc_id, %error, "failed to reap interrupted process spawn");
+                }
+            }
+        });
+    }
 }
 
 impl<A> ProcessProcManager<A> {
@@ -1370,13 +1539,9 @@ impl<A> Drop for ProcessProcManager<A> {
 ///
 /// Unlike [`LocalHandle`], this corresponds to a real OS process
 /// launched by the manager. In this **toy** implementation the handle
-/// does not own/monitor the `Child` and there is no shutdown control
-/// plane. It is a stable, clonable surface exposing the proc's
-/// identity, address, and agent reference so host code can interact
-/// uniformly with local/external procs. `terminate()`/`kill()` are
-/// intentionally `Unsupported` here; process cleanup relies on
-/// `cmd.kill_on_drop(true)` when launching the child (the OS will
-/// SIGKILL it if the handle is dropped).
+/// has no graceful shutdown control plane or exit monitor. It retains
+/// access to the manager's child registry so `terminate()` and `kill()`
+/// can remove, kill, and reap the process when a host spawn fails.
 ///
 /// The type bound `A: Actor + Referable` comes from the
 /// [`ProcHandle::Agent`] requirement: `Actor` because the agent
@@ -1388,6 +1553,7 @@ pub struct ProcessHandle<A: Actor + Referable> {
     proc_id: ProcAddr,
     addr: ChannelAddr,
     agent_ref: ActorRef<A>,
+    children: Arc<Mutex<HashMap<ProcAddr, Child>>>,
 }
 
 // Manual `Clone` to avoid requiring `A: Clone`.
@@ -1397,6 +1563,7 @@ impl<A: Actor + Referable> Clone for ProcessHandle<A> {
             proc_id: self.proc_id.clone(),
             addr: self.addr.clone(),
             agent_ref: self.agent_ref.clone(),
+            children: Arc::clone(&self.children),
         }
     }
 }
@@ -1438,11 +1605,22 @@ impl<A: Actor + Referable> ProcHandle for ProcessHandle<A> {
         _deadline: Duration,
         _reason: &str,
     ) -> Result<(), TerminateError<Self::TerminalStatus>> {
-        Err(TerminateError::Unsupported)
+        self.kill().await
     }
 
     async fn kill(&self) -> Result<(), TerminateError<Self::TerminalStatus>> {
-        Err(TerminateError::Unsupported)
+        let Some(mut child) = self.children.lock().await.remove(&self.proc_id) else {
+            return Err(TerminateError::AlreadyTerminated(()));
+        };
+        child
+            .kill()
+            .await
+            .map_err(|error| TerminateError::Io(error.into()))?;
+        child
+            .wait()
+            .await
+            .map_err(|error| TerminateError::Io(error.into()))?;
+        Ok(())
     }
 }
 
@@ -1496,6 +1674,10 @@ where
             let mut children = self.children.lock().await;
             children.insert(proc_id.clone(), child);
         }
+        let cleanup = ProcessChildCleanup {
+            children: Arc::clone(&self.children),
+            proc_id: Some(proc_id.clone()),
+        };
 
         // Wait for the child's callback with (addr, agent_ref)
         let (proc_addr, agent_ref) = callback_rx.recv().await?;
@@ -1508,11 +1690,14 @@ where
         //   immediate `Child::kill()`.
         // - wire an exit monitor so `wait()` resolves with a real
         //   terminal status.
-        Ok(ProcessHandle {
+        let handle = ProcessHandle {
             proc_id,
             addr: proc_addr,
             agent_ref,
-        })
+            children: Arc::clone(&self.children),
+        };
+        cleanup.disarm();
+        Ok(handle)
     }
 }
 
@@ -1649,7 +1834,7 @@ mod tests {
             Ok(proc.spawn_with_label::<()>("host_agent", ()))
         });
         let procs = Arc::clone(&proc_manager.procs);
-        let mut host = Host::new(proc_manager, ChannelAddr::any(ChannelTransport::Unix))
+        let host = Host::new(proc_manager, ChannelAddr::any(ChannelTransport::Unix))
             .await
             .unwrap();
 
@@ -1720,7 +1905,7 @@ mod tests {
         let process_manager = ProcessProcManager::<EchoActor>::new(
             buck_resources::get("monarch/hyperactor_mesh/host_bootstrap").unwrap(),
         );
-        let mut host = Host::new(process_manager, ChannelAddr::any(ChannelTransport::Unix))
+        let host = Host::new(process_manager, ChannelAddr::any(ChannelTransport::Unix))
             .await
             .unwrap();
 
@@ -1834,6 +2019,8 @@ mod tests {
         mode: ReadyMode,
         omit_addr: bool,
         omit_agent: bool,
+        kill_notify: Option<Arc<tokio::sync::Notify>>,
+        kill_release: Option<Arc<tokio::sync::Notify>>,
     }
 
     #[async_trait::async_trait]
@@ -1886,7 +2073,13 @@ mod tests {
             Err(TerminateError::Unsupported)
         }
         async fn kill(&self) -> Result<Self::TerminalStatus, TerminateError<Self::TerminalStatus>> {
-            Err(TerminateError::Unsupported)
+            if let Some(notify) = &self.kill_notify {
+                notify.notify_one();
+            }
+            if let Some(release) = &self.kill_release {
+                release.notified().await;
+            }
+            Ok(())
         }
     }
 
@@ -1896,6 +2089,8 @@ mod tests {
         omit_addr: bool,
         omit_agent: bool,
         transport: ChannelTransport,
+        kill_notify: Option<Arc<tokio::sync::Notify>>,
+        kill_release: Option<Arc<tokio::sync::Notify>>,
     }
 
     impl TestManager {
@@ -1905,11 +2100,21 @@ mod tests {
                 omit_addr: false,
                 omit_agent: false,
                 transport: ChannelTransport::Local,
+                kill_notify: None,
+                kill_release: None,
             }
         }
         fn with_omissions(mut self, addr: bool, agent: bool) -> Self {
             self.omit_addr = addr;
             self.omit_agent = agent;
+            self
+        }
+        fn with_kill_notify(mut self, notify: Arc<tokio::sync::Notify>) -> Self {
+            self.kill_notify = Some(notify);
+            self
+        }
+        fn with_kill_release(mut self, release: Arc<tokio::sync::Notify>) -> Self {
+            self.kill_release = Some(release);
             self
         }
     }
@@ -1936,8 +2141,79 @@ mod tests {
                 mode: self.mode,
                 omit_addr: self.omit_addr,
                 omit_agent: self.omit_agent,
+                kill_notify: self.kill_notify.clone(),
+                kill_release: self.kill_release.clone(),
             })
         }
+    }
+
+    #[tokio::test]
+    async fn host_spawn_cleans_up_handle_after_readiness_failure() {
+        let cleanup_started = Arc::new(tokio::sync::Notify::new());
+        let cleanup_release = Arc::new(tokio::sync::Notify::new());
+        let host = Host::new(
+            TestManager::local(ReadyMode::ErrTerminal)
+                .with_kill_notify(Arc::clone(&cleanup_started))
+                .with_kill_release(Arc::clone(&cleanup_release)),
+            ChannelAddr::any(ChannelTransport::Local),
+        )
+        .await
+        .expect("host should start");
+
+        let spawn = tokio::spawn(host.spawn("failed-proc".to_string(), ()));
+        cleanup_started.notified().await;
+        assert!(
+            !spawn.is_finished(),
+            "spawn returned before failed-proc cleanup completed",
+        );
+        cleanup_release.notify_one();
+
+        let error = spawn
+            .await
+            .expect("spawn task should complete")
+            .expect_err("readiness failure should fail the spawn");
+        assert!(matches!(
+            error,
+            HostError::ProcessConfigurationFailure(_, _)
+        ));
+        assert!(
+            !host
+                .procs
+                .lock()
+                .expect("procs mutex poisoned")
+                .contains_key("failed-proc"),
+            "failed spawn should not leave a peer registration",
+        );
+    }
+
+    #[tokio::test]
+    async fn local_manager_cleans_up_proc_when_agent_spawn_panics() {
+        async fn panicking_spawn(_proc: Proc) -> anyhow::Result<ActorHandle<()>> {
+            panic!("test agent spawn panic");
+        }
+
+        let manager = LocalProcManager::new(panicking_spawn);
+        let managed_procs = Arc::clone(&manager.procs);
+        let host = Host::new(manager, ChannelAddr::any(ChannelTransport::Local))
+            .await
+            .expect("host should start");
+
+        let result = AssertUnwindSafe(host.spawn("panicking-proc".to_string(), ()))
+            .catch_unwind()
+            .await;
+        assert!(result.is_err(), "agent spawn panic should be preserved");
+        assert!(
+            managed_procs.lock().await.is_empty(),
+            "panicking agent spawn should not leave a managed proc",
+        );
+        assert!(
+            !host
+                .procs
+                .lock()
+                .expect("procs mutex poisoned")
+                .contains_key("panicking-proc"),
+            "panicking agent spawn should release its name reservation",
+        );
     }
 
     #[tokio::test]
@@ -1948,7 +2224,7 @@ mod tests {
             Duration::from_millis(10),
         );
 
-        let mut host = Host::new(
+        let host = Host::new(
             TestManager::local(ReadyMode::Pending),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1967,7 +2243,7 @@ mod tests {
             Duration::from_secs(0),
         );
 
-        let mut host = Host::new(
+        let host = Host::new(
             TestManager::local(ReadyMode::OkAfter(Duration::from_millis(20))),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1976,12 +2252,17 @@ mod tests {
 
         let (pid, agent) = host.spawn("ok".into(), ()).await.expect("must succeed");
         assert_eq!(agent.actor_addr().proc_addr(), pid);
-        assert!(host.procs.contains_key("ok"));
+        assert!(
+            host.procs
+                .lock()
+                .expect("procs mutex poisoned")
+                .contains_key("ok")
+        );
     }
 
     #[tokio::test]
     async fn host_spawn_maps_channel_closed_ready_error_to_config_failure() {
-        let mut host = Host::new(
+        let host = Host::new(
             TestManager::local(ReadyMode::ErrChannelClosed),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1994,7 +2275,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_maps_terminal_ready_error_to_config_failure() {
-        let mut host = Host::new(
+        let host = Host::new(
             TestManager::local(ReadyMode::ErrTerminal),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -2007,7 +2288,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_fails_if_ready_but_missing_addr() {
-        let mut host = Host::new(
+        let host = Host::new(
             TestManager::local(ReadyMode::OkAfter(Duration::ZERO)).with_omissions(true, false),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -2023,7 +2304,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_fails_if_ready_but_missing_agent() {
-        let mut host = Host::new(
+        let host = Host::new(
             TestManager::local(ReadyMode::OkAfter(Duration::ZERO)).with_omissions(false, true),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -2278,7 +2559,7 @@ mod tests {
         let attached_location = Location::from(attached_host_addr).with_via(attached_uid);
         gateway.set_default_location(attached_location.clone());
 
-        let mut host = Host::new_with_gateway(
+        let host = Host::new_with_gateway(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
             None,
@@ -2305,7 +2586,7 @@ mod tests {
             Ok(proc.spawn_with_label::<()>("host_agent", ()))
         });
 
-        let mut host = Host::new_with_gateway(
+        let host = Host::new_with_gateway(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
             None,
