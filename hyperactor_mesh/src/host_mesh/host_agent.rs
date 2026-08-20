@@ -25,6 +25,7 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
+use futures::future::Either;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
@@ -257,7 +258,6 @@ pub(crate) enum CompletionAction {
 
 #[derive(Debug)]
 pub(crate) enum ProcCreationState {
-    #[expect(dead_code)]
     Pending {
         metadata: ProcMetadata,
         on_completion: CompletionAction,
@@ -1063,7 +1063,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         create_or_update: resource::CreateOrUpdate<ProcSpec>,
     ) -> anyhow::Result<()> {
         if self.created.contains_key(&create_or_update.id) {
-            // Already created: there is no update.
+            // Already requested or completed: there is no update.
             return Ok(());
         }
         if self.pending_shutdown.is_some() {
@@ -1085,7 +1085,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             return Ok(());
         }
 
-        let host = match self.host_mut() {
+        let host = match self.host() {
             Some(h) => h,
             None => {
                 tracing::warn!(
@@ -1095,42 +1095,59 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
                 return Ok(());
             }
         };
-        let created = match host {
-            HostAgentMode::Process { host, .. } => {
-                host.spawn(
-                    create_or_update.id.to_string(),
-                    BootstrapProcConfig {
-                        create_rank: create_or_update.rank.unwrap(),
-                        client_config_override: create_or_update
-                            .spec
-                            .client_config_override
-                            .clone(),
-                        proc_bind: create_or_update.spec.proc_bind.clone(),
-                        bootstrap_command: create_or_update.spec.bootstrap_command.clone(),
-                    },
-                )
-                .await
-            }
-            HostAgentMode::Local(host) => host.spawn(create_or_update.id.to_string(), ()).await,
+        let rank = create_or_update.rank.unwrap();
+        let id = create_or_update.id.clone();
+        let spawn = match host {
+            HostAgentMode::Process { host, .. } => Either::Left(host.spawn(
+                id.to_string(),
+                BootstrapProcConfig {
+                    create_rank: rank,
+                    client_config_override: create_or_update.spec.client_config_override.clone(),
+                    proc_bind: create_or_update.spec.proc_bind.clone(),
+                    bootstrap_command: create_or_update.spec.bootstrap_command.clone(),
+                },
+            )),
+            HostAgentMode::Local(host) => Either::Right(host.spawn(id.to_string(), ())),
         };
 
-        let rank = create_or_update.rank.unwrap();
-
-        if let Err(e) = &created {
-            tracing::error!("failed to spawn proc {}: {}", create_or_update.id, e);
-        }
         let was_empty = self.created.is_empty();
         self.created.insert(
-            create_or_update.id.clone(),
-            ProcCreationState::from_spawn_result(
-                ProcMetadata {
+            id.clone(),
+            ProcCreationState::Pending {
+                metadata: ProcMetadata {
                     rank,
                     host_mesh_id: create_or_update.spec.host_mesh_id.clone(),
                     proc_mesh_id: create_or_update.spec.proc_mesh_id.clone(),
                 },
-                None,
-                created,
-            ),
+                on_completion: CompletionAction::Keep,
+                expiry_time: None,
+            },
+        );
+
+        let created = spawn.await;
+
+        if let Err(e) = &created {
+            tracing::error!("failed to spawn proc {}: {}", id, e);
+        }
+        let (metadata, expiry_time) = match self
+            .created
+            .remove(&id)
+            .expect("synchronous proc creation remains pending until spawn completes")
+        {
+            ProcCreationState::Pending {
+                metadata,
+                on_completion: CompletionAction::Keep,
+                expiry_time,
+            } => (metadata, expiry_time),
+            ProcCreationState::Pending { .. }
+            | ProcCreationState::Created { .. }
+            | ProcCreationState::Failed { .. } => {
+                unreachable!("HostAgent cannot process another request during synchronous spawn")
+            }
+        };
+        self.created.insert(
+            id.clone(),
+            ProcCreationState::from_spawn_result(metadata, expiry_time, created),
         );
 
         // Transition Detached → Attached on first proc creation.
@@ -1144,20 +1161,17 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
 
         // A WaitRankStatus stashed before this proc existed carries its own reply
         // rank (RSP-3); starting a status watch bridge for it needs the proc_id.
-        let proc_id = self
-            .created
-            .get(&create_or_update.id)
-            .and_then(|state| match state {
-                ProcCreationState::Created { proc_id, .. } => Some(proc_id.clone()),
-                ProcCreationState::Pending { .. } | ProcCreationState::Failed { .. } => None,
-            });
+        let proc_id = self.created.get(&id).and_then(|state| match state {
+            ProcCreationState::Created { proc_id, .. } => Some(proc_id.clone()),
+            ProcCreationState::Pending { .. } | ProcCreationState::Failed { .. } => None,
+        });
 
         // Bridge status changes to any pending waiters, then flush once now.
-        if self.pending_proc_waiters.contains_key(&create_or_update.id) {
+        if self.pending_proc_waiters.contains_key(&id) {
             if let Some(proc_id) = &proc_id {
-                self.start_watch_bridge(&create_or_update.id, proc_id).await;
+                self.start_watch_bridge(&id, proc_id).await;
             }
-            self.flush_proc_waiters(cx, &create_or_update.id).await;
+            self.flush_proc_waiters(cx, &id).await;
         }
 
         self.publish_introspect_properties(cx);
