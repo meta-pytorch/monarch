@@ -20,11 +20,13 @@ use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
+use futures::FutureExt;
 use futures::future::Either;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
@@ -1191,9 +1193,31 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
                 expiry_time: None,
             },
         );
+        {
+            let panic_id = id.to_string();
+            let client = Instance::<()>::self_client();
+            let completion = cx.port::<ProcSpawned>();
 
-        let created = spawn.await;
-        <Self as Handler<ProcSpawned>>::handle(self, cx, ProcSpawned { id, created }).await
+            tokio::spawn(async move {
+                let created =
+                    AssertUnwindSafe(spawn)
+                        .catch_unwind()
+                        .await
+                        .unwrap_or_else(|payload| {
+                            Err(HostError::SpawnPanicked(
+                                panic_id,
+                                payload
+                                    .downcast_ref::<&str>()
+                                    .map(|message| (*message).to_string())
+                                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                                    .unwrap_or_else(|| "non-string panic payload".to_string()),
+                            ))
+                        });
+                completion.post(client, ProcSpawned { id, created });
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -1543,8 +1567,8 @@ impl Handler<resource::WaitRankStatus> for HostAgent {
                 }
             }
             Some(ProcCreationState::Pending { .. }) | None => {
-                // Proc isn't ready yet. Stash the waiter with the rank the
-                // request carries (RSP-3); proc creation starts the watch bridge.
+                // Proc is not complete yet. Stash the waiter with the rank the
+                // request carries (RSP-3); `ProcSpawned` starts the watch bridge.
                 self.pending_proc_waiters
                     .entry(msg.id.clone())
                     .or_default()
@@ -1770,8 +1794,6 @@ impl Handler<DrainHost> for HostAgent {
             None => PendingDrainKind::Full,
         };
         let selective = matches!(&kind, PendingDrainKind::Selective(_));
-        // CreateOrUpdate still waits for Host::spawn, so a drain cannot observe
-        // an in-progress proc creation in this revision.
         let remaining = self.mark_requests_for_drain(msg.host_mesh_id.as_ref());
         let mut drain = PendingDrain {
             kind,
@@ -1927,8 +1949,6 @@ impl Handler<ShutdownHost> for HostAgent {
             drain.reply.post(cx, overlay);
         }
 
-        // CreateOrUpdate still waits for Host::spawn, so shutdown cannot
-        // observe an in-progress proc creation in this revision.
         let remaining = self.mark_requests_for_shutdown();
         self.pending_shutdown = Some(PendingShutdown {
             remaining,
@@ -2499,6 +2519,9 @@ impl Handler<ConfigDump> for HostAgent {
 #[cfg(all(test, fbcode_build))]
 mod tests {
     use std::assert_matches;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
     use hyperactor::ActorAddr;
     use hyperactor::Proc;
@@ -2535,6 +2558,476 @@ mod tests {
         assert_matches!(status, resource::Status::Failed(_));
     }
 
+    async fn spawn_local_host_agent(spawn: ProcManagerSpawnFn) -> ActorHandle<HostAgent> {
+        let host = Host::new(LocalProcManager::new(spawn), ChannelTransport::Unix.any())
+            .await
+            .expect("local host should start");
+
+        let host_agent = host
+            .system_proc()
+            .clone()
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
+                HostAgent::new_local(host),
+            )
+            .expect("host agent should start");
+
+        HostAgent::wait_initialized(&host_agent)
+            .await
+            .expect("host agent should initialize");
+
+        host_agent
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn create_or_update_reserves_proc_before_spawn_completes() {
+        let spawn_calls = Arc::new(AtomicUsize::new(0));
+        let (release_spawn, release_rx) = tokio::sync::watch::channel(false);
+        let spawn_calls_for_manager = Arc::clone(&spawn_calls);
+        let spawn: ProcManagerSpawnFn = Box::new(move |proc| {
+            let mut release_rx = release_rx.clone();
+            spawn_calls_for_manager.fetch_add(1, Ordering::SeqCst);
+
+            Box::pin(async move {
+                release_rx
+                    .wait_for(|released| *released)
+                    .await
+                    .map_err(|_| anyhow::anyhow!("spawn release channel closed"))?;
+
+                ProcAgent::boot_v1(proc, None)
+            })
+        });
+        let host_agent = spawn_local_host_agent(spawn).await;
+
+        let client = Proc::direct(ChannelTransport::Unix.any(), "dedup_client".to_string())
+            .unwrap()
+            .client("client");
+
+        let id = ResourceId::instance(Label::new("deduplicated-proc").unwrap());
+
+        let (status_reply, mut status_rx) = client.open_port::<crate::StatusOverlay>();
+
+        host_agent
+            .wait_rank_status(
+                &client,
+                id.clone(),
+                resource::Rank::new(0),
+                resource::Status::Running,
+                status_reply.bind(),
+            )
+            .await
+            .expect("status waiter should be accepted");
+
+        host_agent
+            .create_or_update(
+                &client,
+                id.clone(),
+                resource::Rank::new(0),
+                ProcSpec::default(),
+            )
+            .await
+            .expect("first create request should be accepted");
+
+        while spawn_calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(spawn_calls.load(Ordering::SeqCst), 1);
+
+        host_agent
+            .create_or_update(&client, id, resource::Rank::new(0), ProcSpec::default())
+            .await
+            .expect("duplicate create request should be accepted as a no-op");
+
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            spawn_calls.load(Ordering::SeqCst),
+            1,
+            "duplicate request reached the proc manager",
+        );
+
+        release_spawn
+            .send(true)
+            .expect("spawn should still be waiting for release");
+
+        let overlay = status_rx
+            .recv()
+            .await
+            .expect("spawn completion should resolve the status waiter");
+
+        assert_overlay_at_rank(&overlay, 0);
+        assert_eq!(spawn_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn drain_waits_for_create_requested_proc() {
+        let (release_spawn, release_rx) = tokio::sync::watch::channel(false);
+        let spawn: ProcManagerSpawnFn = Box::new(move |proc| {
+            let mut release_rx = release_rx.clone();
+
+            Box::pin(async move {
+                release_rx
+                    .wait_for(|released| *released)
+                    .await
+                    .map_err(|_| anyhow::anyhow!("spawn release channel closed"))?;
+
+                ProcAgent::boot_v1(proc, None)
+            })
+        });
+        let host_agent = spawn_local_host_agent(spawn).await;
+
+        let client = Proc::direct(ChannelTransport::Unix.any(), "drain_client".to_string())
+            .unwrap()
+            .client("client");
+        let id = ResourceId::instance(Label::new("pending-proc").unwrap());
+
+        host_agent
+            .create_or_update(
+                &client,
+                id.clone(),
+                resource::Rank::new(0),
+                ProcSpec::default(),
+            )
+            .await
+            .expect("create request should be accepted");
+
+        assert_matches!(
+            host_agent
+                .get_state(&client, id.clone())
+                .await
+                .expect("create state should be available"),
+            resource::State {
+                status: resource::Status::Initializing,
+                ..
+            }
+        );
+
+        let (status_reply, mut status_rx) = client.open_port::<crate::StatusOverlay>();
+
+        host_agent
+            .wait_rank_status(
+                &client,
+                id.clone(),
+                resource::Rank::new(0),
+                resource::Status::Stopped,
+                status_reply.bind(),
+            )
+            .await
+            .expect("status waiter should be accepted");
+
+        let (drain_reply, mut drain_rx) = client.open_port::<crate::StatusOverlay>();
+
+        host_agent
+            .drain_host(
+                &client,
+                Duration::from_secs(5),
+                16,
+                None,
+                resource::Rank::new(0),
+                drain_reply.bind(),
+            )
+            .await
+            .expect("drain request should be accepted");
+
+        assert_matches!(
+            host_agent
+                .get_state(&client, id.clone())
+                .await
+                .expect("drain state should be available"),
+            resource::State {
+                status: resource::Status::Stopping,
+                ..
+            }
+        );
+        assert_eq!(
+            drain_rx
+                .try_recv()
+                .expect("drain reply port should remain open"),
+            None,
+            "drain replied before the requested proc finished creating",
+        );
+        assert_eq!(
+            status_rx
+                .try_recv()
+                .expect("status reply port should remain open"),
+            None,
+            "status waiter replied before the requested proc was drained",
+        );
+
+        release_spawn
+            .send(true)
+            .expect("spawn should still be waiting for release");
+
+        let status_overlay = status_rx
+            .recv()
+            .await
+            .expect("drain should resolve the pending status waiter");
+
+        let (_, status) = status_overlay
+            .runs()
+            .next()
+            .expect("status overlay should have a run");
+
+        assert_eq!(status, &resource::Status::Stopped);
+
+        let overlay = drain_rx
+            .recv()
+            .await
+            .expect("drain should reply after creation is terminated");
+
+        assert_overlay_at_rank(&overlay, 0);
+
+        let (_, status) = overlay
+            .runs()
+            .next()
+            .expect("drain overlay should have a run");
+
+        assert_eq!(status, &resource::Status::Stopped);
+
+        assert_matches!(
+            host_agent
+                .get_state(&client, id)
+                .await
+                .expect("drained state should be available"),
+            resource::State {
+                status: resource::Status::NotExist,
+                ..
+            }
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn shutdown_waits_for_create_requested_proc_and_rejects_new_creates() {
+        let spawn_calls = Arc::new(AtomicUsize::new(0));
+        let (release_spawn, release_rx) = tokio::sync::watch::channel(false);
+        let spawn_calls_for_manager = Arc::clone(&spawn_calls);
+        let spawn: ProcManagerSpawnFn = Box::new(move |proc| {
+            let mut release_rx = release_rx.clone();
+            spawn_calls_for_manager.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                release_rx
+                    .wait_for(|released| *released)
+                    .await
+                    .map_err(|_| anyhow::anyhow!("spawn release channel closed"))?;
+                ProcAgent::boot_v1(proc, None)
+            })
+        });
+        let host_agent = spawn_local_host_agent(spawn).await;
+
+        let client = Proc::direct(
+            ChannelTransport::Unix.any(),
+            "shutdown_pending_create_client".to_string(),
+        )
+        .unwrap()
+        .client("client");
+
+        let accepted_id = ResourceId::instance(Label::new("accepted-proc").unwrap());
+        host_agent
+            .create_or_update(
+                &client,
+                accepted_id.clone(),
+                resource::Rank::new(0),
+                ProcSpec::default(),
+            )
+            .await
+            .expect("create request should be accepted");
+        while spawn_calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        let (status_reply, mut status_rx) = client.open_port::<crate::StatusOverlay>();
+        host_agent
+            .wait_rank_status(
+                &client,
+                accepted_id.clone(),
+                resource::Rank::new(0),
+                resource::Status::Running,
+                status_reply.bind(),
+            )
+            .await
+            .expect("status waiter should be accepted");
+        let (stopped_reply, mut stopped_rx) = client.open_port::<crate::StatusOverlay>();
+        host_agent
+            .wait_rank_status(
+                &client,
+                accepted_id,
+                resource::Rank::new(0),
+                resource::Status::Stopped,
+                stopped_reply.bind(),
+            )
+            .await
+            .expect("stopped waiter should be accepted");
+
+        let (ack, mut ack_rx) = client.open_port::<usize>();
+        host_agent
+            .try_post(
+                &client,
+                ShutdownHost {
+                    timeout: Duration::from_secs(5),
+                    max_in_flight: 1,
+                    rank: Rank::new(7),
+                    ack: ack.bind().unsplit(),
+                },
+            )
+            .expect("shutdown request should be accepted");
+
+        let rejected_id = ResourceId::instance(Label::new("rejected-proc").unwrap());
+        host_agent
+            .create_or_update(
+                &client,
+                rejected_id.clone(),
+                resource::Rank::new(1),
+                ProcSpec::default(),
+            )
+            .await
+            .expect("create during shutdown should be accepted as a no-op");
+        assert_matches!(
+            host_agent
+                .get_state(&client, rejected_id)
+                .await
+                .expect("rejected create state should be available"),
+            resource::State {
+                status: resource::Status::NotExist,
+                ..
+            }
+        );
+
+        let rejected_proc_mesh_id =
+            ProcMeshId::singleton(Label::new("rejected-proc-mesh").unwrap());
+        let (rejected_status_reply, mut rejected_status_rx) =
+            client.open_port::<crate::StatusOverlay>();
+
+        let agent_ref: ActorRef<HostAgent> = host_agent.bind();
+
+        agent_ref.post(
+            &client,
+            SpawnProcs {
+                rank: resource::Rank::new(0),
+                proc_mesh_id: rejected_proc_mesh_id.clone(),
+                num_per_host: 1,
+                client_config_override: Attrs::new(),
+                host_mesh_id: None,
+                default_bootstrap_command: None,
+                proc_bind: None,
+                bootstrap_commands: None,
+            },
+        );
+        agent_ref.post(
+            &client,
+            WaitProcs {
+                rank: resource::Rank::new(0),
+                proc_mesh_id: rejected_proc_mesh_id,
+                num_per_host: 1,
+                status_reply: rejected_status_reply.bind(),
+            },
+        );
+        assert_overlay_failed_at_rank(
+            &rejected_status_rx
+                .recv()
+                .await
+                .expect("rejected SpawnProcs should report failure"),
+            0,
+        );
+
+        assert_eq!(spawn_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            ack_rx
+                .try_recv()
+                .expect("shutdown ack port should remain open"),
+            None,
+            "shutdown acknowledged before the accepted spawn completed",
+        );
+        assert_eq!(
+            status_rx
+                .try_recv()
+                .expect("status reply port should remain open"),
+            None,
+            "status waiter replied before the accepted spawn completed",
+        );
+        assert_eq!(
+            stopped_rx
+                .try_recv()
+                .expect("stopped reply port should remain open"),
+            None,
+            "stopped waiter replied before the accepted spawn completed",
+        );
+
+        release_spawn
+            .send(true)
+            .expect("spawn should still be waiting for release");
+        let status_overlay = status_rx
+            .recv()
+            .await
+            .expect("shutdown should resolve the pending status waiter");
+        let (_, status) = status_overlay
+            .runs()
+            .next()
+            .expect("status overlay should have a run");
+        assert_eq!(status, &resource::Status::Stopping);
+        let stopped_overlay = stopped_rx
+            .recv()
+            .await
+            .expect("shutdown should resolve the stopped waiter");
+        let (_, status) = stopped_overlay
+            .runs()
+            .next()
+            .expect("stopped overlay should have a run");
+        assert_eq!(status, &resource::Status::Stopped);
+        assert_eq!(ack_rx.recv().await.expect("shutdown should acknowledge"), 7);
+        assert_eq!(spawn_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn create_records_spawn_task_panic_as_failure() {
+        let spawn: ProcManagerSpawnFn = Box::new(|_proc| -> ProcManagerSpawnFuture {
+            Box::pin(async move { panic!("test proc spawn panic") })
+        });
+        let host_agent = spawn_local_host_agent(spawn).await;
+
+        let client = Proc::direct(ChannelTransport::Unix.any(), "panic_client".to_string())
+            .unwrap()
+            .client("client");
+        let id = ResourceId::instance(Label::new("panicking-proc").unwrap());
+
+        let (status_reply, mut status_rx) = client.open_port::<crate::StatusOverlay>();
+        host_agent
+            .wait_rank_status(
+                &client,
+                id.clone(),
+                resource::Rank::new(0),
+                resource::Status::Running,
+                status_reply.bind(),
+            )
+            .await
+            .expect("status waiter should be accepted");
+
+        host_agent
+            .create_or_update(
+                &client,
+                id.clone(),
+                resource::Rank::new(0),
+                ProcSpec::default(),
+            )
+            .await
+            .expect("create request should be accepted");
+
+        let overlay = status_rx
+            .recv()
+            .await
+            .expect("spawn panic should resolve the status waiter");
+        assert_overlay_failed_at_rank(&overlay, 0);
+        assert_matches!(
+            host_agent
+                .get_state(&client, id)
+                .await
+                .expect("failed state should be available"),
+            resource::State {
+                status: resource::Status::Failed(_),
+                ..
+            }
+        );
+    }
+
     // RSP-* coverage map for the HostAgent rank-status tests. Each deliberately
     // uses `message_rank != creation_rank`, so a handler that read the creation
     // rank would fail:
@@ -2557,7 +3050,7 @@ mod tests {
     // - RSP-4 (absence yields an empty overlay): the unknown-proc GetRankStatus
     //   assertion in `test_wait_rank_status_already_running`.
 
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 30)]
     async fn test_basic() {
         let host = Host::new(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
@@ -2592,6 +3085,20 @@ mod tests {
             )
             .await
             .unwrap();
+        let (running_reply, mut running_rx) = client.open_port::<crate::StatusOverlay>();
+
+        host_agent
+            .wait_rank_status(
+                &client,
+                id.clone(),
+                resource::Rank::new(0),
+                resource::Status::Running,
+                running_reply.bind(),
+            )
+            .await
+            .unwrap();
+        running_rx.recv().await.unwrap();
+
         // The host advertises spawned procs with a
         // `Via(proc_uid, Addr(host_addr))` location so its gateway can
         // peel and forward to the child's serving address. Construct
@@ -2985,7 +3492,7 @@ mod tests {
 
     /// DrainHost with a host_mesh_id filter only stops procs
     /// belonging to that mesh; procs from other meshes are unaffected.
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 30)]
     async fn test_drain_scoped_to_host_mesh_id() {
         let host = Host::new(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
@@ -3030,6 +3537,22 @@ mod tests {
             .create_or_update(&client, proc_b_id.clone(), resource::Rank::new(1), spec_b)
             .await
             .unwrap();
+
+        let (running_reply, mut running_rx) = client.open_port::<crate::StatusOverlay>();
+        for (id, rank) in [(&proc_a_id, 0), (&proc_b_id, 1)] {
+            host_agent
+                .wait_rank_status(
+                    &client,
+                    id.clone(),
+                    resource::Rank::new(rank),
+                    resource::Status::Running,
+                    running_reply.bind(),
+                )
+                .await
+                .unwrap();
+        }
+        running_rx.recv().await.unwrap();
+        running_rx.recv().await.unwrap();
 
         // Both should be Running.
         assert_matches!(
