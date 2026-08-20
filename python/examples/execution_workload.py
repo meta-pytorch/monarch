@@ -17,8 +17,8 @@ for sentinels rather than sleeping.
 
 Actors:
 
-  - ``BusyActor`` (direct dispatch): holds an invocation per id until it
-    is individually released or raised. Direct dispatch is concurrent, so
+  - ``BusyActor``: holds an invocation per id until it is individually
+    released or raised. Its ``hold`` method uses ``@concurrent_endpoint``, so
     ``control`` runs while ``hold`` awaits.
   - an idle sibling ``BusyActor`` that is never invoked.
   - ``QueueActor`` (queue dispatch): a single held invocation shows the
@@ -26,25 +26,15 @@ Actors:
     so a held invocation is never released through a second endpoint call
     (that would deadlock the dispatch loop); the test asserts
     ``count == 1`` then tears the proc down.
-  - ``ConcurrentActor`` (queue dispatch): ``hold`` uses
-    ``@concurrent_endpoint``, so multiple held invocations overlap and
-    ``control`` can release them while they wait. This covers the
-    queue-dispatch-compatible pattern used by resource managers.
-  - ``deadlock_actor`` (queue dispatch): a ``BusyActor`` reused under queue
-    dispatch. Its blocking plain ``@endpoint`` ``hold`` monopolizes the Python
-    dispatch loop, so a later ``control`` release is stuck behind it and can
-    never run -- a genuine deadlock (the failure the airport turnaround demo
-    hits under the default queue dispatch). ``execution.rs`` drives it to prove
-    the mesh-admin API surfaces the wedge (``execution.active_count`` stays
-    pinned at 1 on the wedged invocation).
-
-Each proc pins its dispatch mode explicitly via a ``bootstrap`` callable
-that sets ``MONARCH_ACTOR_QUEUE_DISPATCH`` and calls
-``reload_config_from_env()`` before any actor spawns on it (``0`` for the
-direct-dispatch ``busy``/``idle`` procs, ``1`` for the ``queue`` proc), so
-the choice is independent of the process-global default. The reload is
-required: the Env config layer is materialized once at proc start, so
-setting the variable in the bootstrap only takes effect after the reload.
+  - ``ConcurrentActor``: ``hold`` uses ``@concurrent_endpoint``, so multiple
+    held invocations overlap and ``control`` can release them while they wait.
+    This covers the pattern used by resource managers.
+  - ``deadlock_actor``: a ``QueueActor`` whose blocking plain ``@endpoint``
+    ``hold`` monopolizes the Python dispatch loop, so a later ``control``
+    release is stuck behind it and can never run -- the failure avoided by
+    using ``@concurrent_endpoint``. ``execution.rs`` drives it to prove the
+    mesh-admin API surfaces the wedge (``execution.active_count`` stays pinned
+    at 1 on the wedged invocation).
 
 Stdin command protocol, one command per line::
 
@@ -67,12 +57,8 @@ stdout.
 
 import asyncio
 import logging
-import os
 import sys
 
-from monarch._rust_bindings.monarch_hyperactor.config import (  # @manual=//monarch/monarch_extension:monarch_extension
-    reload_config_from_env,
-)
 from monarch._src.actor.actor_mesh import Channel, Port, PortReceiver
 from monarch._src.actor.telemetry import TracingForwarder
 from monarch.actor import Actor, concurrent_endpoint, context, endpoint
@@ -83,45 +69,20 @@ logger.addHandler(TracingForwarder())
 logger.setLevel(logging.INFO)
 
 
-def _enable_queue_dispatch() -> None:
-    """Proc bootstrap: force queue dispatch for actors spawned here.
-
-    The reload is required, not cosmetic: the Env config layer is
-    materialized once at proc start (before this bootstrap runs), so setting
-    the variable only takes effect after ``reload_config_from_env()`` rebuilds
-    that layer. Affects only this proc.
-    """
-    os.environ["MONARCH_ACTOR_QUEUE_DISPATCH"] = "1"
-    reload_config_from_env()
-
-
-def _disable_queue_dispatch() -> None:
-    """Proc bootstrap: force direct (concurrent) dispatch for actors here.
-
-    ``BusyActor`` depends on concurrent dispatch -- it holds one ``hold``
-    while a second ``hold``/``control`` overlaps -- so this proc is pinned to
-    direct dispatch rather than inheriting the process-global
-    ``ACTOR_QUEUE_DISPATCH`` default (now queue dispatch). See
-    ``_enable_queue_dispatch`` for why the reload is required.
-    """
-    os.environ["MONARCH_ACTOR_QUEUE_DISPATCH"] = "0"
-    reload_config_from_env()
-
-
 class BusyActor(Actor):
     """Holds invocations until each is individually released or raised.
 
     ``hold`` creates a per-id event, signals "entered", then blocks on the
     event; ``control`` wakes a held invocation, either to return normally
-    (``release``) or to raise (``raise``). Under direct dispatch (the
-    default) ``control`` runs concurrently with the blocked ``hold``.
+    (``release``) or to raise (``raise``). ``hold`` is concurrent so
+    ``control`` can run while it is blocked.
     """
 
     def __init__(self) -> None:
         self._events: dict[str, asyncio.Event] = {}
         self._raise: dict[str, bool] = {}
 
-    @endpoint
+    @concurrent_endpoint
     async def hold(self, id: str, entered: "Port[str]") -> None:
         self._events[id] = asyncio.Event()
         self._raise[id] = False
@@ -152,20 +113,36 @@ class BusyActor(Actor):
 
 
 class QueueActor(Actor):
-    """Queue-dispatch sibling. Only ``hold`` is exercised: queue dispatch
-    is serialized, so a held invocation is never released (that would
-    deadlock the dispatch loop). The test asserts ``count == 1`` then
-    tears the proc down."""
+    """Actor with a blocking serial endpoint.
+
+    The queue test leaves ``hold`` blocked and inspects it. The deadlock test
+    then sends ``control``, which cannot run behind the blocked ``hold``.
+    """
 
     def __init__(self) -> None:
         self._events: dict[str, asyncio.Event] = {}
+        self._raise: dict[str, bool] = {}
 
     @endpoint
     async def hold(self, id: str, entered: "Port[str]") -> None:
         self._events[id] = asyncio.Event()
+        self._raise[id] = False
         logger.info("hold %s", id)
         entered.send(id)
         await self._events[id].wait()
+        if self._raise[id]:
+            raise RuntimeError("requested")
+
+    @endpoint
+    async def control(self, id: str, op: str) -> None:
+        logger.info("control %s %s", op, id)
+        if op == "release":
+            self._events[id].set()
+        elif op == "raise":
+            self._raise[id] = True
+            self._events[id].set()
+        else:
+            raise ValueError(f"unknown op: {op}")
 
     @endpoint
     async def whoami(self) -> str:
@@ -243,30 +220,20 @@ async def async_main() -> None:
         state = job.state(cached_path=None)
         host = state.hosts
 
-        busy_proc = host.spawn_procs(
-            name="execution_busy", bootstrap=_disable_queue_dispatch
-        )
-        idle_proc = host.spawn_procs(
-            name="execution_idle", bootstrap=_disable_queue_dispatch
-        )
-        queue_proc = host.spawn_procs(
-            name="execution_queue", bootstrap=_enable_queue_dispatch
-        )
-        concurrent_proc = host.spawn_procs(
-            name="execution_concurrent", bootstrap=_enable_queue_dispatch
-        )
-        deadlock_proc = host.spawn_procs(
-            name="execution_deadlock", bootstrap=_enable_queue_dispatch
-        )
+        busy_proc = host.spawn_procs(name="execution_busy")
+        idle_proc = host.spawn_procs(name="execution_idle")
+        queue_proc = host.spawn_procs(name="execution_queue")
+        concurrent_proc = host.spawn_procs(name="execution_concurrent")
+        deadlock_proc = host.spawn_procs(name="execution_deadlock")
 
         busy = busy_proc.spawn("busy_actor", BusyActor)
         idle = idle_proc.spawn("idle_actor", BusyActor)
         queue = queue_proc.spawn("queue_actor", QueueActor)
         concurrent = concurrent_proc.spawn("concurrent_actor", ConcurrentActor)
-        # A queue-dispatch BusyActor: its blocking plain @endpoint `hold`
+        # A QueueActor whose blocking plain @endpoint `hold`
         # monopolizes the serial dispatch loop, so a later `control` release
         # queues behind it and can never run -- a deadlock the admin API surfaces.
-        deadlock = deadlock_proc.spawn("deadlock_actor", BusyActor)
+        deadlock = deadlock_proc.spawn("deadlock_actor", QueueActor)
 
         actors = {
             "busy": busy,

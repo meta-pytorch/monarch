@@ -24,7 +24,7 @@ This is why the reverted "A1" reroute (replacing an await of a Monarch
 the loop the bare await raises. If a future change switches the dispatcher to
 drive endpoints on the tokio runtime (``PythonTask.from_coroutine``), these
 assertions flip -- which is the exact signal that such reroutes become valid.
-Pinned for both dispatch modes (queue and direct).
+Pinned for queue dispatch.
 """
 
 import asyncio
@@ -35,7 +35,6 @@ from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import this_host
 from monarch.actor import Actor, endpoint
-from monarch.config import parametrize_config
 
 
 class _DriverProbe(Actor):
@@ -62,7 +61,6 @@ class _DriverProbe(Actor):
 
 
 @pytest.mark.timeout(120)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_actor_endpoint_is_asyncio_driven() -> None:
     proc = this_host().spawn_procs(per_host={"gpus": 1})

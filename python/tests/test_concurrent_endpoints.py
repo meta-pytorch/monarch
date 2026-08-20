@@ -16,7 +16,6 @@ import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch.actor import Actor, concurrent_endpoint, endpoint, Port, this_host
-from monarch.config import parametrize_config
 
 
 class AsyncGate(Actor):
@@ -167,7 +166,6 @@ def test_concurrent_endpoint_allows_mixed_hierarchy() -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_concurrent_async_endpoint_runs_in_parallel() -> None:
     proc = this_host().spawn_procs(per_host={"gpus": 1})
@@ -185,7 +183,6 @@ async def test_concurrent_async_endpoint_runs_in_parallel() -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_concurrent_explicit_port_runs_in_parallel() -> None:
     proc = this_host().spawn_procs(per_host={"gpus": 1})
@@ -200,7 +197,6 @@ async def test_concurrent_explicit_port_runs_in_parallel() -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_inherited_concurrent_endpoints_run_in_parallel() -> None:
     proc = this_host().spawn_procs(per_host={"gpus": 1})
@@ -216,7 +212,6 @@ async def test_inherited_concurrent_endpoints_run_in_parallel() -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_concurrent_endpoint_exception_uses_actor_error_context() -> None:
     proc = this_host().spawn_procs(per_host={"gpus": 1})
@@ -232,7 +227,6 @@ async def test_concurrent_endpoint_exception_uses_actor_error_context() -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_concurrent_explicit_port_exception_kills_actor() -> None:
     """An ``@concurrent_endpoint(explicit_response_port=True)`` body that raises
@@ -254,7 +248,6 @@ async def test_concurrent_explicit_port_exception_kills_actor() -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True})
 @isolate_in_subprocess
 async def test_queue_dispatch_keeps_async_actor_non_concurrent_by_default() -> None:
     proc = this_host().spawn_procs(per_host={"gpus": 1})
@@ -271,7 +264,6 @@ async def test_queue_dispatch_keeps_async_actor_non_concurrent_by_default() -> N
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_actor_loop_shutdown_cancels_concurrent_endpoint_tasks() -> None:
     with TemporaryDirectory() as tmpdir:
@@ -290,7 +282,6 @@ async def test_actor_loop_shutdown_cancels_concurrent_endpoint_tasks() -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_actor_loop_shutdown_cancels_concurrent_endpoint_before_cleanup() -> None:
     with TemporaryDirectory() as tmpdir:

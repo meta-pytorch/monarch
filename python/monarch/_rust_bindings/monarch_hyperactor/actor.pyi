@@ -186,18 +186,8 @@ class PythonActorHandle:
         """
         ...
 
-@final
-class PanicFlag:
-    """
-    A mechanism to notify the hyperactor runtime that a panic has occurred in an
-    asynchronous Python task. See [Panics in async endpoints] for more details.
-    """
-
-    def signal_panic(self, ex: BaseException) -> None:
-        """
-        Signal that a panic has occurred in an asynchronous Python task.
-        """
-        ...
+class PanicFlag(Protocol):
+    def signal_panic(self, ex: BaseException) -> None: ...
 
 R = TypeVar("R")
 

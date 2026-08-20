@@ -211,13 +211,6 @@ impl<'py> IntoPyObject<'py> for PyDuration {
 
 // Declare monarch-specific configuration keys
 declare_attrs! {
-    /// Use queue-based message dispatch for Python actors instead of direct dispatch
-    @meta(CONFIG = ConfigAttr::new(
-        Some("MONARCH_ACTOR_QUEUE_DISPATCH".to_string()),
-        Some("actor_queue_dispatch".to_string()),
-    ))
-    pub attr ACTOR_QUEUE_DISPATCH: bool = true;
-
     /// Worker thread count for Monarch's Python Tokio runtime bridge.
     @meta(CONFIG = ConfigAttr::new(
         Some("MONARCH_TOKIO_WORKER_THREADS".to_string()),

@@ -28,8 +28,7 @@ from typing import Any
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._src.actor.host_mesh import this_host
-from monarch.actor import Actor, endpoint
-from monarch.config import parametrize_config
+from monarch.actor import Actor, concurrent_endpoint, endpoint
 
 
 @dataclass
@@ -63,7 +62,7 @@ class PingPongActor(Actor):
         """Initialize this actor with a reference to its own mesh."""
         self.my_mesh_ref = mesh_ref
 
-    @endpoint
+    @concurrent_endpoint
     async def ping(self, msg: PingPongMessage) -> None:
         """
         Handle a ping message.
@@ -92,7 +91,6 @@ class PingPongActor(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={False})
 async def test_inter_mesh_ping_pong() -> None:
     """
     Test that two separate ProcMeshes can communicate by passing

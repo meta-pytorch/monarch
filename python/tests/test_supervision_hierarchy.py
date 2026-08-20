@@ -15,7 +15,6 @@ import monarch.actor
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch.actor import Actor, endpoint, this_host
-from monarch.config import parametrize_config
 
 
 T = TypeVar("T")
@@ -100,7 +99,6 @@ class FaultCapture:
             )
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 def test_actor_failure():
     """
@@ -113,7 +111,6 @@ def test_actor_failure():
     capture.assert_fault_occurred("and all its descendants have failed:")
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 def test_proc_failure():
     """
@@ -131,7 +128,6 @@ def test_proc_failure():
     )
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 def test_nested_mesh_kills_actor_actor_error():
     """

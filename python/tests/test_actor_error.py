@@ -34,12 +34,13 @@ from monarch._src.actor.proc_mesh import ProcMesh
 from monarch.actor import (
     Actor,
     ActorError,
+    concurrent_endpoint,
     endpoint,
     get_or_spawn_controller,
     MeshFailure,
     Port,
 )
-from monarch.config import configured, parametrize_config
+from monarch.config import configured
 
 
 class ExceptionActor(Actor):
@@ -164,7 +165,6 @@ async def test_actor_mixing_sync_and_async_endpoints_is_rejected_at_spawn() -> N
     await proc.stop()
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -191,7 +191,6 @@ async def test_actor_exception(mesh, actor_class, num_procs) -> None:
     await proc.stop()
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -219,7 +218,6 @@ def test_actor_exception_sync(mesh, actor_class, num_procs) -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -262,7 +260,6 @@ async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -307,7 +304,6 @@ def test_actor_init_exception_sync(mesh, actor_class, num_procs) -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize("actor_class", [ExceptionActor, ExceptionActorSync])
 @isolate_in_subprocess
 async def test_broadcast_exception_with_no_reply_port_kills_actor(actor_class) -> None:
@@ -342,7 +338,6 @@ async def test_broadcast_exception_with_no_reply_port_kills_actor(actor_class) -
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize("actor_class", [ExceptionActor, ExceptionActorSync])
 @isolate_in_subprocess
 async def test_reply_port_exception_returns_to_caller_and_actor_survives(
@@ -388,7 +383,6 @@ class ExplicitPortFailingActorSync(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "actor_class", [ExplicitPortFailingActor, ExplicitPortFailingActorSync]
 )
@@ -421,15 +415,13 @@ class PanicActor(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_endpoint_panic_kills_actor() -> None:
     """A Rust panic in an endpoint surfaces in Python as a pyo3 `PanicException`
     (a `BaseException`, not an `Exception`), which kills the actor and arrives as
     a supervision fault. This is a different path from a plain `Exception`:
     `_Actor.handle`'s `except BaseException` routes it through
-    `panic_flag.signal_panic` (direct dispatch) or `_QueuePanicFlag` +
-    `_dispatch_loop` (queue dispatch), never the response port. The fault
+    `_QueuePanicFlag` and `_dispatch_loop`, never the response port. The fault
     reason's exact text is racy (a known signal_panic-vs-Aborted format race),
     so this pins death and delivery, not the message string."""
     faults = []
@@ -486,7 +478,6 @@ class SuperviseExceptionParent(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_no_reply_port_exception_delivered_to_supervisor() -> None:
     """End-to-end supervision: a plain `Exception` from a child endpoint invoked
@@ -514,7 +505,6 @@ async def test_no_reply_port_exception_delivered_to_supervisor() -> None:
     await second_mesh.stop()
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -626,7 +616,6 @@ def test_proc_mesh_bootstrap_error():
 
 
 @pytest.mark.oss_skip
-@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize("raise_on_getstate", [True, False])
 @pytest.mark.parametrize("raise_on_setstate", [True, False])
 @pytest.mark.parametrize("num_procs", [1, 2])
@@ -838,6 +827,16 @@ class ErrorActor(Actor):
             print(f"---end checking: {i}")
         return "this is a healthy check"
 
+    @concurrent_endpoint
+    async def concurrent_check(self, i: int | None = None) -> str:
+        """Variant of check that can run multiple concurrently if there
+        is a sleep (non-None i)"""
+        if i is not None:
+            print(f"---start checking: {i}")
+            await asyncio.sleep(5)
+            print(f"---end checking: {i}")
+        return "this is a healthy check"
+
     @endpoint
     async def check_with_exception(self) -> None:
         raise RuntimeError("failed the check with app error")
@@ -869,7 +868,6 @@ class Manager(Actor):
         return await self.workers.work.call_one()
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_errors_propagated() -> None:
     p_mesh = spawn_procs_on_this_host({"gpus": 1})
@@ -890,7 +888,6 @@ async def test_errors_propagated() -> None:
 
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_actor_mesh_supervision_handling() -> None:
     # This test doesn't want the client process to crash during testing.
@@ -978,7 +975,6 @@ class Intermediate(Actor):
 
 @pytest.mark.skip(reason="flaky")
 @pytest.mark.timeout(30)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_actor_mesh_supervision_handling_chained_error() -> None:
     proc = spawn_procs_on_this_host({"gpus": 1})
@@ -1012,7 +1008,6 @@ async def test_actor_mesh_supervision_handling_chained_error() -> None:
     await proc.stop()
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -1060,7 +1055,6 @@ async def test_base_exception_handling(mesh, error_actor_cls) -> None:
     await proc.stop()
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "error_actor_cls",
     [ErrorActor, SyncErrorActor],
@@ -1090,7 +1084,6 @@ async def test_process_exit_handling(error_actor_cls) -> None:
     # Subsequent calls should fail with a health state error
     with pytest.raises(
         RuntimeError,
-        # Message changes depending on actor_queue_dispatch.
         match="failure on mesh .*error.* at rank 0 with event: "
         "The actor.*ErrorActor error.*and all its descendants have failed"
         "|"
@@ -1118,7 +1111,6 @@ class FaultActor(Actor):
 
 
 @pytest.mark.timeout(180)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_sigsegv_handling():
     # This test doesn't want the client process to crash during testing.
@@ -1156,7 +1148,6 @@ async def test_sigsegv_handling():
     await actor.check.call()
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -1198,7 +1189,6 @@ class Printer(Actor):
 
 
 @pytest.mark.timeout(120)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_actor_mesh_stop() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: None
@@ -1316,7 +1306,6 @@ async def test_supervision_with_sending_error() -> None:
 
 
 @pytest.mark.timeout(30)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_slice_supervision() -> None:
     # This test doesn't want the client process to crash during testing.
@@ -1373,7 +1362,6 @@ async def test_slice_supervision() -> None:
 
 @pytest.mark.timeout(30)
 @pytest.mark.skipif(sys.platform != "linux", reason="linux-only")
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_mesh_slices_inherit_parent_errors() -> None:
     # This test doesn't want the client process to crash during testing.
@@ -1554,7 +1542,6 @@ class RaisingAsyncSuperviseActor(ErrorActorWithSupervise):
 
 
 @pytest.mark.timeout(30)
-@parametrize_config(actor_queue_dispatch={True})
 @isolate_in_subprocess
 async def test_supervise_callback_handled():
     pm = spawn_procs_on_this_host({"gpus": 4})
@@ -1582,7 +1569,6 @@ async def test_supervise_callback_handled():
 
 
 @pytest.mark.timeout(30)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_async_supervise_callback_handled():
     """`async def __supervise__` runs on the same asyncio loop as endpoints."""
@@ -1617,7 +1603,6 @@ async def test_async_supervise_callback_handled():
 
 
 @pytest.mark.timeout(120)
-@parametrize_config(actor_queue_dispatch={True})
 @isolate_in_subprocess
 async def test_supervise_callback_without_await_handled():
     pm = spawn_procs_on_this_host({"gpus": 4})
@@ -1646,7 +1631,6 @@ async def test_supervise_callback_without_await_handled():
 
 @pytest.mark.timeout(30)
 @pytest.mark.skipif(sys.platform != "linux", reason="linux-only")
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_supervise_callback_with_mesh_ref():
     # Ensure that supervision events go to the
@@ -1692,7 +1676,6 @@ async def test_supervise_callback_with_mesh_ref():
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_supervise_callback_when_procs_killed():
     pm = spawn_procs_on_this_host({"gpus": 1})
@@ -1722,7 +1705,6 @@ async def test_supervise_callback_when_procs_killed():
 
 
 @pytest.mark.timeout(30)
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_supervise_callback_unhandled():
     # This test doesn't want the client process to crash during testing.
@@ -1759,7 +1741,6 @@ async def test_supervise_callback_unhandled():
     [RaisingSyncSuperviseActor, RaisingAsyncSuperviseActor],
     ids=["sync", "async"],
 )
-@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_supervise_callback_raising(actor_cls):
     """A `__supervise__` that raises chains into `ErrorDuringHandlingSupervision`
@@ -1860,7 +1841,6 @@ async def test_actor_abort(reason) -> None:
 
 
 @pytest.mark.timeout(500)
-@parametrize_config(actor_queue_dispatch={False})
 @isolate_in_subprocess
 async def test_gil_stall():
     """Test that many concurrent actor calls don't cause GIL stall issues.
@@ -1898,7 +1878,7 @@ async def test_gil_stall():
     print(f"[{timestamp()}] start sending requests", file=sys.stderr)
 
     for i in range(0, 600):
-        rets.append(supervisor.check.call(i))
+        rets.append(supervisor.concurrent_check.call(i))
     print(f"[{timestamp()}] all requests are sent", file=sys.stderr)
     gather_start = time.time()
     await asyncio.gather(*rets)
@@ -1967,7 +1947,6 @@ def _subprocess_fault_hook_called_once(marker_path: str) -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 def test_unhandled_fault_hook_called_once() -> None:
     """Regression test: when the fault hook raises, __supervise__ must not
     re-dispatch the event, so the hook is invoked exactly once."""
@@ -2017,7 +1996,6 @@ def _subprocess_unhandled_fault_hook_atexit(marker_path: str) -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
 def test_unhandled_fault_hook_runs_atexit() -> None:
     """Tests that atexit hooks are run in case of an unhandled fault"""
     import tempfile
