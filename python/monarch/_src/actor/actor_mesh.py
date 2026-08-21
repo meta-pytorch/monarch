@@ -69,7 +69,11 @@ from monarch._rust_bindings.monarch_hyperactor.pickle import (
     PicklingState,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+from monarch._rust_bindings.monarch_hyperactor.pytokio import (
+    is_tokio_thread,
+    PythonTask,
+    WouldBlockRuntime,
+)
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch._src.actor import config
@@ -462,6 +466,12 @@ def _init_client_context(via: Optional[str] = None) -> Context:
     Create a client context that bootstraps an actor instance running on a real
     local proc mesh on a real local host mesh.
 
+    Fresh bootstrap ends in ``block_on()``, which panics on a Tokio runtime
+    worker. Reject it from every Tokio runtime context, including the blocking
+    pool, so this synchronous API does not depend on which Tokio-managed thread
+    invoked it. An already-initialized client bypasses this function and can
+    still be reused.
+
     When ``via`` is a non-empty ZMQ-style address, the local client's
     gateway is connected to the gateway serving that address: outbound
     traffic forwards over the duplex, and the remote gateway routes
@@ -470,6 +480,13 @@ def _init_client_context(via: Optional[str] = None) -> Context:
     procs are reached, not the host's identity. Use ``attach``
     to supply ``via`` before the client context is first used.
     """
+    if is_tokio_thread():
+        raise WouldBlockRuntime(
+            "cannot bootstrap a root client from inside the Tokio runtime; "
+            "call context(), this_host(), or attach(addr) before entering "
+            "Tokio. An already-initialized client can still be reused."
+        )
+
     import atexit
 
     from monarch._rust_bindings.monarch_hyperactor.host_mesh import bootstrap_host
@@ -527,7 +544,8 @@ def attach(addr: str) -> None:
     first client-context use. Raises ``RuntimeError`` if the client
     context has already been bootstrapped. ``this_host()`` still names
     the current machine — attach only changes how this host's procs
-    are reached.
+    are reached. Raises ``WouldBlockRuntime`` if called from inside a Tokio
+    runtime before the client has been initialized.
     """
     with _client_context._lock:
         if _client_context._val is not None:
@@ -594,7 +612,9 @@ def context() -> Context:
 
     Call this from within an endpoint to inspect the running actor and the
     current message's position in the mesh. Outside an actor (on the client) it
-    returns the root client context.
+    returns the root client context. Raises ``WouldBlockRuntime`` rather than
+    attempting fresh root-client bootstrap from inside a Tokio runtime; an
+    already-initialized client can still be reused there.
     """
     c = _context.get()
     if c is None:
