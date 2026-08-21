@@ -292,10 +292,10 @@ class Instance(abc.ABC):
         lifecycle pattern (map-reduce shards, batch processing,
         worker pools, etc.; see ``sleep_actors.py`` for an example).
 
-        This is observable in the mesh: on exit the actor emits
-        ``Signal::ChildStopped`` to its parent (always), so
-        ProcAgent *does* see the stop, and terminated snapshots
-        preserve post‑mortem state for introspection.
+        This is observable in the mesh: on exit the runtime emits an
+        ``ActorSupervisionEvent`` to the actor's supervisor, so ProcAgent
+        *does* see the stop, and terminated snapshots preserve post‑mortem
+        state for introspection.
 
         Use ``ActorMesh.stop()`` when you need coordinated, mesh-wide
         shutdown.
