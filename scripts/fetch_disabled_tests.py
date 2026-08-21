@@ -9,7 +9,9 @@
 
 Any open issue on meta-pytorch/monarch whose title begins with "DISABLED "
 is treated as a disabled test.  The remainder of the title is the test name
-as it appears in CI (a pytest node ID or cargo nextest test path).
+as it appears in CI (a pytest node ID or structural prefix, or a cargo nextest
+test path). For example, ``DISABLED python/tests/test_example.py`` disables
+every pytest test collected from that file.
 
 Run this script from the project root before running tests.
 
