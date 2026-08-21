@@ -466,8 +466,8 @@ struct ProcState {
     /// All actor instances in this proc.
     instances: DashMap<ActorId, WeakInstanceCell>,
 
-    /// Root actor ids in this proc, tracked independently from uid shape.
-    root_actors: DashSet<ActorId>,
+    /// Root actor instances in this proc.
+    root_instances: DashMap<ActorId, WeakInstanceCell>,
 
     /// Proc-level queue-pressure accounting (PD-6 through PD-9).
     /// Runtime-driven — updated from `account_enqueue` /
@@ -813,7 +813,7 @@ impl Proc {
                 reserved_roots: DashSet::new(),
                 reserved_child_uids: DashSet::new(),
                 instances: DashMap::new(),
-                root_actors: DashSet::new(),
+                root_instances: DashMap::new(),
                 queue_stats: Arc::new(ProcQueueStats::new()),
                 terminated_snapshots: DashMap::new(),
                 actor_tombstones: DashMap::new(),
@@ -1313,10 +1313,8 @@ impl Proc {
     where
         F: FnMut(&InstanceCell, usize),
     {
-        for entry in self.state().root_actors.iter() {
-            if let Some(cell) = self.get_instance_by_id(entry.key()) {
-                cell.traverse(f);
-            }
+        for cell in self.root_instances() {
+            cell.traverse(f);
         }
     }
 
@@ -1348,15 +1346,17 @@ impl Proc {
             .and_then(|cell| cell.upgrade())
     }
 
-    /// Returns the ActorAddrs of all root actors in this proc.
-    pub fn root_actor_ids(&self) -> Vec<ActorAddr> {
-        self.state()
-            .root_actors
+    /// Live root instances in this proc.
+    fn root_instances(&self) -> Vec<InstanceCell> {
+        let root_instances: Vec<_> = self
+            .state()
+            .root_instances
             .iter()
-            .filter_map(|entry| {
-                self.get_instance_by_id(entry.key())
-                    .map(|cell| cell.actor_addr().clone())
-            })
+            .map(|entry| entry.value().clone())
+            .collect();
+        root_instances
+            .into_iter()
+            .filter_map(|cell| cell.upgrade())
             .collect()
     }
 
@@ -1567,10 +1567,8 @@ impl Proc {
         // (which must stay alive to receive stop events from the others).
         let mut statuses = HashMap::new();
         for actor_id in self
-            .state()
-            .root_actors
-            .iter()
-            .filter_map(|entry| self.get_instance_by_id(entry.key()))
+            .root_instances()
+            .into_iter()
             .filter(|cell| !matches!(*cell.status().borrow(), ActorStatus::Client))
             .map(|cell| cell.actor_addr().clone())
             .collect::<Vec<_>>()
@@ -3770,7 +3768,7 @@ impl<A: Actor> Instance<A> {
 
     /// Return a handle to this instance's parent actor, if it has one.
     pub fn parent_handle<P: Actor>(&self) -> Option<ActorHandle<P>> {
-        let parent_cell = self.inner.cell.inner.parent.upgrade()?;
+        let parent_cell = self.inner.cell.parent()?;
         let ports = if let Ok(ports) = parent_cell.inner.ports.clone().downcast() {
             ports
         } else {
@@ -4207,7 +4205,7 @@ impl InstanceCell {
             Box<dyn Fn() -> crate::ordering::OrderingSnapshot + Send + Sync>,
         >,
     ) -> Self {
-        let is_root = parent.is_none();
+        let is_root_instance = parent.is_none();
         let _ais = actor_id.to_string();
         let cell = Self {
             inner: Arc::new(InstanceCellState {
@@ -4245,8 +4243,10 @@ impl InstanceCell {
         proc.inner
             .instances
             .insert(actor_id.id().clone(), cell.downgrade());
-        if is_root {
-            proc.inner.root_actors.insert(actor_id.id().clone());
+        if is_root_instance {
+            proc.inner
+                .root_instances
+                .insert(actor_id.id().clone(), cell.downgrade());
         }
         cell
     }
@@ -4841,7 +4841,7 @@ impl Drop for InstanceCellState {
         {
             tracing::error!("instance {} was dropped but not in proc", self.actor_id);
         }
-        self.proc.inner.root_actors.remove(self.actor_id.id());
+        self.proc.inner.root_instances.remove(self.actor_id.id());
     }
 }
 
@@ -4852,15 +4852,9 @@ pub struct WeakInstanceCell {
     inner: Weak<InstanceCellState>,
 }
 
-impl Default for WeakInstanceCell {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl WeakInstanceCell {
-    /// Create a new weak instance cell that is never upgradeable.
-    pub fn new() -> Self {
+    /// Create a weak instance cell that is never upgradeable.
+    fn new() -> Self {
         Self { inner: Weak::new() }
     }
 
@@ -5438,16 +5432,16 @@ mod tests {
         let child = proc.spawn_child(parent.cell().clone(), TestActor);
 
         assert!(parent.actor_addr().uid().is_instance());
-        let roots = proc.root_actor_ids();
         assert!(
-            roots
-                .iter()
-                .any(|root| root.id() == parent.actor_addr().id())
+            proc.state()
+                .root_instances
+                .contains_key(parent.actor_addr().id())
         );
         assert!(
-            !roots
-                .iter()
-                .any(|root| root.id() == child.actor_addr().id())
+            !proc
+                .state()
+                .root_instances
+                .contains_key(child.actor_addr().id())
         );
 
         let mut traversed = Vec::new();
@@ -6420,10 +6414,7 @@ mod tests {
             child.actor_addr().proc_addr(),
             parent.actor_addr().proc_addr()
         );
-        assert_eq!(
-            child.inner.parent.upgrade().unwrap().actor_addr(),
-            parent.actor_addr()
-        );
+        assert_eq!(child.parent().unwrap().actor_addr(), parent.actor_addr());
         assert_matches!(
             parent.inner.children.get(child.uid()),
             Some(node) if node.actor_addr() == child.actor_addr()
@@ -6481,7 +6472,7 @@ mod tests {
         // Supervision tree is constructed correctly.
         validate_link(third.cell(), second.cell());
         validate_link(second.cell(), first.cell());
-        assert!(first.cell().inner.parent.upgrade().is_none());
+        assert!(first.cell().parent().is_none());
 
         // Supervision tree is torn down correctly.
         // Once each actor is stopped, it should have no linked children.
@@ -6489,6 +6480,11 @@ mod tests {
         third.drain_and_stop("test").unwrap();
         third.await;
         assert!(third_cell.inner.children.is_empty());
+        assert_eq!(
+            third_cell.parent().unwrap().actor_addr(),
+            second.actor_addr()
+        );
+        assert!(second.cell().get_child(third_cell.uid()).is_none());
         drop(third_cell);
         validate_link(second.cell(), first.cell());
 
@@ -6502,6 +6498,46 @@ mod tests {
         first.drain_and_stop("test").unwrap();
         first.await;
         assert!(first_cell.inner.children.is_empty());
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn expired_parent_link_is_not_a_root() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+
+        let parent = proc.spawn_with_label::<TestActor>("parent", TestActor);
+        let child = TestActor::spawn_child(&client, &parent).await;
+        let child_cell = child.cell().clone();
+        let child_addr = child_cell.actor_addr().clone();
+
+        assert!(
+            proc.state()
+                .root_instances
+                .contains_key(parent.actor_addr().id())
+        );
+        assert!(!proc.state().root_instances.contains_key(child_addr.id()));
+
+        parent.drain_and_stop("test").unwrap();
+        parent.await;
+        drop(child);
+
+        for i in 0..1000 {
+            if child_cell.parent().is_none() {
+                break;
+            }
+            if i < 50 {
+                tokio::task::yield_now().await;
+            } else {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        assert!(
+            child_cell.parent().is_none(),
+            "parent cell should be released once the parent stops"
+        );
+
+        // An expired parent does not implicitly promote the child to a root.
+        assert!(!proc.state().root_instances.contains_key(child_addr.id()));
     }
 
     #[async_timed_test(timeout_secs = 30)]
