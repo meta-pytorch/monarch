@@ -1,0 +1,3522 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+#
+# How to read this manifest
+#
+# Purpose. A checked inventory of every remaining pytokio site in Monarch, so
+# that each Stage 6 migration diff is mechanically reviewable. It is temporary:
+# Stage 6.8 deletes this file and pytokio_removal_census.py once the
+# independent Sapling searches are zero.
+#
+# Maintenance. Hand-maintained. The checker deliberately has no rewrite mode,
+# so a reviewer sees the source change and the manifest edit in one diff. The
+# initial content was produced once by a throwaway script that was not kept;
+# there is no generator or template to regenerate from. Edit this file
+# directly, in the same diff as the source change it records, then run
+# --check. From the fbsource repository root:
+#
+#     python3 fbcode/monarch/scripts/pytokio_removal_census.py --check
+#     python3 fbcode/monarch/scripts/pytokio_removal_census.py --summary
+#
+# --check is the landing gate. --summary prints entries by category, owning
+# transition, and file.
+#
+# Sections, in file order.
+#   [config]       what to scan and what to match: the Monarch roots,
+#                  exclusions, the defining module, per-operation path
+#                  scoping, and the pattern table naming each operation.
+#                  Patterns live here rather than in the checker so the tool
+#                  is not its own residue.
+#   [totals]       the expected aggregate count per operation, reconciled
+#                  against discovery; [total_units] marks the operations
+#                  counted by file rather than by hit. Reconciliation already
+#                  catches a net-zero swap, reporting the missing old locator
+#                  and the unknown new one; totals are the independent
+#                  aggregate check on top of that. Coverage is exact in both
+#                  directions: every configured operation must have a total
+#                  and every total must name a configured operation, so a
+#                  newly added pattern cannot ship without an aggregate check.
+#   [schema]       the closed vocabularies: categories, semantic classes,
+#                  dispositions, the exact Future-matrix ids, and the matrix
+#                  enums. A value outside them fails.
+#   [[matrix]]     the Future/Handle contract cases, a fixed set validated
+#                  against schema.matrix_ids.
+#   [[transition]] the owning diffs; each declares the sites it owns and the
+#                  states it may move them to.
+#   [[site]]       the inventory, one entry per discovered site.
+#
+# Identity. A site is path plus symbol plus operation. Line numbers are never
+# recorded, so unrelated edits that move code do not invalidate a row. Rust
+# symbols are impl- or trait-qualified (Type::method, <Type as Trait>::method,
+# or Trait::method for a default body) so two methods sharing a bare name stay
+# distinct. Generic arguments are retained and normalized, so
+# <ActorMeshRef<PythonActor> as ActorMeshProtocol>::name is distinct from the
+# same method on another specialization; lifetime arguments are dropped,
+# because they never specialize. Python sites carry the
+# rendered call target and, where present, the wrapped callee, as
+# scope[target(arg)], so two roots in one function -- or three transfers on
+# different receivers -- separate.
+#
+# The invariant is a bijection: exactly one active row per discovered hit.
+# There is no multiplicity field, and a duplicate locator fails. Uniqueness
+# spans active rows and tombstones together, so a completed migration keeps
+# reserving its identity and a later row cannot quietly reuse it.
+#
+# One source location may appear under several categories, because the
+# categories track different obligations. AsyncActorMesh::__reduce__ is both a
+# native_producer and a mesh_carrier; PyValueStream::__next__ is both a
+# native_producer and a rust_future_factory. Each appearance is a distinct
+# operation and therefore its own row.
+#
+# Drift detection and the update workflow. The bijection is what makes drift
+# visible, and --check reports each direction differently.
+#
+#   A discovered hit with no active row fails as an unknown site. Nothing is
+#   silently absorbed: a new pytokio site cannot enter the tree without an
+#   explicit row naming its category, and a transition that declares it.
+#
+#   An active legacy row with no discovered hit fails as stale or removed. The
+#   site went away without being recorded, so either the row is wrong or the
+#   removal was not attributed.
+#
+#   Moving a site reports both at once: the old locator is missing and the new
+#   one is unknown. That pair is the signature of a move, and it is resolved by
+#   editing the row rather than by deleting and re-adding it, so the site keeps
+#   its identity and its history.
+#
+# An intentional migration is one diff that changes the source, sets the row
+# state to migrated or removed_upstream, records transition_revision, and
+# updates the affected totals. Splitting those across diffs leaves --check red
+# in between.
+#
+# Reverting a migration is the same edit backwards: restore the source, return
+# the tombstone to legacy, drop its transition_revision, and restore the
+# totals, all together.
+#
+# Scope: Monarch only, throughout Stage 6.
+#
+# The roots are Monarch itself, and there are no downstream roots in [config].
+# Callers of the public pytokio API that live outside Monarch -- fbcode/mitra,
+# fbcode/pytorch/torchtitan, the AgentTune project under genai, and any not yet
+# identified -- are deliberately not inventoried here. Those roots are large
+# and almost entirely unrelated, so content-scanning them on every gate run
+# would cost far more than the handful of sites it would find.
+#
+# They are covered by audit instead of by continuous scanning. Downstream
+# customers were audited separately at 6.0a, and will be audited again
+# immediately before 6.8. A code search for the module name is sufficient:
+# there is no file in Monarch that names PythonTask without also naming
+# pytokio, so every downstream route to the type carries the token in its
+# import path.
+#
+# The consequence is explicit: a pytokio site in downstream code will not fail
+# this gate. Migrating downstream callers is tracked by the Stage 6 planning
+# documents, and the final zero check in 6.8 is a code search, not this file.
+#
+# TorchTitan is in fbsource, at fbcode/pytorch/torchtitan; it is simply out of
+# scope for this manifest, not out of reach. AIRA Dojo is the one external
+# repository, which no configuration here could reach even if the scope were
+# widened.
+#
+# Detection is bounded by the configured patterns, roots, and exclusions, so
+# the checker can only reconcile what it is told to look for. It is not proof
+# that its own patterns are complete. Independent scoped Sapling searches
+# establish the initial coverage, and they are what performs the final zero
+# check in 6.8 after this file and the checker are deleted.
+#
+# State. legacy means the site still exists and still has to move. migrated
+# means it moved through its declared transition. removed_upstream means work
+# this program does not own removed it. The latter two are tombstones: they
+# stay so that applied transitions and reverts remain auditable, and
+# reconciliation skips them, so no source hit is expected.
+#
+# Transitions. A row names its owning transition, and that transition must
+# list the row in owns, so a site cannot be migrated by a diff that does not
+# own it. allowed_states bounds which tombstone states it may set.
+#
+# transition_revision and amendment_revision are factual, not approvals.
+# transition_revision records the diff that performed the move; it is required
+# once state leaves legacy and rejected while state is legacy.
+# amendment_revision records a diff that corrected a site's current behavior --
+# a bug fix -- without migrating it, and never discharges the declared
+# transition.
+#
+# Behavior rows. native_producer and coroutine_root rows carry the eleven
+# fields below. Each states what the code does now, not what the target should
+# do.
+#
+#   return_surface   the type the site hands to Python -- PyPythonTask, a raw
+#                    PythonTask, or Future[T] -- named so a conversion that
+#                    changes the surface is visible in the diff.
+#   consumer         the immediate consumer of what this site produces: the
+#                    function or expression that receives it. Name it. "see
+#                    oracle" is not an answer.
+#   driver           what actually drives the returned task to completion --
+#                    tokio::spawn, block_on, a queue task, the actor loop, or
+#                    the awaiting caller.
+#   start_point      when the underlying operation begins. Timing only. It is
+#                    not whether abandonment is possible; that is the
+#                    abandonment field. Typical values: lazy until driven,
+#                    eager at construction, already running, already complete.
+#   abandonment      whether the site can be constructed and dropped before
+#                    observation, and by what path.
+#   eager_effect     what an eager Handle conversion would newly do: start a
+#                    side effect, claim a receive, observe already-running
+#                    work, or only wrap a ready value.
+#   drop_behavior    what happens today when the value is dropped unobserved.
+#   unobserved_error how a failure surfaces when nobody observes the result.
+#   disposition      the intended target treatment, from schema.dispositions.
+#   semantic_class   the abandonment class, from schema.semantic_classes; it
+#                    selects the characterization test that covers the site.
+#   oracle           the named test pinning the current behavior.
+#
+# coroutine_root rows add public_operation, caller_contexts, and
+# first_side_effect: the user-facing API, the calling contexts it supports,
+# and the first externally visible effect once the coroutine runs.
+#
+# Import rows record members, the exact set of names imported from the pytokio
+# module at that site. Members are required: a file count alone would permit
+# swapping one imported name for another. The requirement is derived from the
+# row's operation -- whether it is a configured python_modules pattern -- not
+# from its category, so miscategorising a row cannot skip the check. Both
+# relative and absolute import forms are discovered.
+#
+# [[matrix]] rows record disposition (preserve, intentional change, or
+# implementation-neutral) and execution_state (green_in_6.0b, running against
+# the current Future, or activates_in_6.1, executable once _from_handle
+# exists).
+#
+# Grounded at fbsource master c58f6cb66dbe, 2026-08-19.
+
+[config]
+roots = [
+  "fbcode/monarch/monarch_hyperactor/src",
+  "fbcode/monarch/monarch_rdma",
+  "fbcode/monarch/monarch_extension/src",
+  "fbcode/monarch/monarch_distributed_telemetry/src",
+  "fbcode/monarch/hyperactor_config/src",
+  "fbcode/monarch/python/monarch",
+  "fbcode/monarch/python/tests",
+  "fbcode/monarch/docs",
+]
+exclude = ["/build/", "/buck-out/", "/__pycache__/", "/scripts/"]
+suffixes = [".rs", ".py", ".pyi", ".md"]
+doc_suffixes = [".md"]
+import_only_roots = ["fbcode/monarch/python/tests"]
+
+defining_module = "fbcode/monarch/monarch_hyperactor/src/pytokio.rs"
+defining_module_exempt = [
+  "would_block_surface",
+  "pytokio_module_ref",
+  "helper_symbol",
+  "helper_definition",
+  "caller_free_primitive",
+]
+symbol_capture_operations = [
+  "take_inner_retire",
+  "mesh_reserve_fill",
+  "mesh_state_resolve",
+  "shared_reconstruction",
+  "reserve_binding",
+  "would_block_surface",
+  "helper_symbol",
+  "helper_definition",
+  "caller_free_primitive",
+  "binding_stub_symbol",
+]
+per_file_operations = ["pytokio_module_ref"]
+
+# Some patterns name a symbol that exists elsewhere under a different owner:
+# tokio has its own spawn_blocking. Scope those operations to the file that
+# owns them.
+[config.operation_paths]
+take_inner_retire = ["fbcode/monarch/python/monarch/_src/actor/future.py"]
+bootstrap_storage_spawn = ["fbcode/monarch/python/monarch/_src/actor/bootstrap.py"]
+caller_free_primitive = ["fbcode/monarch/monarch_hyperactor/src/pytokio.rs"]
+mesh_state_resolve = ["fbcode/monarch/monarch_hyperactor/src/pickle.rs"]
+reserve_binding = ["fbcode/monarch/monarch_hyperactor/src/pickle.rs"]
+would_block_surface = [
+  "fbcode/monarch/monarch_hyperactor/src/handle.rs",
+  "fbcode/monarch/monarch_hyperactor/src/pytokio.rs",
+]
+binding_stub_symbol = [
+  "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/pytokio.pyi",
+  "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/pickle.pyi",
+]
+
+[config.patterns.rust]
+py_python_task_new = "\\bPyPythonTask::new\\b"
+raw_python_task_new = "(?<!Py)\\bPythonTask::new\\b"
+spawn_abortable = "\\.spawn_abortable\\(\\)"
+mesh_reserve_fill = "\\b(reserve_mesh_reference_if_active|push_mesh_reference_if_active|pop_mesh_reference)\\b"
+mesh_state_resolve = "pub async fn (resolve)\\b"
+reserve_binding = "fn (reserve_mesh_reference)\\b|wrap_pyfunction!\\((reserve_mesh_reference)\\b"
+would_block_surface = "pyo3::create_exception!\\s*\\(\\s*\\w+,\\s*(WouldBlockRuntime)|get_type::<crate::handle::(WouldBlockRuntime)>|add\\(\"(WouldBlockRuntime)\""
+shared_reconstruction = "shared_class\\(py\\)\\.getattr\\(\"(block_on|from_value)\"\\)"
+rust_take_inner = "\"_take_inner\""
+rust_from_coro = "\"_from_coro\""
+pytokio_module_ref = "crate::pytokio|monarch_hyperactor::pytokio|^pub mod pytokio"
+helper_symbol = "(?:crate|monarch_hyperactor)::pytokio::(\\w+)"
+caller_free_primitive = "^\\s*fn\\s+(select_one|with_timeout|spawn_blocking|sleep)\\s*\\("
+helper_definition = "^\\s*(?:pub(?:\\(crate\\))?\\s+)?(?:fn|struct)\\s+(is_tokio_thread|send_result|to_py_error|WouldBlockRuntime)\\b|attr\\s+(ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK)"
+
+[config.patterns.python_calls]
+from_coro = "Future._from_coro"
+from_coroutine = "PythonTask.from_coroutine"
+take_inner = "_take_inner"
+shared_from_value = "Shared.from_value"
+mesh_storage_spawn = "PythonTask.from_coroutine().spawn"
+bootstrap_storage_spawn = "host_mesh.spawn"
+py_mesh_reserve = "reserve_mesh_reference"
+py_is_tokio_thread = "is_tokio_thread"
+
+[config.patterns.python_defs]
+take_inner_retire = "^    def (_take_inner)\\b|^class (_Taken)\\b"
+
+[config.patterns.python_stub]
+binding_stub_symbol = "^class (PythonTask|Shared|WouldBlockRuntime)\\b|^def (is_tokio_thread)\\b|^def (reserve_mesh_reference)\\b"
+
+[config.patterns.python_modules]
+pytokio_import = "monarch._rust_bindings.monarch_hyperactor.pytokio"
+
+[config.patterns.docs]
+doc_legacy_surface = "PythonTask|PyShared|pytokio"
+
+[totals]
+py_python_task_new = 26
+raw_python_task_new = 6
+from_coro = 19
+rust_from_coro = 2
+from_coroutine = 7
+take_inner = 7
+rust_take_inner = 2
+take_inner_retire = 2
+caller_free_primitive = 4
+shared_from_value = 4
+spawn_abortable = 1
+mesh_storage_spawn = 5
+bootstrap_storage_spawn = 1
+mesh_reserve_fill = 10
+mesh_state_resolve = 1
+shared_reconstruction = 2
+reserve_binding = 1
+py_mesh_reserve = 2
+py_is_tokio_thread = 3
+pytokio_import = 31
+pytokio_module_ref = 18
+helper_symbol = 29
+helper_definition = 6
+would_block_surface = 2
+binding_stub_symbol = 5
+doc_legacy_surface = 4
+
+# Imports are counted by file; each row also pins its exact member set, so a
+# net-zero member swap fails.
+[total_units]
+pytokio_import = "file"
+
+[schema]
+categories = [
+  "native_producer",
+  "coroutine_root",
+  "native_wrapping_factory",
+  "rust_future_factory",
+  "driver_root",
+  "ownership_transfer",
+  "ownership_surface",
+  "mesh_carrier",
+  "module_import",
+  "module_reference",
+  "helper_residue",
+  "helper_definition",
+  "binding_stub",
+  "caller_free_primitive",
+  "documentation",
+]
+
+semantic_classes = [
+  "deferred_side_effect",
+  "deferred_receive_claim",
+  "already_started_lazy_observer",
+  "sync_partial_effect_lazy_tail",
+  "ready_no_op_wrapper",
+  "abortable_observer",
+]
+
+dispositions = [
+  "preserve timing",
+  "intentionally become eager",
+  "replace with a direct value",
+  "replace with a direct blocking binding",
+  "replace with the bridge future directly",
+  "require a binding-specific design",
+]
+
+matrix_dispositions = ["preserve", "intentional change", "implementation-neutral"]
+matrix_execution_states = ["green_in_6.0b", "activates_in_6.1"]
+matrix_ids = [
+  "fm.repeated_observation",
+  "fm.exception_identity",
+  "fm.timeout_then_success",
+  "fm.cancelled_observer",
+  "fm.ready_get_on_loop_warns",
+  "fm.ready_get_on_tokio_refuses",
+  "fm.invalid_timeout_on_ready",
+  "fm.ready_as_asyncio_settlement",
+  "fm.terminal_baseexception_reobservable",
+  "fm.off_loop_as_asyncio",
+  "fm.off_loop_await",
+  "fm.tokio_await",
+  "fm.get_tracing_event",
+  "fm.result_alias",
+  "fm.exception_accessor",
+]
+
+# Future/Handle contract matrix. Fifteen declared cases; 6.0b makes the
+# current-facade rows green and 6.1 activates the Handle-backed ones.
+[[matrix]]
+id = "fm.repeated_observation"
+disposition = "preserve"
+execution_state = "green_in_6.0b"
+
+[[matrix]]
+id = "fm.exception_identity"
+disposition = "preserve"
+execution_state = "green_in_6.0b"
+
+[[matrix]]
+id = "fm.timeout_then_success"
+disposition = "preserve"
+execution_state = "green_in_6.0b"
+
+[[matrix]]
+id = "fm.cancelled_observer"
+disposition = "preserve"
+execution_state = "green_in_6.0b"
+
+[[matrix]]
+id = "fm.ready_get_on_loop_warns"
+disposition = "intentional change"
+execution_state = "activates_in_6.1"
+
+[[matrix]]
+id = "fm.ready_get_on_tokio_refuses"
+disposition = "intentional change"
+execution_state = "activates_in_6.1"
+
+[[matrix]]
+id = "fm.invalid_timeout_on_ready"
+disposition = "intentional change"
+execution_state = "activates_in_6.1"
+
+[[matrix]]
+id = "fm.ready_as_asyncio_settlement"
+disposition = "intentional change"
+execution_state = "activates_in_6.1"
+
+[[matrix]]
+id = "fm.terminal_baseexception_reobservable"
+disposition = "intentional change"
+execution_state = "activates_in_6.1"
+
+[[matrix]]
+id = "fm.off_loop_as_asyncio"
+disposition = "preserve"
+execution_state = "green_in_6.0b"
+
+[[matrix]]
+id = "fm.off_loop_await"
+disposition = "intentional change"
+execution_state = "activates_in_6.1"
+
+[[matrix]]
+id = "fm.tokio_await"
+disposition = "intentional change"
+execution_state = "activates_in_6.1"
+
+[[matrix]]
+id = "fm.get_tracing_event"
+disposition = "preserve"
+execution_state = "activates_in_6.1"
+
+[[matrix]]
+id = "fm.result_alias"
+disposition = "preserve"
+execution_state = "activates_in_6.1"
+
+[[matrix]]
+id = "fm.exception_accessor"
+disposition = "preserve"
+execution_state = "activates_in_6.1"
+
+# Transition ownership. A site changes state only through the transition
+# that declares it.
+[[transition]]
+id = "6.1"
+allowed_states = ["migrated", "removed_upstream"]
+owns = [
+  "hd.actor.to_py_error",
+  "hd.handle.WouldBlockRuntime",
+  "hd.mesh_controller.to_py_error",
+  "hd.pytokio.WouldBlockRuntime",
+  "hd.pytokio.is_tokio_thread",
+  "hd.pytokio.send_result",
+  "hd.pytokio.to_py_error",
+  "hs.actor_mesh._init_client_context[is_tokio_thread]",
+  "hs.future.Future.__await__[is_tokio_thread]",
+  "hs.future.Future.get[is_tokio_thread]",
+  "hs.handle.ensure_python",
+  "hs.handle.is_tokio_thread",
+  "hs.handle.send_result",
+  "hs.handle.to_py_error",
+  "mr.handle.file"
+]
+
+[[transition]]
+id = "6.2"
+allowed_states = ["migrated", "removed_upstream"]
+owns = [
+  "fc.actor_mesh.Port.resolve_and_send[Future._from_corocastAny, message.resolve]",
+  "fc.actor_mesh._Actor.handle[Future._from_cororesponse]",
+  "fc.rdma.RDMAAction.submit[Future._from_coroself._inner.submitclient=client, timeout=timeout, rdma_manager_init=ready]",
+  "fc.rdma.RDMABuffer.drop[Future._from_coroself._buffer.dropclient=client, rdma_manager_init=ready]",
+  "hs.actor.PyPythonTask",
+  "hs.lib.PyPythonTask",
+  "hs.pickle.PyPythonTask",
+  "hs.proc_launcher_probe.PyPythonTask",
+  "im.rdma.module_2",
+  "mr.actor.file",
+  "mr.proc_launcher_probe.file",
+  "np.actor.DroppingPort.resolve_and_send",
+  "np.actor.LocalPort.resolve_and_send",
+  "np.bootstrap.run_worker_loop_forever",
+  "np.lib.PyRdmaAction.submit",
+  "np.lib.PyRdmaBuffer.drop",
+  "np.pickle.PendingMessage.py_resolve",
+  "np.proc_launcher_probe.probe_exit_port_via_mesh"
+]
+
+[[transition]]
+id = "6.3a"
+allowed_states = ["migrated", "removed_upstream"]
+owns = [
+  "bs.pickle.reserve_mesh_reference",
+  "ms.actor_mesh.pop_mesh_reference",
+  "ms.actor_mesh.push_mesh_reference_if_active",
+  "ms.actor_mesh.reserve_mesh_reference_if_active",
+  "ms.host_mesh.HostMesh.__reduce_ex__[reserve_mesh_referenceself._hy_host_mesh]",
+  "ms.host_mesh.pop_mesh_reference",
+  "ms.host_mesh.push_mesh_reference_if_active",
+  "ms.pickle.pop_mesh_reference",
+  "ms.pickle.push_mesh_reference_if_active",
+  "ms.pickle.reserve_mesh_reference",
+  "ms.pickle.reserve_mesh_reference_if_active",
+  "ms.pickle.resolve",
+  "ms.proc_mesh.ProcMesh.__reduce_ex__[reserve_mesh_referenceself._proc_mesh]",
+  "ms.proc_mesh.pop_mesh_reference",
+  "ms.proc_mesh.push_mesh_reference_if_active"
+]
+
+[[transition]]
+id = "6.3b"
+allowed_states = ["migrated", "removed_upstream"]
+owns = [
+  "fc.actor_mesh.shutdown_context[Future._from_coro_noop]",
+  "fc.actor_mesh.shutdown_context[Future._from_coro_shutdown_sequence]",
+  "fc.host_mesh.HostMesh.shutdown[Future._from_corotask]",
+  "fc.host_mesh.HostMesh.stop[Future._from_corotask]",
+  "fc.proc_mesh.ProcMesh.stop[Future._from_coro_stop_nonblockinginstance]",
+  "hs.context.PyPythonTask",
+  "hs.logging.AwaitPyExt",
+  "hs.logging.PyPythonTask",
+  "hs.logging.ensure_python",
+  "im.logging.module_2",
+  "mr.context.file",
+  "mr.logging.file",
+  "np.context.PyInstance.stop_and_wait",
+  "np.host_mesh.PyHostMesh.shutdown",
+  "np.host_mesh.PyHostMesh.stop",
+  "np.host_mesh.shutdown_local_host_mesh",
+  "np.logging.LoggingMeshClient.flush",
+  "np.logging.LoggingMeshClient.spawn",
+  "np.proc_mesh.PyProcMesh.stop_nonblocking",
+  "ot.proc_mesh.ProcMesh._flush_pending_actor_spawns[mesh.initialized._take_inner]"
+]
+
+[[transition]]
+id = "6.3c"
+allowed_states = ["migrated", "removed_upstream"]
+owns = [
+  "dr.bootstrap._as_python_task[PythonTask.from_coroutinejust]",
+  "dr.host_mesh.HostMesh._new_with_shape[PythonTask.from_coroutinetask]",
+  "dr.host_mesh.HostMesh._spawn_nonblocking[PythonTask.from_coroutinetask]",
+  "dr.host_mesh.HostMesh.with_python_executable[PythonTask.from_coroutinetask]",
+  "dr.proc_mesh.ProcMesh._new_with_shape[PythonTask.from_coroutinetask]",
+  "dr.proc_mesh.ProcMesh.from_host_mesh[PythonTask.from_coroutinetaskpm, hy_proc_mesh, setup_actor, host_mesh.stream_logs]",
+  "fc.actor_mesh.ActorMesh._name[Future._from_coroself._inner.name]",
+  "fc.actor_mesh.ActorMesh.initialized[Future._from_coroself._inner.initialized]",
+  "fc.actor_mesh.ActorMesh.stop[Future._from_coroself._inner.stopinstance, reason]",
+  "fc.host_mesh.HostMesh.initialized[Future._from_corotask]",
+  "fc.host_mesh._spawn_admin[Future._from_corotask]",
+  "fc.proc_mesh.ProcMesh._proc_mesh_for_asyncio_fixme[Future._from_coroself._proc_mesh.task]",
+  "fc.proc_mesh.ProcMesh.initialized[Future._from_corotask]",
+  "hs.actor_mesh.PyPythonTask",
+  "hs.actor_mesh.ensure_python",
+  "hs.bootstrap.PyPythonTask",
+  "hs.host_mesh.PyPythonTask",
+  "hs.lib.PyShared",
+  "hs.pickle.PyShared",
+  "hs.proc_mesh.PyPythonTask",
+  "hs.proc_mesh.PyShared",
+  "im.actor_mesh.module_2",
+  "im.bootstrap.module_2",
+  "im.host_mesh.module_2",
+  "im.proc_mesh.module_2",
+  "mr.actor_mesh.file",
+  "mr.bootstrap.file",
+  "mr.host_mesh.file",
+  "mr.lib.file_3",
+  "mr.pickle.file",
+  "mr.proc_mesh.file",
+  "ms.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.__reduce__",
+  "ms.actor_mesh.block_on",
+  "ms.bootstrap.attach_to_workers[host_mesh.spawn]",
+  "ms.host_mesh.HostMesh._from_initialized_hy_host_mesh[Shared.from_valuehy_host_mesh]",
+  "ms.host_mesh.HostMesh._new_with_shape[PythonTask.from_coroutinetask.spawn]",
+  "ms.host_mesh.HostMesh._new_with_shape[Shared.from_valuehm.slicedshape.region]",
+  "ms.host_mesh.HostMesh._spawn_nonblocking[PythonTask.from_coroutinetask.spawn]",
+  "ms.host_mesh.HostMesh.with_python_executable[PythonTask.from_coroutinetask.spawn]",
+  "ms.pickle.from_value",
+  "ms.proc_mesh.ProcMesh._from_initialized_hy_proc_mesh[Shared.from_valuehy_proc_mesh]",
+  "ms.proc_mesh.ProcMesh._new_with_shape[PythonTask.from_coroutinetask.spawn]",
+  "ms.proc_mesh.ProcMesh._new_with_shape[Shared.from_valuepm.slicedshape.region]",
+  "ms.proc_mesh.ProcMesh.from_host_mesh[PythonTask.from_coroutinetaskpm, hy_proc_mesh, setup_actor, host_mesh.stream_logs.spawn]",
+  "np.actor_mesh.ActorMeshRef_as_ActorMeshProtocol.name",
+  "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.__reduce__",
+  "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.initialized",
+  "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.name",
+  "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.stop",
+  "np.actor_mesh.PythonActorMeshImpl_as_ActorMeshProtocol.name",
+  "np.actor_mesh.PythonActorMeshImpl_as_ActorMeshProtocol.stop",
+  "np.actor_mesh.initialized",
+  "np.bootstrap.attach_to_workers",
+  "np.host_mesh.PyHostMesh.spawn_nonblocking",
+  "np.host_mesh._spawn_admin",
+  "np.host_mesh.bootstrap_host",
+  "ot.bootstrap._as_python_task[s._take_inner]",
+  "ot.proc_mesh.ProcMesh.from_host_mesh.task[setup_actor.setup.call._take_inner]"
+]
+
+[[transition]]
+id = "6.4a"
+allowed_states = ["migrated", "removed_upstream"]
+owns = [
+  "fc.actor_mesh.Accumulator.accumulate[Future._from_coroimpl]",
+  "ot.actor_mesh.Accumulator.accumulate.impl[x._take_inner]"
+]
+
+[[transition]]
+id = "6.4b"
+allowed_states = ["migrated", "removed_upstream"]
+owns = [
+  "fc.job.exec_command[Future._from_coro_impl]",
+  "ot.job.exec_command._impl[bash_actors.run.callscript, output_dir=output_dir._take_inner]",
+  "ot.job.exec_command._impl[bash_actors.run_python.callcmd, env=env, workdir=workdir, client_cwd=client_cwd, output_dir=output_dir._take_inner]",
+  "ot.job.exec_command._impl[procs.stop._take_inner]"
+]
+
+[[transition]]
+id = "6.4c"
+allowed_states = ["migrated", "removed_upstream"]
+owns = [
+  "hs.query_engine.PyPythonTask",
+  "hs.readonly_fuse.PyPythonTask",
+  "mr.query_engine.file",
+  "mr.readonly_fuse.file",
+  "ot.query_engine.DistributedExec_as_ExecutionPlan.execute",
+  "ot.readonly_fuse.take_actor_future"
+]
+
+[[transition]]
+id = "6.5a"
+allowed_states = ["migrated", "removed_upstream"]
+owns = [
+  "hs.endpoint.PyPythonTask",
+  "hs.endpoint.PythonTask",
+  "mr.endpoint.file",
+  "np.endpoint.PyValueStream.__next__",
+  "np.endpoint.call",
+  "np.endpoint.value_collector",
+  "rf.endpoint.PyValueStream.__next__",
+  "rf.endpoint.wrap_in_future"
+]
+
+[[transition]]
+id = "6.5b"
+allowed_states = ["migrated", "removed_upstream"]
+owns = [
+  "fc.actor_mesh.PortReceiver.recv[Future._from_coroself._recv]",
+  "hs.mailbox.PyPythonTask",
+  "hs.mailbox.PythonTask",
+  "mr.mailbox.file",
+  "np.mailbox.PythonOncePortReceiver.recv_task",
+  "np.mailbox.PythonPortReceiver.recv_task"
+]
+
+[[transition]]
+id = "6.6"
+allowed_states = ["migrated", "removed_upstream"]
+owns = [
+  "ret.future._Taken",
+  "ret.future._take_inner"
+]
+
+[[transition]]
+id = "6.7"
+allowed_states = ["migrated", "removed_upstream"]
+owns = [
+  "dr.future.Future._from_coro[PythonTask.from_coroutinecoro]",
+  "im.future.module"
+]
+
+[[transition]]
+id = "6.8"
+allowed_states = ["migrated", "removed_upstream"]
+owns = [
+  "bs.pytokio.PythonTask",
+  "bs.pytokio.Shared",
+  "bs.pytokio.WouldBlockRuntime",
+  "bs.pytokio.is_tokio_thread",
+  "cf.pytokio.select_one",
+  "cf.pytokio.sleep",
+  "cf.pytokio.spawn_blocking",
+  "cf.pytokio.with_timeout",
+  "doc.SUMMARY.document",
+  "doc.overview.document",
+  "doc.python.document",
+  "doc.pytokio-appendix.document",
+  "hd.pytokio.ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK",
+  "hs.attrs.unawaited_pytokio_traceback",
+  "hs.lib.register_python_bindings",
+  "im.actor_mesh.module",
+  "im.bootstrap.module",
+  "im.context.module",
+  "im.endpoint.module",
+  "im.host_mesh.module",
+  "im.logging.module",
+  "im.mailbox.module",
+  "im.pickle.module",
+  "im.proc_launcher_probe.module",
+  "im.proc_mesh.module",
+  "im.rdma.module",
+  "im.supervision.module",
+  "im.test_actor_driver_characterization.module",
+  "im.test_actor_mesh.module",
+  "im.test_client_context_guard.module",
+  "im.test_future_characterization.module",
+  "im.test_host_mesh.module",
+  "im.test_hyperactor.module",
+  "im.test_logging.module",
+  "im.test_mailbox.module",
+  "im.test_proc_launcher_probe.module",
+  "im.test_proc_mesh.module",
+  "im.test_python_actors.module",
+  "im.test_rdma_initialization.test_ensure_init_observes_its_supplied_shared",
+  "im.test_rdma_initialization.test_ensure_init_returns_handle_that_resolves_over_tcp",
+  "mr.attrs.file",
+  "mr.lib.file",
+  "mr.lib.file_2"
+]
+
+[[transition]]
+id = "D116091231-or-6.2-direct"
+allowed_states = ["migrated", "removed_upstream"]
+owns = [
+  "hs.actor.PythonTask",
+  "np.actor.PythonActor.handle_direct"
+]
+
+# Inventory. One row per discovered site.
+[[site]]
+id = "bs.pickle.reserve_mesh_reference"
+category = "binding_stub"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/pickle.pyi"
+symbol = "reserve_mesh_reference"
+operation = "binding_stub_symbol"
+scope = "stub"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "bs.pytokio.PythonTask"
+category = "binding_stub"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/pytokio.pyi"
+symbol = "PythonTask"
+operation = "binding_stub_symbol"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "bs.pytokio.Shared"
+category = "binding_stub"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/pytokio.pyi"
+symbol = "Shared"
+operation = "binding_stub_symbol"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "bs.pytokio.WouldBlockRuntime"
+category = "binding_stub"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/pytokio.pyi"
+symbol = "WouldBlockRuntime"
+operation = "binding_stub_symbol"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "bs.pytokio.is_tokio_thread"
+category = "binding_stub"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/pytokio.pyi"
+symbol = "is_tokio_thread"
+operation = "binding_stub_symbol"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "ms.bootstrap.attach_to_workers[host_mesh.spawn]"
+category = "mesh_carrier"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/bootstrap.py"
+symbol = "attach_to_workers[host_mesh.spawn]"
+operation = "bootstrap_storage_spawn"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "cf.pytokio.select_one"
+category = "caller_free_primitive"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pytokio.rs"
+symbol = "select_one"
+operation = "caller_free_primitive"
+scope = "production_compiled_test_only"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "cf.pytokio.sleep"
+category = "caller_free_primitive"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pytokio.rs"
+symbol = "sleep"
+operation = "caller_free_primitive"
+scope = "production_compiled_test_only"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "cf.pytokio.spawn_blocking"
+category = "caller_free_primitive"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pytokio.rs"
+symbol = "spawn_blocking"
+operation = "caller_free_primitive"
+scope = "production_compiled_test_only"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "cf.pytokio.with_timeout"
+category = "caller_free_primitive"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pytokio.rs"
+symbol = "with_timeout"
+operation = "caller_free_primitive"
+scope = "production_compiled_test_only"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "doc.SUMMARY.document"
+category = "documentation"
+language = "doc"
+path = "fbcode/monarch/docs/source/books/hyperactor-mesh-book/src/SUMMARY.md"
+symbol = "<document>"
+operation = "doc_legacy_surface"
+scope = "doc"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "doc.overview.document"
+category = "documentation"
+language = "doc"
+path = "fbcode/monarch/docs/source/books/hyperactor-mesh-book/src/logging/overview.md"
+symbol = "<document>"
+operation = "doc_legacy_surface"
+scope = "doc"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "doc.python.document"
+category = "documentation"
+language = "doc"
+path = "fbcode/monarch/docs/source/books/hyperactor-mesh-book/src/logging/python.md"
+symbol = "<document>"
+operation = "doc_legacy_surface"
+scope = "doc"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "doc.pytokio-appendix.document"
+category = "documentation"
+language = "doc"
+path = "fbcode/monarch/docs/source/books/hyperactor-mesh-book/src/meshes/pytokio-appendix.md"
+symbol = "<document>"
+operation = "doc_legacy_surface"
+scope = "doc"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "fc.actor_mesh.Accumulator.accumulate[Future._from_coroimpl]"
+category = "coroutine_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
+symbol = "Accumulator.accumulate[Future._from_coro(impl())]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.4a"
+public_operation = "Accumulator.accumulate(...)"
+caller_contexts = "sync and asyncio"
+return_surface = "Future[T]"
+consumer = "user code"
+driver = "awaited or blocked on by the caller"
+start_point = "the endpoint stream is dispatched when accumulate() is called; combine runs only on observation"
+abandonment = "possible; the stream was already dispatched, so dropping abandons its replies"
+eager_effect = "observes already-running work"
+drop_behavior = "the combine never runs and the dispatched replies are never collected"
+first_side_effect = "endpoint stream dispatch at call time"
+unobserved_error = "silently dropped"
+disposition = "require a binding-specific design"
+semantic_class = "already_started_lazy_observer"
+oracle = "Accumulator exact-once and error behavior (6.0c item 5)"
+
+[[site]]
+id = "fc.actor_mesh.ActorMesh._name[Future._from_coroself._inner.name]"
+category = "native_wrapping_factory"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
+symbol = "ActorMesh._name[Future._from_coro(self._inner.name())]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "fc.actor_mesh.ActorMesh.initialized[Future._from_coroself._inner.initialized]"
+category = "native_wrapping_factory"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
+symbol = "ActorMesh.initialized[Future._from_coro(self._inner.initialized())]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "fc.actor_mesh.ActorMesh.stop[Future._from_coroself._inner.stopinstance, reason]"
+category = "native_wrapping_factory"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
+symbol = "ActorMesh.stop[Future._from_coro(self._inner.stop(instance, reason))]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "fc.actor_mesh.Port.resolve_and_send[Future._from_corocastAny, message.resolve]"
+category = "native_wrapping_factory"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
+symbol = "Port.resolve_and_send[Future._from_coro(cast(Any, message).resolve())]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+
+[[site]]
+id = "fc.actor_mesh.PortReceiver.recv[Future._from_coroself._recv]"
+category = "coroutine_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
+symbol = "PortReceiver.recv[Future._from_coro(self._recv())]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.5b"
+public_operation = "PortReceiver.recv()"
+caller_contexts = "sync and asyncio"
+return_surface = "Future[T]"
+consumer = "user code"
+driver = "awaited or blocked on by the caller"
+start_point = "lazy; the native recv_task binding is not called until the coroutine is driven"
+abandonment = "possible; discarding claims nothing because the binding was never called"
+eager_effect = "claims a receive"
+drop_behavior = "no message is consumed"
+first_side_effect = "the native recv_task call"
+unobserved_error = "silently dropped"
+disposition = "require a binding-specific design"
+semantic_class = "deferred_receive_claim"
+oracle = "mailbox ownership (6.0c item 2)"
+
+[[site]]
+id = "fc.actor_mesh._Actor.handle[Future._from_cororesponse]"
+category = "native_wrapping_factory"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
+symbol = "_Actor.handle[Future._from_coro(response)]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+
+[[site]]
+id = "fc.actor_mesh.shutdown_context[Future._from_coro_noop]"
+category = "coroutine_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
+symbol = "shutdown_context[Future._from_coro(_noop())]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+public_operation = "monarch.actor.shutdown_context() when shutdown already ran"
+caller_contexts = "sync and asyncio"
+return_surface = "Future[T]"
+consumer = "user code, usually at process exit"
+driver = "awaited or blocked on by the caller"
+start_point = "the wrapped coroutine is an empty no-op; there is nothing to start"
+abandonment = "possible and harmless; shutdown already completed"
+eager_effect = "only wraps a completed no-op"
+drop_behavior = "no effect; _shutdown_done is already True"
+first_side_effect = "none"
+unobserved_error = "none"
+disposition = "replace with a direct value"
+semantic_class = "ready_no_op_wrapper"
+oracle = "lifecycle edge behavior (6.0c item 7)"
+
+[[site]]
+id = "fc.actor_mesh.shutdown_context[Future._from_coro_shutdown_sequence]"
+category = "coroutine_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
+symbol = "shutdown_context[Future._from_coro(_shutdown_sequence())]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+public_operation = "monarch.actor.shutdown_context()"
+caller_contexts = "sync and asyncio"
+return_surface = "Future[T]"
+consumer = "user code, usually at process exit"
+driver = "awaited or blocked on by the caller"
+start_point = "lazy; no shutdown work runs until the Future is observed"
+abandonment = "possible; dropping leaves _shutdown_done False and shutdown unperformed"
+eager_effect = "starts a side effect"
+drop_behavior = "shutdown never runs"
+first_side_effect = "setting _shutdown_done = True"
+unobserved_error = "silently dropped"
+disposition = "require a binding-specific design"
+semantic_class = "deferred_side_effect"
+oracle = "lifecycle edge behavior (6.0c item 7)"
+
+[[site]]
+id = "fc.host_mesh.HostMesh.initialized[Future._from_corotask]"
+category = "coroutine_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
+symbol = "HostMesh.initialized[Future._from_coro(task())]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+public_operation = "HostMesh.initialized"
+caller_contexts = "sync and asyncio"
+return_surface = "Future[T]"
+consumer = "user code and internal readiness gates"
+driver = "awaited or blocked on by the caller"
+start_point = "the storage Shared is already being driven; the coroutine only awaits it"
+abandonment = "possible; initialization continues on the storage Shared"
+eager_effect = "observes already-running work"
+drop_behavior = "abandons this observer only"
+first_side_effect = "none; the property access only raises if the mesh is already shut down"
+unobserved_error = "silently dropped"
+disposition = "preserve timing"
+semantic_class = "already_started_lazy_observer"
+oracle = "host mesh readiness coverage"
+
+[[site]]
+id = "fc.host_mesh.HostMesh.shutdown[Future._from_corotask]"
+category = "coroutine_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
+symbol = "HostMesh.shutdown[Future._from_coro(task())]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+public_operation = "HostMesh.shutdown()"
+caller_contexts = "sync and asyncio"
+return_surface = "Future[T]"
+consumer = "user code and context-manager exit"
+driver = "awaited or blocked on by the caller"
+start_point = "lazy; nothing runs until the Future is observed"
+abandonment = "possible; dropping leaves the mesh running and _inner_host_mesh set"
+eager_effect = "starts a side effect"
+drop_behavior = "shutdown never runs"
+first_side_effect = "flushing pending spawns"
+unobserved_error = "silently dropped"
+disposition = "require a binding-specific design"
+semantic_class = "deferred_side_effect"
+oracle = "immediate-shutdown coverage"
+
+[[site]]
+id = "fc.host_mesh.HostMesh.stop[Future._from_corotask]"
+category = "coroutine_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
+symbol = "HostMesh.stop[Future._from_coro(task())]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+public_operation = "HostMesh.stop()"
+caller_contexts = "sync and asyncio"
+return_surface = "Future[T]"
+consumer = "user code"
+driver = "awaited or blocked on by the caller"
+start_point = "lazy; nothing runs until the Future is observed"
+abandonment = "possible; dropping leaves the mesh running"
+eager_effect = "starts a side effect"
+drop_behavior = "stop never runs"
+first_side_effect = "flushing pending spawns"
+unobserved_error = "silently dropped"
+disposition = "intentionally become eager"
+semantic_class = "deferred_side_effect"
+oracle = "stop idempotence coverage"
+
+[[site]]
+id = "fc.host_mesh._spawn_admin[Future._from_corotask]"
+category = "coroutine_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
+symbol = "_spawn_admin[Future._from_coro(task())]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+public_operation = "host mesh admin spawn"
+caller_contexts = "sync and asyncio"
+return_surface = "Future[T]"
+consumer = "internal admin plumbing"
+driver = "awaited or blocked on by the caller"
+start_point = "lazy; nothing runs until the Future is observed"
+abandonment = "possible; dropping leaves MONARCH_ADMIN_URL unset"
+eager_effect = "starts a side effect"
+drop_behavior = "no admin mesh is spawned"
+first_side_effect = "the native admin spawn, which then sets MONARCH_ADMIN_URL"
+unobserved_error = "silently dropped"
+disposition = "intentionally become eager"
+semantic_class = "deferred_side_effect"
+oracle = "admin spawn coverage"
+
+[[site]]
+id = "fc.proc_mesh.ProcMesh._proc_mesh_for_asyncio_fixme[Future._from_coroself._proc_mesh.task]"
+category = "native_wrapping_factory"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
+symbol = "ProcMesh._proc_mesh_for_asyncio_fixme[Future._from_coro(self._proc_mesh.task())]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "fc.proc_mesh.ProcMesh.initialized[Future._from_corotask]"
+category = "coroutine_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
+symbol = "ProcMesh.initialized[Future._from_coro(task())]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+public_operation = "ProcMesh.initialized"
+caller_contexts = "sync and asyncio"
+return_surface = "Future[T]"
+consumer = "user code and internal readiness gates"
+driver = "awaited or blocked on by the caller"
+start_point = "the storage Shared is already being driven; the coroutine only awaits it"
+abandonment = "possible; initialization continues on the storage Shared"
+eager_effect = "observes already-running work"
+drop_behavior = "abandons this observer only"
+first_side_effect = "none"
+unobserved_error = "silently dropped"
+disposition = "preserve timing"
+semantic_class = "already_started_lazy_observer"
+oracle = "proc mesh readiness coverage"
+
+[[site]]
+id = "fc.proc_mesh.ProcMesh.stop[Future._from_coro_stop_nonblockinginstance]"
+category = "coroutine_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
+symbol = "ProcMesh.stop[Future._from_coro(_stop_nonblocking(instance))]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+public_operation = "ProcMesh.stop()"
+caller_contexts = "sync and asyncio"
+return_surface = "Future[T]"
+consumer = "user code and context-manager exit"
+driver = "awaited or blocked on by the caller"
+start_point = "lazy; nothing runs until the Future is observed"
+abandonment = "possible; dropping leaves _stopped False and logs unflushed"
+eager_effect = "starts a side effect"
+drop_behavior = "stop never runs"
+first_side_effect = "flushing pending actor spawns"
+unobserved_error = "silently dropped"
+disposition = "intentionally become eager"
+semantic_class = "deferred_side_effect"
+oracle = "proc mesh stop idempotence coverage"
+
+[[site]]
+id = "fc.job.exec_command[Future._from_coro_impl]"
+category = "coroutine_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/job/job.py"
+symbol = "exec_command[Future._from_coro(_impl())]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.4b"
+public_operation = "job.exec_command(...)"
+caller_contexts = "sync and asyncio"
+return_surface = "Future[T]"
+consumer = "user code"
+driver = "awaited or blocked on by the caller"
+start_point = "lazy; no proc is spawned until the Future is observed"
+abandonment = "possible; dropping prevents the spawn and therefore the finally-block cleanup"
+eager_effect = "starts a side effect"
+drop_behavior = "nothing runs, and no cleanup is owed"
+first_side_effect = "the proc spawn"
+unobserved_error = "silently dropped"
+disposition = "require a binding-specific design"
+semantic_class = "deferred_side_effect"
+oracle = "job.exec_command operation-root behavior (6.0c item 6)"
+
+[[site]]
+id = "fc.rdma.RDMAAction.submit[Future._from_coroself._inner.submitclient=client, timeout=timeout, rdma_manager_init=ready]"
+category = "native_wrapping_factory"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/rdma/rdma.py"
+symbol = "RDMAAction.submit[Future._from_coro(self._inner.submit(client=client, timeout=timeout, rdma_manager_init=ready))]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+
+[[site]]
+id = "fc.rdma.RDMABuffer.drop[Future._from_coroself._buffer.dropclient=client, rdma_manager_init=ready]"
+category = "native_wrapping_factory"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/rdma/rdma.py"
+symbol = "RDMABuffer.drop[Future._from_coro(self._buffer.drop(client=client, rdma_manager_init=ready))]"
+operation = "from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+
+[[site]]
+id = "dr.bootstrap._as_python_task[PythonTask.from_coroutinejust]"
+category = "driver_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/bootstrap.py"
+symbol = "_as_python_task[PythonTask.from_coroutine(just())]"
+operation = "from_coroutine"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "dr.future.Future._from_coro[PythonTask.from_coroutinecoro]"
+category = "driver_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/future.py"
+symbol = "Future._from_coro[PythonTask.from_coroutine(coro)]"
+operation = "from_coroutine"
+scope = "production"
+state = "legacy"
+transition = "6.7"
+
+[[site]]
+id = "dr.host_mesh.HostMesh._new_with_shape[PythonTask.from_coroutinetask]"
+category = "driver_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
+symbol = "HostMesh._new_with_shape[PythonTask.from_coroutine(task())]"
+operation = "from_coroutine"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "dr.host_mesh.HostMesh._spawn_nonblocking[PythonTask.from_coroutinetask]"
+category = "driver_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
+symbol = "HostMesh._spawn_nonblocking[PythonTask.from_coroutine(task())]"
+operation = "from_coroutine"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "dr.host_mesh.HostMesh.with_python_executable[PythonTask.from_coroutinetask]"
+category = "driver_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
+symbol = "HostMesh.with_python_executable[PythonTask.from_coroutine(task())]"
+operation = "from_coroutine"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "dr.proc_mesh.ProcMesh._new_with_shape[PythonTask.from_coroutinetask]"
+category = "driver_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
+symbol = "ProcMesh._new_with_shape[PythonTask.from_coroutine(task())]"
+operation = "from_coroutine"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "dr.proc_mesh.ProcMesh.from_host_mesh[PythonTask.from_coroutinetaskpm, hy_proc_mesh, setup_actor, host_mesh.stream_logs]"
+category = "driver_root"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
+symbol = "ProcMesh.from_host_mesh[PythonTask.from_coroutine(task(pm, hy_proc_mesh, setup_actor, host_mesh.stream_logs))]"
+operation = "from_coroutine"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "hd.mesh_controller.to_py_error"
+category = "helper_definition"
+language = "rust"
+path = "fbcode/monarch/monarch_extension/src/mesh_controller.rs"
+symbol = "to_py_error"
+operation = "helper_definition"
+scope = "production"
+state = "legacy"
+transition = "6.1"
+
+[[site]]
+id = "hd.actor.to_py_error"
+category = "helper_definition"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor.rs"
+symbol = "to_py_error"
+operation = "helper_definition"
+scope = "production"
+state = "legacy"
+transition = "6.1"
+
+[[site]]
+id = "hd.pytokio.ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK"
+category = "helper_definition"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pytokio.rs"
+symbol = "ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK"
+operation = "helper_definition"
+scope = "production"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "hd.pytokio.is_tokio_thread"
+category = "helper_definition"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pytokio.rs"
+symbol = "is_tokio_thread"
+operation = "helper_definition"
+scope = "production"
+state = "legacy"
+transition = "6.1"
+
+[[site]]
+id = "hd.pytokio.send_result"
+category = "helper_definition"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pytokio.rs"
+symbol = "send_result"
+operation = "helper_definition"
+scope = "production"
+state = "legacy"
+transition = "6.1"
+
+[[site]]
+id = "hd.pytokio.to_py_error"
+category = "helper_definition"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pytokio.rs"
+symbol = "to_py_error"
+operation = "helper_definition"
+scope = "production"
+state = "legacy"
+transition = "6.1"
+
+[[site]]
+id = "hs.attrs.unawaited_pytokio_traceback"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/hyperactor_config/src/attrs.rs"
+symbol = "unawaited_pytokio_traceback"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "hs.query_engine.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_distributed_telemetry/src/query_engine.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.4c"
+
+[[site]]
+id = "hs.lib.register_python_bindings"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_extension/src/lib.rs"
+symbol = "register_python_bindings"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "hs.readonly_fuse.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_extension/src/readonly_fuse.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.4c"
+
+[[site]]
+id = "hs.actor.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+
+[[site]]
+id = "hs.actor.PythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor.rs"
+symbol = "PythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "D116091231-or-6.2-direct"
+
+[[site]]
+id = "hs.actor_mesh.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "hs.actor_mesh.ensure_python"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "ensure_python"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "hs.bootstrap.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/bootstrap.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "hs.context.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/context.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+
+[[site]]
+id = "hs.endpoint.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/endpoint.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.5a"
+
+[[site]]
+id = "hs.endpoint.PythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/endpoint.rs"
+symbol = "PythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.5a"
+
+[[site]]
+id = "hs.handle.ensure_python"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/handle.rs"
+symbol = "ensure_python"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.1"
+
+[[site]]
+id = "hs.handle.is_tokio_thread"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/handle.rs"
+symbol = "is_tokio_thread"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.1"
+
+[[site]]
+id = "hs.handle.send_result"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/handle.rs"
+symbol = "send_result"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.1"
+
+[[site]]
+id = "hs.handle.to_py_error"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/handle.rs"
+symbol = "to_py_error"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.1"
+
+[[site]]
+id = "hs.host_mesh.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "hs.logging.AwaitPyExt"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/logging.rs"
+symbol = "AwaitPyExt"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+
+[[site]]
+id = "hs.logging.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/logging.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+
+[[site]]
+id = "hs.logging.ensure_python"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/logging.rs"
+symbol = "ensure_python"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+
+[[site]]
+id = "hs.mailbox.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/mailbox.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.5b"
+
+[[site]]
+id = "hs.mailbox.PythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/mailbox.rs"
+symbol = "PythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.5b"
+
+[[site]]
+id = "hs.pickle.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+
+[[site]]
+id = "hs.pickle.PyShared"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
+symbol = "PyShared"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "hs.proc_launcher_probe.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/proc_launcher_probe.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production_compiled_test_only"
+state = "legacy"
+transition = "6.2"
+
+[[site]]
+id = "hs.proc_mesh.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/proc_mesh.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "hs.proc_mesh.PyShared"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/proc_mesh.rs"
+symbol = "PyShared"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "hs.lib.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_rdma/extension/lib.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+
+[[site]]
+id = "hs.lib.PyShared"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_rdma/extension/lib.rs"
+symbol = "PyShared"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "ms.actor_mesh.pop_mesh_reference"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "pop_mesh_reference"
+operation = "mesh_reserve_fill"
+scope = "production"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "ms.actor_mesh.push_mesh_reference_if_active"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "push_mesh_reference_if_active"
+operation = "mesh_reserve_fill"
+scope = "production"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "ms.actor_mesh.reserve_mesh_reference_if_active"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "reserve_mesh_reference_if_active"
+operation = "mesh_reserve_fill"
+scope = "production"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "ms.host_mesh.pop_mesh_reference"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
+symbol = "pop_mesh_reference"
+operation = "mesh_reserve_fill"
+scope = "production"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "ms.host_mesh.push_mesh_reference_if_active"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
+symbol = "push_mesh_reference_if_active"
+operation = "mesh_reserve_fill"
+scope = "production"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "ms.pickle.pop_mesh_reference"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
+symbol = "pop_mesh_reference"
+operation = "mesh_reserve_fill"
+scope = "production"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "ms.pickle.push_mesh_reference_if_active"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
+symbol = "push_mesh_reference_if_active"
+operation = "mesh_reserve_fill"
+scope = "production"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "ms.pickle.reserve_mesh_reference_if_active"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
+symbol = "reserve_mesh_reference_if_active"
+operation = "mesh_reserve_fill"
+scope = "production"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "ms.proc_mesh.pop_mesh_reference"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/proc_mesh.rs"
+symbol = "pop_mesh_reference"
+operation = "mesh_reserve_fill"
+scope = "production"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "ms.proc_mesh.push_mesh_reference_if_active"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/proc_mesh.rs"
+symbol = "push_mesh_reference_if_active"
+operation = "mesh_reserve_fill"
+scope = "production"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "ms.pickle.resolve"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
+symbol = "resolve"
+operation = "mesh_state_resolve"
+scope = "production"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "ms.host_mesh.HostMesh._new_with_shape[PythonTask.from_coroutinetask.spawn]"
+category = "mesh_carrier"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
+symbol = "HostMesh._new_with_shape[PythonTask.from_coroutine(task()).spawn]"
+operation = "mesh_storage_spawn"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "ms.host_mesh.HostMesh._spawn_nonblocking[PythonTask.from_coroutinetask.spawn]"
+category = "mesh_carrier"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
+symbol = "HostMesh._spawn_nonblocking[PythonTask.from_coroutine(task()).spawn]"
+operation = "mesh_storage_spawn"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "ms.host_mesh.HostMesh.with_python_executable[PythonTask.from_coroutinetask.spawn]"
+category = "mesh_carrier"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
+symbol = "HostMesh.with_python_executable[PythonTask.from_coroutine(task()).spawn]"
+operation = "mesh_storage_spawn"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "ms.proc_mesh.ProcMesh._new_with_shape[PythonTask.from_coroutinetask.spawn]"
+category = "mesh_carrier"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
+symbol = "ProcMesh._new_with_shape[PythonTask.from_coroutine(task()).spawn]"
+operation = "mesh_storage_spawn"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "ms.proc_mesh.ProcMesh.from_host_mesh[PythonTask.from_coroutinetaskpm, hy_proc_mesh, setup_actor, host_mesh.stream_logs.spawn]"
+category = "mesh_carrier"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
+symbol = "ProcMesh.from_host_mesh[PythonTask.from_coroutine(task(pm, hy_proc_mesh, setup_actor, host_mesh.stream_logs)).spawn]"
+operation = "mesh_storage_spawn"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "hs.actor_mesh._init_client_context[is_tokio_thread]"
+category = "helper_residue"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
+symbol = "_init_client_context[is_tokio_thread]"
+operation = "py_is_tokio_thread"
+scope = "production"
+state = "legacy"
+transition = "6.1"
+
+[[site]]
+id = "hs.future.Future.__await__[is_tokio_thread]"
+category = "helper_residue"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/future.py"
+symbol = "Future.__await__[is_tokio_thread]"
+operation = "py_is_tokio_thread"
+scope = "production"
+state = "legacy"
+transition = "6.1"
+
+[[site]]
+id = "hs.future.Future.get[is_tokio_thread]"
+category = "helper_residue"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/future.py"
+symbol = "Future.get[is_tokio_thread]"
+operation = "py_is_tokio_thread"
+scope = "production"
+state = "legacy"
+transition = "6.1"
+
+[[site]]
+id = "ms.host_mesh.HostMesh.__reduce_ex__[reserve_mesh_referenceself._hy_host_mesh]"
+category = "mesh_carrier"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
+symbol = "HostMesh.__reduce_ex__[reserve_mesh_reference(self._hy_host_mesh)]"
+operation = "py_mesh_reserve"
+scope = "production"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "ms.proc_mesh.ProcMesh.__reduce_ex__[reserve_mesh_referenceself._proc_mesh]"
+category = "mesh_carrier"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
+symbol = "ProcMesh.__reduce_ex__[reserve_mesh_reference(self._proc_mesh)]"
+operation = "py_mesh_reserve"
+scope = "production"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "np.actor.DroppingPort.resolve_and_send"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor.rs"
+symbol = "DroppingPort::resolve_and_send"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from DroppingPort::resolve_and_send"
+consumer = "_Actor.handle, through its isinstance(response, PythonTask) branch"
+driver = "awaited on the actor loop by _Actor.handle"
+start_point = "already complete at construction"
+abandonment = "possible; _Actor.handle may return before awaiting the branch"
+eager_effect = "only wraps a ready value"
+drop_behavior = "no effect; the send is a no-op by construction"
+unobserved_error = "none; the future resolves to Ok(())"
+disposition = "replace with a direct value"
+semantic_class = "ready_no_op_wrapper"
+oracle = "test_python_actors response-port coverage"
+
+[[site]]
+id = "np.actor.LocalPort.resolve_and_send"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor.rs"
+symbol = "LocalPort::resolve_and_send"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from LocalPort::resolve_and_send"
+consumer = "_Actor.handle, through its isinstance(response, PythonTask) branch"
+driver = "awaited on the actor loop by _Actor.handle"
+start_point = "already complete at construction"
+abandonment = "possible; _Actor.handle may return before awaiting the branch"
+eager_effect = "only wraps a ready value"
+drop_behavior = "no effect; port.send already happened synchronously"
+unobserved_error = "none; the future resolves to Ok(())"
+disposition = "replace with a direct value"
+semantic_class = "ready_no_op_wrapper"
+oracle = "test_python_actors response-port coverage"
+
+[[site]]
+id = "np.actor_mesh.ActorMeshRef_as_ActorMeshProtocol.name"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "<ActorMeshRef<PythonActor> as ActorMeshProtocol>::name"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from <ActorMeshRef<PythonActor> as ActorMeshProtocol>::name"
+consumer = "ActorMesh._name via Future._from_coro"
+driver = "awaited by the Python ActorMesh._name coroutine"
+start_point = "already complete; the name is read from the mesh ref before the future is built"
+abandonment = "possible; a caller may drop the returned task"
+eager_effect = "only wraps a ready value"
+drop_behavior = "no effect; the name was already computed"
+unobserved_error = "none"
+disposition = "replace with a direct value"
+semantic_class = "ready_no_op_wrapper"
+oracle = "actor mesh naming coverage"
+
+[[site]]
+id = "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.__reduce__"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "<AsyncActorMesh as ActorMeshProtocol>::__reduce__"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::__reduce__"
+consumer = "reserve_mesh_reference_if_active, or Shared.block_on named in the payload"
+driver = "spawn_abortable onto the shared tokio runtime, immediately after construction"
+start_point = "eager; spawn_abortable drives it as soon as __reduce__ returns"
+abandonment = "possible; the pickler may drop the reduction observer before it resolves"
+eager_effect = "observes already-running work"
+drop_behavior = "aborts the transient waiter only; new_queue drives root initialization independently, and a sliced derived Shared remains re-observable rather than cancelled"
+unobserved_error = "send_result logs an unobserved error"
+disposition = "require a binding-specific design"
+semantic_class = "abortable_observer"
+oracle = "root and sliced reduction abandonment (6.0c items 3 and 4)"
+
+[[site]]
+id = "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.initialized"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "<AsyncActorMesh as ActorMeshProtocol>::initialized"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::initialized"
+consumer = "ActorMesh.initialized via Future._from_coro"
+driver = "awaits a clone of the shared mesh future; for a root, new_queue drives that clone independently, while a slice from new_with_region has a derived Shared with no independent driver"
+start_point = "the root is already running under its queue driver; a sliced derived Shared is driven only by whoever polls it"
+abandonment = "possible; root initialization continues, and a dropped slice observer leaves the derived Shared re-observable"
+eager_effect = "observes already-running work"
+drop_behavior = "abandons this observer only; it never cancels root initialization, and a slice stays re-observable"
+unobserved_error = "surfaced on the next observation of the shared future"
+disposition = "preserve timing"
+semantic_class = "already_started_lazy_observer"
+oracle = "root and sliced readiness abandonment (6.0c items 3 and 4)"
+
+[[site]]
+id = "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.name"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "<AsyncActorMesh as ActorMeshProtocol>::name"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::name"
+consumer = "ActorMesh._name via Future._from_coro"
+driver = "the per-mesh queue task runs the work; the returned task only reads a oneshot rx"
+start_point = "already started; push() enqueues the work before the observer is returned, so the returned task is a lazy observer of an operation already in flight"
+abandonment = "possible and currently fatal; the observer may be dropped while the queue task runs"
+eager_effect = "observes already-running work"
+drop_behavior = "dropping rx makes tx.send fail and the queue task panics with 'oneshot failed'"
+unobserved_error = "the queue driver panics rather than reporting"
+disposition = "require a binding-specific design"
+semantic_class = "already_started_lazy_observer"
+oracle = "queued observer abandonment (6.0c item 8)"
+
+[[site]]
+id = "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.stop"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "<AsyncActorMesh as ActorMeshProtocol>::stop"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::stop"
+consumer = "ActorMesh.stop via Future._from_coro"
+driver = "the per-mesh queue task runs the work; the returned task only reads a oneshot rx"
+start_point = "already started; push() enqueues the work before the observer is returned, so the returned task is a lazy observer of an operation already in flight"
+abandonment = "possible and currently fatal; the observer may be dropped while the queue task runs"
+eager_effect = "observes already-running work"
+drop_behavior = "dropping rx makes tx.send fail and the queue task panics with 'oneshot failed'"
+unobserved_error = "the queue driver panics rather than reporting"
+disposition = "require a binding-specific design"
+semantic_class = "already_started_lazy_observer"
+oracle = "queued observer abandonment (6.0c item 8)"
+
+[[site]]
+id = "np.actor_mesh.PythonActorMeshImpl_as_ActorMeshProtocol.name"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "<PythonActorMeshImpl as ActorMeshProtocol>::name"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from <PythonActorMeshImpl as ActorMeshProtocol>::name"
+consumer = "ActorMesh._name via Future._from_coro"
+driver = "awaited by the Python ActorMesh._name coroutine"
+start_point = "already complete; the name is read from the mesh ref before the future is built"
+abandonment = "possible; a caller may drop the returned task"
+eager_effect = "only wraps a ready value"
+drop_behavior = "no effect; the name was already computed"
+unobserved_error = "none"
+disposition = "replace with a direct value"
+semantic_class = "ready_no_op_wrapper"
+oracle = "actor mesh naming coverage"
+
+[[site]]
+id = "np.actor_mesh.PythonActorMeshImpl_as_ActorMeshProtocol.stop"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "<PythonActorMeshImpl as ActorMeshProtocol>::stop"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from <PythonActorMeshImpl as ActorMeshProtocol>::stop"
+consumer = "ActorMesh.stop via Future._from_coro"
+driver = "awaited by the Python ActorMesh.stop coroutine"
+start_point = "lazy; the boxed future is not polled until the returned task is driven"
+abandonment = "possible; a caller may drop the returned task"
+eager_effect = "starts a side effect"
+drop_behavior = "the mesh is never stopped"
+unobserved_error = "surfaced on observation"
+disposition = "intentionally become eager"
+semantic_class = "deferred_side_effect"
+oracle = "actor mesh stop coverage"
+
+[[site]]
+id = "np.actor_mesh.initialized"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "ActorMeshProtocol::initialized"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from initialized"
+consumer = "ActorMesh.initialized via Future._from_coro"
+driver = "awaited by the Python ActorMesh.initialized coroutine"
+start_point = "already complete; the trait default resolves to None without work"
+abandonment = "possible; a caller may drop the returned task"
+eager_effect = "only wraps a ready value"
+drop_behavior = "no effect; there is no underlying operation"
+unobserved_error = "none; resolves to Ok(None)"
+disposition = "replace with a direct value"
+semantic_class = "ready_no_op_wrapper"
+oracle = "actor mesh readiness coverage"
+
+[[site]]
+id = "np.bootstrap.attach_to_workers"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/bootstrap.rs"
+symbol = "attach_to_workers"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from attach_to_workers"
+consumer = "HostMesh construction, through the bootstrap _as_python_task adapter"
+driver = "awaited inside the host mesh setup coroutine"
+start_point = "lazy; the boxed future is not polled until the returned task is driven"
+abandonment = "possible; the adapter's task may be dropped before it is driven"
+eager_effect = "starts a side effect"
+drop_behavior = "no worker attach is performed"
+unobserved_error = "surfaced on observation"
+disposition = "intentionally become eager"
+semantic_class = "deferred_side_effect"
+oracle = "bootstrap attach-to-workers coverage"
+
+[[site]]
+id = "np.bootstrap.run_worker_loop_forever"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/bootstrap.rs"
+symbol = "run_worker_loop_forever"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from run_worker_loop_forever"
+consumer = "bootstrap_main, which blocks the worker's main thread on it"
+driver = "PythonTask.block_on on the calling thread"
+start_point = "lazy; the boxed future is not polled until the returned task is driven"
+abandonment = "not reachable in practice; the caller blocks immediately after construction"
+eager_effect = "starts a side effect"
+drop_behavior = "the worker server loop never starts"
+unobserved_error = "propagated synchronously out of block_on"
+disposition = "replace with a direct blocking binding"
+semantic_class = "deferred_side_effect"
+oracle = "bootstrap worker-loop coverage"
+
+[[site]]
+id = "np.context.PyInstance.stop_and_wait"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/context.rs"
+symbol = "PyInstance::stop_and_wait"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from PyInstance::stop_and_wait"
+consumer = "shutdown_context's no-host fallback"
+driver = "awaited inside _shutdown_sequence"
+start_point = "lazy; the boxed future is not polled until the returned task is driven"
+abandonment = "possible; reachable only when the shutdown coroutine itself is abandoned"
+eager_effect = "starts a side effect"
+drop_behavior = "the root client instance is never stopped"
+unobserved_error = "surfaced on observation"
+disposition = "intentionally become eager"
+semantic_class = "deferred_side_effect"
+oracle = "lifecycle edge behavior (6.0c item 7)"
+
+[[site]]
+id = "np.host_mesh.PyHostMesh.shutdown"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
+symbol = "PyHostMesh::shutdown"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from PyHostMesh::shutdown"
+consumer = "HostMesh.shutdown, after flushing pending spawns"
+driver = "awaited inside the HostMesh.shutdown coroutine"
+start_point = "lazy; the boxed future is not polled until the returned task is driven"
+abandonment = "possible; reachable only when the shutdown coroutine is abandoned"
+eager_effect = "starts a side effect"
+drop_behavior = "the host mesh is never shut down"
+unobserved_error = "surfaced on observation"
+disposition = "require a binding-specific design"
+semantic_class = "deferred_side_effect"
+oracle = "immediate-shutdown and drain coverage"
+
+[[site]]
+id = "np.host_mesh.PyHostMesh.spawn_nonblocking"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
+symbol = "PyHostMesh::spawn_nonblocking"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from PyHostMesh::spawn_nonblocking"
+consumer = "HostMesh._spawn_nonblocking"
+driver = "driven by PythonTask.from_coroutine(task()).spawn() on the Python side"
+start_point = "lazy; the boxed future is not polled until the returned task is driven"
+abandonment = "possible; the storage Shared may be built and never observed"
+eager_effect = "starts a side effect"
+drop_behavior = "no proc mesh is spawned"
+unobserved_error = "send_result logs an unobserved error once spawned"
+disposition = "intentionally become eager"
+semantic_class = "deferred_side_effect"
+oracle = "proc mesh setup coverage"
+
+[[site]]
+id = "np.host_mesh.PyHostMesh.stop"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
+symbol = "PyHostMesh::stop"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from PyHostMesh::stop"
+consumer = "HostMesh.stop, after flushing pending spawns"
+driver = "awaited inside the HostMesh.stop coroutine"
+start_point = "lazy; the boxed future is not polled until the returned task is driven"
+abandonment = "possible; reachable only when the stop coroutine is abandoned"
+eager_effect = "starts a side effect"
+drop_behavior = "the host mesh is never stopped"
+unobserved_error = "surfaced on observation"
+disposition = "intentionally become eager"
+semantic_class = "deferred_side_effect"
+oracle = "stop idempotence coverage"
+
+[[site]]
+id = "np.host_mesh._spawn_admin"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
+symbol = "_spawn_admin"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from _spawn_admin"
+consumer = "the Python _spawn_admin coroutine, which then sets MONARCH_ADMIN_URL"
+driver = "awaited inside the Python _spawn_admin coroutine"
+start_point = "lazy; the boxed future is not polled until the returned task is driven"
+abandonment = "possible; the admin coroutine may be abandoned"
+eager_effect = "starts a side effect"
+drop_behavior = "no admin mesh is spawned and the environment variable is not set"
+unobserved_error = "surfaced on observation"
+disposition = "intentionally become eager"
+semantic_class = "deferred_side_effect"
+oracle = "admin spawn coverage"
+
+[[site]]
+id = "np.host_mesh.bootstrap_host"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
+symbol = "bootstrap_host"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from bootstrap_host"
+consumer = "host mesh construction"
+driver = "awaited inside the host mesh setup coroutine"
+start_point = "lazy; the boxed future is not polled until the returned task is driven"
+abandonment = "possible; the setup coroutine may be abandoned"
+eager_effect = "starts a side effect"
+drop_behavior = "no host is bootstrapped"
+unobserved_error = "surfaced on observation"
+disposition = "intentionally become eager"
+semantic_class = "deferred_side_effect"
+oracle = "host mesh setup coverage"
+
+[[site]]
+id = "np.host_mesh.shutdown_local_host_mesh"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
+symbol = "shutdown_local_host_mesh"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from shutdown_local_host_mesh"
+consumer = "_shutdown_sequence, as the local-host path"
+driver = "awaited inside _shutdown_sequence"
+start_point = "lazy; the boxed future is not polled until the returned task is driven"
+abandonment = "possible; reachable only when the shutdown coroutine is abandoned"
+eager_effect = "starts a side effect"
+drop_behavior = "the local host mesh is never shut down and logs are not flushed"
+unobserved_error = "surfaced on observation"
+disposition = "require a binding-specific design"
+semantic_class = "deferred_side_effect"
+oracle = "global shutdown sequence coverage"
+
+[[site]]
+id = "np.logging.LoggingMeshClient.flush"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/logging.rs"
+symbol = "LoggingMeshClient::flush"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from LoggingMeshClient::flush"
+consumer = "ProcMesh.stop and the logging manager's tokio flush"
+driver = "awaited during teardown"
+start_point = "lazy; the boxed future is not polled until the returned task is driven"
+abandonment = "possible; teardown may abandon it"
+eager_effect = "starts a side effect"
+drop_behavior = "the flush never runs and buffered logs are lost"
+unobserved_error = "currently suppressed rather than reported"
+disposition = "preserve timing"
+semantic_class = "deferred_side_effect"
+oracle = "logging flush ordering coverage"
+
+[[site]]
+id = "np.logging.LoggingMeshClient.spawn"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/logging.rs"
+symbol = "LoggingMeshClient::spawn"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from LoggingMeshClient::spawn"
+consumer = "proc mesh logging initialization"
+driver = "awaited during proc mesh setup"
+start_point = "lazy; the boxed future is not polled until the returned task is driven"
+abandonment = "possible; this is the known fast-bootstrap gap"
+eager_effect = "starts a side effect"
+drop_behavior = "the logging client is never created and early logs are lost"
+unobserved_error = "currently suppressed rather than reported"
+disposition = "preserve timing"
+semantic_class = "deferred_side_effect"
+oracle = "logging initialization and suppression coverage"
+
+[[site]]
+id = "np.pickle.PendingMessage.py_resolve"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
+symbol = "PendingMessage::py_resolve"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from PendingMessage::py_resolve"
+consumer = "Port.resolve_and_send, on the actor loop"
+driver = "awaited on the actor loop before the reply is sent"
+start_point = "self.take() consumes the PendingMessage synchronously at construction; only the slot fill in resolve() is deferred to the returned task"
+abandonment = "possible; the message has already been taken out of the PendingMessage, so the source cannot be reused"
+eager_effect = "starts a side effect"
+drop_behavior = "the taken message is lost: slots are never filled and no reply is sent"
+unobserved_error = "surfaced on observation"
+disposition = "preserve timing"
+semantic_class = "sync_partial_effect_lazy_tail"
+oracle = "PicklingState::resolve slot-order in-crate test (6.0c)"
+
+[[site]]
+id = "np.proc_launcher_probe.probe_exit_port_via_mesh"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/proc_launcher_probe.rs"
+symbol = "probe_exit_port_via_mesh"
+operation = "py_python_task_new"
+scope = "production_compiled_test_only"
+state = "legacy"
+transition = "6.2"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from probe_exit_port_via_mesh"
+consumer = "test_proc_launcher_probe"
+driver = "awaited by the probe's test caller"
+start_point = "lazy; the boxed future is not polled until the returned task is driven"
+abandonment = "possible; the probe task may be dropped"
+eager_effect = "starts a side effect"
+drop_behavior = "the probe never runs"
+unobserved_error = "surfaced on observation"
+disposition = "intentionally become eager"
+semantic_class = "deferred_side_effect"
+oracle = "test_proc_launcher_probe"
+
+[[site]]
+id = "np.proc_mesh.PyProcMesh.stop_nonblocking"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/proc_mesh.rs"
+symbol = "PyProcMesh::stop_nonblocking"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from PyProcMesh::stop_nonblocking"
+consumer = "ProcMesh.stop, after flushing pending actor spawns and logs"
+driver = "awaited inside the _stop_nonblocking coroutine"
+start_point = "lazy; the boxed future is not polled until the returned task is driven"
+abandonment = "possible; reachable only when the stop coroutine is abandoned"
+eager_effect = "starts a side effect"
+drop_behavior = "the proc mesh is never stopped and _stopped stays False"
+unobserved_error = "surfaced on observation"
+disposition = "intentionally become eager"
+semantic_class = "deferred_side_effect"
+oracle = "proc mesh stop idempotence coverage"
+
+[[site]]
+id = "np.lib.PyRdmaAction.submit"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_rdma/extension/lib.rs"
+symbol = "PyRdmaAction::submit"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from PyRdmaAction::submit"
+consumer = "RDMAAction.submit via Future._from_coro"
+driver = "awaited by the caller through the public Future"
+start_point = "gated on RDMA readiness, then lazy until driven"
+abandonment = "possible; a caller may drop the returned Future"
+eager_effect = "starts a side effect"
+drop_behavior = "the transfer is never submitted"
+unobserved_error = "surfaced on observation"
+disposition = "intentionally become eager"
+semantic_class = "deferred_side_effect"
+oracle = "test_rdma submit coverage"
+
+[[site]]
+id = "np.lib.PyRdmaBuffer.drop"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_rdma/extension/lib.rs"
+symbol = "PyRdmaBuffer::drop"
+operation = "py_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from PyRdmaBuffer::drop"
+consumer = "RDMABuffer.drop via Future._from_coro"
+driver = "awaited by the caller through the public Future"
+start_point = "gated on RDMA readiness, then lazy until driven"
+abandonment = "possible; a caller may drop the returned Future"
+eager_effect = "starts a side effect"
+drop_behavior = "the buffer registration is never released"
+unobserved_error = "surfaced on observation"
+disposition = "intentionally become eager"
+semantic_class = "deferred_side_effect"
+oracle = "test_rdma drop coverage"
+
+[[site]]
+id = "im.actor_mesh.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/actor_mesh.pyi"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask"]
+
+[[site]]
+id = "im.bootstrap.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/bootstrap.pyi"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask"]
+
+[[site]]
+id = "im.context.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/context.pyi"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask"]
+
+[[site]]
+id = "im.endpoint.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/endpoint.pyi"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask"]
+
+[[site]]
+id = "im.host_mesh.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/host_mesh.pyi"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask"]
+
+[[site]]
+id = "im.logging.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/logging.pyi"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask"]
+
+[[site]]
+id = "im.mailbox.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/mailbox.pyi"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask"]
+
+[[site]]
+id = "im.pickle.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/pickle.pyi"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+members = ["Shared"]
+
+[[site]]
+id = "im.proc_launcher_probe.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/proc_launcher_probe.pyi"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask"]
+
+[[site]]
+id = "im.proc_mesh.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/proc_mesh.pyi"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask", "Shared"]
+
+[[site]]
+id = "im.supervision.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/supervision.pyi"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+members = ["Shared"]
+
+[[site]]
+id = "im.rdma.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_rust_bindings/rdma.pyi"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "stub"
+state = "legacy"
+transition = "6.8"
+members = ["Handle", "PythonTask"]
+
+[[site]]
+id = "im.actor_mesh.module_2"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+members = ["PythonTask", "WouldBlockRuntime", "is_tokio_thread"]
+
+[[site]]
+id = "im.bootstrap.module_2"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/bootstrap.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+members = ["PythonTask"]
+
+[[site]]
+id = "im.future.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/future.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "production"
+state = "legacy"
+transition = "6.7"
+members = ["Handle", "PythonTask", "WouldBlockRuntime", "is_tokio_thread"]
+
+[[site]]
+id = "im.host_mesh.module_2"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+members = ["PythonTask", "Shared"]
+
+[[site]]
+id = "im.logging.module_2"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/logging.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+members = ["PythonTask"]
+
+[[site]]
+id = "im.proc_mesh.module_2"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+members = ["PythonTask", "Shared"]
+
+[[site]]
+id = "im.rdma.module_2"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/rdma/rdma.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+members = ["Handle"]
+
+[[site]]
+id = "im.test_actor_mesh.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/tests/_monarch/test_actor_mesh.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "test"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask", "Shared"]
+
+[[site]]
+id = "im.test_hyperactor.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/tests/_monarch/test_hyperactor.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "test"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask", "Shared"]
+
+[[site]]
+id = "im.test_logging.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/tests/_monarch/test_logging.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "test"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask", "Shared"]
+
+[[site]]
+id = "im.test_mailbox.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/tests/_monarch/test_mailbox.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "test"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask", "Shared"]
+
+[[site]]
+id = "im.test_actor_driver_characterization.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/tests/test_actor_driver_characterization.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "test"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask"]
+
+[[site]]
+id = "im.test_client_context_guard.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/tests/test_client_context_guard.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "test"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask", "WouldBlockRuntime", "is_tokio_thread"]
+
+[[site]]
+id = "im.test_future_characterization.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/tests/test_future_characterization.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "test"
+state = "legacy"
+transition = "6.8"
+members = ["Handle", "PythonTask", "WouldBlockRuntime", "is_tokio_thread"]
+
+[[site]]
+id = "im.test_host_mesh.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/tests/test_host_mesh.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "test"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask"]
+
+[[site]]
+id = "im.test_proc_launcher_probe.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/tests/test_proc_launcher_probe.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "test"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask"]
+
+[[site]]
+id = "im.test_proc_mesh.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/tests/test_proc_mesh.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "test"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask", "Shared"]
+
+[[site]]
+id = "im.test_python_actors.module"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/tests/test_python_actors.py"
+symbol = "<module>"
+operation = "pytokio_import"
+scope = "test"
+state = "legacy"
+transition = "6.8"
+members = ["PythonTask", "Shared"]
+
+[[site]]
+id = "im.test_rdma_initialization.test_ensure_init_observes_its_supplied_shared"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/tests/test_rdma_initialization.py"
+symbol = "test_ensure_init_observes_its_supplied_shared"
+operation = "pytokio_import"
+scope = "test"
+state = "legacy"
+transition = "6.8"
+members = ["Shared"]
+
+[[site]]
+id = "im.test_rdma_initialization.test_ensure_init_returns_handle_that_resolves_over_tcp"
+category = "module_import"
+language = "python"
+path = "fbcode/monarch/python/tests/test_rdma_initialization.py"
+symbol = "test_ensure_init_returns_handle_that_resolves_over_tcp"
+operation = "pytokio_import"
+scope = "test"
+state = "legacy"
+transition = "6.8"
+members = ["Handle"]
+
+[[site]]
+id = "mr.attrs.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/hyperactor_config/src/attrs.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "mr.query_engine.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_distributed_telemetry/src/query_engine.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.4c"
+
+[[site]]
+id = "mr.lib.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_extension/src/lib.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "mr.readonly_fuse.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_extension/src/readonly_fuse.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.4c"
+
+[[site]]
+id = "mr.actor.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.2"
+
+[[site]]
+id = "mr.actor_mesh.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "mr.bootstrap.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/bootstrap.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "mr.context.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/context.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+
+[[site]]
+id = "mr.endpoint.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/endpoint.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.5a"
+
+[[site]]
+id = "mr.handle.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/handle.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.1"
+
+[[site]]
+id = "mr.host_mesh.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "mr.lib.file_2"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/lib.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.8"
+
+[[site]]
+id = "mr.logging.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/logging.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+
+[[site]]
+id = "mr.mailbox.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/mailbox.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.5b"
+
+[[site]]
+id = "mr.pickle.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "mr.proc_launcher_probe.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/proc_launcher_probe.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production_compiled_test_only"
+state = "legacy"
+transition = "6.2"
+
+[[site]]
+id = "mr.proc_mesh.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/proc_mesh.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "mr.lib.file_3"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_rdma/extension/lib.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "np.actor.PythonActor.handle_direct"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor.rs"
+symbol = "PythonActor::handle_direct"
+operation = "raw_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "D116091231-or-6.2-direct"
+constructor = "raw PythonTask"
+return_surface = "raw PythonTask returned from PythonActor::handle_direct"
+consumer = "handle_async_endpoint_panic, which immediately calls task.take()"
+driver = "tokio::spawn in the same expression that constructs it"
+start_point = "eager; the pyo3-async-runtimes future is already scheduled on the actor loop"
+abandonment = "none; construction and spawn are one expression, so no caller can drop it"
+eager_effect = "observes already-running work"
+drop_behavior = "not reachable; the task is never handed to a caller"
+unobserved_error = "a panic reaches the actor as Signal::Kill via the side channel"
+disposition = "replace with the bridge future directly"
+semantic_class = "already_started_lazy_observer"
+oracle = "test_actor_driver_characterization"
+
+[[site]]
+id = "np.endpoint.PyValueStream.__next__"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/endpoint.rs"
+symbol = "PyValueStream::__next__"
+operation = "raw_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.5a"
+constructor = "raw PythonTask"
+return_surface = "raw PythonTask returned from PyValueStream::__next__"
+consumer = "the per-element Future yielded by ValueStream iteration"
+driver = "awaited by the caller, one element at a time"
+start_point = "lazy; the raw task is not polled at construction, and the receiver claim begins only when it is driven"
+abandonment = "possible; a yielded element Future may be discarded"
+eager_effect = "claims a receive"
+drop_behavior = "the reply is left for the next observer"
+unobserved_error = "surfaced on observation"
+disposition = "require a binding-specific design"
+semantic_class = "deferred_receive_claim"
+oracle = "ValueStream reverse observation (6.0c item 2)"
+
+[[site]]
+id = "np.endpoint.call"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/endpoint.rs"
+symbol = "Endpoint::call"
+operation = "raw_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.5a"
+constructor = "raw PythonTask"
+return_surface = "raw PythonTask returned from call"
+consumer = "the public Future built by make_future for call"
+driver = "awaited by the caller through Future.get or as_asyncio"
+start_point = "the cast already happened; only ValueMesh accumulation is deferred"
+abandonment = "possible; a caller may drop the returned Future"
+eager_effect = "observes already-running work"
+drop_behavior = "accumulation is abandoned"
+unobserved_error = "surfaced on observation"
+disposition = "preserve timing"
+semantic_class = "already_started_lazy_observer"
+oracle = "collect_valuemesh refs and lazy-decode coverage"
+
+[[site]]
+id = "np.endpoint.value_collector"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/endpoint.rs"
+symbol = "value_collector"
+operation = "raw_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.5a"
+constructor = "raw PythonTask"
+return_surface = "raw PythonTask returned from value_collector"
+consumer = "the public Future built by make_future for call_one and choose"
+driver = "awaited by the caller through Future.get or as_asyncio"
+start_point = "the request was already cast; only reply collection is deferred"
+abandonment = "possible; a caller may drop the returned Future"
+eager_effect = "observes already-running work"
+drop_behavior = "collection is abandoned and the reply is discarded"
+unobserved_error = "surfaced on observation"
+disposition = "preserve timing"
+semantic_class = "already_started_lazy_observer"
+oracle = "endpoint reply coverage"
+
+[[site]]
+id = "np.mailbox.PythonOncePortReceiver.recv_task"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/mailbox.rs"
+symbol = "PythonOncePortReceiver::recv_task"
+operation = "raw_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.5b"
+constructor = "raw PythonTask"
+return_surface = "raw PythonTask returned from PythonOncePortReceiver::recv_task"
+consumer = "PortReceiver._recv for a once port"
+driver = "awaited by the PortReceiver.recv coroutine"
+start_point = "the once receiver is taken synchronously at construction; only the await is deferred"
+abandonment = "possible, and the receiver is already consumed"
+eager_effect = "claims a receive at construction"
+drop_behavior = "the reply is lost; the receiver cannot be reused"
+unobserved_error = "surfaced on observation"
+disposition = "require a binding-specific design"
+semantic_class = "sync_partial_effect_lazy_tail"
+oracle = "mailbox ownership, once receiver (6.0c item 2)"
+
+[[site]]
+id = "np.mailbox.PythonPortReceiver.recv_task"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/mailbox.rs"
+symbol = "PythonPortReceiver::recv_task"
+operation = "raw_python_task_new"
+scope = "production"
+state = "legacy"
+transition = "6.5b"
+constructor = "raw PythonTask"
+return_surface = "raw PythonTask returned from PythonPortReceiver::recv_task"
+consumer = "PortReceiver._recv, which decodes the message"
+driver = "awaited by the PortReceiver.recv coroutine"
+start_point = "lazy; the receiver Arc is cloned but the lock and recv happen only when driven"
+abandonment = "possible; discarding the task claims nothing"
+eager_effect = "claims a receive"
+drop_behavior = "no message is consumed; the next observer gets it"
+unobserved_error = "surfaced on observation"
+disposition = "require a binding-specific design"
+semantic_class = "deferred_receive_claim"
+oracle = "mailbox ownership, regular receiver (6.0c item 2)"
+
+[[site]]
+id = "ms.pickle.reserve_mesh_reference"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
+symbol = "reserve_mesh_reference"
+operation = "reserve_binding"
+scope = "production"
+state = "legacy"
+transition = "6.3a"
+
+[[site]]
+id = "rf.endpoint.PyValueStream.__next__"
+category = "rust_future_factory"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/endpoint.rs"
+symbol = "PyValueStream::__next__"
+operation = "rust_from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.5a"
+
+[[site]]
+id = "rf.endpoint.wrap_in_future"
+category = "rust_future_factory"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/endpoint.rs"
+symbol = "wrap_in_future"
+operation = "rust_from_coro"
+scope = "production"
+state = "legacy"
+transition = "6.5a"
+
+[[site]]
+id = "ot.query_engine.DistributedExec_as_ExecutionPlan.execute"
+category = "ownership_transfer"
+language = "rust"
+path = "fbcode/monarch/monarch_distributed_telemetry/src/query_engine.rs"
+symbol = "<DistributedExec as ExecutionPlan>::execute"
+operation = "rust_take_inner"
+scope = "production"
+state = "legacy"
+transition = "6.4c"
+
+[[site]]
+id = "ot.readonly_fuse.take_actor_future"
+category = "ownership_transfer"
+language = "rust"
+path = "fbcode/monarch/monarch_extension/src/readonly_fuse.rs"
+symbol = "take_actor_future"
+operation = "rust_take_inner"
+scope = "production"
+state = "legacy"
+transition = "6.4c"
+
+[[site]]
+id = "ms.host_mesh.HostMesh._from_initialized_hy_host_mesh[Shared.from_valuehy_host_mesh]"
+category = "mesh_carrier"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
+symbol = "HostMesh._from_initialized_hy_host_mesh[Shared.from_value(hy_host_mesh)]"
+operation = "shared_from_value"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "ms.host_mesh.HostMesh._new_with_shape[Shared.from_valuehm.slicedshape.region]"
+category = "mesh_carrier"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
+symbol = "HostMesh._new_with_shape[Shared.from_value(hm.sliced(shape.region))]"
+operation = "shared_from_value"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "ms.proc_mesh.ProcMesh._from_initialized_hy_proc_mesh[Shared.from_valuehy_proc_mesh]"
+category = "mesh_carrier"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
+symbol = "ProcMesh._from_initialized_hy_proc_mesh[Shared.from_value(hy_proc_mesh)]"
+operation = "shared_from_value"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "ms.proc_mesh.ProcMesh._new_with_shape[Shared.from_valuepm.slicedshape.region]"
+category = "mesh_carrier"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
+symbol = "ProcMesh._new_with_shape[Shared.from_value(pm.sliced(shape.region))]"
+operation = "shared_from_value"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "ms.actor_mesh.block_on"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "block_on"
+operation = "shared_reconstruction"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "ms.pickle.from_value"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
+symbol = "from_value"
+operation = "shared_reconstruction"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "ms.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.__reduce__"
+category = "mesh_carrier"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "<AsyncActorMesh as ActorMeshProtocol>::__reduce__"
+operation = "spawn_abortable"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "ot.actor_mesh.Accumulator.accumulate.impl[x._take_inner]"
+category = "ownership_transfer"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
+symbol = "Accumulator.accumulate.impl[x._take_inner]"
+operation = "take_inner"
+scope = "production"
+state = "legacy"
+transition = "6.4a"
+
+[[site]]
+id = "ot.bootstrap._as_python_task[s._take_inner]"
+category = "ownership_transfer"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/bootstrap.py"
+symbol = "_as_python_task[s._take_inner]"
+operation = "take_inner"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "ot.proc_mesh.ProcMesh._flush_pending_actor_spawns[mesh.initialized._take_inner]"
+category = "ownership_transfer"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
+symbol = "ProcMesh._flush_pending_actor_spawns[mesh.initialized._take_inner]"
+operation = "take_inner"
+scope = "production"
+state = "legacy"
+transition = "6.3b"
+
+[[site]]
+id = "ot.proc_mesh.ProcMesh.from_host_mesh.task[setup_actor.setup.call._take_inner]"
+category = "ownership_transfer"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
+symbol = "ProcMesh.from_host_mesh.task[setup_actor.setup.call()._take_inner]"
+operation = "take_inner"
+scope = "production"
+state = "legacy"
+transition = "6.3c"
+
+[[site]]
+id = "ot.job.exec_command._impl[bash_actors.run.callscript, output_dir=output_dir._take_inner]"
+category = "ownership_transfer"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/job/job.py"
+symbol = "exec_command._impl[bash_actors.run.call(script, output_dir=output_dir)._take_inner]"
+operation = "take_inner"
+scope = "production"
+state = "legacy"
+transition = "6.4b"
+
+[[site]]
+id = "ot.job.exec_command._impl[bash_actors.run_python.callcmd, env=env, workdir=workdir, client_cwd=client_cwd, output_dir=output_dir._take_inner]"
+category = "ownership_transfer"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/job/job.py"
+symbol = "exec_command._impl[bash_actors.run_python.call(cmd, env=env, workdir=workdir, client_cwd=client_cwd, output_dir=output_dir)._take_inner]"
+operation = "take_inner"
+scope = "production"
+state = "legacy"
+transition = "6.4b"
+
+[[site]]
+id = "ot.job.exec_command._impl[procs.stop._take_inner]"
+category = "ownership_transfer"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/job/job.py"
+symbol = "exec_command._impl[procs.stop()._take_inner]"
+operation = "take_inner"
+scope = "production"
+state = "legacy"
+transition = "6.4b"
+
+[[site]]
+id = "ret.future._Taken"
+category = "ownership_surface"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/future.py"
+symbol = "_Taken"
+operation = "take_inner_retire"
+scope = "production"
+state = "legacy"
+transition = "6.6"
+
+[[site]]
+id = "ret.future._take_inner"
+category = "ownership_surface"
+language = "python"
+path = "fbcode/monarch/python/monarch/_src/actor/future.py"
+symbol = "_take_inner"
+operation = "take_inner_retire"
+scope = "production"
+state = "legacy"
+transition = "6.6"
+
+[[site]]
+id = "hd.handle.WouldBlockRuntime"
+category = "helper_definition"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/handle.rs"
+symbol = "WouldBlockRuntime"
+operation = "would_block_surface"
+scope = "production"
+state = "legacy"
+transition = "6.1"
+
+[[site]]
+id = "hd.pytokio.WouldBlockRuntime"
+category = "helper_definition"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/pytokio.rs"
+symbol = "WouldBlockRuntime"
+operation = "would_block_surface"
+scope = "production"
+state = "legacy"
+transition = "6.1"
