@@ -1,12 +1,13 @@
 # Build system configuration - PEP 517/518
 [build-system]
 # Note: torch is required at build time (not just runtime) because:
-#   1. setup.py needs to detect torch installation paths and C++11 ABI
-#   2. C++ extensions (monarch.common._C, gradient_generator) link against libtorch
+#   1. build_support.py detects torch installation paths and C++11 ABI
+#   2. embedded C++ modules link against libtorch
 #   3. Build-time torch detection determines whether to enable tensor_engine feature
 # The torch index is controlled by [tool.uv.sources] below (e.g., pytorch-cu132)
-requires = ["setuptools>=77", "setuptools-rust", "wheel", "numpy>=1.26", "torch"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.14,<2", "packaging>=24", "numpy>=1.26", "torch"]
+build-backend = "build_backend"
+backend-path = ["."]
 
 [project]
 name = "torchmonarch"
@@ -97,7 +98,8 @@ python-preference = "managed"  # Use uv-managed Python installations
 python-downloads = "automatic"  # Automatically download Python if needed
 cache-keys = [
     { file = "pyproject.toml" },
-    { file = "setup.py" },
+    { file = "build_backend.py" },
+    { file = "build_support.py" },
     # Note: we intentionally avoid "**/*.rs" because it matches generated
     # .rs files in target/release/build/, causing a full rebuild every time.
     { file = "*/src/**/*.rs" },
@@ -155,7 +157,8 @@ dev = [
     "pyright>=1.1",
     "torch>=2.9.1",
     "torchx-nightly",
-    "setuptools-rust",
+    "maturin>=1.14,<2",
+    "packaging>=24",
 ]
 
 [project.urls]
@@ -170,15 +173,23 @@ monarch = "monarch.tools.cli:main"
 monarch_bootstrap = "monarch._src.actor.bootstrap_main:invoke_main"
 monarch-dashboard = "monarch.monarch_dashboard.__main__:main"
 
-[tool.setuptools]
-packages = {find = {where = ["python"]}}
-
-[tool.setuptools.package-dir]
-"" = "python"
-
-[tool.setuptools.package-data]
-"monarch.monarch_dashboard" = ["frontend/build/**/*"]
-"monarch.tools" = ["SKILL.md"]
+[tool.maturin]
+manifest-path = "monarch_extension/Cargo.toml"
+python-source = "python"
+python-packages = ["monarch", "monarch_supervisor", "tests", "examples", "benches"]
+module-name = "monarch._rust_bindings"
+bindings = "pyo3"
+locked = true
+no-default-features = true
+compatibility = "off"
+use-base-python = true
+exclude = [
+    { path = "python/monarch/monarch_dashboard/frontend/**", format = "wheel" },
+]
+include = [
+    { path = "build_backend.py", format = "sdist" },
+    { path = "build_support.py", format = "sdist" },
+]
 
 [tool.pytest.ini_options]
 markers = [

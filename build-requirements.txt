@@ -1,5 +1,4 @@
 build
-setuptools>=77
-setuptools-rust
-wheel
+maturin>=1.14,<2
+packaging>=24
 numpy>=1.26

@@ -4665,6 +4665,7 @@ dependencies = [
  "bincode 2.0.1",
  "build_utils",
  "bytes",
+ "cc",
  "fuse3",
  "futures 0.3.34",
  "hyperactor",

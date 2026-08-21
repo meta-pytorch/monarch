@@ -47,11 +47,13 @@ wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [build-dependencies]
 build_utils = { version = "0.0.0", path = "../build_utils" }
+cc = "1.4.3"
 monarch_cpp_static_libs = { version = "0.0.0", path = "../monarch_cpp_static_libs", optional = true }
 
 [features]
 default = ["tensor_engine"]
 distributed_sql_telemetry = ["dep:monarch_distributed_telemetry", "dep:monarch_introspection_snapshot"]
+embedded-cpp = []
 extension-module = ["pyo3/extension-module"]
 rdma = ["dep:monarch_cpp_static_libs", "dep:monarch_rdma_extension"]
 tensor_engine = ["dep:monarch_messages", "dep:monarch_tensor_worker", "dep:torch-sys-cuda"]

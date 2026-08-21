@@ -40,8 +40,10 @@ jobs:
         pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
         pip install -r build-requirements.txt
 
+        python -m unittest discover -s build_tests -v
+
         # Build monarch (No tensor engine, CPU version)
-        USE_TENSOR_ENGINE=0 python -m build --wheel --no-isolation
+        MONARCH_REQUIRE_FRONTEND=1 USE_TENSOR_ENGINE=0 python -m build --wheel --no-isolation
 
         echo "=== sccache stats ==="
         sccache --show-stats || true

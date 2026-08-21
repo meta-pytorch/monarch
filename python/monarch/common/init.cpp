@@ -95,3 +95,26 @@ static struct PyModuleDef _C_module = {
 PyMODINIT_FUNC PyInit__C(void) {
   return PyModuleDef_Init(&_C_module);
 }
+
+extern "C" PyObject* monarch_register_common_C(void) {
+  PyObject* util = PyImport_ImportModule("importlib.util");
+  if (util == nullptr) {
+    return nullptr;
+  }
+  PyObject* spec =
+      PyObject_CallMethod(util, "spec_from_loader", "sO", "monarch.common._C", Py_None);
+  Py_DECREF(util);
+  if (spec == nullptr) {
+    return nullptr;
+  }
+  PyObject* module = PyModule_FromDefAndSpec(&_C_module, spec);
+  Py_DECREF(spec);
+  if (module == nullptr) {
+    return nullptr;
+  }
+  if (PyModule_ExecDef(module, &_C_module) < 0) {
+    Py_DECREF(module);
+    return nullptr;
+  }
+  return module;
+}
