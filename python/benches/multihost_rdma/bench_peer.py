@@ -45,7 +45,7 @@ import torch
 import xxhash
 from bench_stats import Sample
 from bench_topology import InitiatorPlan, Slot, SlotAllocation, SlotValues
-from monarch.actor import Actor, context, endpoint
+from monarch.actor import Actor, context, endpoint, Point
 from monarch.config import get_global_config
 from monarch.rdma import is_ibverbs_available, RDMAAction, RDMABuffer
 
@@ -61,11 +61,8 @@ class Peer(Actor):
 
     def __init__(self) -> None:
         # `Instance.rank` is where this proc sits in the mesh it was spawned
-        # into. A mesh over a single host carries no hosts dimension at all,
-        # which is the same thing as sitting at index zero of one.
-        rank = context().actor_instance.rank
-        host = rank["hosts"] if "hosts" in rank.extent.labels else 0
-        self.slot: Slot = Slot(host, rank["lanes"])
+        # into, which is what the driver addresses it by.
+        self.slot: Slot = slot_of(context().actor_instance.rank)
         # Byte tensors, because an RDMA op moves opaque bytes. A slot's outgoing
         # tensors live on the source device and its incoming ones on the
         # destination device.
@@ -212,6 +209,12 @@ class Peer(Actor):
 def _nothing() -> SlotValues[Any]:
     """A slot holding no tensors yet, or none at all."""
     return SlotValues(outgoing=(), incoming={})
+
+
+def slot_of(point: Point) -> Slot:
+    """Which slot the proc at ``point`` is."""
+    host = point["hosts"] if "hosts" in point.extent.labels else 0
+    return Slot(host, point["lanes"])
 
 
 def _ms(seconds: float) -> float:

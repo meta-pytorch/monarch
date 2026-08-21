@@ -49,12 +49,6 @@ DEVICE_VARIANTS: list[tuple[bool, bool]] = [
 DEVICE_IDS = ["cpu", "gpu", "cpu2gpu", "gpu2cpu"]
 
 
-def _slot_of(point) -> bt.Slot:
-    """Which slot a value in a cast's result came from."""
-    host = point["hosts"] if "hosts" in point.extent.labels else 0
-    return bt.Slot(host, point["lanes"])
-
-
 def _spawn(lanes: int = _LANES):
     procs = this_host().spawn_procs(per_host={"lanes": lanes})
     return procs.spawn("peer", bench_peer.Peer)
@@ -68,14 +62,14 @@ async def _drive(peers, topo, direction, *, source_on_gpu=False, dest_on_gpu=Fal
     results = await peers.setup.call(
         allocations, _PAYLOAD_BYTES, _SEED, source_on_gpu, dest_on_gpu
     )
-    buffers = {_slot_of(point): value[1] for point, value in results.items()}
+    buffers = {bench_peer.slot_of(point): value[1] for point, value in results.items()}
     await peers.wire.call(bt.plan_for(topo, direction, buffers, ops=_OPS))
     return results
 
 
 async def _compare(peers, topo):
     digests = {
-        _slot_of(point): value
+        bench_peer.slot_of(point): value
         for point, value in (
             await peers.digest.call(bench_peer.VERIFY_FULL, _PAYLOAD_BYTES)
         ).items()
@@ -161,7 +155,7 @@ async def test_a_proc_outside_the_topology_stays_idle() -> None:
     await _drive(peers, topo, bt.WRITE)
 
     samples = {
-        _slot_of(point): sample
+        bench_peer.slot_of(point): sample
         for point, sample in (await peers.execute_iteration.call()).items()
     }
     assert set(topo.slots()) < set(samples), "more procs than the topology uses"
