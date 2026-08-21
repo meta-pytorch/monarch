@@ -21,6 +21,17 @@ fn main() {
     if std::env::var("CARGO_FEATURE_EMBEDDED_CPP").is_ok() {
         build_embedded_cpp_modules();
     }
+    if std::env::var("CARGO_FEATURE_TUI_BIN").is_ok() {
+        stage_tui_binary();
+    }
+}
+
+fn stage_tui_binary() {
+    let binary = std::env::var("CARGO_BIN_FILE_MONARCH_TUI_hyperactor_mesh_admin_tui")
+        .or_else(|_| std::env::var("CARGO_BIN_FILE_MONARCH_TUI"))
+        .expect("Cargo did not provide the monarch-tui artifact dependency");
+    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("monarch-tui");
+    std::fs::copy(binary, output).expect("failed to stage monarch-tui");
 }
 
 fn build_embedded_cpp_modules() {

@@ -50,7 +50,7 @@ class BuildConfigTest(unittest.TestCase):
         self.assertFalse(selected.build_rdma)
         self.assertEqual(
             selected.cargo_features,
-            ("extension-module", "distributed_sql_telemetry"),
+            ("extension-module", "distributed_sql_telemetry", "tui-bin"),
         )
 
     def test_cpu_tensor_engine_embeds_cpp(self) -> None:
@@ -114,12 +114,16 @@ class ArtifactRewriteTest(unittest.TestCase):
                     "torchmonarch-0.0.0.dist-info/METADATA",
                     b"Metadata-Version: 2.4\nName: torchmonarch\nVersion: 0.0.0\n",
                 )
+                script_info = zipfile.ZipInfo(
+                    "torchmonarch-0.0.0.data/scripts/monarch-tui"
+                )
+                script_info.create_system = 3
+                script_info.external_attr = (stat.S_IFREG | 0o755) << 16
+                archive.writestr(script_info, b"native executable")
                 archive.writestr(
                     "torchmonarch-0.0.0.dist-info/RECORD",
                     b"torchmonarch-0.0.0.dist-info/RECORD,,\n",
                 )
-            tui = root / "monarch-tui"
-            tui.write_bytes(b"native executable")
             frontend = root / "frontend"
             frontend.mkdir()
             (frontend / "index.html").write_text("dashboard")
@@ -127,7 +131,6 @@ class ArtifactRewriteTest(unittest.TestCase):
             rewritten = build_backend._rewrite_wheel(
                 wheel,
                 version="1.2.3rc1",
-                tui=tui,
                 frontend=frontend,
             )
             self.assertEqual(
@@ -176,17 +179,27 @@ class ArtifactRewriteTest(unittest.TestCase):
                     info.size = len(data)
                     archive.addfile(info, io.BytesIO(data))
 
-            rewritten = build_backend._rewrite_sdist(source, "1.2.3rc1")
+            with mock.patch.object(
+                build_backend,
+                "_refresh_sdist_lock",
+                return_value=build_backend._patch_lock_version(
+                    files["torchmonarch-0.0.0/Cargo.lock"], "1.2.3-rc.1"
+                ),
+            ):
+                rewritten = build_backend._rewrite_sdist(source, "1.2.3rc1")
             self.assertEqual(rewritten.name, "torchmonarch-1.2.3rc1.tar.gz")
             with tarfile.open(rewritten, "r:gz") as archive:
                 pkg = archive.extractfile("torchmonarch-1.2.3rc1/PKG-INFO").read()
-                manifest = archive.extractfile(
+                manifest_info = archive.getmember(
                     "torchmonarch-1.2.3rc1/monarch_extension/Cargo.toml"
-                ).read()
-                lock = archive.extractfile("torchmonarch-1.2.3rc1/Cargo.lock").read()
+                )
+                manifest = archive.extractfile(manifest_info).read()
+                lock_info = archive.getmember("torchmonarch-1.2.3rc1/Cargo.lock")
+                lock = archive.extractfile(lock_info).read()
             self.assertIn(b"Version: 1.2.3rc1", pkg)
             self.assertIn(b'version = "1.2.3-rc.1"', manifest)
             self.assertIn(b'version = "1.2.3-rc.1"', lock)
+            self.assertGreater(lock_info.mtime, manifest_info.mtime)
 
     def test_environment_version_is_normalized(self) -> None:
         with mock.patch.dict(os.environ, {"MONARCH_VERSION": "1.2.3-rc1"}):

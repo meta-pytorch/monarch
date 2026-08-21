@@ -277,7 +277,7 @@ def select_build_config(
         assert rocm_home is not None
         build_env["ROCM_PATH"] = os.fspath(rocm_home)
 
-    features = ["extension-module", "distributed_sql_telemetry"]
+    features = ["extension-module", "distributed_sql_telemetry", "tui-bin"]
     if build_rdma:
         features.append("rdma")
     if build_tensor_engine:

@@ -4670,6 +4670,7 @@ dependencies = [
  "futures 0.3.34",
  "hyperactor",
  "hyperactor_mesh",
+ "hyperactor_mesh_admin_tui_lib",
  "hyperactor_telemetry",
  "libc",
  "monarch_cpp_static_libs",

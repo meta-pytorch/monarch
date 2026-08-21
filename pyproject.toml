@@ -187,8 +187,11 @@ exclude = [
     { path = "python/monarch/monarch_dashboard/frontend/**", format = "wheel" },
 ]
 include = [
+    { path = ".cargo/config.toml", format = "sdist" },
     { path = "build_backend.py", format = "sdist" },
     { path = "build_support.py", format = "sdist" },
+    { path = "monarch-tui", from = "out-dir", to = "torchmonarch-0.0.0.data/scripts" },
+    { path = "rust-toolchain", format = "sdist" },
 ]
 
 [tool.pytest.ini_options]

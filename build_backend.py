@@ -12,12 +12,10 @@ import base64
 import csv
 import hashlib
 import io
-import json
 import os
 import re
 import stat
 import subprocess
-import sys
 import tarfile
 import tempfile
 import zipfile
@@ -41,8 +39,6 @@ from build_support import (
 DIST_NAME = "torchmonarch"
 EXTENSION_MANIFEST = ROOT / "monarch_extension" / "Cargo.toml"
 LOCKFILE = ROOT / "Cargo.lock"
-TUI_MANIFEST = ROOT / "hyperactor_mesh_admin_tui" / "Cargo.toml"
-TUI_TARGET_NAME = "hyperactor_mesh_admin_tui"
 
 
 def _metadata_version(data: bytes) -> str | None:
@@ -172,62 +168,21 @@ def _cargo_option(args: Sequence[str], name: str) -> str | None:
     return None
 
 
-def _tui_target_dir() -> Path:
-    base = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target"))
-    return base / "monarch-tui"
-
-
-def _build_tui(config_settings: Mapping[str, object] | None) -> Path:
-    settings = merge_maturin_args(config_settings, [])
-    maturin_args = list(settings["maturin.build-args"])
-    command = [
-        "cargo",
-        "build",
-        "--locked",
-        "--release",
-        "--manifest-path",
-        os.fspath(TUI_MANIFEST),
-        "--target-dir",
-        os.fspath(_tui_target_dir()),
-        "--message-format=json-render-diagnostics",
-    ]
-    target = _cargo_option(maturin_args, "--target") or os.environ.get(
-        "CARGO_BUILD_TARGET"
-    )
+def _find_staged_tui(settings: Mapping[str, object]) -> Path:
+    args = list(settings["maturin.build-args"])
+    target_dir = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target"))
+    if not target_dir.is_absolute():
+        target_dir = ROOT / target_dir
+    target = _cargo_option(args, "--target") or os.environ.get("CARGO_BUILD_TARGET")
     if target:
-        command.extend(("--target", target))
-
-    print(f"Running `{' '.join(command)}`")
-    process = subprocess.Popen(
-        command,
-        cwd=ROOT,
-        stdout=subprocess.PIPE,
-        text=True,
+        target_dir /= target
+    profile = _cargo_option(args, "--profile") or "release"
+    candidates = list(
+        (target_dir / profile / "build").glob("monarch_extension-*/out/monarch-tui")
     )
-    executable: Path | None = None
-    assert process.stdout is not None
-    for line in process.stdout:
-        try:
-            message = json.loads(line)
-        except json.JSONDecodeError:
-            print(line, end="")
-            continue
-        rendered = message.get("message", {}).get("rendered")
-        if rendered:
-            print(rendered, end="", file=sys.stderr)
-        target_info = message.get("target", {})
-        if (
-            message.get("reason") == "compiler-artifact"
-            and target_info.get("name") == TUI_TARGET_NAME
-            and message.get("executable")
-        ):
-            executable = Path(message["executable"])
-    return_code = process.wait()
-    if return_code:
-        raise subprocess.CalledProcessError(return_code, command)
-    if executable is None or not executable.is_file():
-        raise RuntimeError("cargo did not report the monarch-tui executable")
-    return executable
+    if not candidates:
+        raise RuntimeError("Cargo did not stage the monarch-tui executable")
+    return max(candidates, key=lambda path: path.stat().st_mtime_ns)
 
 
 def _zip_info(name: str, mode: int) -> zipfile.ZipInfo:
@@ -247,7 +202,7 @@ def _rewrite_wheel(
     wheel_path: Path,
     *,
     version: str,
-    tui: Path,
+    tui: Path | None = None,
     frontend: Path | None,
 ) -> Path:
     with zipfile.ZipFile(wheel_path) as source:
@@ -285,10 +240,13 @@ def _rewrite_wheel(
         entries[name] = (info, data)
 
     script_name = f"{new_data_dir}/scripts/monarch-tui"
-    entries[script_name] = (
-        _zip_info(script_name, stat.S_IFREG | 0o755),
-        tui.read_bytes(),
-    )
+    if script_name not in entries:
+        if tui is None:
+            raise RuntimeError("maturin wheel did not contain monarch-tui")
+        entries[script_name] = (
+            _zip_info(script_name, stat.S_IFREG | 0o755),
+            tui.read_bytes(),
+        )
 
     if frontend is not None:
         for path in sorted(frontend.rglob("*")):
@@ -359,6 +317,44 @@ def _patch_lock_version(data: bytes, version: str) -> bytes:
     return updated.encode()
 
 
+def _write_sdist_archive(
+    path: Path, entries: list[tuple[tarfile.TarInfo, bytes | None]]
+) -> None:
+    with tarfile.open(path, "w:gz", format=tarfile.PAX_FORMAT) as output:
+        for member, data in entries:
+            if data is not None:
+                output.addfile(member, io.BytesIO(data))
+            else:
+                output.addfile(member)
+
+
+def _refresh_sdist_lock(sdist_path: Path, root_name: str) -> bytes:
+    """Let Cargo normalize the lockfile for maturin's pruned workspace."""
+
+    with tempfile.TemporaryDirectory(prefix="monarch-sdist-lock-") as temp_dir:
+        temp_root = Path(temp_dir)
+        with tarfile.open(sdist_path, "r:gz") as archive:
+            archive.extractall(temp_root)
+        source_root = temp_root / root_name
+        subprocess.run(
+            [
+                "cargo",
+                "metadata",
+                "--format-version",
+                "1",
+                "--manifest-path",
+                os.fspath(source_root / "monarch_extension" / "Cargo.toml"),
+                "--no-default-features",
+                "--features",
+                "extension-module,distributed_sql_telemetry,tui-bin",
+            ],
+            cwd=source_root,
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        return (source_root / "Cargo.lock").read_bytes()
+
+
 def _rewrite_sdist(sdist_path: Path, version: str) -> Path:
     cargo_version = _cargo_version(version)
     with tarfile.open(sdist_path, "r:gz") as source:
@@ -374,22 +370,39 @@ def _rewrite_sdist(sdist_path: Path, version: str) -> Path:
     new_root = f"{DIST_NAME}-{version}"
     destination = sdist_path.with_name(f"{new_root}.tar.gz")
     temporary = destination.with_suffix(".tar.gz.tmp")
-    with tarfile.open(temporary, "w:gz", format=tarfile.PAX_FORMAT) as output:
-        for member, data in archived:
-            suffix = member.name[len(old_root) :]
-            member.name = new_root + suffix
-            relative = suffix.lstrip("/")
-            if data is not None:
-                if relative == "PKG-INFO":
-                    data = _replace_metadata_version(data, version)
-                elif relative == "monarch_extension/Cargo.toml":
-                    data = _patch_manifest_version(data, cargo_version)
-                elif relative == "Cargo.lock":
-                    data = _patch_lock_version(data, cargo_version)
-                member.size = len(data)
-                output.addfile(member, io.BytesIO(data))
-            else:
-                output.addfile(member)
+    newest_mtime = max(member.mtime for member, _data in archived)
+    rewritten: list[tuple[tarfile.TarInfo, bytes | None]] = []
+    for member, data in archived:
+        suffix = member.name[len(old_root) :]
+        member.name = new_root + suffix
+        relative = suffix.lstrip("/")
+        if data is not None:
+            if relative == "PKG-INFO":
+                data = _replace_metadata_version(data, version)
+            elif relative == "monarch_extension/Cargo.toml":
+                data = _patch_manifest_version(data, cargo_version)
+            elif relative == "Cargo.lock":
+                data = _patch_lock_version(data, cargo_version)
+            member.size = len(data)
+        rewritten.append((member, data))
+
+    _write_sdist_archive(temporary, rewritten)
+    refreshed_lock = _refresh_sdist_lock(temporary, new_root)
+    for member, data in rewritten:
+        if member.name == f"{new_root}/Cargo.lock":
+            data = refreshed_lock
+            member.size = len(data)
+            # Cargo considers a lockfile with the same archive mtime as a
+            # rewritten manifest stale, even if its content is valid.
+            member.mtime = newest_mtime + 1
+            break
+    else:
+        raise RuntimeError("generated sdist has no Cargo.lock")
+    rewritten = [
+        (member, refreshed_lock if member.name == f"{new_root}/Cargo.lock" else data)
+        for member, data in rewritten
+    ]
+    _write_sdist_archive(temporary, rewritten)
     os.replace(temporary, destination)
     if destination != sdist_path:
         sdist_path.unlink()
@@ -475,7 +488,7 @@ def _build_wheel(
             filename = maturin.build_editable(wheel_directory, settings, None)
         else:
             filename = maturin.build_wheel(wheel_directory, settings, None)
-        tui = _build_tui(config_settings)
+        tui = _find_staged_tui(settings) if editable else None
         rewritten = _rewrite_wheel(
             Path(wheel_directory) / filename,
             version=version,
