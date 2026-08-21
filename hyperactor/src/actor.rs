@@ -25,7 +25,6 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::watch;
@@ -503,9 +502,9 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
     type Params: RemoteMessage;
 
     /// Creates a new actor instance given its instantiation parameters.
-    /// The `environment` allows whoever is responsible for spawning this actor
-    /// to pass in additional context that may be useful.
-    async fn new(params: Self::Params, environment: Flattrs) -> anyhow::Result<Self>;
+    /// The caller shapes `environment` with any construction context before
+    /// spawning. The runtime stores the same environment unchanged.
+    async fn new(params: Self::Params, environment: &ActorEnvironment) -> anyhow::Result<Self>;
 
     /// A type-erased entry point to spawn this actor as a root. This is
     /// primarily used by hyperactor's remote actor registration
@@ -516,19 +515,13 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
         uid: crate::id::Uid,
         serialized_params: Data,
         environment: ActorEnvironment,
-        transient: Flattrs,
     ) -> Pin<Box<dyn Future<Output = Result<ActorAddr, anyhow::Error>> + Send>> {
         let proc = proc.clone();
         Box::pin(async move {
             let params =
                 bincode::serde::decode_from_slice(&serialized_params, bincode::config::legacy())
                     .map(|(v, _)| v)?;
-            // The constructor sees persistent + transient headers (transient
-            // wins); the instance stores only `environment`. Local callers
-            // derive it from the parent (AENV-2); remote callers transport the
-            // spawning actor's value (AENV-3). Transient headers are never
-            // stored (AENV-4).
-            let actor = Self::new(params, environment.constructor_view(transient)?).await?;
+            let actor = Self::new(params, &environment).await?;
             let handle = proc.spawn_with_uid_in_environment(uid, actor, environment)?;
             // We return only the ActorAddr, not a typed ActorRef.
             // Callers that hold this ID can interact with the actor
@@ -555,17 +548,13 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
         uid: crate::id::Uid,
         serialized_params: Data,
         environment: ActorEnvironment,
-        transient: Flattrs,
     ) -> Pin<Box<dyn Future<Output = Result<AnyActorHandle, anyhow::Error>> + Send>> {
         let proc = proc.clone();
         Box::pin(async move {
             let params =
                 bincode::serde::decode_from_slice(&serialized_params, bincode::config::legacy())
                     .map(|(v, _)| v)?;
-            // The constructor sees persistent + transient headers (transient
-            // wins on collision); only the persistent environment is stored on
-            // the instance (AENV-3, AENV-4).
-            let actor = Self::new(params, environment.constructor_view(transient)?).await?;
+            let actor = Self::new(params, &environment).await?;
             let handle =
                 proc.spawn_child_with_uid_in_environment(parent, uid, actor, environment)?;
             handle.bind::<Self>();
@@ -585,7 +574,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
 impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A {
     type Params = ();
 
-    async fn new(_params: Self::Params, _environment: Flattrs) -> anyhow::Result<Self> {
+    async fn new(_params: Self::Params, _environment: &ActorEnvironment) -> anyhow::Result<Self> {
         Ok(Default::default())
     }
 }
@@ -1318,6 +1307,7 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
+    use hyperactor_config::Flattrs;
     use rand::seq::SliceRandom;
     use timed_test::async_timed_test;
     use tokio::sync::mpsc;

@@ -14,8 +14,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::LazyLock;
 
-use hyperactor_config::Flattrs;
-
 use crate::Actor;
 use crate::ActorEnvironment;
 use crate::AnyActorHandle;
@@ -70,23 +68,20 @@ pub struct SpawnableActor {
     pub name: &'static LazyLock<&'static str>,
 
     /// Type-erased root spawn function. This is the type's
-    /// [`RemoteSpawn::gspawn_root_bind`]. The `ActorEnvironment` is the
-    /// persistent environment stored on the new instance; the `Flattrs` are the
-    /// transient constructor headers overlaid only for `RemoteSpawn::new`.
+    /// [`RemoteSpawn::gspawn_root_bind`]. The `ActorEnvironment` is passed to
+    /// the constructor and stored unchanged on the new instance.
     pub gspawn_root_bind: fn(
         &Proc,
         Uid,
         Data,
         ActorEnvironment,
-        Flattrs,
     ) -> Pin<
         Box<dyn Future<Output = Result<crate::ActorAddr, anyhow::Error>> + Send>,
     >,
 
     /// Type-erased child spawn function. This is the type's
-    /// [`RemoteSpawn::gspawn_child`]. The `ActorEnvironment` is the persistent
-    /// environment stored on the new instance; the `Flattrs` are the transient
-    /// constructor headers overlaid only for `RemoteSpawn::new`.
+    /// [`RemoteSpawn::gspawn_child`]. The `ActorEnvironment` is passed to the
+    /// constructor and stored unchanged on the new instance.
     pub gspawn_child:
         fn(
             &Proc,
@@ -94,7 +89,6 @@ pub struct SpawnableActor {
             Uid,
             Data,
             ActorEnvironment,
-            Flattrs,
         ) -> Pin<Box<dyn Future<Output = Result<AnyActorHandle, anyhow::Error>> + Send>>,
 
     /// A function to retrieve the type id of the actor itself. This is
@@ -158,13 +152,12 @@ impl Remote {
         actor_uid: Uid,
         params: Data,
         environment: ActorEnvironment,
-        transient: Flattrs,
     ) -> Result<crate::ActorAddr, anyhow::Error> {
         let entry = self
             .by_name
             .get(actor_type)
             .ok_or_else(|| anyhow::anyhow!("actor type {} not registered", actor_type))?;
-        (entry.gspawn_root_bind)(proc, actor_uid, params, environment, transient).await
+        (entry.gspawn_root_bind)(proc, actor_uid, params, environment).await
     }
 
     /// Spawns the actor as a child of the provided parent. Returns an
@@ -176,19 +169,10 @@ impl Remote {
         actor_type: &str,
         actor_uid: Uid,
         params: Data,
-        transient: Flattrs,
     ) -> Result<AnyActorHandle, anyhow::Error> {
         let environment = parent.actor_environment().clone();
-        self.gspawn_child_in_environment(
-            proc,
-            parent,
-            actor_type,
-            actor_uid,
-            params,
-            environment,
-            transient,
-        )
-        .await
+        self.gspawn_child_in_environment(proc, parent, actor_type, actor_uid, params, environment)
+            .await
     }
 
     /// Spawn a child with an explicit environment instead of inheriting from
@@ -201,13 +185,12 @@ impl Remote {
         actor_uid: Uid,
         params: Data,
         environment: ActorEnvironment,
-        transient: Flattrs,
     ) -> Result<AnyActorHandle, anyhow::Error> {
         let entry = self
             .by_name
             .get(actor_type)
             .ok_or_else(|| anyhow::anyhow!("actor type {} not registered", actor_type))?;
-        (entry.gspawn_child)(proc, parent, actor_uid, params, environment, transient).await
+        (entry.gspawn_child)(proc, parent, actor_uid, params, environment).await
     }
 }
 
@@ -216,7 +199,6 @@ mod tests {
     use std::assert_matches;
 
     use async_trait::async_trait;
-    use hyperactor_config::Flattrs;
 
     use super::*;
     use crate as hyperactor; // for macros
@@ -236,7 +218,7 @@ mod tests {
     impl RemoteSpawn for MyActor {
         type Params = bool;
 
-        async fn new(params: bool, _environment: Flattrs) -> Result<Self, anyhow::Error> {
+        async fn new(params: bool, _environment: &ActorEnvironment) -> Result<Self, anyhow::Error> {
             if params {
                 Ok(MyActor)
             } else {
@@ -298,7 +280,6 @@ mod tests {
                 Uid::instance(Label::new("actor").unwrap()),
                 bincode::serde::encode_to_vec(true, bincode::config::legacy()).unwrap(),
                 ActorEnvironment::default(),
-                Flattrs::default(),
             )
             .await
             .unwrap();
@@ -310,7 +291,6 @@ mod tests {
                 Uid::instance(Label::new("actor").unwrap()),
                 bincode::serde::encode_to_vec(false, bincode::config::legacy()).unwrap(),
                 ActorEnvironment::default(),
-                Flattrs::default(),
             )
             .await
             .unwrap_err();

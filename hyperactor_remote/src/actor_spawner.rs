@@ -332,7 +332,6 @@ mod tests {
     use hyperactor::RemoteSpawn;
     use hyperactor::Uid;
     use hyperactor::supervision::ActorSupervisionEvent;
-    use hyperactor_config::Flattrs;
     use hyperactor_config::attrs::declare_attrs;
     use serde::Deserialize;
     use serde::Serialize;
@@ -361,7 +360,7 @@ mod tests {
     impl RemoteSpawn for TestChild {
         type Params = ();
 
-        async fn new(_params: (), _environment: Flattrs) -> anyhow::Result<Self> {
+        async fn new(_params: (), _environment: &ActorEnvironment) -> anyhow::Result<Self> {
             Ok(Self)
         }
     }
@@ -390,7 +389,7 @@ mod tests {
     impl RemoteSpawn for FailingChild {
         type Params = ();
 
-        async fn new(_params: (), _environment: Flattrs) -> anyhow::Result<Self> {
+        async fn new(_params: (), _environment: &ActorEnvironment) -> anyhow::Result<Self> {
             Ok(Self)
         }
     }
@@ -434,7 +433,7 @@ mod tests {
     impl RemoteSpawn for EnvironmentChild {
         type Params = PortRef<(u64, u64, Option<u64>, Option<u64>)>;
 
-        async fn new(reply: Self::Params, environment: Flattrs) -> anyhow::Result<Self> {
+        async fn new(reply: Self::Params, environment: &ActorEnvironment) -> anyhow::Result<Self> {
             Ok(Self {
                 reply,
                 constructor_value: environment.get(REMOTE_ENVIRONMENT_TAG).unwrap_or_default(),

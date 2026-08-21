@@ -12,11 +12,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor as reference;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
-use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -41,7 +41,7 @@ impl Actor for BenchActor {}
 #[async_trait]
 impl RemoteSpawn for BenchActor {
     type Params = Duration;
-    async fn new(params: Duration, _environment: Flattrs) -> Result<Self, anyhow::Error> {
+    async fn new(params: Duration, _environment: &ActorEnvironment) -> Result<Self, anyhow::Error> {
         Ok(Self {
             processing_time: params,
         })

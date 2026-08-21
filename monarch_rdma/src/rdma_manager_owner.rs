@@ -133,6 +133,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
@@ -151,7 +152,6 @@ use hyperactor::mailbox::InvalidReference;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::mesh_controller::Subscribe;
@@ -545,7 +545,7 @@ impl RdmaManagerOwnerActor {
 impl RemoteSpawn for RdmaManagerOwnerActor {
     type Params = ();
 
-    async fn new(_params: (), _environment: Flattrs) -> Result<Self, anyhow::Error> {
+    async fn new(_params: (), _environment: &ActorEnvironment) -> Result<Self, anyhow::Error> {
         Ok(Self {
             by_mesh: HashMap::new(),
             entries: HashMap::new(),
@@ -835,6 +835,7 @@ mod tests {
 
     use async_trait::async_trait;
     use hyperactor::ActorAddr;
+    use hyperactor::ActorEnvironment;
     use hyperactor::ActorHandle;
     use hyperactor::ActorId;
     use hyperactor::ActorRef;
@@ -900,7 +901,7 @@ mod tests {
             .await?;
         let proc_mesh_ref: ProcMeshRef = (*proc_mesh).clone();
 
-        let owner = RdmaManagerOwnerActor::new((), Flattrs::default()).await?;
+        let owner = RdmaManagerOwnerActor::new((), &ActorEnvironment::default()).await?;
         let owner_handle = client.spawn(owner);
 
         let (reply, rx) = client.open_once_port::<Result<(), RdmaInitError>>();
@@ -1041,7 +1042,7 @@ mod tests {
             .await?;
         let key: ProcMeshRef = (*proc_mesh).clone();
 
-        let owner = RdmaManagerOwnerActor::new((), Flattrs::default()).await?;
+        let owner = RdmaManagerOwnerActor::new((), &ActorEnvironment::default()).await?;
         let owner_handle = client.spawn(owner);
 
         let (r1, rx1) = client.open_once_port::<Result<(), RdmaInitError>>();
@@ -1110,7 +1111,7 @@ mod tests {
             .await?;
         let key: ProcMeshRef = (*proc_mesh).clone();
 
-        let owner = RdmaManagerOwnerActor::new((), Flattrs::default()).await?;
+        let owner = RdmaManagerOwnerActor::new((), &ActorEnvironment::default()).await?;
         let owner_handle = client.spawn(owner);
 
         // Block the owner, then enqueue (FIFO, behind the pause) two ensures
@@ -1192,7 +1193,7 @@ mod tests {
         let view_a: ProcMeshRef = proc_mesh.range("procs", 0..1)?;
         let view_b: ProcMeshRef = proc_mesh.range("procs", 1..2)?;
 
-        let owner = RdmaManagerOwnerActor::new((), Flattrs::default()).await?;
+        let owner = RdmaManagerOwnerActor::new((), &ActorEnvironment::default()).await?;
         let owner_handle = client.spawn(owner);
 
         // Block the owner, then enqueue (FIFO, behind the pause) ensures for
@@ -1402,7 +1403,7 @@ mod tests {
         let whole: ProcMeshRef = (*proc_mesh).clone();
         let slice: ProcMeshRef = proc_mesh.range("procs", 1..2)?;
 
-        let owner = RdmaManagerOwnerActor::new((), Flattrs::default()).await?;
+        let owner = RdmaManagerOwnerActor::new((), &ActorEnvironment::default()).await?;
         let owner_handle = client.spawn(owner);
 
         let (first, second) = if whole_first {
@@ -1734,7 +1735,7 @@ mod tests {
             .await?;
         let key: ProcMeshRef = (*proc_mesh).clone();
 
-        let owner = RdmaManagerOwnerActor::new((), Flattrs::default()).await?;
+        let owner = RdmaManagerOwnerActor::new((), &ActorEnvironment::default()).await?;
         let owner_handle = client.spawn(owner);
 
         let (r1, rx1) = client.open_once_port::<Result<(), RdmaInitError>>();
@@ -1820,7 +1821,7 @@ mod tests {
         let view_b: ProcMeshRef = proc_mesh.range("procs", 0..1)?; // [0], overlaps A
         let view_c: ProcMeshRef = proc_mesh.range("procs", 2..3)?; // [2], disjoint
 
-        let owner = RdmaManagerOwnerActor::new((), Flattrs::default()).await?;
+        let owner = RdmaManagerOwnerActor::new((), &ActorEnvironment::default()).await?;
         let owner_handle = client.spawn(owner);
         let subject = owner_handle.actor_addr().clone();
 
@@ -2060,7 +2061,7 @@ mod tests {
             .await?;
         let key: ProcMeshRef = (*proc_mesh).clone();
 
-        let owner = RdmaManagerOwnerActor::new((), Flattrs::default()).await?;
+        let owner = RdmaManagerOwnerActor::new((), &ActorEnvironment::default()).await?;
         let owner_handle = client.spawn(owner);
         let subject = owner_handle.actor_addr().clone();
 
@@ -2166,7 +2167,7 @@ mod tests {
             .await?;
         let key: ProcMeshRef = (*proc_mesh).clone();
 
-        let owner = RdmaManagerOwnerActor::new((), Flattrs::default()).await?;
+        let owner = RdmaManagerOwnerActor::new((), &ActorEnvironment::default()).await?;
         let owner_handle = client.spawn(owner);
 
         // Prequeue ensure + hold behind a pause so the entry is created and held
@@ -2321,7 +2322,7 @@ mod tests {
         let view_c: ProcMeshRef = proc_mesh.range("procs", 1..2)?; // [1]
         let view_d: ProcMeshRef = proc_mesh.range("procs", 2..3)?; // [2]
 
-        let owner = RdmaManagerOwnerActor::new((), Flattrs::default()).await?;
+        let owner = RdmaManagerOwnerActor::new((), &ActorEnvironment::default()).await?;
         let owner_handle = client.spawn(owner);
 
         // Hold A pending to capture its real controller, then release its
@@ -2532,7 +2533,7 @@ mod tests {
             .await?;
         let key: ProcMeshRef = (*proc_mesh).clone();
 
-        let owner = RdmaManagerOwnerActor::new((), Flattrs::default()).await?;
+        let owner = RdmaManagerOwnerActor::new((), &ActorEnvironment::default()).await?;
         let owner_handle = client.spawn(owner);
         let owner_addr = owner_handle.actor_addr().clone();
 

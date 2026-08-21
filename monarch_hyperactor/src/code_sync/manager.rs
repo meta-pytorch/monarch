@@ -23,6 +23,7 @@ use futures::TryStreamExt;
 use futures::try_join;
 use hyperactor as reference;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -30,7 +31,6 @@ use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
 use hyperactor::context;
 use hyperactor::handle;
-use hyperactor_config::Flattrs;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
 use lazy_errors::ErrorStash;
@@ -200,7 +200,10 @@ impl Actor for CodeSyncManager {}
 impl RemoteSpawn for CodeSyncManager {
     type Params = CodeSyncManagerParams;
 
-    async fn new(CodeSyncManagerParams {}: Self::Params, _environment: Flattrs) -> Result<Self> {
+    async fn new(
+        CodeSyncManagerParams {}: Self::Params,
+        _environment: &ActorEnvironment,
+    ) -> Result<Self> {
         Ok(Self {
             rsync: OnceCell::new(),
             auto_reload: OnceCell::new(),

@@ -5,8 +5,11 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
     /// The type of parameters used to instantiate the actor remotely.
     type Params: RemoteMessage;
 
-    /// Creates a new actor instance given its instantiation parameters.
-    async fn new(params: Self::Params) -> anyhow::Result<Self>;
+    /// Creates a new actor instance from its parameters and construction environment.
+    async fn new(
+        params: Self::Params,
+        environment: &ActorEnvironment,
+    ) -> anyhow::Result<Self>;
 
     fn gspawn(
         proc: &Proc,
@@ -24,7 +27,8 @@ The `RemoteSpawn` trait marks an actor type as spawnable across process boundari
 ## Requirements
 - The actor type must also implement `Actor`.
 - Its `Params` type (used in `RemoteSpawn::new`) must implement `RemoteMessage`, so it can be serialized and transmitted over the network.
-- `new` creates a new instance of the actor given its parameters
+- `new` creates a new instance from its parameters and the caller-shaped
+  `ActorEnvironment` that the runtime stores on the actor.
 
 ## `gspawn`
 ```rust

@@ -405,10 +405,10 @@ mod tests {
 
     use anyhow::Result;
     use futures::future::try_join_all;
+    use hyperactor::ActorEnvironment;
     use hyperactor::RemoteSpawn;
     use hyperactor::actor::ActorStatus;
     use hyperactor::proc::Proc;
-    use hyperactor_config::Flattrs;
     use monarch_messages::worker::ArgsKwargs;
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_messages::worker::WorkerParams;
@@ -663,7 +663,7 @@ mod tests {
                             device_index: Some(rank.try_into()?),
                             controller_actor: controller_ref.clone(),
                         },
-                        Flattrs::default(),
+                        &ActorEnvironment::default(),
                     )
                     .await
                     .unwrap(),
@@ -850,7 +850,7 @@ mod tests {
                     device_index: Some(0),
                     controller_actor: controller_ref.clone(),
                 },
-                Flattrs::default(),
+                &ActorEnvironment::default(),
             )
             .await
             .unwrap(),
@@ -864,7 +864,7 @@ mod tests {
                     device_index: Some(1),
                     controller_actor: controller_ref,
                 },
-                Flattrs::default(),
+                &ActorEnvironment::default(),
             )
             .await
             .unwrap(),
@@ -1030,7 +1030,7 @@ mod tests {
                     device_index: Some(0),
                     controller_actor: controller_ref,
                 },
-                Flattrs::default(),
+                &ActorEnvironment::default(),
             )
             .await
             .unwrap(),

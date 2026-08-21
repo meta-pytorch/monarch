@@ -20,6 +20,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -999,8 +1000,8 @@ pub struct PythonActor {
     dispatch_sender: pympsc::Sender,
     /// Channel receiver, taken during Actor::init to start the message loop.
     dispatch_receiver: Option<pympsc::PyReceiver>,
-    /// The location in the actor mesh at which this actor was spawned.
-    spawn_point: OnceLock<Option<Point>>,
+    /// Inherited or assigned construction context, not proof of mesh membership.
+    construction_point: OnceLock<Option<Point>>,
     /// Initial message to process during PythonActor::init.
     init_message: Option<PythonMessage>,
     /// User-provided mesh base-name string plumbed from
@@ -1024,7 +1025,7 @@ impl PythonActor {
     pub(crate) fn new(
         actor_type: PickledPyObject,
         init_message: Option<PythonMessage>,
-        spawn_point: Option<Point>,
+        construction_point: Option<Point>,
         mesh_base_name: Option<String>,
     ) -> Result<Self, anyhow::Error> {
         Ok(monarch_with_gil_blocking(
@@ -1047,7 +1048,7 @@ impl PythonActor {
                     instance: None,
                     dispatch_sender,
                     dispatch_receiver: Some(dispatch_receiver),
-                    spawn_point: OnceLock::from(spawn_point),
+                    construction_point: OnceLock::from(construction_point),
                     init_message,
                     mesh_base_name,
                     execution_tracker: Arc::new(ExecutionTracker::new()),
@@ -1127,7 +1128,7 @@ impl PythonActor {
         Self::bootstrap_client_inner(
             py,
             client_proc,
-            hyperactor::ActorEnvironment::default(),
+            ActorEnvironment::default(),
             &ROOT_CLIENT_INSTANCE,
         )
     }
@@ -1143,7 +1144,7 @@ impl PythonActor {
     pub(crate) fn bootstrap_client_inner(
         py: Python<'_>,
         client_proc: Proc,
-        environment: hyperactor::ActorEnvironment,
+        environment: ActorEnvironment,
         root_client_instance: &'static OnceLock<Instance<PythonActor>>,
     ) -> (&'static Instance<Self>, ActorHandle<Self>) {
         let actor_mesh_mod = py
@@ -1427,9 +1428,9 @@ impl Actor for PythonActor {
         .await?;
 
         if let Some(init_message) = self.init_message.take() {
-            let spawn_point = self.spawn_point.get().unwrap().as_ref().expect("PythonActor should never be spawned with init_message unless spawn_point also specified").clone();
+            let construction_point = self.construction_point.get().unwrap().as_ref().expect("PythonActor should never be spawned with init_message unless construction_point is also specified").clone();
             let mut headers = Flattrs::new();
-            headers.set(CAST_POINT, spawn_point);
+            headers.set(CAST_POINT, construction_point);
             let cx = Context::new(this, headers);
             <Self as Handler<PythonMessage>>::handle(self, &cx, init_message).await?;
         }
@@ -1659,10 +1660,10 @@ impl RemoteSpawn for PythonActor {
             init_message,
             mesh_base_name,
         }: PythonActorParams,
-        environment: Flattrs,
+        environment: &ActorEnvironment,
     ) -> Result<Self, anyhow::Error> {
-        let spawn_point = environment.get(CAST_POINT);
-        Self::new(actor_type, init_message, spawn_point, mesh_base_name)
+        let construction_point = environment.get(CAST_POINT);
+        Self::new(actor_type, init_message, construction_point, mesh_base_name)
     }
 }
 
