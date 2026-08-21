@@ -35,6 +35,37 @@ mod trace;
 
 use pyo3::prelude::*;
 
+#[cfg(feature = "embedded-cpp")]
+unsafe extern "C" {
+    fn monarch_register_common_C() -> *mut pyo3::ffi::PyObject;
+    fn monarch_register_gradient_generator() -> *mut pyo3::ffi::PyObject;
+}
+
+#[cfg(feature = "embedded-cpp")]
+fn register_embedded_cpp_modules(py: Python<'_>) -> PyResult<()> {
+    let modules = py.import("sys")?.getattr("modules")?;
+    for (name, init) in [
+        (
+            "monarch.common._C",
+            monarch_register_common_C as unsafe extern "C" fn() -> *mut pyo3::ffi::PyObject,
+        ),
+        (
+            "monarch.gradient._gradient_generator",
+            monarch_register_gradient_generator
+                as unsafe extern "C" fn() -> *mut pyo3::ffi::PyObject,
+        ),
+    ] {
+        let module = unsafe {
+            Bound::<pyo3::types::PyAny>::from_owned_ptr_or_err(py, init())?
+        };
+        modules.set_item(name, &module)?;
+        if name == "monarch.common._C" {
+            py.import("monarch.common")?.setattr("_C", module)?;
+        }
+    }
+    Ok(())
+}
+
 #[pyfunction]
 fn has_tensor_engine() -> bool {
     cfg!(feature = "tensor_engine")
@@ -73,6 +104,9 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_telemetry::trace::get_or_create_trace_id();
 
     let py = module.py();
+    #[cfg(feature = "embedded-cpp")]
+    register_embedded_cpp_modules(py)?;
+
     py.import("os")?.getattr("environ")?.set_item(
         hyperactor_telemetry::env::HYPERACTOR_EXECUTION_ID_ENV,
         hyperactor_telemetry::env::execution_id(),

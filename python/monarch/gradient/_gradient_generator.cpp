@@ -838,3 +838,30 @@ static PyModuleDef gradientmodule = {
 PyMODINIT_FUNC PyInit__gradient_generator(void) {
   return PyModuleDef_Init(&gradientmodule);
 }
+
+extern "C" PyObject* monarch_register_gradient_generator(void) {
+  PyObject* util = PyImport_ImportModule("importlib.util");
+  if (util == nullptr) {
+    return nullptr;
+  }
+  PyObject* spec = PyObject_CallMethod(
+      util,
+      "spec_from_loader",
+      "sO",
+      "monarch.gradient._gradient_generator",
+      Py_None);
+  Py_DECREF(util);
+  if (spec == nullptr) {
+    return nullptr;
+  }
+  PyObject* module = PyModule_FromDefAndSpec(&gradientmodule, spec);
+  Py_DECREF(spec);
+  if (module == nullptr) {
+    return nullptr;
+  }
+  if (PyModule_ExecDef(module, &gradientmodule) < 0) {
+    Py_DECREF(module);
+    return nullptr;
+  }
+  return module;
+}
