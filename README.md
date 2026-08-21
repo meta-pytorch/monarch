@@ -386,8 +386,10 @@ Closing the issue re-enables the test on the next run.
 - **Rust (cargo nextest):** use the test name exactly as it appears in nextest
   output: `<binary> <module::path::test_fn>`, e.g.
   `DISABLED hyperactor proc::tests::test_child_lifecycle`
-- **Python (pytest):** use the test function name, e.g.
-  `DISABLED test_my_function`
+- **Python (pytest):** use a test function name, full node ID, or structural
+  node-ID prefix. For example, `DISABLED test_my_function` skips that function
+  (including all parameterizations), while
+  `DISABLED python/tests/test_example.py` skips the entire file.
 
 ### Overriding skips locally
 
