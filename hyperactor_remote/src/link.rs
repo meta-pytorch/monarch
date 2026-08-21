@@ -93,6 +93,7 @@ impl LinkSpec {
 mod tests {
     use async_trait::async_trait;
     use hyperactor::Actor;
+    use hyperactor::ActorEnvironment;
     use hyperactor::Context;
     use hyperactor::Endpoint as _;
     use hyperactor::Handler;
@@ -104,7 +105,6 @@ mod tests {
     use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
     use hyperactor::supervision::ActorSupervisionEvent;
-    use hyperactor_config::Flattrs;
 
     use super::*;
 
@@ -119,7 +119,7 @@ mod tests {
     impl RemoteSpawn for TestLinkActor {
         type Params = ();
 
-        async fn new(_params: (), _environment: Flattrs) -> anyhow::Result<Self> {
+        async fn new(_params: (), _environment: &ActorEnvironment) -> anyhow::Result<Self> {
             Ok(Self)
         }
     }

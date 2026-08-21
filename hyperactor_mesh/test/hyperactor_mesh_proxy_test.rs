@@ -16,13 +16,13 @@ use async_trait::async_trait;
 use clap::Parser;
 use hyperactor as reference;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RemoteSpawn;
 use hyperactor::context::Mailbox;
-use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
@@ -67,7 +67,10 @@ impl Actor for TestActor {}
 impl RemoteSpawn for TestActor {
     type Params = ();
 
-    async fn new(_params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
+    async fn new(
+        _params: Self::Params,
+        _environment: &ActorEnvironment,
+    ) -> Result<Self, anyhow::Error> {
         Ok(Self)
     }
 }
@@ -143,7 +146,7 @@ impl RemoteSpawn for ProxyActor {
 
     async fn new(
         exe_path: Self::Params,
-        _environment: Flattrs,
+        _environment: &ActorEnvironment,
     ) -> anyhow::Result<Self, anyhow::Error> {
         Ok(Self {
             exe_path,

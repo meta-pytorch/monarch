@@ -238,13 +238,16 @@ self.actor_states.insert(
 This is the core of v1 spawning. The agent:
 - unpacks the `ActorSpec` (type name + parameter bytes), and
 - passes those pieces into `remote.gspawn(...)` to construct the local actor.
+- when the create cast carries `CAST_POINT`, replaces that key in the caller's
+  `ActorEnvironment` before construction. Other message headers remain scoped
+  to the delivery and are not stored on the actor.
 - `actor_type: String` – the logical type name registered by `#[spawnable]` or `register_spawnable!(A)`, computed in `ProcMeshRef::spawn_with_name_inner` via `remote.name_of::<A>()`, and used by `Remote::gspawn` on each proc to find the right constructor.
 - `params_data: Data` A raw byte buffer containing serialized `A::Params` (via `bincode::serialize`).
 - `self.remote.gspawn(...)` This method looks up the `SpawnableActor` entry for `actor_type` in the local `Remote` registry then invoks:
 ```rust
 SpawnableActor::spawn(proc, name, params_data)
 ```
-Internally this calls the actor's `RemoteSpawn::new(params).await` construtor registers it under the given name in the proc's runtime, and returns an `ActorId`.
+Internally this calls the actor's `RemoteSpawn::new(params, &environment).await` constructor, registers it under the given name in the proc's runtime, and returns an `ActorId`.
 
 The result -- success or failure -- is recorded in:
 ```rust

@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -31,7 +32,6 @@ use hyperactor::context;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_config::global::Source;
 use ndslice::Point;
@@ -278,7 +278,7 @@ impl hyperactor::RemoteSpawn for FailingCreateTestActor {
 
     async fn new(
         _params: Self::Params,
-        _environment: Flattrs,
+        _environment: &ActorEnvironment,
     ) -> Result<Self, hyperactor::internal_macro_support::anyhow::Error> {
         Err(anyhow::anyhow!("test failure"))
     }
@@ -358,7 +358,7 @@ impl Actor for ActorEnvironmentProbe {
 impl hyperactor::RemoteSpawn for ActorEnvironmentProbe {
     type Params = ActorEnvironmentProbeParams;
 
-    async fn new(params: Self::Params, environment: Flattrs) -> anyhow::Result<Self> {
+    async fn new(params: Self::Params, environment: &ActorEnvironment) -> anyhow::Result<Self> {
         Ok(Self {
             label: params.label,
             reply: params.reply,
@@ -433,7 +433,7 @@ impl hyperactor::RemoteSpawn for WrapperActor {
 
     async fn new(
         (proc_mesh, supervisor, test_name): Self::Params,
-        _environment: Flattrs,
+        _environment: &ActorEnvironment,
     ) -> Result<Self, hyperactor::internal_macro_support::anyhow::Error> {
         Ok(Self {
             proc_mesh,

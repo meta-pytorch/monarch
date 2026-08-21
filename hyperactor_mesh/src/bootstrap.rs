@@ -2454,6 +2454,7 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use async_trait::async_trait;
+    use hyperactor::ActorEnvironment;
     use hyperactor::Location;
     use hyperactor::PortHandle;
     use hyperactor::ProcId;
@@ -2466,7 +2467,6 @@ mod tests {
     use hyperactor::mailbox::Undeliverable;
     use hyperactor::testing::ids::test_proc_id;
     use hyperactor::testing::ids::test_proc_id_with_addr;
-    use hyperactor_config::Flattrs;
 
     use super::*;
 
@@ -2807,15 +2807,18 @@ mod tests {
 
         // Spawn the log client and disable aggregation (immediate
         // print + tap push).
-        let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
+        let log_client_actor = LogClientActor::new((), &ActorEnvironment::default())
+            .await
+            .unwrap();
         let log_client: ActorRef<LogClientActor> = proc.spawn(log_client_actor).bind();
         log_client.set_aggregate(&client, None).await.unwrap();
 
         // Spawn the forwarder in this proc (it will serve
         // BOOTSTRAP_LOG_CHANNEL).
-        let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Flattrs::default())
-            .await
-            .unwrap();
+        let log_forwarder_actor =
+            LogForwardActor::new(log_client.clone(), &ActorEnvironment::default())
+                .await
+                .unwrap();
         let _log_forwarder: ActorRef<LogForwardActor> = proc.spawn(log_forwarder_actor).bind();
 
         // Dial the channel but don't post until we know the forwarder

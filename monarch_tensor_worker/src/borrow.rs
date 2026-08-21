@@ -175,9 +175,9 @@ mod tests {
 
     use anyhow::Context;
     use anyhow::Result;
+    use hyperactor::ActorEnvironment;
     use hyperactor::RemoteSpawn;
     use hyperactor::proc::Proc;
-    use hyperactor_config::Flattrs;
     use monarch_messages::controller::ControllerMessage;
     use monarch_messages::worker::ArgsKwargs;
     use monarch_messages::worker::WorkerMessage;
@@ -207,7 +207,7 @@ mod tests {
                     device_index: None,
                     controller_actor: controller_ref,
                 },
-                Flattrs::default(),
+                &ActorEnvironment::default(),
             )
             .await?,
         );
@@ -359,7 +359,7 @@ mod tests {
                     device_index: None,
                     controller_actor: controller_ref,
                 },
-                Flattrs::default(),
+                &ActorEnvironment::default(),
             )
             .await
             .unwrap(),
