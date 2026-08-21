@@ -297,7 +297,7 @@ doc_legacy_surface = "PythonTask|PyShared|pytokio"
 
 [totals]
 py_python_task_new = 26
-raw_python_task_new = 6
+raw_python_task_new = 5
 from_coro = 19
 rust_from_coro = 2
 from_coroutine = 7
@@ -317,7 +317,7 @@ py_mesh_reserve = 2
 py_is_tokio_thread = 3
 pytokio_import = 31
 pytokio_module_ref = 18
-helper_symbol = 29
+helper_symbol = 27
 helper_definition = 6
 would_block_surface = 2
 binding_stub_symbol = 5
@@ -574,7 +574,6 @@ owns = [
   "fc.proc_mesh.ProcMesh._proc_mesh_for_asyncio_fixme[Future._from_coroself._proc_mesh.task]",
   "fc.proc_mesh.ProcMesh.initialized[Future._from_corotask]",
   "hs.actor_mesh.PyPythonTask",
-  "hs.actor_mesh.ensure_python",
   "hs.bootstrap.PyPythonTask",
   "hs.host_mesh.PyPythonTask",
   "hs.lib.PyShared",
@@ -742,10 +741,11 @@ owns = [
 ]
 
 [[transition]]
-id = "D116091231-or-6.2-direct"
-allowed_states = ["migrated", "removed_upstream"]
+id = "D116091231"
+allowed_states = ["removed_upstream"]
 owns = [
   "hs.actor.PythonTask",
+  "hs.actor_mesh.ensure_python",
   "np.actor.PythonActor.handle_direct"
 ]
 
@@ -1473,8 +1473,9 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor.rs"
 symbol = "PythonTask"
 operation = "helper_symbol"
 scope = "production"
-state = "legacy"
-transition = "D116091231-or-6.2-direct"
+state = "removed_upstream"
+transition = "D116091231"
+transition_revision = "D116091231"
 
 [[site]]
 id = "hs.actor_mesh.PyPythonTask"
@@ -1495,8 +1496,9 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "ensure_python"
 operation = "helper_symbol"
 scope = "production"
-state = "legacy"
-transition = "6.3c"
+state = "removed_upstream"
+transition = "D116091231"
+transition_revision = "D116091231"
 
 [[site]]
 id = "hs.bootstrap.PyPythonTask"
@@ -3148,8 +3150,9 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor.rs"
 symbol = "PythonActor::handle_direct"
 operation = "raw_python_task_new"
 scope = "production"
-state = "legacy"
-transition = "D116091231-or-6.2-direct"
+state = "removed_upstream"
+transition = "D116091231"
+transition_revision = "D116091231"
 constructor = "raw PythonTask"
 return_surface = "raw PythonTask returned from PythonActor::handle_direct"
 consumer = "handle_async_endpoint_panic, which immediately calls task.take()"
