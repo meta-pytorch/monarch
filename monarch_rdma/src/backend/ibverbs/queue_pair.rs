@@ -1190,6 +1190,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
 #[async_trait]
 impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
         let local_info = self.qp.get_qp_info().map_err(|e| {
             tracing::error!(qp_key = ?self.qp_key, error = %e, "QueuePairActor init: get_qp_info failed");
             anyhow::anyhow!("could not extract local QP info: {e}")

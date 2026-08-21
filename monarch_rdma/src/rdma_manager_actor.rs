@@ -175,6 +175,7 @@ impl RemoteSpawn for RdmaManagerActor {
 #[async_trait]
 impl Actor for RdmaManagerActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
         // An explicit per-manager target takes precedence over
         // `RDMA_IBVERBS_TARGET`. Otherwise validate the process setting here:
         // `spawn_available` may ignore an ibverbs initialization failure when

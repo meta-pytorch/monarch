@@ -556,6 +556,11 @@ impl RemoteSpawn for RdmaManagerOwnerActor {
 
 #[async_trait]
 impl Actor for RdmaManagerOwnerActor {
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
+        Ok(())
+    }
+
     /// The manager-mesh controller is a direct child of the owner, so any
     /// *terminal* status of the controller itself — clean `Stopped` as well as
     /// `Failed` — is delivered here (RMO-14). It is matched by `event.actor_id`
