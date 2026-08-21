@@ -185,9 +185,19 @@
 # relative and absolute import forms are discovered.
 #
 # [[matrix]] rows record disposition (preserve, intentional change, or
-# implementation-neutral) and execution_state (green_in_6.0b, running against
-# the current Future, or activates_in_6.1, executable once _from_handle
-# exists).
+# implementation-neutral) and execution_state.
+#
+# execution_state is about the *facade* assertion only: when the Handle-backed
+# Future case becomes executable. green_in_6.0b means the final behavior is
+# already established by the paired current-Future and direct-Handle
+# assertions together -- not by the current facade alone; activates_in_6.1
+# means that last assertion needs the Handle-backed Future constructor before
+# it can run.
+#
+# It is not a licence to defer Handle coverage. Every directly expressible
+# Handle primitive is green in 6.0b, including for rows marked
+# activates_in_6.1 -- those rows are pinned on the Handle side now, and only
+# the facade half waits.
 #
 # Grounded at fbsource master c58f6cb66dbe, 2026-08-19.
 

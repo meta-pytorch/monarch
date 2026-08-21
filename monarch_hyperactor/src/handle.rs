@@ -986,6 +986,62 @@ def run_two(h):
         });
     }
 
+    // __await__ in a Tokio runtime context finds no asyncio loop to bridge to,
+    // so it surfaces asyncio's native "no running event loop" RuntimeError --
+    // NOT WouldBlockRuntime, which among the observers stays specific to get()
+    // (HDL-6). The refusal consumes nothing: the same handle still observes its
+    // value afterwards. Lives here rather than in the Python suite so the Handle
+    // contract does not depend on a PythonTask-driven test helper.
+    // Attests HDL-6, HDL-7.
+    #[test]
+    fn await_in_tokio_raises_native_and_leaves_handle_observable() {
+        ensure_python();
+        let handle = monarch_with_gil_blocking(GilSite::Test, |py| {
+            let value = 11i64.into_py_any(py).unwrap();
+            Py::new(py, PyHandle::from_value(value).unwrap()).unwrap()
+        });
+        let in_tokio = monarch_with_gil_blocking(GilSite::Test, |py| handle.clone_ref(py));
+
+        // `block_on` would poll the root future on *this* thread under an
+        // entered runtime -- `is_tokio_thread()` is true there, but it is not a
+        // worker and nested blocking is tolerated. Spawn instead, so the
+        // assertion genuinely runs on a runtime worker, and join from here.
+        let joined = get_tokio_runtime().spawn(async move {
+            assert!(
+                is_tokio_thread(),
+                "the oracle must observe from a runtime worker"
+            );
+            monarch_with_gil(GilSite::Test, |py| {
+                let err = PyHandle::__await__(in_tokio.borrow(py), py).unwrap_err();
+                assert!(
+                    !err.is_instance_of::<WouldBlockRuntime>(py),
+                    "__await__ must not raise WouldBlockRuntime; among the observers that is get()'s alone"
+                );
+                assert!(
+                    err.is_instance_of::<PyRuntimeError>(py),
+                    "__await__ off an asyncio loop should raise the native RuntimeError"
+                );
+                assert!(
+                    err.to_string().contains("no running event loop"),
+                    "expected asyncio's native message, got {err}"
+                );
+            })
+            .await
+        });
+        get_tokio_runtime()
+            .block_on(joined)
+            .expect("the spawned oracle panicked");
+
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let value = PyHandle::get(handle.borrow(py), py, None).unwrap();
+            assert_eq!(
+                value.extract::<i64>(py).unwrap(),
+                11,
+                "a refused __await__ must not consume the handle"
+            );
+        });
+    }
+
     // get(timeout) raises TimeoutError and leaves the handle pending, so a later
     // observation still sees completion.
     // Attests HDL-12.
