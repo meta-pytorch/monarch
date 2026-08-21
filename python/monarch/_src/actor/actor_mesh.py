@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-strict
+from __future__ import annotations
 
 import abc
 import asyncio
@@ -46,7 +47,6 @@ from typing import (
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     DroppingPort,
     MethodSpecifier,
-    PanicFlag,
     PythonMessage,
     PythonMessageKind,
 )
@@ -93,6 +93,7 @@ from typing_extensions import Self
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import (
+        PanicFlag,
         PortProtocol,
         QueuedMessage,
     )
@@ -1251,10 +1252,9 @@ class ActorInitArgs:
 
 
 class _QueuePanicFlag:
-    """Panic flag for queue dispatch mode.
+    """Store a panic so the dispatch loop can re-raise it after cleanup.
 
-    Unlike the DummyPanicFlag, this one stores the exception so it can
-    be re-raised after handle() returns, ensuring proper cleanup.
+    Re-raising after ``handle()`` returns ensures its cleanup runs first.
     """
 
     def __init__(self) -> None:
@@ -1299,7 +1299,7 @@ async def _handle_queued_message(actor: Any, msg: "QueuedMessage") -> None:
             msg.context,
             msg.method,
             msg.bytes,
-            panic_flag,  # pyre-ignore[6]: _QueuePanicFlag implements PanicFlag protocol
+            panic_flag,
             msg.local_state,
             msg.refs,
             msg.response_port,

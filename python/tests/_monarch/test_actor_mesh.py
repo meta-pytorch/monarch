@@ -12,7 +12,6 @@ from typing import Any, Callable, cast, Coroutine, Iterable, List, Type, TYPE_CH
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     MethodSpecifier,
-    PanicFlag,
     PythonMessage,
     PythonMessageKind,
 )
@@ -103,7 +102,7 @@ class MyActor:
         ctx: Context,
         method: MethodSpecifier,
         message: bytes,
-        panic_flag: PanicFlag,
+        panic_flag: Any,
         local_state: Iterable[Any],
         mesh_references: Iterable[Any],
         response_port: "PortProtocol[Any]",

@@ -388,8 +388,8 @@ async fn test_inbound_ordering_workload() {
 
 /// Execution surface, real Python hooks end-to-end: a Python workload
 /// driven by the stdin/stdout handshake proves the `_Actor.handle`
-/// bracket increments/decrements `execution` across direct and queue
-/// dispatch, visible over `GET /v1/{actor}`.
+/// bracket increments/decrements `execution` across serial and concurrent
+/// endpoints, visible over `GET /v1/{actor}`.
 #[tokio::test]
 async fn test_execution_workload() {
     execution::run_execution_workload().await;

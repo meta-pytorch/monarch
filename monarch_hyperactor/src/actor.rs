@@ -10,11 +10,9 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt::Debug;
-use std::future::pending;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::Once;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering as AtomicOrdering;
@@ -60,7 +58,6 @@ use monarch_types::py_global;
 use ndslice::Point;
 use ndslice::extent;
 use pyo3::IntoPyObjectExt;
-use pyo3::exceptions::PyBaseException;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -70,29 +67,20 @@ use pyo3::types::PyType;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_multipart::Part;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 use typeuri::Named;
 
 use crate::buffers::FrozenBuffer;
-use crate::config::ACTOR_QUEUE_DISPATCH;
 use crate::context::PyInstance;
 use crate::local_state_broker::BrokerId;
 use crate::local_state_broker::LocalStateBrokerMessage;
 use crate::mailbox::EitherPortRef;
 use crate::mailbox::PyMailbox;
 use crate::mailbox::PythonUndeliverableMessageEnvelope;
-use crate::metrics::ENDPOINT_ACTOR_COUNT;
-use crate::metrics::ENDPOINT_ACTOR_ERROR;
-use crate::metrics::ENDPOINT_ACTOR_LATENCY_US_HISTOGRAM;
-use crate::metrics::ENDPOINT_ACTOR_PANIC;
-use crate::metrics::EndpointAttrs;
 use crate::pickle::PicklingState;
 use crate::pickle::pickle_to_part;
 use crate::proc::PyActorAddr;
 use crate::pympsc;
 use crate::pytokio::PyPythonTask;
-use crate::pytokio::PythonTask;
 use crate::runtime::GilSite;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
@@ -719,20 +707,6 @@ impl PythonActorHandle {
     }
 }
 
-/// Dispatch mode for Python actors.
-#[derive(Debug)]
-pub enum PythonActorDispatchMode {
-    /// Direct dispatch: Rust acquires the GIL and calls Python handlers directly.
-    Direct,
-    /// Queue dispatch: Rust enqueues messages to a channel; Python dequeues and dispatches.
-    Queue {
-        /// Channel sender for enqueuing messages to Python.
-        sender: pympsc::Sender,
-        /// Channel receiver, taken during Actor::init to start the message loop.
-        receiver: Option<pympsc::PyReceiver>,
-    },
-}
-
 // In-flight handler execution tracking for a Python actor -- the producer
 // side of the mesh `execution` field. Per-actor Rust state, read GIL-free
 // by the introspect seam. Producer invariants (PE-*, monarch_hyperactor-
@@ -1021,8 +995,10 @@ pub struct PythonActor {
     /// Instance object that we keep across handle calls so that we can store
     /// information from the Init (spawn rank, controller) and provide it to other calls.
     instance: Option<Py<crate::context::PyInstance>>,
-    /// Dispatch mode for this actor.
-    dispatch_mode: PythonActorDispatchMode,
+    /// Channel sender for enqueuing messages to Python.
+    dispatch_sender: pympsc::Sender,
+    /// Channel receiver, taken during Actor::init to start the message loop.
+    dispatch_receiver: Option<pympsc::PyReceiver>,
     /// The location in the actor mesh at which this actor was spawned.
     spawn_point: OnceLock<Option<Point>>,
     /// Initial message to process during PythonActor::init.
@@ -1051,16 +1027,6 @@ impl PythonActor {
         spawn_point: Option<Point>,
         mesh_base_name: Option<String>,
     ) -> Result<Self, anyhow::Error> {
-        let use_queue_dispatch = hyperactor_config::global::get(ACTOR_QUEUE_DISPATCH);
-        if !use_queue_dispatch {
-            static WARNED: Once = Once::new();
-            WARNED.call_once(|| {
-                tracing::warn!(
-                    "actor_queue_dispatch=false is deprecated and direct dispatch will be removed in a future release"
-                );
-            });
-        }
-
         Ok(monarch_with_gil_blocking(
             GilSite::ActorConstruct,
             |py| -> Result<Self, SerializablePyErr> {
@@ -1070,24 +1036,17 @@ impl PythonActor {
 
                 let task_locals = Python::detach(py, create_task_locals);
 
-                let dispatch_mode = if use_queue_dispatch {
-                    let (sender, receiver) = pympsc::channel().map_err(|e| {
-                        let py_err = PyRuntimeError::new_err(e.to_string());
-                        SerializablePyErr::from(py, &py_err)
-                    })?;
-                    PythonActorDispatchMode::Queue {
-                        sender,
-                        receiver: Some(receiver),
-                    }
-                } else {
-                    PythonActorDispatchMode::Direct
-                };
+                let (dispatch_sender, dispatch_receiver) = pympsc::channel().map_err(|e| {
+                    let py_err = PyRuntimeError::new_err(e.to_string());
+                    SerializablePyErr::from(py, &py_err)
+                })?;
 
                 Ok(Self {
                     actor,
                     task_locals,
                     instance: None,
-                    dispatch_mode,
+                    dispatch_sender,
+                    dispatch_receiver: Some(dispatch_receiver),
                     spawn_point: OnceLock::from(spawn_point),
                     init_message,
                     mesh_base_name,
@@ -1442,29 +1401,30 @@ impl Actor for PythonActor {
             attrs
         });
 
-        if let PythonActorDispatchMode::Queue { receiver, .. } = &mut self.dispatch_mode {
-            let receiver = receiver.take().unwrap();
+        let receiver = self
+            .dispatch_receiver
+            .take()
+            .expect("dispatch receiver already taken");
 
-            monarch_with_gil(GilSite::DispatchInit, |py| {
-                let self_instance = self.ensure_py_instance(py, this);
-                let actor_mesh_mod = py.import("monarch._src.actor.actor_mesh")?;
+        monarch_with_gil(GilSite::DispatchInit, |py| {
+            let self_instance = self.ensure_py_instance(py, this);
+            let actor_mesh_mod = py.import("monarch._src.actor.actor_mesh")?;
 
-                let tl = &self.task_locals;
-                let awaitable = actor_mesh_mod.call_method(
-                    "_dispatch_loop",
-                    (self.actor.clone_ref(py), receiver, self_instance),
-                    None,
-                )?;
-                let future = pyo3_async_runtimes::into_future_with_locals(tl, awaitable)?;
-                tokio::spawn(async move {
-                    if let Err(e) = future.await {
-                        tracing::error!("message loop error: {}", e);
-                    }
-                });
-                Ok::<_, anyhow::Error>(())
-            })
-            .await?;
-        }
+            let tl = &self.task_locals;
+            let awaitable = actor_mesh_mod.call_method(
+                "_dispatch_loop",
+                (self.actor.clone_ref(py), receiver, self_instance),
+                None,
+            )?;
+            let future = pyo3_async_runtimes::into_future_with_locals(tl, awaitable)?;
+            tokio::spawn(async move {
+                if let Err(e) = future.await {
+                    tracing::error!("message loop error: {}", e);
+                }
+            });
+            Ok::<_, anyhow::Error>(())
+        })
+        .await?;
 
         if let Some(init_message) = self.init_message.take() {
             let spawn_point = self.spawn_point.get().unwrap().as_ref().expect("PythonActor should never be spawned with init_message unless spawn_point also specified").clone();
@@ -1730,53 +1690,6 @@ fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
     })
 }
 
-// [Panics in async endpoints]
-// This class exists to solve a deadlock when an async endpoint calls into some
-// Rust code that panics.
-//
-// When an async endpoint is invoked and calls into Rust, the following sequence happens:
-//
-// hyperactor message -> PythonActor::handle() -> call _Actor.handle() in Python
-//   -> convert the resulting coroutine into a Rust future, but scheduled on
-//      the Python asyncio event loop (`into_future_with_locals`)
-//   -> set a callback on Python asyncio loop to ping a channel that fulfills
-//      the Rust future when the Python coroutine has finished. ('PyTaskCompleter`)
-//
-// This works fine for normal results and Python exceptions: we will take the
-// result of the callback and send it through the channel, where it will be
-// returned to the `await`er of the Rust future.
-//
-// This DOESN'T work for panics. The behavior of a panic in pyo3-bound code is
-// that it will get caught by pyo3 and re-thrown to Python as a PanicException.
-// And if that PanicException ever makes it back to Rust, it will get unwound
-// instead of passed around as a normal PyErr type.
-//
-// So:
-//   - Endpoint panics.
-//   - This panic is captured as a PanicException in Python and
-//     stored as the result of the Python asyncio task.
-//   - When the callback in `PyTaskCompleter` queries the status of the task to
-//     pass it back to the Rust awaiter, instead of getting a Result type, it
-//     just starts resumes unwinding the PanicException
-//   - This triggers a deadlock, because the whole task dies without ever
-//     pinging the response channel, and the Rust awaiter will never complete.
-//
-// We work around this by passing a side-channel to our Python task so that it,
-// in Python, can catch the PanicException and notify the Rust awaiter manually.
-// In this way we can guarantee that the awaiter will complete even if the
-// `PyTaskCompleter` callback explodes.
-#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
-struct PanicFlag {
-    sender: Option<tokio::sync::oneshot::Sender<Py<PyAny>>>,
-}
-
-#[pymethods]
-impl PanicFlag {
-    fn signal_panic(&mut self, ex: Py<PyAny>) {
-        self.sender.take().unwrap().send(ex).unwrap();
-    }
-}
-
 #[async_trait]
 impl Handler<PythonMessage> for PythonActor {
     fn message_status_reporting() -> MessageStatusReporting {
@@ -1789,75 +1702,12 @@ impl Handler<PythonMessage> for PythonActor {
         cx: &Context<PythonActor>,
         message: PythonMessage,
     ) -> anyhow::Result<()> {
-        match &self.dispatch_mode {
-            PythonActorDispatchMode::Direct => self.handle_direct(cx, message).await,
-            PythonActorDispatchMode::Queue { sender, .. } => {
-                let sender = sender.clone();
-                self.handle_queue(cx, sender, message).await
-            }
-        }
+        let sender = self.dispatch_sender.clone();
+        self.handle_queue(cx, sender, message).await
     }
 }
 
 impl PythonActor {
-    /// Handle a message using direct dispatch (current behavior).
-    async fn handle_direct(
-        &mut self,
-        cx: &Context<'_, PythonActor>,
-        message: PythonMessage,
-    ) -> anyhow::Result<()> {
-        let resolved = message.resolve_indirect_call(cx).await?;
-        let attrs = EndpointAttrs::new(resolved.method.name(), cx.self_addr().label());
-
-        // Create a channel for signaling panics in async endpoints.
-        // See [Panics in async endpoints].
-        let (sender, receiver) = oneshot::channel();
-
-        let future = monarch_with_gil(
-            GilSite::EndpointDispatch,
-            |py| -> Result<_, SerializablePyErr> {
-                let inst = self.ensure_py_instance(py, cx);
-
-                let awaitable = self.actor.call_method(
-                    py,
-                    "handle",
-                    (
-                        crate::context::PyContext::new(cx, inst.clone_ref(py)),
-                        resolved.method,
-                        resolved.bytes,
-                        PanicFlag {
-                            sender: Some(sender),
-                        },
-                        resolved
-                            .local_state
-                            .unwrap_or_else(|| PyList::empty(py).unbind().into()),
-                        resolved.mesh_references.into_py_any(py)?,
-                        resolved.response_port.into_py_any(py)?,
-                    ),
-                    None,
-                )?;
-
-                pyo3_async_runtimes::into_future_with_locals(
-                    &self.task_locals,
-                    awaitable.into_bound(py),
-                )
-                .map_err(|err| err.into())
-            },
-        )
-        .await?;
-
-        // Spawn a child actor to await the Python handler method.
-        tokio::spawn(handle_async_endpoint_panic(
-            cx.signal_sender(),
-            PythonTask::new(future)?,
-            receiver,
-            attrs,
-            cx.headers()
-                .get(hyperactor::mailbox::headers::TELEMETRY_MESSAGE_ID),
-        ));
-        Ok(())
-    }
-
     /// Handle a message using queue dispatch.
     /// Resolves the message on the Rust side and enqueues it for Python to process.
     async fn handle_queue(
@@ -2059,77 +1909,6 @@ impl Handler<MeshFailure> for PythonActor {
     }
 }
 
-async fn handle_async_endpoint_panic(
-    panic_sender: mpsc::UnboundedSender<Signal>,
-    task: PythonTask,
-    side_channel: oneshot::Receiver<Py<PyAny>>,
-    attrs: EndpointAttrs,
-    telemetry_message_id: Option<u64>,
-) {
-    let attributes = attrs.as_slice();
-
-    // Record the start time for latency measurement
-    let start_time = std::time::Instant::now();
-
-    // Increment throughput counter
-    ENDPOINT_ACTOR_COUNT.add(1, attributes);
-
-    let err_or_never = async {
-        // The side channel will resolve with a value if a panic occured during
-        // processing of the async endpoint, see [Panics in async endpoints].
-        match side_channel.await {
-            Ok(value) => {
-                monarch_with_gil(GilSite::AwaitDrive, |py| -> Option<SerializablePyErr> {
-                    let err: PyErr = value
-                        .cast_bound::<PyBaseException>(py)
-                        .unwrap()
-                        .clone()
-                        .into();
-                    ENDPOINT_ACTOR_PANIC.add(1, attributes);
-                    Some(err.into())
-                })
-                .await
-            }
-            // An Err means that the sender has been dropped without sending.
-            // That's okay, it just means that the Python task has completed.
-            // In that case, just never resolve this future. We expect the other
-            // branch of the select to finish eventually.
-            Err(_) => pending().await,
-        }
-    };
-    let future = task.take();
-    let panic = tokio::select! {
-        result = future => {
-            match result {
-                Ok(_) => None,
-                Err(e) => Some(e.into()),
-            }
-        },
-        result = err_or_never => {
-            result
-        }
-    };
-    report_message_status(
-        telemetry_message_id,
-        if panic.is_some() {
-            "failed"
-        } else {
-            "complete"
-        },
-    );
-    if let Some(panic) = panic {
-        // Record error and panic metrics
-        ENDPOINT_ACTOR_ERROR.add(1, attributes);
-        if panic_sender.send(Signal::Kill(panic.to_string())).is_err() {
-            tracing::warn!("dropped panic signal: actor already stopped: {panic}");
-        }
-    }
-
-    // Record latency in microseconds
-    let elapsed_micros = start_time.elapsed().as_micros() as f64;
-    ENDPOINT_ACTOR_LATENCY_US_HISTOGRAM.record(elapsed_micros, attributes);
-}
-
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 struct LocalPort {
     instance: PyInstance,
@@ -2321,7 +2100,6 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PythonMessageKind>()?;
     hyperactor_mod.add_class::<MethodSpecifier>()?;
     hyperactor_mod.add_class::<UnflattenArg>()?;
-    hyperactor_mod.add_class::<PanicFlag>()?;
     hyperactor_mod.add_class::<QueuedMessage>()?;
     hyperactor_mod.add_class::<DroppingPort>()?;
     hyperactor_mod.add_class::<Port>()?;

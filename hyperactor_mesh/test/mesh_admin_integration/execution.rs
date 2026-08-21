@@ -18,8 +18,8 @@
 //! ordering, truncation, the `0` sentinel, idempotent `finish`) and the
 //! DTO json-shape tests, this proves the *real* `_Actor.handle` bracket
 //! increments the `execution` surface on entry and decrements on exit
-//! (completion and exception), across direct dispatch, queue dispatch,
-//! and `@concurrent_endpoint`, visible end-to-end through
+//! (completion and exception), across serial and concurrent endpoints,
+//! visible end-to-end through
 //! `GET /v1/{actor}` and the typed actor node payload.
 //!
 //! Cancellation is actor-fatal in the current runtime (`CancelledError`
@@ -30,7 +30,7 @@
 //! decrement path is covered by the `ExecutionTracker` unit tests.
 //!
 //! Coverage:
-//!   - direct dispatch: one held invocation -> `active_count` 1, populated row.
+//!   - concurrent endpoint: one held invocation -> `active_count` 1, populated row.
 //!   - same-name aggregation: two held `hold`s -> `active_count` 2, ONE row
 //!     at row `active_count == 2`.
 //!   - completion decrement: release each -> count drops; after the last
@@ -38,12 +38,11 @@
 //!   - exception decrement: raise a held invocation (via `call_one`, so
 //!     the handler error returns as `ActorError` and the actor survives)
 //!     -> count drops back to the idle shape.
-//!   - queue dispatch: one held invocation -> `active_count` 1 (the
-//!     bracket fires in queue mode too).
-//!   - concurrent endpoint under queue dispatch: two held `hold`s overlap,
+//!   - serial endpoint: one held invocation -> `active_count` 1.
+//!   - concurrent endpoint: two held `hold`s overlap,
 //!     aggregate to one row with `active_count == 2`, and can be released by
 //!     a later control message on the same actor without deadlocking.
-//!   - queue-dispatch deadlock: a blocking plain `@endpoint` monopolizes the
+//!   - serial-dispatch deadlock: a blocking plain `@endpoint` monopolizes the
 //!     Python dispatch loop, so a later release can never run; the API surfaces
 //!     the wedge as `execution.active_count` pinned at 1 on the same invocation
 //!     (the stuck release is not introspectable -- `queue_depth` is the Rust
@@ -207,7 +206,7 @@ async fn run_inner(fixture: &WorkloadFixture) {
         .await
         .expect("execution: deadlock actor was not initialized");
 
-    // --- Direct dispatch: one held invocation -> count 1. ---
+    // --- Concurrent endpoint: one held invocation -> count 1. ---
     fixture
         .send_command("HOLD busy a")
         .await
@@ -368,8 +367,8 @@ async fn run_inner(fixture: &WorkloadFixture) {
     // observable on a surviving actor. The decrement-on-exit guarantee is
     // covered by the `ExecutionTracker` unit tests.
 
-    // --- Queue dispatch: one held invocation -> count 1 (bracket fires). ---
-    // Queue dispatch is serialized: we hold a single invocation and only
+    // --- Serial endpoint: one held invocation -> count 1 (bracket fires). ---
+    // Actor dispatch is serialized: we hold a single invocation and only
     // assert count == 1, never releasing it through a second endpoint
     // call (that would deadlock the dispatch loop). The proc tears down
     // at fixture shutdown.
@@ -384,21 +383,20 @@ async fn run_inner(fixture: &WorkloadFixture) {
     let exec = execution_of(fixture, &queue).await;
     assert_eq!(
         exec.active_count, 1,
-        "execution: queue-dispatch held invocation must report count 1 \
-         (the bracket fires in queue mode too); got {exec:?}",
+        "execution: serial held invocation must report count 1; got {exec:?}",
     );
     assert_eq!(
         exec.active_handlers.len(),
         1,
-        "execution: queue-dispatch held invocation must report one row; got {exec:?}",
+        "execution: serial held invocation must report one row; got {exec:?}",
     );
     assert_eq!(
         exec.active_handlers[0].name, "hold",
-        "execution: queue-dispatch active row name must be `hold`; got {exec:?}",
+        "execution: serial active row name must be `hold`; got {exec:?}",
     );
 
-    // --- @concurrent_endpoint under queue dispatch: overlap + release. ---
-    // This is the queue-compatible resource-manager pattern: a held endpoint
+    // --- @concurrent_endpoint: overlap + release. ---
+    // This is the resource-manager pattern: a held endpoint
     // does not monopolize the actor dispatch loop, so a later control message
     // can run on the same actor and release it.
     fixture
@@ -474,11 +472,11 @@ async fn run_inner(fixture: &WorkloadFixture) {
     let exec = poll_until(fixture, &concurrent, |e| e.active_count == 0).await;
     assert_idle_shape(&exec, "@concurrent_endpoint post-release clear");
 
-    // --- Queue-dispatch DEADLOCK: the API surfaces a wedged actor. ---
-    // A plain @endpoint under queue dispatch monopolizes the Python dispatch
+    // --- Serial-dispatch DEADLOCK: the API surfaces a wedged actor. ---
+    // A plain @endpoint monopolizes the Python dispatch
     // loop: `hold` blocks, so the later `control` release is stuck behind it in
     // the per-actor dispatch queue and can never run. This is the failure the
-    // airport turnaround demo hits under the default (queue) dispatch.
+    // airport turnaround demo avoids with @concurrent_endpoint.
     //
     // The API-visible signal is `execution.active_count`: the wedged `hold`
     // never completes, so its bracket never decrements and active_count stays
@@ -488,8 +486,8 @@ async fn run_inner(fixture: &WorkloadFixture) {
     // handed to a Python-side channel and the Rust loop returns), so it sits at
     // 0; the stuck release waits in the Python dispatch queue, which
     // introspection does not expose. (Contrast: `concurrent_actor` above, same
-    // queue dispatch, releases cleanly and drops to 0 -- so the signal is the
-    // wedge, not queue dispatch per se.)
+    // dispatch path, releases cleanly and drops to 0 -- so the signal is the
+    // wedge, not queueing per se.)
     //
     // Last driven block: the command loop wedges on the inline `control.call_one`
     // after the release. The admin server is Rust-served, so `/v1` stays live.
@@ -505,7 +503,7 @@ async fn run_inner(fixture: &WorkloadFixture) {
     let exec = execution_of(fixture, &deadlock).await;
     assert_eq!(
         exec.active_count, 1,
-        "deadlock: held queue-dispatch invocation must report active_count == 1; got {exec:?}",
+        "deadlock: held serial invocation must report active_count == 1; got {exec:?}",
     );
     assert_eq!(
         exec.active_handlers[0].name, "hold",

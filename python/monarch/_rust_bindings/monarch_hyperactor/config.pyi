@@ -76,7 +76,6 @@ def configure(
     supervision_watchdog_timeout: str = ...,
     proc_stop_max_idle: str = ...,
     get_proc_state_max_idle: str = ...,
-    actor_queue_dispatch: bool = ...,
     mesh_admin_addr: str = ...,
     mesh_attach_config_timeout: str = ...,
     mesh_orphan_timeout: str = ...,

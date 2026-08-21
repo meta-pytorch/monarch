@@ -42,17 +42,6 @@ impl EndpointAttrs {
 // ENDPOINT METRICS
 // Tracks the size of endpoint messages in bytes
 declare_static_histogram!(ENDPOINT_MESSAGE_SIZE_HISTOGRAM, "endpoint_message_size");
-// Tracks latency of endpoint calls in microseconds
-declare_static_histogram!(
-    ENDPOINT_ACTOR_LATENCY_US_HISTOGRAM,
-    "endpoint_actor_latency_us_histogram"
-);
-// Tracks the total number of endpoint calls
-declare_static_counter!(ENDPOINT_ACTOR_COUNT, "endpoint_actor_count");
-// Tracks errors that occur during endpoint execution
-declare_static_counter!(ENDPOINT_ACTOR_ERROR, "endpoint_actor_error");
-// Tracks panics that occur during endpoint execution
-declare_static_counter!(ENDPOINT_ACTOR_PANIC, "endpoint_actor_panic");
 // Tracks latency of endpoint calls from the caller's perspective in microseconds
 declare_static_histogram!(
     ENDPOINT_CALL_LATENCY_US_HISTOGRAM,

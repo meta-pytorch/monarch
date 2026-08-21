@@ -80,7 +80,6 @@ if TYPE_CHECKING:
             supervision_watchdog_timeout: NotRequired[str]
             proc_stop_max_idle: NotRequired[str]
             get_proc_state_max_idle: NotRequired[str]
-            actor_queue_dispatch: NotRequired[bool]
             mesh_admin_addr: NotRequired[str]
             mesh_attach_config_timeout: NotRequired[str]
             mesh_orphan_timeout: NotRequired[str]
@@ -316,7 +315,7 @@ def parametrize_config(
         >>> from monarch.config import parametrize_config
         >>>
         >>> @parametrize_config(
-        ...     actor_queue_dispatch={True, False},
+        ...     force_file_log={True, False},
         ...     prefix_with_rank={True, False},
         ... )
         ... async def test_actor_feature():
@@ -406,13 +405,13 @@ def parametrize_config_pointwise(
         >>> from monarch.config import parametrize_config_pointwise
         >>>
         >>> @parametrize_config_pointwise(
-        ...     actor_queue_dispatch=[True, False],
+        ...     force_file_log=[True, False],
         ...     prefix_with_rank=[True, False],
         ... )
         ... async def test_actor_feature():
         ...     # Runs 2 times:
-        ...     # (actor_queue_dispatch=True, prefix_with_rank=True)
-        ...     # (actor_queue_dispatch=False, prefix_with_rank=False)
+        ...     # (force_file_log=True, prefix_with_rank=True)
+        ...     # (force_file_log=False, prefix_with_rank=False)
         ...     pass
     """
     import asyncio
