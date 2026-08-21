@@ -108,7 +108,7 @@ drop_behavior = "nothing runs"
 unobserved_error = "dropped"
 disposition = "intentionally become eager"
 semantic_class = "deferred_side_effect"
-oracle = "fixture"
+oracle = ["fbcode//monarch/scripts:test_pytokio_removal_census::test_baseline_passes"]
 """
 
 TRANSITION = """
@@ -699,7 +699,8 @@ class CensusCheckerTest(unittest.TestCase):
             'eager_effect = "starts a side effect"\n'
             'drop_behavior = "nothing runs"\nunobserved_error = "dropped"\n'
             'disposition = "intentionally become eager"\n'
-            'semantic_class = "deferred_side_effect"\noracle = "fixture"\n'
+            'semantic_class = "deferred_side_effect"\n'
+            'oracle = ["fbcode//monarch/scripts:test_pytokio_removal_census::test_baseline_passes"]\n'
         )
         manifest = self.fixture.manifest(row, totals={"py_python_task_new": 1})
         manifest["site"] = [r for r in manifest["site"] if r["id"] != "np.one"]
@@ -1198,7 +1199,7 @@ class CensusCheckerTest(unittest.TestCase):
             'drop_behavior = "n/a"\nunobserved_error = "kill signal"\n'
             'disposition = "replace with the bridge future directly"\n'
             'semantic_class = "already_started_lazy_observer"\n'
-            'oracle = "fixture"\n'
+            'oracle = ["fbcode//monarch/scripts:test_pytokio_removal_census::test_baseline_passes"]\n'
         )
         manifest = self.fixture.manifest(direct)
         manifest["transition"][0]["owns"].append("np.direct")
@@ -1304,6 +1305,241 @@ class CensusCheckerTest(unittest.TestCase):
         )
         manifest["schema"]["matrix_ids"] = ["fm.x"]
         self.assert_reports(self.fixture.check(manifest), "unknown execution state")
+
+    # -- oracle references ------------------------------------------------
+
+    def _behavior_row(self, manifest):
+        """The synthetic producer row, which is a behavior row."""
+        return manifest["site"][0]
+
+    def _tombstoned_producer(self, manifest, oracle):
+        """Append a tombstoned behavior row carrying ``oracle``.
+
+        Its locator names no source file, so reconciliation -- which skips
+        tombstones -- neither expects a hit nor reports an unknown one.
+        """
+        row = dict(manifest["site"][0])
+        row.update(
+            id="np.gone",
+            path="src/deleted.rs",
+            symbol="Gone::make",
+            state="removed_upstream",
+            transition_revision="D111111",
+            oracle=oracle,
+        )
+        manifest["site"].append(row)
+        manifest["transition"][0]["owns"].append("np.gone")
+        return manifest
+
+    def test_oracle_canonical_single_reference_passes(self) -> None:
+        manifest = self.fixture.manifest()
+        self._behavior_row(manifest)["oracle"] = [
+            "fbcode//monarch/scripts:test_pytokio_removal_census::test_baseline_passes"
+        ]
+        self.assertEqual(self.fixture.check(manifest), [])
+
+    def test_oracle_multiple_qualified_references_pass(self) -> None:
+        """Conjunctive references, module-qualified and class-qualified."""
+        manifest = self.fixture.manifest()
+        self._behavior_row(manifest)["oracle"] = [
+            "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest"
+            "::pickle::tests::resolve_fills_slots_in_order",
+            "fbcode//monarch/python/tests:test_job::TestJob::test_exec_command",
+        ]
+        self.assertEqual(self.fixture.check(manifest), [])
+
+    def test_oracle_legacy_label_accepted_on_active_row(self) -> None:
+        """Prose is still accepted while rows are being converted."""
+        manifest = self.fixture.manifest()
+        self._behavior_row(manifest)["oracle"] = "endpoint reply coverage"
+        self.assertEqual(self.fixture.check(manifest), [])
+
+    def test_oracle_legacy_label_accepted_on_tombstone(self) -> None:
+        """A deleted path has no live test to name, so its label stays."""
+        manifest = self._tombstoned_producer(
+            self.fixture.manifest(), "test_actor_driver_characterization"
+        )
+        self.assertEqual(self.fixture.check(manifest), [])
+
+    def test_oracle_scalar_reference_attempts_fail(self) -> None:
+        """Any bare string reaching for the canonical form is a half-finished
+        conversion, valid or not.
+
+        Accepting a *malformed* attempt as prose would silently swallow the
+        typo, so the prefix alone decides, and the diagnostic names the syntax
+        problem as well as the shape."""
+        cases = [
+            ("fbcode//monarch/scripts:target::test_name", None),
+            ("fbcode//monarch/scripts:target::9bad", "malformed test name"),
+            ("fbcode//monarch/scripts:target", "no '::'"),
+            ("fbcode//monarch/scripts:target::test name", "whitespace"),
+            ("  fbcode//monarch/scripts:target::test_name", "whitespace"),
+        ]
+        for reference, syntax in cases:
+            with self.subTest(reference=reference):
+                manifest = self.fixture.manifest()
+                self._behavior_row(manifest)["oracle"] = reference
+                errors = self.fixture.check(manifest)
+                self.assert_reports(errors, "canonical references go in a list")
+                if syntax is not None:
+                    self.assert_reports(errors, syntax)
+
+    def test_oracle_target_names_follow_buck_grammar(self) -> None:
+        """Buck's grammar, not a guessed subset.
+
+        A narrower class silently rejects legal targets; a laxer one blesses
+        ``...``, which Buck reserves. Both failures are invisible here because
+        the checker never resolves the label.
+        """
+        for name in (
+            ".",
+            "..",
+            "foo+bar",
+            "a@b!c=d~e",
+            "with.dots-and_score",
+            "back\\slash",
+        ):
+            with self.subTest(name=name):
+                manifest = self.fixture.manifest()
+                self._behavior_row(manifest)["oracle"] = [
+                    f"fbcode//monarch/scripts:{name}::test_name"
+                ]
+                self.assertEqual(self.fixture.check(manifest), [])
+
+        manifest = self.fixture.manifest()
+        self._behavior_row(manifest)["oracle"] = [
+            "fbcode//monarch/scripts:...::test_name"
+        ]
+        self.assert_reports(self.fixture.check(manifest), "reserved target name")
+
+    def test_oracle_target_name_boundary_rules(self) -> None:
+        """The three rules Buck applies beyond its character set.
+
+        Each is a boundary rather than a shape, so none of them is caught by
+        the character class alone.
+        """
+        limit = census.TARGET_NAME_MAX_LEN
+
+        # `_eqsb_` is Buck's substitution for `=`; a written name may not carry it.
+        manifest = self.fixture.manifest()
+        self._behavior_row(manifest)["oracle"] = [
+            "fbcode//monarch/scripts:a_eqsb_b::test_name"
+        ]
+        self.assert_reports(self.fixture.check(manifest), "reserved substring")
+
+        # Exactly at the limit is legal; one over is not.
+        manifest = self.fixture.manifest()
+        self._behavior_row(manifest)["oracle"] = [
+            f"fbcode//monarch/scripts:{'x' * limit}::test_name"
+        ]
+        self.assertEqual(self.fixture.check(manifest), [])
+
+        manifest = self.fixture.manifest()
+        self._behavior_row(manifest)["oracle"] = [
+            f"fbcode//monarch/scripts:{'x' * (limit + 1)}::test_name"
+        ]
+        self.assert_reports(self.fixture.check(manifest), f"over the {limit} limit")
+
+    def test_oracle_prose_inside_list_is_named_directly(self) -> None:
+        """Prose in the list gets its own diagnostic.
+
+        Falling through to the reference check would blame whatever the label
+        trips first -- usually a space -- instead of the real mistake. An entry
+        carrying '::' is a botched reference, not prose, and still gets the
+        reference diagnostic.
+        """
+        manifest = self.fixture.manifest()
+        self._behavior_row(manifest)["oracle"] = ["endpoint reply coverage"]
+        self.assert_reports(
+            self.fixture.check(manifest), "a legacy prose label stays a bare string"
+        )
+
+        manifest = self.fixture.manifest()
+        self._behavior_row(manifest)["oracle"] = [
+            "fbcode//monarch/scripts:test_pytokio_removal_census::test_baseline_passes",
+            "lifecycle_coverage",
+        ]
+        self.assert_reports(self.fixture.check(manifest), "oracle[1]")
+
+        manifest = self.fixture.manifest()
+        self._behavior_row(manifest)["oracle"] = ["//monarch/scripts:target::test_name"]
+        self.assert_reports(self.fixture.check(manifest), "malformed target")
+
+    def test_oracle_whitespace_only_label_fails(self) -> None:
+        """A blank label names nothing, and was passing because it is truthy."""
+        for blank in ("   ", "\t", " \n "):
+            with self.subTest(blank=repr(blank)):
+                manifest = self.fixture.manifest()
+                self._behavior_row(manifest)["oracle"] = blank
+                self.assert_reports(self.fixture.check(manifest), "oracle is empty")
+
+    def test_oracle_ordinary_prose_label_still_passes(self) -> None:
+        """The contrast case: prose that does not reach for the canonical form
+        is untouched by the prefix rule."""
+        for label in ("endpoint reply coverage", "lifecycle edge behavior"):
+            with self.subTest(label=label):
+                manifest = self.fixture.manifest()
+                self._behavior_row(manifest)["oracle"] = label
+                self.assertEqual(self.fixture.check(manifest), [])
+
+    def test_oracle_empty_list_reports_shape_not_missing_field(self) -> None:
+        """The empty list is present but unusable; the truthiness gate would
+        otherwise misreport it as an absent field."""
+        manifest = self.fixture.manifest()
+        self._behavior_row(manifest)["oracle"] = []
+        errors = self.fixture.check(manifest)
+        self.assert_reports(errors, "oracle is an empty list")
+        joined = "\n".join(errors)
+        self.assertNotIn("behavior row missing", joined)
+
+    def test_oracle_absent_still_reports_missing_field(self) -> None:
+        """Shape checking must not swallow the absent-field diagnostic."""
+        manifest = self.fixture.manifest()
+        del self._behavior_row(manifest)["oracle"]
+        self.assert_reports(self.fixture.check(manifest), "behavior row missing oracle")
+
+    def test_oracle_wrong_top_level_type_fails(self) -> None:
+        manifest = self.fixture.manifest()
+        self._behavior_row(manifest)["oracle"] = 7
+        self.assert_reports(self.fixture.check(manifest), "oracle is int")
+
+    def test_oracle_non_string_member_fails(self) -> None:
+        manifest = self.fixture.manifest()
+        self._behavior_row(manifest)["oracle"] = [7]
+        self.assert_reports(self.fixture.check(manifest), "oracle[0] is int")
+
+    def test_oracle_duplicate_references_fail(self) -> None:
+        reference = (
+            "fbcode//monarch/scripts:test_pytokio_removal_census::test_baseline_passes"
+        )
+        manifest = self.fixture.manifest()
+        self._behavior_row(manifest)["oracle"] = [reference, reference]
+        self.assert_reports(self.fixture.check(manifest), "oracle[1] repeats")
+
+    def test_oracle_malformed_references_fail(self) -> None:
+        """Each malformed shape is rejected, and named in the diagnostic."""
+        cases = [
+            ("//monarch/scripts:target::test_name", "malformed target"),
+            ("fbcode//:target::test_name", "malformed package path"),
+            ("fbcode//monarch/scripts::test_name", "malformed target"),
+            ("fbcode//monarch/scripts:target", "no '::'"),
+            ("fbcode//monarch/scripts:target::", "malformed test name"),
+            ("fbcode//monarch/scripts:target::9test", "malformed test name"),
+            ("fbcode//monarch/scripts:target::test name", "whitespace"),
+            ("fbcode//monarch/scripts:tar get::test_name", "whitespace"),
+            ("fbcode///pkg:target::test", "malformed package path"),
+            ("fbcode//pkg//sub:target::test", "malformed package path"),
+            ("fbcode//pkg/../sub:target::test", "malformed package path"),
+            ("fbcode//pkg/./sub:target::test", "malformed package path"),
+            ("fbcode//pkg/:target::test", "malformed package path"),
+            ("fbcode//pkg:...::test", "reserved target name"),
+            ("fbcode//pkg:tar get::test", "whitespace"),
+        ]
+        for reference, expected in cases:
+            with self.subTest(reference=reference):
+                manifest = self.fixture.manifest()
+                self._behavior_row(manifest)["oracle"] = [reference]
+                self.assert_reports(self.fixture.check(manifest), expected)
 
 
 if __name__ == "__main__":
