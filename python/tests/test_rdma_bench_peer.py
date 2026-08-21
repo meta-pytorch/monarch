@@ -29,6 +29,7 @@ import bench_topology as bt  # noqa: E402
 import pytest  # noqa: E402
 import torch  # noqa: E402
 from monarch.actor import this_host  # noqa: E402
+from monarch.config import get_global_config  # noqa: E402
 from proc_mesh_test_utils import stop_all_proc_meshes  # noqa: E402, F401
 from rdma_test_utils import rdma_backends  # noqa: E402
 
@@ -85,6 +86,19 @@ async def _compare(peers, topo):
 def _skip_without_cuda(source_on_gpu: bool, dest_on_gpu: bool) -> None:
     if (source_on_gpu or dest_on_gpu) and not torch.cuda.is_available():
         pytest.skip("CUDA not available")
+
+
+@rdma_backends
+async def test_a_peer_reports_the_transport_its_configuration_selects() -> None:
+    # The rdma_backends decorator skips the test if rdma_disable_ibverbs == False
+    # and ibverbs is unavailable, and always enables tcp fallback when ibverbs is
+    # disabled, so this computation for `expected` is correct.
+    expected = "tcp" if get_global_config()["rdma_disable_ibverbs"] else "ibverbs"
+    peers = _spawn(lanes=1)
+
+    reported = {value for _point, value in (await peers.transport.call()).items()}
+
+    assert reported == {expected}
 
 
 @rdma_backends

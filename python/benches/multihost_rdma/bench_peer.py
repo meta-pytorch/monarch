@@ -46,7 +46,8 @@ import xxhash
 from bench_stats import Sample
 from bench_topology import InitiatorPlan, Slot, SlotAllocation, SlotValues
 from monarch.actor import Actor, context, endpoint
-from monarch.rdma import get_rdma_backend, RDMAAction, RDMABuffer
+from monarch.config import get_global_config
+from monarch.rdma import is_ibverbs_available, RDMAAction, RDMABuffer
 
 
 VERIFY_OFF: str = "off"
@@ -73,13 +74,19 @@ class Peer(Actor):
         self.plan: InitiatorPlan = InitiatorPlan()
 
     @endpoint
-    async def backend(self) -> str:
-        """The RDMA backend this proc actually resolved.
+    async def transport(self) -> str:
+        """Which transport this proc's configuration will actually use.
 
-        Checked against the requested transport so a silent TCP fallback fails
-        loudly instead of showing up as a hundred-fold outlier.
+        The driver checks this against what was asked for, so a silent
+        fallback fails loudly instead of showing up as a hundred-fold
+        outlier.
         """
-        return get_rdma_backend()
+        config = get_global_config()
+        if not config["rdma_disable_ibverbs"] and is_ibverbs_available():
+            return "ibverbs"
+        if config["rdma_allow_tcp_fallback"]:
+            return "tcp"
+        return "none"
 
     @endpoint
     async def setup(
