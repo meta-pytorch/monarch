@@ -45,11 +45,7 @@ class _Abort(NamedTuple):
     pass
 
 
-class _Opened(NamedTuple):
-    send: Port[_Message]
-
-
-_Message = _Data | _Eof | _Abort | _Opened
+_Message = _Data | _Eof | _Abort
 
 
 async def _close_writer(writer: asyncio.StreamWriter) -> None:
@@ -95,7 +91,7 @@ async def _receive_channel(
             writer.transport.abort()
             raise ConnectionAbortedError
         else:
-            raise RuntimeError("received duplicate port-forward open message")
+            raise RuntimeError("received unexpected port-forward message")
 
 
 async def _wait_for_eofs(
@@ -174,15 +170,15 @@ class _DestinationPortForwardActor(Actor):
         )
 
     @endpoint
-    async def open(self, send: Port[_Message]) -> None:
+    async def open(self, send: Port[_Message]) -> Port[_Message]:
         destination_port = self._destination_port
         if destination_port is None:
             raise RuntimeError("port forward destination is not configured")
         reader, writer = await asyncio.open_connection(_HOST, destination_port)
         try:
             source_send, receive = Channel[_Message].open()
-            send.send(_Opened(source_send))
             self._connections.add(reader, writer, send, receive)
+            return source_send
         except (Exception, asyncio.CancelledError):
             await _close_writer(writer)
             raise
@@ -222,11 +218,8 @@ class _SourcePortForwardActor(Actor):
             return
         try:
             send, receive = Channel[_Message].open()
-            await destination.open.call_one(send)
-            opened = await receive.recv()
-            if not isinstance(opened, _Opened):
-                raise RuntimeError("expected port-forward open message")
-            self._connections.add(reader, writer, opened.send, receive)
+            source_send = await destination.open.call_one(send)
+            self._connections.add(reader, writer, source_send, receive)
         except (Exception, asyncio.CancelledError):
             await _close_writer(writer)
             raise
