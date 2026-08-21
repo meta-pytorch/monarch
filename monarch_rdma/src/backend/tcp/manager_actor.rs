@@ -370,6 +370,7 @@ impl TcpManagerActor {
 #[async_trait]
 impl Actor for TcpManagerActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
         let owner = this.parent_handle().ok_or_else(|| {
             anyhow::anyhow!("RdmaManagerActor not found as parent of TcpManagerActor")
         })?;

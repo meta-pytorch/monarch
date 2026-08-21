@@ -188,6 +188,7 @@ pub struct IbvManagerActor<I: IbvDeviceImpl> {
 #[async_trait]
 impl<I: IbvDeviceImpl> Actor for IbvManagerActor<I> {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
         let owner = if let Some(owner) = this.parent_handle() {
             owner
         } else {
