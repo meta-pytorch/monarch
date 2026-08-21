@@ -52,9 +52,13 @@
 //!   and every acquisition goes through `monarch_with_gil{,_blocking}`. Enforced
 //!   by the crate's `#![deny(clippy::disallowed_methods)]` ban on raw
 //!   `Python::with_gil`/`attach` -- a hard compile error, not a `debug_assert`.
-//! - **HDL-6 (`WouldBlockRuntime` is `get()`'s alone).** Only `get()` raises it,
-//!   and only in a Tokio runtime context; `as_asyncio()`/`__await__` off a loop
-//!   raise the native `RuntimeError` instead.
+//! - **HDL-6 (`WouldBlockRuntime` is `get()`'s alone *among the observers*).**
+//!   Of the `Handle` observers only `get()` raises it, and only in a Tokio
+//!   runtime context; `as_asyncio()`/`__await__` off a loop raise the native
+//!   `RuntimeError` instead. The exception type itself is not private to this
+//!   module: it marks synchronous APIs that refuse to enter or block on Tokio
+//!   from an existing Tokio runtime context. The Python layer also raises it
+//!   for fresh root-client bootstrap (`monarch._src.actor.actor_mesh`).
 //! - **HDL-7 (`as_asyncio` publish).** The observer waits borrow-first (via
 //!   `wait_ready`, never `changed()`-first) and sets a result only on a
 //!   non-cancelled future, swallowing `InvalidStateError`; any `StopIteration`
@@ -139,7 +143,9 @@ pyo3::create_exception!(
     pytokio,
     WouldBlockRuntime,
     pyo3::exceptions::PyRuntimeError,
-    "raised when Handle.get() is called from a Tokio runtime context"
+    "raised when a synchronous API refuses to enter or block on Tokio from \
+     an existing Tokio runtime context -- Handle.get(), or a fresh root-client \
+     bootstrap from the Python layer"
 );
 
 /// The watch-channel mechanics behind a `Handle`.
@@ -525,10 +531,10 @@ impl PyHandle {
     /// `poll()`/`get()`/`await` still observes completion.
     #[pyo3(signature = (timeout = None))]
     fn get(slf: PyRef<'_, Self>, py: Python<'_>, timeout: Option<f64>) -> PyResult<Py<PyAny>> {
-        // HDL-6: get() is the sole WouldBlockRuntime raiser. It is the blocking
-        // API, and in a Tokio runtime context blocking would panic the runtime,
-        // so refuse unconditionally -- even a ready value -- keying the outcome
-        // to context, not producer timing.
+        // HDL-6: among the observers, get() is the sole WouldBlockRuntime
+        // raiser. It is the blocking API, and in a Tokio runtime context
+        // blocking would panic the runtime, so refuse unconditionally -- even
+        // a ready value -- keying the outcome to context, not producer timing.
         if is_tokio_thread() {
             return Err(WouldBlockRuntime::new_err(
                 "get() cannot be called from a Tokio runtime context; use poll() or as_asyncio()",
