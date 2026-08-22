@@ -54,6 +54,11 @@ default = ["tensor_engine"]
 distributed_sql_telemetry = ["dep:monarch_distributed_telemetry", "dep:monarch_introspection_snapshot"]
 extension-module = ["pyo3/extension-module"]
 rdma = ["dep:monarch_cpp_static_libs", "dep:monarch_rdma_extension"]
+# Kernel-launched RDMA (GPU-driven doorbell + GPU-Direct registration). OFF by
+# default; enabling this links libamdhip64/cudart into `_rust_bindings`. Not
+# folded into tensor_engine_gpu on purpose -- kept as a standalone opt-in so a
+# plain rdma build stays GPU-runtime-free. Driven by USE_RDMA_CUDA_KERNELS in setup.py.
+rdma_cuda = ["rdma", "monarch_rdma_extension/cuda"]
 tensor_engine = ["dep:monarch_messages", "dep:monarch_tensor_worker", "dep:torch-sys-cuda"]
 tensor_engine_gpu = ["dep:nccl-sys", "dep:rdmaxcel-sys", "monarch_messages/cuda", "monarch_tensor_worker/cuda", "rdma", "tensor_engine", "torch-sys-cuda/cuda"]
 
