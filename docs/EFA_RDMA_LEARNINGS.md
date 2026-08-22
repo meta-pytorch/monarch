@@ -64,9 +64,14 @@ multi-rail fan-out, shared-QP. Rules:
    climbed but cross-node `rx_pkts` stayed at 0. Adding a self-referencing
    egress rule on the EFA security group — and only then — brought `rx_pkts`
    off zero.
-3. **P4d vs P5 capability gap.** `max_qp_rd_atom = 0` on P4d and the same
-   value on P5 made clear that "no RDMA read/write atomics" is a provider
-   property, not a P4d-only limitation.
+3. **P4d vs P5 capability gap.** `ibv_query_device` reports
+   `max_qp_rd_atom = 0` on P4d. What generalizes to both instance types is the
+   absence of RDMA *atomics* — that is an EFA/SRD property, not a P4d quirk.
+   RDMA read/write is where the two diverge: P4d advertises neither
+   `EFADV_DEVICE_ATTR_CAPS_RDMA_READ` nor `..._RDMA_WRITE`, while P5 advertises
+   both and passes the `max_qp_rd_atom > 0` gate in
+   `rdmaxcel_efa_supports_rdma()`, so P5 necessarily reports a non-zero value.
+   We did not record P5's exact number.
 
 ---
 
