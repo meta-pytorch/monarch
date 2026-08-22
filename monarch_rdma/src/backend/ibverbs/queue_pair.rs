@@ -1322,6 +1322,7 @@ mod tests {
     use crate::backend::ibverbs::device_selection::resolve_target;
     use crate::backend::ibverbs::mlx_device::MlxDevice;
     use crate::backend::ibverbs::primitives::IbvConfig;
+    use crate::device_selection::MemoryLocation;
 
     #[test]
     fn test_create_connection() {
@@ -2057,6 +2058,7 @@ mod tests {
                 addr: 0x4000_0000,
                 size,
                 device_name: PEER_DEVICE.to_string(),
+                location: MemoryLocation::Cpu(None),
             },
         }
     }

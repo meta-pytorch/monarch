@@ -26,6 +26,7 @@ use serde::Serialize;
 use typeuri::Named;
 
 use super::primitives::IbvMr;
+use crate::device_selection::MemoryLocation;
 
 /// Guards the resources behind a registered MR, releasing them when the last
 /// [`IbvMemoryRegionView`] over it drops. Each implementor frees whatever it
@@ -99,8 +100,8 @@ impl IbvMemoryRegionView {
 }
 
 /// What a peer needs in order to address one of our registered memory regions
-/// over RDMA: the region's `rkey`, its RDMA address, its size, and the device
-/// serving it.
+/// over RDMA: the region's `rkey`, its RDMA address, its size, the device
+/// serving it, and where it lives.
 ///
 /// This is the wire form of an [`IbvMemoryRegionView`]. It carries no `lkey` and
 /// no keepalive: an `lkey` only means anything to the protection domain that
@@ -114,17 +115,30 @@ pub struct IbvRemoteMemoryRegionView {
     pub size: usize,
     /// Name of the RDMA device this region is registered on (e.g., "mlx5_0").
     pub device_name: String,
+    /// Where the registered memory lives, as resolved by the side that owns it.
+    ///
+    /// Carried explicitly because it cannot be recovered from `addr`: that is an
+    /// offset into the MR's zero-based address space, which coincides with a
+    /// pointer only for host memory, and it names an address space the receiver
+    /// does not share in any case. A receiver that must know whether a region is
+    /// on a GPU — to pick a device, or to take a local shortcut — reads it here.
+    pub location: MemoryLocation,
 }
 
-impl From<&IbvMemoryRegionView> for IbvRemoteMemoryRegionView {
-    /// The wire transport details are fully derived from the registered MR
-    /// view: the remote key, the RDMA address, the size, and the device name.
-    fn from(view: &IbvMemoryRegionView) -> Self {
+impl IbvRemoteMemoryRegionView {
+    /// The wire form of `view`, whose memory lives at `location`.
+    ///
+    /// `location` is a parameter rather than something read off `view`: only the
+    /// registering side holds the [`KeepaliveLocalMemory`] that resolved it.
+    ///
+    /// [`KeepaliveLocalMemory`]: crate::local_memory::KeepaliveLocalMemory
+    pub(super) fn new(view: &IbvMemoryRegionView, location: MemoryLocation) -> Self {
         Self {
             rkey: view.rkey,
             addr: view.rdma_addr,
             size: view.size,
             device_name: view.device_name.clone(),
+            location,
         }
     }
 }
