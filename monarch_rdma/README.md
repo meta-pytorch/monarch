@@ -19,6 +19,10 @@ Monarch RDMA is a Rust library that provides high-performance Remote Direct Memo
 - RDMA-capable network interface card (NIC), such as Mellanox ConnectX series
 - For GPU integration: NVIDIA GPU with CUDA support
 
+On AWS Elastic Fabric Adapter, RDMA runs over SRD rather than a reliable
+connection, and several assumptions that hold on Mellanox hardware fail there —
+some silently. See [EFA_NOTES.md](EFA_NOTES.md) before debugging an EFA setup.
+
 ### Software Requirements
 
 #### Required Libraries
