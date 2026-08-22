@@ -240,7 +240,6 @@ class ConfigColumns:
 
     schema_version: int
     transport: str
-    tcp_serialized: int
     source_device: str
     dest_device: str
     payload_size_mb: float
@@ -249,7 +248,7 @@ class ConfigColumns:
     runs: int
     warmup_iters_per_run: int
     warm_iters_per_run: int
-    local_sender: int
+    local_only: int
     verify_mode: str
     rdma_runtime_threads: str
     integrity_ok: str
