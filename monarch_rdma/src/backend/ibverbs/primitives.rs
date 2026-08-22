@@ -267,8 +267,7 @@ pub fn resolve_qp_type(qp_type: IbvQpType) -> u32 {
 pub struct IbvConfig {
     /// `target` - An explicit RDMA device target, resolved to a concrete
     /// device via [`resolve_target`]. When `None`, the consumer picks the
-    /// device itself (the co-located NIC for GPU memory, or a hash-assigned
-    /// NIC for host memory).
+    /// devices itself.
     pub target: Option<IbvDeviceTarget>,
     /// `port_num` - The physical port number on the device.
     pub port_num: u8,

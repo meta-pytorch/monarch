@@ -776,7 +776,7 @@ mod tests {
         let view = unsafe { register_host_or_dmabuf_mr(&domain, &mem) }.unwrap();
         // Tie the view's lifetime to the allocation's lifetime so that the safety contract
         // above holds.
-        mem.install_mr(view.clone())
+        mem.install_mr::<MlxDevice>(view.clone())
             .expect("the region has no registration on this device yet");
         assert_eq!(view.virtual_addr, alloc.ptr());
         assert_eq!(view.size, alloc.size());
@@ -803,7 +803,7 @@ mod tests {
         let view = unsafe { register_host_or_dmabuf_mr(&domain, &mem) }.unwrap();
         // Tie the view's lifetime to the allocation's lifetime so that the safety contract
         // above holds.
-        mem.install_mr(view.clone())
+        mem.install_mr::<MlxDevice>(view.clone())
             .expect("the region has no registration on this device yet");
         assert_eq!(view.virtual_addr, alloc.ptr() + offset);
         assert_eq!(view.size, size);
@@ -826,7 +826,7 @@ mod tests {
         let view = unsafe { register_host_or_dmabuf_mr(&domain, &mem) }.unwrap();
         // Tie the view's lifetime to the allocation's lifetime so that the safety contract
         // above holds.
-        mem.install_mr(view.clone())
+        mem.install_mr::<MlxDevice>(view.clone())
             .expect("the region has no registration on this device yet");
         assert_eq!(view.virtual_addr, alloc.ptr() + offset);
         assert_eq!(view.size, size);
@@ -846,7 +846,7 @@ mod tests {
         let view = unsafe { register_host_or_dmabuf_mr(&domain, &mem) }.unwrap();
         // Tie the view's lifetime to the allocation's lifetime so that the safety contract
         // above holds.
-        mem.install_mr(view.clone())
+        mem.install_mr::<MlxDevice>(view.clone())
             .expect("the region has no registration on this device yet");
         assert_eq!(view.virtual_addr, alloc.ptr());
         assert_eq!(view.size, size);

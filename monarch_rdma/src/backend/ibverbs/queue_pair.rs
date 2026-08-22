@@ -853,6 +853,8 @@ pub(super) struct QueuePairOp {
     pub(super) op_idx: usize,
     pub(super) op_type: RdmaOpType,
     pub(super) local_memory: KeepaliveLocalMemory,
+    /// `local_memory`'s registration on this queue pair's own device.
+    pub(super) local: IbvMemoryRegionView,
     pub(super) remote: IbvRemoteMemoryRegionView,
 }
 
@@ -887,13 +889,15 @@ struct PendingOp {
 struct PostedOpEntry {
     op_idx: usize,
     pending_wrs: HashSet<u64>,
-    /// Kept alive so both the memory and its registration outlive every
-    /// in-flight WR touching it.
+    /// Kept alive so the memory outlives every in-flight WR touching it.
     _local_memory: KeepaliveLocalMemory,
+    /// Kept alive so the memory *registration* outlives every in-flight
+    /// WR touching it.
+    _local_mrv: IbvMemoryRegionView,
     reply: PortHandle<OpResult>,
     /// First per-WR error observed for this op. The op's final reply is
-    /// held back until `pending_wrs.is_empty()`, so `_local_memory` outlives
-    /// every WR still in flight.
+    /// held back until `pending_wrs.is_empty()`, so the two fields above
+    /// outlive every WR still in flight.
     first_error: Option<String>,
 }
 
@@ -1031,36 +1035,8 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
             return Ok(false);
         }
 
-        // 3. Resolve the local side. A QP is bound to one device on each side,
-        //    so the only registration it can address is the one on
-        //    `self_device`: an `lkey` from any other protection domain means
-        //    nothing here.
-        let local = match op.local_memory.registered_mr(&self.qp_key.self_device) {
-            Ok(Some(view)) => view,
-            other => {
-                let err = match other {
-                    Ok(None) => format!(
-                        "local memory is not registered on this QP's device [op_idx={}, qp_key={:?}, local: {:?}]",
-                        op_idx, self.qp_key, op.local_memory,
-                    ),
-                    Err(error) => format!(
-                        "local memory cannot be registered on this QP's device [op_idx={}, qp_key={:?}]: {error:#}",
-                        op_idx, self.qp_key,
-                    ),
-                    Ok(Some(_)) => unreachable!("matched by the arm above"),
-                };
-                reply.try_post(
-                    cx,
-                    OpResult {
-                        op_idx,
-                        result: Err(err),
-                    },
-                )?;
-                return Ok(true);
-            }
-        };
-
-        // 4. Post.
+        // 3. Post.
+        let local = op.local;
         let post_result = match op.op_type {
             RdmaOpType::WriteFromLocal => self.qp.put(op.remote.clone(), local.clone()),
             RdmaOpType::ReadIntoLocal => self.qp.get(local.clone(), op.remote.clone()),
@@ -1080,7 +1056,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
             )
         })?;
 
-        // 5. Track in-flight state.
+        // 4. Track in-flight state.
         let op_id = self.next_op_id;
         self.next_op_id += 1;
         let mut pending_wrs = HashSet::with_capacity(wr_ids.len());
@@ -1095,6 +1071,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
                 op_idx,
                 pending_wrs,
                 _local_memory: op.local_memory,
+                _local_mrv: local,
                 reply,
                 first_error: None,
             },
@@ -1315,6 +1292,7 @@ mod tests {
     use hyperactor::Handler;
     use hyperactor::proc::Proc;
 
+    use super::super::memory_region::IbvMemoryRegionKeepalive;
     use super::*;
     use crate::backend::ibverbs::device::IbvDevice;
     use crate::backend::ibverbs::device::list_all_devices;
@@ -1992,20 +1970,10 @@ mod tests {
         }
     }
 
-    /// Local memory already registered on [`SELF_DEVICE`], which is what the QP
-    /// resolves to post an op.
+    /// The allocation an op's [`QueuePairOp::local`] view describes.
     fn fake_local_memory(addr: usize, size: usize) -> KeepaliveLocalMemory {
-        registered(
-            KeepaliveLocalMemory::try_new(Arc::new(FakeKeepalive { addr, size }))
-                .expect("a fake host address has a location"),
-        )
-    }
-
-    /// Install a [`SELF_DEVICE`] registration over the whole of `mem`.
-    fn registered(mem: KeepaliveLocalMemory) -> KeepaliveLocalMemory {
-        mem.install_mr(fake_mrv(mem.addr(), mem.size()))
-            .expect("a fresh handle carries no registration");
-        mem
+        KeepaliveLocalMemory::try_new(Arc::new(FakeKeepalive { addr, size }))
+            .expect("a fake host address has a location")
     }
 
     /// [`Keepalive`] that sets `dropped` when it goes away, so a test can
@@ -2042,8 +2010,7 @@ mod tests {
         )
     }
 
-    /// Devices of the QP `spawn_ready_actor` builds. The local memory of an op
-    /// must be registered on `SELF_DEVICE` for the QP to post it.
+    /// Devices of the QP `spawn_ready_actor` builds.
     const SELF_DEVICE: &str = "mlx5_0";
     const PEER_DEVICE: &str = "mlx5_0";
 
@@ -2052,12 +2019,48 @@ mod tests {
             op_idx,
             op_type,
             local_memory: fake_local_memory(addr, size),
+            local: fake_mrv(addr, size),
             remote: IbvRemoteMemoryRegionView {
                 rkey: 0,
                 addr: 0x4000_0000,
                 size,
                 device_name: PEER_DEVICE.to_string(),
             },
+        }
+    }
+
+    /// MR keepalive that sets `dropped` when it goes away, so a test can tell
+    /// whether anything still holds the registration open.
+    #[derive(Debug)]
+    struct DropFlagMr {
+        dropped: Arc<AtomicBool>,
+    }
+    impl IbvMemoryRegionKeepalive for DropFlagMr {}
+    impl Drop for DropFlagMr {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Like [`make_op`], but the registration reports when it drops.
+    fn make_op_watching_mr_drop(
+        op_idx: usize,
+        op_type: RdmaOpType,
+        addr: usize,
+        size: usize,
+        dropped: Arc<AtomicBool>,
+    ) -> QueuePairOp {
+        QueuePairOp {
+            local: IbvMemoryRegionView::new(
+                addr,
+                addr,
+                size,
+                0x1234,
+                0x5678,
+                SELF_DEVICE.to_string(),
+                Arc::new(DropFlagMr { dropped }),
+            ),
+            ..make_op(op_idx, op_type, addr, size)
         }
     }
 
@@ -2070,14 +2073,12 @@ mod tests {
         dropped: Arc<AtomicBool>,
     ) -> QueuePairOp {
         QueuePairOp {
-            local_memory: registered(
-                KeepaliveLocalMemory::try_new(Arc::new(DropFlagKeepalive {
-                    addr,
-                    size,
-                    dropped,
-                }))
-                .expect("a fake host address has a location"),
-            ),
+            local_memory: KeepaliveLocalMemory::try_new(Arc::new(DropFlagKeepalive {
+                addr,
+                size,
+                dropped,
+            }))
+            .expect("a fake host address has a location"),
             ..make_op(op_idx, op_type, addr, size)
         }
     }
@@ -2243,41 +2244,6 @@ mod tests {
         Ok(())
     }
 
-    /// The QP addresses local memory through its registration on `self_device`,
-    /// which the manager makes before dispatching. An op whose memory carries no
-    /// such registration fails on its own, and nothing is posted.
-    #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn qpa_rejects_op_not_registered_on_its_device() -> Result<()> {
-        let harness = QpaHarness::build()?;
-        let (actor, _qp, mut posted_rx) = harness.spawn_ready_actor(4).await?;
-
-        let items = vec![QueuePairOp {
-            local_memory: KeepaliveLocalMemory::try_new(Arc::new(FakeKeepalive {
-                addr: 0x1000,
-                size: 4096,
-            }))
-            .expect("a fake host address has a location"),
-            ..make_op(3, RdmaOpType::WriteFromLocal, 0x1000, 4096)
-        }];
-        let mut rx = submit_ops(&harness, &actor, items)?;
-
-        let replies = collect_replies(&mut rx, 1).await;
-        let [(op_idx, result)] = replies.as_slice() else {
-            panic!("expected exactly one reply, got {replies:?}");
-        };
-        assert_eq!(*op_idx, 3);
-        let error = result
-            .as_ref()
-            .expect_err("unregistered local memory cannot be posted");
-        assert!(
-            error.contains("not registered on this QP's device"),
-            "the error should name the missing registration: {error}",
-        );
-        assert_no_post(&mut posted_rx, Duration::from_millis(200)).await;
-        harness.teardown().await;
-        Ok(())
-    }
-
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn qpa_posted_op_pins_local_memory() -> Result<()> {
         let harness = QpaHarness::build()?;
@@ -2315,6 +2281,44 @@ mod tests {
         await_dropped(&dropped).await;
 
         // Retire op 1 too, so no op is left in flight at teardown.
+        qp.queue_completion(other_wr_ids[0]);
+        assert_eq!(
+            collect_replies(&mut rx, 2).await,
+            vec![(0, Ok(())), (1, Ok(()))]
+        );
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_posted_op_pins_local_registration() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4).await?;
+
+        // As above, op 1 only proves op 0 has left `try_post_head`.
+        let dropped = Arc::new(AtomicBool::new(false));
+        let items = vec![
+            make_op_watching_mr_drop(
+                0,
+                RdmaOpType::WriteFromLocal,
+                0x1000,
+                4096,
+                Arc::clone(&dropped),
+            ),
+            make_op(1, RdmaOpType::WriteFromLocal, 0x2000, 4096),
+        ];
+        let mut rx = submit_ops(&harness, &actor, items)?;
+
+        let (_, _, wr_ids) = expect_put(recv_posted(&mut posted_rx).await);
+        let (_, _, other_wr_ids) = expect_put(recv_posted(&mut posted_rx).await);
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "the registration must stay alive while a WR that touches it is in flight"
+        );
+
+        qp.queue_completion(wr_ids[0]);
+        await_dropped(&dropped).await;
+
         qp.queue_completion(other_wr_ids[0]);
         assert_eq!(
             collect_replies(&mut rx, 2).await,

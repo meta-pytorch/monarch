@@ -11,12 +11,14 @@
 
 use std::collections::BTreeSet;
 use std::num::NonZeroU32;
+use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
 use anyhow::Context;
 use anyhow::Result;
 use dashmap::DashMap;
+use dashmap::DashSet;
 
 use super::device::IbvDevice;
 use super::device::IbvDeviceImpl;
@@ -139,11 +141,6 @@ impl PeerDeviceAffinityPolicy {
     /// Whatever is left over pairs subject to the policy, taking the
     /// first NIC in `remote` it can still reach.
     ///
-    /// Both lists are expected in [`select_optimal_ibv_devices`] order, which
-    /// is what makes that choice reproducible: two processes ranking the same
-    /// NICs list them identically, so each arrives at the same pairing without
-    /// exchanging anything.
-    ///
     /// The leftovers are matched greedily in order, so an earlier device can
     /// take the only partner a later one could have used. Maximizing the number
     /// of pairs is likely not worth a matching algorithm here.
@@ -177,6 +174,89 @@ impl PeerDeviceAffinityPolicy {
             }
         }
         pairs
+    }
+
+    /// The devices to serve one buffer from: at most `max` of `devices`, or all
+    /// of them when `max` is `None`.
+    ///
+    /// Which devices are dropped is decided by position, so the caller decides
+    /// what "first" means by how it orders `devices`.
+    ///
+    /// Selection logic depends on the policy:
+    ///
+    /// - [`Self::Any`]: any two NICs can talk to each other, so buffers should
+    ///   spread across tied devices rather than always funneling through
+    ///   the first. `choose` picks a random offset into `devices`, then
+    ///   takes up to `max` starting from that offset, wrapping around if
+    ///   necessary.
+    /// - [`Self::MatchName`]: takes the first `max` NICs in the order in which
+    ///   they appear in devices. Callers should pass `devices` in a known,
+    ///   consistent order so that different processes agree on the choice.
+    /// - [`Self::Groups`]: takes one device from every group `devices` touches
+    ///   before taking a second from any of them, so a peer served by any of
+    ///   those groups still finds a partner here. A device no group names comes
+    ///   last: it reaches no peer device, so it is worth registering only once
+    ///   nothing else fills `max`.
+    pub fn choose(&self, devices: &[String], max: Option<NonZeroUsize>) -> Vec<String> {
+        if devices.is_empty() {
+            return Vec::new();
+        }
+        let limit = max
+            .map_or(devices.len(), NonZeroUsize::get)
+            .min(devices.len());
+        match self {
+            Self::Any => devices
+                .iter()
+                .cycle()
+                .skip(rand::random_range(0..devices.len()))
+                .take(limit)
+                .cloned()
+                .collect(),
+            Self::MatchName => devices.iter().take(limit).cloned().collect(),
+            Self::Groups(groups) => Self::choose_across_groups(groups, devices, limit),
+        }
+    }
+
+    /// [`Self::Groups`]'s arm of [`Self::choose`].
+    fn choose_across_groups(
+        groups: &[BTreeSet<String>],
+        devices: &[String],
+        limit: usize,
+    ) -> Vec<String> {
+        // One bucket per group `devices` touches, created on first touch and
+        // filled in `devices` order.
+        let mut buckets: Vec<Vec<&String>> = Vec::new();
+        let mut bucket_of: Vec<Option<usize>> = vec![None; groups.len()];
+        let mut ungrouped: Vec<&String> = Vec::new();
+        for device in devices {
+            let Some(group) = groups.iter().position(|names| names.contains(device)) else {
+                ungrouped.push(device);
+                continue;
+            };
+            match bucket_of[group] {
+                Some(bucket) => buckets[bucket].push(device),
+                None => {
+                    bucket_of[group] = Some(buckets.len());
+                    buckets.push(vec![device]);
+                }
+            }
+        }
+        if buckets.len() > limit {
+            warn_uncovered_groups(limit, buckets.len(), &buckets[limit..]);
+        }
+
+        let rounds = buckets.iter().map(Vec::len).max().unwrap_or(0);
+        let mut ordered: Vec<&String> = Vec::with_capacity(devices.len());
+        for round in 0..rounds {
+            ordered.extend(
+                buckets
+                    .iter()
+                    .filter_map(|bucket| bucket.get(round))
+                    .copied(),
+            );
+        }
+        ordered.extend(ungrouped);
+        ordered.into_iter().take(limit).cloned().collect()
     }
 
     /// Whether a transfer may run between `local` and `remote`.
@@ -234,6 +314,31 @@ impl FromStr for PeerDeviceAffinityPolicy {
                 Ok(Self::Groups(groups))
             }
         }
+    }
+}
+
+/// Report, at most once per distinct set of left-out devices, that
+/// `rdma_max_nics_per_buffer` is too low for a buffer to reach every
+/// peer-affinity group that it could hypothetically reach.
+///
+/// `uncovered` holds the buckets [`PeerDeviceAffinityPolicy::choose`] had to
+/// drop, one per group it could not reach.
+fn warn_uncovered_groups(max: usize, groups: usize, uncovered: &[Vec<&String>]) {
+    static WARNED: LazyLock<DashSet<String>> = LazyLock::new(DashSet::new);
+    let mut left_out: Vec<&str> = uncovered
+        .iter()
+        .flatten()
+        .map(|device| device.as_str())
+        .collect();
+    left_out.sort();
+    // `insert` is true only for the first caller to claim this key, and it takes
+    // the shard lock, so exactly one of them warns.
+    if WARNED.insert(left_out.join(",")) {
+        tracing::warn!(
+            "rdma_max_nics_per_buffer is {max}, but this buffer's RDMA devices span {groups} \
+             peer-affinity groups; raise it to {groups} to also serve {left_out:?}, or else \
+             some peers may be unreachable.",
+        );
     }
 }
 
@@ -492,10 +597,10 @@ mod tests {
         );
     }
 
-    /// Device names as a caller passes them: in [`select_optimal_ibv_devices`]
-    /// order, which is sorted by name.
+    /// Device names in [`select_optimal_ibv_devices`] order, which is sorted by
+    /// name -- what [`PeerDeviceAffinityPolicy::choose`] is handed.
     fn devices<const N: usize>(names: [&str; N]) -> Vec<String> {
-        assert!(names.is_sorted(), "callers pass device names in order");
+        assert!(names.is_sorted(), "a ranking comes back sorted by name");
         names.map(str::to_owned).to_vec()
     }
 
@@ -600,6 +705,150 @@ mod tests {
             vec![None; local.len()],
             "a peer advertising no device leaves every local NIC unpaired",
         );
+    }
+
+    /// [`PeerDeviceAffinityPolicy::choose`] with a budget of `max`.
+    fn chosen(policy: &PeerDeviceAffinityPolicy, devices: &[String], max: usize) -> Vec<String> {
+        policy.choose(
+            devices,
+            Some(NonZeroUsize::new(max).expect("a device budget is at least one")),
+        )
+    }
+
+    #[test]
+    fn each_group_is_reached_before_any_is_doubled_up() {
+        let policy: PeerDeviceAffinityPolicy =
+            "groups:mlx5_0,mlx5_1|mlx5_2,mlx5_3|mlx5_4,mlx5_5|mlx5_6,mlx5_7"
+                .parse()
+                .expect("group spec should parse");
+        let local = devices([
+            "mlx5_0", "mlx5_1", "mlx5_2", "mlx5_3", "mlx5_4", "mlx5_5", "mlx5_6", "mlx5_7",
+        ]);
+        // One device out of each group. A prefix of the ranking would have taken
+        // mlx5_0 through mlx5_3 and left the last two groups unreachable.
+        assert_eq!(
+            chosen(&policy, &local, 4),
+            devices(["mlx5_0", "mlx5_2", "mlx5_4", "mlx5_6"]),
+        );
+        // Once every group is covered the budget doubles up within them.
+        assert_eq!(
+            chosen(&policy, &local, 6),
+            ["mlx5_0", "mlx5_2", "mlx5_4", "mlx5_6", "mlx5_1", "mlx5_3"].map(str::to_owned),
+        );
+        // The best-ranked device is still taken first.
+        assert_eq!(chosen(&policy, &local, 1), devices(["mlx5_0"]));
+    }
+
+    #[test]
+    fn a_group_the_devices_do_not_reach_costs_no_budget() {
+        let policy: PeerDeviceAffinityPolicy = "groups:mlx5_0,mlx5_1|mlx5_2,mlx5_3|mlx5_4,mlx5_5"
+            .parse()
+            .expect("group spec should parse");
+        // A buffer only two groups can serve — a GPU buffer, say — spends its
+        // whole budget on those two rather than holding room for the third.
+        let local = devices(["mlx5_1", "mlx5_2", "mlx5_3"]);
+        assert_eq!(
+            chosen(&policy, &local, 3),
+            devices(["mlx5_1", "mlx5_2", "mlx5_3"]),
+        );
+    }
+
+    #[test]
+    fn a_device_no_group_names_is_taken_last() {
+        let policy: PeerDeviceAffinityPolicy = "groups:mlx5_2,mlx5_3"
+            .parse()
+            .expect("group spec should parse");
+        // `mlx5_0` and `mlx5_1` reach no peer device under this policy, so the
+        // budget goes to the group first even though they rank higher.
+        let local = devices(["mlx5_0", "mlx5_1", "mlx5_2", "mlx5_3"]);
+        assert_eq!(chosen(&policy, &local, 1), devices(["mlx5_2"]));
+        assert_eq!(
+            chosen(&policy, &local, 3),
+            ["mlx5_2", "mlx5_3", "mlx5_0"].map(str::to_owned),
+        );
+    }
+
+    #[test]
+    fn match_name_takes_devices_in_order() {
+        // Both sides have to land on the same name.
+        let local = devices(["mlx5_0", "mlx5_1", "mlx5_2"]);
+        assert_eq!(
+            chosen(&PeerDeviceAffinityPolicy::MatchName, &local, 2),
+            devices(["mlx5_0", "mlx5_1"]),
+        );
+    }
+
+    #[test]
+    fn any_starts_at_a_random_device_and_wraps() {
+        let policy = PeerDeviceAffinityPolicy::Any;
+        let ranked = devices(["mlx5_0", "mlx5_1", "mlx5_2", "mlx5_3"]);
+        // Every pair of devices adjacent in the ranking, wrapping around.
+        let windows: BTreeSet<Vec<String>> = [
+            ["mlx5_0", "mlx5_1"].map(str::to_owned).to_vec(),
+            ["mlx5_1", "mlx5_2"].map(str::to_owned).to_vec(),
+            ["mlx5_2", "mlx5_3"].map(str::to_owned).to_vec(),
+            ["mlx5_3", "mlx5_0"].map(str::to_owned).to_vec(),
+        ]
+        .into();
+        let mut seen: BTreeSet<Vec<String>> = BTreeSet::new();
+        for _ in 0..64 {
+            let picked = chosen(&policy, &ranked, 2);
+            assert!(
+                windows.contains(&picked),
+                "{picked:?} does not start somewhere in {ranked:?} and run on from there",
+            );
+            seen.insert(picked);
+        }
+        // 64 draws that all miss one of four starts would be a one-in-billions
+        // coincidence.
+        assert_eq!(seen, windows);
+    }
+
+    #[test]
+    fn no_limit_takes_every_device() {
+        let local = devices(["mlx5_0", "mlx5_1", "mlx5_2", "mlx5_3"]);
+        for policy in [
+            PeerDeviceAffinityPolicy::Any,
+            PeerDeviceAffinityPolicy::MatchName,
+            "groups:mlx5_0,mlx5_1|mlx5_2,mlx5_3"
+                .parse()
+                .expect("group spec should parse"),
+        ] {
+            let mut unbounded = policy.choose(&local, None);
+            unbounded.sort();
+            assert_eq!(unbounded, local, "{policy:?} should leave no device behind");
+            // A budget larger than the list is the same as no budget at all.
+            let mut over_budget = chosen(&policy, &local, local.len() + 5);
+            over_budget.sort();
+            assert_eq!(
+                over_budget, local,
+                "{policy:?} should not repeat a device to fill its budget",
+            );
+        }
+    }
+
+    #[test]
+    fn one_device_per_group_pairs_with_a_peer_in_any_of_them() {
+        // What spreading over groups buys: a buffer that only one group can
+        // serve -- a GPU buffer bound to a single NIC -- still finds a partner,
+        // whichever group that NIC falls in.
+        let policy: PeerDeviceAffinityPolicy =
+            "groups:mlx5_0,mlx5_1|mlx5_2,mlx5_3|mlx5_4,mlx5_5|mlx5_6,mlx5_7"
+                .parse()
+                .expect("group spec should parse");
+        let ranked = devices([
+            "mlx5_0", "mlx5_1", "mlx5_2", "mlx5_3", "mlx5_4", "mlx5_5", "mlx5_6", "mlx5_7",
+        ]);
+        let local = chosen(&policy, &ranked, 4);
+        for peer in &ranked {
+            let remote = chosen(&policy, std::slice::from_ref(peer), 4);
+            let pairs = policy.pairs(&local, &remote);
+            assert_eq!(
+                pairs.iter().flatten().count(),
+                1,
+                "{peer} should pair with one of {local:?}, got {pairs:?}",
+            );
+        }
     }
 
     #[test]

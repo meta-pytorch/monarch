@@ -107,6 +107,36 @@ declare_attrs! {
     ))
     pub attr RDMA_PEER_DEVICE_AFFINITY: String = String::new();
 
+    /// How many NICs a buffer is registered on, at most. `None`, which an
+    /// empty environment value parses to, sets no limit: every equally good
+    /// NIC serves the buffer.
+    ///
+    /// Depending on where in memory a buffer lives, there may be many
+    /// NICs that would be equally good for serving it. Registering the
+    /// buffer on each NIC improves flexibility and provides performance
+    /// optimization opportunities, but comes at the cost of an expensive
+    /// memory registration per NIC. This config attribute lets the user
+    /// tune this tradeoff.
+    ///
+    /// When multiple optimal NICs are available for a buffer, selecting
+    /// among them depends on [`RDMA_PEER_DEVICE_AFFINITY`]:
+    /// - `any`: first chosen at random, then the rest are taken
+    ///    lexicographically starting from the first.
+    /// - `match_name`: taken lexicographically.
+    /// - `groups`: round robin across groups, taken lexicographically
+    ///    within each group (so `groups:nic0,nic1|nic2,nic3`
+    ///    with `RDMA_MAX_NICS_PER_BUFFER = 2` would choose
+    ///    `nic0` and `nic2`).
+    ///
+    /// A manager pinned to one device by [`RDMA_IBVERBS_TARGET`] registers
+    /// there and ignores this.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_MAX_NICS_PER_BUFFER".to_string()),
+        Some("rdma_max_nics_per_buffer".to_string()),
+    ))
+    pub attr RDMA_MAX_NICS_PER_BUFFER: Option<NonZeroUsize> =
+        Some(NonZeroUsize::new(1).expect("1 is non-zero"));
+
     /// How many queue pairs share one completion queue.
     ///
     /// Sharing is what lets one poller reap for several queue pairs. Each
