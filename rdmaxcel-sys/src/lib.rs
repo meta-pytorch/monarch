@@ -344,6 +344,8 @@ unsafe extern "C" {
 
     /// EFA post operation with ibv_post_recv fallback
     /// op_type: 0 = write, 1 = read, 2 = recv, 3 = write_with_imm
+    /// signaled: non-zero to request a completion. The QP is created with
+    /// sq_sig_all = 0, so an unsignaled work request produces no CQE.
     pub fn rdmaxcel_qp_post_op(
         qp: *mut rdmaxcel_qp_t,
         local_addr: *mut std::ffi::c_void,

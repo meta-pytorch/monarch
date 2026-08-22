@@ -766,14 +766,15 @@ int rdmaxcel_efa_post_write(
     size_t length,
     void* remote_addr,
     uint32_t rkey,
-    uint64_t wr_id) {
+    uint64_t wr_id,
+    int signaled) {
   if (!qp || !qp->qpex || !ah) {
     return RDMAXCEL_INVALID_PARAMS;
   }
 
   ibv_wr_start(qp->qpex);
   qp->qpex->wr_id = wr_id;
-  qp->qpex->wr_flags = IBV_SEND_SIGNALED;
+  qp->qpex->wr_flags = signaled ? IBV_SEND_SIGNALED : 0;
 
   ibv_wr_rdma_write(qp->qpex, rkey, (uintptr_t)remote_addr);
   ibv_wr_set_sge(qp->qpex, lkey, (uintptr_t)local_addr, (uint32_t)length);
@@ -801,14 +802,15 @@ int rdmaxcel_efa_post_read(
     size_t length,
     void* remote_addr,
     uint32_t rkey,
-    uint64_t wr_id) {
+    uint64_t wr_id,
+    int signaled) {
   if (!qp || !qp->qpex || !ah) {
     return RDMAXCEL_INVALID_PARAMS;
   }
 
   ibv_wr_start(qp->qpex);
   qp->qpex->wr_id = wr_id;
-  qp->qpex->wr_flags = IBV_SEND_SIGNALED;
+  qp->qpex->wr_flags = signaled ? IBV_SEND_SIGNALED : 0;
 
   ibv_wr_rdma_read(qp->qpex, rkey, (uintptr_t)remote_addr);
   ibv_wr_set_sge(qp->qpex, lkey, (uintptr_t)local_addr, (uint32_t)length);
@@ -941,6 +943,7 @@ int rdmaxcel_efa_post_op(
     void* remote_addr,
     uint32_t rkey,
     uint64_t wr_id,
+    int signaled,
     int op_type) {
   if (!ah) {
     return RDMAXCEL_INVALID_PARAMS;
@@ -956,7 +959,8 @@ int rdmaxcel_efa_post_op(
         length,
         remote_addr,
         rkey,
-        wr_id);
+        wr_id,
+        signaled);
   } else if (op_type == 1) {
     return rdmaxcel_efa_post_read(
         qp,
@@ -968,7 +972,8 @@ int rdmaxcel_efa_post_op(
         length,
         remote_addr,
         rkey,
-        wr_id);
+        wr_id,
+        signaled);
   }
   return RDMAXCEL_UNSUPPORTED_OP;
 }
@@ -1029,5 +1034,6 @@ int rdmaxcel_qp_post_op(
       remote_addr,
       rkey,
       wr_id,
+      signaled,
       efa_op);
 }

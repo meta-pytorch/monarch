@@ -399,6 +399,8 @@ struct ibv_qp* create_efa_qp(
     int max_recv_sge);
 
 // EFA extended-verbs operation posting
+// signaled: non-zero to request a completion for this work request. The QP is
+// created with sq_sig_all = 0, so an unsignaled request produces no CQE.
 int rdmaxcel_efa_post_write(
     rdmaxcel_qp_t* qp,
     struct ibv_ah* ah,
@@ -409,7 +411,8 @@ int rdmaxcel_efa_post_write(
     size_t length,
     void* remote_addr,
     uint32_t rkey,
-    uint64_t wr_id);
+    uint64_t wr_id,
+    int signaled);
 
 int rdmaxcel_efa_post_read(
     rdmaxcel_qp_t* qp,
@@ -421,7 +424,8 @@ int rdmaxcel_efa_post_read(
     size_t length,
     void* remote_addr,
     uint32_t rkey,
-    uint64_t wr_id);
+    uint64_t wr_id,
+    int signaled);
 
 // EFA-specific connect: INIT->RTR->RTS + address handle creation
 int rdmaxcel_efa_connect(
@@ -446,6 +450,7 @@ int rdmaxcel_efa_post_op(
     void* remote_addr,
     uint32_t rkey,
     uint64_t wr_id,
+    int signaled,
     int op_type);
 
 #ifdef __cplusplus
