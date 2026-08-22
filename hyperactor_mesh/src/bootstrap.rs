@@ -81,6 +81,7 @@ use crate::host::SingleTerminate;
 use crate::host::TerminateError;
 use crate::host::TerminateSummary;
 use crate::host::WaitError;
+use crate::host::legacy_service_proc_id;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::logging::OutputTarget;
@@ -299,7 +300,9 @@ impl DrainedHostShutdown {
 /// - `shutdown_handle` joins the host's accept loop and runs the
 ///   drain protocol; see [`HostShutdownHandle`].
 ///
-/// - `addr`: the listening address of the host; this is used for the frontend server.
+/// - `addr`: the service proc identity and direct host frontend listening
+///   address. The gateway remints the proc's final location after binding and
+///   optional `via` attachment; a source-routed input location is rejected.
 /// - `command`: optional bootstrap command to spawn procs, otherwise [`BootstrapProcManager::current`].
 /// - `config`: optional runtime config overlay.
 /// - `exit_on_shutdown`: if true, [`HostShutdownHandle::join`] will call `process::exit` after draining.
@@ -311,7 +314,7 @@ impl DrainedHostShutdown {
 ///   before any ref is minted — so refs advertise the routable `Via`
 ///   location (used by out-of-cluster clients).
 pub async fn host(
-    addr: ChannelAddr,
+    addr: ProcAddr,
     command: Option<BootstrapCommand>,
     config: Option<Attrs>,
     exit_on_shutdown: bool,
@@ -590,9 +593,9 @@ impl Bootstrap {
                 let (serve_addr, _) = local_proc_addr(&socket_dir_path, proc_id.id())?;
 
                 // The following is a modified host::spawn_proc to support direct
-                // dialing between local procs: 1) we bind each proc to a deterministic
-                // address in socket_dir_path; 2) we use LocalProcDialer to dial these
-                // addresses for local procs.
+                // dialing between spawned sibling procs: 1) we bind each proc to a
+                // deterministic address in socket_dir_path; 2) we use LocalProcDialer
+                // to dial those addresses directly.
                 let proc_sender = mailbox::LocalProcDialer::new(
                     local_addr.clone(),
                     socket_dir_path,
@@ -636,7 +639,7 @@ impl Bootstrap {
                 exit_on_shutdown,
             } => {
                 let (_agent_handle, shutdown) = host(
-                    addr,
+                    ProcAddr::new(legacy_service_proc_id(), addr.into()),
                     command,
                     config,
                     exit_on_shutdown,
@@ -3458,7 +3461,10 @@ mod tests {
         let temp_instance = temp_proc.client("temp");
 
         let handle = host(
-            ChannelAddr::any(ChannelTransport::Unix),
+            ProcAddr::new(
+                legacy_service_proc_id(),
+                ChannelAddr::any(ChannelTransport::Unix).into(),
+            ),
             Some(BootstrapCommand::test()),
             None,
             false,

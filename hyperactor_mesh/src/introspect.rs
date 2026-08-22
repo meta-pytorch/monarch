@@ -268,9 +268,9 @@
 //! - **PS-12 (universal py-spy):** Worker procs and the service
 //!   proc can handle `PySpyDump`. Worker procs handle it via
 //!   ProcAgent; the service proc handles it via HostAgent (same
-//!   spawn-worker pattern). `pyspy_bridge` routes by proc name:
-//!   if `proc_id.base_name() == SERVICE_PROC_NAME`, the target
-//!   is `host_agent`; otherwise `proc_agent[0]`. Procs lacking
+//!   spawn-worker pattern). `pyspy_bridge` routes to a HostAgent
+//!   only when its exact actor identity is registered with the mesh
+//!   admin; all other procs route to `proc_agent[0]`. Procs lacking
 //!   either agent (e.g. mesh-admin) fast-fail via PS-13.
 //! - **PS-13 (defensive probe):** Before sending `PySpyDump`,
 //!   `pyspy_bridge` probes the selected actor with an introspect

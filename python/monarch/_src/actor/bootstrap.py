@@ -8,7 +8,7 @@
 
 
 from pathlib import Path
-from typing import List, Literal, Optional, Union
+from typing import Literal, Optional, Sequence, Union
 
 from monarch._rust_bindings.monarch_hyperactor.bootstrap import (
     attach_to_workers as _attach_to_workers,
@@ -47,12 +47,23 @@ def run_worker_loop_forever(
     Start a monarch server at "address" capable of letting this machine participate in
     a monarch process.
 
-    address is a zmq-style specifier for the place where the server will listen to connections, examples:
+    ``address`` accepts either of these string formats:
+
+    - A ZMQ-style channel URL. This uses the legacy ``service`` proc identity.
+    - A ProcAddr in ``<proc-id>@<channel-url>`` form. This uses the embedded
+      proc identity. An explicit legacy address such as
+      ``service@tcp://host:4444`` is equivalent to the bare channel URL.
+
+    Channel URL examples:
 
         tcp://*:4444 - listen on tcp port (NYI, use tls on connection when ca="trust_all_connections")
         metatls://*:4444 - listen on tcp port use ssl encryption via metatls
         ipc://some_unique_string - unix sockets
         inproc://3423 - connection only accessible within the process
+
+    A ProcAddr example:
+
+        service<2MuAHeDjLCEd>@tcp://worker-fqdn:4444
 
     To bind to one interface but advertise a different one, append the bind
     address after ``@``:
@@ -66,10 +77,13 @@ def run_worker_loop_forever(
     only for serving: after the worker starts, its host identity is the
     advertised address to the left of ``@``.
 
+    The bind alias can also be used inside a ProcAddr:
+
+        service<2MuAHeDjLCEd>@tcp://worker-fqdn:4444@tcp://0.0.0.0:4444
+
     The server will accept a connection to a new root client and enable it to
     use this machine as a host. If the client disconnects or cannot be contacted, this server
     kills all the current work and waits for a new connection.
-
 
     private_key is a tls private key file loaded as bytes used to establish secure connections.
     Things connecting to this machine must trust this private_key in the certificate authority file.
@@ -97,7 +111,7 @@ def attach_to_workers(
     *,
     private_key: PrivateKey = None,
     ca: CA,
-    workers: List[str | Future[str]],
+    workers: Sequence[str | Future[str]],
     name: Optional[str] = None,
 ) -> HostMesh:
     """
@@ -106,16 +120,20 @@ def attach_to_workers(
 
     This returns the host mesh immediately, and allows the logic for the hosts to
     connect to happen asynchronously. A separate future such as `await mesh.initialized` is
-    used to decide if we have successfully connected to all hosts. Workers are specified with the same zmq-style
-    specifier strings described in `run_worker_loop_forever`. They may be specified as monarch.actor.Future objects
-    so that an implementation can do some asynchronous work to discover where to connect.
+    used to decide if we have successfully connected to all hosts. Workers may
+    be strings or monarch.actor.Future objects that resolve to strings.
+
+    Each worker string accepts either of these formats:
+
+    - A ZMQ-style channel URL such as ``tcp://worker-fqdn:4444``. This uses the
+      legacy ``service`` proc identity.
+    - A ProcAddr in ``<proc-id>@<location>`` form, such as
+      ``service<2MuAHeDjLCEd>@tcp://worker-fqdn:4444``. This preserves the
+      embedded service proc identity and full location.
 
     If a worker string uses the alias form ``dial_to@bind_to``,
     ``attach_to_workers`` treats it as a reference to an already-serving
-    worker and stores only ``dial_to`` in the host mesh. The ``bind_to`` half
-    is a serve-side detail and is not part of the host, proc, or actor
-    identity.
-
+    worker. Dialing uses ``dial_to``; ``bind_to`` remains a serve-side detail.
 
     private_key is a tls private key file loaded as bytes used to establish secure connections.
     The workers must trust this private_key in their certificate authority file.

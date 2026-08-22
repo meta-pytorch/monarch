@@ -17,6 +17,8 @@ use hyperactor::Endpoint as _;
 use hyperactor::Gateway;
 use hyperactor::Instance;
 use hyperactor::Proc;
+use hyperactor::ProcAddr;
+use hyperactor::ProcId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::id::Label;
 use hyperactor_mesh::ProcMeshRef;
@@ -403,9 +405,13 @@ fn bootstrap_host(
         // flows back over the duplex. The host owns the resulting serve
         // handle and tears it down on drop.
         let gateway = Gateway::global().clone();
+        let service_proc_addr = ProcAddr::new(
+            ProcId::singleton(Label::strip(hyperactor::proc::LEGACY_SERVICE_PROC_NAME)),
+            default_bind_spec().binding_addr().into(),
+        );
 
         let (host_mesh_agent, shutdown_handle) = host(
-            default_bind_spec().binding_addr(),
+            service_proc_addr,
             Some(bootstrap_cmd),
             None,
             false,
