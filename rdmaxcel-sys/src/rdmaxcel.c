@@ -671,6 +671,37 @@ int rdmaxcel_is_efa_dev(struct ibv_context* ctx) {
   return (ret == 0) ? 1 : 0;
 }
 
+// Whether this EFA device can serve RDMA read and write, or only send/recv.
+//
+// The authoritative signal is `efadv_device_attr.device_caps`, which carries
+// the `EFADV_DEVICE_ATTR_CAPS_RDMA_READ` / `..._RDMA_WRITE` bits the driver
+// sets for RDMA-capable instances. We also require `max_qp_rd_atom > 0` from
+// the standard `ibv_query_device`, so a device whose driver advertises the EFA
+// capability while the verbs layer refuses RDMA work requests is reported as
+// incapable rather than failing later at queue-pair creation.
+int rdmaxcel_efa_supports_rdma(struct ibv_context* ctx) {
+  if (!ctx || !ctx->device) {
+    return 0;
+  }
+
+  struct ibv_device_attr dev_attr = {};
+  if (ibv_query_device(ctx, &dev_attr) != 0) {
+    return 0;
+  }
+  if (dev_attr.max_qp_rd_atom == 0) {
+    return 0;
+  }
+
+  struct efadv_device_attr efa_attr = {};
+  if (efadv_query_device(ctx, &efa_attr, sizeof(efa_attr)) != 0) {
+    return 0;
+  }
+
+  const uint32_t rdma_caps =
+      EFADV_DEVICE_ATTR_CAPS_RDMA_READ | EFADV_DEVICE_ATTR_CAPS_RDMA_WRITE;
+  return ((efa_attr.device_caps & rdma_caps) == rdma_caps) ? 1 : 0;
+}
+
 // ============================================================================
 // EFA QP Creation
 // ============================================================================
@@ -735,14 +766,15 @@ int rdmaxcel_efa_post_write(
     size_t length,
     void* remote_addr,
     uint32_t rkey,
-    uint64_t wr_id) {
+    uint64_t wr_id,
+    int signaled) {
   if (!qp || !qp->qpex || !ah) {
     return RDMAXCEL_INVALID_PARAMS;
   }
 
   ibv_wr_start(qp->qpex);
   qp->qpex->wr_id = wr_id;
-  qp->qpex->wr_flags = IBV_SEND_SIGNALED;
+  qp->qpex->wr_flags = signaled ? IBV_SEND_SIGNALED : 0;
 
   ibv_wr_rdma_write(qp->qpex, rkey, (uintptr_t)remote_addr);
   ibv_wr_set_sge(qp->qpex, lkey, (uintptr_t)local_addr, (uint32_t)length);
@@ -770,14 +802,15 @@ int rdmaxcel_efa_post_read(
     size_t length,
     void* remote_addr,
     uint32_t rkey,
-    uint64_t wr_id) {
+    uint64_t wr_id,
+    int signaled) {
   if (!qp || !qp->qpex || !ah) {
     return RDMAXCEL_INVALID_PARAMS;
   }
 
   ibv_wr_start(qp->qpex);
   qp->qpex->wr_id = wr_id;
-  qp->qpex->wr_flags = IBV_SEND_SIGNALED;
+  qp->qpex->wr_flags = signaled ? IBV_SEND_SIGNALED : 0;
 
   ibv_wr_rdma_read(qp->qpex, rkey, (uintptr_t)remote_addr);
   ibv_wr_set_sge(qp->qpex, lkey, (uintptr_t)local_addr, (uint32_t)length);
@@ -910,6 +943,7 @@ int rdmaxcel_efa_post_op(
     void* remote_addr,
     uint32_t rkey,
     uint64_t wr_id,
+    int signaled,
     int op_type) {
   if (!ah) {
     return RDMAXCEL_INVALID_PARAMS;
@@ -925,7 +959,8 @@ int rdmaxcel_efa_post_op(
         length,
         remote_addr,
         rkey,
-        wr_id);
+        wr_id,
+        signaled);
   } else if (op_type == 1) {
     return rdmaxcel_efa_post_read(
         qp,
@@ -937,7 +972,8 @@ int rdmaxcel_efa_post_op(
         length,
         remote_addr,
         rkey,
-        wr_id);
+        wr_id,
+        signaled);
   }
   return RDMAXCEL_UNSUPPORTED_OP;
 }
@@ -998,5 +1034,6 @@ int rdmaxcel_qp_post_op(
       remote_addr,
       rkey,
       wr_id,
+      signaled,
       efa_op);
 }

@@ -93,9 +93,22 @@ impl WorkRequestError {
 
     #[cfg(test)]
     pub(super) fn for_test(wr_id: u64, message: &str) -> Self {
+        Self::for_test_with_status(
+            wr_id,
+            message,
+            rdmaxcel_sys::ibv_wc_status::IBV_WC_GENERAL_ERR,
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_test_with_status(
+        wr_id: u64,
+        message: &str,
+        status: rdmaxcel_sys::ibv_wc_status::Type,
+    ) -> Self {
         Self {
             wr_id,
-            status: rdmaxcel_sys::ibv_wc_status::IBV_WC_GENERAL_ERR,
+            status,
             vendor_err: 0,
             message: message.to_string(),
         }
@@ -891,10 +904,43 @@ struct PostedOpEntry {
     /// in-flight WR touching it.
     _local_memory: KeepaliveLocalMemory,
     reply: PortHandle<OpResult>,
-    /// First per-WR error observed for this op. The op's final reply is
-    /// held back until `pending_wrs.is_empty()`, so `_local_memory` outlives
-    /// every WR still in flight.
-    first_error: Option<String>,
+    /// The error this op reports, if any. The op's final reply is held back
+    /// until `pending_wrs.is_empty()`, so `_local_memory` outlives every WR
+    /// still in flight.
+    error: Option<AttributedError>,
+}
+
+/// The error a multi-WR op reports, and whether it is a root cause.
+///
+/// A failing WR puts the QP in error state, and every WR already posted behind
+/// it then completes with `IBV_WC_WR_FLUSH_ERR`. Which of the two a poll sees
+/// first is not fixed — flushes can be drained ahead of the failure that caused
+/// them — so keeping whichever arrived first would sometimes report the
+/// consequence and hide the cause.
+#[derive(Debug)]
+struct AttributedError {
+    message: String,
+    /// Whether `message` came from a flushed WR, i.e. is a consequence of some
+    /// other WR's failure and should give way to a root cause.
+    is_flush: bool,
+}
+
+impl PostedOpEntry {
+    /// Fold `err` into the error this op will report: a root cause replaces a
+    /// flush, and the first of either kind is kept.
+    fn observe_error(&mut self, err: WorkRequestError) {
+        let is_flush = err.is_wr_flush_err();
+        let replaces = match &self.error {
+            None => true,
+            Some(current) => current.is_flush && !is_flush,
+        };
+        if replaces {
+            self.error = Some(AttributedError {
+                message: err.to_string(),
+                is_flush,
+            });
+        }
+    }
 }
 
 /// Per-peer queue-pair actor.
@@ -1096,7 +1142,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
                 pending_wrs,
                 _local_memory: op.local_memory,
                 reply,
-                first_error: None,
+                error: None,
             },
         );
         Ok(true)
@@ -1135,7 +1181,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
 
             let (wr_id, wr_error) = match wc_result {
                 Ok(wc) => (wc.wr_id(), None),
-                Err(per_wr) => (per_wr.wr_id, Some(per_wr.to_string())),
+                Err(per_wr) => (per_wr.wr_id, Some(per_wr)),
             };
 
             let op_id = self
@@ -1148,15 +1194,13 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
                 .expect("op_id missing from posted");
             entry.pending_wrs.remove(&wr_id);
             self.in_flight -= 1;
-            if let Some(err) = wr_error
-                && entry.first_error.is_none()
-            {
-                entry.first_error = Some(err);
+            if let Some(err) = wr_error {
+                entry.observe_error(err);
             }
             if entry.pending_wrs.is_empty() {
                 let entry = self.posted.remove(&op_id).expect("just verified");
-                let result = match entry.first_error {
-                    Some(err) => Err(err),
+                let result = match entry.error {
+                    Some(err) => Err(err.message),
                     None => Ok(()),
                 };
                 entry.reply.try_post(
@@ -1322,6 +1366,7 @@ mod tests {
     use crate::backend::ibverbs::device_selection::resolve_target;
     use crate::backend::ibverbs::mlx_device::MlxDevice;
     use crate::backend::ibverbs::primitives::IbvConfig;
+    use crate::device_selection::MemoryLocation;
 
     #[test]
     fn test_create_connection() {
@@ -1596,6 +1641,20 @@ mod tests {
                 .unwrap()
                 .pending_completions
                 .push_back(Err(WorkRequestError::for_test(wr_id, message)));
+        }
+
+        /// Queue an `IBV_WC_WR_FLUSH_ERR` completion for `wr_id`, as the NIC
+        /// reports for a WR the QP dropped when it went to error state.
+        fn queue_flush_error(&self, wr_id: u64, message: &str) {
+            self.inner
+                .lock()
+                .unwrap()
+                .pending_completions
+                .push_back(Err(WorkRequestError::for_test_with_status(
+                    wr_id,
+                    message,
+                    rdmaxcel_sys::ibv_wc_status::IBV_WC_WR_FLUSH_ERR,
+                )));
         }
 
         /// Queue a CQ-level poll error (one-shot). The next poll
@@ -2057,6 +2116,7 @@ mod tests {
                 addr: 0x4000_0000,
                 size,
                 device_name: PEER_DEVICE.to_string(),
+                location: MemoryLocation::Cpu(None),
             },
         }
     }
@@ -2447,6 +2507,77 @@ mod tests {
             "op_idx 0 error should name the per-WR error: {err}",
         );
         assert_eq!(replies[1], (1usize, Ok(())));
+        harness.teardown().await;
+        Ok(())
+    }
+
+    // A failing WR puts the QP in error state and the WRs behind it are flushed,
+    // so an op can see both a root cause and a flush. It reports the root cause
+    // whichever order they arrive in — here the flush lands first.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_op_error_prefers_a_root_cause_drained_after_a_flush() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8).await?;
+
+        let items = vec![make_op(
+            7,
+            RdmaOpType::WriteFromLocal,
+            0x1000,
+            3 * MAX_RDMA_MSG_SIZE,
+        )];
+        let mut rx = submit_ops(&harness, &actor, items)?;
+
+        let (_, _, wr_ids) = expect_put(recv_posted(&mut posted_rx).await);
+        assert_eq!(wr_ids.len(), 3);
+
+        qp.queue_flush_error(wr_ids[2], "flushed behind the failure");
+        qp.queue_per_wr_error(wr_ids[0], "the real failure");
+        qp.queue_completion(wr_ids[1]);
+
+        let replies = collect_replies(&mut rx, 1).await;
+        let err = replies[0]
+            .1
+            .as_ref()
+            .expect_err("op should fail because one WR errored");
+        assert!(
+            err.contains("the real failure"),
+            "op error should name the root cause, not the flush: {err}",
+        );
+        harness.teardown().await;
+        Ok(())
+    }
+
+    // The same op, with the root cause drained first: it is kept, and the
+    // flushes that follow do not displace it.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_op_error_keeps_a_root_cause_drained_before_a_flush() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8).await?;
+
+        let items = vec![make_op(
+            9,
+            RdmaOpType::WriteFromLocal,
+            0x1000,
+            3 * MAX_RDMA_MSG_SIZE,
+        )];
+        let mut rx = submit_ops(&harness, &actor, items)?;
+
+        let (_, _, wr_ids) = expect_put(recv_posted(&mut posted_rx).await);
+        assert_eq!(wr_ids.len(), 3);
+
+        qp.queue_per_wr_error(wr_ids[0], "the real failure");
+        qp.queue_flush_error(wr_ids[1], "flushed behind the failure");
+        qp.queue_flush_error(wr_ids[2], "flushed behind the failure");
+
+        let replies = collect_replies(&mut rx, 1).await;
+        let err = replies[0]
+            .1
+            .as_ref()
+            .expect_err("op should fail because one WR errored");
+        assert!(
+            err.contains("the real failure"),
+            "op error should name the root cause, not the flush: {err}",
+        );
         harness.teardown().await;
         Ok(())
     }
