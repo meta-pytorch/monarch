@@ -14,8 +14,8 @@
 //! and frontend endpoints, multiplexes inbound traffic to in-process procs,
 //! and routes spawned child proc gateways through peer routes.
 //!
-//! Use [`Host::new`] or [`Host::new_with_gateway`] to construct a host, start
-//! its backend and frontend accept loops, then [`Host::spawn`] to create child procs.
+//! Use [`Host::new`] or [`Host::new_with_gateway`] to construct a host, start its
+//! backend and frontend accept loops, then [`Host::spawn`] to create child procs.
 //! Spawned children are returned as [`ProcAddr`] values whose location is
 //! advertised through this host's gateway.
 //!
@@ -74,8 +74,10 @@ use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Gateway;
+use hyperactor::Location;
 use hyperactor::Proc;
 use hyperactor::ProcAddr;
+use hyperactor::ProcId;
 use hyperactor::actor::Binds;
 use hyperactor::actor::Referable;
 use hyperactor::channel;
@@ -88,9 +90,25 @@ use hyperactor::channel::Tx;
 use hyperactor::context;
 use hyperactor::gateway::GatewayServeHandle;
 use hyperactor::gateway::PeerAttachGuard;
+use hyperactor::id::Label;
 use hyperactor::mailbox::IntoBoxedMailboxSender as _;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
+use tokio::process::Child;
+use tokio::process::Command;
+use tokio::sync::Mutex;
+
+use crate::mesh_id::ResourceId;
+
+/// Name of the system service proc on a host.
+///
+/// Hosts the admin actor layer: HostMeshAgent, MeshAdminAgent, and bridge.
+pub const SERVICE_PROC_NAME: &str = hyperactor::proc::LEGACY_SERVICE_PROC_NAME;
+
+pub(crate) fn legacy_service_proc_id() -> ProcId {
+    ProcId::singleton(Label::strip(SERVICE_PROC_NAME))
+}
+
 /// Name of the local client proc on a host.
 ///
 /// See LP-1 (lazy activation) in module doc.
@@ -99,16 +117,7 @@ use hyperactor::mailbox::MailboxServer;
 /// `GetLocalProc` is never sent, so the local proc remains empty
 /// throughout the program's lifetime. Code that inspects the local
 /// proc's actors must not assume they exist.
-pub use hyperactor::proc::LEGACY_LOCAL_PROC_NAME as LOCAL_PROC_NAME;
-/// Name of the system service proc on a host.
-///
-/// Hosts the admin actor layer: HostMeshAgent, MeshAdminAgent, and bridge.
-pub use hyperactor::proc::LEGACY_SERVICE_PROC_NAME as SERVICE_PROC_NAME;
-use tokio::process::Child;
-use tokio::process::Command;
-use tokio::sync::Mutex;
-
-use crate::mesh_id::ResourceId;
+pub const LOCAL_PROC_NAME: &str = "local";
 
 /// The type of error produced by host operations.
 #[derive(Debug, thiserror::Error)]
@@ -148,6 +157,14 @@ pub enum HostError {
     /// Attaching the gateway to a remote `serve_via` session failed.
     #[error("failed to attach gateway via session: {0}")]
     ViaAttachFailure(#[source] anyhow::Error),
+
+    /// Constructing a built-in proc failed.
+    #[error("failed to construct built-in proc: {0}")]
+    ProcConstructionFailure(#[source] anyhow::Error),
+
+    /// The service proc startup address contained a source route.
+    #[error("host service proc address must have a direct frontend location, got {0}")]
+    InvalidFrontendLocation(Location),
 }
 
 /// Client transport handles transferred to the bootstrap shutdown task.
@@ -244,19 +261,24 @@ impl<M: ProcManager> Host<M> {
         // host share one routing table with the rest of the process.
         // Callers that need a different gateway (e.g. via attach) build
         // it externally and pass it to [`new_with_gateway`].
-        Self::new_with_gateway(manager, addr, listener, Gateway::global().clone(), None).await
+        Self::new_with_gateway(
+            manager,
+            ProcAddr::new(legacy_service_proc_id(), addr.into()),
+            listener,
+            Gateway::global().clone(),
+            None,
+        )
+        .await
     }
 
-    /// Like [`new_with_default`], but uses a caller-provided
-    /// [`Gateway`] instead of creating one internally.
+    /// Like [`new_with_default`], but uses a caller-provided [`Gateway`] and
+    /// service [`ProcAddr`].
     ///
-    /// Serving the backend and frontend endpoints, choosing the frontend
-    /// transport, and adopting the frontend address as the gateway's
-    /// advertised location are all owned by the gateway. The host operates on
-    /// a vanilla gateway: it never inspects the transport nor rewrites the
-    /// gateway's location. Adopting the bound frontend address makes the
-    /// legacy pseudo-singleton proc ids (system, local) carry it so remote
-    /// hosts can reach them by name.
+    /// `addr` is a startup specification: its proc id becomes the service proc
+    /// identity, and its direct location is used to serve the frontend. The
+    /// final service proc location comes from the gateway after binding, so it
+    /// may differ because of an alias, an ephemeral address, or `via`. A
+    /// source-routed [`Location::Via`] is therefore rejected here.
     ///
     /// When `via` is `Some`, the gateway attaches to that remote duplex
     /// address with [`Gateway::serve_via`] *after* the local
@@ -269,11 +291,18 @@ impl<M: ProcManager> Host<M> {
     #[hyperactor::instrument(fields(addr=addr.to_string()))]
     pub async fn new_with_gateway(
         manager: M,
-        addr: ChannelAddr,
+        addr: ProcAddr,
         listener: Option<std::net::TcpListener>,
         gateway: Gateway,
         via: Option<ChannelAddr>,
     ) -> Result<Self, HostError> {
+        let service_proc_id = addr.id().clone();
+        let addr = match addr.location() {
+            Location::Addr(addr) => addr.clone(),
+            Location::Via(..) => {
+                return Err(HostError::InvalidFrontendLocation(addr.location().clone()));
+            }
+        };
         let mut backend_handle = Gateway::serve(&gateway, ChannelAddr::any(manager.transport()))?;
         let backend_addr = gateway.default_location().addr().clone();
 
@@ -306,6 +335,10 @@ impl<M: ProcManager> Host<M> {
             }
         };
         let frontend_addr = gateway.default_location().addr().clone();
+        assert!(
+            !matches!(frontend_addr, ChannelAddr::Alias { .. }),
+            "gateway frontend serve must canonicalize aliases"
+        );
 
         // Attach to the remote gateway after the local serves are live
         // but before any proc or actor ref is minted below. `serve_via`
@@ -341,8 +374,23 @@ impl<M: ProcManager> Host<M> {
         // gateway servers are live. The HostAgent is published only
         // after it binds its handler, so the brief unroutable window is
         // before normal clients can discover this host.
-        let service_proc = Proc::legacy_service_pseudo_singleton_on_gateway(gateway.clone());
-        let local_proc = Proc::legacy_local_pseudo_singleton_on_gateway(gateway.clone());
+        let expected_service_proc_addr =
+            ProcAddr::new(service_proc_id.clone(), gateway.default_location());
+        let service_proc = Proc::builder()
+            .proc_id(service_proc_id)
+            .shared_gateway(gateway.clone())
+            .build()
+            .map_err(HostError::ProcConstructionFailure)?;
+        assert_eq!(
+            service_proc.proc_addr(),
+            expected_service_proc_addr,
+            "service proc must use the gateway's active advertised location"
+        );
+        let local_proc = Proc::builder()
+            .proc_id(ProcId::instance(Label::strip(LOCAL_PROC_NAME)))
+            .shared_gateway(gateway.clone())
+            .build()
+            .map_err(HostError::ProcConstructionFailure)?;
         let service_proc_id = service_proc.proc_addr().clone();
         let local_proc_id = local_proc.proc_addr().clone();
 
@@ -1639,9 +1687,21 @@ mod tests {
     use hyperactor::mailbox::DialMailboxRouter;
     use hyperactor::mailbox::MessageEnvelope;
     use hyperactor::port::Port;
+    #[cfg(fbcode_build)]
+    use hyperactor_config::attrs::Attrs;
 
     use super::testing::EchoActor;
     use super::*;
+    #[cfg(fbcode_build)]
+    use crate::bootstrap::BootstrapCommand;
+    #[cfg(fbcode_build)]
+    use crate::bootstrap::BootstrapProcConfig;
+    #[cfg(fbcode_build)]
+    use crate::bootstrap::BootstrapProcManager;
+    #[cfg(fbcode_build)]
+    use crate::config_dump::ConfigDump;
+    #[cfg(fbcode_build)]
+    use crate::config_dump::ConfigDumpResult;
 
     #[tokio::test]
     async fn test_basic() {
@@ -1708,6 +1768,79 @@ mod tests {
             rx.recv().await.unwrap(),
             "hello from the instance1".to_string()
         );
+    }
+
+    #[cfg(fbcode_build)]
+    async fn assert_bootstrap_child_round_trip(service_proc_id: ProcId) {
+        let manager = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+        let mut host = Host::new_with_gateway(
+            manager,
+            ProcAddr::new(
+                service_proc_id,
+                ChannelAddr::any(ChannelTransport::Unix).into(),
+            ),
+            None,
+            Gateway::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let child_name = ResourceId::instance(Label::strip("route-child")).to_string();
+        let (_child_proc, child_agent) = host
+            .spawn(
+                child_name,
+                BootstrapProcConfig {
+                    create_rank: 0,
+                    client_config_override: Attrs::new(),
+                    proc_bind: None,
+                    bootstrap_command: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let service_client = host.system_proc().client("route-test");
+        let (reply_handle, reply_rx) = service_client
+            .mailbox()
+            .open_once_port::<ConfigDumpResult>();
+        child_agent.post(
+            &service_client,
+            ConfigDump {
+                result: reply_handle.bind(),
+            },
+        );
+        tokio::time::timeout(Duration::from_secs(5), reply_rx.recv())
+            .await
+            .expect("service-to-child request and child-to-service reply timed out")
+            .expect("config dump reply channel closed");
+
+        let summary = host
+            .terminate_children(
+                &service_client,
+                Duration::from_secs(2),
+                1,
+                "routing test complete",
+            )
+            .await;
+        assert_eq!(summary.failed, 0);
+        host.shutdown_servers().await;
+    }
+
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_bootstrap_child_round_trip_with_legacy_service_proc() {
+        assert_bootstrap_child_round_trip(legacy_service_proc_id()).await;
+    }
+
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_bootstrap_child_round_trip_with_instance_service_proc() {
+        let service_proc_id = ProcId::new(
+            Uid::Instance(0x5e12_71ce, Some(Label::strip(SERVICE_PROC_NAME))),
+            None,
+        );
+        assert_bootstrap_child_round_trip(service_proc_id).await;
     }
 
     #[tokio::test]
@@ -2268,6 +2401,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_explicit_service_and_local_proc_ids_are_instances() {
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
+        let service_proc_id = ProcId::instance(hyperactor::id::Label::strip("service"));
+
+        let host = Host::new_with_gateway(
+            proc_manager,
+            ProcAddr::new(
+                service_proc_id.clone(),
+                ChannelAddr::any(ChannelTransport::Unix).into(),
+            ),
+            None,
+            Gateway::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(host.system_proc().proc_id(), &service_proc_id);
+        assert!(matches!(
+            host.local_proc().proc_id().uid(),
+            hyperactor::id::Uid::Instance(..)
+        ));
+        assert_eq!(
+            host.local_proc()
+                .proc_id()
+                .label()
+                .map(|label| label.as_str()),
+            Some(LOCAL_PROC_NAME)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_new_with_gateway_rejects_via_frontend_location() {
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
+        let location = Location::from(ChannelAddr::any(ChannelTransport::Unix))
+            .with_via(Uid::instance(Label::strip("remote")));
+        let service_proc_addr = ProcAddr::new(legacy_service_proc_id(), location.clone());
+
+        let result =
+            Host::new_with_gateway(proc_manager, service_proc_addr, None, Gateway::new(), None)
+                .await;
+
+        assert!(matches!(
+            result,
+            Err(HostError::InvalidFrontendLocation(error_location))
+                if error_location == location
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_new_with_gateway_remints_service_proc_at_bound_address() {
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
+        let service_proc_id = ProcId::instance(Label::strip("service"));
+        let startup_addr = ChannelAddr::from_zmq_url("tcp://127.0.0.1:0").unwrap();
+        let mut host = Host::new_with_gateway(
+            proc_manager,
+            ProcAddr::new(service_proc_id.clone(), startup_addr.into()),
+            None,
+            Gateway::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let ChannelAddr::Tcp(bound_addr) = host.addr() else {
+            panic!("expected TCP frontend address")
+        };
+        assert_ne!(bound_addr.port(), 0);
+        assert_eq!(
+            host.system_proc().proc_addr(),
+            ProcAddr::new(service_proc_id, Location::from(host.addr().clone()))
+        );
+
+        host.shutdown_servers().await;
+    }
+
+    #[tokio::test]
     async fn test_spawn_uses_latest_serve_location_after_prior_default_override() {
         let proc_manager = LocalProcManager::new(|proc: Proc| async move {
             Ok(proc.spawn_with_label::<()>("host_agent", ()))
@@ -2280,7 +2496,10 @@ mod tests {
 
         let mut host = Host::new_with_gateway(
             proc_manager,
-            ChannelAddr::any(ChannelTransport::Unix),
+            ProcAddr::new(
+                legacy_service_proc_id(),
+                ChannelAddr::any(ChannelTransport::Unix).into(),
+            ),
             None,
             gateway,
             None,
@@ -2307,7 +2526,10 @@ mod tests {
 
         let mut host = Host::new_with_gateway(
             proc_manager,
-            ChannelAddr::any(ChannelTransport::Unix),
+            ProcAddr::new(
+                legacy_service_proc_id(),
+                ChannelAddr::any(ChannelTransport::Unix).into(),
+            ),
             None,
             Gateway::new(),
             None,
@@ -2358,7 +2580,10 @@ mod tests {
         let fallback_location = gateway.default_location();
         let mut host = Host::new_with_gateway(
             proc_manager,
-            ChannelAddr::any(ChannelTransport::Unix),
+            ProcAddr::new(
+                legacy_service_proc_id(),
+                ChannelAddr::any(ChannelTransport::Unix).into(),
+            ),
             None,
             gateway.clone(),
             Some(remote_addr.clone()),

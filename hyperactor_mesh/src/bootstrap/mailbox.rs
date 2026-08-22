@@ -26,21 +26,24 @@ use hyperactor::mailbox::TransportFailureReason;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableReason;
 
-/// LocalProcDialer dials local procs directly through a configured socket
-/// directory.
+/// Dials local procs directly through a configured socket directory.
+///
+/// A same-host destination is direct-dialable when its deterministic socket
+/// exists in `socket_dir`. Other destinations are routed through the backend
+/// sender to the host gateway.
 #[derive(Debug)]
 pub(crate) struct LocalProcDialer {
     local_addr: ChannelAddr,
     socket_dir: PathBuf,
     backend_sender: MailboxClient,
-    local_senders: RwLock<HashMap<Uid, Result<MailboxClient, ChannelError>>>,
+    local_senders: RwLock<HashMap<Uid, MailboxClient>>,
 }
 
 impl LocalProcDialer {
-    /// Create a new local proc dialer. Any direct-addressed procs with a destination
-    /// address of `local_addr`, will instead be dialed through the direct sockets
-    /// present in `socket_dir`. Messages to other procs are forwarded through the
-    /// backend sender.
+    /// Create a new local proc dialer. Procs with a destination address of
+    /// `local_addr` are dialed through direct sockets when present in
+    /// `socket_dir`. Messages to other procs are forwarded through the backend
+    /// sender.
     pub(crate) fn new(
         local_addr: ChannelAddr,
         socket_dir: PathBuf,
@@ -53,6 +56,22 @@ impl LocalProcDialer {
             local_senders: RwLock::new(HashMap::new()),
         }
     }
+
+    fn return_dial_failure(
+        error: &ChannelError,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        let destination = envelope.dest().clone();
+        let failure = DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+            destination.clone(),
+            TransportFailureReason::DialFailed {
+                addr: destination.actor_addr().proc_addr().addr().clone(),
+                error: error.to_string(),
+            },
+        )));
+        envelope.undeliverable(failure, return_handle);
+    }
 }
 
 #[async_trait]
@@ -63,52 +82,43 @@ impl MailboxSender for LocalProcDialer {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         let proc_ref = envelope.dest().actor_addr().proc_addr();
-        let addr = proc_ref.addr();
-        if addr == &self.local_addr
-            // ...and only non-system procs on that address; the rest are directly
-            // reachable through the backend address.
-            && proc_ref.uid().is_instance()
-        {
-            let key = proc_ref.id().pseudo_uid();
-            let senders = self.local_senders.read().unwrap();
-            let senders = if senders.contains_key(&key) {
-                senders
-            } else {
-                drop(senders);
-                let mut senders = self.local_senders.write().unwrap();
-                senders.entry(key.clone()).or_insert_with(|| {
-                    let (addr, path) = super::local_proc_addr(&self.socket_dir, proc_ref.id())
-                        .map_err(|e| ChannelError::InvalidAddress(e.to_string()))?;
-                    if !path.exists() {
-                        return Err(ChannelError::InvalidAddress(format!(
-                            "unix socket path '{}' does not exist",
-                            path.display()
-                        )));
-                    }
-                    MailboxClient::dial(addr)
-                });
-                drop(senders);
-                self.local_senders.read().unwrap()
-            };
+        if proc_ref.uid().is_singleton() {
+            self.backend_sender.post_unchecked(envelope, return_handle);
+            return;
+        }
 
-            match senders.get(&key).unwrap() {
-                Ok(sender) => sender.post_unchecked(envelope, return_handle),
-                Err(e) => {
-                    let failure = DeliveryFailure::new(UndeliverableReason::Transport(
-                        TransportFailure::new(
-                            envelope.dest().clone(),
-                            TransportFailureReason::DialFailed {
-                                addr: addr.clone(),
-                                error: e.to_string(),
-                            },
-                        ),
-                    ));
-                    envelope.undeliverable(failure, return_handle);
+        let addr = proc_ref.addr();
+        if addr == &self.local_addr {
+            let key = proc_ref.id().pseudo_uid();
+            {
+                let senders = self.local_senders.read().unwrap();
+                if let Some(sender) = senders.get(&key) {
+                    sender.post_unchecked(envelope, return_handle);
+                    return;
                 }
             }
-        } else {
-            self.backend_sender.post_unchecked(envelope, return_handle);
+
+            // Host-owned service procs do not bind deterministic child sockets.
+            if let Ok((local_addr, path)) = super::local_proc_addr(&self.socket_dir, proc_ref.id())
+                && path.exists()
+            {
+                let mut senders = self.local_senders.write().unwrap();
+                if let Some(sender) = senders.get(&key) {
+                    sender.post_unchecked(envelope, return_handle);
+                    return;
+                }
+                match MailboxClient::dial(local_addr) {
+                    Ok(sender) => {
+                        sender.post_unchecked(envelope, return_handle);
+                        senders.insert(key, sender);
+                    }
+                    Err(error) => Self::return_dial_failure(&error, envelope, return_handle),
+                }
+                return;
+            }
         }
+
+        self.backend_sender.post_unchecked(envelope, return_handle);
     }
 
     async fn flush(&self) -> Result<(), anyhow::Error> {
@@ -122,167 +132,167 @@ impl MailboxSender for LocalProcDialer {
 
 #[cfg(test)]
 mod tests {
-
-    use std::assert_matches;
-
     use hyperactor::Mailbox;
     use hyperactor::channel::ChannelAddr;
+    use hyperactor::channel::ChannelRx;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Rx;
     use hyperactor::channel::{self};
+    use hyperactor::id::Label;
     use hyperactor::testing::ids::test_actor_id;
     use hyperactor_config::Flattrs;
 
     use super::*;
     use crate::bootstrap::local_proc_addr;
+    use crate::host::SERVICE_PROC_NAME;
+    use crate::host::legacy_service_proc_id;
     use crate::mesh_id::ResourceId;
 
+    fn recording_dialer(
+        local_addr: ChannelAddr,
+        socket_dir: PathBuf,
+    ) -> (LocalProcDialer, ChannelRx<MessageEnvelope>) {
+        let (backend_addr, backend_rx) =
+            channel::serve::<MessageEnvelope>(ChannelTransport::Unix.any()).unwrap();
+        let dialer = LocalProcDialer::new(
+            local_addr,
+            socket_dir,
+            MailboxClient::dial(backend_addr).unwrap(),
+        );
+        (dialer, backend_rx)
+    }
+
     #[tokio::test]
-    async fn test_proc_dialer() {
+    async fn test_proc_dialer_routes_between_local_proc_sockets_in_both_directions() {
         let dir = tempfile::tempdir().unwrap();
         let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
         let first = hyperactor::ProcAddr::instance(local_addr.clone(), "first");
         let second = hyperactor::ProcAddr::instance(local_addr.clone(), "second");
-        let third = hyperactor::ProcAddr::instance(local_addr.clone(), "third");
         let (first_serve, _) = local_proc_addr(dir.path(), first.id()).unwrap();
         let (_first_addr, mut first_rx) = channel::serve::<MessageEnvelope>(first_serve).unwrap();
         let (second_serve, _) = local_proc_addr(dir.path(), second.id()).unwrap();
-        let (_second_addr, _second_rx) = channel::serve::<MessageEnvelope>(second_serve).unwrap();
-        let (backend_addr, mut backend_rx) =
-            channel::serve::<MessageEnvelope>(ChannelTransport::Unix.any()).unwrap();
-
-        // The dialer derives the socket path from each proc's pseudo_uid, so
-        // both ends must share the same ProcId.
-        let first_actor_id = first.actor_addr("actor");
-        let second_actor_id = second.actor_addr("actor");
-        let third_notexist_actor_id = third.actor_addr("actor");
-        let proc_dialer = LocalProcDialer::new(
-            local_addr.clone(),
-            dir.path().to_owned(),
-            MailboxClient::dial(backend_addr).unwrap(),
-        );
-
-        let (return_handle, mut return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
-            .open_port::<Undeliverable<MessageEnvelope>>();
-
-        // Existing address on the host:
-        let envelope = MessageEnvelope::new(
-            third_notexist_actor_id.clone(),
-            first_actor_id.port_addr(0.into()),
-            wirevalue::Any::serialize(&()).unwrap(),
-            Flattrs::new(),
-        );
-        proc_dialer.post(envelope.clone(), return_handle.clone());
-        assert_eq!(
-            first_rx.recv().await.unwrap().sender(),
-            &third_notexist_actor_id
-        );
-
-        // Nonexistant address on the host:
-        let envelope = MessageEnvelope::new(
-            second_actor_id.clone(),
-            third_notexist_actor_id.port_addr(0.into()),
-            wirevalue::Any::serialize(&()).unwrap(),
-            Flattrs::new(),
-        );
-        proc_dialer.post(envelope.clone(), return_handle.clone());
-        let envelope = return_rx
-            .recv()
-            .await
-            .unwrap()
-            .into_message()
-            .expect("expected returned envelope");
-        assert_matches!(
-            envelope
-                .root_delivery_failure()
-                .map(|failure| &failure.kind),
-            Some(hyperactor::mailbox::DeliveryFailureKind::Undeliverable(
-                UndeliverableReason::Transport(_)
-            ))
-        );
-
-        // Outside the host:
-        let envelope = MessageEnvelope::new(
-            second_actor_id.clone(),
-            test_actor_id("external_0", "actor").port_addr(0.into()),
-            wirevalue::Any::serialize(&()).unwrap(),
-            Flattrs::new(),
-        );
-        proc_dialer.post(envelope.clone(), return_handle.clone());
-        assert_eq!(backend_rx.recv().await.unwrap().sender(), &second_actor_id);
-
-        // System proc on the host (name must be exactly "system"):
-        let system_actor_id =
-            ResourceId::proc_addr_from_name(local_addr.clone(), "system").actor_addr("actor");
-        let envelope = MessageEnvelope::new(
-            second_actor_id.clone(),
-            system_actor_id.port_addr(0.into()),
-            wirevalue::Any::serialize(&()).unwrap(),
-            Flattrs::new(),
-        );
-        proc_dialer.post(envelope.clone(), return_handle.clone());
-        assert_eq!(backend_rx.recv().await.unwrap().sender(), &second_actor_id);
-    }
-
-    /// Same-host proc-to-proc traffic must keep using the direct
-    /// local-socket path even when destinations carry a `Via(uid,
-    /// Addr(host_addr))` source-routing prefix (the convention
-    /// `Host::spawn` now applies to every spawned child). The
-    /// `Via` should not push the envelope onto the slower backend
-    /// sender path.
-    #[tokio::test]
-    async fn test_proc_dialer_via_prefixed_dest() {
-        use hyperactor::Location;
-
-        let dir = tempfile::tempdir().unwrap();
-        let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
-
-        // Build two sibling procs with the via-prefixed location
-        // convention used by `Host::spawn`.
-        let make_proc = |name: &str| -> hyperactor::ProcAddr {
-            let bare = hyperactor::ProcAddr::instance(local_addr.clone(), name);
-            let via = Location::from(local_addr.clone()).with_via(bare.id().uid().clone());
-            hyperactor::ProcAddr::new(bare.id().clone(), via)
-        };
-        let first = make_proc("first");
-        let second = make_proc("second");
-        assert!(
-            first.location().as_via().is_some(),
-            "test setup: spawned-proc address must carry a via prefix"
-        );
-
-        let (first_serve, _) = local_proc_addr(dir.path(), first.id()).unwrap();
-        let (_first_addr, mut first_rx) = channel::serve::<MessageEnvelope>(first_serve).unwrap();
-
-        let (backend_addr, mut backend_rx) =
-            channel::serve::<MessageEnvelope>(ChannelTransport::Unix.any()).unwrap();
+        let (_second_addr, mut second_rx) =
+            channel::serve::<MessageEnvelope>(second_serve).unwrap();
+        let (proc_dialer, _backend_rx) =
+            recording_dialer(local_addr.clone(), dir.path().to_owned());
 
         let first_actor_id = first.actor_addr("actor");
         let second_actor_id = second.actor_addr("actor");
-        let proc_dialer = LocalProcDialer::new(
-            local_addr.clone(),
-            dir.path().to_owned(),
-            MailboxClient::dial(backend_addr).unwrap(),
-        );
         let (return_handle, _return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
             .open_port::<Undeliverable<MessageEnvelope>>();
 
-        // `second` → `first`, both via-prefixed. Expect the
-        // envelope on `first`'s local socket (direct path), not on
-        // the backend.
         let envelope = MessageEnvelope::new(
-            second_actor_id.clone(),
-            first_actor_id.port_addr(0.into()),
+            first_actor_id.clone(),
+            second_actor_id.port_addr(0.into()),
             wirevalue::Any::serialize(&()).unwrap(),
             Flattrs::new(),
         );
         proc_dialer.post(envelope, return_handle.clone());
-        assert_eq!(first_rx.recv().await.unwrap().sender(), &second_actor_id);
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), backend_rx.recv())
-                .await
-                .is_err(),
-            "via-prefixed sibling traffic must not detour through the backend",
+        assert_eq!(second_rx.recv().await.unwrap().sender(), &first_actor_id);
+
+        let first_via = hyperactor::ProcAddr::new(
+            first.id().clone(),
+            hyperactor::Location::from(local_addr.clone()).with_via(first.id().uid().clone()),
         );
+        let envelope = MessageEnvelope::new(
+            second_actor_id.clone(),
+            first_via.actor_addr("actor").port_addr(0.into()),
+            wirevalue::Any::serialize(&()).unwrap(),
+            Flattrs::new(),
+        );
+        proc_dialer.post(envelope, return_handle);
+        assert_eq!(first_rx.recv().await.unwrap().sender(), &second_actor_id);
+    }
+
+    #[tokio::test]
+    async fn test_proc_dialer_routes_both_service_id_forms_through_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
+        let sender = hyperactor::ProcAddr::instance(local_addr.clone(), "sender");
+        let (proc_dialer, mut backend_rx) =
+            recording_dialer(local_addr.clone(), dir.path().to_owned());
+        let (return_handle, _return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
+            .open_port::<Undeliverable<MessageEnvelope>>();
+
+        let service_proc_ids = [
+            legacy_service_proc_id(),
+            hyperactor::ProcId::instance(Label::strip(SERVICE_PROC_NAME)),
+        ];
+        for service_proc_id in service_proc_ids {
+            let service_proc =
+                hyperactor::ProcAddr::new(service_proc_id, local_addr.clone().into());
+
+            let envelope = MessageEnvelope::new(
+                sender.actor_addr("actor"),
+                service_proc.actor_addr("actor").port_addr(0.into()),
+                wirevalue::Any::serialize(&()).unwrap(),
+                Flattrs::new(),
+            );
+            proc_dialer.post(envelope, return_handle.clone());
+
+            let forwarded = backend_rx.recv().await.unwrap();
+            assert_eq!(forwarded.dest().actor_addr().proc_addr(), service_proc);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_proc_dialer_routes_singletons_through_backend_when_socket_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
+        let sender = hyperactor::ProcAddr::instance(local_addr.clone(), "sender");
+        let singleton =
+            hyperactor::ProcAddr::new(legacy_service_proc_id(), local_addr.clone().into());
+        let (singleton_addr, _) = local_proc_addr(dir.path(), singleton.id()).unwrap();
+        let (_singleton_addr, _singleton_rx) =
+            channel::serve::<MessageEnvelope>(singleton_addr).unwrap();
+        let (proc_dialer, mut backend_rx) = recording_dialer(local_addr, dir.path().to_owned());
+        let (return_handle, _return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
+            .open_port::<Undeliverable<MessageEnvelope>>();
+
+        let envelope = MessageEnvelope::new(
+            sender.actor_addr("actor"),
+            singleton.actor_addr("actor").port_addr(0.into()),
+            wirevalue::Any::serialize(&()).unwrap(),
+            Flattrs::new(),
+        );
+        proc_dialer.post(envelope, return_handle);
+
+        let forwarded = backend_rx.recv().await.unwrap();
+        assert_eq!(forwarded.dest().actor_addr().proc_addr(), singleton);
+    }
+
+    #[tokio::test]
+    async fn test_proc_dialer_uses_backend_for_missing_or_remote_proc() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
+        let sender = hyperactor::ProcAddr::instance(local_addr.clone(), "sender");
+        let missing = hyperactor::ProcAddr::instance(local_addr.clone(), "missing");
+        let (proc_dialer, mut backend_rx) = recording_dialer(local_addr, dir.path().to_owned());
+        let (return_handle, _return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
+            .open_port::<Undeliverable<MessageEnvelope>>();
+
+        let envelope = MessageEnvelope::new(
+            sender.actor_addr("actor"),
+            missing.actor_addr("actor").port_addr(0.into()),
+            wirevalue::Any::serialize(&()).unwrap(),
+            Flattrs::new(),
+        );
+        proc_dialer.post(envelope, return_handle.clone());
+        let forwarded = backend_rx.recv().await.unwrap();
+        assert_eq!(forwarded.dest().actor_addr().proc_addr(), missing);
+
+        let remote = ResourceId::proc_addr_from_name(
+            "tcp:4.5.6.7:456".parse::<ChannelAddr>().unwrap(),
+            "remote",
+        );
+        let envelope = MessageEnvelope::new(
+            sender.actor_addr("actor"),
+            remote.actor_addr("actor").port_addr(0.into()),
+            wirevalue::Any::serialize(&()).unwrap(),
+            Flattrs::new(),
+        );
+        proc_dialer.post(envelope, return_handle);
+        let forwarded = backend_rx.recv().await.unwrap();
+        assert_eq!(forwarded.dest().actor_addr().proc_addr(), remote);
     }
 }

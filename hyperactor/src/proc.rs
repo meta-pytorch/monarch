@@ -221,12 +221,6 @@ tokio::task_local! {
     static CURRENT_TASK_PROC: Proc;
 }
 
-/// Legacy singleton proc name used for host-local client actors.
-///
-/// This is not a true singleton: every host may have a `local` proc, so local
-/// delivery must compare both proc id and location for this id.
-pub const LEGACY_LOCAL_PROC_NAME: &str = "local";
-
 /// Legacy singleton proc name used for host system actors.
 ///
 /// This is not a true singleton: every host may have a `service` proc, so
@@ -883,12 +877,6 @@ impl Proc {
         Self::from_parts_unchecked(proc_id, gateway)
     }
 
-    /// Create the legacy host-local client proc pseudo-singleton on
-    /// a fresh gateway whose forwarder is `forwarder`.
-    pub fn legacy_local_pseudo_singleton(addr: ChannelAddr, forwarder: BoxedMailboxSender) -> Self {
-        Self::legacy_local_pseudo_singleton_on_gateway(Gateway::configured(addr.into(), forwarder))
-    }
-
     /// Create the legacy host system proc pseudo-singleton on a
     /// fresh gateway whose forwarder is `forwarder`.
     pub fn legacy_service_pseudo_singleton(
@@ -899,12 +887,6 @@ impl Proc {
             addr.into(),
             forwarder,
         ))
-    }
-
-    /// Create the legacy host-local client proc pseudo-singleton on
-    /// the provided shared gateway.
-    pub fn legacy_local_pseudo_singleton_on_gateway(gateway: Gateway) -> Self {
-        Self::legacy_pseudo_singleton_on_gateway(LEGACY_LOCAL_PROC_NAME, gateway)
     }
 
     /// Create the legacy host system proc pseudo-singleton on the
@@ -1838,10 +1820,9 @@ impl Proc {
 
 fn requires_location_for_local_delivery_identity(proc_id: &ProcId) -> bool {
     // Temporary hyperactor_mesh compatibility hack: host bootstrap
-    // still creates a `service` proc and a `local` proc in every host
-    // process, so those proc ids are not globally unique. Until those
-    // construction paths are assigned instance ids, local delivery for
-    // those two ids also compares the terminal channel address.
+    // still creates a `service` proc in every host process, so that proc id
+    // is not globally unique. Until all construction paths assign it an
+    // instance id, local delivery also compares the terminal channel address.
     is_legacy_pseudo_singleton_proc_id(proc_id)
 }
 
@@ -1882,10 +1863,7 @@ fn is_legacy_pseudo_singleton_proc_id(proc_id: &ProcId) -> bool {
 }
 
 fn is_legacy_pseudo_singleton_label(label: &Label) -> bool {
-    matches!(
-        label.as_str(),
-        LEGACY_SERVICE_PROC_NAME | LEGACY_LOCAL_PROC_NAME
-    )
+    label.as_str() == LEGACY_SERVICE_PROC_NAME
 }
 
 #[async_trait]
@@ -5880,26 +5858,18 @@ mod tests {
     }
 
     #[test]
-    fn test_local_delivery_service_and_local_compare_full_proc_addr() {
-        for name in [LEGACY_SERVICE_PROC_NAME, LEGACY_LOCAL_PROC_NAME] {
-            let local = ProcAddr::singleton(ChannelAddr::Local(1), name);
-            let same_id_other_location = ProcAddr::singleton(ChannelAddr::Local(2), name);
-            let proc = match name {
-                LEGACY_SERVICE_PROC_NAME => Proc::legacy_service_pseudo_singleton(
-                    ChannelAddr::Local(1),
-                    BoxedMailboxSender::new(PanickingMailboxSender),
-                ),
-                LEGACY_LOCAL_PROC_NAME => Proc::legacy_local_pseudo_singleton(
-                    ChannelAddr::Local(1),
-                    BoxedMailboxSender::new(PanickingMailboxSender),
-                ),
-                _ => unreachable!("test only covers legacy pseudo-singletons"),
-            };
+    fn test_local_delivery_legacy_service_compares_full_proc_addr() {
+        let local = ProcAddr::singleton(ChannelAddr::Local(1), LEGACY_SERVICE_PROC_NAME);
+        let same_id_other_location =
+            ProcAddr::singleton(ChannelAddr::Local(2), LEGACY_SERVICE_PROC_NAME);
+        let proc = Proc::legacy_service_pseudo_singleton(
+            ChannelAddr::Local(1),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+        );
 
-            assert_eq!(local.id(), same_id_other_location.id());
-            assert!(proc.is_local_delivery_target(&local));
-            assert!(!proc.is_local_delivery_target(&same_id_other_location));
-        }
+        assert_eq!(local.id(), same_id_other_location.id());
+        assert!(proc.is_local_delivery_target(&local));
+        assert!(!proc.is_local_delivery_target(&same_id_other_location));
 
         let shared = ProcAddr::singleton(ChannelAddr::Local(1), "shared");
         let shared_other_location = ProcAddr::singleton(ChannelAddr::Local(2), "shared");
@@ -5920,16 +5890,14 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_pseudo_singletons_use_dedicated_constructors() {
-        for name in [LEGACY_SERVICE_PROC_NAME, LEGACY_LOCAL_PROC_NAME] {
-            let result = std::panic::catch_unwind(|| {
-                Proc::configured(
-                    ProcAddr::singleton(ChannelAddr::Local(1), name),
-                    BoxedMailboxSender::new(PanickingMailboxSender),
-                );
-            });
-            assert!(result.is_err());
-        }
+    fn test_legacy_service_pseudo_singleton_uses_dedicated_constructor() {
+        let result = std::panic::catch_unwind(|| {
+            Proc::configured(
+                ProcAddr::singleton(ChannelAddr::Local(1), LEGACY_SERVICE_PROC_NAME),
+                BoxedMailboxSender::new(PanickingMailboxSender),
+            );
+        });
+        assert!(result.is_err());
 
         let service = Proc::legacy_service_pseudo_singleton(
             ChannelAddr::Local(1),
@@ -5938,15 +5906,6 @@ mod tests {
         assert_eq!(
             service.proc_addr().id().uid().to_string(),
             LEGACY_SERVICE_PROC_NAME
-        );
-
-        let local = Proc::legacy_local_pseudo_singleton(
-            ChannelAddr::Local(2),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
-        assert_eq!(
-            local.proc_addr().id().uid().to_string(),
-            LEGACY_LOCAL_PROC_NAME
         );
     }
 
