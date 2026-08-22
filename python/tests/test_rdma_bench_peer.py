@@ -77,9 +77,9 @@ async def _compare(peers, topo):
     return bt.compare_digests(topo, digests)
 
 
-def _skip_without_cuda(source_on_gpu: bool, dest_on_gpu: bool) -> None:
-    if (source_on_gpu or dest_on_gpu) and not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
+def _skip_without_enough_cuda_devices(source_on_gpu: bool, dest_on_gpu: bool) -> None:
+    if (source_on_gpu or dest_on_gpu) and torch.cuda.device_count() < _LANES:
+        pytest.skip(f"requires {_LANES} CUDA devices")
 
 
 @rdma_backends
@@ -109,7 +109,7 @@ async def test_every_edge_delivers_its_own_bytes(
     so this fails if any op is routed to the wrong peer's memory -- the failure
     the RDMA layer cannot detect for itself.
     """
-    _skip_without_cuda(source_on_gpu, dest_on_gpu)
+    _skip_without_enough_cuda_devices(source_on_gpu, dest_on_gpu)
     topo = bt.build_topology("p2p", 1, _LANES, bt.ALL)
     peers = _spawn()
     await _drive(
