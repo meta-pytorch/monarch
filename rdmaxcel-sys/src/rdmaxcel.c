@@ -671,6 +671,37 @@ int rdmaxcel_is_efa_dev(struct ibv_context* ctx) {
   return (ret == 0) ? 1 : 0;
 }
 
+// Whether this EFA device can serve RDMA read and write, or only send/recv.
+//
+// The authoritative signal is `efadv_device_attr.device_caps`, which carries
+// the `EFADV_DEVICE_ATTR_CAPS_RDMA_READ` / `..._RDMA_WRITE` bits the driver
+// sets for RDMA-capable instances. We also require `max_qp_rd_atom > 0` from
+// the standard `ibv_query_device`, so a device whose driver advertises the EFA
+// capability while the verbs layer refuses RDMA work requests is reported as
+// incapable rather than failing later at queue-pair creation.
+int rdmaxcel_efa_supports_rdma(struct ibv_context* ctx) {
+  if (!ctx || !ctx->device) {
+    return 0;
+  }
+
+  struct ibv_device_attr dev_attr = {};
+  if (ibv_query_device(ctx, &dev_attr) != 0) {
+    return 0;
+  }
+  if (dev_attr.max_qp_rd_atom == 0) {
+    return 0;
+  }
+
+  struct efadv_device_attr efa_attr = {};
+  if (efadv_query_device(ctx, &efa_attr, sizeof(efa_attr)) != 0) {
+    return 0;
+  }
+
+  const uint32_t rdma_caps =
+      EFADV_DEVICE_ATTR_CAPS_RDMA_READ | EFADV_DEVICE_ATTR_CAPS_RDMA_WRITE;
+  return ((efa_attr.device_caps & rdma_caps) == rdma_caps) ? 1 : 0;
+}
+
 // ============================================================================
 // EFA QP Creation
 // ============================================================================

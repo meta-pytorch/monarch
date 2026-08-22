@@ -326,6 +326,10 @@ unsafe extern "C" {
     /// Check if the device is an EFA device (via efadv_query_device)
     pub fn rdmaxcel_is_efa_dev(ctx: *mut ibv_context) -> std::os::raw::c_int;
 
+    /// Check whether an EFA device can serve RDMA read and write, or only
+    /// send/recv. Returns 1 when both are supported, 0 otherwise.
+    pub fn rdmaxcel_efa_supports_rdma(ctx: *mut ibv_context) -> std::os::raw::c_int;
+
     /// EFA connect: INIT->RTR->RTS + AH creation, stored directly in qp struct
     pub fn rdmaxcel_efa_connect(
         qp: *mut rdmaxcel_qp_t,

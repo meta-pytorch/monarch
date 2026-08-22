@@ -383,6 +383,10 @@ int rdmaxcel_qp_post_op(
 // EFA device detection
 int rdmaxcel_is_efa_dev(struct ibv_context* ctx);
 
+// Whether this EFA device can serve RDMA read and write, or only send/recv.
+// Returns 1 if both RDMA read and RDMA write are supported, 0 otherwise.
+int rdmaxcel_efa_supports_rdma(struct ibv_context* ctx);
+
 // Create an EFA SRD queue pair via efadv_create_qp_ex
 struct ibv_qp* create_efa_qp(
     struct ibv_context* context,

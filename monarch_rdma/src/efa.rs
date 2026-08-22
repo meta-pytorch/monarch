@@ -54,6 +54,22 @@ fn is_efa_device_impl() -> bool {
     }
 }
 
+/// Whether an EFA device can serve RDMA read and write.
+///
+/// EFA generations differ here: instances such as p5 and p5en advertise
+/// `EFADV_DEVICE_ATTR_CAPS_RDMA_READ` and `..._RDMA_WRITE` and can carry RDMA
+/// traffic over SRD, while p4d advertises neither and offers only send/recv.
+/// A queue pair created for RDMA on the latter is rejected, so callers that
+/// need RDMA must consult this before selecting an EFA device.
+///
+/// `ctx` must be an EFA device context; on any other device the underlying
+/// `efadv_query_device` fails and this returns false.
+pub fn supports_rdma(ctx: *mut rdmaxcel_sys::ibv_context) -> bool {
+    // SAFETY: `ctx` is a context opened by libibverbs, and
+    // `rdmaxcel_efa_supports_rdma` tolerates a null pointer.
+    unsafe { rdmaxcel_sys::rdmaxcel_efa_supports_rdma(ctx) != 0 }
+}
+
 /// Returns the MR access flags appropriate for EFA devices.
 ///
 /// EFA does not support `IBV_ACCESS_REMOTE_ATOMIC`, so this returns only
