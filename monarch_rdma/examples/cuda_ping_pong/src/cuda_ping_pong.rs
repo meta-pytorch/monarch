@@ -87,6 +87,7 @@ use monarch_rdma::RdmaRemoteBuffer;
 use monarch_rdma::backend::ibverbs::device_selection::IbvDeviceTarget;
 use monarch_rdma::backend::ibverbs::manager_actor::RawQueuePair;
 use monarch_rdma::backend::ibverbs::memory_region::IbvRemoteMemoryRegionView;
+use monarch_rdma::backend::ibverbs::mlx_device::MlxDevice;
 use monarch_rdma::backend::ibverbs::primitives::IbvQpInfo;
 use monarch_rdma::backend::ibverbs::queue_pair::legacy::IbvQueuePair;
 use monarch_rdma::cu_check;
@@ -148,9 +149,7 @@ pub fn ping_pong(
     if result == 0 { Ok(()) } else { Err(result) }
 }
 
-/// The NIC serving a buffer's first registration. A buffer may be registered on
-/// several; this example drives a single queue pair, and taking the first entry
-/// is a stable choice because the registrations come back in device-name order.
+/// The NIC serving a buffer's first registration.
 fn first_device(buffers: &[IbvRemoteMemoryRegionView]) -> Result<String, anyhow::Error> {
     Ok(buffers
         .first()
@@ -646,7 +645,7 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
             .local_memory
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Local buffer not registered"))?
-            .registered_mr(&local_device)?
+            .registered_mr::<MlxDevice>(&local_device)?
             .ok_or_else(|| anyhow::anyhow!("local buffer has no registration on {local_device}"))?;
         let remote_ibv = remote_buffer
             .resolve_mlx()

@@ -120,6 +120,25 @@ def test_rdma_peer_device_affinity_round_trip() -> None:
     assert get_global_config()["rdma_peer_device_affinity"] == ""
 
 
+def test_rdma_max_nics_per_buffer_round_trip() -> None:
+    assert get_global_config()["rdma_max_nics_per_buffer"] == 1
+
+    with configured(rdma_max_nics_per_buffer=4) as config:
+        assert config["rdma_max_nics_per_buffer"] == 4
+
+    # None means no limit: every equally good NIC serves the buffer.
+    with configured(rdma_max_nics_per_buffer=None) as config:
+        assert config["rdma_max_nics_per_buffer"] is None
+
+    assert get_global_config()["rdma_max_nics_per_buffer"] == 1
+
+    # The attribute is non-zero, so zero is rejected rather than silently
+    # meaning "no NIC".
+    with pytest.raises(ValueError):
+        with configured(rdma_max_nics_per_buffer=0):
+            pass
+
+
 def test_rdma_runtime_worker_threads_round_trip() -> None:
     assert get_global_config()["rdma_runtime_worker_threads"] == 16
 

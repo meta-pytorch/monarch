@@ -576,7 +576,7 @@ async fn local_view(
         .next()
         .ok_or_else(|| anyhow::anyhow!("local buffer carries no registration"))?
         .device_name;
-    mem.registered_mr(&device)?
+    mem.registered_mr::<MlxDevice>(&device)?
         .ok_or_else(|| anyhow::anyhow!("request_buffer should have registered on {device}"))
 }
 

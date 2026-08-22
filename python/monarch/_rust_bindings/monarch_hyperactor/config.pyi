@@ -11,7 +11,7 @@ Type hints for the monarch_hyperactor.config Rust bindings.
 """
 
 from enum import Enum
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 
@@ -84,6 +84,7 @@ def configure(
     rdma_max_chunk_size_mb: int = ...,
     rdma_ibverbs_target: str = ...,
     rdma_peer_device_affinity: str = ...,
+    rdma_max_nics_per_buffer: Optional[int] = ...,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.
@@ -193,6 +194,8 @@ def configure(
             "groups:mlx5_0,mlx5_1|mlx5_2,mlx5_3|mlx5_4". Groups must be
             disjoint. Empty, the default, means "any". Value syntax is
             validated when the RDMA manager starts.
+        rdma_max_nics_per_buffer: How many NICs a buffer is registered
+            on, at most (default: 1); None sets no limit.
         **kwargs: Reserved for future configuration keys
 
     For historical reasons, this API is named ``configure(...)``;
