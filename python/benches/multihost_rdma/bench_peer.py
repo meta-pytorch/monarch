@@ -47,7 +47,7 @@ from bench_stats import Sample
 from bench_topology import InitiatorPlan, Slot, SlotAllocation, SlotValues
 from monarch.actor import Actor, context, endpoint, Point
 from monarch.config import get_global_config
-from monarch.rdma import is_ibverbs_available, RDMAAction, RDMABuffer
+from monarch.rdma import RDMAAction, RDMABuffer
 
 
 VERIFY_OFF: str = "off"
@@ -71,19 +71,15 @@ class Peer(Actor):
         self.plan: InitiatorPlan = InitiatorPlan()
 
     @endpoint
-    async def transport(self) -> str:
-        """Which transport this proc's configuration will actually use.
-
-        The driver checks this against what was asked for, so a silent
-        fallback fails loudly instead of showing up as a hundred-fold
-        outlier.
+    async def check_config(self, expected: Mapping[str, Any]) -> dict[str, Any]:
+        """Which of `expected` this proc's config disagrees with, and what it
+        holds instead. Empty when the proc has every one of them. Used to ensure
+        the client's config propagated properly.
         """
         config = get_global_config()
-        if not config["rdma_disable_ibverbs"] and is_ibverbs_available():
-            return "ibverbs"
-        if config["rdma_allow_tcp_fallback"]:
-            return "tcp"
-        return "none"
+        return {
+            key: config[key] for key, value in expected.items() if config[key] != value
+        }
 
     @endpoint
     async def setup(

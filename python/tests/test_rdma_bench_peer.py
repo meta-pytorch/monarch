@@ -83,16 +83,19 @@ def _skip_without_cuda(source_on_gpu: bool, dest_on_gpu: bool) -> None:
 
 
 @rdma_backends
-async def test_a_peer_reports_the_transport_its_configuration_selects() -> None:
-    # The rdma_backends decorator skips the test if rdma_disable_ibverbs == False
-    # and ibverbs is unavailable, and always enables tcp fallback when ibverbs is
-    # disabled, so this computation for `expected` is correct.
-    expected = "tcp" if get_global_config()["rdma_disable_ibverbs"] else "ibverbs"
+async def test_a_peer_reports_the_settings_its_configuration_disagrees_with() -> None:
+    disable_ibverbs = get_global_config()["rdma_disable_ibverbs"]
     peers = _spawn(lanes=1)
 
-    reported = {value for _point, value in (await peers.transport.call()).items()}
+    agreed = await peers.check_config.call({"rdma_disable_ibverbs": disable_ibverbs})
+    disagreed = await peers.check_config.call(
+        {"rdma_disable_ibverbs": not disable_ibverbs}
+    )
 
-    assert reported == {expected}
+    assert [held for _point, held in agreed.items()] == [{}]
+    assert [held for _point, held in disagreed.items()] == [
+        {"rdma_disable_ibverbs": disable_ibverbs}
+    ]
 
 
 @rdma_backends
