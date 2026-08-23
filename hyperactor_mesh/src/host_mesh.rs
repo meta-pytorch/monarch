@@ -1456,7 +1456,7 @@ impl HostMeshRef {
                 default_bootstrap_command: self.bootstrap_command.clone(),
                 proc_bind,
                 bootstrap_commands,
-                status_reply: Some(reply_port),
+                status_reply: reply_port,
             },
         )?;
 
