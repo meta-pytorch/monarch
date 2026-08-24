@@ -233,9 +233,9 @@ pub(crate) fn proc_slots(
 }
 
 #[derive(Debug)]
-pub(crate) struct ProcCreationState {
-    pub(crate) rank: usize,
-    pub(crate) host_mesh_id: Option<HostMeshId>,
+pub(crate) struct ProcMetadata {
+    rank: usize,
+    host_mesh_id: Option<HostMeshId>,
     /// The proc mesh this proc belongs to. Used to scope per-mesh queries like
     /// `StreamState`, since a host agent can hold procs from multiple meshes.
     /// Always set for procs spawned through a proc mesh (the cast `SpawnProcs`
@@ -243,7 +243,12 @@ pub(crate) struct ProcCreationState {
     /// path (e.g. the point-to-point `CreateOrUpdate` used by tests/admin),
     /// which belong to no queryable mesh and are intentionally excluded from
     /// per-mesh queries.
-    pub(crate) proc_mesh_id: Option<ProcMeshId>,
+    proc_mesh_id: Option<ProcMeshId>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ProcCreationState {
+    metadata: ProcMetadata,
     pub(crate) created: Result<(ProcAddr, ActorRef<ProcAgent>), HostError>,
     /// "Owner is alive" deadline communicated by the controller via
     /// `KeepaliveGetState`. The host's `SelfCheck` reaper compares against this
@@ -563,7 +568,7 @@ impl HostAgent {
         let matching_ids: Vec<ResourceId> = self
             .created
             .iter()
-            .filter(|(_, state)| state.host_mesh_id.as_ref() == filter)
+            .filter(|(_, state)| state.metadata.host_mesh_id.as_ref() == filter)
             .map(|(id, _)| id.clone())
             .collect();
 
@@ -1051,9 +1056,11 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         self.created.insert(
             create_or_update.id.clone(),
             ProcCreationState {
-                rank,
-                host_mesh_id: create_or_update.spec.host_mesh_id.clone(),
-                proc_mesh_id: create_or_update.spec.proc_mesh_id.clone(),
+                metadata: ProcMetadata {
+                    rank,
+                    host_mesh_id: create_or_update.spec.host_mesh_id.clone(),
+                    proc_mesh_id: create_or_update.spec.proc_mesh_id.clone(),
+                },
                 created,
                 expiry_time: None,
             },
@@ -1133,22 +1140,19 @@ impl HostAgent {
     /// status. `rank == usize::MAX` means the proc is unknown to this host.
     async fn proc_rank_status(&self, id: &ResourceId) -> (usize, Status) {
         match self.created.get(id) {
-            Some(ProcCreationState {
-                rank,
-                created: Ok((proc_id, _mesh_agent)),
-                ..
-            }) => {
-                let raw_status = match self.host() {
-                    Some(host) => host.proc_status(proc_id).await.0,
-                    None => resource::Status::Unknown,
-                };
-                (*rank, raw_status.clamp_min(self.min_proc_status()))
-            }
-            Some(ProcCreationState {
-                rank,
-                created: Err(e),
-                ..
-            }) => (*rank, Status::Failed(e.to_string())),
+            Some(state) => match &state.created {
+                Ok((proc_id, _mesh_agent)) => {
+                    let raw_status = match self.host() {
+                        Some(host) => host.proc_status(proc_id).await.0,
+                        None => resource::Status::Unknown,
+                    };
+                    (
+                        state.metadata.rank,
+                        raw_status.clamp_min(self.min_proc_status()),
+                    )
+                }
+                Err(e) => (state.metadata.rank, Status::Failed(e.to_string())),
+            },
             None => (usize::MAX, Status::NotExist),
         }
     }
@@ -1744,12 +1748,8 @@ impl HostAgent {
         id: &ResourceId,
         state: &ProcCreationState,
     ) -> resource::State<ProcState> {
-        match state {
-            ProcCreationState {
-                rank,
-                created: Ok((proc_id, mesh_agent)),
-                ..
-            } => {
+        match &state.created {
+            Ok((proc_id, mesh_agent)) => {
                 let (raw_status, proc_status, bootstrap_command) = match self.host() {
                     Some(host) => {
                         let (status, proc_status) = host.proc_status(proc_id).await;
@@ -1763,7 +1763,7 @@ impl HostAgent {
                     status,
                     state: Some(ProcState {
                         proc_id: proc_id.clone(),
-                        create_rank: *rank,
+                        create_rank: state.metadata.rank,
                         mesh_agent: mesh_agent.clone(),
                         bootstrap_command,
                         proc_status,
@@ -1772,9 +1772,7 @@ impl HostAgent {
                     timestamp: std::time::SystemTime::now(),
                 }
             }
-            ProcCreationState {
-                created: Err(e), ..
-            } => resource::State {
+            Err(e) => resource::State {
                 id: id.clone(),
                 status: resource::Status::Failed(e.to_string()),
                 state: None,
@@ -1840,8 +1838,8 @@ impl Handler<GetHostProcStates> for HostAgent {
         message: GetHostProcStates,
     ) -> anyhow::Result<()> {
         let selects = |state: &ProcCreationState| {
-            state.proc_mesh_id.as_ref() == Some(&message.proc_mesh_id)
-                && message.region.slice().contains(state.rank)
+            state.metadata.proc_mesh_id.as_ref() == Some(&message.proc_mesh_id)
+                && message.region.slice().contains(state.metadata.rank)
         };
 
         // Bump keepalive (if requested) in a separate mutable pass, so the read
@@ -1864,7 +1862,7 @@ impl Handler<GetHostProcStates> for HostAgent {
         let mut runs = Vec::new();
         for (id, state) in self.created.iter() {
             if selects(state) {
-                let base = message.region.slice().index(state.rank)?;
+                let base = message.region.slice().index(state.metadata.rank)?;
                 runs.push((base..(base + 1), self.proc_state_from(id, state).await));
             }
         }
@@ -1978,6 +1976,7 @@ impl Handler<resource::StreamState<ProcState>> for HostAgent {
         for (id, proc) in self.created.iter() {
             // Skip procs that don't belong to the subscribing proc mesh.
             if proc
+                .metadata
                 .proc_mesh_id
                 .as_ref()
                 .is_none_or(|mesh| mesh.resource_id() != &stream_state.id)
@@ -2000,7 +1999,7 @@ impl Handler<resource::StreamState<ProcState>> for HostAgent {
                         status,
                         state: Some(ProcState {
                             proc_id: proc_id.clone(),
-                            create_rank: proc.rank,
+                            create_rank: proc.metadata.rank,
                             mesh_agent: mesh_agent.clone(),
                             bootstrap_command,
                             proc_status,
@@ -2022,7 +2021,7 @@ impl Handler<resource::StreamState<ProcState>> for HostAgent {
                 cx,
                 headers.clone(),
                 resource::RankedState {
-                    rank: resource::Rank::new(proc.rank),
+                    rank: resource::Rank::new(proc.metadata.rank),
                     state,
                 },
             );
