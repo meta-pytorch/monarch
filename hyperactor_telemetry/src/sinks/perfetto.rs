@@ -173,7 +173,7 @@ pub fn default_trace_dir() -> PathBuf {
     if let Ok(dir) = std::env::var(MONARCH_TRACE_DIR_ENV) {
         return PathBuf::from(dir);
     }
-    let username = whoami::username();
+    let username = whoami::username().unwrap_or_else(|_| "unknown".to_owned());
     PathBuf::from(format!("/tmp/{}/monarch_traces", username))
 }
 

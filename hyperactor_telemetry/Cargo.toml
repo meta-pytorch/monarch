@@ -34,7 +34,7 @@ tracing-appender = "0.2.5"
 tracing-core = { version = "0.1.33", features = ["valuable"] }
 tracing-perfetto-sdk-schema = "0.13.1"
 tracing-subscriber = { version = "0.3.23", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
-whoami = "1.5"
+whoami = "2.1.3"
 
 [dev-dependencies]
 datafusion = "52.5.0"
