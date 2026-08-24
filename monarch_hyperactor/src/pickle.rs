@@ -902,25 +902,76 @@ mod tests {
     use hyperactor_mesh::proc_agent::ProcAgent;
     use hyperactor_mesh::proc_mesh::ProcMeshRef;
     use hyperactor_mesh::proc_mesh::ProcRef;
+    use pyo3::IntoPyObjectExt;
+    use pyo3::PyTypeInfo;
 
     use super::*;
+    use crate::proc_mesh::PyProcMesh;
 
-    fn resolved_proc_mesh_ref() -> MeshRef {
+    /// A distinct resolved proc mesh per `(instance, mesh)` pair, so a test can
+    /// tell one filled slot from another.
+    fn proc_mesh_ref(instance: u64, mesh: &str) -> ProcMeshRef {
         let proc_id = ProcId::new(
-            Uid::Instance(1, None),
+            Uid::Instance(instance, None),
             Some(Label::new("local").expect("test label should be valid")),
         );
         let proc_addr = ProcAddr::new(proc_id, ChannelAddr::Local(1).into());
         let agent: ActorRef<ProcAgent> =
             ActorRef::attest(proc_addr.actor_addr(PROC_AGENT_ACTOR_NAME));
         let proc_ref = ProcRef::new(proc_addr, 0, agent);
-        MeshRef::Proc(Box::new(
-            ProcMeshRef::new_singleton(
-                ProcMeshId::singleton(Label::new("mesh").expect("test label should be valid")),
-                proc_ref,
-            )
-            .expect("test proc mesh should be valid"),
-        ))
+        ProcMeshRef::new_singleton(
+            ProcMeshId::singleton(Label::new(mesh).expect("test label should be valid")),
+            proc_ref,
+        )
+        .expect("test proc mesh should be valid")
+    }
+
+    fn resolved_proc_mesh_ref() -> MeshRef {
+        MeshRef::Proc(Box::new(proc_mesh_ref(1, "mesh")))
+    }
+
+    /// A `Shared` that is already completed with `value`.
+    ///
+    /// Built through the Python classmethod so nothing is spawned: the handle
+    /// is finished before any test looks at it, which keeps slot filling free
+    /// of scheduling order.
+    fn completed_shared(py: Python<'_>, value: Py<PyAny>) -> Py<PyShared> {
+        py.get_type::<PyShared>()
+            .call_method1("from_value", (value,))
+            .expect("Shared.from_value should accept any object")
+            .extract()
+            .expect("Shared.from_value should return a Shared")
+    }
+
+    /// The Python object a resolved pending mesh hands back: the wrapper type
+    /// the sender-side fill knows how to turn into a `MeshRef`.
+    fn mesh_value(py: Python<'_>, mesh: &ProcMeshRef) -> Py<PyAny> {
+        Py::new(py, PyProcMesh::new_ref(mesh.clone()))
+            .expect("PyProcMesh should construct")
+            .into_any()
+    }
+
+    /// `Result::expect_err` for a success type that is not `Debug`.
+    fn expect_error(result: PyResult<PyPythonTask>, context: &str) -> PyErr {
+        match result {
+            Ok(_) => panic!("{context}"),
+            Err(error) => error,
+        }
+    }
+
+    fn pickling_state(
+        buffer: Vec<u8>,
+        mesh_references: Vec<Option<MeshRef>>,
+        pending_mesh_fills: Vec<(usize, Py<PyShared>)>,
+    ) -> PicklingState {
+        PicklingState {
+            inner: Some(PicklingStateInner {
+                buffer: Part::from(buffer),
+                tensor_engine_references: VecDeque::new(),
+                mesh_references: mesh_references.into(),
+                pending_mesh_fills,
+            }),
+        }
     }
 
     fn pending_message(
@@ -1048,5 +1099,281 @@ mod tests {
                 "sync and async resolution should preserve kind, bytes, and refs"
             );
         }
+    }
+
+    /// `resolve` writes each pending mesh into the slot it reserved, leaving
+    /// the slots it did not reserve and the pickled bytes alone.
+    ///
+    /// The two pending slots are nonadjacent, with an already-resolved slot
+    /// between them, so filling them in the wrong order or appending instead of
+    /// writing in place both produce a different table.
+    #[tokio::test]
+    async fn resolve_fills_nonadjacent_slots_in_place_without_touching_the_payload() {
+        pyo3::Python::initialize();
+
+        let first = proc_mesh_ref(11, "first");
+        let already = proc_mesh_ref(22, "already");
+        let second = proc_mesh_ref(33, "second");
+        assert_ne!(
+            first, second,
+            "the two pending meshes must be distinguishable"
+        );
+        let payload: Vec<u8> = vec![0, 1, 2, 3, 127, 128, 254, 255];
+
+        let state = monarch_with_gil_blocking(GilSite::Test, |py| {
+            Ok::<_, PyErr>(pickling_state(
+                payload.clone(),
+                vec![None, Some(MeshRef::Proc(Box::new(already.clone()))), None],
+                // Deliberately out of index order: an implementation that
+                // ignored the index and filled successive empty slots would
+                // produce the reverse table.
+                vec![
+                    (2, completed_shared(py, mesh_value(py, &second))),
+                    (0, completed_shared(py, mesh_value(py, &first))),
+                ],
+            ))
+        })
+        .expect("building the pending state should succeed");
+
+        let resolved = state.resolve().await.expect("resolution should succeed");
+        let inner = resolved
+            .inner
+            .expect("a resolved state should still hold its inner");
+
+        assert_eq!(
+            inner.mesh_references,
+            VecDeque::from(vec![
+                Some(MeshRef::Proc(Box::new(first))),
+                Some(MeshRef::Proc(Box::new(already))),
+                Some(MeshRef::Proc(Box::new(second))),
+            ]),
+            "each pending mesh must land in the slot it reserved"
+        );
+        assert_eq!(
+            &inner.take_buffer().into_bytes()[..],
+            &payload[..],
+            "resolution must not re-pickle: the payload bytes are carried through"
+        );
+    }
+
+    /// `py_resolve` consumes its source in the call and defers the fill.
+    ///
+    /// The handle resolves to a value that is not a mesh, so filling its slot
+    /// must fail. `py_resolve` returning `Ok` therefore shows the fill did not
+    /// happen during the call, and
+    /// `py_resolve_task_surfaces_the_fill_error_and_leaves_the_source_consumed`
+    /// drives the same shape and collects that failure.
+    /// `py_resolve_retains_no_waiter_on_a_pending_handle` is what covers the
+    /// stronger timing claim, that the call retains no waiter on the handle.
+    #[tokio::test]
+    async fn py_resolve_consumes_the_source_before_returning_its_task() {
+        pyo3::Python::initialize();
+
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let not_a_mesh = 41i64.into_py_any(py)?;
+            let mut message = PendingMessage::new(
+                PythonMessageKind::Result { rank: Some(7) },
+                pickling_state(
+                    vec![1, 2, 3],
+                    vec![None],
+                    vec![(0, completed_shared(py, not_a_mesh))],
+                ),
+            );
+
+            let task = message
+                .py_resolve()
+                .expect("the fill is deferred, so construction must not perform it");
+
+            // Discarded without ever being driven: no fill runs and no
+            // `PythonMessage` is ever produced.
+            drop(task);
+
+            let second = expect_error(
+                message.py_resolve(),
+                "the source was consumed by the first call",
+            );
+            assert_eq!(
+                second.value(py).to_string(),
+                "PicklingState has already been consumed",
+                "a second resolution must report the consumed source"
+            );
+            Ok::<_, PyErr>(())
+        })
+        .expect("test body should not fail");
+    }
+
+    /// The control for the case above: the fill error the construction did not
+    /// raise surfaces when the returned task is driven, and the source stays
+    /// consumed afterwards.
+    #[tokio::test]
+    async fn py_resolve_task_surfaces_the_fill_error_and_leaves_the_source_consumed() {
+        pyo3::Python::initialize();
+
+        let (mut task, mut message) = monarch_with_gil_blocking(GilSite::Test, |py| {
+            let not_a_mesh = 41i64.into_py_any(py)?;
+            let mut message = PendingMessage::new(
+                PythonMessageKind::Result { rank: Some(7) },
+                pickling_state(
+                    vec![1, 2, 3],
+                    vec![None],
+                    vec![(0, completed_shared(py, not_a_mesh))],
+                ),
+            );
+            let task = message.py_resolve()?;
+            Ok::<_, PyErr>((task, message))
+        })
+        .expect("construction should succeed");
+
+        let error = task
+            .take_task()
+            .expect("the returned task should be takeable")
+            .await
+            .expect_err("driving the task must surface the fill failure");
+
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            assert!(
+                error
+                    .get_type(py)
+                    .is(pyo3::exceptions::PyRuntimeError::type_object(py)),
+                "the original exception type must survive the task boundary exactly, \
+                 not merely as a subclass"
+            );
+            assert_eq!(
+                error.value(py).to_string(),
+                "pending pickle did not resolve to a mesh reference",
+                "the original message must survive the task boundary"
+            );
+
+            let second = expect_error(
+                message.py_resolve(),
+                "a failed drive must not hand the source back",
+            );
+            assert_eq!(
+                second.value(py).to_string(),
+                "PicklingState has already been consumed",
+            );
+            Ok::<_, PyErr>(())
+        })
+        .expect("assertions should not fail");
+    }
+
+    /// A failure raised by the pending handle's own task, rather than by the
+    /// conversion that follows it, is what the outer task reports.
+    ///
+    /// The inner message reserves a slot with no fill for it, so its task fails
+    /// in assembly with a message the conversion path cannot produce. Spawning
+    /// that task backs the handle with a task that fails, so awaiting the handle
+    /// is the step that fails and the sibling conversion-error test cannot be
+    /// what this one is measuring.
+    #[tokio::test]
+    async fn py_resolve_task_surfaces_a_failed_pending_handle_error() {
+        pyo3::Python::initialize();
+
+        let (mut outer_task, mut outer) = monarch_with_gil_blocking(GilSite::Test, |py| {
+            let mut inner = PendingMessage::new(
+                PythonMessageKind::Result { rank: Some(1) },
+                pickling_state(vec![9], vec![None], vec![]),
+            );
+            let handle = Py::new(py, inner.py_resolve()?.spawn()?)?;
+
+            let mut outer = PendingMessage::new(
+                PythonMessageKind::Result { rank: Some(7) },
+                pickling_state(vec![1, 2, 3], vec![None], vec![(0, handle)]),
+            );
+            let task = outer.py_resolve()?;
+            Ok::<_, PyErr>((task, outer))
+        })
+        .expect("construction should succeed");
+
+        let error = outer_task
+            .take_task()
+            .expect("the returned task should be takeable")
+            .await
+            .expect_err("the failed handle must fail the outer resolution");
+
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            assert!(
+                error
+                    .get_type(py)
+                    .is(pyo3::exceptions::PyRuntimeError::type_object(py)),
+                "the producer's exception type must survive both task boundaries"
+            );
+            assert_eq!(
+                error.value(py).to_string(),
+                "mesh reference slot was never filled",
+                "the outer task must report the producer's own failure, not a \
+                 conversion failure raised after a successful await"
+            );
+
+            let second = expect_error(
+                outer.py_resolve(),
+                "a failed handle must not hand the source back",
+            );
+            assert_eq!(
+                second.value(py).to_string(),
+                "PicklingState has already been consumed",
+            );
+            Ok::<_, PyErr>(())
+        })
+        .expect("assertions should not fail");
+    }
+
+    /// `py_resolve` returns without retaining a waiter on a pending handle:
+    /// it consumes the source and leaves the waiting to the returned task.
+    ///
+    /// The witness is the sender's receiver count, because `Shared::task()`
+    /// clones the watch receiver and holds it for the life of the waiter. The
+    /// count is read before the returned task is dropped, since dropping it
+    /// would release any waiter it had retained and restore the baseline.
+    ///
+    /// Scope: this is about retaining a waiter, not about looking. `poll()`
+    /// reads the watch value through a borrow and clones nothing, so a count
+    /// that has not moved does not rule out a poll.
+    #[tokio::test]
+    async fn py_resolve_retains_no_waiter_on_a_pending_handle() {
+        pyo3::Python::initialize();
+
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let (sender, pending) = PyShared::pending();
+            let handle = Py::new(py, pending)?;
+            let baseline = sender.receiver_count();
+
+            let mut message = PendingMessage::new(
+                PythonMessageKind::Result { rank: Some(7) },
+                pickling_state(vec![1, 2, 3], vec![None], vec![(0, handle.clone_ref(py))]),
+            );
+
+            let task = message.py_resolve()?;
+            let retained = sender.receiver_count();
+            drop(task);
+
+            assert_eq!(
+                retained, baseline,
+                "py_resolve must return without retaining a waiter on the handle"
+            );
+
+            let waiter = handle.borrow(py).task()?;
+            assert_eq!(
+                sender.receiver_count(),
+                baseline + 1,
+                "one task() waiter must retain exactly one additional receiver"
+            );
+            drop(waiter);
+
+            let second = expect_error(
+                message.py_resolve(),
+                "the source was consumed by the first call",
+            );
+            assert_eq!(
+                second.value(py).to_string(),
+                "PicklingState has already been consumed",
+            );
+
+            // Nothing is parked on this handle, but publish rather than leave
+            // the fixture's sender to drop on a still-live receiver.
+            sender.send(Some(Ok(py.None()))).ok();
+            Ok::<_, PyErr>(())
+        })
+        .expect("test body should not fail");
     }
 }

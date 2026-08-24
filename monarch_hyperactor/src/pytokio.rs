@@ -773,6 +773,27 @@ impl PyShared {
     }
 }
 
+#[cfg(test)]
+impl PyShared {
+    /// A `Shared` that stays pending until the returned sender publishes.
+    ///
+    /// Handing back the sender lets a test both control completion and read
+    /// `receiver_count()`. `task()` and `wait_future()` clone the receiver
+    /// eagerly and hold it for the life of the waiter, so the count witnesses
+    /// waiter retention specifically. It is not a witness for observation in
+    /// general: `poll()` reads the watch value through a borrow and clones
+    /// nothing, so it leaves the count unmoved.
+    pub(crate) fn pending() -> (watch::Sender<Option<PyResult<Py<PyAny>>>>, Self) {
+        let (tx, rx) = watch::channel(None);
+        (
+            tx,
+            Self {
+                core: HandleCore::new(rx, None, None),
+            },
+        )
+    }
+}
+
 #[pymethods]
 impl PyShared {
     /// Convert this `Shared` handle into a `PythonTask` that waits
