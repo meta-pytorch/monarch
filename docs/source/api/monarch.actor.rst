@@ -67,7 +67,7 @@ Messaging is done through the "adverbs" defined for each endpoint
    :undoc-members:
    :inherited-members:
    :show-inheritance:
-   :exclude-members: __init__, choose
+   :exclude-members: __init__
 
 .. autoclass:: Future
    :members:
