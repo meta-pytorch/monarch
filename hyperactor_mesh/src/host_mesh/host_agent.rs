@@ -251,6 +251,60 @@ pub(crate) struct ProcCreationState {
     pub(crate) expiry_time: Option<std::time::SystemTime>,
 }
 
+struct PendingDrain {
+    /// Number of matching proc spawns that were pending when the drain began.
+    /// Each counted spawn decrements this exactly once. Reaching zero completes
+    /// the drain and posts every reply exactly once.
+    remaining: usize,
+    failures: Vec<String>,
+    timeout: Duration,
+    max_in_flight: usize,
+    replies: Vec<PendingDrainReply>,
+}
+
+struct PendingDrainReply {
+    rank: usize,
+    reply: PortRef<crate::StatusOverlay>,
+}
+
+#[derive(Default)]
+struct PendingDrains {
+    /// A full drain subsumes the selective drains, which remain in the map so
+    /// that every selective request still receives its reply.
+    full: Option<PendingDrain>,
+    selective: HashMap<HostMeshId, PendingDrain>,
+}
+
+impl PendingDrains {
+    fn blocks_create(&self, host_mesh_id: Option<&HostMeshId>) -> bool {
+        self.full.is_some()
+            || host_mesh_id.is_some_and(|host_mesh_id| self.selective.contains_key(host_mesh_id))
+    }
+
+    fn take_all(&mut self) -> impl Iterator<Item = PendingDrain> {
+        let full = self.full.take();
+        let selective = std::mem::take(&mut self.selective);
+        full.into_iter().chain(selective.into_values())
+    }
+}
+
+impl PendingDrain {
+    fn post_replies(self, cx: &Context<'_, HostAgent>) {
+        let status = if self.failures.is_empty() {
+            resource::Status::Stopped
+        } else {
+            resource::Status::Failed(self.failures.join("; "))
+        };
+
+        for PendingDrainReply { rank, reply } in self.replies {
+            let overlay =
+                crate::StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status.clone())])
+                    .expect("valid single-run overlay");
+            reply.post(cx, overlay);
+        }
+    }
+}
+
 /// Actor name used when spawning the host mesh agent on the system proc.
 pub const HOST_MESH_AGENT_ACTOR_NAME: &str = "host_agent";
 
@@ -280,14 +334,7 @@ struct ProcStatusChanged {
 
 /// Sent by DrainWorker back to HostAgent when draining completes.
 /// Not exported — delivered locally via PortHandle (no serialization).
-struct DrainComplete {
-    host: HostAgentMode,
-    /// This host's ordinal within the drain cast region.
-    rank: usize,
-    /// Streaming status reply the parent posts the drained overlay to,
-    /// after restoring state.
-    reply: PortRef<crate::StatusOverlay>,
-}
+struct DrainComplete(HostAgentMode);
 
 /// Child actor whose only job is to run `host.terminate_children()` in
 /// its `init()`, return the host and ack to the parent via DrainComplete,
@@ -298,8 +345,6 @@ struct DrainWorker {
     host: Option<HostAgentMode>,
     timeout: Duration,
     max_in_flight: usize,
-    rank: usize,
-    reply: Option<PortRef<crate::StatusOverlay>>,
     done_notify: PortHandle<DrainComplete>,
 }
 
@@ -324,18 +369,9 @@ impl Actor for DrainWorker {
             }
         }
 
-        // Bundle host + reply into DrainComplete so the parent reports the
-        // drained overlay AFTER restoring state (prevents race with
-        // ShutdownHost).
-        if let (Some(host), Some(reply)) = (self.host.take(), self.reply.take()) {
-            let _ = self.done_notify.post(
-                this,
-                DrainComplete {
-                    host,
-                    rank: self.rank,
-                    reply,
-                },
-            );
+        // Restore the host before the parent reports drain completion.
+        if let Some(host) = self.host.take() {
+            let _ = self.done_notify.post(this, DrainComplete(host));
         }
 
         Ok(())
@@ -377,6 +413,7 @@ impl fmt::Debug for DrainWorker {
 pub struct HostAgent {
     state: HostAgentState,
     pub(crate) created: HashMap<ResourceId, ProcCreationState>,
+    pending_drains: PendingDrains,
     /// Pending `WaitRankStatus` waiters, keyed by resource name.
     /// Each entry is `(min_status, rank, reply_port)`. Only touched
     /// from `&mut self` handlers.
@@ -410,6 +447,7 @@ impl HostAgent {
         Self {
             state: HostAgentState::Detached(host),
             created: HashMap::new(),
+            pending_drains: PendingDrains::default(),
             pending_proc_waiters: HashMap::new(),
             watching: HashSet::new(),
             proc_status_port: None,
@@ -940,6 +978,16 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             // Already created: there is no update.
             return Ok(());
         }
+        if self
+            .pending_drains
+            .blocks_create(create_or_update.spec.host_mesh_id.as_ref())
+        {
+            tracing::warn!(
+                id = %create_or_update.id,
+                "ignoring CreateOrUpdate: HostAgent is draining"
+            );
+            return Ok(());
+        }
 
         let host = match self.host_mut() {
             Some(h) => h,
@@ -1357,74 +1405,120 @@ wirevalue::register_type!(DrainHost);
 impl Handler<DrainHost> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: DrainHost) -> anyhow::Result<()> {
         let rank = msg.rank.unwrap();
-        // This host's drain completion, as a single-rank `Stopped` overlay at
-        // its ordinal. The caller reduces these into a StatusMesh barrier.
-        let drained_overlay = || {
-            crate::StatusOverlay::try_from_runs(vec![(rank..(rank + 1), resource::Status::Stopped)])
-                .expect("valid single-run overlay")
+        let active_drain = match msg.host_mesh_id.as_ref() {
+            Some(host_mesh_id) => self.pending_drains.selective.get_mut(host_mesh_id),
+            None => self.pending_drains.full.as_mut(),
         };
-
-        if msg.host_mesh_id.is_some() {
-            // Selective drain: stop only procs belonging to the named mesh.
-            self.drain_by_mesh_name(cx, msg.timeout, msg.host_mesh_id.as_ref())
-                .await;
-            msg.reply.post(cx, drained_overlay());
+        if let Some(drain) = active_drain {
+            drain.replies.push(PendingDrainReply {
+                rank,
+                reply: msg.reply,
+            });
             return Ok(());
         }
 
-        // Full drain: terminate all children.
+        // CreateOrUpdate still waits for Host::spawn, so a drain cannot observe
+        // an in-progress proc creation in this revision.
+        let remaining = 0;
+        let drain = PendingDrain {
+            remaining,
+            failures: Vec::new(),
+            timeout: msg.timeout,
+            max_in_flight: msg.max_in_flight,
+            replies: vec![PendingDrainReply {
+                rank,
+                reply: msg.reply,
+            }],
+        };
+
+        match msg.host_mesh_id {
+            Some(host_mesh_id) => {
+                if self.pending_drains.full.is_some() {
+                    let replaced = self.pending_drains.selective.insert(host_mesh_id, drain);
+                    debug_assert!(replaced.is_none(), "duplicate selective drain was joined");
+                    return Ok(());
+                }
+
+                self.drain_by_mesh_name(cx, msg.timeout, Some(&host_mesh_id))
+                    .await;
+
+                if remaining == 0 {
+                    drain.post_replies(cx);
+                } else {
+                    let replaced = self.pending_drains.selective.insert(host_mesh_id, drain);
+                    debug_assert!(replaced.is_none(), "duplicate selective drain was joined");
+                }
+            }
+            None => {
+                if remaining == 0 && self.pending_drains.selective.is_empty() {
+                    self.start_full_drain(cx, drain);
+                } else {
+                    debug_assert!(
+                        self.pending_drains.full.is_none(),
+                        "duplicate full drain joined"
+                    );
+                    self.pending_drains.full = Some(drain);
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl HostAgent {
+    fn start_full_drain(&mut self, cx: &Context<'_, Self>, drain: PendingDrain) {
+        if drain.remaining != 0 {
+            unreachable!("full drain requires no remaining proc creations");
+        }
+        let timeout = drain.timeout;
+        let max_in_flight = drain.max_in_flight;
+
         let host = match std::mem::replace(&mut self.state, HostAgentState::Draining) {
             HostAgentState::Attached(h) => h,
             other @ (HostAgentState::Detached(_) | HostAgentState::Draining) => {
                 // Nothing to drain — report immediately.
                 self.state = other;
-                msg.reply.post(cx, drained_overlay());
-                return Ok(());
+                drain.post_replies(cx);
+                return;
             }
             HostAgentState::Shutdown => {
                 self.state = HostAgentState::Shutdown;
-                msg.reply.post(cx, drained_overlay());
-                return Ok(());
+                drain.post_replies(cx);
+                return;
             }
         };
 
-        // Do NOT clear `self.created` here: the DrainWorker
-        // terminates procs asynchronously, and concurrent GetState /
-        // GetRankStatus queries must still find the entries. With the
-        // host in Draining state (`self.host()` returns None), those
-        // handlers already report Status::Stopped for every known
-        // proc, which is the correct answer while draining is
-        // in progress.
+        debug_assert!(
+            self.pending_drains.full.is_none(),
+            "duplicate full drain was joined"
+        );
+        self.pending_drains.full = Some(drain);
 
+        // Do not clear `self.created` here. The DrainWorker terminates procs
+        // asynchronously, and status queries must still find their entries.
         let done_port = cx.port::<DrainComplete>();
 
         cx.spawn_with_label(
             "drain_worker",
             DrainWorker {
                 host: Some(host),
-                timeout: msg.timeout,
-                max_in_flight: msg.max_in_flight,
-                rank,
-                reply: Some(msg.reply),
+                timeout,
+                max_in_flight,
                 done_notify: done_port,
             },
         );
-
-        Ok(())
     }
 }
 
 #[async_trait]
 impl Handler<DrainComplete> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: DrainComplete) -> anyhow::Result<()> {
-        self.state = HostAgentState::Detached(msg.host);
+        self.state = HostAgentState::Detached(msg.0);
         self.created.clear();
-        let overlay = crate::StatusOverlay::try_from_runs(vec![(
-            msg.rank..(msg.rank + 1),
-            resource::Status::Stopped,
-        )])
-        .expect("valid single-run overlay");
-        msg.reply.post(cx, overlay);
+        for drain in self.pending_drains.take_all() {
+            drain.post_replies(cx);
+        }
         Ok(())
     }
 }
@@ -2002,6 +2096,27 @@ mod tests {
         assert_matches!(status, resource::Status::Failed(_));
     }
 
+    async fn spawn_local_host_agent(spawn: ProcManagerSpawnFn) -> ActorHandle<HostAgent> {
+        let host = Host::new(LocalProcManager::new(spawn), ChannelTransport::Unix.any())
+            .await
+            .expect("local host should start");
+
+        let host_agent = host
+            .system_proc()
+            .clone()
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
+                HostAgent::new_local(host),
+            )
+            .expect("host agent should start");
+
+        HostAgent::wait_initialized(&host_agent)
+            .await
+            .expect("host agent should initialize");
+
+        host_agent
+    }
+
     // RSP-* coverage map for the HostAgent rank-status tests. Each deliberately
     // uses `message_rank != creation_rank`, so a handler that read the creation
     // rank would fail:
@@ -2365,18 +2480,7 @@ mod tests {
                 anyhow::anyhow!("test failure"),
             )))
         });
-        let host = Host::new(LocalProcManager::new(spawn), ChannelTransport::Unix.any())
-            .await
-            .unwrap();
-
-        let system_proc = host.system_proc().clone();
-        let host_agent = system_proc
-            .spawn_with_uid(
-                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
-                HostAgent::new_local(host),
-            )
-            .unwrap();
-        HostAgent::wait_initialized(&host_agent).await.unwrap();
+        let host_agent = spawn_local_host_agent(spawn).await;
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let client = client_proc.client("client");
@@ -2448,6 +2552,92 @@ mod tests {
             .expect("reply timed out")
             .expect("reply channel closed");
         assert_overlay_failed_at_rank(&overlay, get_rank);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn duplicate_selective_drains_each_receive_completion() {
+        let (spawn_started_tx, mut spawn_started_rx) = tokio::sync::watch::channel(false);
+        let (release_spawn_tx, release_spawn_rx) = tokio::sync::watch::channel(false);
+        let spawn: ProcManagerSpawnFn = Box::new(move |proc| {
+            let spawn_started_tx = spawn_started_tx.clone();
+            let mut release_spawn_rx = release_spawn_rx.clone();
+            Box::pin(async move {
+                spawn_started_tx
+                    .send(true)
+                    .expect("spawn-start receiver remains open");
+                release_spawn_rx
+                    .wait_for(|release| *release)
+                    .await
+                    .expect("spawn-release sender remains open");
+                ProcAgent::boot_v1(proc, None)
+            })
+        });
+        let host_agent = spawn_local_host_agent(spawn).await;
+
+        let client_proc =
+            Proc::direct(ChannelTransport::Unix.any(), "drain_client".to_string()).unwrap();
+        let client = client_proc.client("drain_client");
+        let host_mesh_id = HostMeshId::instance(Label::new("mesh-a").unwrap());
+        let proc_id = ResourceId::instance(Label::new("proc-a").unwrap());
+        let agent_ref: ActorRef<HostAgent> = host_agent.bind();
+
+        agent_ref.post(
+            &client,
+            resource::CreateOrUpdate {
+                id: proc_id,
+                rank: resource::Rank::new(0),
+                spec: ProcSpec {
+                    host_mesh_id: Some(host_mesh_id.clone()),
+                    ..Default::default()
+                },
+            },
+        );
+        spawn_started_rx
+            .wait_for(|started| *started)
+            .await
+            .expect("spawn-start sender remains open");
+
+        let (first_reply, mut first_reply_rx) = client.open_port::<crate::StatusOverlay>();
+        let (second_reply, mut second_reply_rx) = client.open_port::<crate::StatusOverlay>();
+        agent_ref.post(
+            &client,
+            DrainHost {
+                timeout: Duration::from_secs(5),
+                max_in_flight: 16,
+                host_mesh_id: Some(host_mesh_id.clone()),
+                rank: resource::Rank::new(3),
+                reply: first_reply.bind(),
+            },
+        );
+        agent_ref.post(
+            &client,
+            DrainHost {
+                timeout: Duration::from_secs(5),
+                max_in_flight: 16,
+                host_mesh_id: Some(host_mesh_id),
+                rank: resource::Rank::new(7),
+                reply: second_reply.bind(),
+            },
+        );
+
+        release_spawn_tx
+            .send(true)
+            .expect("spawn-release receivers remain open");
+
+        let first = first_reply_rx.recv().await.expect("first drain reply");
+        assert_overlay_at_rank(&first, 3);
+        assert_eq!(
+            first.runs().next().unwrap().1,
+            resource::Status::Stopped,
+            "first drain should complete successfully",
+        );
+        let second = second_reply_rx.recv().await.expect("second drain reply");
+        assert_overlay_at_rank(&second, 7);
+        assert_eq!(
+            second.runs().next().unwrap().1,
+            resource::Status::Stopped,
+            "second drain should complete successfully",
+        );
     }
 
     /// DrainHost with a host_mesh_id filter only stops procs
