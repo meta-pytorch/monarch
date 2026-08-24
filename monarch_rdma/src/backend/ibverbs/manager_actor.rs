@@ -64,6 +64,7 @@ use super::queue_pair::QueuePairActor;
 use super::queue_pair::QueuePairOp;
 use super::queue_pair::legacy;
 use crate::RdmaOp;
+use crate::RdmaOpType;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
 use crate::backend::RdmaConfig;
@@ -451,12 +452,84 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         self.qp_handles.insert(qp_key.clone(), actor.clone());
         Ok(actor)
     }
+
+    /// Whether this manager drives EFA devices.
+    ///
+    /// Per-backend, not per-process: on a host with both NICs, `spawn_available`
+    /// spawns an `IbvManagerActor<MlxDevice>` *and* an
+    /// `IbvManagerActor<EfaDevice>`, so asking whether the process can see an EFA
+    /// device would answer yes inside the Mellanox manager too.
+    fn is_efa() -> bool {
+        I::backend_name() == EfaDevice::backend_name()
+    }
+}
+
+/// The `(dst, src, len)` of the in-process copy that serves `op_type` between
+/// `local` and `remote`, or `None` if the pair has to go over a queue pair
+/// after all.
+///
+/// Eligibility is host memory on both ends. Device memory is excluded because
+/// the copy would need the CUDA driver — and, for a peer GPU, a peer-to-peer
+/// mapping this side has no handle on — while the device RDMA path already
+/// works.
+///
+/// The size rules mirror [`IbvQueuePair::put`] and [`IbvQueuePair::get`]
+/// exactly, down to the message, so an op the queue pair would have rejected is
+/// rejected here the same way: a write sends all of the local region and needs
+/// the remote to hold it, a read takes all of the remote region and needs the
+/// local to hold it.
+fn loopback_copy_range(
+    local: &KeepaliveLocalMemory,
+    remote: &IbvRemoteMemoryRegionView,
+    op_type: RdmaOpType,
+) -> Option<Result<(usize, usize, usize), anyhow::Error>> {
+    if !matches!(local.location(), MemoryLocation::Cpu(_))
+        || !matches!(remote.location, MemoryLocation::Cpu(_))
+    {
+        return None;
+    }
+    // Host memory is the one case where a region's RDMA address is also a
+    // pointer into this process: its MR covers exactly the requested range, so
+    // the offset within the MR is zero and `ibv_reg_mr` reports the registered
+    // address itself. For device memory `addr` is an offset into a zero-based
+    // address space, which is why the test above is on `location` rather than
+    // on `addr` — a GPU region's `addr` is frequently 0, and probing it as a
+    // pointer would report host memory and copy over whatever is there.
+    Some(match op_type {
+        RdmaOpType::WriteFromLocal => {
+            if remote.size < local.size() {
+                Err(anyhow::anyhow!(
+                    "remote buffer size ({}) is smaller than local buffer size ({})",
+                    remote.size,
+                    local.size()
+                ))
+            } else {
+                Ok((remote.addr, local.addr(), local.size()))
+            }
+        }
+        RdmaOpType::ReadIntoLocal => {
+            if local.size() < remote.size {
+                Err(anyhow::anyhow!(
+                    "local buffer size ({}) is smaller than remote buffer size ({})",
+                    local.size(),
+                    remote.size
+                ))
+            } else {
+                Ok((local.addr(), remote.addr, remote.size))
+            }
+        }
+    })
 }
 
 #[async_trait]
 impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
     async fn handle(&mut self, cx: &Context<Self>, msg: SubmitOps<I>) -> Result<(), anyhow::Error> {
         let SubmitOps { ops, reply } = msg;
+
+        // Only EFA needs the same-node shortcut below, and which manager this
+        // is does not change per op. Bound out here because `bind` re-exports
+        // the actor's ports on every call.
+        let loopback_manager: Option<ActorRef<Self>> = Self::is_efa().then(|| cx.bind());
 
         // Interleave MR resolution with QP dispatch: as soon as op `i`'s
         // local MR is resolved and its QP actor is in place, ship a
@@ -475,6 +548,36 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
                 )?;
                 continue;
             };
+            // EFA drops a same-node RDMA write on the floor: the QP connects and
+            // the work request completes locally, but the NIC never delivers the
+            // payload, so the transfer silently reads stale bytes. Both ends are
+            // in this process, so copy directly instead of posting a work request
+            // that will not arrive.
+            if let Some(local_manager) = &loopback_manager
+                && op.remote_manager.actor_addr() == local_manager.actor_addr()
+                && let Some(range) = loopback_copy_range(&op.local_memory, &remote, op.op_type)
+            {
+                let result = range.map(|(dst, src, len)| {
+                    // SAFETY: both regions are host memory registered in this
+                    // process. `op.local_memory`'s keepalive pins the local side
+                    // for this call; the remote side was registered with the peer
+                    // manager, which the check above established is this actor, and
+                    // its MR keepalive holds it. Each registration covers `size`
+                    // bytes from its address and `len` is the smaller of the two, so
+                    // both ranges are in bounds. Two registrations are either over
+                    // the same region — a copy onto itself — or disjoint, so they
+                    // never partially overlap.
+                    unsafe { std::ptr::copy(src as *const u8, dst as *mut u8, len) }
+                });
+                reply.try_post(
+                    cx,
+                    OpResult {
+                        op_idx: i,
+                        result: result.map_err(|e| e.to_string()),
+                    },
+                )?;
+                continue;
+            }
             let self_device = match self.resolve_local_mr(&op.local_memory) {
                 Ok(mrv) => mrv.device_name.clone(),
                 Err(e) => {
@@ -578,7 +681,7 @@ impl<I: IbvDeviceImpl> IbvManagerLocalMessageHandler for IbvManagerActor<I> {
         // than registering the same region on that device again.
         Ok(self
             .resolve_local_mr(&local)
-            .map(|mrv| vec![IbvRemoteMemoryRegionView::from(&mrv)])
+            .map(|mrv| vec![IbvRemoteMemoryRegionView::new(&mrv, local.location())])
             .map_err(|error| format!("{error:#}")))
     }
 }
@@ -825,6 +928,7 @@ mod tests {
     //! explicitly drains both procs.
 
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
@@ -849,6 +953,11 @@ mod tests {
     use serde::Serialize;
     use typeuri::Named;
 
+    use super::EfaDevice;
+    use super::IbvManagerActor;
+    use super::IbvRemoteMemoryRegionView;
+    use super::MemoryLocation;
+    use super::loopback_copy_range;
     use crate::IbvConfig;
     use crate::RdmaManagerActor;
     use crate::RdmaManagerMessageClient;
@@ -863,6 +972,7 @@ mod tests {
     use crate::backend::ibverbs::device_selection::resolve_target;
     use crate::backend::ibverbs::mlx_device::MlxDevice;
     use crate::backend::ibverbs::primitives::IbvQpType;
+    use crate::local_memory::Keepalive;
     use crate::local_memory::KeepaliveLocalMemory;
 
     // ====================================================================
@@ -1946,5 +2056,170 @@ mod tests {
         assert_remote_pattern(&env.helper_b, &env.client, post_flush_dst, SIZE, 0).await?;
 
         env.shutdown().await
+    }
+
+    // ====================================================================
+    // Same-node loopback copy
+    // ====================================================================
+    //
+    // EFA silently drops a same-node RDMA transfer, so an op whose peer is this
+    // same manager is served by an in-process copy instead. These cover the
+    // eligibility rules and the byte ranges; the copy itself is
+    // `std::ptr::copy`.
+
+    /// [`Keepalive`] over a `Vec<u8>` the test owns, so a region has real,
+    /// readable host memory behind it.
+    struct VecKeepalive(Mutex<Vec<u8>>);
+
+    impl Keepalive for VecKeepalive {
+        fn addr(&self) -> usize {
+            self.0.lock().unwrap().as_ptr() as usize
+        }
+        fn size(&self) -> usize {
+            self.0.lock().unwrap().len()
+        }
+    }
+
+    /// Host memory of `size` bytes filled with `pattern`.
+    fn host_memory(size: usize, pattern: u8) -> KeepaliveLocalMemory {
+        KeepaliveLocalMemory::try_new(Arc::new(VecKeepalive(Mutex::new(vec![pattern; size]))))
+            .expect("a host allocation has a location")
+    }
+
+    /// A remote view of `mem`, as its owner would put on the wire.
+    fn remote_view_of(mem: &KeepaliveLocalMemory) -> IbvRemoteMemoryRegionView {
+        IbvRemoteMemoryRegionView {
+            rkey: 0,
+            addr: mem.addr(),
+            size: mem.size(),
+            device_name: "efa_0".to_string(),
+            location: mem.location(),
+        }
+    }
+
+    /// Read `len` bytes from `addr`.
+    ///
+    /// # Safety
+    ///
+    /// `[addr, addr + len)` must be initialized host memory that outlives the
+    /// call.
+    unsafe fn bytes_at(addr: usize, len: usize) -> Vec<u8> {
+        // SAFETY: forwards this function's contract.
+        unsafe { std::slice::from_raw_parts(addr as *const u8, len) }.to_vec()
+    }
+
+    #[test]
+    fn a_write_copies_the_whole_local_region_to_the_remote() {
+        const SIZE: usize = 256;
+        let local = host_memory(SIZE, 0xAB);
+        let remote_mem = host_memory(SIZE, 0);
+        let remote = remote_view_of(&remote_mem);
+
+        let (dst, src, len) = loopback_copy_range(&local, &remote, RdmaOpType::WriteFromLocal)
+            .expect("host memory on both ends is eligible")
+            .expect("equal sizes are accepted");
+        assert_eq!((dst, src, len), (remote.addr, local.addr(), SIZE));
+
+        // SAFETY: `dst`/`src` are the two live host allocations above, each
+        // `SIZE` bytes, and `len` is `SIZE`.
+        unsafe { std::ptr::copy(src as *const u8, dst as *mut u8, len) };
+        // SAFETY: `remote_mem` is live host memory of `SIZE` bytes.
+        assert_eq!(unsafe { bytes_at(remote.addr, SIZE) }, vec![0xAB; SIZE]);
+    }
+
+    #[test]
+    fn a_read_copies_the_whole_remote_region_into_the_local() {
+        const SIZE: usize = 256;
+        let local = host_memory(SIZE, 0);
+        let remote_mem = host_memory(SIZE, 0xCD);
+        let remote = remote_view_of(&remote_mem);
+
+        let (dst, src, len) = loopback_copy_range(&local, &remote, RdmaOpType::ReadIntoLocal)
+            .expect("host memory on both ends is eligible")
+            .expect("equal sizes are accepted");
+        assert_eq!((dst, src, len), (local.addr(), remote.addr, SIZE));
+
+        // SAFETY: `dst`/`src` are the two live host allocations above, each
+        // `SIZE` bytes, and `len` is `SIZE`.
+        unsafe { std::ptr::copy(src as *const u8, dst as *mut u8, len) };
+        // SAFETY: `local` is live host memory of `SIZE` bytes.
+        assert_eq!(unsafe { bytes_at(local.addr(), SIZE) }, vec![0xCD; SIZE]);
+    }
+
+    // A transfer moves the source region in full, so the destination has to be
+    // able to hold it — the same bound the queue pair enforces before posting.
+    #[test]
+    fn a_transfer_into_too_small_a_destination_is_refused() {
+        let big = host_memory(256, 0);
+        let small = host_memory(128, 0);
+
+        let err = loopback_copy_range(&big, &remote_view_of(&small), RdmaOpType::WriteFromLocal)
+            .expect("host memory on both ends is eligible")
+            .expect_err("a 256-byte write does not fit in 128 bytes");
+        assert!(
+            err.to_string().contains("remote buffer size (128)"),
+            "unexpected error: {err}"
+        );
+
+        let err = loopback_copy_range(&small, &remote_view_of(&big), RdmaOpType::ReadIntoLocal)
+            .expect("host memory on both ends is eligible")
+            .expect_err("a 256-byte read does not fit in 128 bytes");
+        assert!(
+            err.to_string().contains("local buffer size (128)"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // A destination larger than the source is fine: only the source's bytes move.
+    #[test]
+    fn a_transfer_into_a_larger_destination_moves_only_the_source() {
+        let local = host_memory(128, 0xEE);
+        let remote_mem = host_memory(256, 0);
+        let remote = remote_view_of(&remote_mem);
+
+        let (dst, src, len) = loopback_copy_range(&local, &remote, RdmaOpType::WriteFromLocal)
+            .expect("host memory on both ends is eligible")
+            .expect("a smaller source fits");
+        assert_eq!(
+            len, 128,
+            "a write moves the local region, not the remote one"
+        );
+
+        // SAFETY: `dst` is 256 live bytes, `src` is 128, and `len` is 128.
+        unsafe { std::ptr::copy(src as *const u8, dst as *mut u8, len) };
+        // SAFETY: `remote_mem` is live host memory of 256 bytes.
+        let after = unsafe { bytes_at(remote.addr, 256) };
+        assert_eq!(after[..128], [0xEE; 128], "the source bytes landed");
+        assert_eq!(after[128..], [0; 128], "the tail was left alone");
+    }
+
+    // GPU memory is left to the RDMA path. The remote side is judged by its
+    // `location` and not by probing `addr`, which for a device region is an
+    // offset into the MR's zero-based address space — frequently 0, which would
+    // probe as host memory and send the copy to a near-null address.
+    #[test]
+    fn a_gpu_region_is_not_eligible_even_when_its_addr_looks_like_host_memory() {
+        let local = host_memory(256, 0);
+        let mut remote = remote_view_of(&local);
+        remote.location = MemoryLocation::Gpu(Some(0));
+        remote.addr = 0;
+
+        assert!(
+            loopback_copy_range(&local, &remote, RdmaOpType::WriteFromLocal).is_none(),
+            "a GPU remote region must go over the queue pair"
+        );
+        assert!(
+            loopback_copy_range(&local, &remote, RdmaOpType::ReadIntoLocal).is_none(),
+            "a GPU remote region must go over the queue pair"
+        );
+    }
+
+    // Only the EFA manager takes the shortcut. Both managers are spawned on a
+    // host with both NICs, and Mellanox same-node RDMA works, so a process-wide
+    // "is there an EFA device" test would divert it too.
+    #[test]
+    fn the_shortcut_is_scoped_to_the_efa_manager() {
+        assert!(IbvManagerActor::<EfaDevice>::is_efa());
+        assert!(!IbvManagerActor::<MlxDevice>::is_efa());
     }
 }

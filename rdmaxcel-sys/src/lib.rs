@@ -326,6 +326,10 @@ unsafe extern "C" {
     /// Check if the device is an EFA device (via efadv_query_device)
     pub fn rdmaxcel_is_efa_dev(ctx: *mut ibv_context) -> std::os::raw::c_int;
 
+    /// Check whether an EFA device can serve RDMA read and write, or only
+    /// send/recv. Returns 1 when both are supported, 0 otherwise.
+    pub fn rdmaxcel_efa_supports_rdma(ctx: *mut ibv_context) -> std::os::raw::c_int;
+
     /// EFA connect: INIT->RTR->RTS + AH creation, stored directly in qp struct
     pub fn rdmaxcel_efa_connect(
         qp: *mut rdmaxcel_qp_t,
@@ -340,6 +344,8 @@ unsafe extern "C" {
 
     /// EFA post operation with ibv_post_recv fallback
     /// op_type: 0 = write, 1 = read, 2 = recv, 3 = write_with_imm
+    /// signaled: non-zero to request a completion. The QP is created with
+    /// sq_sig_all = 0, so an unsignaled work request produces no CQE.
     pub fn rdmaxcel_qp_post_op(
         qp: *mut rdmaxcel_qp_t,
         local_addr: *mut std::ffi::c_void,
