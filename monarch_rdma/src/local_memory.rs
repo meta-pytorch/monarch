@@ -11,14 +11,16 @@
 //! [`KeepaliveLocalMemory`] wraps a raw pointer with a [`Keepalive`]
 //! guard and dispatches reads/writes to CPU or CUDA paths.
 
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
 
 use dashmap::DashMap;
-use dashmap::mapref::entry::Entry;
 
+use crate::backend::ibverbs::device::IbvDeviceImpl;
 use crate::backend::ibverbs::memory_region::IbvMemoryRegionView;
 use crate::device_selection::MemoryLocation;
 
@@ -397,12 +399,11 @@ pub(crate) struct LocalMemoryInner {
     /// Bandwidth (bytes/s) for direct device-thread pointer access, or
     /// `None` if the memory is not device-accessible.
     direct_access_device_bandwidth: Option<u64>,
-    /// The registrations this handle has made, keyed by RDMA device name.
-    /// Populated lazily by `IbvManagerActor::resolve_local_mr` as devices are
-    /// needed. Keying by device is what makes the entries substitutable for
-    /// one another: an `lkey`/`rkey` pair is only meaningful to the device
-    /// whose protection domain issued it.
-    mrs: Arc<DashMap<String, MrEntry>>,
+    /// The registrations this handle has made, keyed by the backend that made
+    /// them ([`IbvDeviceImpl::typename`]) and then by RDMA device name.
+    /// Populated lazily by `IbvManagerActor::resolve_local_mrs` as devices are
+    /// needed.
+    mrs: Arc<DashMap<&'static str, HashMap<String, MrEntry>>>,
     /// Coordinates concurrent reads, exclusive writes, and parallel
     /// disjoint writes against this region.
     access: Arc<AccessLock>,
@@ -519,7 +520,8 @@ impl KeepaliveLocalMemory {
         self.inner.location
     }
 
-    /// This handle's registration of the region on `device`, if it has one.
+    /// This handle's registration of the region on backend `I`'s `device`, if
+    /// it has one.
     ///
     /// `Err` means a previous attempt to register on `device` failed and
     /// carries that error; the caller should not retry. `Ok(None)` means this
@@ -529,12 +531,17 @@ impl KeepaliveLocalMemory {
     /// with any [`WeakLocalMemory`] downgraded from it, so one clone's
     /// registration is visible to all of them. Handles built separately over
     /// the same region share nothing.
-    pub fn registered_mr(
+    pub fn registered_mr<I: IbvDeviceImpl>(
         &self,
         device: &str,
     ) -> Result<Option<IbvMemoryRegionView>, anyhow::Error> {
-        match self.inner.mrs.get(device).as_deref() {
-            Some(MrEntry::Registered(view)) => Ok(Some(view.clone())),
+        match self
+            .inner
+            .mrs
+            .get(I::typename())
+            .and_then(|backend| backend.get(device).cloned())
+        {
+            Some(MrEntry::Registered(view)) => Ok(Some(view)),
             Some(MrEntry::Failed(error)) => anyhow::bail!(
                 "registering [{:#x}, {:#x}) on {device} failed earlier: {error}",
                 self.inner.addr,
@@ -544,8 +551,25 @@ impl KeepaliveLocalMemory {
         }
     }
 
-    /// Record `view` as this handle's registration on `view.device_name` and
-    /// return the registration now in force there.
+    /// Every registration this handle has on a device of backend `I`.
+    pub fn registered_mrs<I: IbvDeviceImpl>(&self) -> Vec<IbvMemoryRegionView> {
+        self.inner
+            .mrs
+            .get(I::typename())
+            .map(|backend| {
+                backend
+                    .values()
+                    .filter_map(|entry| match entry {
+                        MrEntry::Registered(view) => Some(view.clone()),
+                        MrEntry::Failed(_) => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Record `view` as this handle's registration on backend `I`'s
+    /// `view.device_name` and return the registration now in force there.
     ///
     /// Idempotent: a registration already present wins, and `view` is dropped
     /// (deregistering it, since nothing else holds it).
@@ -556,11 +580,12 @@ impl KeepaliveLocalMemory {
     /// The recorded failure stands and `view` is dropped, so the region keeps
     /// answering with the failure rather than flip-flopping on who got there
     /// last.
-    pub fn install_mr(
+    pub fn install_mr<I: IbvDeviceImpl>(
         &self,
         view: IbvMemoryRegionView,
     ) -> Result<IbvMemoryRegionView, anyhow::Error> {
-        match self.inner.mrs.entry(view.device_name.clone()) {
+        let mut backend = self.inner.mrs.entry(I::typename()).or_default();
+        match backend.entry(view.device_name.clone()) {
             Entry::Vacant(vacant) => {
                 vacant.insert(MrEntry::Registered(view.clone()));
                 Ok(view)
@@ -577,13 +602,15 @@ impl KeepaliveLocalMemory {
         }
     }
 
-    /// Record that registering this region on `device` failed, so later
-    /// transfers see the failure instead of retrying it. A registration
+    /// Record that registering this region on backend `I`'s `device` failed, so
+    /// later transfers see the failure instead of retrying it. A registration
     /// already in force on `device` wins: one caller's failure does not
     /// invalidate another's working keys.
-    pub fn record_mr_failure(&self, device: &str, error: &anyhow::Error) {
+    pub fn record_mr_failure<I: IbvDeviceImpl>(&self, device: &str, error: &anyhow::Error) {
         self.inner
             .mrs
+            .entry(I::typename())
+            .or_default()
             .entry(device.to_string())
             .or_insert_with(|| MrEntry::Failed(format!("{error:#}")));
     }
@@ -756,6 +783,7 @@ impl WeakLocalMemory {
 mod tests {
     use super::*;
     use crate::backend::cuda_test_utils::CudaAllocator;
+    use crate::backend::ibverbs::mlx_device::MlxDevice;
 
     // -- KeepaliveLocalMemory (host) --
 
@@ -787,38 +815,41 @@ mod tests {
     fn registrations_are_independent_per_device() {
         let mem = host_keepalive_mem(vec![0; 8].into_boxed_slice());
         let first = mem
-            .install_mr(IbvMemoryRegionView::for_test("mlx5_0", 10))
+            .install_mr::<MlxDevice>(IbvMemoryRegionView::for_test("mlx5_0", 10))
             .unwrap();
         assert_eq!(first.device_name, "mlx5_0");
-        mem.install_mr(IbvMemoryRegionView::for_test("mlx5_1", 20))
+        mem.install_mr::<MlxDevice>(IbvMemoryRegionView::for_test("mlx5_1", 20))
             .unwrap();
 
         // Each device answers with its own registration; keys issued by one
         // device's protection domain mean nothing to another.
         for (device, key) in [("mlx5_0", 10), ("mlx5_1", 20)] {
-            let view = mem.registered_mr(device).unwrap().unwrap();
+            let view = mem.registered_mr::<MlxDevice>(device).unwrap().unwrap();
             assert_eq!(view.device_name, device);
             assert_eq!(
                 view.lkey, key,
                 "{device} answered with another device's key"
             );
         }
-        assert!(mem.registered_mr("mlx5_2").unwrap().is_none());
+        assert!(mem.registered_mr::<MlxDevice>("mlx5_2").unwrap().is_none());
     }
 
     #[test]
     fn install_mr_keeps_the_registration_already_in_force() {
         let mem = host_keepalive_mem(vec![0; 8].into_boxed_slice());
-        mem.install_mr(IbvMemoryRegionView::for_test("mlx5_0", 10))
+        mem.install_mr::<MlxDevice>(IbvMemoryRegionView::for_test("mlx5_0", 10))
             .unwrap();
         // A second registration of the same region on the same device loses:
         // holders of the first view keep addressing through it.
         let second = mem
-            .install_mr(IbvMemoryRegionView::for_test("mlx5_0", 20))
+            .install_mr::<MlxDevice>(IbvMemoryRegionView::for_test("mlx5_0", 20))
             .unwrap();
         assert_eq!(second.lkey, 10, "the loser's key must not be handed back");
         assert_eq!(
-            mem.registered_mr("mlx5_0").unwrap().unwrap().lkey,
+            mem.registered_mr::<MlxDevice>("mlx5_0")
+                .unwrap()
+                .unwrap()
+                .lkey,
             10,
             "nor recorded for later resolutions",
         );
@@ -827,12 +858,12 @@ mod tests {
     #[test]
     fn install_mr_leaves_a_recorded_failure_standing() {
         let mem = host_keepalive_mem(vec![0; 8].into_boxed_slice());
-        mem.record_mr_failure("mlx5_0", &anyhow::anyhow!("out of memory keys"));
+        mem.record_mr_failure::<MlxDevice>("mlx5_0", &anyhow::anyhow!("out of memory keys"));
         // Reached when two callers register the same region on the same device
         // at once and only one of them fails.
         let error = format!(
             "{:#}",
-            mem.install_mr(IbvMemoryRegionView::for_test("mlx5_0", 10))
+            mem.install_mr::<MlxDevice>(IbvMemoryRegionView::for_test("mlx5_0", 10))
                 .expect_err("installing over a recorded failure should fail")
         );
         assert!(
@@ -840,7 +871,7 @@ mod tests {
             "the error should carry the recorded failure: {error}",
         );
         assert!(
-            mem.registered_mr("mlx5_0").is_err(),
+            mem.registered_mr::<MlxDevice>("mlx5_0").is_err(),
             "the recorded failure should still be what the device answers with",
         );
     }
@@ -848,10 +879,10 @@ mod tests {
     #[test]
     fn a_recorded_failure_is_reported_rather_than_retried() {
         let mem = host_keepalive_mem(vec![0; 8].into_boxed_slice());
-        mem.record_mr_failure("mlx5_0", &anyhow::anyhow!("out of memory keys"));
+        mem.record_mr_failure::<MlxDevice>("mlx5_0", &anyhow::anyhow!("out of memory keys"));
         let error = format!(
             "{:#}",
-            mem.registered_mr("mlx5_0")
+            mem.registered_mr::<MlxDevice>("mlx5_0")
                 .expect_err("a recorded failure should surface")
         );
         assert!(
@@ -859,7 +890,7 @@ mod tests {
             "the error should carry the original failure: {error}",
         );
         // Other devices are unaffected by one device's failure.
-        assert!(mem.registered_mr("mlx5_1").unwrap().is_none());
+        assert!(mem.registered_mr::<MlxDevice>("mlx5_1").unwrap().is_none());
     }
 
     #[test]

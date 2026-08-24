@@ -88,6 +88,7 @@ if TYPE_CHECKING:
             rdma_max_chunk_size_mb: NotRequired[int]
             rdma_ibverbs_target: NotRequired[str]
             rdma_peer_device_affinity: NotRequired[str]
+            rdma_max_nics_per_buffer: NotRequired[int | None]
             rdma_runtime_worker_threads: NotRequired[int]
 
         # pyrefly: ignore [invalid-annotation]
@@ -198,6 +199,8 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
                 ``"groups:mlx5_0,mlx5_1|mlx5_2,mlx5_3|mlx5_4"``. Groups must be
                 disjoint. Empty, the default, means ``"any"``. Value syntax is
                 validated when the RDMA manager starts.
+            rdma_max_nics_per_buffer: How many NICs a buffer is registered on,
+                at most (default 1); ``None`` sets no limit.
             rdma_runtime_worker_threads: Worker threads for the shared RDMA
                 data-plane runtime, which every queue pair's poll loop runs on.
                 Latched at the first RDMA use in a process; setting it later
