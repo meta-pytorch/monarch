@@ -296,6 +296,10 @@ impl PendingDrain {
             resource::Status::Failed(self.failures.join("; "))
         };
 
+        self.post_replies_with_status(cx, status);
+    }
+
+    fn post_replies_with_status(self, cx: &Context<'_, HostAgent>, status: resource::Status) {
         for PendingDrainReply { rank, reply } in self.replies {
             let overlay =
                 crate::StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status.clone())])
@@ -303,6 +307,14 @@ impl PendingDrain {
             reply.post(cx, overlay);
         }
     }
+}
+
+struct PendingShutdown {
+    remaining: usize,
+    timeout: Duration,
+    max_in_flight: usize,
+    acknowledgements: Vec<(usize, PortRef<usize>)>,
+    drain_replies: Vec<PendingDrainReply>,
 }
 
 /// Actor name used when spawning the host mesh agent on the system proc.
@@ -414,6 +426,7 @@ pub struct HostAgent {
     state: HostAgentState,
     pub(crate) created: HashMap<ResourceId, ProcCreationState>,
     pending_drains: PendingDrains,
+    pending_shutdown: Option<PendingShutdown>,
     /// Pending `WaitRankStatus` waiters, keyed by resource name.
     /// Each entry is `(min_status, rank, reply_port)`. Only touched
     /// from `&mut self` handlers.
@@ -448,6 +461,7 @@ impl HostAgent {
             state: HostAgentState::Detached(host),
             created: HashMap::new(),
             pending_drains: PendingDrains::default(),
+            pending_shutdown: None,
             pending_proc_waiters: HashMap::new(),
             watching: HashSet::new(),
             proc_status_port: None,
@@ -483,6 +497,9 @@ impl HostAgent {
     /// Minimum status floor derived from the host agent's lifecycle.
     /// Procs on this host cannot be healthier than this.
     fn min_proc_status(&self) -> resource::Status {
+        if self.pending_shutdown.is_some() {
+            return resource::Status::Stopping;
+        }
         match &self.state {
             HostAgentState::Detached(_) | HostAgentState::Attached(_) => resource::Status::Running,
             HostAgentState::Draining => resource::Status::Stopping,
@@ -978,6 +995,13 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             // Already created: there is no update.
             return Ok(());
         }
+        if self.pending_shutdown.is_some() {
+            tracing::warn!(
+                id = %create_or_update.id,
+                "ignoring CreateOrUpdate: HostAgent is shutting down"
+            );
+            return Ok(());
+        }
         if self
             .pending_drains
             .blocks_create(create_or_update.spec.host_mesh_id.as_ref())
@@ -1405,6 +1429,14 @@ wirevalue::register_type!(DrainHost);
 impl Handler<DrainHost> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: DrainHost) -> anyhow::Result<()> {
         let rank = msg.rank.unwrap();
+        if let Some(shutdown) = self.pending_shutdown.as_mut() {
+            shutdown.drain_replies.push(PendingDrainReply {
+                rank,
+                reply: msg.reply,
+            });
+            return Ok(());
+        }
+
         let active_drain = match msg.host_mesh_id.as_ref() {
             Some(host_mesh_id) => self.pending_drains.selective.get_mut(host_mesh_id),
             None => self.pending_drains.full.as_mut(),
@@ -1519,6 +1551,18 @@ impl Handler<DrainComplete> for HostAgent {
         for drain in self.pending_drains.take_all() {
             drain.post_replies(cx);
         }
+
+        if self
+            .pending_shutdown
+            .as_ref()
+            .is_some_and(|shutdown| shutdown.remaining == 0)
+        {
+            let shutdown = self
+                .pending_shutdown
+                .take()
+                .expect("pending shutdown exists");
+            self.finish_shutdown(cx, shutdown).await;
+        }
         Ok(())
     }
 }
@@ -1527,6 +1571,62 @@ impl Handler<DrainComplete> for HostAgent {
 impl Handler<ShutdownHost> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: ShutdownHost) -> anyhow::Result<()> {
         let rank = msg.rank.unwrap();
+        if matches!(&self.state, HostAgentState::Shutdown) {
+            msg.ack.post(cx, rank);
+            return Ok(());
+        }
+
+        if let Some(shutdown) = self.pending_shutdown.as_mut() {
+            shutdown.acknowledgements.push((rank, msg.ack));
+            return Ok(());
+        }
+
+        for drain in self.pending_drains.take_all() {
+            drain.post_replies_with_status(
+                cx,
+                resource::Status::Failed("host shutdown superseded drain".to_string()),
+            );
+        }
+
+        // CreateOrUpdate still waits for Host::spawn, so shutdown cannot
+        // observe an in-progress proc creation in this revision.
+        let remaining = 0;
+        let shutdown = PendingShutdown {
+            remaining,
+            timeout: msg.timeout,
+            max_in_flight: msg.max_in_flight,
+            acknowledgements: vec![(rank, msg.ack)],
+            drain_replies: Vec::new(),
+        };
+
+        if remaining == 0 {
+            self.finish_shutdown(cx, shutdown).await;
+        } else {
+            self.pending_shutdown = Some(shutdown);
+        }
+
+        Ok(())
+    }
+}
+
+impl HostAgent {
+    async fn finish_shutdown(&mut self, cx: &Context<'_, Self>, shutdown: PendingShutdown) {
+        if matches!(&self.state, HostAgentState::Draining) {
+            self.pending_shutdown = Some(shutdown);
+            return;
+        }
+
+        let PendingShutdown {
+            remaining: 0,
+            timeout,
+            max_in_flight,
+            acknowledgements,
+            drain_replies,
+        } = shutdown
+        else {
+            unreachable!("shutdown cannot finish while proc creation is pending");
+        };
+
         // Terminate children BEFORE acking, so the caller's networking
         // stays alive while children flush their forwarders during
         // teardown. If we ack first, the caller proceeds to tear down
@@ -1534,7 +1634,16 @@ impl Handler<ShutdownHost> for HostAgent {
         // causing their forwarder flushes to hang until
         // MESSAGE_DELIVERY_TIMEOUT expires.
         if !self.created.is_empty() {
-            self.drain(cx, msg.timeout, msg.max_in_flight).await;
+            self.drain(cx, timeout, max_in_flight).await;
+        }
+
+        for PendingDrainReply { rank, reply } in drain_replies {
+            let overlay = crate::StatusOverlay::try_from_runs(vec![(
+                rank..(rank + 1),
+                resource::Status::Stopped,
+            )])
+            .expect("valid single-run overlay");
+            reply.post(cx, overlay);
         }
 
         // Drop the host and signal the bootstrap loop to drain the
@@ -1549,10 +1658,12 @@ impl Handler<ShutdownHost> for HostAgent {
                 shutdown_tx: Some(tx),
             }) => {
                 // Keep the host's outbound gateway alive until the direct
-                // shutdown acknowledgment has been flushed. The bootstrap
+                // shutdown acknowledgments have been flushed. The bootstrap
                 // task may stop the frontend as soon as it receives the
                 // handle below.
-                msg.ack.post(cx, rank);
+                for (rank, ack) in acknowledgements {
+                    ack.post(cx, rank);
+                }
                 let flush_timeout =
                     hyperactor_config::global::get(hyperactor::config::FORWARDER_FLUSH_TIMEOUT);
                 match tokio::time::timeout(flush_timeout, host.gateway().flush()).await {
@@ -1582,18 +1693,20 @@ impl Handler<ShutdownHost> for HostAgent {
                 // after that proc has stopped.
                 tokio::spawn(async move {
                     for mut proc in procs {
-                        let _ = proc
-                            .destroy_and_wait(msg.timeout, "local host shutdown")
-                            .await;
+                        let _ = proc.destroy_and_wait(timeout, "local host shutdown").await;
                     }
                     host.shutdown_servers().await;
-                    msg.ack.post(&shutdown_client, rank);
+                    for (rank, ack) in acknowledgements {
+                        ack.post(&shutdown_client, rank);
+                    }
                 });
             }
-            _ => msg.ack.post(cx, rank),
+            _ => {
+                for (rank, ack) in acknowledgements {
+                    ack.post(cx, rank);
+                }
+            }
         }
-
-        Ok(())
     }
 }
 
@@ -2060,8 +2173,11 @@ impl Handler<ConfigDump> for HostAgent {
 #[cfg(all(test, fbcode_build))]
 mod tests {
     use std::assert_matches;
+    use std::sync::Arc;
 
     use hyperactor::ActorAddr;
+    use hyperactor::Client;
+    use hyperactor::PortReceiver;
     use hyperactor::Proc;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::id::Label;
@@ -2115,6 +2231,120 @@ mod tests {
             .expect("host agent should initialize");
 
         host_agent
+    }
+
+    #[derive(Debug)]
+    struct DrainBlockingActor {
+        stop_started: Arc<tokio::sync::Notify>,
+        release_stop: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl Actor for DrainBlockingActor {
+        async fn handle_stop(
+            &mut self,
+            this: &Instance<Self>,
+            mode: hyperactor::actor::StopMode,
+            reason: &str,
+        ) -> anyhow::Result<()> {
+            let this = this.clone_for_py();
+            let release_stop = Arc::clone(&self.release_stop);
+            let reason = reason.to_string();
+            this.close();
+            self.stop_started.notify_one();
+            tokio::spawn(async move {
+                release_stop.notified().await;
+                match mode {
+                    hyperactor::actor::StopMode::Stop => this.exit(&reason).unwrap(),
+                    hyperactor::actor::StopMode::DrainAndStop => {
+                        this.exit_after_drain(&reason).unwrap()
+                    }
+                }
+            });
+            Ok(())
+        }
+    }
+
+    /// Spawn a Proc, wait for it to be running, request a drain
+    async fn start_blocked_full_drain(
+        client_name: &str,
+    ) -> (
+        ActorHandle<HostAgent>,
+        Client,
+        Arc<tokio::sync::Notify>,
+        PortReceiver<crate::StatusOverlay>,
+    ) {
+        let stop_started = Arc::new(tokio::sync::Notify::new());
+        let release_stop = Arc::new(tokio::sync::Notify::new());
+
+        let spawn: ProcManagerSpawnFn = {
+            let stop_started_for_spawn = Arc::clone(&stop_started);
+            let release_stop_for_spawn = Arc::clone(&release_stop);
+
+            Box::new(move |proc: Proc| {
+                proc.spawn(DrainBlockingActor {
+                    stop_started: Arc::clone(&stop_started_for_spawn),
+                    release_stop: Arc::clone(&release_stop_for_spawn),
+                });
+                Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None)))
+            })
+        };
+        let host_agent = spawn_local_host_agent(spawn).await;
+
+        let client = Proc::direct(ChannelTransport::Unix.any(), client_name.to_string())
+            .unwrap()
+            .client("client");
+        let proc_id = ResourceId::instance(Label::new("proc").unwrap());
+        let (running_reply, mut running_rx) = client.open_port::<crate::StatusOverlay>();
+
+        host_agent
+            .wait_rank_status(
+                &client,
+                proc_id.clone(),
+                resource::Rank::new(0),
+                resource::Status::Running,
+                running_reply.bind(),
+            )
+            .await
+            .expect("running waiter should be accepted");
+
+        host_agent
+            .create_or_update(
+                &client,
+                proc_id,
+                resource::Rank::new(0),
+                ProcSpec::default(),
+            )
+            .await
+            .expect("proc should start");
+
+        let running_status = running_rx
+            .recv()
+            .await
+            .expect("proc should report running before drain");
+
+        assert_overlay_at_rank(&running_status, 0);
+        assert_eq!(
+            running_status.runs().next().unwrap().1,
+            resource::Status::Running,
+        );
+
+        let (drain_reply, drain_rx) = client.open_port::<crate::StatusOverlay>();
+        host_agent
+            .try_post(
+                &client,
+                DrainHost {
+                    timeout: Duration::from_secs(20),
+                    max_in_flight: 1,
+                    host_mesh_id: None,
+                    rank: resource::Rank::new(0),
+                    reply: drain_reply.bind(),
+                },
+            )
+            .expect("drain request should be delivered");
+        stop_started.notified().await;
+
+        (host_agent, client, release_stop, drain_rx)
     }
 
     // RSP-* coverage map for the HostAgent rank-status tests. Each deliberately
@@ -2254,6 +2484,111 @@ mod tests {
         assert!(
             cast_actor.status().borrow().is_terminal(),
             "local CastActor must stop before acknowledging shutdown"
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn shutdown_waits_for_active_drain_worker() {
+        let (host_agent, client, release_stop, mut drain_rx) =
+            start_blocked_full_drain("shutdown_during_drain_client").await;
+
+        let (ack, mut ack_rx) = client.open_port::<usize>();
+        host_agent
+            .try_post(
+                &client,
+                ShutdownHost {
+                    timeout: Duration::from_secs(5),
+                    max_in_flight: 1,
+                    rank: resource::Rank::new(0),
+                    ack: ack.bind().unsplit(),
+                },
+            )
+            .expect("shutdown request should be delivered");
+
+        let drain_status = drain_rx
+            .recv()
+            .await
+            .expect("shutdown should supersede the active drain");
+        assert_overlay_failed_at_rank(&drain_status, 0);
+        assert_eq!(
+            ack_rx
+                .try_recv()
+                .expect("shutdown ack port should remain open"),
+            None,
+            "shutdown was acknowledged before DrainComplete",
+        );
+
+        release_stop.notify_one();
+        assert_eq!(
+            ack_rx
+                .recv()
+                .await
+                .expect("shutdown should be acknowledged"),
+            0,
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn drain_during_pending_shutdown_waits_for_completion() {
+        let (host_agent, client, release_stop, mut active_drain_rx) =
+            start_blocked_full_drain("drain_during_shutdown_client").await;
+
+        let (ack, mut ack_rx) = client.open_port::<usize>();
+        host_agent
+            .try_post(
+                &client,
+                ShutdownHost {
+                    timeout: Duration::from_secs(5),
+                    max_in_flight: 1,
+                    rank: resource::Rank::new(0),
+                    ack: ack.bind().unsplit(),
+                },
+            )
+            .expect("shutdown request should be delivered");
+
+        let active_drain_status = active_drain_rx
+            .recv()
+            .await
+            .expect("shutdown should supersede the active drain");
+        assert_overlay_failed_at_rank(&active_drain_status, 0);
+
+        let (drain_reply, mut drain_rx) = client.open_port::<crate::StatusOverlay>();
+        host_agent
+            .try_post(
+                &client,
+                DrainHost {
+                    timeout: Duration::from_secs(20),
+                    max_in_flight: 1,
+                    host_mesh_id: None,
+                    rank: resource::Rank::new(0),
+                    reply: drain_reply.bind(),
+                },
+            )
+            .expect("drain request should be delivered during shutdown");
+        assert_eq!(
+            drain_rx
+                .try_recv()
+                .expect("drain reply port should remain open"),
+            None,
+            "drain completed before shutdown finished terminating procs",
+        );
+
+        release_stop.notify_one();
+        let drain_status = drain_rx
+            .recv()
+            .await
+            .expect("drain during shutdown should complete");
+        assert_overlay_at_rank(&drain_status, 0);
+        assert_eq!(
+            drain_status.runs().next().unwrap().1,
+            resource::Status::Stopped,
+        );
+        assert_eq!(
+            ack_rx
+                .recv()
+                .await
+                .expect("shutdown should be acknowledged"),
+            0,
         );
     }
 
