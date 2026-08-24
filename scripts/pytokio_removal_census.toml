@@ -2000,16 +2000,18 @@ state = "legacy"
 transition = "6.2"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from DroppingPort::resolve_and_send"
-consumer = "_Actor.handle, through its isinstance(response, PythonTask) branch"
+consumer = "_Actor.handle, through its isinstance(response, PythonTask) branch; also handed directly to user endpoint code as the explicit port argument for MethodSpecifier::ExplicitPort"
 driver = "awaited on the actor loop by _Actor.handle"
-start_point = "already complete at construction"
-abandonment = "possible; _Actor.handle may return before awaiting the branch"
-eager_effect = "only wraps a ready value"
-drop_behavior = "no effect; the send is a no-op by construction"
+start_point = "the no-op send completes synchronously inside resolve_and_send, before the wrapper is returned; observing the wrapper only converts the result, which waits on the process-global GIL lock"
+abandonment = "possible through direct use of the port, and harmless; _Actor.handle itself does not abandon the wrapper, awaiting the branch with no suspension after resolve_and_send returns"
+eager_effect = "performs the no-op send synchronously; the returned task only wraps a ready value"
+drop_behavior = "no effect; dropping the wrapper cannot undo the no-op that already ran"
 unobserved_error = "none; the future resolves to Ok(())"
 disposition = "replace with a direct value"
 semantic_class = "ready_no_op_wrapper"
-oracle = "test_python_actors response-port coverage"
+oracle = [
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor::tests::dropping_port_resolve_and_send_completes_and_is_idempotent",
+]
 
 [[site]]
 id = "np.actor.LocalPort.resolve_and_send"
@@ -2023,16 +2025,20 @@ state = "legacy"
 transition = "6.2"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from LocalPort::resolve_and_send"
-consumer = "_Actor.handle, through its isinstance(response, PythonTask) branch"
+consumer = "_Actor.handle, through its isinstance(response, PythonTask) branch; also handed directly to user endpoint code as the explicit port argument for MethodSpecifier::ExplicitPort"
 driver = "awaited on the actor loop by _Actor.handle"
-start_point = "already complete at construction"
-abandonment = "possible; _Actor.handle may return before awaiting the branch"
-eager_effect = "only wraps a ready value"
-drop_behavior = "no effect; port.send already happened synchronously"
+start_point = "the post completes synchronously inside resolve_and_send, before the wrapper is returned; observing the wrapper only converts the result, which waits on the process-global GIL lock"
+abandonment = "possible through direct use of the port, and harmless; _Actor.handle itself does not abandon the wrapper, awaiting the branch with no suspension after resolve_and_send returns"
+eager_effect = "posts to the once port synchronously; the returned task only wraps the already-delivered result"
+drop_behavior = "no effect; dropping the wrapper cannot undo the post that already happened"
 unobserved_error = "none; the future resolves to Ok(())"
 disposition = "replace with a direct value"
 semantic_class = "ready_no_op_wrapper"
-oracle = "test_python_actors response-port coverage"
+oracle = [
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor::tests::local_port_resolve_and_send_posts_before_the_task_is_observed",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor::tests::local_port_resolve_and_send_task_completes_successfully",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor::tests::local_port_second_resolve_and_send_raises_panic_exception",
+]
 
 [[site]]
 id = "np.actor_mesh.ActorMeshRef_as_ActorMeshProtocol.name"
