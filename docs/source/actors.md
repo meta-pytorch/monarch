@@ -329,7 +329,47 @@ sequenceDiagram
     Mesh-->>Client: Future[List[Result]]
 ```
 
-#### 3. `broadcast()` - Fire and Forget
+#### 3. `choose()` - Random Single Actor
+
+Send to one randomly selected actor and get its response.
+
+```python
+workers = procs.spawn("workers", Worker)
+
+result = workers.compute.choose(data).get()
+```
+
+Each call independently selects an actor uniformly at random. Selection does not
+account for actor load, so calls are balanced only across many calls, and
+consecutive calls may hit the same actor.
+
+**Use When:**
+- Any one actor can serve the request
+- Actors are interchangeable and hold no per-rank state
+- Approximate spreading over many calls is good enough
+
+**Avoid When:**
+- The workload is sensitive to how evenly work is distributed
+- You need a specific rank — slice the mesh and use `call_one` instead
+
+**Flow Diagram:**
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Mesh
+    participant A1 as Actor 1
+    participant A2 as Actor 2
+    participant An as Actor N
+
+    Client->>Mesh: choose(args)
+    Note over Mesh: Pick one rank at random
+    Mesh->>A2: message
+    A2-->>Mesh: result
+    Mesh-->>Client: Future[Result]
+```
+
+#### 4. `broadcast()` - Fire and Forget
 
 Send to all actors without waiting for responses.
 
@@ -362,7 +402,7 @@ sequenceDiagram
     Note over Actors: Process async
 ```
 
-#### 4. `rref()` - Distributed Tensor Reference
+#### 5. `rref()` - Distributed Tensor Reference
 
 Return distributed tensor from actor endpoint.
 
@@ -389,7 +429,7 @@ with procs.activate():
 - Need tensor operations across actors
 - Building neural network layers
 
-#### 5. `stream()` - Streaming Responses
+#### 6. `stream()` - Streaming Responses
 
 Stream responses as they arrive.
 
