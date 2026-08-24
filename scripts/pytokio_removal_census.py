@@ -244,6 +244,151 @@ REQUIRED_COROUTINE_ROOT_FIELDS = (
     "first_side_effect",
 )
 
+# An oracle reference names one test: a Buck target, then the test within it,
+# split at the first `::`. The target half allows the path and hyphen forms Buck
+# uses; the test half is identifier segments, which covers a Rust module path
+# and a class-qualified Python method equally.
+ORACLE_PREFIX = "fbcode//"
+
+# Buck's own target-name grammar, mirrored from buck2_core/src/target/name.rs
+# rather than guessed: a narrower class rejects legal targets like `foo+bar`,
+# a laxer one blesses names Buck reserves, and both failures are silent here
+# because the label is never resolved.
+#
+# The character list is taken from TARGET_NAME_VALID_CHARS, not from the
+# InvalidName error text, which omits the backslash the set actually contains.
+ORACLE_TARGET_NAME = re.compile(r"^[A-Za-z0-9,.=/~@!+$_\\-]+$")
+RESERVED_TARGET_NAME = "..."
+# Buck substitutes this for `=` in generated names and rejects it in a written
+# one.
+TARGET_NAME_SUBSTITUTION = "_eqsb_"
+# TargetName::MAX_NAME_LEN, which is u16::MAX.
+TARGET_NAME_MAX_LEN = 0xFFFF
+
+# Package path segments are a different grammar: a cell-relative path, so an
+# empty, `.` or `..` component is traversal rather than a name.
+ORACLE_PACKAGE_SEGMENT = re.compile(r"^[A-Za-z0-9_.-]+$")
+ORACLE_TEST = re.compile(r"^[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*$")
+
+
+def oracle_target_problem(target: str) -> str | None:
+    """Why ``target`` is not a well-formed Buck label, or ``None``.
+
+    The two halves have different grammars and are checked differently. The
+    package is a cell-relative path, so an empty, ``.`` or ``..`` segment is
+    traversal and is rejected. The target name is whatever Buck accepts, which
+    includes ``.``, ``..`` and a good deal of punctuation; it rejects the
+    reserved name ``...``, any name containing the substitution ``_eqsb_``, and
+    a name over ``u16::MAX`` characters. Neither half is resolved: the label is
+    checked for shape, never for existence.
+    """
+    if not target.startswith(ORACLE_PREFIX):
+        return f"has a malformed target {target!r}"
+    package, separator, name = target[len(ORACLE_PREFIX) :].partition(":")
+    if not separator:
+        return f"has a malformed target {target!r}"
+    # Same order Buck checks in, so the diagnostic names the first thing wrong.
+    if len(name) > TARGET_NAME_MAX_LEN:
+        return (
+            f"has a target name of {len(name)} characters, over the "
+            f"{TARGET_NAME_MAX_LEN} limit, in {target!r}"
+        )
+    if not ORACLE_TARGET_NAME.match(name):
+        return f"has a malformed target name in {target!r}"
+    if TARGET_NAME_SUBSTITUTION in name:
+        return (
+            f"has a target name containing the reserved substring "
+            f"{TARGET_NAME_SUBSTITUTION!r} in {target!r}"
+        )
+    if name == RESERVED_TARGET_NAME:
+        return f"uses the reserved target name {RESERVED_TARGET_NAME!r} in {target!r}"
+    segments = package.split("/")
+    if not package or any(
+        segment in ("", ".", "..") or not ORACLE_PACKAGE_SEGMENT.match(segment)
+        for segment in segments
+    ):
+        return f"has a malformed package path in {target!r}"
+    return None
+
+
+def oracle_reference_problem(reference: object) -> str | None:
+    """Why ``reference`` is not a well-formed oracle reference, or ``None``.
+
+    Structure only. Whether the named test exists, or exercises the row, is a
+    review question: resolving a Buck target or searching for a test function
+    would make the checker depend on the build graph to answer a question it
+    cannot settle anyway.
+    """
+    if not isinstance(reference, str):
+        return f"is {type(reference).__name__}, expected a string"
+    if any(character.isspace() for character in reference):
+        return "contains whitespace"
+    target, separator, test = reference.partition("::")
+    if not separator:
+        return "has no '::' between the Buck target and the test name"
+    target_problem = oracle_target_problem(target)
+    if target_problem is not None:
+        return target_problem
+    if not ORACLE_TEST.match(test):
+        return f"has a malformed test name {test!r}"
+    return None
+
+
+def oracle_problem(value: object) -> str | None:
+    """Why a present ``oracle`` value is unusable, or ``None``.
+
+    Two accepted shapes while rows are being converted: the canonical list of
+    references, and a legacy prose label. Any bare string that starts with the
+    Buck prefix is rejected rather than read as prose -- valid or malformed --
+    because it is a half-finished conversion wearing the old shape.
+    """
+    if isinstance(value, str):
+        if not value.strip():
+            return "oracle is empty"
+        if value.strip().startswith(ORACLE_PREFIX):
+            # Anything reaching for the canonical form is a half-finished
+            # conversion, whether or not it parses. Accepting a *malformed*
+            # attempt as prose would hide precisely the typo worth catching.
+            problem = oracle_reference_problem(value)
+            syntax = "" if problem is None else f", and it {problem}"
+            return (
+                f"oracle is a bare reference string{syntax}; canonical "
+                "references go in a list, as oracle = [...]"
+            )
+        return None
+    if not isinstance(value, list):
+        return (
+            f"oracle is {type(value).__name__}; expected a list of references "
+            "or a legacy label"
+        )
+    if not value:
+        return "oracle is an empty list; give at least one reference"
+    seen: set[str] = set()
+    for position, reference in enumerate(value):
+        if (
+            isinstance(reference, str)
+            and not reference.startswith(ORACLE_PREFIX)
+            and "::" not in reference
+        ):
+            # A legacy label typed into the new shape. Say so directly: the
+            # generic reference diagnostic would blame whatever the label
+            # happens to trip first, usually a space. Something carrying `::`
+            # is a botched reference rather than prose, so it falls through to
+            # the reference diagnostic, which can name the actual defect.
+            return (
+                f"oracle[{position}] {reference!r} is not a reference; a legacy "
+                "prose label stays a bare string, and list entries must be "
+                "canonical references"
+            )
+        problem = oracle_reference_problem(reference)
+        if problem is not None:
+            return f"oracle[{position}] {problem}"
+        if reference in seen:
+            return f"oracle[{position}] repeats {reference!r}"
+        seen.add(reference)
+    return None
+
+
 REQUIRED_MATRIX_FIELDS = ("id", "disposition", "execution_state")
 
 REVISION = re.compile(r"^D\d{6,}$")
@@ -1041,7 +1186,9 @@ def validate_rows(rows: list[dict], schema: dict, config: dict) -> list[str]:
 
     Enforces required fields, declared enum values, identifier uniqueness, and
     locator uniqueness across active rows *and* tombstones, so a completed
-    migration still reserves its identity. Behavior rows additionally must
+    migration still reserves its identity. A present ``oracle`` is shape-checked
+    before the required-field gate, so an empty or malformed one is reported as
+    such rather than as a missing field. Behavior rows additionally must
     carry the full field set, and coroutine-root rows the three root-only
     facts on top of it. The obligation to pin an import member set is derived
     from the row's *operation* -- whether it is a configured Python module
@@ -1094,6 +1241,18 @@ def validate_rows(rows: list[dict], schema: dict, config: dict) -> list[str]:
             )
         if row["category"] not in BEHAVIOR_KINDS:
             continue
+        if "oracle" in row:
+            # Shape first, for this field only. While rows are being converted
+            # `oracle` accepts two representations, so a present value can be
+            # structurally wrong rather than merely absent, and the truthiness
+            # gate below would misreport it as missing. The other required
+            # fields are single free-form values with nothing to check, so this
+            # is a local exception and not the start of a field-validation
+            # framework.
+            problem = oracle_problem(row["oracle"])
+            if problem is not None:
+                errors.append(f"{row['id']}: {problem}")
+                continue
         absent = [f for f in REQUIRED_BEHAVIOR_FIELDS if not row.get(f)]
         if absent:
             errors.append(

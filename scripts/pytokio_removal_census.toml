@@ -171,7 +171,33 @@
 #   disposition      the intended target treatment, from schema.dispositions.
 #   semantic_class   the abandonment class, from schema.semantic_classes; it
 #                    selects the characterization test that covers the site.
-#   oracle           the named test pinning the current behavior.
+#   oracle           the tests pinning the current behavior, as a list of
+#                    references of the form
+#                    "fbcode//package:target::test_name". Several entries are
+#                    conjunctive: the row needs all of them. The test half may
+#                    be qualified, which is how a Rust module path or a Python
+#                    class method is named:
+#
+#                      "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest\
+#                       ::pickle::tests::resolve_fills_slots_in_order"
+#                      "fbcode//monarch/python/tests:test_job::TestJob::test_exec_command"
+#
+#                    A legacy label stays a *bare string*. Prose inside the list
+#                    is rejected: the list is the canonical form and every entry
+#                    in it must be a reference.
+#
+#                    A prose label on an *active* row is transitional: those
+#                    rows are being converted to exact references and the label
+#                    will be replaced. A historical tombstone may keep its prose
+#                    label permanently, because the path it described is gone
+#                    and there is no live test left to name.
+#
+#                    A bare string starting with "fbcode//" is rejected whether
+#                    or not it parses, because that is a half-finished
+#                    conversion rather than a label. The checker validates
+#                    reference shape only -- whether the named test exists, and
+#                    whether it actually exercises the row, is a review
+#                    question it cannot answer.
 #
 # coroutine_root rows add public_operation, caller_contexts, and
 # first_side_effect: the user-facing API, the calling contexts it supports,
