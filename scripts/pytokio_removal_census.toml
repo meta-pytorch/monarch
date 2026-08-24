@@ -2491,14 +2491,20 @@ constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from PendingMessage::py_resolve"
 consumer = "Port.resolve_and_send, on the actor loop"
 driver = "awaited on the actor loop before the reply is sent"
-start_point = "self.take() consumes the PendingMessage synchronously at construction; only the slot fill in resolve() is deferred to the returned task"
-abandonment = "possible; the message has already been taken out of the PendingMessage, so the source cannot be reused"
-eager_effect = "starts a side effect"
+start_point = "self.take() consumes the PendingMessage synchronously at construction; the call returns without retaining a waiter on any pending handle, and the slot fill in resolve() is deferred to the returned task"
+abandonment = "possible; the message has already been taken out of the PendingMessage, so a second resolution reports PicklingState has already been consumed"
+eager_effect = "consumes the source; take() moves the kind and the pickling state out, so the PendingMessage is spent whether or not the returned task is ever driven"
 drop_behavior = "the taken message is lost: slots are never filled and no reply is sent"
-unobserved_error = "surfaced on observation"
+unobserved_error = "none until the returned task is driven; driving it reports either a pending handle's failure or the mesh conversion that follows, with the original exception type and message, and the source stays consumed either way. What a producer behind a pending handle does with its own failure is that producer's policy, not this task's"
 disposition = "preserve timing"
 semantic_class = "sync_partial_effect_lazy_tail"
-oracle = "PicklingState::resolve slot-order in-crate test (6.0c)"
+oracle = [
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::pickle::tests::py_resolve_consumes_the_source_before_returning_its_task",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::pickle::tests::py_resolve_retains_no_waiter_on_a_pending_handle",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::pickle::tests::py_resolve_task_surfaces_a_failed_pending_handle_error",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::pickle::tests::py_resolve_task_surfaces_the_fill_error_and_leaves_the_source_consumed",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::pickle::tests::resolve_fills_nonadjacent_slots_in_place_without_touching_the_payload",
+]
 
 [[site]]
 id = "np.proc_launcher_probe.probe_exit_port_via_mesh"
