@@ -29,6 +29,8 @@ from torch.utils.data import DataLoader, TensorDataset
 
 logger = logging.getLogger(__name__)
 
+_barrier: threading.Barrier | None = None
+
 """
 Collection of worker-side remote functions that are used in unit tests
 """
@@ -78,15 +80,16 @@ def has_nan(t):
 
 
 def new_barrier_hackery(threads):
-    # pyrefly: ignore [unknown-name]
     global _barrier
     _barrier = threading.Barrier(threads)
     return torch.zeros(1)
 
 
 def wait_barrier_hackery(t: torch.Tensor):
-    # pyre-fixme[10]: Name `_barrier` is used but not defined.
-    _barrier.wait()
+    barrier = _barrier
+    if barrier is None:
+        raise RuntimeError("barrier has not been initialized")
+    barrier.wait()
 
 
 def all_reduce_prop(tensor, *args, **kwargs):
