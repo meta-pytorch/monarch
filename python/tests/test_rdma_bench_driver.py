@@ -476,3 +476,139 @@ async def test_the_run_is_told_every_proc_that_disagreed() -> None:
     assert "{'rdma_allow_tcp_fallback': False}" in str(caught.value), (
         "the message names what was expected as well as what was held"
     )
+
+
+def _self_edge_topology() -> bt.Topology:
+    """Two procs on one host, each its own peer."""
+    return bt.build_topology("p2p", 1, 2, bt.SAME, 1)
+
+
+def _digests(slots, *, sent, received) -> dict:
+    return {
+        slot: bt.SlotValues(outgoing=(sent(slot),), incoming={slot: (received(slot),)})
+        for slot in slots
+    }
+
+
+async def test_setup_records_registration_and_collects_every_buffer() -> None:
+    topo = _self_edge_topology()
+    allocations = {slot: bt.allocation_for(topo, slot, ops=1) for slot in topo.slots()}
+    replies = [
+        (4.0, bt.SlotValues(outgoing=("buf-0",), incoming={})),
+        (6.0, bt.SlotValues(outgoing=("buf-1",), incoming={})),
+    ]
+    peers = _FakePeers(setup=_FakeEndpoint(_value_mesh(replies, lanes=2)))
+    record = bs.RunRecord()
+
+    buffers = await bd._setup_run(
+        _config(), cast(bench_peer.Peer, peers), allocations, record, seed=3
+    )
+
+    assert set(buffers) == {bt.Slot(0, 0), bt.Slot(0, 1)}
+    assert buffers[bt.Slot(0, 0)].outgoing == ("buf-0",)
+    assert buffers[bt.Slot(0, 1)].outgoing == ("buf-1",)
+    assert record.register_ms == [4.0, 6.0]
+
+
+async def test_setup_ignores_a_proc_the_pattern_never_touches() -> None:
+    """A pattern that leaves a proc idle still casts to it, and it answers with
+    nothing registered; counting that as a registration would skew the median."""
+    topo = _self_edge_topology()
+    allocations = {slot: bt.allocation_for(topo, slot, ops=1) for slot in topo.slots()}
+    replies = [
+        (4.0, bt.SlotValues(outgoing=("buf-0",), incoming={})),
+        (6.0, bt.SlotValues(outgoing=("buf-1",), incoming={})),
+        (0.0, bt.SlotValues(outgoing=(), incoming={})),
+    ]
+    peers = _FakePeers(setup=_FakeEndpoint(_value_mesh(replies, lanes=3)))
+    record = bs.RunRecord()
+
+    buffers = await bd._setup_run(
+        _config(), cast(bench_peer.Peer, peers), allocations, record, seed=0
+    )
+
+    assert bt.Slot(0, 2) not in buffers
+    assert record.register_ms == [4.0, 6.0]
+
+
+async def test_setup_passes_the_run_seed_and_memory_kinds_to_every_proc() -> None:
+    topo = _self_edge_topology()
+    allocations = {slot: bt.allocation_for(topo, slot, ops=1) for slot in topo.slots()}
+    replies = [(1.0, bt.SlotValues(outgoing=(), incoming={}))] * 2
+    setup = _FakeEndpoint(_value_mesh(replies, lanes=2))
+    cfg = _config("--payload-size-mb", "2", "--source-device", "cpu")
+
+    await bd._setup_run(
+        cfg,
+        cast(bench_peer.Peer, _FakePeers(setup=setup)),
+        allocations,
+        bs.RunRecord(),
+        7,
+    )
+
+    ((cast_allocations, payload_bytes, seed, source_on_gpu, dest_on_gpu),) = setup.casts
+    assert cast_allocations == allocations
+    assert (payload_bytes, seed) == (2 * 1000**2, 7)
+    assert (source_on_gpu, dest_on_gpu) == (False, True)
+
+
+async def test_matching_digests_pass_the_integrity_check() -> None:
+    topo = _self_edge_topology()
+    digests = _digests(
+        topo.slots(), sent=lambda s: f"h{s.lane}", received=lambda s: f"h{s.lane}"
+    )
+    peers = _FakePeers(
+        digest=_FakeEndpoint(_value_mesh(list(digests.values()), lanes=2))
+    )
+    cfg = _config()
+
+    assert await bd._check_integrity(cfg, topo, cast(bench_peer.Peer, peers)) is True
+    with pytest.raises(RuntimeError, match="negative control failed"):
+        await bd._check_control(cfg, topo, cast(bench_peer.Peer, peers))
+
+
+async def test_zeroed_destinations_pass_the_negative_control() -> None:
+    """Every edge must disagree before a transfer, which is what proves the
+    comparison is able to fail at all."""
+    topo = _self_edge_topology()
+    digests = _digests(
+        topo.slots(), sent=lambda s: f"h{s.lane}", received=lambda s: "zero"
+    )
+    peers = _FakePeers(
+        digest=_FakeEndpoint(_value_mesh(list(digests.values()), lanes=2))
+    )
+    cfg = _config()
+
+    assert await bd._check_control(cfg, topo, cast(bench_peer.Peer, peers)) is True
+    with pytest.raises(RuntimeError, match="data corruption: 2 of 2 pairs differ"):
+        await bd._check_integrity(cfg, topo, cast(bench_peer.Peer, peers))
+
+
+async def test_one_wrongly_routed_edge_is_caught_and_named() -> None:
+    topo = _self_edge_topology()
+    digests = _digests(
+        topo.slots(),
+        sent=lambda s: f"h{s.lane}",
+        received=lambda s: "h0" if s.lane == 0 else "wrong",
+    )
+    peers = _FakePeers(
+        digest=_FakeEndpoint(_value_mesh(list(digests.values()), lanes=2))
+    )
+
+    with pytest.raises(RuntimeError, match="1 of 2 pairs differ") as caught:
+        await bd._check_integrity(_config(), topo, cast(bench_peer.Peer, peers))
+
+    assert "h1" in str(caught.value) and "wrong" in str(caught.value)
+
+
+async def test_the_digest_window_is_at_least_one_byte() -> None:
+    """`--verify-window-mb` is a float, so a small enough one rounds to zero and
+    would digest nothing at all."""
+    topo = _self_edge_topology()
+    digests = _digests(topo.slots(), sent=lambda s: "x", received=lambda s: "x")
+    digest = _FakeEndpoint(_value_mesh(list(digests.values()), lanes=2))
+    cfg = _config("--verify-window-mb", "0.0000001")
+
+    await bd._mismatches(cfg, topo, cast(bench_peer.Peer, _FakePeers(digest=digest)))
+
+    assert digest.casts == [("sampled", 1)]

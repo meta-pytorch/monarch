@@ -26,7 +26,7 @@ reported separately.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
@@ -47,6 +47,7 @@ from bench_stats import (
 )
 from bench_topology import (
     bytes_per_iteration,
+    compare_digests,
     describe,
     DIRECTIONS,
     max_ops_per_action,
@@ -55,11 +56,15 @@ from bench_topology import (
     PATTERNS,
     PHASES,
     SAME,
+    Slot,
+    SlotAllocation,
+    SlotValues,
     Topology,
     unused_hosts,
 )
 from monarch.actor import ProcMesh, this_host
 from monarch.config import get_global_config
+from monarch.rdma import RDMABuffer
 
 # `monarch.job` is only needed for the type of the object a wrapper hands us;
 # this module never constructs one.
@@ -521,6 +526,62 @@ async def _check_config(cfg: BenchConfig, peers: Peer) -> None:
         raise RuntimeError(
             f"the procs must be configured with {expected}, but {disagreed}"
         )
+
+
+async def _setup_run(
+    cfg: BenchConfig,
+    peers: Peer,
+    allocations: Mapping[Slot, SlotAllocation],
+    record: RunRecord,
+    seed: int,
+) -> dict[Slot, SlotValues[RDMABuffer]]:
+    """Allocate, fill and register everywhere; collect the buffers to route."""
+    results = await peers.setup.call(
+        allocations, cfg.payload_bytes, seed, cfg.source_on_gpu, cfg.dest_on_gpu
+    )
+    buffers: dict[Slot, SlotValues[RDMABuffer]] = {}
+    for point, (register_ms, values) in results.items():
+        slot = slot_of(point)
+        if slot not in allocations:
+            continue
+        record.register_ms.append(register_ms)
+        buffers[slot] = values
+    return buffers
+
+
+async def _mismatches(
+    cfg: BenchConfig, topo: Topology, peers: Peer
+) -> tuple[int, list[str]]:
+    window = max(int(cfg.verify_window_mb * _MB), 1)
+    results = await peers.digest.call(cfg.verify, window)
+    digests = {slot_of(point): values for point, values in results.items()}
+    return compare_digests(topo, digests)
+
+
+async def _check_control(cfg: BenchConfig, topo: Topology, peers: Peer) -> bool:
+    """Before any transfer every edge must disagree.
+
+    Freshly allocated destinations are zeroed, so this is what proves the
+    comparison can fail at all.
+    """
+    checked, mismatches = await _mismatches(cfg, topo, peers)
+    if checked and len(mismatches) == checked:
+        return True
+    raise RuntimeError(
+        f"negative control failed: {checked - len(mismatches)} of {checked} "
+        "pairs already matched before any transfer"
+    )
+
+
+async def _check_integrity(cfg: BenchConfig, topo: Topology, peers: Peer) -> bool:
+    """After a transfer every edge's destination must match what was sent."""
+    checked, mismatches = await _mismatches(cfg, topo, peers)
+    if not mismatches:
+        return True
+    raise RuntimeError(
+        f"data corruption: {len(mismatches)} of {checked} pairs differ; "
+        + "; ".join(mismatches[:5])
+    )
 
 
 def _shape_columns(
