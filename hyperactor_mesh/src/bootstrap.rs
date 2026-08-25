@@ -1545,6 +1545,8 @@ pub struct BootstrapCommand {
     pub program: PathBuf,
     pub arg0: Option<String>,
     pub args: Vec<String>,
+    /// The complete environment for the child process. No variables are
+    /// inherited from the spawning process.
     pub env: HashMap<String, String>,
 }
 wirevalue::register_type!(BootstrapCommand);
@@ -1596,6 +1598,9 @@ impl BootstrapCommand {
         for arg in &self.args {
             cmd.arg(arg);
         }
+        // `env` is authoritative, so disable `Command`'s implicit
+        // parent-environment inheritance before applying it.
+        cmd.env_clear();
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
@@ -1615,7 +1620,7 @@ impl BootstrapCommand {
             program: crate::testresource::get("monarch/hyperactor_mesh/bootstrap"),
             arg0: None,
             args: vec![],
-            env: HashMap::new(),
+            env: std::env::vars().collect(),
         }
     }
 }
@@ -1627,7 +1632,7 @@ impl<T: Into<PathBuf>> From<T> for BootstrapCommand {
             program: s.into(),
             arg0: None,
             args: vec![],
-            env: HashMap::new(),
+            env: std::env::vars().collect(),
         }
     }
 }
@@ -2472,6 +2477,31 @@ mod tests {
     use hyperactor::testing::ids::test_proc_id_with_addr;
 
     use super::*;
+
+    #[tokio::test]
+    async fn bootstrap_command_uses_exact_environment() {
+        assert!(
+            std::env::var_os("PATH").is_some(),
+            "test runner should set PATH"
+        );
+
+        let output = BootstrapCommand {
+            program: PathBuf::from("/usr/bin/env"),
+            env: HashMap::from([("BOOTSTRAP_COMMAND_TEST".to_string(), "present".to_string())]),
+            ..Default::default()
+        }
+        .new()
+        .output()
+        .await
+        .expect("run env with the configured environment");
+        let stdout = String::from_utf8(output.stdout).expect("env output should be UTF-8");
+
+        assert_eq!(
+            stdout.lines().collect::<Vec<_>>(),
+            ["BOOTSTRAP_COMMAND_TEST=present"],
+            "bootstrap command should use only its configured environment"
+        );
+    }
 
     struct ShutdownFlushProbe {
         gateway: Gateway,

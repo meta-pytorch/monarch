@@ -991,15 +991,13 @@ _BOOTSTRAP_MAIN = "monarch._src.actor.bootstrap_main"
 
 
 def _get_bootstrap_args() -> tuple[str, Optional[list[str]], dict[str, str]]:
+    env = dict(os.environ)
     if IN_PAR:
         cmd = sys.argv[0]
         args = None
-        env = {
-            "PAR_MAIN_OVERRIDE": _BOOTSTRAP_MAIN,
-        }
+        env["PAR_MAIN_OVERRIDE"] = _BOOTSTRAP_MAIN
     else:
         cmd = sys.executable
         args = ["-m", _BOOTSTRAP_MAIN]
-        env = {}
 
     return cmd, args, env

@@ -636,6 +636,18 @@ class CudaVisibleDevicesActor(Actor):
         return os.environ.get("CUDA_VISIBLE_DEVICES", "")
 
 
+def test_get_bootstrap_args_includes_parent_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from monarch._src.actor.proc_mesh import _get_bootstrap_args
+
+    monkeypatch.setenv("MONARCH_BOOTSTRAP_ENV_TEST", "present")
+
+    _, _, env = _get_bootstrap_args()
+
+    assert env["MONARCH_BOOTSTRAP_ENV_TEST"] == "present"
+
+
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_spawn_procs_with_bootstrap_command() -> None:
