@@ -2538,8 +2538,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_basic() {
+        let bootstrap_command = BootstrapCommand::test();
+        let expected_bootstrap_command = bootstrap_command.clone();
         let host = Host::new(
-            BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
+            BootstrapProcManager::new(bootstrap_command).unwrap(),
             ChannelTransport::Unix.any(),
         )
         .await
@@ -2589,7 +2591,7 @@ mod tests {
                     // The mesh agent should run in the same proc, under the name
                     // "proc_agent".
                     mesh_agent,
-                    bootstrap_command,
+                    bootstrap_command: actual_bootstrap_command,
                     proc_status: Some(ProcStatus::Ready { started_at: _, addr: _, agent: proc_status_mesh_agent}),
                     ..
                 }),
@@ -2597,7 +2599,7 @@ mod tests {
             } if id == resource_id
               && proc_id == expected_proc_addr
               && mesh_agent == ActorRef::attest(expected_proc_addr.actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME))
-              && bootstrap_command == Some(BootstrapCommand::test())
+              && actual_bootstrap_command == Some(expected_bootstrap_command)
               && mesh_agent == proc_status_mesh_agent
         );
     }

@@ -104,7 +104,8 @@ class BootstrapCommand:
         - `program`: The program to execute.
         - `arg0`: Optionally, the program's arg0. If not provided, the program's name will be used.
         - `args`: List of command line arguments.
-        - `env`: Environment variables as key-value pairs.
+        - `env`: The complete child environment as key-value pairs. Variables
+          are not inherited from the parent process.
         """
         ...
 

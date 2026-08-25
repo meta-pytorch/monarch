@@ -1107,6 +1107,7 @@ while True:
         let command = BootstrapCommand {
             program: PathBuf::from("python3"),
             args: vec!["-u".into(), "-c".into(), python_script.trim().into()],
+            env: std::env::vars().collect(),
             ..Default::default()
         };
 
