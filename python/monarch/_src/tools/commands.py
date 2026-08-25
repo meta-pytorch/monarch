@@ -95,7 +95,7 @@ def create(
     from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
         defaults,
     )
-    from torchx.specs import AppDef, AppDryRunInfo, CfgVal
+    from torchx.specs import AppDef, CfgVal
 
     if name is None:
         name = _default_name()
@@ -120,16 +120,9 @@ def create(
 
                 info = runner.dryrun(appdef, scheduler, cfg, str(workspace_out))
 
-        info_json_fmt = AppDryRunInfo(
-            info.request,
-            fmt=defaults.dryrun_info_formatter(info),
-        )
-        info_json_fmt._app = info._app
-        info_json_fmt._cfg = info._cfg
-        info_json_fmt._scheduler = info._scheduler
-
         if config.dryrun:
-            return info_json_fmt
+            info._fmt = defaults.dryrun_info_formatter(info)
+            return info
         else:
             server_handle = runner.schedule(info)
             return server_handle
