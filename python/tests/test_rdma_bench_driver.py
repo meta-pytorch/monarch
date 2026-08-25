@@ -13,6 +13,8 @@ Unit tests for the multi-host RDMA benchmark's driver.
 
 import argparse
 import csv
+import pathlib
+import sys
 from typing import cast
 
 import bench_peer
@@ -104,11 +106,15 @@ class _FakeJob:
     def __init__(self, mesh_name: str, host: _FakeHost) -> None:
         self._state = type("State", (), {mesh_name: host})()
         self.cached_paths: list = []
+        self.applied: list[str] = []
         self.killed = False
 
     def state(self, cached_path=None):
         self.cached_paths.append(cached_path)
         return self._state
+
+    def apply(self, client_script: str) -> None:
+        self.applied.append(client_script)
 
     def kill(self) -> None:
         self.killed = True
@@ -255,8 +261,8 @@ def _topology(cfg: bd.BenchConfig) -> bt.Topology:
     )
 
 
-def _plan(cfg: bd.BenchConfig, topo: bt.Topology) -> bt.MemoryPlan:
-    return bt.plan_memory(
+def _footprint(cfg: bd.BenchConfig, topo: bt.Topology) -> bt.MemoryFootprint:
+    return bt.memory_footprint(
         topo,
         ops=cfg.concurrent_ops,
         payload_bytes=cfg.payload_bytes,
@@ -288,7 +294,7 @@ def test_the_banner_states_the_shape_before_anything_is_provisioned(capsys) -> N
     cfg = _config("--pattern", "ring", "--num-hosts", "4", "--procs-per-host", "2")
     topo = _topology(cfg)
 
-    bd._print_banner(cfg, topo, _plan(cfg, topo), ["Mode: test"])
+    bd._print_banner(cfg, topo, _footprint(cfg, topo), ["Mode: test"])
 
     printed = capsys.readouterr().out
     assert "Mode: test" in printed
@@ -309,7 +315,7 @@ def test_the_banner_names_the_hosts_a_pattern_leaves_idle(capsys) -> None:
     cfg = _config("--pattern", "p2p", "--num-hosts", "8")
     topo = _topology(cfg)
 
-    bd._print_banner(cfg, topo, _plan(cfg, topo), [])
+    bd._print_banner(cfg, topo, _footprint(cfg, topo), [])
 
     assert "never touches: [2, 3, 4, 5, 6, 7]" in capsys.readouterr().out
 
@@ -320,7 +326,7 @@ def test_the_shape_columns_describe_the_graph() -> None:
     )
     topo = _topology(cfg)
 
-    shape = bd._shape_columns(cfg, topo, _plan(cfg, topo), bt.READ)
+    shape = bd._shape_columns(cfg, topo, _footprint(cfg, topo), bt.READ)
 
     assert (shape.num_hosts, shape.procs_per_host) == (4, 2)
     assert shape.num_edges == 24, "4 hosts fully connected, 2 same-lane pairs each"
@@ -359,7 +365,7 @@ def test_reporting_writes_a_row_per_direction_and_phase(tmp_path, capsys) -> Non
     topo = _topology(cfg)
     records = {bt.READ: _record(submit_ms=400.0), bt.WRITE: _record(submit_ms=200.0)}
 
-    bd._report(cfg, topo, _plan(cfg, topo), records)
+    bd._report(cfg, topo, _footprint(cfg, topo), records)
 
     with open(output_csv) as stream:
         rows = list(csv.DictReader(stream))
@@ -629,6 +635,10 @@ async def test_the_digest_window_is_at_least_one_byte() -> None:
     assert digest.casts == [("sampled", 1)]
 
 
+async def _noop_drive(cfg, job, mesh_name, banner) -> None:
+    return None
+
+
 def _sample(lane: int, submit_ms: float) -> bs.Sample:
     return bs.Sample(bt.Slot(0, lane), build_ms=1.0, submit_ms=submit_ms)
 
@@ -677,7 +687,9 @@ async def test_a_proc_that_initiates_nothing_contributes_no_sample() -> None:
     assert len(record.phases[bt.COLD_QP].span_ms) == 1, "the iteration still happened"
 
 
-def _fake_peers_entire_direction(topo, *, transferred: bool = True) -> _FakePeers:
+def _fake_peers_entire_direction(
+    topo, *, transferred: bool = True, directions: int = 1
+) -> _FakePeers:
     """Construct and return a `_FakePeers` with responses covering an entire direction.
     Assumes the input `topo` is the result of `_self_edge_topology()`.
 
@@ -706,6 +718,7 @@ def _fake_peers_entire_direction(topo, *, transferred: bool = True) -> _FakePeer
         for s in slots
     ]
     return _FakePeers(
+        check_config=_FakeEndpoint(_value_mesh([{}] * lanes, lanes=lanes)),
         setup=_FakeEndpoint(_value_mesh(setup_replies, lanes=lanes)),
         wire=_FakeEndpoint(_value_mesh([None] * lanes, lanes=lanes)),
         execute_iteration=_FakeEndpoint(
@@ -713,6 +726,7 @@ def _fake_peers_entire_direction(topo, *, transferred: bool = True) -> _FakePeer
         ),
         digest=_FakeEndpoint(
             [_value_mesh(before, lanes=lanes), _value_mesh(after, lanes=lanes)]
+            * directions
         ),
         reset=_FakeEndpoint(_value_mesh([None] * lanes, lanes=lanes)),
     )
@@ -779,3 +793,206 @@ async def test_verify_off_skips_both_checks() -> None:
     assert peers.digest.casts == []
     assert record.integrity_ok is None, "not run is not the same as failed"
     assert record.negative_control_ok is None
+
+
+def _drivable(tmp_path, monkeypatch, *flags, transferred: bool = True):
+    """A configuration, the procs and the fake peers a whole `_drive` will use."""
+    topo = _self_edge_topology()
+    peers = _fake_peers_entire_direction(
+        topo, transferred=transferred, directions=len(bt.DIRECTIONS)
+    )
+    procs = _FakeProcs(peers)
+    monkeypatch.setattr(bd, "_configure_rdma", lambda cfg: None)
+    monkeypatch.setattr(
+        bd, "_spawn_procs_and_actors", lambda cfg, job, mesh_name: (procs, peers)
+    )
+    cfg = _config(
+        "--pattern",
+        "p2p",
+        "--num-hosts",
+        "1",
+        "--procs-per-host",
+        "2",
+        "--payload-size-mb",
+        "1",
+        "--runs",
+        "1",
+        "--output-csv",
+        str(tmp_path / "results.csv"),
+        *flags,
+    )
+    return cfg, procs, peers
+
+
+async def test_a_whole_run_measures_both_directions_and_writes_them(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    cfg, procs, peers = _drivable(tmp_path, monkeypatch)
+
+    await bd._drive(cfg, None, "mesh0", ["Mode: test"])
+
+    assert len(peers.check_config.casts) == 1, "checked once, before any measuring"
+    assert procs.stopped, "the procs are released even though the run succeeded"
+    with open(cfg.output_csv) as stream:
+        rows = list(csv.DictReader(stream))
+    assert {(row["direction"], row["phase"]) for row in rows} == {
+        (direction, phase) for direction in bt.DIRECTIONS for phase in bt.PHASES
+    }
+    assert all(row["integrity_ok"] == "True" for row in rows)
+    assert "Mode: test" in capsys.readouterr().out
+
+
+async def test_a_footprint_that_will_not_fit_is_refused_before_provisioning(
+    tmp_path, monkeypatch
+) -> None:
+    """The guard reads the graph alone, so a bad combination costs no job."""
+    cfg, procs, _peers = _drivable(
+        tmp_path, monkeypatch, "--max-device-gb-per-proc", "0.000001"
+    )
+
+    with pytest.raises(ValueError, match="device memory"):
+        await bd._drive(cfg, None, "mesh0", [])
+
+    assert procs.spawned == [], "nothing was provisioned"
+    assert not pathlib.Path(cfg.output_csv).exists()
+
+
+async def test_a_failed_run_still_releases_its_procs(tmp_path, monkeypatch) -> None:
+    cfg, procs, _peers = _drivable(tmp_path, monkeypatch, transferred=False)
+
+    with pytest.raises(RuntimeError, match="data corruption"):
+        await bd._drive(cfg, None, "mesh0", [])
+
+    assert procs.stopped
+    assert not pathlib.Path(cfg.output_csv).exists(), "no CSV for a failed run"
+
+
+@pytest.mark.parametrize(
+    ("policy", "failed", "killed"),
+    [
+        (bd.TEARDOWN_ALWAYS, False, True),
+        (bd.TEARDOWN_ALWAYS, True, True),
+        (bd.TEARDOWN_ON_FAILURE, False, False),
+        (bd.TEARDOWN_ON_FAILURE, True, True),
+        (bd.TEARDOWN_NEVER, False, False),
+        (bd.TEARDOWN_NEVER, True, False),
+    ],
+)
+def test_when_a_job_is_killed(policy, failed, killed) -> None:
+    job = _FakeJob("mesh0", _FakeHost(_FakeProcs()))
+    parser = argparse.ArgumentParser()
+    bd.add_benchmark_args(parser)
+    cfg = bd.config_from_args(parser.parse_args(["run", "--teardown-policy", policy]))
+
+    bd._teardown(cfg, cast(JobTrait, job), failed)
+
+    assert job.killed is killed
+
+
+def test_the_batch_client_command_reruns_this_invocation_in_the_allocation(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        sys, "argv", ["/bin/bench.py", "--num-hosts", "4", bd.BATCH_COMMAND]
+    )
+
+    command = bd._batch_client_command()
+
+    assert " --num-hosts 4 " in command
+    assert f" {bd.RUN_COMMAND} " in command
+    assert bd.BATCH_COMMAND not in command, "otherwise it submits a nested batch job"
+    assert command.endswith(f"--teardown-policy {bd.TEARDOWN_NEVER}")
+    assert "--cached-path" in command
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["/bin/bench.py", "run"],
+        ["/bin/bench.py", "--output-csv", "run-batch", "run-batch"],
+    ],
+)
+def test_an_ambiguous_batch_subcommand_is_not_guessed_at(argv, monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(SystemExit, match="exactly"):
+        bd._batch_client_command()
+
+
+def test_local_only_never_builds_a_job(tmp_path, monkeypatch) -> None:
+    made: list = []
+    monkeypatch.setattr(bd, "_drive", _noop_drive)
+    parser = argparse.ArgumentParser()
+    bd.add_benchmark_args(parser)
+    cfg = bd.config_from_args(
+        parser.parse_args(["--num-hosts", "4", "run", "--local-only"])
+    )
+
+    def _make_job(cfg: bd.BenchConfig) -> JobTrait:
+        made.append(cfg)
+        return cast(JobTrait, _FakeJob("mesh0", _FakeHost(_FakeProcs())))
+
+    assert bd.run(cfg, make_job=_make_job, mesh_name="mesh0") == 0
+    assert made == [], "a job would have cost real hosts"
+
+
+def test_a_scheduled_run_builds_a_job(monkeypatch) -> None:
+    made: list = []
+    monkeypatch.setattr(bd, "_drive", _noop_drive)
+    job = _FakeJob("mesh0", _FakeHost(_FakeProcs()))
+
+    def _make_job(cfg: bd.BenchConfig) -> JobTrait:
+        made.append(cfg)
+        return cast(JobTrait, job)
+
+    cfg = _config("--num-hosts", "4")
+
+    assert bd.run(cfg, make_job=_make_job, mesh_name="mesh0") == 0
+
+    assert made == [cfg], "built from the configuration it is about to run"
+    assert job.killed, "and torn down once the run is over"
+
+
+def test_a_job_of_the_wrong_size_fails_the_run(tmp_path, monkeypatch) -> None:
+    """`--cached-path` reconnects to whatever job is already there, so a run has
+    to check the size it got rather than assume the one it asked for."""
+    monkeypatch.setattr(bd, "_configure_rdma", lambda cfg: None)
+    job = _FakeJob("mesh0", _FakeHost(_FakeProcs(), hosts=2))
+    cfg = _config(
+        "--num-hosts",
+        "4",
+        "--payload-size-mb",
+        "1",
+        "--output-csv",
+        str(tmp_path / "results.csv"),
+    )
+
+    with pytest.raises(RuntimeError, match="--num-hosts 4 but the job provisioned 2"):
+        bd.run(cfg, make_job=lambda c: cast(JobTrait, job), mesh_name="mesh0")
+
+    assert job.killed, "a job this run cannot use is not left standing"
+    assert not pathlib.Path(cfg.output_csv).exists()
+
+
+def test_run_batch_submits_the_client_and_returns(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["/bin/bench.py", bd.BATCH_COMMAND])
+    job = _FakeJob("mesh0", _FakeHost(_FakeProcs()))
+    cfg = _config(command=bd.BATCH_COMMAND)
+
+    assert bd.run(cfg, make_job=lambda c: cast(JobTrait, job), mesh_name="mesh0") == 0
+
+    assert len(job.applied) == 1 and bd.RUN_COMMAND in job.applied[0]
+    assert not job.killed, "the runner owns the allocation, not this process"
+
+
+def test_a_failing_run_kills_the_job_and_reraises(monkeypatch) -> None:
+    async def _boom(cfg, job, mesh_name, banner):
+        raise RuntimeError("fabric fell over")
+
+    monkeypatch.setattr(bd, "_drive", _boom)
+    job = _FakeJob("mesh0", _FakeHost(_FakeProcs()))
+
+    with pytest.raises(RuntimeError, match="fabric fell over"):
+        bd.run(_config(), make_job=lambda c: cast(JobTrait, job), mesh_name="mesh0")
+
+    assert job.killed

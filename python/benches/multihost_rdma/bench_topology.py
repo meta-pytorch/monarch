@@ -33,7 +33,7 @@ it, and keeping them separate per peer is mandatory: an ``RDMAAction`` does not
 track remote ranges, so two initiators writing the same remote buffer would
 corrupt it silently. :py:func:`allocation_for` is the single source of truth for
 what a slot allocates, so what the actors allocate and what
-:py:func:`plan_memory` charges them for cannot drift.
+:py:func:`memory_footprint` charges them for cannot drift.
 
 This module imports only the standard library. It holds no monarch, torch, or
 RDMA state, and every function in it is pure, so the whole benchmark's
@@ -307,12 +307,12 @@ def max_ops_per_action(topo: Topology, direction: str, *, ops: int) -> int:
 
 
 @dataclass(frozen=True)
-class MemoryPlan:
+class MemoryFootprint:
     """One configuration's footprint, split by memory kind.
 
     Device memory is charged per slot because each slot owns one GPU; host
     memory is charged per host because the procs on a host share it. Unused
-    hosts and slots have no entry in the plan.
+    hosts and slots have no entry in the footprint.
     """
 
     payload_bytes: int
@@ -325,14 +325,14 @@ class MemoryPlan:
         return sum(self.device_bytes.values()) + sum(self.host_bytes_per_host.values())
 
 
-def plan_memory(
+def memory_footprint(
     topo: Topology,
     *,
     ops: int,
     payload_bytes: int,
     source_on_gpu: bool,
     dest_on_gpu: bool,
-) -> MemoryPlan:
+) -> MemoryFootprint:
     """Charge every slot's tensors to device or host memory by their role."""
     buffers: dict[Slot, int] = {}
     device: dict[Slot, int] = {}
@@ -348,7 +348,7 @@ def plan_memory(
         host[slot.host] += (0 if source_on_gpu else outgoing) + (
             0 if dest_on_gpu else incoming
         )
-    return MemoryPlan(
+    return MemoryFootprint(
         payload_bytes=payload_bytes,
         buffers=buffers,
         device_bytes=device,
@@ -358,7 +358,7 @@ def plan_memory(
 
 def check_memory(
     topo: Topology,
-    plan: MemoryPlan,
+    footprint: MemoryFootprint,
     *,
     max_device_bytes: int,
     max_host_bytes: int,
@@ -369,24 +369,24 @@ def check_memory(
     that would fit, so a bad flag combination fails on the client in
     milliseconds instead of part-way into a multi-host allocation.
     """
-    slot, device_bytes = max(plan.device_bytes.items(), key=lambda kv: kv[1])
+    slot, device_bytes = max(footprint.device_bytes.items(), key=lambda kv: kv[1])
     if device_bytes > max_device_bytes:
         raise ValueError(
             f"{topo.pattern}: slot {slot} needs {_size(device_bytes)} of device "
             f"memory, over the {_size(max_device_bytes)} budget. Its in-degree is "
             f"{topo.in_degree(slot)}, its out-degree is {topo.out_degree(slot)}, "
-            f"and the payload is {_size(plan.payload_bytes)}; the largest payload "
+            f"and the payload is {_size(footprint.payload_bytes)}; the largest payload "
             "that fits is "
-            f"{_size(_fitting_payload(plan.payload_bytes, device_bytes, max_device_bytes))}"
+            f"{_size(_fitting_payload(footprint.payload_bytes, device_bytes, max_device_bytes))}"
         )
-    host, host_bytes = max(plan.host_bytes_per_host.items(), key=lambda kv: kv[1])
+    host, host_bytes = max(footprint.host_bytes_per_host.items(), key=lambda kv: kv[1])
     if host_bytes > max_host_bytes:
         raise ValueError(
             f"{topo.pattern}: host {host} needs {_size(host_bytes)} of pinned host "
             f"memory across its {topo.procs_per_host} procs, over the "
             f"{_size(max_host_bytes)} budget. The payload is "
-            f"{_size(plan.payload_bytes)}; the largest payload that fits is "
-            f"{_size(_fitting_payload(plan.payload_bytes, host_bytes, max_host_bytes))}"
+            f"{_size(footprint.payload_bytes)}; the largest payload that fits is "
+            f"{_size(_fitting_payload(footprint.payload_bytes, host_bytes, max_host_bytes))}"
         )
 
 
