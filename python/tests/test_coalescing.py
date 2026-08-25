@@ -9,7 +9,7 @@
 import itertools
 from contextlib import contextmanager
 from enum import Enum
-from typing import ContextManager, List
+from typing import ContextManager, List, Literal
 from unittest.mock import patch
 
 import monarch
@@ -37,15 +37,19 @@ def inspect(x):
     return fetch_shard(x).result().item()
 
 
+local: TestingContext | None = None
+
+
 @pytest.fixture(scope="module", autouse=True)
 def testing_context():
-    # pyrefly: ignore [unknown-name]
     global local
     with TestingContext() as local:
         yield
 
 
 class BackendType(Enum):
+    value: Literal["py", "rs", "mesh"]
+
     PY = "py"
     RS = "rs"
     MESH = "mesh"
@@ -67,7 +71,7 @@ class TestCoalescing:
         backend_type: BackendType,
         activate: bool = True,
     ) -> ContextManager[DeviceMesh]:
-        # pyre-fixme[10]: pytest defines this fixture.
+        assert local is not None
         return local.local_device_mesh(
             num_hosts,
             gpu_per_host,
@@ -167,7 +171,7 @@ class TestCoalescing:
 
             @compile(verify=False)
             def fn():
-                nonlocal a, b
+                nonlocal a
                 c, borrow = get_active_stream().borrow(b)
                 with borrow:
                     a += c
@@ -381,7 +385,6 @@ class TestCoalescing:
 
             @compile(verify=True)
             def add_broken(b):
-                nonlocal c
                 if c:
                     a = torch.zeros(3, 4)
                 else:
