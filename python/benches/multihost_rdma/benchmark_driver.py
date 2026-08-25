@@ -10,15 +10,54 @@
 """
 All of the scheduler-independent logic to configure and drive a multihost RDMA
 benchmark.
+
+Each configuration is run in two directions. Both move the same bytes over the
+same edges; only the side that initiates the transfers changes, so ``write`` has
+the source pushing into the destination's buffers and ``read`` has the
+destination pulling from the source's. Each side's memory kind is set
+independently with ``--source-device`` and ``--dest-device``.
+
+A *run* allocates and registers fresh tensors and then iterates. Within a run, the
+first ``--warmup-iters-per-run`` iterations are discarded and the rest are warm.
+The very first iteration of all needs to establish QP connections and is therefore
+reported separately.
 """
 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from bench_peer import VERIFY_MODES, VERIFY_SAMPLED
-from bench_topology import PAIRINGS, PATTERNS, SAME
+from bench_stats import (
+    ConfigColumns,
+    KeyColumns,
+    MetricColumns,
+    metrics_for,
+    phase_table,
+    RunRecord,
+    SCHEMA_VERSION,
+    ShapeColumns,
+    summary_header,
+    summary_row,
+    write_rows,
+)
+from bench_topology import (
+    bytes_per_iteration,
+    describe,
+    DIRECTIONS,
+    max_ops_per_action,
+    MemoryPlan,
+    PAIRINGS,
+    PATTERNS,
+    PHASES,
+    SAME,
+    Topology,
+    unused_hosts,
+)
+from monarch.config import get_global_config
 
 
 RUN_COMMAND: str = "run"
@@ -34,6 +73,7 @@ TEARDOWN_POLICIES: tuple[str, ...] = (
     TEARDOWN_ALWAYS,
 )
 
+_GB: int = 1000**3
 _MB: int = 1000**2
 
 
@@ -421,3 +461,116 @@ def config_from_args(args: argparse.Namespace) -> BenchConfig:
     if cfg.runs < 1:
         raise ValueError("--runs must be at least 1")
     return cfg
+
+
+def _shape_columns(
+    cfg: BenchConfig, topo: Topology, plan: MemoryPlan, direction: str
+) -> ShapeColumns:
+    return ShapeColumns(
+        num_hosts=topo.num_hosts,
+        procs_per_host=topo.procs_per_host,
+        lane_pairing=topo.pairing,
+        lane_shift=topo.shift,
+        num_edges=len(topo.edges),
+        num_initiators=len(topo.initiators(direction)),
+        max_degree=topo.max_degree(direction),
+        max_ops_per_action=max_ops_per_action(topo, direction, ops=cfg.concurrent_ops),
+        max_in_degree=max((topo.in_degree(s) for s in topo.slots()), default=0),
+        bytes_per_iteration=bytes_per_iteration(
+            topo, ops=cfg.concurrent_ops, payload_bytes=cfg.payload_bytes
+        ),
+        max_buffers_per_proc=max(plan.buffers.values(), default=0),
+        max_device_bytes_per_proc=max(plan.device_bytes.values(), default=0),
+        max_host_bytes_per_host=max(plan.host_bytes_per_host.values(), default=0),
+    )
+
+
+def _config_columns(cfg: BenchConfig, record: RunRecord) -> ConfigColumns:
+    return ConfigColumns(
+        schema_version=SCHEMA_VERSION,
+        transport=cfg.transport,
+        source_device=cfg.source_label,
+        dest_device=cfg.dest_label,
+        payload_size_mb=cfg.payload_size_mb,
+        concurrent_ops=cfg.concurrent_ops,
+        # One generation of procs, so `cold_qp` has exactly one iteration behind
+        # it however many runs there were.
+        cold_proc_runs=1,
+        runs=cfg.runs,
+        warmup_iters_per_run=cfg.warmup_iters_per_run,
+        warm_iters_per_run=cfg.warm_iters_per_run,
+        local_only=int(cfg.local_only),
+        verify_mode=cfg.verify,
+        rdma_runtime_threads=str(get_global_config()["rdma_runtime_worker_threads"]),
+        integrity_ok=_flag(record.integrity_ok),
+        negative_control_ok=_flag(record.negative_control_ok),
+    )
+
+
+def _flag(value: bool | None) -> str:
+    return "skipped" if value is None else str(value)
+
+
+def _report(
+    cfg: BenchConfig,
+    topo: Topology,
+    plan: MemoryPlan,
+    records: dict[str, RunRecord],
+) -> None:
+    """Write the CSV and print the per-phase digest."""
+    rows: list[Sequence[Any]] = []
+    table: list[tuple[KeyColumns, MetricColumns]] = []
+    for direction, record in records.items():
+        shape = _shape_columns(cfg, topo, plan, direction)
+        config = _config_columns(cfg, record)
+        for phase in PHASES:
+            key = KeyColumns(pattern=topo.pattern, direction=direction, phase=phase)
+            metrics = metrics_for(phase, record)
+            rows.append(summary_row(key, shape, config, metrics))
+            table.append((key, metrics))
+
+    with open(cfg.output_csv, "w") as stream:
+        write_rows(stream, summary_header(), rows)
+
+    print()
+    for line in phase_table(table):
+        print(line)
+    print(f"\nResults written to {cfg.output_csv}")
+
+
+def _print_banner(
+    cfg: BenchConfig, topo: Topology, plan: MemoryPlan, banner: Sequence[str]
+) -> None:
+    print("=" * 78)
+    print("RDMA Benchmark")
+    print("=" * 78)
+    for line in banner:
+        print(line)
+    for direction in DIRECTIONS:
+        print(
+            describe(
+                topo,
+                direction,
+                ops=cfg.concurrent_ops,
+                payload_bytes=cfg.payload_bytes,
+            )
+        )
+    idle = unused_hosts(topo)
+    if idle:
+        print(f"Hosts this pattern never touches: {list(idle)}")
+    print(
+        f"Memory: source={cfg.source_label} dest={cfg.dest_label}; "
+        f"up to {max(plan.buffers.values(), default=0)} buffers per proc, "
+        f"{_gb(max(plan.device_bytes.values(), default=0))} device per proc, "
+        f"{_gb(max(plan.host_bytes_per_host.values(), default=0))} host per host"
+    )
+    print(
+        f"Runs: {cfg.runs} x ({cfg.warmup_iters_per_run} ramp + "
+        f"{cfg.warm_iters_per_run} warm) iterations, first iteration "
+        f"cold; verify={cfg.verify}"
+    )
+    print(f"Transport: {cfg.transport}  |  Output: {cfg.output_csv}")
+
+
+def _gb(num_bytes: int) -> str:
+    return f"{num_bytes / _GB:.2f} GB"
