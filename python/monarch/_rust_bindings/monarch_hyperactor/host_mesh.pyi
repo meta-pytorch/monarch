@@ -90,6 +90,8 @@ class HostMesh:
 
 @final
 class BootstrapCommand:
+    env: dict[str, str]
+
     def __init__(
         self,
         program: str,
