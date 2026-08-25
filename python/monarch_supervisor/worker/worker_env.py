@@ -7,6 +7,8 @@
 # pyre-unsafe
 import runpy
 import sys
+from collections.abc import Callable
+from typing import cast
 
 __MONARCH_TENSOR_WORKER_ENV__ = True
 
@@ -18,8 +20,14 @@ def main() -> None:
     # Remove the -m and the main module from the command line arguments before
     # forwarding
     sys.argv[1:] = sys.argv[3:]
-    # pyre-fixme[16]: Module `runpy` has no attribute `_run_module_as_main`.
-    runpy._run_module_as_main(main_module, alter_argv=False)
+
+    # The public run_module() uses a fresh namespace instead of preserving the
+    # existing __main__ namespace required by Python's -m behavior.
+    run_module_as_main = cast(
+        Callable[[str, bool], object],
+        vars(runpy)["_run_module_as_main"],
+    )
+    run_module_as_main(main_module, False)
 
 
 if __name__ == "__main__":
