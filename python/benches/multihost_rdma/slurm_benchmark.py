@@ -10,7 +10,7 @@
 """
 SLURM wrapper around the multi-host RDMA benchmark.
 
-The benchmark itself lives in ``benchmark_common`` and knows nothing about
+The benchmark itself lives in ``benchmark_driver`` and knows nothing about
 SLURM. This file only builds the ``SlurmJob`` it runs on and adds the SLURM
 flags.
 
@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import argparse
 
-from benchmark_common import add_benchmark_args, BenchConfig, config_from_args, run
+from benchmark_driver import add_benchmark_args, BenchConfig, config_from_args, run
 from monarch.job import SlurmJob
 
 
@@ -112,7 +112,7 @@ def main() -> None:
     cfg = config_from_args(args)
 
     banner = [
-        f"Mode: {'local sender -> SLURM receivers' if cfg.local_sender else 'all SLURM'}",
+        f"Mode: {'this host only' if cfg.local_only else 'SLURM'}",
         f"Partition: {args.partition or 'default'}",
         f"GPUs per node: {args.gpus_per_node}",
     ]
