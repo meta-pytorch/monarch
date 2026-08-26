@@ -150,6 +150,9 @@ class BenchConfig:
     max_host_gb_per_host: float
     # How many threads the RDMA runtime was configured to use.
     rdma_runtime_threads: int | None
+    # How many NICs a buffer is registered on, at most. `None` sets no limit,
+    # so every equally good NIC serves it.
+    rdma_max_nics_per_buffer: int | None
     # Path to the file where the output will live.
     output_csv: str
     # Batch or non-batch mode.
@@ -302,6 +305,16 @@ def _add_workload_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=None,
         help="How many threads the RDMA runtime should use (default: monarch's own).",
+    )
+
+    parser.add_argument(
+        "--rdma-max-nics-per-buffer",
+        type=int,
+        default=1,
+        help=(
+            "How many NICs a buffer is registered on, at most. Pass 0 for no "
+            "limit, which registers it on every equally good NIC (default: 1)."
+        ),
     )
 
     mode_group = parser.add_mutually_exclusive_group()
@@ -468,6 +481,7 @@ def config_from_args(args: argparse.Namespace) -> BenchConfig:
         max_device_gb_per_proc=float(args.max_device_gb_per_proc),
         max_host_gb_per_host=float(args.max_host_gb_per_host),
         rdma_runtime_threads=args.rdma_runtime_threads,
+        rdma_max_nics_per_buffer=args.rdma_max_nics_per_buffer or None,
         output_csv=args.output_csv,
         command=args.command,
         # These exist only on the `run` subparser.
@@ -484,6 +498,8 @@ def config_from_args(args: argparse.Namespace) -> BenchConfig:
         raise ValueError("--warm-iters-per-run must be at least 1")
     if cfg.runs < 1:
         raise ValueError("--runs must be at least 1")
+    if args.rdma_max_nics_per_buffer < 0:
+        raise ValueError("--rdma-max-nics-per-buffer cannot be negative")
     return cfg
 
 
@@ -496,6 +512,7 @@ def _rdma_settings(cfg: BenchConfig) -> dict[str, Any]:
     )
     if cfg.rdma_runtime_threads is not None:
         settings["rdma_runtime_worker_threads"] = cfg.rdma_runtime_threads
+    settings["rdma_max_nics_per_buffer"] = cfg.rdma_max_nics_per_buffer
     return settings
 
 
@@ -701,6 +718,7 @@ def _config_columns(cfg: BenchConfig, record: RunRecord) -> ConfigColumns:
         local_only=int(cfg.local_only),
         verify_mode=cfg.verify,
         rdma_runtime_threads=str(get_global_config()["rdma_runtime_worker_threads"]),
+        rdma_max_nics_per_buffer=str(get_global_config()["rdma_max_nics_per_buffer"]),
         integrity_ok=_flag(record.integrity_ok),
         negative_control_ok=_flag(record.negative_control_ok),
     )

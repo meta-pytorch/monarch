@@ -251,6 +251,7 @@ class ConfigColumns:
     local_only: int
     verify_mode: str
     rdma_runtime_threads: str
+    rdma_max_nics_per_buffer: str
     integrity_ok: str
     negative_control_ok: str
 

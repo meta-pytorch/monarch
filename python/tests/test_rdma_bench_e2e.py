@@ -81,6 +81,7 @@ def _config(
         max_device_gb_per_proc=1.0,
         max_host_gb_per_host=1.0,
         rdma_runtime_threads=None,
+        rdma_max_nics_per_buffer=1,
         output_csv=output_csv,
         command=bd.RUN_COMMAND,
         local_only=True,

@@ -273,6 +273,7 @@ def _columns() -> tuple[
             local_only=0,
             verify_mode="sampled",
             rdma_runtime_threads="16",
+            rdma_max_nics_per_buffer="1",
             integrity_ok="True",
             negative_control_ok="True",
         ),
