@@ -37,8 +37,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
+use backoff::ExponentialBackoff;
+use backoff::ExponentialBackoffBuilder;
+use backoff::backoff::Backoff;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::Handler;
@@ -286,6 +291,62 @@ fn group_by_queue_pair(
     batches
 }
 
+/// How long to wait before the next polling round. Ask
+/// [`Self::next_interval`] for the delay; call [`Self::reset`] whenever a poll
+/// consumed something.
+///
+/// Within `yield_window` of the first call to [`Self::next_interval`] since
+/// construction/the last reset, the round the delay is `Duration::ZERO`,
+/// which keeps latency tight while completions are expected. Passed the
+/// yield window, the policy walks an exponential backoff (1ms initial, doubling,
+/// capped at 10ms) rather than keep a core busy. A `yield_window` of `None` --
+/// the default of [`crate::config::RDMA_CQ_BUSY_POLL_WINDOW`] -- always returns
+/// `Duration::ZERO`.
+#[derive(Debug)]
+pub(super) struct PollSleepPolicy {
+    yield_window: Option<Duration>,
+    started_at: Option<Instant>,
+    backoff: Option<ExponentialBackoff>,
+}
+
+impl PollSleepPolicy {
+    pub(super) fn new() -> Self {
+        let yield_window = hyperactor_config::global::get(crate::config::RDMA_CQ_BUSY_POLL_WINDOW);
+        Self {
+            yield_window,
+            started_at: None,
+            backoff: None,
+        }
+    }
+
+    /// Forget all accumulated backoff state.
+    pub(super) fn reset(&mut self) {
+        self.started_at = None;
+        self.backoff = None;
+    }
+
+    /// Delay before the next round. `Duration::ZERO` means "now".
+    pub(super) fn next_interval(&mut self) -> Duration {
+        let Some(window) = self.yield_window else {
+            return Duration::ZERO;
+        };
+        let started = *self.started_at.get_or_insert_with(Instant::now);
+        if started.elapsed() < window {
+            return Duration::ZERO;
+        }
+        let backoff = self.backoff.get_or_insert_with(|| {
+            ExponentialBackoffBuilder::new()
+                .with_initial_interval(Duration::from_millis(1))
+                .with_max_interval(Duration::from_millis(10))
+                .with_multiplier(2.0)
+                .with_randomization_factor(0.0)
+                .with_max_elapsed_time(None)
+                .build()
+        });
+        backoff.next_backoff().unwrap_or(Duration::ZERO)
+    }
+}
+
 /// Polls a set of CQs and delivers every completion to the queue pair that
 /// produced it.
 ///
@@ -297,6 +358,9 @@ pub(super) struct CompletionQueueActor<Cq: IbvCompletionQueue> {
     completion_queues: HashMap<CqId, CqSlot<Cq>>,
     /// The completions one poll consumes, reused by every round.
     consumed: Vec<Completion>,
+    /// Controls polling frequency when no completions are being generated;
+    /// see [`PollSleepPolicy`].
+    poll_policy: PollSleepPolicy,
     /// `true` while a `Poll` self-message is already in flight; the flag
     /// prevents stacking redundant rounds.
     poll_armed: bool,
@@ -329,12 +393,14 @@ impl<Cq: IbvCompletionQueue> CompletionQueueActor<Cq> {
         Self {
             completion_queues: HashMap::new(),
             consumed: Vec::with_capacity(CQES_PER_POLL),
+            poll_policy: PollSleepPolicy::new(),
             poll_armed: false,
         }
     }
 
     /// Arms a polling round, unless one is already armed or no queue pair awaits
-    /// a completion.
+    /// a completion. A round that found nothing arms the next after the delay
+    /// [`PollSleepPolicy`] asks for.
     fn arm(&mut self, cx: &Instance<Self>) -> Result<(), anyhow::Error> {
         if self.poll_armed
             || !self
@@ -345,9 +411,14 @@ impl<Cq: IbvCompletionQueue> CompletionQueueActor<Cq> {
             return Ok(());
         }
         self.poll_armed = true;
-        if let Err(error) = cx.handle().try_post(cx, Poll) {
-            self.poll_armed = false;
-            return Err(error.into());
+        let delay = self.poll_policy.next_interval();
+        if delay.is_zero() {
+            if let Err(error) = cx.handle().try_post(cx, Poll) {
+                self.poll_armed = false;
+                return Err(error.into());
+            }
+        } else {
+            cx.post_after(cx, Poll, delay);
         }
         Ok(())
     }
@@ -361,6 +432,7 @@ impl<Cq: IbvCompletionQueue> CompletionQueueActor<Cq> {
     /// does not bring down the actor, since it does not mean that the CQ is
     /// poisoned.
     fn poll_round(&mut self, cx: &Instance<Self>) -> Result<(), anyhow::Error> {
+        let mut progressed = false;
         let Self {
             completion_queues,
             consumed,
@@ -382,10 +454,14 @@ impl<Cq: IbvCompletionQueue> CompletionQueueActor<Cq> {
                 tracing::warn!(?cq_id, %error, "consuming from a CQ failed");
                 return true;
             }
+            progressed |= !consumed.is_empty();
             slot.route(*cq_id, cx, consumed);
             // The last queue pair to be destroyed takes its CQ with it.
             !slot.queue_pairs.is_empty()
         });
+        if progressed {
+            self.poll_policy.reset();
+        }
         self.arm(cx)
     }
 }
@@ -448,6 +524,7 @@ impl<Cq: IbvCompletionQueue> Handler<Attach<Cq>> for CompletionQueueActor<Cq> {
 #[async_trait]
 impl<Cq: IbvCompletionQueue> Handler<Posted> for CompletionQueueActor<Cq> {
     async fn handle(&mut self, cx: &Context<Self>, _msg: Posted) -> Result<(), anyhow::Error> {
+        self.poll_policy.reset();
         self.arm(cx)
     }
 }
@@ -482,7 +559,8 @@ impl<Cq: IbvCompletionQueue> Handler<Detach> for CompletionQueueActor<Cq> {
             self.completion_queues.remove(&cq_id);
         }
         // It may have posted for completions nothing else will wake the poller
-        // for, its own actor being gone.
+        // for.
+        self.poll_policy.reset();
         self.arm(cx)
     }
 }
@@ -965,6 +1043,40 @@ mod tests {
             error.contains("simulated WR fail"),
             "a failed work request arrives as its own error: {error}",
         );
+        harness.teardown().await;
+        Ok(())
+    }
+
+    /// A CQ that keeps coming back empty is polled on a backoff rather than in a
+    /// spin, and a completion that arrives during one still lands.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn cqa_backs_off_on_a_quiet_cq() -> Result<()> {
+        let lock = hyperactor_config::global::lock();
+        let _guard = lock.override_key(
+            crate::config::RDMA_CQ_BUSY_POLL_WINDOW,
+            Some(Duration::from_millis(1)),
+        );
+
+        let harness = CqaHarness::build();
+        let poller = harness.spawn_poller().await?;
+        let cq = MockCq::new(1, CQES_PER_POLL);
+        let mut qp7 = harness.attach(&poller, &cq, 7).await?;
+
+        // Outstanding, with nothing to consume: the poller runs out its yield
+        // window and starts sleeping between rounds.
+        harness.post(&poller, &qp7, 1)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // By now, it should have reached the maximum backoff of 10ms.
+        let polls = cq.polls();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let polls = cq.polls() - polls;
+        assert!(
+            polls <= 15,
+            "a quiet CQ is polled on a backoff, not spun: expected <= 15 polls, got {polls}"
+        );
+
+        cq.queue_completion(7, 100);
+        assert_eq!(recv_wr_ids(&mut qp7.completions, 1).await, vec![100]);
         harness.teardown().await;
         Ok(())
     }
