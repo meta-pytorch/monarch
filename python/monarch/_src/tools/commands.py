@@ -121,6 +121,8 @@ def create(
                 info = runner.dryrun(appdef, scheduler, cfg, str(workspace_out))
 
         if config.dryrun:
+            # every formatter returns a fresh function or the CURRENT `info._fmt`;
+            # one that read `info._fmt` lazily would make `repr(info)` recurse
             info._fmt = defaults.dryrun_info_formatter(info)
             return info
         else:
