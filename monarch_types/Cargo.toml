@@ -8,7 +8,7 @@ edition = "2024"
 license = "BSD-3-Clause"
 
 [dependencies]
-derive_more = { version = "1.0.0", features = ["full"] }
+derive_more = { version = "2.1.1", features = ["full"] }
 monarch_gil = { version = "0.0.0", path = "../monarch_gil" }
 pyo3 = { version = "0.27", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 serde = { version = "1.0.229", features = ["derive", "rc"] }

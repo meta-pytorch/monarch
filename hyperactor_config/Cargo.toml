@@ -15,7 +15,7 @@ arc-swap = { version = "1.9.2", features = ["weak"] }
 bincode = { version = "2", features = ["serde"] }
 bytes = { version = "1.12.1", features = ["serde"] }
 chrono = { version = "0.4.45", features = ["clock", "serde", "std"], default-features = false }
-derive_more = { version = "1.0.0", features = ["full"] }
+derive_more = { version = "2.1.1", features = ["full"] }
 erased-serde = "0.4.10"
 humantime = "2.4.0"
 hyperactor_config_macros = { version = "0.0.0", path = "../hyperactor_config_macros" }

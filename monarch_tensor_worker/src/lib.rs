@@ -47,7 +47,6 @@ use borrow::Borrow;
 use comm::CommMessageClient;
 use comm::CommParams;
 use comm::NcclCommActor;
-use derive_more::TryInto;
 use device_mesh::DeviceMesh;
 use futures::future::try_join_all;
 use hyperactor as reference;

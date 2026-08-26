@@ -1353,15 +1353,6 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "convert_case"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec182b0ca2f35d8fc196cf3404988fd8b8c739a4d270ff118a398feb0cbec1ca"
-dependencies = [
- "unicode-segmentation",
-]
-
-[[package]]
-name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
@@ -1545,7 +1536,7 @@ checksum = "d8b9f2e4c67f833b660cdb0a3523065869fb35570177239812ed4c905aeff87b"
 dependencies = [
  "bitflags 2.13.1",
  "crossterm_winapi",
- "derive_more 2.1.1",
+ "derive_more",
  "document-features",
  "futures-core",
  "mio",
@@ -2459,33 +2450,11 @@ dependencies = [
 
 [[package]]
 name = "derive_more"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a9b99b9cbbe49445b21764dc0625032a89b145a2642e67603e1c936f5458d05"
-dependencies = [
- "derive_more-impl 1.0.0",
-]
-
-[[package]]
-name = "derive_more"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d751e9e49156b02b44f9c1815bcb94b984cdcc4396ecc32521c739452808b134"
 dependencies = [
- "derive_more-impl 2.1.1",
-]
-
-[[package]]
-name = "derive_more-impl"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb7330aeadfbe296029522e6c40f315320aba36fc43a5b3632f3795348f3bd22"
-dependencies = [
- "convert_case 0.6.0",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
- "unicode-xid",
+ "derive_more-impl",
 ]
 
 [[package]]
@@ -2499,6 +2468,7 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn 2.0.119",
+ "unicode-xid",
 ]
 
 [[package]]
@@ -3560,7 +3530,7 @@ dependencies = [
  "bincode 2.0.1",
  "bytes",
  "chrono",
- "derive_more 1.0.0",
+ "derive_more",
  "erased-serde",
  "humantime",
  "hyperactor_config_macros",
@@ -4761,7 +4731,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "build_utils",
- "derive_more 1.0.0",
+ "derive_more",
  "enum-as-inner",
  "hyperactor",
  "monarch_gil",
@@ -4911,7 +4881,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "build_utils",
- "derive_more 1.0.0",
+ "derive_more",
  "futures 0.3.34",
  "hyperactor",
  "hyperactor_mesh",
@@ -4942,7 +4912,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "build_utils",
- "derive_more 1.0.0",
+ "derive_more",
  "monarch_gil",
  "pyo3",
  "serde",
@@ -8047,7 +8017,7 @@ name = "torch-sys-cuda"
 version = "0.0.0"
 dependencies = [
  "build_utils",
- "derive_more 1.0.0",
+ "derive_more",
  "fxhash",
  "monarch_types",
  "nccl-sys",

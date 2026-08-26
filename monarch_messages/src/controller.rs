@@ -6,7 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use derive_more::Display;
+use std::fmt::Display;
+
 use hyperactor as reference;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
