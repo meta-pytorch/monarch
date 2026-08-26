@@ -591,13 +591,12 @@ async def _iterate(
     reply."""
     phase = record.record(phase_of(run, iteration, cfg.warmup_iters_per_run))
     started = time.perf_counter()
-    samples = await peers.execute_iteration.call()
+    replies = await peers.execute_iteration.call()
     span_ms = (time.perf_counter() - started) * 1000.0
+    samples = [sample for _point, sample in replies.items() if sample is not None]
 
     slowest_ms = 0.0
-    for _point, sample in samples.items():
-        if sample is None:
-            continue
+    for sample in samples:
         phase.add_sample(
             sample,
             initiator_bytes(
@@ -608,7 +607,7 @@ async def _iterate(
                 payload_bytes=cfg.payload_bytes,
             ),
         )
-        slowest_ms = max(slowest_ms, sample.total_ms)
+        slowest_ms = max(slowest_ms, sample.submit_ms)
     phase.add_iteration(
         span_ms,
         bytes_per_iteration(
@@ -667,7 +666,11 @@ async def _run_direction(
         for run in range(cfg.runs):
             buffers = await _setup_run(cfg, peers, allocations, record, seed=run)
             plans = plan_for(topo, direction, buffers, ops=cfg.concurrent_ops)
-            await peers.wire.call(plans)
+            build_timing = await peers.wire.call(plans)
+            for point, build_ms in build_timing.items():
+                # Only record build time for slots with non-empty actions.
+                if slot_of(point) in plans:
+                    record.build_ms.append(build_ms)
             if verifying and run == 0:
                 record.negative_control_ok = await _check_control(cfg, topo, peers)
             for iteration in range(cfg.iterations_per_run):
