@@ -26,12 +26,13 @@ reported separately.
 from __future__ import annotations
 
 import argparse
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
 import monarch
-from bench_peer import Peer, slot_of, VERIFY_MODES, VERIFY_SAMPLED
+from bench_peer import Peer, slot_of, VERIFY_MODES, VERIFY_OFF, VERIFY_SAMPLED
 from bench_stats import (
     ConfigColumns,
     KeyColumns,
@@ -46,15 +47,19 @@ from bench_stats import (
     write_rows,
 )
 from bench_topology import (
+    allocation_for,
     bytes_per_iteration,
     compare_digests,
     describe,
     DIRECTIONS,
+    initiator_bytes,
     max_ops_per_action,
     MemoryPlan,
     PAIRINGS,
     PATTERNS,
+    phase_of,
     PHASES,
+    plan_for,
     SAME,
     Slot,
     SlotAllocation,
@@ -549,6 +554,46 @@ async def _setup_run(
     return buffers
 
 
+async def _iterate(
+    cfg: BenchConfig,
+    topo: Topology,
+    peers: Peer,
+    direction: str,
+    record: RunRecord,
+    run: int,
+    iteration: int,
+) -> None:
+    """One iteration, timed on this process's clock from the cast to the last
+    reply."""
+    phase = record.record(phase_of(run, iteration, cfg.warmup_iters_per_run))
+    started = time.perf_counter()
+    samples = await peers.execute_iteration.call()
+    span_ms = (time.perf_counter() - started) * 1000.0
+
+    slowest_ms = 0.0
+    for _point, sample in samples.items():
+        if sample is None:
+            continue
+        phase.add_sample(
+            sample,
+            initiator_bytes(
+                topo,
+                sample.slot,
+                direction,
+                ops=cfg.concurrent_ops,
+                payload_bytes=cfg.payload_bytes,
+            ),
+        )
+        slowest_ms = max(slowest_ms, sample.total_ms)
+    phase.add_iteration(
+        span_ms,
+        bytes_per_iteration(
+            topo, ops=cfg.concurrent_ops, payload_bytes=cfg.payload_bytes
+        ),
+        slowest_ms,
+    )
+
+
 async def _mismatches(
     cfg: BenchConfig, topo: Topology, peers: Peer
 ) -> tuple[int, list[str]]:
@@ -582,6 +627,32 @@ async def _check_integrity(cfg: BenchConfig, topo: Topology, peers: Peer) -> boo
         f"data corruption: {len(mismatches)} of {checked} pairs differ; "
         + "; ".join(mismatches[:5])
     )
+
+
+async def _run_direction(
+    cfg: BenchConfig, topo: Topology, peers: Peer, direction: str
+) -> RunRecord:
+    """Every run of one direction, leaving the peers in a clean state."""
+    record = RunRecord()
+    allocations = {
+        slot: allocation_for(topo, slot, ops=cfg.concurrent_ops)
+        for slot in topo.slots()
+    }
+    verifying = cfg.verify != VERIFY_OFF
+    try:
+        for run in range(cfg.runs):
+            buffers = await _setup_run(cfg, peers, allocations, record, seed=run)
+            plans = plan_for(topo, direction, buffers, ops=cfg.concurrent_ops)
+            await peers.wire.call(plans)
+            if verifying and run == 0:
+                record.negative_control_ok = await _check_control(cfg, topo, peers)
+            for iteration in range(cfg.iterations_per_run):
+                await _iterate(cfg, topo, peers, direction, record, run, iteration)
+            if verifying:
+                record.integrity_ok = await _check_integrity(cfg, topo, peers)
+    finally:
+        await peers.reset.call()
+    return record
 
 
 def _shape_columns(

@@ -41,14 +41,29 @@ class _FakeEndpoint:
 
     async def call(self, *args, **kwargs) -> ValueMesh:
         self.casts.append(args)
-        replies = (
-            self._replies(*args, **kwargs) if callable(self._replies) else self._replies
-        )
-        return cast(ValueMesh, replies)
+        if callable(self._replies):
+            return cast(ValueMesh, self._replies(*args, **kwargs))
+        if isinstance(self._replies, list):
+            return cast(
+                ValueMesh,
+                self._replies[min(len(self.casts) - 1, len(self._replies) - 1)],
+            )
+        return self._replies
 
 
 class _FakePeers:
-    """Stands in for the peer actor mesh."""
+    """Stands in for the peer actor mesh, one endpoint per keyword.
+
+    The endpoints are declared but not assigned: a test supplies only the ones
+    its subject casts to, and the rest stay missing.
+    """
+
+    check_config: _FakeEndpoint
+    setup: _FakeEndpoint
+    wire: _FakeEndpoint
+    execute_iteration: _FakeEndpoint
+    digest: _FakeEndpoint
+    reset: _FakeEndpoint
 
     def __init__(self, **endpoints: _FakeEndpoint) -> None:
         for name, endpoint in endpoints.items():
@@ -612,3 +627,155 @@ async def test_the_digest_window_is_at_least_one_byte() -> None:
     await bd._mismatches(cfg, topo, cast(bench_peer.Peer, _FakePeers(digest=digest)))
 
     assert digest.casts == [("sampled", 1)]
+
+
+def _sample(lane: int, submit_ms: float) -> bs.Sample:
+    return bs.Sample(bt.Slot(0, lane), build_ms=1.0, submit_ms=submit_ms)
+
+
+async def test_an_iteration_lands_in_the_phase_it_belongs_to() -> None:
+    topo = _self_edge_topology()
+    samples = _value_mesh([_sample(0, 100.0), _sample(1, 200.0)], lanes=2)
+    peers = _FakePeers(execute_iteration=_FakeEndpoint(samples))
+    cfg = _config("--warmup-iters-per-run", "1")
+    record = bs.RunRecord()
+
+    await bd._iterate(
+        cfg, topo, cast(bench_peer.Peer, peers), bt.READ, record, run=0, iteration=0
+    )
+    await bd._iterate(
+        cfg, topo, cast(bench_peer.Peer, peers), bt.READ, record, run=0, iteration=1
+    )
+
+    assert set(record.phases) == {bt.COLD_QP, bt.WARM}, "the ramp is discarded"
+    assert len(record.phases[bt.COLD_QP].span_ms) == 1
+    assert len(record.phases[bt.WARM].span_ms) == 1
+    # Two initiators answered, so one span carries two samples.
+    assert record.phases[bt.WARM].submit_ms == [100.0, 200.0]
+    assert record.phases[bt.WARM].span_ms[0] > 0.0
+
+
+async def test_a_proc_that_initiates_nothing_contributes_no_sample() -> None:
+    """It is still cast to, and answers `None`; counting that as a measurement
+    would drag every percentile toward zero."""
+    topo = _self_edge_topology()
+    samples = _value_mesh([_sample(0, 100.0), None], lanes=2)
+    peers = _FakePeers(execute_iteration=_FakeEndpoint(samples))
+    record = bs.RunRecord()
+
+    await bd._iterate(
+        _config(),
+        topo,
+        cast(bench_peer.Peer, peers),
+        bt.READ,
+        record,
+        run=0,
+        iteration=0,
+    )
+
+    assert record.phases[bt.COLD_QP].submit_ms == [100.0]
+    assert len(record.phases[bt.COLD_QP].span_ms) == 1, "the iteration still happened"
+
+
+def _fake_peers_entire_direction(topo, *, transferred: bool = True) -> _FakePeers:
+    """Construct and return a `_FakePeers` with responses covering an entire direction.
+    Assumes the input `topo` is the result of `_self_edge_topology()`.
+
+    `transferred = False` means the digests after an iteration will appear as though
+    the transfer never happened, and the integrity check should fail.
+    """
+    slots = topo.slots()
+    lanes = len(slots)
+    setup_replies = [
+        (
+            5.0 + slot.lane,
+            bt.SlotValues(
+                outgoing=(f"out-{slot.lane}",), incoming={slot: (f"in-{slot.lane}",)}
+            ),
+        )
+        for slot in slots
+    ]
+    before = [
+        bt.SlotValues(outgoing=(f"h{s.lane}",), incoming={s: ("zero",)}) for s in slots
+    ]
+    after = [
+        bt.SlotValues(
+            outgoing=(f"h{s.lane}",),
+            incoming={s: (f"h{s.lane}" if transferred else "zero",)},
+        )
+        for s in slots
+    ]
+    return _FakePeers(
+        setup=_FakeEndpoint(_value_mesh(setup_replies, lanes=lanes)),
+        wire=_FakeEndpoint(_value_mesh([None] * lanes, lanes=lanes)),
+        execute_iteration=_FakeEndpoint(
+            _value_mesh([_sample(s.lane, 100.0) for s in slots], lanes=lanes)
+        ),
+        digest=_FakeEndpoint(
+            [_value_mesh(before, lanes=lanes), _value_mesh(after, lanes=lanes)]
+        ),
+        reset=_FakeEndpoint(_value_mesh([None] * lanes, lanes=lanes)),
+    )
+
+
+async def test_a_direction_runs_every_iteration_of_every_run() -> None:
+    topo = _self_edge_topology()
+    peers = _fake_peers_entire_direction(topo)
+    cfg = _config(
+        "--runs", "2", "--warmup-iters-per-run", "1", "--warm-iters-per-run", "2"
+    )
+
+    record = await bd._run_direction(cfg, topo, cast(bench_peer.Peer, peers), bt.READ)
+
+    assert len(peers.setup.casts) == 2, "fresh tensors once per run"
+    assert len(peers.execute_iteration.casts) == 6, "2 runs x (1 ramp + 2 warm)"
+    assert len(record.register_ms) == 4, "one per proc per run"
+    assert len(record.phases[bt.COLD_QP].span_ms) == 1
+    assert len(record.phases[bt.WARM].span_ms) == 4
+    assert record.integrity_ok is True
+    assert record.negative_control_ok is True
+
+
+async def test_a_direction_wires_each_proc_the_ops_it_will_issue() -> None:
+    topo = _self_edge_topology()
+    peers = _fake_peers_entire_direction(topo)
+
+    await bd._run_direction(
+        _config("--runs", "1"), topo, cast(bench_peer.Peer, peers), bt.WRITE
+    )
+
+    ((plans,),) = peers.wire.casts
+    assert set(plans) == set(topo.slots())
+    # For the write direction, each slot pushes into its peer's incoming buffer.
+    pushed = plans[bt.Slot(0, 1)].push
+    assert [op.remote for op in pushed] == ["in-1"]
+    assert not plans[bt.Slot(0, 1)].pull
+
+
+async def test_a_direction_releases_its_buffers_even_when_it_fails() -> None:
+    """Leaving them registered would leak into the next direction's run."""
+    topo = _self_edge_topology()
+    peers = _fake_peers_entire_direction(topo, transferred=False)
+
+    with pytest.raises(RuntimeError, match="data corruption"):
+        await bd._run_direction(
+            _config("--runs", "1"), topo, cast(bench_peer.Peer, peers), bt.READ
+        )
+
+    assert len(peers.reset.casts) == 1
+
+
+async def test_verify_off_skips_both_checks() -> None:
+    topo = _self_edge_topology()
+    peers = _fake_peers_entire_direction(topo)
+
+    record = await bd._run_direction(
+        _config("--runs", "1", "--verify", "off"),
+        topo,
+        cast(bench_peer.Peer, peers),
+        bt.READ,
+    )
+
+    assert peers.digest.casts == []
+    assert record.integrity_ok is None, "not run is not the same as failed"
+    assert record.negative_control_ok is None
