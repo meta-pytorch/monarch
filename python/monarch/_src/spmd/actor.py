@@ -20,10 +20,8 @@ from monarch.tools.network import AddrType, get_ipaddr
 
 def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("localhost", 0))
-        addr = s.getsockname()
-        port = addr[1]
-        return port
+        s.bind(("", 0))
+        return s.getsockname()[1]
 
 
 class SPMDActor(Actor):
