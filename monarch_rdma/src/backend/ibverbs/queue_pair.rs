@@ -91,6 +91,23 @@ impl WorkRequestError {
         self.status == rdmaxcel_sys::ibv_wc_status::IBV_WC_WR_FLUSH_ERR
     }
 
+    /// Builds the failure a work completion reported, formatting its message from
+    /// the status fields.
+    pub(super) fn from_status(
+        wr_id: u64,
+        status: rdmaxcel_sys::ibv_wc_status::Type,
+        vendor_err: u32,
+    ) -> Self {
+        Self {
+            wr_id,
+            status,
+            vendor_err,
+            message: format!(
+                "completion failed for wr_id={wr_id}: status={status:?}, vendor_err={vendor_err}"
+            ),
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn for_test(wr_id: u64, message: &str) -> Self {
         Self {
@@ -102,9 +119,9 @@ impl WorkRequestError {
     }
 }
 
-/// A CQ-level poll failure from [`IbvQueuePair::poll_completion`]:
-/// `ibv_poll_cq` itself failed and the completion queue is no longer
-/// usable. The owning QP should be treated as poisoned.
+/// A CQ-level poll failure: `ibv_poll_cq` itself failed, naming no work request.
+/// The entry that caused it, if any, has been consumed.
+/// [`IbvQueuePair::poll_completion`] treats it as poisoning its queue pair.
 #[derive(Debug)]
 pub struct PollCompletionError {
     message: String,
@@ -119,11 +136,9 @@ impl std::fmt::Display for PollCompletionError {
 impl std::error::Error for PollCompletionError {}
 
 impl PollCompletionError {
-    #[cfg(test)]
-    pub(super) fn for_test(message: &str) -> Self {
-        Self {
-            message: message.to_string(),
-        }
+    /// A poll that failed, described by `message`.
+    pub(super) fn new(message: String) -> Self {
+        Self { message }
     }
 }
 
@@ -2656,7 +2671,7 @@ mod tests {
         let items = vec![make_op(0, RdmaOpType::WriteFromLocal, 0x1000, 4096)];
         let _rx = submit_ops(&harness, &actor, items)?;
         let _ = recv_posted(&mut posted_rx).await;
-        qp.queue_poll_error(PollCompletionError::for_test("simulated CQ poison"));
+        qp.queue_poll_error(PollCompletionError::new("simulated CQ poison".to_string()));
 
         let event = harness.next_supervision_failure().await;
         assert_eq!(&event.actor_id, actor.actor_addr());
