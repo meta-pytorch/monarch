@@ -279,7 +279,7 @@ def _record(*, submit_ms: float = 200.0, spans: int = 4) -> bs.RunRecord:
         phase = bt.COLD_QP if index == 0 else bt.WARM
         into = runs.record(phase)
         into.add_sample(
-            bs.Sample(bt.Slot(0, 0), build_ms=1.0, submit_ms=submit_ms),
+            bs.Sample(bt.Slot(0, 0), submit_ms=submit_ms),
             initiator_bytes=_GB,
         )
         into.add_iteration(
@@ -647,7 +647,7 @@ async def _noop_drive(cfg, job, mesh_name, banner) -> None:
 
 
 def _sample(lane: int, submit_ms: float) -> bs.Sample:
-    return bs.Sample(bt.Slot(0, lane), build_ms=1.0, submit_ms=submit_ms)
+    return bs.Sample(bt.Slot(0, lane), submit_ms=submit_ms)
 
 
 async def test_an_iteration_lands_in_the_phase_it_belongs_to() -> None:
@@ -727,7 +727,7 @@ def _fake_peers_entire_direction(
     return _FakePeers(
         check_config=_FakeEndpoint(_value_mesh([{}] * lanes, lanes=lanes)),
         setup=_FakeEndpoint(_value_mesh(setup_replies, lanes=lanes)),
-        wire=_FakeEndpoint(_value_mesh([None] * lanes, lanes=lanes)),
+        wire=_FakeEndpoint(_value_mesh([3.0] * lanes, lanes=lanes)),
         execute_iteration=_FakeEndpoint(
             _value_mesh([_sample(s.lane, 100.0) for s in slots], lanes=lanes)
         ),
@@ -1039,3 +1039,14 @@ def test_the_nic_limit_reaches_the_config_and_the_csv(
 def test_a_negative_nic_limit_is_refused() -> None:
     with pytest.raises(ValueError, match="--rdma-max-nics-per-buffer"):
         _config("--rdma-max-nics-per-buffer", "-1")
+
+
+async def test_building_the_actions_is_measured_once_per_run() -> None:
+    topo = _self_edge_topology()
+    peers = _fake_peers_entire_direction(topo)
+
+    record = await bd._run_direction(
+        _config("--runs", "2"), topo, cast(bench_peer.Peer, peers), bt.READ
+    )
+
+    assert record.build_ms == [3.0] * 4, "one per proc per run, from wire"
