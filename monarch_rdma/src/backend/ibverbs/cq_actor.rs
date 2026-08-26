@@ -30,9 +30,6 @@
 //! differently when the associated QP is destroyed. Keeping the QP alive
 //! until all CQEs have drained means we can have one uniform implementation.
 
-// Nothing outside the tests below uses this module.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -180,6 +177,7 @@ pub(super) struct Detach {
 /// when this is dropped. Opaque: the poller never operates on it, it only decides
 /// when it goes away.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(super) struct DetachedQueuePair(Box<dyn std::fmt::Debug + Send + Sync>);
 
 impl DetachedQueuePair {

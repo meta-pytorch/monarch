@@ -1261,8 +1261,9 @@ impl Drop for IbvCq {
 #[derive(Debug)]
 pub(super) struct IbvQp {
     qp: *mut rdmaxcel_sys::ibv_qp,
-    send_cq: Arc<IbvCq>,
-    recv_cq: Arc<IbvCq>,
+    /// Kept alive for the QP's lifetime. Never read.
+    _send_cq: Arc<IbvCq>,
+    _recv_cq: Arc<IbvCq>,
     /// Keeps the PD alive for the QP's lifetime and is the source of the QP's
     /// device context (via [`IbvPd::context`]).
     pd: Arc<IbvPd>,
@@ -1294,8 +1295,8 @@ impl IbvQp {
     ) -> Self {
         Self {
             qp,
-            send_cq,
-            recv_cq,
+            _send_cq: send_cq,
+            _recv_cq: recv_cq,
             pd,
         }
     }
@@ -1303,16 +1304,6 @@ impl IbvQp {
     /// The raw `ibv_qp`; null for a placeholder that holds no queue pair.
     pub(super) fn as_ptr(&self) -> *mut rdmaxcel_sys::ibv_qp {
         self.qp
-    }
-
-    /// The send completion queue.
-    pub(super) fn send_cq(&self) -> &IbvCq {
-        &self.send_cq
-    }
-
-    /// The receive completion queue.
-    pub(super) fn recv_cq(&self) -> &IbvCq {
-        &self.recv_cq
     }
 
     /// The protection domain this QP was created against, shareable as a
@@ -1332,8 +1323,8 @@ impl IbvQp {
     pub(super) fn null() -> Self {
         Self {
             qp: std::ptr::null_mut(),
-            send_cq: Arc::new(IbvCq::null()),
-            recv_cq: Arc::new(IbvCq::null()),
+            _send_cq: Arc::new(IbvCq::null()),
+            _recv_cq: Arc::new(IbvCq::null()),
             pd: Arc::new(IbvPd::null()),
         }
     }

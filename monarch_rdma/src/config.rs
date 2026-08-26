@@ -57,12 +57,12 @@ declare_attrs! {
     ))
     pub attr RDMA_TCP_FALLBACK_PARALLELISM: usize = 1;
 
-    /// Cooperative-yield window for the ibverbs CQ poll loop. While
-    /// the policy is within this window it calls
-    /// `tokio::task::yield_now` between polls; past it, polls fall
-    /// into an exponential backoff sleep (1ms initial, x2, capped at
-    /// 10ms). `None` (the default) disables the cutoff entirely:
-    /// the loop only ever yields, never sleeps.
+    /// How long a `CompletionQueueActor` keeps polling a completion queue that
+    /// comes back empty before it starts sleeping between rounds. Within the
+    /// window it arms the next round immediately; past it, rounds fall into an
+    /// exponential backoff (1ms initial, x2, capped at 10ms). `None` (the
+    /// default) disables the cutoff entirely: the loop only ever yields, never
+    /// sleeps.
     @meta(CONFIG = ConfigAttr::new(
         Some("MONARCH_RDMA_CQ_BUSY_POLL_WINDOW".to_string()),
         Some("rdma_cq_busy_poll_window".to_string()),
@@ -144,9 +144,6 @@ declare_attrs! {
     /// (`rdma_qps_per_cq * max_send_wr` entries), so raising this trades
     /// completion-queue memory for fewer completion queues to poll. Opening a
     /// device fails outright if it cannot hold a completion queue that large.
-    ///
-    /// Only 1 is accepted for now: each queue pair polls its own completion
-    /// queue, so sharing one would give it several pollers.
     @meta(CONFIG = ConfigAttr::new(
         Some("MONARCH_RDMA_QPS_PER_CQ".to_string()),
         Some("rdma_qps_per_cq".to_string()),
@@ -154,8 +151,21 @@ declare_attrs! {
     pub attr RDMA_QPS_PER_CQ: NonZeroUsize =
         NonZeroUsize::new(1).expect("1 is non-zero");
 
-    /// Worker-thread count for the shared rdma data-plane runtime, which
-    /// every `QueuePairActor` poll loop runs on.
+    /// Whether each device gets its own completion-queue poller.
+    ///
+    /// When true (the default) the manager spawns one `CompletionQueueActor` per
+    /// RDMA device, on demand, so each device's completions are polled
+    /// independently of every other device's and a poller that fails takes down
+    /// only that device's queue pairs. When false, one poller serves every device
+    /// in the process.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_CQ_POLLER_PER_DEVICE".to_string()),
+        Some("rdma_cq_poller_per_device".to_string()),
+    ))
+    pub attr RDMA_CQ_POLLER_PER_DEVICE: bool = true;
+
+    /// Worker-thread count for the shared rdma data-plane runtime, which every
+    /// `CompletionQueueActor` and `QueuePairActor` runs on.
     ///
     /// The runtime is built once, lazily, so this value is latched at the
     /// first RDMA use in a process and later changes have no effect.

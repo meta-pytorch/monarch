@@ -22,12 +22,8 @@ use super::primitives::IbvConfig;
 use super::primitives::IbvCq;
 use super::primitives::IbvQp;
 use super::primitives::IbvQpInfo;
-use super::primitives::IbvWc;
 use super::queue_pair::IbvQueuePair;
-use super::queue_pair::PollCompletionError;
-use super::queue_pair::PollTarget;
 use super::queue_pair::RCQueuePair;
-use super::queue_pair::WorkRequestError;
 
 /// An mlx5 RC queue pair created through `mlx5dv_create_qp`, so it carries the
 /// mlx5dv send-ops flags that arm a direct-WQE/doorbell data path.
@@ -162,12 +158,5 @@ impl IbvQueuePair for MlxQueuePair {
         remote_src: IbvRemoteMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error> {
         self.0.get(local_dst, remote_src)
-    }
-
-    fn poll_completion(
-        &mut self,
-        target: PollTarget,
-    ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
-        self.0.poll_completion(target)
     }
 }
