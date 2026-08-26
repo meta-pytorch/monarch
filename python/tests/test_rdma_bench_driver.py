@@ -390,7 +390,7 @@ def test_reporting_writes_a_row_per_direction_and_phase(tmp_path, capsys) -> Non
     assert output_csv in printed
 
 
-def test_the_transport_and_thread_count_are_pinned_before_any_proc_starts(
+def test_the_config_is_pinned_before_any_proc_starts(
     monkeypatch,
 ) -> None:
     """The procs inherit this configuration, so it has to be set first."""
@@ -401,13 +401,19 @@ def test_the_transport_and_thread_count_are_pinned_before_any_proc_starts(
 
     bd._configure_rdma(_config("--transport", "ibverbs"))
     bd._configure_rdma(_config("--transport", "tcp", "--rdma-runtime-threads", "16"))
+    bd._configure_rdma(_config("--rdma-max-nics-per-buffer", "0"))
 
-    assert settings[0] == {"rdma_allow_tcp_fallback": False}
+    assert settings[0] == {
+        "rdma_allow_tcp_fallback": False,
+        "rdma_max_nics_per_buffer": 1,
+    }
     assert settings[1] == {
         "rdma_disable_ibverbs": True,
         "rdma_allow_tcp_fallback": True,
         "rdma_runtime_worker_threads": 16,
+        "rdma_max_nics_per_buffer": 1,
     }
+    assert settings[2]["rdma_max_nics_per_buffer"] is None
 
 
 def test_local_only_puts_every_host_on_this_machine(monkeypatch) -> None:
@@ -472,6 +478,7 @@ async def test_every_proc_must_have_the_configuration_the_client_pinned() -> Non
         "rdma_disable_ibverbs": True,
         "rdma_allow_tcp_fallback": True,
         "rdma_runtime_worker_threads": 16,
+        "rdma_max_nics_per_buffer": 1,
     }, "exactly what _configure_rdma pinned on the client"
 
 
@@ -494,7 +501,7 @@ async def test_the_run_is_told_every_proc_that_disagreed() -> None:
             _config("--transport", "ibverbs"), cast(bench_peer.Peer, peers)
         )
 
-    assert "{'rdma_allow_tcp_fallback': False}" in str(caught.value), (
+    assert "'rdma_allow_tcp_fallback': False" in str(caught.value), (
         "the message names what was expected as well as what was held"
     )
 
@@ -996,3 +1003,39 @@ def test_a_failing_run_kills_the_job_and_reraises(monkeypatch) -> None:
         bd.run(_config(), make_job=lambda c: cast(JobTrait, job), mesh_name="mesh0")
 
     assert job.killed
+
+
+@pytest.mark.parametrize(
+    ("flag", "configured"),
+    [
+        ((), 1),
+        (("--rdma-max-nics-per-buffer", "4"), 4),
+        (("--rdma-max-nics-per-buffer", "0"), None),
+    ],
+)
+def test_the_nic_limit_reaches_the_config_and_the_csv(
+    flag, configured, monkeypatch
+) -> None:
+    cfg = _config(*flag)
+
+    assert cfg.rdma_max_nics_per_buffer == configured
+    assert bd._rdma_settings(cfg)["rdma_max_nics_per_buffer"] == configured
+
+    # The column is read back from the live config rather than from the flag, so
+    # that it records what the procs were actually given.
+    monkeypatch.setattr(
+        bd,
+        "get_global_config",
+        lambda: {
+            "rdma_runtime_worker_threads": 16,
+            "rdma_max_nics_per_buffer": configured,
+        },
+    )
+    columns = bd._config_columns(cfg, _record())
+
+    assert columns.rdma_max_nics_per_buffer == str(configured)
+
+
+def test_a_negative_nic_limit_is_refused() -> None:
+    with pytest.raises(ValueError, match="--rdma-max-nics-per-buffer"):
+        _config("--rdma-max-nics-per-buffer", "-1")
