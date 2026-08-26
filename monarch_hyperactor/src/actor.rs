@@ -84,6 +84,7 @@ use crate::pympsc;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::GilSite;
 use crate::runtime::get_tokio_runtime;
+use crate::runtime::mark_actor_event_loop_thread;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
 use crate::supervision::PyMeshFailure;
@@ -1681,11 +1682,16 @@ fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
         kwargs.set_item("target", target).unwrap();
         // Need to make this a daemon thread, otherwise shutdown will hang.
         kwargs.set_item("daemon", true).unwrap();
+        kwargs
+            .set_item("name", "monarch-actor-event-loop")
+            .expect("thread name should be accepted");
         let thread = py
             .import("threading")
             .unwrap()
             .call_method("Thread", (), Some(&kwargs))
             .unwrap();
+        mark_actor_event_loop_thread(&thread, &event_loop)
+            .expect("actor event loop should attach to its owning thread");
         thread.call_method0("start").unwrap();
         task_locals
     })
