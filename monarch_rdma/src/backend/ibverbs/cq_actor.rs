@@ -16,6 +16,19 @@
 //! A CQ is polled only while a queue pair on it has CQEs outstanding. Nothing
 //! here decides that a CQ has stopped working: noticing that completions have
 //! stopped arriving is the queue pair's responsibility.
+//!
+//! When a QP actor stops, the safest approach is to wait for all pending WRs
+//! to drain before actually destroying it. In order to not introduce an async
+//! dependency into a QP's teardown, we instead hand the underlying resources
+//! and CQ lease to the CQ actor via [`Detach`] when the QP actor drops. The
+//! CQ actor keeps the QP's resources and lease alive until all pending WRs
+//! have drained. This is important for correctness: we do not want the dead
+//! QP's qp_num to be reassigned until we are sure it will produce no more
+//! CQEs; similarly, we cannot safely drop its CQ lease until we are sure
+//! it will produce no more CQEs. It is also useful for reasoning about
+//! behavior: different RDMA providers treat pending WRs and their CQEs
+//! differently when the associated QP is destroyed. Keeping the QP alive
+//! until all CQEs have drained means we can have one uniform implementation.
 
 // Nothing outside the tests below uses this module.
 #![allow(dead_code)]
@@ -33,6 +46,7 @@ use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::PortHandle;
 
+use super::cq_pool::CqLease;
 use super::primitives::IbvCq;
 use super::primitives::IbvWc;
 use super::queue_pair::PollCompletionError;
@@ -146,6 +160,29 @@ pub(super) struct Attach<Cq: IbvCompletionQueue> {
 #[derive(Debug)]
 pub(super) struct Posted;
 
+/// Notifies the CQ actor that the QP with `qp_num` will post no more work.
+/// The CQ actor drops the QP and its associated lease on CQ capacity only once
+/// no more pending work remains for that QP.
+#[derive(Debug)]
+pub(super) struct Detach {
+    pub(super) cq_id: CqId,
+    pub(super) qp_num: u32,
+    pub(super) qp: DetachedQueuePair,
+    pub(super) lease: CqLease,
+}
+
+/// A queue pair the poller has taken responsibility for destroying, which happens
+/// when this is dropped. Opaque: the poller never operates on it, it only decides
+/// when it goes away.
+#[derive(Debug)]
+pub(super) struct DetachedQueuePair(Box<dyn std::fmt::Debug + Send + Sync>);
+
+impl DetachedQueuePair {
+    pub(super) fn new<Qp: std::fmt::Debug + Send + Sync + 'static>(qp: Qp) -> Self {
+        Self(Box::new(qp))
+    }
+}
+
 /// Self-message that drives one polling round.
 #[derive(Debug)]
 struct Poll;
@@ -153,12 +190,20 @@ struct Poll;
 /// One queue pair reporting on a CQ.
 #[derive(Debug)]
 struct QpSlot {
-    /// Where the QP's completions go.
-    port: PortHandle<CompletionBatch>,
+    /// Where the QP's completions go, and `None` once the QP has detached.
+    port: Option<PortHandle<CompletionBatch>>,
     /// The QP's [`Attach::posted`] counter, which stops moving when it stops posting.
     posted: Arc<AtomicU64>,
     /// CQEs consumed for this queue pair.
     consumed: u64,
+    /// The queue pair itself, set once its actor has stopped and sent
+    /// [`Detach`] to the CQ actor. Held here so the QP's resources aren't
+    /// destroyed until all pending work has drained.
+    qp: Option<DetachedQueuePair>,
+    /// The CQ capacity reservation associated with the detached QP. Dropped
+    /// after [`Detach`] once all pending work has drained -- until then,
+    /// the detached QP still uses capacity on the CQ.
+    _lease: Option<CqLease>,
 }
 
 impl QpSlot {
@@ -167,6 +212,12 @@ impl QpSlot {
     /// produced it.
     fn outstanding(&self) -> i64 {
         self.posted.load(Ordering::Relaxed) as i64 - self.consumed as i64
+    }
+
+    /// True as long as this QP has pending work *or* the QP is still
+    /// attached.
+    fn is_live(&self) -> bool {
+        self.port.is_some() || self.outstanding() > 0
     }
 }
 
@@ -184,7 +235,9 @@ impl<Cq: IbvCompletionQueue> CqSlot<Cq> {
         self.queue_pairs.values().any(|qp| qp.outstanding() > 0)
     }
 
-    /// Hands each of `consumed` to the queue pair that produced it.
+    /// Hands each of `consumed` to the queue pair that produced it. Completions
+    /// for detached QPs are discarded, and a detached QP with no more pending work
+    /// is dropped here, along with its lease on CQ capacity.
     fn route(
         &mut self,
         cq_id: CqId,
@@ -200,7 +253,9 @@ impl<Cq: IbvCompletionQueue> CqSlot<Cq> {
             });
             qp.consumed += completions.len() as u64;
 
-            if let Err(error) = qp.port.try_post(cx, CompletionBatch { completions }) {
+            if let Some(port) = &qp.port
+                && let Err(error) = port.try_post(cx, CompletionBatch { completions })
+            {
                 // It's okay to just log and do nothing here. It won't mess up the QP's internal credit
                 // accounting, because the delivery should only be able to fail once the QP is
                 // already dead
@@ -210,6 +265,10 @@ impl<Cq: IbvCompletionQueue> CqSlot<Cq> {
                     %error,
                     "delivering completions to a queue pair failed",
                 );
+            }
+
+            if !qp.is_live() {
+                self.queue_pairs.remove(&qp_num);
             }
         }
     }
@@ -231,7 +290,8 @@ fn group_by_queue_pair(
 /// produced it.
 ///
 /// Generic over the CQ type `Cq` so unit tests run without RDMA hardware. A
-/// poller starts empty: CQs arrive with the queue pairs that attach to them.
+/// poller starts empty: CQs arrive with the queue pairs that attach to them, and
+/// leave with the last queue pair on them.
 #[derive(Debug)]
 pub(super) struct CompletionQueueActor<Cq: IbvCompletionQueue> {
     completion_queues: HashMap<CqId, CqSlot<Cq>>,
@@ -240,6 +300,28 @@ pub(super) struct CompletionQueueActor<Cq: IbvCompletionQueue> {
     /// `true` while a `Poll` self-message is already in flight; the flag
     /// prevents stacking redundant rounds.
     poll_armed: bool,
+}
+
+impl<Cq: IbvCompletionQueue> Drop for CompletionQueueActor<Cq> {
+    fn drop(&mut self) {
+        let attached: usize = self
+            .completion_queues
+            .values()
+            .map(|slot| {
+                slot.queue_pairs
+                    .values()
+                    .filter(|qp| qp.port.is_some())
+                    .count()
+            })
+            .sum();
+        if attached > 0 {
+            tracing::error!(
+                attached,
+                completion_queues = self.completion_queues.len(),
+                "a CQ poller is going away with queue pairs attached to it",
+            );
+        }
+    }
 }
 
 impl<Cq: IbvCompletionQueue> CompletionQueueActor<Cq> {
@@ -284,9 +366,9 @@ impl<Cq: IbvCompletionQueue> CompletionQueueActor<Cq> {
             consumed,
             ..
         } = self;
-        for (cq_id, slot) in completion_queues {
+        completion_queues.retain(|cq_id, slot| {
             if !slot.expects_completions() {
-                continue;
+                return true;
             }
             consumed.clear();
             // SAFETY: a CQ stays live or null while a queue pair is attached to
@@ -298,10 +380,12 @@ impl<Cq: IbvCompletionQueue> CompletionQueueActor<Cq> {
                 // The failing entry is consumed either way, so the CQ can still
                 // make progress next round.
                 tracing::warn!(?cq_id, %error, "consuming from a CQ failed");
-                continue;
+                return true;
             }
             slot.route(*cq_id, cx, consumed);
-        }
+            // The last queue pair to be destroyed takes its CQ with it.
+            !slot.queue_pairs.is_empty()
+        });
         self.arm(cx)
     }
 }
@@ -345,9 +429,11 @@ impl<Cq: IbvCompletionQueue> Handler<Attach<Cq>> for CompletionQueueActor<Cq> {
         slot.queue_pairs.insert(
             qp_num,
             QpSlot {
-                port,
+                port: Some(port),
                 posted,
                 consumed: 0,
+                qp: None,
+                _lease: None,
             },
         );
         // The route is in place whether or not anyone is left to hear that, and
@@ -367,6 +453,41 @@ impl<Cq: IbvCompletionQueue> Handler<Posted> for CompletionQueueActor<Cq> {
 }
 
 #[async_trait]
+impl<Cq: IbvCompletionQueue> Handler<Detach> for CompletionQueueActor<Cq> {
+    async fn handle(&mut self, cx: &Context<Self>, msg: Detach) -> Result<(), anyhow::Error> {
+        let Detach {
+            cq_id,
+            qp_num,
+            qp,
+            lease,
+        } = msg;
+        let slot = self.completion_queues.get_mut(&cq_id).unwrap_or_else(|| {
+            panic!(
+                "detach for queue pair {qp_num} on CQ {cq_id:?}, which this poller does not hold"
+            )
+        });
+        let route = slot.queue_pairs.get_mut(&qp_num).unwrap_or_else(|| {
+            // A queue pair detaches only after its attach was acknowledged.
+            panic!("detach for queue pair {qp_num}, which is not attached to CQ {cq_id:?}")
+        });
+        // Nothing will read its completions or post to it again; what it still
+        // has outstanding is consumed and discarded.
+        route.port = None;
+        route.qp = Some(qp);
+        route._lease = Some(lease);
+        if !route.is_live() {
+            slot.queue_pairs.remove(&qp_num);
+        }
+        if slot.queue_pairs.is_empty() {
+            self.completion_queues.remove(&cq_id);
+        }
+        // It may have posted for completions nothing else will wake the poller
+        // for, its own actor being gone.
+        self.arm(cx)
+    }
+}
+
+#[async_trait]
 impl<Cq: IbvCompletionQueue> Handler<Poll> for CompletionQueueActor<Cq> {
     async fn handle(&mut self, cx: &Context<Self>, _msg: Poll) -> Result<(), anyhow::Error> {
         self.poll_armed = false;
@@ -378,6 +499,8 @@ impl<Cq: IbvCompletionQueue> Handler<Poll> for CompletionQueueActor<Cq> {
 mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicU32;
     use std::time::Duration;
 
     use anyhow::Result;
@@ -471,11 +594,53 @@ mod tests {
         }
     }
 
+    /// Stands in for a queue pair handed over on detach: sets `destroyed` when the
+    /// poller drops it, and records the reservations outstanding as of then.
+    #[derive(Debug)]
+    struct TestQp {
+        destroyed: Arc<AtomicBool>,
+        leases: Arc<AtomicU32>,
+        leases_at_destroy: Arc<AtomicU32>,
+    }
+
+    impl Drop for TestQp {
+        fn drop(&mut self) {
+            self.leases_at_destroy
+                .store(self.leases.load(Ordering::SeqCst), Ordering::SeqCst);
+            self.destroyed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A queue pair to hand over, the flag reporting its destruction, and the
+    /// reservations outstanding when that happened -- which is how a test sees that
+    /// the queue pair went away before its reservation did.
+    fn test_qp(leases: &Arc<AtomicU32>) -> (DetachedQueuePair, Arc<AtomicBool>, Arc<AtomicU32>) {
+        let destroyed = Arc::new(AtomicBool::new(false));
+        let leases_at_destroy = Arc::new(AtomicU32::new(u32::MAX));
+        let qp = DetachedQueuePair::new(TestQp {
+            destroyed: Arc::clone(&destroyed),
+            leases: Arc::clone(leases),
+            leases_at_destroy: Arc::clone(&leases_at_destroy),
+        });
+        (qp, destroyed, leases_at_destroy)
+    }
+
     /// One attached queue pair, from the test's side: where its completions
-    /// arrive, and the counter it posts against.
+    /// arrive, the counter it posts against, and the reservation it holds.
     struct TestRoute {
         completions: PortReceiver<CompletionBatch>,
         posted: Arc<AtomicU64>,
+        leases: Arc<AtomicU32>,
+        lease: Option<CqLease>,
+    }
+
+    impl TestRoute {
+        /// The reservation this queue pair holds, to hand over on detach.
+        fn lease(&mut self) -> CqLease {
+            self.lease
+                .take()
+                .expect("the queue pair still holds its reservation")
+        }
     }
 
     /// Parent of the actor under test, so its supervision events land here and
@@ -510,8 +675,7 @@ mod tests {
     #[async_trait]
     impl Handler<SpawnPoller> for MockParent {
         async fn handle(&mut self, cx: &Context<Self>, msg: SpawnPoller) -> Result<()> {
-            let actor = CompletionQueueActor::<MockCq>::new();
-            let handle = cx.spawn(actor);
+            let handle = cx.spawn(CompletionQueueActor::<MockCq>::new());
             msg.reply.try_post(cx, handle)?;
             Ok(())
         }
@@ -561,6 +725,8 @@ mod tests {
         ) -> Result<TestRoute> {
             let (port, completions) = self.client.mailbox().open_port::<CompletionBatch>();
             let (reply, rx) = self.client.mailbox().open_once_port();
+            let leases = Arc::new(AtomicU32::new(0));
+            let lease = CqLease::for_test_counted(Arc::clone(&leases));
             let posted = Arc::new(AtomicU64::new(0));
             poller.handle.try_post(
                 &self.client,
@@ -576,6 +742,8 @@ mod tests {
             Ok(TestRoute {
                 completions,
                 posted,
+                leases,
+                lease: Some(lease),
             })
         }
 
@@ -591,6 +759,27 @@ mod tests {
         /// wake-up was lost does.
         fn post_without_wake(&self, route: &TestRoute, n: u64) {
             route.posted.fetch_add(n, Ordering::Relaxed);
+        }
+
+        /// Hand `qp` and its reservation over.
+        fn detach(
+            &self,
+            poller: &Poller,
+            cq_id: CqId,
+            qp_num: u32,
+            qp: DetachedQueuePair,
+            lease: CqLease,
+        ) -> Result<()> {
+            poller.handle.try_post(
+                &self.client,
+                Detach {
+                    cq_id,
+                    qp_num,
+                    qp,
+                    lease,
+                },
+            )?;
+            Ok(())
         }
 
         /// Await the next forwarded child-error supervision event.
@@ -656,6 +845,45 @@ mod tests {
     async fn assert_no_batch(rx: &mut PortReceiver<CompletionBatch>, wait: Duration) {
         if let Ok(Ok(batch)) = tokio::time::timeout(wait, rx.recv()).await {
             panic!("unexpected completions: {batch:?}");
+        }
+    }
+
+    /// Await `flag` becoming true; panics on timeout with `whose` named.
+    async fn await_flag(flag: &AtomicBool, whose: &str) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !flag.load(Ordering::SeqCst) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for {whose}",
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Await `count` clones of `cq` remaining, which is how a test sees the poller
+    /// let go of a CQ; panics on timeout.
+    async fn await_strong_count(cq: &Arc<MockCq>, count: usize) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(cq) != count {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the poller still holds {} clones of the CQ",
+                Arc::strong_count(cq) - 1,
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Await `leases` reaching `expected`; panics on timeout.
+    async fn await_leases(leases: &AtomicU32, expected: u32) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while leases.load(Ordering::Relaxed) != expected {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "reservations settled at {} rather than {expected}",
+                leases.load(Ordering::Relaxed),
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
@@ -894,6 +1122,159 @@ mod tests {
             cq.polls() > 3,
             "the failures were retried, not fatal: {} polls",
             cq.polls(),
+        );
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn cqa_destroys_a_detached_queue_pair_once_it_drains() -> Result<()> {
+        let harness = CqaHarness::build();
+        let poller = harness.spawn_poller().await?;
+        let cq = MockCq::new(1, CQES_PER_POLL);
+        let mut qp7 = harness.attach(&poller, &cq, 7).await?;
+
+        harness.post(&poller, &qp7, 2)?;
+        let (qp, destroyed, leases_at_destroy) = test_qp(&qp7.leases);
+        harness.detach(&poller, cq.cq_id(), 7, qp, qp7.lease())?;
+
+        // Attaching another queue pair and awaiting its reply lands after the
+        // detach, so what is read below is the settled state.
+        let other = MockCq::new(2, CQES_PER_POLL);
+        let _qp9 = harness.attach(&poller, &other, 9).await?;
+        assert!(
+            !destroyed.load(Ordering::SeqCst),
+            "two completions are still to come, so the queue pair must live",
+        );
+        assert_eq!(qp7.leases.load(Ordering::Relaxed), 1);
+
+        cq.queue_completion(7, 100);
+        cq.queue_completion(7, 101);
+        await_flag(&destroyed, "the detached queue pair to be destroyed").await;
+        await_leases(&qp7.leases, 0).await;
+        assert_eq!(
+            leases_at_destroy.load(Ordering::SeqCst),
+            1,
+            "the reservation must outlive the queue pair, not the other way round",
+        );
+        assert_no_batch(&mut qp7.completions, Duration::from_millis(100)).await;
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn cqa_destroys_a_drained_queue_pair_on_detach() -> Result<()> {
+        let harness = CqaHarness::build();
+        let poller = harness.spawn_poller().await?;
+        let cq = MockCq::new(1, CQES_PER_POLL);
+        let mut qp7 = harness.attach(&poller, &cq, 7).await?;
+        assert_eq!(qp7.leases.load(Ordering::Relaxed), 1);
+
+        let (qp, destroyed, _leases_at_destroy) = test_qp(&qp7.leases);
+        harness.detach(&poller, cq.cq_id(), 7, qp, qp7.lease())?;
+        await_flag(&destroyed, "the detached queue pair to be destroyed").await;
+        await_leases(&qp7.leases, 0).await;
+
+        // The last queue pair to be destroyed takes its CQ with it: the poller
+        // lets go of its clone, and nothing polls it even once CQEs appear.
+        await_strong_count(&cq, 1).await;
+
+        // And a fresh attach on the same CQ still works afterwards.
+        let mut again = harness.attach(&poller, &cq, 7).await?;
+        cq.queue_completion(7, 100);
+        harness.post(&poller, &again, 1)?;
+        assert_eq!(recv_wr_ids(&mut again.completions, 1).await, vec![100]);
+        harness.teardown().await;
+        Ok(())
+    }
+
+    /// A queue pair can die between posting work and waking the poller, so what
+    /// its counter says -- not what a message said -- is what decides when it can
+    /// be destroyed.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn cqa_detach_wakes_the_poller() -> Result<()> {
+        let harness = CqaHarness::build();
+        let poller = harness.spawn_poller().await?;
+        let cq = MockCq::new(1, CQES_PER_POLL);
+        let mut qp7 = harness.attach(&poller, &cq, 7).await?;
+
+        // Counted but never announced: the queue pair died before waking anyone.
+        harness.post_without_wake(&qp7, 1);
+        let (qp, destroyed, _leases_at_destroy) = test_qp(&qp7.leases);
+        // Detach should wake the poller.
+        harness.detach(&poller, cq.cq_id(), 7, qp, qp7.lease())?;
+
+        let other = MockCq::new(2, CQES_PER_POLL);
+        let _qp9 = harness.attach(&poller, &other, 9).await?;
+        assert!(
+            !destroyed.load(Ordering::SeqCst),
+            "a completion is still to come, so the queue pair must live",
+        );
+
+        cq.queue_completion(7, 100);
+        await_flag(&destroyed, "the detached queue pair to be destroyed").await;
+        await_leases(&qp7.leases, 0).await;
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn cqa_fails_on_a_detach_for_an_unattached_queue_pair() -> Result<()> {
+        let mut harness = CqaHarness::build();
+        let poller = harness.spawn_poller().await?;
+        let cq = MockCq::new(1, CQES_PER_POLL);
+        let _qp7 = harness.attach(&poller, &cq, 7).await?;
+
+        let leases = Arc::new(AtomicU32::new(0));
+        let (qp, destroyed, _leases_at_destroy) = test_qp(&leases);
+        harness.detach(
+            &poller,
+            cq.cq_id(),
+            404,
+            qp,
+            CqLease::for_test_counted(Arc::clone(&leases)),
+        )?;
+
+        let event = harness.next_supervision_failure().await;
+        assert_eq!(&event.actor_id, poller.handle.actor_addr());
+        let report = event.failure_report().expect("event should be a failure");
+        assert!(
+            report.contains("panic"),
+            "supervision report should say the poller panicked: {report}",
+        );
+        assert!(
+            destroyed.load(Ordering::SeqCst),
+            "the queue pair goes with the message that carried it",
+        );
+        harness.teardown().await;
+        Ok(())
+    }
+
+    /// Destroying one queue pair on a shared CQ must leave its neighbor's route
+    /// and reservation alone.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn cqa_leaves_a_sibling_working_when_one_queue_pair_detaches() -> Result<()> {
+        let harness = CqaHarness::build();
+        let poller = harness.spawn_poller().await?;
+        let cq = MockCq::new(1, CQES_PER_POLL);
+        let mut first = harness.attach(&poller, &cq, 7).await?;
+        let mut second = harness.attach(&poller, &cq, 9).await?;
+
+        cq.queue_completion(7, 100);
+        harness.post(&poller, &first, 1)?;
+        assert_eq!(recv_wr_ids(&mut first.completions, 1).await, vec![100]);
+
+        let (qp, destroyed, _leases_at_destroy) = test_qp(&first.leases);
+        harness.detach(&poller, cq.cq_id(), 7, qp, first.lease())?;
+        await_flag(&destroyed, "the detached queue pair to be destroyed").await;
+        await_leases(&first.leases, 0).await;
+
+        cq.queue_completion(9, 200);
+        harness.post(&poller, &second, 1)?;
+        assert_eq!(
+            recv_wr_ids(&mut second.completions, 1).await,
+            vec![200],
+            "the surviving queue pair keeps its route",
         );
         harness.teardown().await;
         Ok(())
