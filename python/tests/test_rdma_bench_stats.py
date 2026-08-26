@@ -262,7 +262,6 @@ def _columns() -> tuple[
         bs.ConfigColumns(
             schema_version=bs.SCHEMA_VERSION,
             transport="ibverbs",
-            tcp_serialized=0,
             source_device="gpu",
             dest_device="gpu",
             payload_size_mb=1024.0,
@@ -271,7 +270,7 @@ def _columns() -> tuple[
             runs=3,
             warmup_iters_per_run=3,
             warm_iters_per_run=10,
-            local_sender=0,
+            local_only=0,
             verify_mode="sampled",
             rdma_runtime_threads="16",
             integrity_ok="True",
