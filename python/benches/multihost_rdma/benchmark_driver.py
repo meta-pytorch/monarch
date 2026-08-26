@@ -28,9 +28,10 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from bench_peer import VERIFY_MODES, VERIFY_SAMPLED
+import monarch
+from bench_peer import Peer, slot_of, VERIFY_MODES, VERIFY_SAMPLED
 from bench_stats import (
     ConfigColumns,
     KeyColumns,
@@ -57,7 +58,13 @@ from bench_topology import (
     Topology,
     unused_hosts,
 )
+from monarch.actor import ProcMesh, this_host
 from monarch.config import get_global_config
+
+# `monarch.job` is only needed for the type of the object a wrapper hands us;
+# this module never constructs one.
+if TYPE_CHECKING:
+    from monarch.job import JobTrait
 
 
 RUN_COMMAND: str = "run"
@@ -461,6 +468,59 @@ def config_from_args(args: argparse.Namespace) -> BenchConfig:
     if cfg.runs < 1:
         raise ValueError("--runs must be at least 1")
     return cfg
+
+
+def _rdma_settings(cfg: BenchConfig) -> dict[str, Any]:
+    """The RDMA configuration this run needs, on the client and on every proc."""
+    settings: dict[str, Any] = (
+        {"rdma_allow_tcp_fallback": False}
+        if cfg.transport == "ibverbs"
+        else {"rdma_disable_ibverbs": True, "rdma_allow_tcp_fallback": True}
+    )
+    if cfg.rdma_runtime_threads is not None:
+        settings["rdma_runtime_worker_threads"] = cfg.rdma_runtime_threads
+    return settings
+
+
+def _configure_rdma(cfg: BenchConfig) -> None:
+    """Pin the transport and the runtime thread count."""
+    monarch.configure(**_rdma_settings(cfg))
+
+
+def _spawn_procs_and_actors(
+    cfg: BenchConfig, job: JobTrait | None, mesh_name: str
+) -> tuple[ProcMesh, Peer]:
+    """Spawn one proc per lane on each host, and spawn a `Peer` actor on
+    each proc."""
+    if cfg.local_only:
+        procs = this_host().spawn_procs(
+            per_host={"hosts": cfg.num_hosts, "lanes": cfg.procs_per_host}
+        )
+    else:
+        assert job is not None, "a job is required unless --local-only is specified"
+        hosts = getattr(job.state(cached_path=cfg.cached_path), mesh_name)
+        # `--cached-path` reconnects to whatever job is already there, which
+        # might not be the size this run asked for.
+        if hosts.size() != cfg.num_hosts:
+            raise RuntimeError(
+                f"--num-hosts {cfg.num_hosts} but the job provisioned {hosts.size()}"
+            )
+        procs = hosts.spawn_procs(per_host={"lanes": cfg.procs_per_host})
+    return procs, procs.spawn("rdma_bench_peer", Peer)
+
+
+async def _check_config(cfg: BenchConfig, peers: Peer) -> None:
+    """Fail unless every proc inherited the configuration the client pinned."""
+    expected = _rdma_settings(cfg)
+    results = await peers.check_config.call(expected)
+    wrong = {slot_of(point): held for point, held in results.items() if held}
+    if wrong:
+        disagreed = "; ".join(
+            f"{slot} has {held}" for slot, held in sorted(wrong.items())
+        )
+        raise RuntimeError(
+            f"the procs must be configured with {expected}, but {disagreed}"
+        )
 
 
 def _shape_columns(
