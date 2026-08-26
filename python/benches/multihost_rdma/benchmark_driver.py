@@ -26,9 +26,13 @@ reported separately.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import shlex
+import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 import monarch
@@ -48,13 +52,16 @@ from bench_stats import (
 )
 from bench_topology import (
     allocation_for,
+    build_topology,
     bytes_per_iteration,
+    check_memory,
     compare_digests,
     describe,
     DIRECTIONS,
     initiator_bytes,
     max_ops_per_action,
-    MemoryPlan,
+    memory_footprint,
+    MemoryFootprint,
     PAIRINGS,
     PATTERNS,
     phase_of,
@@ -656,7 +663,7 @@ async def _run_direction(
 
 
 def _shape_columns(
-    cfg: BenchConfig, topo: Topology, plan: MemoryPlan, direction: str
+    cfg: BenchConfig, topo: Topology, footprint: MemoryFootprint, direction: str
 ) -> ShapeColumns:
     return ShapeColumns(
         num_hosts=topo.num_hosts,
@@ -671,9 +678,9 @@ def _shape_columns(
         bytes_per_iteration=bytes_per_iteration(
             topo, ops=cfg.concurrent_ops, payload_bytes=cfg.payload_bytes
         ),
-        max_buffers_per_proc=max(plan.buffers.values(), default=0),
-        max_device_bytes_per_proc=max(plan.device_bytes.values(), default=0),
-        max_host_bytes_per_host=max(plan.host_bytes_per_host.values(), default=0),
+        max_buffers_per_proc=max(footprint.buffers.values(), default=0),
+        max_device_bytes_per_proc=max(footprint.device_bytes.values(), default=0),
+        max_host_bytes_per_host=max(footprint.host_bytes_per_host.values(), default=0),
     )
 
 
@@ -706,14 +713,14 @@ def _flag(value: bool | None) -> str:
 def _report(
     cfg: BenchConfig,
     topo: Topology,
-    plan: MemoryPlan,
+    footprint: MemoryFootprint,
     records: dict[str, RunRecord],
 ) -> None:
     """Write the CSV and print the per-phase digest."""
     rows: list[Sequence[Any]] = []
     table: list[tuple[KeyColumns, MetricColumns]] = []
     for direction, record in records.items():
-        shape = _shape_columns(cfg, topo, plan, direction)
+        shape = _shape_columns(cfg, topo, footprint, direction)
         config = _config_columns(cfg, record)
         for phase in PHASES:
             key = KeyColumns(pattern=topo.pattern, direction=direction, phase=phase)
@@ -731,7 +738,7 @@ def _report(
 
 
 def _print_banner(
-    cfg: BenchConfig, topo: Topology, plan: MemoryPlan, banner: Sequence[str]
+    cfg: BenchConfig, topo: Topology, footprint: MemoryFootprint, banner: Sequence[str]
 ) -> None:
     print("=" * 78)
     print("RDMA Benchmark")
@@ -752,9 +759,9 @@ def _print_banner(
         print(f"Hosts this pattern never touches: {list(idle)}")
     print(
         f"Memory: source={cfg.source_label} dest={cfg.dest_label}; "
-        f"up to {max(plan.buffers.values(), default=0)} buffers per proc, "
-        f"{_gb(max(plan.device_bytes.values(), default=0))} device per proc, "
-        f"{_gb(max(plan.host_bytes_per_host.values(), default=0))} host per host"
+        f"up to {max(footprint.buffers.values(), default=0)} buffers per proc, "
+        f"{_gb(max(footprint.device_bytes.values(), default=0))} device per proc, "
+        f"{_gb(max(footprint.host_bytes_per_host.values(), default=0))} host per host"
     )
     print(
         f"Runs: {cfg.runs} x ({cfg.warmup_iters_per_run} ramp + "
@@ -766,3 +773,139 @@ def _print_banner(
 
 def _gb(num_bytes: int) -> str:
     return f"{num_bytes / _GB:.2f} GB"
+
+
+async def _drive(
+    cfg: BenchConfig, job: JobTrait | None, mesh_name: str, banner: Sequence[str]
+) -> None:
+    """Build the graph, provision, measure every direction, and report."""
+    _configure_rdma(cfg)
+    topo = build_topology(
+        cfg.pattern,
+        cfg.num_hosts,
+        cfg.procs_per_host,
+        cfg.lane_pairing,
+        cfg.lane_shift,
+    )
+    footprint = memory_footprint(
+        topo,
+        ops=cfg.concurrent_ops,
+        payload_bytes=cfg.payload_bytes,
+        source_on_gpu=cfg.source_on_gpu,
+        dest_on_gpu=cfg.dest_on_gpu,
+    )
+    check_memory(
+        topo,
+        footprint,
+        max_device_bytes=int(cfg.max_device_gb_per_proc * _GB),
+        max_host_bytes=int(cfg.max_host_gb_per_host * _GB),
+    )
+    _print_banner(cfg, topo, footprint, banner)
+
+    procs, peers = _spawn_procs_and_actors(cfg, job, mesh_name)
+    try:
+        await _check_config(cfg, peers)
+        records = {
+            direction: await _run_direction(cfg, topo, peers, direction)
+            for direction in DIRECTIONS
+        }
+    finally:
+        try:
+            await procs.stop()
+        except Exception as error:
+            print(f"Warning: failed to stop the proc mesh: {error}")
+    _report(cfg, topo, footprint, records)
+
+
+def _batch_client_command() -> str:
+    """This same invocation, rewritten to be the in-allocation client.
+
+    ``run-batch`` becomes ``run``, and the two flags that make the client attach
+    to the surrounding allocation are appended: ``--cached-path`` so it reads the
+    ``BatchJob`` the scheduler dumped there instead of submitting a second
+    allocation from inside the first, and ``--teardown-policy never`` because the
+    runner -- not the client -- owns the allocation.
+    """
+    from monarch.job import DEFAULT_JOB_PATH
+
+    argv = sys.argv[1:]
+    # The subcommand is a bare word, so a flag *value* could also equal it (e.g.
+    # --output-csv run-batch). Rewriting the wrong one would silently submit a
+    # nested batch job, so require it to be unambiguous.
+    positions = [i for i, arg in enumerate(argv) if arg == BATCH_COMMAND]
+    if len(positions) != 1:
+        raise SystemExit(
+            f"cannot rebuild the client command: {BATCH_COMMAND!r} appears "
+            f"{len(positions)} times in the arguments; it must appear exactly "
+            "once, as the subcommand"
+        )
+    argv[positions[0]] = RUN_COMMAND
+
+    return shlex.join(
+        [
+            sys.executable,
+            str(Path(sys.argv[0]).resolve()),
+            *argv,
+            "--cached-path",
+            DEFAULT_JOB_PATH,
+            "--teardown-policy",
+            TEARDOWN_NEVER,
+        ]
+    )
+
+
+def _teardown(cfg: BenchConfig, job: JobTrait, failed: bool) -> None:
+    kill = cfg.teardown_policy == TEARDOWN_ALWAYS or (
+        cfg.teardown_policy == TEARDOWN_ON_FAILURE and failed
+    )
+    if not kill:
+        print(f"Leaving job running (--teardown-policy {cfg.teardown_policy})")
+        return
+    try:
+        job.kill()
+        print("Killed job")
+    except Exception as error:
+        print(f"Warning: failed to kill the job: {error}")
+
+
+def run(
+    cfg: BenchConfig,
+    *,
+    make_job: Callable[[BenchConfig], JobTrait],
+    mesh_name: str,
+    banner: Sequence[str] = (),
+) -> int:
+    """Run or submit the benchmark against a job built by ``make_job``.
+
+    Returns a process exit code.
+
+    ``make_job`` is called only when hosts are actually needed, so
+    ``--local-only`` never provisions anything. It is called before any
+    ``this_host()`` call, which matters because some job types configure the
+    channel transport as a side effect of construction.
+    """
+    job: JobTrait | None = None
+    if cfg.job_hosts > 0:
+        job = make_job(cfg)
+
+    if cfg.command == BATCH_COMMAND:
+        # job_hosts is only 0 under --local-only, which run-batch does not offer.
+        assert job is not None
+        job.apply(client_script=_batch_client_command())
+        print(
+            f"Submitted batch run; results will be written to {cfg.output_csv}. "
+            "The scheduler reports no completion status, so check the job's log."
+        )
+        return 0
+
+    failed = True
+    try:
+        asyncio.run(_drive(cfg, job, mesh_name, banner))
+        failed = False
+        return 0
+    except Exception as error:
+        print(f"BENCHMARK FAILED: {error}", flush=True)
+        raise
+    finally:
+        if job is not None:
+            _teardown(cfg, job, failed)

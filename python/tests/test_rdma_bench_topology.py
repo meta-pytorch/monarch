@@ -255,21 +255,21 @@ def test_memory_plan_charges_each_pool_to_its_own_device() -> None:
     slot = bt.Slot(0, 0)
     kwargs = {"ops": 2, "payload_bytes": GB}
 
-    gpu = bt.plan_memory(topo, **kwargs, source_on_gpu=True, dest_on_gpu=True)
+    gpu = bt.memory_footprint(topo, **kwargs, source_on_gpu=True, dest_on_gpu=True)
     assert gpu.buffers[slot] == 16, "2 outgoing + 7 incoming pools of 2"
     assert gpu.device_bytes[slot] == 16 * GB
     assert gpu.host_bytes_per_host[0] == 0
 
-    cpu = bt.plan_memory(topo, **kwargs, source_on_gpu=False, dest_on_gpu=False)
+    cpu = bt.memory_footprint(topo, **kwargs, source_on_gpu=False, dest_on_gpu=False)
     assert cpu.buffers[slot] == 16, "the same tensors, charged elsewhere"
     assert cpu.device_bytes[slot] == 0
     assert cpu.host_bytes_per_host[0] == 128 * GB, "16 GB on each of 8 procs"
 
-    cpu2gpu = bt.plan_memory(topo, **kwargs, source_on_gpu=False, dest_on_gpu=True)
+    cpu2gpu = bt.memory_footprint(topo, **kwargs, source_on_gpu=False, dest_on_gpu=True)
     assert cpu2gpu.device_bytes[slot] == 14 * GB, "the incoming pools only"
     assert cpu2gpu.host_bytes_per_host[0] == 16 * GB, "one outgoing pool per proc"
 
-    gpu2cpu = bt.plan_memory(topo, **kwargs, source_on_gpu=True, dest_on_gpu=False)
+    gpu2cpu = bt.memory_footprint(topo, **kwargs, source_on_gpu=True, dest_on_gpu=False)
     assert gpu2cpu.device_bytes[slot] == 2 * GB, "the outgoing pool only"
     assert gpu2cpu.host_bytes_per_host[0] == 112 * GB
 
@@ -278,13 +278,13 @@ def test_check_memory_names_the_binding_budget_and_a_payload_that_fits() -> None
     topo = bt.build_topology("all-to-all", 8, 8)
     budgets = {"max_device_bytes": 40 * GB, "max_host_bytes": 256 * GB}
 
-    ok = bt.plan_memory(
+    ok = bt.memory_footprint(
         topo, ops=1, payload_bytes=GB, source_on_gpu=True, dest_on_gpu=True
     )
     bt.check_memory(topo, ok, **budgets)
 
     # 8 concurrent ops puts 64 GB on one card.
-    too_big = bt.plan_memory(
+    too_big = bt.memory_footprint(
         topo, ops=8, payload_bytes=GB, source_on_gpu=True, dest_on_gpu=True
     )
     with pytest.raises(ValueError) as excinfo:
@@ -298,7 +298,7 @@ def test_check_memory_names_the_binding_budget_and_a_payload_that_fits() -> None
     assert "625.00 MB" in message
 
     # The cpu config trips the per-host budget while every card stays empty.
-    host_bound = bt.plan_memory(
+    host_bound = bt.memory_footprint(
         topo, ops=6, payload_bytes=GB, source_on_gpu=False, dest_on_gpu=False
     )
     assert host_bound.device_bytes[bt.Slot(0, 0)] == 0
@@ -309,11 +309,13 @@ def test_check_memory_names_the_binding_budget_and_a_payload_that_fits() -> None
 def test_check_memory_catches_the_all_pairing_blowup() -> None:
     topo = bt.build_topology("all-to-all", 8, 8, bt.ALL)
     assert topo.in_degree(bt.Slot(0, 0)) == 56, "7 peer hosts x 8 lanes"
-    plan = bt.plan_memory(
+    footprint = bt.memory_footprint(
         topo, ops=1, payload_bytes=GB, source_on_gpu=True, dest_on_gpu=True
     )
     with pytest.raises(ValueError, match="in-degree is 56"):
-        bt.check_memory(topo, plan, max_device_bytes=40 * GB, max_host_bytes=256 * GB)
+        bt.check_memory(
+            topo, footprint, max_device_bytes=40 * GB, max_host_bytes=256 * GB
+        )
 
 
 def test_byte_counts() -> None:
