@@ -61,24 +61,15 @@ def _gbs(num_bytes: int, milliseconds: float) -> float:
 class Sample:
     """One initiator's measurement of one iteration, on the initiator's clock.
 
-    ``build_ms`` is the Python-side cost of assembling the ``RDMAAction``: one
-    call per op, before any byte moves. ``submit_ms`` runs from handing that
-    action to the RDMA layer until every op in it has completed, so it is the
-    only part that measures the fabric. They are reported separately and only
-    ``submit_ms`` is ever a throughput denominator.
+    ``submit_ms`` runs from handing the action to the RDMA layer until every op
+    in it has completed.
 
     The slot travels with the measurement because how many bytes it stands for
     depends on how that slot fits into the topology of the run.
     """
 
     slot: Slot
-    build_ms: float
     submit_ms: float
-
-    @property
-    def total_ms(self) -> float:
-        """Everything the initiator spent, which the driver's span must cover."""
-        return self.build_ms + self.submit_ms
 
 
 def percentile(values: Sequence[float], pct: float) -> float:
@@ -134,12 +125,11 @@ class PhaseRecord:
     :py:func:`bench_topology.phase_of` is that mapping, and it is the only place
     the boundaries are decided.
 
-    ``build_ms`` and ``submit_ms`` hold one entry per initiator per iteration.
+    ``submit_ms`` holds one entry per initiator per iteration.
     ``span_ms``, ``overhead_ms``, and ``agg_gbs`` hold one entry per iteration,
     because one span covers every initiator at once.
     """
 
-    build_ms: list[float] = field(default_factory=list)
     submit_ms: list[float] = field(default_factory=list)
     initiator_gbs: list[float] = field(default_factory=list)
     span_ms: list[float] = field(default_factory=list)
@@ -149,7 +139,6 @@ class PhaseRecord:
     def add_sample(self, sample: Sample, initiator_bytes: int) -> None:
         """Record one initiator's iteration. ``initiator_bytes`` is what that
         initiator moved, which depends on its degree."""
-        self.build_ms.append(sample.build_ms)
         self.submit_ms.append(sample.submit_ms)
         if sample.submit_ms > 0:
             self.initiator_gbs.append(_gbs(initiator_bytes, sample.submit_ms))
@@ -159,7 +148,7 @@ class PhaseRecord:
     ) -> None:
         """Record the driver-clock span of one iteration.
 
-        ``slowest_ms`` is the largest ``Sample.total_ms`` in that iteration, so
+        ``slowest_ms`` is the largest ``Sample.submit_ms`` in that iteration, so
         the overhead is the part of the span no initiator was working during.
         """
         self.span_ms.append(span_ms)
@@ -190,6 +179,7 @@ class RunRecord:
     # actor, one entry per run per proc, so the spread across procs shows how
     # the cost tracks a proc's buffer count. Allocation itself is excluded.
     register_ms: list[float] = field(default_factory=list)
+    build_ms: list[float] = field(default_factory=list)
     phases: dict[str, PhaseRecord] = field(
         default_factory=lambda: {phase: PhaseRecord() for phase in PHASES}
     )
@@ -299,7 +289,7 @@ def metrics_for(phase: str, runs: RunRecord) -> MetricColumns:
     """
     record = runs.phases[phase]
     register = summarize(runs.register_ms)
-    build = summarize(record.build_ms)
+    build = summarize(runs.build_ms)
     submit = summarize(record.submit_ms)
     span = summarize(record.span_ms)
     overhead = summarize(record.overhead_ms)

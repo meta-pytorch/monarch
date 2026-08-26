@@ -39,7 +39,7 @@ can be given a plan by :py:meth:`Peer.wire`.
 from __future__ import annotations
 
 import time
-from typing import Any, Mapping
+from typing import Any, cast, Mapping
 
 import torch
 import xxhash
@@ -68,7 +68,10 @@ class Peer(Actor):
         # destination device.
         self.tensors: SlotValues[torch.Tensor] = _nothing()
         self.buffers: SlotValues[RDMABuffer] = _nothing()
-        self.plan: InitiatorPlan = InitiatorPlan()
+        # Built once by `wire` and submitted every iteration, so assembling
+        # it costs nothing on the timed path. `None` on a proc that
+        # initiates nothing.
+        self.action: RDMAAction | None = None
 
     @endpoint
     async def check_config(self, expected: Mapping[str, Any]) -> dict[str, Any]:
@@ -147,34 +150,36 @@ class Peer(Actor):
                 tensor.zero_()
 
     @endpoint
-    async def wire(self, plans: Mapping[Slot, InitiatorPlan]) -> None:
-        """Install the ops this slot will issue."""
-        self.plan = plans.get(self.slot, InitiatorPlan())
+    async def wire(self, plans: Mapping[Slot, InitiatorPlan]) -> float:
+        """Build the action carrying the ops this slot will issue, and return the
+        milliseconds that took.
+
+        An `RDMAAction` can be submitted more than once, so it is built here
+        rather than in every iteration.
+        """
+        plan = plans.get(self.slot, InitiatorPlan())
+        started = time.perf_counter()
+        action = RDMAAction()
+        for op in plan.push:
+            action.write_remote(op.remote, self.tensors.outgoing[op.outgoing_index])
+        for op in plan.pull:
+            action.read_remote(self.tensors.incoming[op.peer][op.op_index], op.remote)
+        ended = time.perf_counter()
+        self.action = action if plan.ops else None
+        return _ms(ended - started)
 
     @endpoint
     async def execute_iteration(self) -> Sample | None:
-        """Build one ``RDMAAction`` from the installed plan, submit it, and wait
-        for every op in it to complete.
+        """Submit this slot's action and wait for every op in it to complete.
 
         ``None`` on a proc that initiates nothing, so the driver can cast to
         every proc and keep only the measurements that mean something.
         """
-        if not self.plan.ops:
+        if self.action is None:
             return None
         started = time.perf_counter()
-        action = RDMAAction()
-        for op in self.plan.push:
-            action.write_remote(op.remote, self.tensors.outgoing[op.outgoing_index])
-        for op in self.plan.pull:
-            action.read_remote(self.tensors.incoming[op.peer][op.op_index], op.remote)
-        built = time.perf_counter()
-        await action.submit()
-        finished = time.perf_counter()
-        return Sample(
-            slot=self.slot,
-            build_ms=_ms(built - started),
-            submit_ms=_ms(finished - built),
-        )
+        await cast(RDMAAction, self.action).submit()
+        return Sample(slot=self.slot, submit_ms=_ms(time.perf_counter() - started))
 
     @endpoint
     async def digest(self, mode: str, window_bytes: int) -> SlotValues[str]:
@@ -199,7 +204,7 @@ class Peer(Actor):
             await buffer.drop()
         self.buffers = _nothing()
         self.tensors = _nothing()
-        self.plan = InitiatorPlan()
+        self.action = None
 
 
 def _nothing() -> SlotValues[Any]:

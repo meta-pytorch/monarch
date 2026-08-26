@@ -69,18 +69,15 @@ def test_summarize_handles_thin_sample_sets() -> None:
     assert two.maximum == 3.0
 
 
-def test_sample_total() -> None:
-    sample = bs.Sample(slot=bt.Slot(0, 0), build_ms=2.0, submit_ms=100.0)
-    assert sample.total_ms == pytest.approx(102.0)
+def _sample(slot: bt.Slot, submit_ms: float) -> bs.Sample:
+    return bs.Sample(slot=slot, submit_ms=submit_ms)
 
 
 def test_phase_record_derives_throughput_from_the_right_clock() -> None:
     record = bs.PhaseRecord()
+    record.add_sample(_sample(bt.Slot(0, 0), 500.0), initiator_bytes=GB)
     record.add_sample(
-        bs.Sample(bt.Slot(0, 0), build_ms=1.0, submit_ms=500.0), initiator_bytes=GB
-    )
-    record.add_sample(
-        bs.Sample(bt.Slot(1, 0), build_ms=1.0, submit_ms=1000.0),
+        _sample(bt.Slot(1, 0), 1000.0),
         initiator_bytes=2 * GB,
     )
     assert record.initiator_gbs == [2.0, 2.0], "each initiator's own bytes and clock"
@@ -100,12 +97,8 @@ def test_aggregate_throughput_is_measured_against_the_span() -> None:
     that the assertion pins which one is reported.
     """
     record = bs.PhaseRecord()
-    record.add_sample(
-        bs.Sample(bt.Slot(0, 0), build_ms=0.0, submit_ms=500.0), initiator_bytes=GB
-    )
-    record.add_sample(
-        bs.Sample(bt.Slot(1, 0), build_ms=0.0, submit_ms=1000.0), initiator_bytes=GB
-    )
+    record.add_sample(_sample(bt.Slot(0, 0), 500.0), initiator_bytes=GB)
+    record.add_sample(_sample(bt.Slot(1, 0), 1000.0), initiator_bytes=GB)
     record.add_iteration(span_ms=1000.0, iteration_bytes=2 * GB, slowest_ms=1000.0)
 
     assert record.agg_gbs == [2.0]
@@ -115,9 +108,7 @@ def test_aggregate_throughput_is_measured_against_the_span() -> None:
 
 def test_zero_durations_do_not_produce_infinite_throughput() -> None:
     record = bs.PhaseRecord()
-    record.add_sample(
-        bs.Sample(bt.Slot(0, 0), build_ms=0.0, submit_ms=0.0), initiator_bytes=GB
-    )
+    record.add_sample(_sample(bt.Slot(0, 0), 0.0), initiator_bytes=GB)
     record.add_iteration(span_ms=0.0, iteration_bytes=GB, slowest_ms=0.0)
     assert record.initiator_gbs == []
     assert record.agg_gbs == []
@@ -128,12 +119,8 @@ def test_run_record_discards_ramp_without_a_special_case() -> None:
     runs = bs.RunRecord()
     assert set(runs.phases) == set(bt.PHASES)
 
-    runs.record(bt.WARM).add_sample(
-        bs.Sample(bt.Slot(0, 0), 0.0, 500.0), initiator_bytes=GB
-    )
-    runs.record(bt.RAMP).add_sample(
-        bs.Sample(bt.Slot(0, 0), 0.0, 9000.0), initiator_bytes=GB
-    )
+    runs.record(bt.WARM).add_sample(_sample(bt.Slot(0, 0), 500.0), initiator_bytes=GB)
+    runs.record(bt.RAMP).add_sample(_sample(bt.Slot(0, 0), 9000.0), initiator_bytes=GB)
 
     assert runs.phases[bt.WARM].submit_ms == [500.0]
     assert bt.RAMP not in runs.phases, "the ramp record is a throwaway"
@@ -173,13 +160,14 @@ def _run_record() -> bs.RunRecord:
     for run in range(_RUNS):
         # One registration measurement per proc per run.
         runs.register_ms.extend(400.0 + 100.0 * run + 50.0 * i for i in range(2))
+        runs.build_ms.extend(2.0 for _ in range(2))
         for iteration in range(_WARMUP_ITERS + _WARM_ITERS):
             phase = bt.phase_of(run, iteration, _WARMUP_ITERS)
             record = runs.record(phase)
             submit_ms = _SUBMIT_MS[phase]
             for slot in _INITIATORS:
                 record.add_sample(
-                    bs.Sample(slot, build_ms=2.0, submit_ms=submit_ms),
+                    _sample(slot, submit_ms),
                     initiator_bytes=GB,
                 )
             record.add_iteration(
