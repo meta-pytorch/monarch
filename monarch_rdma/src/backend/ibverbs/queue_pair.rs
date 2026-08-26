@@ -22,12 +22,8 @@ use std::io::Error;
 use std::result::Result;
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::Instant;
 
 use async_trait::async_trait;
-use backoff::ExponentialBackoff;
-use backoff::ExponentialBackoffBuilder;
-use backoff::backoff::Backoff;
 use hyperactor::Actor;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
@@ -43,6 +39,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use super::cq_actor::PollSleepPolicy;
 use super::cq_pool::CqLease;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
@@ -772,68 +769,6 @@ impl IbvQueuePair for RCQueuePair {
         // this queue pair, and its lease leaves it the only queue pair polling
         // that completion queue, so no other thread is polling it.
         unsafe { poll_one(&self.qp, target) }
-    }
-}
-
-/// Adaptive backoff for the scheduler's `Tick` self-message. Use
-/// [`Self::next_interval`] to ask "how long should I wait before the
-/// next poll attempt?"; call [`Self::reset`] whenever the previous
-/// poll observed completions (so the actor stays tight while work
-/// is making progress).
-///
-/// While the elapsed time since the first non-zero interval is below
-/// `yield_window`, the policy returns `Duration::ZERO` so the actor
-/// just re-sends `Tick` to itself with no delay — keeping latency
-/// tight when WRs are about to complete. Past the window, it walks
-/// an exponential backoff (1ms initial, doubling, capped at 10ms)
-/// so a long-running op doesn't keep the runtime spinning. When
-/// `yield_window` is `None` (the default for
-/// `RDMA_CQ_BUSY_POLL_WINDOW`) the policy always returns
-/// `Duration::ZERO`.
-#[derive(Debug)]
-struct PollSleepPolicy {
-    yield_window: Option<Duration>,
-    started_at: Option<Instant>,
-    backoff: Option<ExponentialBackoff>,
-}
-
-impl PollSleepPolicy {
-    fn new() -> Self {
-        let yield_window = hyperactor_config::global::get(crate::config::RDMA_CQ_BUSY_POLL_WINDOW);
-        Self {
-            yield_window,
-            started_at: None,
-            backoff: None,
-        }
-    }
-
-    /// Forget all accumulated backoff state. Called after a poll
-    /// returns completions, so the next idle stretch starts fresh.
-    fn reset(&mut self) {
-        self.started_at = None;
-        self.backoff = None;
-    }
-
-    /// Suggested delay before the next `Tick`. `Duration::ZERO`
-    /// means "send `Tick` immediately".
-    fn next_interval(&mut self) -> Duration {
-        let Some(window) = self.yield_window else {
-            return Duration::ZERO;
-        };
-        let started = *self.started_at.get_or_insert_with(Instant::now);
-        if started.elapsed() < window {
-            return Duration::ZERO;
-        }
-        let backoff = self.backoff.get_or_insert_with(|| {
-            ExponentialBackoffBuilder::new()
-                .with_initial_interval(Duration::from_millis(1))
-                .with_max_interval(Duration::from_millis(10))
-                .with_multiplier(2.0)
-                .with_randomization_factor(0.0)
-                .with_max_elapsed_time(None)
-                .build()
-        });
-        backoff.next_backoff().unwrap_or(Duration::ZERO)
     }
 }
 
