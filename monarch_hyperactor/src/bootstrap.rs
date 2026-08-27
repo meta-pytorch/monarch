@@ -256,7 +256,29 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 
 #[cfg(test)]
 mod tests {
+    use std::os::fd::AsFd;
+    use std::os::fd::AsRawFd;
+    use std::os::fd::IntoRawFd;
+    use std::os::fd::OwnedFd;
+    use std::os::fd::RawFd;
+
+    use nix::errno::Errno;
+    use nix::libc;
+    use nix::sys::socket::AddressFamily;
+    use nix::sys::socket::SockFlag;
+    use nix::sys::socket::SockType;
+    use nix::sys::socket::SockaddrIn;
+    use nix::sys::socket::bind;
+    use nix::sys::socket::getsockname;
+    use nix::sys::socket::getsockopt;
+    use nix::sys::socket::socket;
+    use nix::sys::socket::sockopt;
+    use nix::unistd::dup;
+    use pyo3::PyErr;
+    use pyo3::PyTypeInfo;
+
     use super::*;
+    use crate::runtime::monarch_with_gil_blocking;
 
     #[test]
     fn test_bare_worker_address_uses_legacy_service_proc() {
@@ -330,6 +352,220 @@ mod tests {
         assert_eq!(service_proc.id(), &legacy_service_proc_id());
         assert_eq!(service_proc.location().to_string(), "tcp://127.0.0.1:1234");
         assert!(listener.is_none());
+    }
+
+    /// A bound but deliberately not-yet-listening IPv4 socket, plus the address
+    /// it holds. Starting from a listening socket would make the
+    /// `SO_ACCEPTCONN` transition below vacuous.
+    fn bound_not_listening() -> (OwnedFd, SockaddrIn) {
+        let sock = socket(
+            AddressFamily::Inet,
+            SockType::Stream,
+            SockFlag::empty(),
+            None,
+        )
+        .expect("test socket should be creatable");
+        let wildcard = SockaddrIn::new(127, 0, 0, 1, 0);
+        bind(sock.as_raw_fd(), &wildcard).expect("binding an ephemeral port should succeed");
+        let bound = getsockname::<SockaddrIn>(sock.as_raw_fd()).expect("bound socket has a name");
+        (sock, bound)
+    }
+
+    /// What the kernel says when a fresh socket tries to take `addr`. A live
+    /// listener holds it; a released one does not. The error is preserved so a
+    /// caller can require the specific refusal rather than any failure.
+    fn rebind_result(addr: &SockaddrIn) -> nix::Result<()> {
+        let probe = socket(
+            AddressFamily::Inet,
+            SockType::Stream,
+            SockFlag::empty(),
+            None,
+        )
+        .expect("probe socket should be creatable");
+        bind(probe.as_raw_fd(), addr)
+    }
+
+    /// A non-alias TCP `host:fdN` location transfers descriptor ownership while
+    /// the binding is being called, and the returned task holds that listener.
+    ///
+    /// The test exercises two spellings of this same path, each with its own
+    /// freshly bound socket: a bare channel URL using the legacy service proc id
+    /// and an explicit `ProcId@location` using a generated instance id. The tls,
+    /// metatls, quic, and metaquic schemes use the same `host:fdN` parser but are
+    /// not exercised here. A TCP alias is different: its nested listener is
+    /// discarded and closed during parsing rather than retained by the task.
+    ///
+    /// The address is the durable ownership witness. Rebinding is checked on
+    /// both sides of the drop, because a rebind that succeeds afterwards proves
+    /// nothing unless it fails while the task still owns the listener.
+    #[test]
+    fn run_worker_loop_forever_retains_non_alias_tcp_fd_until_drop() {
+        pyo3::Python::initialize();
+
+        for build_address in [
+            (&|fd| format!("tcp://127.0.0.1:fd{fd}")) as &dyn Fn(RawFd) -> String,
+            &|fd| {
+                format!(
+                    "{}@tcp://127.0.0.1:fd{fd}",
+                    ProcId::instance(Label::strip("service"))
+                )
+            },
+        ] {
+            let (sock, bound) = bound_not_listening();
+            let observer = dup(sock.as_fd()).expect("duplicating for observation should succeed");
+            assert!(
+                !getsockopt(&observer, sockopt::AcceptConn).expect("SO_ACCEPTCONN is readable"),
+                "the fixture must hand over a bound socket that is not yet listening"
+            );
+
+            // Ownership leaves Rust here: the number is all that is passed, and
+            // the binding adopts it.
+            //
+            // If construction were to fail instead, this fixture cannot reclaim
+            // the descriptor. Whether it is still open depends on where the
+            // failure happened -- a parse failure leaves it untouched, while a
+            // failure after the listener is built has already closed it -- and
+            // the caller cannot tell those apart. Closing it here would risk a
+            // double close, which in a shared test process could take out an
+            // unrelated descriptor opened concurrently. Leaking one descriptor
+            // in a test that is failing anyway is the safer of the two.
+            let transferred = sock.into_raw_fd();
+            let address = build_address(transferred);
+
+            let task = monarch_with_gil_blocking(GilSite::Test, |py| {
+                run_worker_loop_forever(py, &address)
+            })
+            .expect("a valid descriptor address should construct a task");
+
+            // SAFETY: `F_GETFD` only reads the flags of a descriptor number and
+            // never closes it. A number that is not open is defined input here:
+            // the call returns -1 and sets EBADF, which is exactly the outcome
+            // this assertion rules out. Taking a `BorrowedFd` first would
+            // instead assume the validity being tested.
+            let flags = unsafe { libc::fcntl(transferred, libc::F_GETFD) };
+            assert_ne!(
+                flags, -1,
+                "construction must leave the transferred descriptor number open"
+            );
+            // Still open is not enough: the number could have been closed and
+            // handed back out by another thread. Requiring it to name the same
+            // socket rules that out.
+            assert_eq!(
+                getsockname::<SockaddrIn>(transferred)
+                    .expect("a retained descriptor names its socket"),
+                bound,
+                "the retained descriptor must still be the socket that was handed over"
+            );
+            assert!(
+                getsockopt(&observer, sockopt::AcceptConn).expect("SO_ACCEPTCONN is readable"),
+                "construction must call listen before it returns"
+            );
+
+            // The task must be the only owner left before the address can say
+            // anything about what the task holds.
+            drop(observer);
+            assert_eq!(
+                rebind_result(&bound),
+                Err(Errno::EADDRINUSE),
+                "the undriven task must still hold the listener"
+            );
+
+            monarch_with_gil_blocking(GilSite::Test, |_py| {
+                drop(task);
+                Ok::<_, PyErr>(())
+            })
+            .expect("dropping the task should not fail");
+
+            // Deliberately not probing `transferred` here: once released, that
+            // number may already belong to another thread's descriptor.
+            assert_eq!(
+                rebind_result(&bound),
+                Ok(()),
+                "dropping the undriven task must release the adopted listener"
+            );
+        }
+    }
+
+    /// An `fdN` on the bind side of a TCP alias is listened on during parsing,
+    /// but the alias parser discards that listener before the binding returns.
+    /// The returned task therefore retains no ownership of the bind socket.
+    #[test]
+    fn run_worker_loop_forever_alias_fd_listens_and_closes_during_construction() {
+        pyo3::Python::initialize();
+
+        let (sock, bound) = bound_not_listening();
+        let observer = dup(sock.as_fd()).expect("duplicating for observation should succeed");
+        assert!(
+            !getsockopt(&observer, sockopt::AcceptConn).expect("SO_ACCEPTCONN is readable"),
+            "the fixture must hand over a bound socket that is not yet listening"
+        );
+
+        let transferred = sock.into_raw_fd();
+        let address = format!("tcp://127.0.0.1:4444@tcp://127.0.0.1:fd{transferred}");
+        let task =
+            monarch_with_gil_blocking(GilSite::Test, |py| run_worker_loop_forever(py, &address))
+                .expect("a valid alias descriptor address should construct a task");
+
+        assert!(
+            getsockopt(&observer, sockopt::AcceptConn).expect("SO_ACCEPTCONN is readable"),
+            "alias parsing must call listen before discarding the adopted listener"
+        );
+        drop(observer);
+        assert_eq!(
+            rebind_result(&bound),
+            Ok(()),
+            "the returned task must not retain the alias bind listener"
+        );
+
+        monarch_with_gil_blocking(GilSite::Test, |_py| {
+            drop(task);
+            Ok::<_, PyErr>(())
+        })
+        .expect("dropping the task should not fail");
+    }
+
+    /// A textual address failure and a descriptor-syntax failure are both
+    /// raised by the call itself, so no task is created.
+    ///
+    /// Both are `ValueError`, as is the later bind failure when a task is
+    /// driven, so the type alone does not say which phase failed. What
+    /// distinguishes these is that there is no task to drive. This says nothing
+    /// about a numeric descriptor that is syntactically valid; that precondition
+    /// belongs to the caller and is not exercised here.
+    #[test]
+    fn run_worker_loop_forever_rejects_invalid_addresses_before_returning_task() {
+        pyo3::Python::initialize();
+
+        for (address, cause) in [
+            (
+                "tcp://127.0.0.1:fdnot-a-number",
+                "invalid file descriptor number: fdnot-a-number",
+            ),
+            ("zzz://127.0.0.1:1234", "unsupported ZMQ scheme: zzz"),
+        ] {
+            monarch_with_gil_blocking(GilSite::Test, |py| {
+                let error = match run_worker_loop_forever(py, address) {
+                    Ok(_) => panic!("{address} must not produce a task"),
+                    Err(error) => error,
+                };
+
+                assert!(
+                    error.get_type(py).is(PyValueError::type_object(py)),
+                    "an address failure must be exactly ValueError"
+                );
+                let message = error.value(py).to_string();
+                assert!(
+                    message.contains(&format!("invalid worker address {address:?}")),
+                    "the message must name the rejected address, got {message}"
+                );
+                assert!(
+                    message.contains(cause),
+                    "the message must retain the underlying cause, got {message}"
+                );
+                Ok::<_, PyErr>(())
+            })
+            .expect("assertions should not fail");
+        }
     }
 
     #[test]
