@@ -259,11 +259,7 @@ mod completion_action {
     pub(crate) struct CompletionAction(State);
 
     #[derive(Debug)]
-    #[expect(
-        dead_code,
-        reason = "pending proc creation is activated by a later change"
-    )]
-    enum State {
+    pub(super) enum State {
         Keep,
         Stop { timeout: Duration, reason: String },
         Drain,
@@ -273,6 +269,10 @@ mod completion_action {
     impl CompletionAction {
         pub(super) fn is_keep(&self) -> bool {
             matches!(&self.0, State::Keep)
+        }
+
+        pub(super) fn is_drain(&self) -> bool {
+            matches!(&self.0, State::Drain)
         }
 
         pub(super) fn request_stop(&mut self, timeout: Duration, reason: String) {
@@ -295,6 +295,10 @@ mod completion_action {
 
         pub(super) fn request_shutdown(&mut self) {
             self.0 = State::Shutdown;
+        }
+
+        pub(super) fn into_state(self) -> State {
+            self.0
         }
     }
 
@@ -319,6 +323,7 @@ pub(crate) enum ProcCreationState {
     Pending {
         metadata: ProcMetadata,
         on_completion: CompletionAction,
+        /// Latest owner keepalive received before proc creation completed.
         expiry_time: Option<std::time::SystemTime>,
     },
     Created {
@@ -413,6 +418,10 @@ impl PendingDrains {
             || host_mesh_id.is_some_and(|host_mesh_id| self.selective.contains_key(host_mesh_id))
     }
 
+    fn full_is_ready(&self) -> bool {
+        self.full.as_ref().is_some_and(|drain| drain.remaining == 0)
+            && self.selective.values().all(|drain| drain.remaining == 0)
+    }
     fn take_all(&mut self) -> impl Iterator<Item = PendingDrain> {
         let full = self.full.take();
         let selective = std::mem::take(&mut self.selective);
@@ -1172,7 +1181,6 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             HostAgentMode::Local(host) => Either::Right(host.spawn(id.to_string(), ())),
         };
 
-        let was_empty = self.created.is_empty();
         self.created.insert(
             id.clone(),
             ProcCreationState::pending(
@@ -1186,46 +1194,170 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         );
 
         let created = spawn.await;
+        <Self as Handler<ProcSpawned>>::handle(self, cx, ProcSpawned { id, created }).await
+    }
+}
+
+struct ProcSpawned {
+    id: ResourceId,
+    created: Result<(ProcAddr, ActorRef<ProcAgent>), HostError>,
+}
+
+#[async_trait]
+impl Handler<ProcSpawned> for HostAgent {
+    async fn handle(&mut self, cx: &Context<Self>, spawned: ProcSpawned) -> anyhow::Result<()> {
+        let ProcSpawned { id, created } = spawned;
 
         if let Err(e) = &created {
             tracing::error!("failed to spawn proc {}: {}", id, e);
         }
-        let (metadata, expiry_time) = match self
-            .created
-            .remove(&id)
-            .expect("synchronous proc creation remains pending until spawn completes")
-        {
-            ProcCreationState::Pending {
+
+        // A WaitRankStatus stashed before this proc existed carries its own reply
+        // rank (RSP-3); starting a status watch bridge for it needs the proc_id.
+        let proc_id = created.as_ref().ok().map(|(pid, _)| pid.clone());
+        let drain_status = match &created {
+            Ok(_) => Status::Stopped,
+            Err(error) => Status::Failed(error.to_string()),
+        };
+
+        let (metadata, on_completion, expiry_time) = match self.created.remove(&id) {
+            Some(ProcCreationState::Pending {
                 metadata,
                 on_completion,
                 expiry_time,
-            } if on_completion.is_keep() => (metadata, expiry_time),
-            ProcCreationState::Pending { .. }
-            | ProcCreationState::Created { .. }
-            | ProcCreationState::Failed { .. } => {
-                unreachable!("HostAgent cannot process another request during synchronous spawn")
+            }) => (metadata, on_completion, expiry_time),
+            Some(ProcCreationState::Created { .. } | ProcCreationState::Failed { .. }) => {
+                unreachable!("ProcSpawned requires a pending creation state for {id}")
             }
+            None => unreachable!("ProcSpawned requires tracked creation state for {id}"),
         };
-        self.created.insert(
-            id.clone(),
-            ProcCreationState::from_spawn_result(metadata, expiry_time, created),
-        );
+        let host_mesh_id = metadata.host_mesh_id.clone();
+
+        if !on_completion.is_drain() {
+            self.created.insert(
+                id.clone(),
+                ProcCreationState::from_spawn_result(metadata, expiry_time, created),
+            );
+        }
+
+        match on_completion.into_state() {
+            completion_action::State::Keep => {}
+            completion_action::State::Stop { timeout, reason } => {
+                if let (Some(proc_id), Some(host)) = (proc_id.as_ref(), self.host()) {
+                    host.request_stop(cx, proc_id, timeout, &reason).await;
+                }
+            }
+            completion_action::State::Drain => {
+                let (timeout, reason) = if let Some(drain) = self.pending_drains.full.as_ref() {
+                    (drain.timeout, "full drain")
+                } else if let Some(drain) = host_mesh_id
+                    .as_ref()
+                    .and_then(|host_mesh_id| self.pending_drains.selective.get(host_mesh_id))
+                {
+                    (drain.timeout, "selective drain")
+                } else {
+                    unreachable!("pending drain owns deferred proc completion")
+                };
+
+                if let (Some(proc_id), Some(host)) = (proc_id.as_ref(), self.host()) {
+                    match host {
+                        HostAgentMode::Process { host, .. } => {
+                            let _ = host.terminate_proc(cx, proc_id, timeout, reason).await;
+                        }
+                        HostAgentMode::Local(host) => {
+                            let _ = host.terminate_proc(cx, proc_id, timeout, reason).await;
+                        }
+                    }
+                }
+                self.watching.remove(&id);
+
+                self.flush_proc_waiters_with_status(cx, &id, drain_status);
+
+                if let Some(drain) = self.pending_drains.full.as_mut() {
+                    drain.remaining = drain
+                        .remaining
+                        .checked_sub(1)
+                        .expect("full drain count includes completed proc");
+                }
+
+                let finished_selective_drain = match host_mesh_id
+                    .as_ref()
+                    .and_then(|host_mesh_id| self.pending_drains.selective.get_mut(host_mesh_id))
+                {
+                    Some(drain) => {
+                        drain.remaining = drain
+                            .remaining
+                            .checked_sub(1)
+                            .expect("selective drain count includes completed proc");
+
+                        drain.remaining == 0
+                    }
+                    None => false,
+                };
+
+                if finished_selective_drain && self.pending_drains.full.is_none() {
+                    let drain = self
+                        .pending_drains
+                        .selective
+                        .remove(
+                            host_mesh_id
+                                .as_ref()
+                                .expect("selective drain has a mesh id"),
+                        )
+                        .expect("completed selective drain exists");
+                    drain.post_replies(cx);
+                }
+
+                if self.pending_drains.full_is_ready() {
+                    let drain = self
+                        .pending_drains
+                        .full
+                        .take()
+                        .expect("completed full drain exists");
+
+                    self.start_full_drain(cx, drain);
+                }
+
+                self.publish_introspect_properties(cx);
+                return Ok(());
+            }
+            completion_action::State::Shutdown => {
+                if self.pending_proc_waiters.contains_key(&id) {
+                    self.flush_proc_waiters(cx, &id).await;
+                }
+
+                let shutdown_finished = {
+                    let shutdown = self
+                        .pending_shutdown
+                        .as_mut()
+                        .expect("pending shutdown owns deferred proc completion");
+                    shutdown.remaining = shutdown
+                        .remaining
+                        .checked_sub(1)
+                        .expect("pending shutdown count includes completed proc");
+                    shutdown.remaining == 0
+                };
+
+                self.publish_introspect_properties(cx);
+                if shutdown_finished {
+                    let shutdown = self
+                        .pending_shutdown
+                        .take()
+                        .expect("pending shutdown exists");
+                    self.finish_shutdown(cx, shutdown).await;
+                }
+                return Ok(());
+            }
+        }
 
         // Transition Detached → Attached on first proc creation.
-        if was_empty && let HostAgentState::Detached(_) = &self.state {
+        if let HostAgentState::Detached(_) = &self.state {
             let host = match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
                 HostAgentState::Detached(h) => h,
                 _ => unreachable!(),
             };
             self.state = HostAgentState::Attached(host);
         }
-
-        // A WaitRankStatus stashed before this proc existed carries its own reply
-        // rank (RSP-3); starting a status watch bridge for it needs the proc_id.
-        let proc_id = self.created.get(&id).and_then(|state| match state {
-            ProcCreationState::Created { proc_id, .. } => Some(proc_id.clone()),
-            ProcCreationState::Pending { .. } | ProcCreationState::Failed { .. } => None,
-        });
 
         // Bridge status changes to any pending waiters, then flush once now.
         if self.pending_proc_waiters.contains_key(&id) {
@@ -1415,9 +1547,6 @@ impl Handler<ProcStatusChanged> for HostAgent {
 impl HostAgent {
     /// Flush pending `WaitRankStatus` waiters whose threshold is now satisfied.
     async fn flush_proc_waiters(&mut self, cx: &Context<'_, Self>, id: &ResourceId) {
-        use crate::StatusOverlay;
-        use crate::resource::Status;
-
         let status = match self.created.get(id) {
             Some(ProcCreationState::Pending { on_completion, .. }) => {
                 if on_completion.is_keep() {
@@ -1437,6 +1566,15 @@ impl HostAgent {
             }
         };
 
+        self.flush_proc_waiters_with_status(cx, id, status);
+    }
+
+    fn flush_proc_waiters_with_status(
+        &mut self,
+        cx: &Context<'_, Self>,
+        id: &ResourceId,
+        status: Status,
+    ) {
         let Some(waiters) = self.pending_proc_waiters.get_mut(id) else {
             return;
         };
@@ -1628,6 +1766,16 @@ impl Handler<DrainHost> for HostAgent {
                 if self.pending_drains.full.is_some() {
                     let replaced = self.pending_drains.selective.insert(host_mesh_id, drain);
                     debug_assert!(replaced.is_none(), "duplicate selective drain was joined");
+                    if self.pending_drains.full_is_ready()
+                        && !matches!(&self.state, HostAgentState::Draining)
+                    {
+                        let drain = self
+                            .pending_drains
+                            .full
+                            .take()
+                            .expect("ready full drain exists");
+                        self.start_full_drain(cx, drain);
+                    }
                     return Ok(());
                 }
 
@@ -1642,7 +1790,13 @@ impl Handler<DrainHost> for HostAgent {
                 }
             }
             None => {
-                if remaining == 0 && self.pending_drains.selective.is_empty() {
+                if remaining == 0
+                    && self
+                        .pending_drains
+                        .selective
+                        .values()
+                        .all(|drain| drain.remaining == 0)
+                {
                     self.start_full_drain(cx, drain);
                 } else {
                     debug_assert!(
