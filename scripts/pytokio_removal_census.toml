@@ -2259,16 +2259,22 @@ state = "legacy"
 transition = "6.2"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from run_worker_loop_forever"
-consumer = "bootstrap_main, which blocks the worker's main thread on it"
-driver = "PythonTask.block_on on the calling thread"
-start_point = "lazy; the boxed future is not polled until the returned task is driven"
-abandonment = "not reachable in practice; the caller blocks immediately after construction"
-eager_effect = "starts a side effect"
-drop_behavior = "the worker server loop never starts"
-unobserved_error = "propagated synchronously out of block_on"
+consumer = "monarch._src.actor.bootstrap.run_worker_loop_forever, which calls block_on immediately after its argument checks; bootstrap_main is the child command captured during construction, not the consumer"
+driver = "PythonTask.block_on consumes the task; on the Python main thread signal_safe_block_on spawns it onto the embedded runtime and blocks the caller while checking signals, while the non-main branch uses runtime.block_on"
+start_point = "source inspection places service-address parsing and child-command/environment capture in the call and host(...) in the returned task. The Rust ownership tests prove that a non-alias TCP host:fdN location calls listen and transfers its listener before return, while a TCP alias listens on and closes any nested fdN listener during parsing. The same parser handles non-alias tls, metatls, quic, and metaquic host:fdN locations"
+abandonment = "possible through the private native binding; the public wrapper offers no ordinary caller-controlled gap before block_on, while signal interruption follows the shared signal_safe_block_on policy"
+eager_effect = "a successful non-alias host:fdN construction for tcp, tls, metatls, quic, or metaquic calls listen and moves the adopted listener into the returned task; a TCP alias listens on and closes any nested fdN listener during the call, so the task retains none"
+drop_behavior = "source makes a successfully returned non-alias host:fdN task own the listener, so dropping it undriven closes that listener without entering host; the Rust oracle exercises the TCP forms and proves that their address is released. A TCP alias has no nested listener left for task drop to release because parsing closed it before return"
+unobserved_error = "textual address and descriptor-syntax errors raise as PyValueError before a task is returned. Source places host errors inside the returned task; the occupied-numeric-address oracle proves that construction returns a task and block_on publishes the listen failure as PyValueError. The phases are distinguished by whether a task was returned and driven, not by exception type"
 disposition = "replace with a direct blocking binding"
-semantic_class = "deferred_side_effect"
-oracle = "bootstrap worker-loop coverage"
+semantic_class = "sync_partial_effect_lazy_tail"
+oracle = [
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::bootstrap::tests::run_worker_loop_forever_retains_non_alias_tcp_fd_until_drop",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::bootstrap::tests::run_worker_loop_forever_alias_fd_listens_and_closes_during_construction",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::bootstrap::tests::run_worker_loop_forever_rejects_invalid_addresses_before_returning_task",
+  "fbcode//monarch/python/tests:test_worker_loop_characterization::test_occupied_numeric_address_fails_when_blocked_on",
+  "fbcode//monarch/python/tests:test_python_actors::test_fd_bootstrap",
+]
 
 [[site]]
 id = "np.context.PyInstance.stop_and_wait"
