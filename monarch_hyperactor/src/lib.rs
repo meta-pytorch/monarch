@@ -30,7 +30,6 @@ pub mod operation_context;
 pub mod pickle;
 pub mod proc;
 pub mod proc_launcher;
-pub mod proc_launcher_probe;
 pub mod proc_mesh;
 pub mod py_cell;
 pub mod pympsc;
