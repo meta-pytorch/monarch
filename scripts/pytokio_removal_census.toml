@@ -322,7 +322,7 @@ pytokio_import = "monarch._rust_bindings.monarch_hyperactor.pytokio"
 doc_legacy_surface = "PythonTask|PyShared|pytokio"
 
 [totals]
-py_python_task_new = 26
+py_python_task_new = 25
 raw_python_task_new = 5
 from_coro = 19
 rust_from_coro = 2
@@ -341,9 +341,9 @@ shared_reconstruction = 2
 reserve_binding = 1
 py_mesh_reserve = 2
 py_is_tokio_thread = 3
-pytokio_import = 31
-pytokio_module_ref = 18
-helper_symbol = 27
+pytokio_import = 29
+pytokio_module_ref = 17
+helper_symbol = 26
 helper_definition = 6
 would_block_surface = 2
 binding_stub_symbol = 5
@@ -491,6 +491,17 @@ execution_state = "activates_in_6.1"
 # Transition ownership. A site changes state only through the transition
 # that declares it.
 [[transition]]
+id = "6.0c.1e"
+allowed_states = ["migrated"]
+owns = [
+  "hs.proc_launcher_probe.PyPythonTask",
+  "im.proc_launcher_probe.module",
+  "im.test_proc_launcher_probe.module",
+  "mr.proc_launcher_probe.file",
+  "np.proc_launcher_probe.probe_exit_port_via_mesh",
+]
+
+[[transition]]
 id = "6.1"
 allowed_states = ["migrated", "removed_upstream"]
 owns = [
@@ -522,17 +533,14 @@ owns = [
   "hs.actor.PyPythonTask",
   "hs.lib.PyPythonTask",
   "hs.pickle.PyPythonTask",
-  "hs.proc_launcher_probe.PyPythonTask",
   "im.rdma.module_2",
   "mr.actor.file",
-  "mr.proc_launcher_probe.file",
   "np.actor.DroppingPort.resolve_and_send",
   "np.actor.LocalPort.resolve_and_send",
   "np.bootstrap.run_worker_loop_forever",
   "np.lib.PyRdmaAction.submit",
   "np.lib.PyRdmaBuffer.drop",
-  "np.pickle.PendingMessage.py_resolve",
-  "np.proc_launcher_probe.probe_exit_port_via_mesh"
+  "np.pickle.PendingMessage.py_resolve"
 ]
 
 [[transition]]
@@ -744,7 +752,6 @@ owns = [
   "im.logging.module",
   "im.mailbox.module",
   "im.pickle.module",
-  "im.proc_launcher_probe.module",
   "im.proc_mesh.module",
   "im.rdma.module",
   "im.supervision.module",
@@ -756,7 +763,6 @@ owns = [
   "im.test_hyperactor.module",
   "im.test_logging.module",
   "im.test_mailbox.module",
-  "im.test_proc_launcher_probe.module",
   "im.test_proc_mesh.module",
   "im.test_python_actors.module",
   "im.test_rdma_initialization.test_ensure_init_observes_its_supplied_shared",
@@ -1710,8 +1716,9 @@ path = "fbcode/monarch/monarch_hyperactor/src/proc_launcher_probe.rs"
 symbol = "PyPythonTask"
 operation = "helper_symbol"
 scope = "production_compiled_test_only"
-state = "legacy"
-transition = "6.2"
+state = "migrated"
+transition = "6.0c.1e"
+transition_revision = "D117415952"
 
 [[site]]
 id = "hs.proc_mesh.PyPythonTask"
@@ -2520,8 +2527,9 @@ path = "fbcode/monarch/monarch_hyperactor/src/proc_launcher_probe.rs"
 symbol = "probe_exit_port_via_mesh"
 operation = "py_python_task_new"
 scope = "production_compiled_test_only"
-state = "legacy"
-transition = "6.2"
+state = "migrated"
+transition = "6.0c.1e"
+transition_revision = "D117415952"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from probe_exit_port_via_mesh"
 consumer = "test_proc_launcher_probe"
@@ -2708,8 +2716,9 @@ path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/proc_lau
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "stub"
-state = "legacy"
-transition = "6.8"
+state = "migrated"
+transition = "6.0c.1e"
+transition_revision = "D117415952"
 members = ["PythonTask"]
 
 [[site]]
@@ -2936,8 +2945,9 @@ path = "fbcode/monarch/python/tests/test_proc_launcher_probe.py"
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "test"
-state = "legacy"
-transition = "6.8"
+state = "migrated"
+transition = "6.0c.1e"
+transition_revision = "D117415952"
 members = ["PythonTask"]
 
 [[site]]
@@ -3161,8 +3171,9 @@ path = "fbcode/monarch/monarch_hyperactor/src/proc_launcher_probe.rs"
 symbol = "<file>"
 operation = "pytokio_module_ref"
 scope = "production_compiled_test_only"
-state = "legacy"
-transition = "6.2"
+state = "migrated"
+transition = "6.0c.1e"
+transition_revision = "D117415952"
 
 [[site]]
 id = "mr.proc_mesh.file"
