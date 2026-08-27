@@ -21,6 +21,10 @@ def sleep_indefinitely_for_unit_tests() -> None:
     """
     ...
 
+def _wait_on_event_for_exit_test(entered: object, release: object) -> None:
+    """Block inside a PyO3 call for the interpreter-exit regression test."""
+    ...
+
 def _get_gil_on_control_plane() -> int:
     """
     Number of unsanctioned GIL acquisitions seen on the control-plane runtime.

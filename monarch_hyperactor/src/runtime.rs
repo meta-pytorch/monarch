@@ -13,7 +13,9 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::Result;
 use hyperactor::runtime_identity::RuntimeKind;
@@ -35,6 +37,13 @@ use tokio::runtime::Handle;
 use tokio::task;
 
 use crate::config::TOKIO_WORKER_THREADS;
+
+/// Attribute holding an actor's event loop on the `threading.Thread` running
+/// it. `threading` already tracks every live thread, so this needs no second
+/// registry and takes no lock on the actor-spawn path.
+const ACTOR_EVENT_LOOP_ATTRIBUTE: &str = "_monarch_actor_event_loop";
+const ACTOR_EVENT_LOOP_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const ACTOR_EVENT_LOOP_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Global tokio runtime container.
 ///
@@ -84,6 +93,113 @@ pub fn get_tokio_runtime() -> Handle {
     global_runtime().handle.clone()
 }
 
+/// Record an actor's event loop on the `threading.Thread` running it, so the
+/// interpreter-exit reaper can find it again.
+///
+/// This does not keep the loop alive any longer than it already lives:
+/// `TaskLocals` holds it for the life of the `PythonActor` regardless. What it
+/// buys is that no separate process-lifetime registry exists.
+pub(crate) fn mark_actor_event_loop_thread(
+    thread: &Bound<'_, PyAny>,
+    event_loop: &Bound<'_, PyAny>,
+) -> PyResult<()> {
+    thread.setattr(ACTOR_EVENT_LOOP_ATTRIBUTE, event_loop)
+}
+
+fn actor_event_loops(py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
+    let threading = py.import("threading")?;
+    let mut loops = Vec::new();
+    for thread in threading.call_method0("enumerate")?.try_iter()? {
+        let thread = thread?;
+        let Ok(event_loop) = thread.getattr(ACTOR_EVENT_LOOP_ATTRIBUTE) else {
+            continue;
+        };
+        loops.push(event_loop.unbind());
+    }
+    Ok(loops)
+}
+
+/// Stop every marked actor loop, polling until they exit or `timeout` elapses.
+/// Returns how many were still enumerable when the pass ended.
+///
+/// Scope: this covers loops enumerable *during* the pass. The first empty
+/// snapshot returns, so a loop created after that observation is missed.
+/// That residual is deliberate -- closing it would mean proving actor-loop
+/// creation had quiesced first, which is a process-wide gate this guard
+/// intentionally does not have. Actor-owned teardown is what will make late
+/// creation safe; this is only the interpreter-exit backstop.
+///
+/// Latency: the deadline is checked once per pass, after a full enumeration
+/// and one `call_soon_threadsafe` per loop, so the bound is `timeout` plus one
+/// pass rather than exactly `timeout`.
+///
+/// Every wait is bounded and there are no thread joins: the pass only sleeps.
+/// `Thread.join()` and `Thread.is_alive()` are both avoided because on CPython
+/// 3.14 `is_alive()` can enter an unbounded OS-thread join once
+/// `thread_is_exiting` is set.
+fn stop_and_wait_actor_event_loops(py: Python<'_>, timeout: Duration) -> PyResult<usize> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let loops = actor_event_loops(py)?;
+        if loops.is_empty() {
+            return Ok(0);
+        }
+        for event_loop in &loops {
+            let event_loop = event_loop.bind(py);
+            // `stop` must run on the loop's own thread, so schedule it rather
+            // than call it. A closed loop raises, which is the normal state
+            // for an actor that already drained.
+            let stop_result = event_loop
+                .getattr("stop")
+                .and_then(|stop| event_loop.call_method1("call_soon_threadsafe", (stop,)));
+            if let Err(err) = stop_result {
+                tracing::warn!(error = %err, "failed to stop actor event loop at interpreter exit");
+            }
+        }
+        if Instant::now() >= deadline {
+            // Re-enumerate: threads may have exited while this pass issued its
+            // stops, and the survivor count is what the caller reports.
+            return Ok(actor_event_loops(py)?.len());
+        }
+
+        // Releasing the GIL is what lets the loop threads run the scheduled stop.
+        let sleep_for =
+            ACTOR_EVENT_LOOP_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now()));
+        py.detach(move || thread::sleep(sleep_for));
+    }
+}
+
+/// Reap actor event-loop threads before the interpreter finalizes.
+///
+/// `Py_FinalizeEx` runs Python `atexit` handlers *before* it publishes the
+/// finalizing thread state, so while this runs every loop thread can still
+/// take the GIL, run the scheduled `stop`, return from `run_forever` and exit.
+/// After that point a surviving daemon thread that asks for the GIL is
+/// force-exited with `pthread_exit`, and that unwind through pyo3's
+/// `catch_unwind` aborts the process.
+///
+/// This is an interpreter-exit guard, not the lifecycle repair: actor cleanup
+/// still returns before its thread terminates, and the root client still
+/// publishes `Stopped` without running cleanup.
+fn shutdown_actor_event_loops(py: Python<'_>, timeout: Duration) {
+    let remaining = match stop_and_wait_actor_event_loops(py, timeout) {
+        Ok(remaining) => remaining,
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to stop actor event-loop threads at interpreter exit");
+            return;
+        }
+    };
+    if remaining > 0 {
+        // Only reachable if a callback on that loop never yields, which is a
+        // bug of its own. Naming it turns a bare SIGABRT into something
+        // diagnosable rather than hanging the exit path.
+        tracing::warn!(
+            remaining,
+            "actor event-loop threads survived interpreter-exit shutdown"
+        );
+    }
+}
+
 /// atexit handler that tears down the data-plane runtimes and the global Tokio runtime.
 ///
 /// Callers obtain a cloned `Handle` from `get_tokio_runtime()` rather
@@ -111,6 +227,11 @@ pub fn shutdown_tokio_runtime(py: Python<'_>) {
         };
         rt.shutdown_timeout(Duration::from_secs(1));
     });
+
+    // Reaping runs unconditionally. The field intervention that took this
+    // failure from 6/60 to 0/60 was an unconditional stop-and-join, and the
+    // bounded deadline caps the worst case.
+    shutdown_actor_event_loops(py, ACTOR_EVENT_LOOP_SHUTDOWN_TIMEOUT);
 }
 
 /// Stores the native thread ID of the main Python thread.
@@ -251,6 +372,22 @@ pub fn sleep_indefinitely_for_unit_tests(py: Python) -> PyResult<()> {
     signal_safe_block_on(py, future)
 }
 
+/// Test hook for the interpreter-exit regression test.
+///
+/// `threading.Event.wait()` releases the GIL, so keeping this PyO3 frame on
+/// the stack while it waits is what puts a `catch_unwind` trampoline in the
+/// path of CPython's finalization unwind. Test-only; not part of any API.
+#[pyfunction]
+#[pyo3(name = "_wait_on_event_for_exit_test")]
+fn wait_on_event_for_exit_test(
+    entered: &Bound<'_, PyAny>,
+    release: &Bound<'_, PyAny>,
+) -> PyResult<()> {
+    entered.call_method0("set")?;
+    release.call_method0("wait")?;
+    Ok(())
+}
+
 /// Initialize the runtime module and expose Python functions
 pub fn register_python_bindings(runtime_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     let sleep_indefinitely_fn =
@@ -260,6 +397,14 @@ pub fn register_python_bindings(runtime_mod: &Bound<'_, PyModule>) -> PyResult<(
         "monarch._rust_bindings.monarch_hyperactor.runtime",
     )?;
     runtime_mod.add_function(sleep_indefinitely_fn)?;
+
+    let wait_on_event_for_exit_test_fn =
+        wrap_pyfunction!(wait_on_event_for_exit_test, runtime_mod.py())?;
+    wait_on_event_for_exit_test_fn.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.runtime",
+    )?;
+    runtime_mod.add_function(wait_on_event_for_exit_test_fn)?;
 
     let get_gil_on_control_plane_fn = wrap_pyfunction!(get_gil_on_control_plane, runtime_mod.py())?;
     get_gil_on_control_plane_fn.setattr(
@@ -342,10 +487,197 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use hyperactor::runtime_identity::RuntimeKind;
     use hyperactor::runtime_identity::current_runtime_kind;
+    use pyo3::types::PyDict;
 
     use super::*;
+
+    // The reaper is process-wide over `threading.enumerate()`, so two of these
+    // running concurrently would see each other's threads. A test-only static
+    // is fine; the no-new-global-state rule is about production code.
+    static ACTOR_EVENT_LOOP_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn start_marked_thread(
+        py: Python<'_>,
+        target: &Bound<'_, PyAny>,
+        event_loop: &Bound<'_, PyAny>,
+    ) {
+        let kwargs = PyDict::new(py);
+        kwargs
+            .set_item("target", target)
+            .expect("thread target should be set");
+        kwargs
+            .set_item("daemon", true)
+            .expect("thread should be made a daemon");
+        let thread = py
+            .import("threading")
+            .expect("threading should import")
+            .call_method("Thread", (), Some(&kwargs))
+            .expect("thread should be created");
+        mark_actor_event_loop_thread(&thread, event_loop)
+            .expect("actor event loop should attach to its owning thread");
+        thread.call_method0("start").expect("thread should start");
+    }
+
+    /// A marked thread actually running `run_forever`, so a scheduled `stop`
+    /// reaches it and the thread exits.
+    fn new_actor_event_loop(py: Python<'_>) -> Py<PyAny> {
+        let event_loop = py
+            .import("asyncio")
+            .expect("asyncio should import")
+            .call_method0("new_event_loop")
+            .expect("event loop should be created");
+        let target = event_loop
+            .getattr("run_forever")
+            .expect("event loop should have run_forever");
+        start_marked_thread(py, &target, &event_loop);
+        event_loop.unbind()
+    }
+
+    /// A marked thread wedged on `Event.wait()`, carrying a loop that never
+    /// runs, so the scheduled `stop` can never execute and the thread outlives
+    /// any deadline.
+    fn new_wedged_actor_event_loop(py: Python<'_>) -> (Py<PyAny>, Py<PyAny>) {
+        let event_loop = py
+            .import("asyncio")
+            .expect("asyncio should import")
+            .call_method0("new_event_loop")
+            .expect("event loop should be created");
+        let release = py
+            .import("threading")
+            .expect("threading should import")
+            .call_method0("Event")
+            .expect("release event should be created");
+        let target = release.getattr("wait").expect("event should have wait");
+        start_marked_thread(py, &target, &event_loop);
+        (event_loop.unbind(), release.unbind())
+    }
+
+    fn marked_loop_count(py: Python<'_>) -> usize {
+        actor_event_loops(py)
+            .expect("actor event-loop threads should enumerate")
+            .len()
+    }
+
+    #[test]
+    fn stop_and_wait_actor_event_loops_reaps_every_thread() {
+        let _guard = ACTOR_EVENT_LOOP_TEST_LOCK
+            .lock()
+            .expect("actor event-loop tests should not poison their lock");
+        pyo3::Python::initialize();
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let loops = [new_actor_event_loop(py), new_actor_event_loop(py)];
+
+            assert_eq!(
+                stop_and_wait_actor_event_loops(py, Duration::from_secs(1))
+                    .expect("actor event-loop shutdown should succeed"),
+                0,
+                "all marked actor event-loop threads should exit before the deadline"
+            );
+            assert_eq!(
+                marked_loop_count(py),
+                0,
+                "stopped actor event-loop threads should leave threading.enumerate()"
+            );
+            for event_loop in loops {
+                event_loop
+                    .bind(py)
+                    .call_method0("close")
+                    .expect("stopped event loop should close");
+            }
+        });
+    }
+
+    #[test]
+    fn stop_and_wait_actor_event_loops_returns_at_deadline() {
+        let _guard = ACTOR_EVENT_LOOP_TEST_LOCK
+            .lock()
+            .expect("actor event-loop tests should not poison their lock");
+        pyo3::Python::initialize();
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let (event_loop, release) = new_wedged_actor_event_loop(py);
+            let started = Instant::now();
+
+            assert_eq!(
+                stop_and_wait_actor_event_loops(py, Duration::from_millis(10))
+                    .expect("actor event-loop timeout should be observed"),
+                1,
+                "a wedged marked thread should survive the shutdown deadline"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "actor event-loop shutdown should return near its deadline"
+            );
+
+            release
+                .bind(py)
+                .call_method0("set")
+                .expect("wedged thread should be released");
+            assert_eq!(
+                stop_and_wait_actor_event_loops(py, Duration::from_secs(1))
+                    .expect("released actor event-loop thread should be observed"),
+                0,
+                "released marked thread should exit"
+            );
+            event_loop
+                .bind(py)
+                .call_method0("close")
+                .expect("unused event loop should close");
+        });
+    }
+
+    // The documented bound is `timeout + one pass`. Measure the one-pass term
+    // with many loops so it is a behaviour rather than a claim, and so a
+    // regression to per-thread timeouts (N * timeout) would be caught.
+    #[test]
+    fn stop_and_wait_actor_event_loops_pass_cost_is_bounded_with_many_loops() {
+        const LOOPS: usize = 32;
+        let _guard = ACTOR_EVENT_LOOP_TEST_LOCK
+            .lock()
+            .expect("actor event-loop tests should not poison their lock");
+        pyo3::Python::initialize();
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let wedged: Vec<_> = (0..LOOPS)
+                .map(|_| new_wedged_actor_event_loop(py))
+                .collect();
+            let started = Instant::now();
+
+            assert_eq!(
+                stop_and_wait_actor_event_loops(py, Duration::from_millis(50))
+                    .expect("actor event-loop timeout should be observed"),
+                LOOPS,
+                "every wedged marked thread should survive the shutdown deadline"
+            );
+            // Per-thread timeouts would cost LOOPS * 50ms = 1.6s here.
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "one pass over {LOOPS} loops should be small next to the deadline, got {:?}",
+                started.elapsed()
+            );
+
+            for (_, release) in &wedged {
+                release
+                    .bind(py)
+                    .call_method0("set")
+                    .expect("wedged thread should be released");
+            }
+            assert_eq!(
+                stop_and_wait_actor_event_loops(py, Duration::from_secs(5))
+                    .expect("released actor event-loop threads should be observed"),
+                0,
+                "released marked threads should exit"
+            );
+            for (event_loop, _) in wedged {
+                event_loop
+                    .bind(py)
+                    .call_method0("close")
+                    .expect("unused event loop should close");
+            }
+        });
+    }
 
     // The shared control-plane runtime stamps its worker threads ControlPlane.
     #[test]
