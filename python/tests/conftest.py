@@ -188,3 +188,44 @@ def pytest_collection_modifyitems(
                     reason=f"Disabled via GitHub issue: DISABLED {test_name}"
                 )
             )
+
+
+def _test_uses_rdma(request: pytest.FixtureRequest) -> bool:
+    """Whether a test exercises monarch's RDMA path (and so needs torch preloaded).
+
+    Matches both the RDMA test modules (``test_rdma*`` / ``rdma_load_test``) and any
+    test parametrized by ``@rdma_backends`` (rdma_test_utils) -- which drives the
+    RDMA path from non-rdma-named modules too, e.g. ``test_gil_on_control_plane``.
+    Both appear in the node id: the module path, or the ``rdma_disable_ibverbs``
+    param id. (``@rdma_backends`` parametrizes via a config helper, so the params
+    show up in the id but NOT in ``callspec.params`` -- hence checking the id.)
+    """
+    return "rdma" in (getattr(request.node, "nodeid", "") or "").lower()
+
+
+@pytest.fixture(autouse=True)
+def _scope_torch_preload_to_rdma(request: pytest.FixtureRequest):
+    """Scope MONARCH_PRELOAD_TORCH so only RDMA tests pay the torch-preload cost.
+
+    Only monarch's RDMA path makes the rdmaxcel HIP call that races with torch's
+    bundled libamdhip64 on ROCm (the fatal hip.cpp:512 "hipApiName ..." abort).
+    The ROCm CI enables MONARCH_PRELOAD_TORCH job-wide so the test worker's own
+    (inline) RDMA calls stay safe -- but that also made *every* proc mesh / isolated
+    subprocess spawned by the many non-RDMA actor tests import torch (~10s each),
+    timing them out on slower ROCm runners. So turn the preload OFF while a
+    non-RDMA test runs: the procs it spawns then skip the torch import. RDMA test
+    modules keep it on (a test may still override, e.g. test_rdma_cpu_no_torch pins
+    it to "0" in its isolated subprocess). No-op when the flag isn't set (CUDA/CPU).
+    """
+    if _test_uses_rdma(request):
+        yield
+        return
+    previous = os.environ.get("MONARCH_PRELOAD_TORCH")
+    os.environ["MONARCH_PRELOAD_TORCH"] = "0"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("MONARCH_PRELOAD_TORCH", None)
+        else:
+            os.environ["MONARCH_PRELOAD_TORCH"] = previous
