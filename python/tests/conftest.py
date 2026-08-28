@@ -218,7 +218,17 @@ def _scope_torch_preload_to_rdma(request: pytest.FixtureRequest):
     it to "0" in its isolated subprocess). No-op when the flag isn't set (CUDA/CPU).
     """
     if _test_uses_rdma(request):
-        yield
+        # RDMA tests keep the preload on, so each proc they spawn imports torch
+        # (~10s); multi-proc RDMA spawns then blow past the default 30s Host::spawn
+        # readiness window on slow ROCm runners. Widen it just for these tests.
+        # (Scoped via `configured()` rather than a job-wide env var, which would
+        # sit in the higher-priority Env config layer and clobber the
+        # host_spawn_ready_timeout that test_config asserts on. `configured()` also
+        # propagates the value to spawned/isolated procs via the env var.)
+        from monarch.config import configured
+
+        with configured(host_spawn_ready_timeout="120s"):
+            yield
         return
     previous = os.environ.get("MONARCH_PRELOAD_TORCH")
     os.environ["MONARCH_PRELOAD_TORCH"] = "0"
