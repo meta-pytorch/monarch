@@ -23,11 +23,7 @@ use super::primitives::IbvConfig;
 use super::primitives::IbvCq;
 use super::primitives::IbvQp;
 use super::primitives::IbvQpInfo;
-use super::primitives::IbvWc;
 use super::queue_pair::IbvQueuePair;
-use super::queue_pair::PollCompletionError;
-use super::queue_pair::PollTarget;
-use super::queue_pair::WorkRequestError;
 
 /// Queue key for EFA SRD traffic. Both peers must present the same value or the
 /// responder drops the traffic silently; [`IbvQpInfo`] carries no queue key, so
@@ -655,18 +651,6 @@ impl IbvQueuePair for EfaQueuePair {
             remote_src.rkey,
             remote_src.size,
         )
-    }
-
-    fn poll_completion(
-        &mut self,
-        target: PollTarget,
-    ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
-        // SAFETY: `self.qp` owns the live queue pair built in `new`, along with
-        // its completion queues and device context, all non-null and alive for
-        // `self`'s lifetime. `&mut self` excludes another poll through this queue
-        // pair, and its lease leaves it the only queue pair polling that
-        // completion queue, so no other thread is polling it.
-        unsafe { super::queue_pair::poll_one(&self.qp, target) }
     }
 }
 
