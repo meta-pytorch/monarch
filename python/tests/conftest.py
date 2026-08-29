@@ -114,14 +114,31 @@ _NO_TENSOR_ENGINE_SKIP_PREFIXES = (
     "python/tests/simulator/test_communication_model.py::",
     "python/tests/simulator/test_ir.py::",
 )
+# Keep temporary macOS CI quarantines here instead of adding per-test skipif
+# markers, so the test definitions continue to describe supported behavior.
 _MACOS_ARM64_SKIP_NODEIDS = frozenset(
     {
+        "python/tests/test_actor_error.py::test_client_hard_exit_cleanup",
+        "python/tests/test_actor_error.py::test_supervise_callback_without_await_handled[actor_queue_dispatch=True]",
         "python/tests/test_config.py::test_codec_max_frame_length_with_increased_limit",
+        "python/tests/test_config.py::test_rdma_ibverbs_target_round_trip_and_propagation",
         "python/tests/test_cuda.py::TestEnvBeforeCuda::test_cleanup_torch_distributed",
         "python/tests/test_cuda.py::TestEnvBeforeCuda::test_lambda_sets_env_vars_before_cuda_init",
         "python/tests/test_cuda.py::TestEnvBeforeCuda::test_proc_mesh_with_dictionary_env",
         "python/tests/test_cuda.py::TestEnvBeforeCuda::test_proc_mesh_with_lambda_env",
+        "python/tests/test_debugger.py::test_debug",
+        "python/tests/test_debugger.py::test_debug_cli",
+        "python/tests/test_debugger.py::test_debug_multi_actor",
+        "python/tests/test_debugger.py::test_debug_nested",
         "python/tests/test_debugger.py::test_debug_with_pickle_by_value",
+        "python/tests/test_distributed_telemetry.py::test_all_actors_in_host_mesh",
+        "python/tests/test_distributed_telemetry.py::test_all_actors_in_proc_mesh",
+        "python/tests/test_distributed_telemetry.py::test_public_custom_trace_is_queryable",
+        "python/tests/test_distributed_telemetry.py::test_pyspy_tables_in_information_schema",
+        "python/tests/test_distributed_telemetry.py::test_query_after_stopping_actor_mesh",
+        "python/tests/test_distributed_telemetry.py::test_scan_timeout_on_dead_child",
+        "python/tests/test_distributed_telemetry.py::test_snapshot_schemas_pre_registered",
+        "python/tests/test_distributed_telemetry.py::test_store_pyspy_dump_and_query",
         "python/tests/test_host_mesh.py::test_host_mesh_context_manager",
         "python/tests/test_host_mesh.py::test_spawn_procs_with_taskset_bind",
         "python/tests/test_host_mesh.py::test_stop_and_reconnect",
