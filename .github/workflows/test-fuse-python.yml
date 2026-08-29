@@ -48,7 +48,7 @@ jobs:
         pip install -r build-requirements.txt
 
         # RDMA (monarch._rust_bindings.rdma) only builds with a CUDA/ROCm toolchain --
-        # setup.py sets build_rdma = has_cuda or has_rocm (rdmaxcel-sys compiles device
+        # build_support.py sets build_rdma = has_cuda or has_rocm (rdmaxcel-sys compiles device
         # code). The remotemount fan-out test needs RDMABuffer, so install the build-only
         # CUDA toolkit (statically linked, so no GPU or CUDA runtime is needed to import).
         command -v nvcc &> /dev/null || setup_cuda_toolkit

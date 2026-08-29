@@ -33,5 +33,6 @@ jobs:
         setup_build_environment ${{ matrix.python-version }}
         pip install ${{ matrix.torch-spec }}
         pip install -r build-requirements.txt
+        python -m unittest discover -s build_tests -v
         setup_tensor_engine
-        python -m build --wheel --no-isolation
+        MONARCH_REQUIRE_FRONTEND=1 python -m build --wheel --no-isolation

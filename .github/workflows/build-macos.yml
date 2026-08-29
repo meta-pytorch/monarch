@@ -47,6 +47,13 @@ jobs:
       - name: Set up Rust nightly
         uses: dtolnay/rust-toolchain@nightly
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: python/monarch/monarch_dashboard/frontend/package-lock.json
+
       - name: Install macOS build dependencies
         shell: bash
         run: |
@@ -72,7 +79,7 @@ jobs:
             export MONARCH_VERSION=0.7.0.dev$(date +'%Y%m%d')
           fi
 
-          python -m build --wheel --no-isolation
+          MONARCH_REQUIRE_FRONTEND=1 python -m build --wheel --no-isolation
           ls -la dist/
           python -m pip install dist/*.whl
           python -c "import monarch"

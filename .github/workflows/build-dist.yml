@@ -98,7 +98,7 @@ jobs:
         else
           export MONARCH_VERSION=0.7.0.dev$(date +'%Y%m%d')
         fi
-        python -m build --wheel --no-isolation
+        MONARCH_REQUIRE_FRONTEND=1 python -m build --wheel --no-isolation
 
         echo "=== sccache stats ==="
         sccache --show-stats || true

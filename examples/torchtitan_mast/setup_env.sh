@@ -10,7 +10,7 @@
 # venv. The slim worker (bootstrap) fbpkg is built on demand by
 # simple_mast_job.build_bootstrap, which reuses the wheel this script caches
 # in /tmp/monarch_bootstrap_$USER/wheel.
-# H100 x86, OSS tools only (uv + pip + maturin/setuptools-rust; no buck).
+# H100 x86, OSS tools only (uv + pip + maturin; no buck).
 # --force wipes and rebuilds.
 
 set -euo pipefail
@@ -34,16 +34,17 @@ HF_ASSETS="${TITAN_HF_ASSETS:-Qwen/Qwen3-1.7B}"
 [[ "${1:-}" =~ ^(-f|--force)$ ]] && { rm -rf "$CLIENT" "$WORKSPACE/.venv" "$WHEEL_DIR"; }
 [ -x "$PYTHON" ]                 || { echo "ERROR: $PYTHON not found" >&2; exit 1; }
 command -v uv >/dev/null         || { echo "ERROR: uv not on PATH" >&2; exit 1; }
-[ -f "$MONARCH_SRC/setup.py" ]   || { echo "ERROR: no setup.py at $MONARCH_SRC" >&2; exit 1; }
+[ -f "$MONARCH_SRC/pyproject.toml" ] || { echo "ERROR: no pyproject.toml at $MONARCH_SRC" >&2; exit 1; }
 [ -d "$TORCHTITAN" ]             || { echo "ERROR: TITAN_TORCHTITAN=$TORCHTITAN missing" >&2; exit 1; }
 mkdir -p "$CLIENT" "$WHEEL_DIR" "$WORKSPACE" "$BOOTSTRAP_WHEEL_DIR"
 
 # [1] Build the monarch wheel from $MONARCH_SRC (USE_TENSOR_ENGINE=0 -> slim,
-# no torch/nccl; the `rdma` cargo feature is on by default in setup.py so
+# no torch/nccl; the shared build configuration still enables `rdma` when a
+# CUDA or ROCm toolchain is present, so
 # monarch.rdma is still registered).
 "$PYTHON" -m venv --clear "$CLIENT"
 "$CLIENT/bin/python3.12" -m pip install --upgrade --disable-pip-version-check \
-    libclang numpy "setuptools>=64" setuptools-rust wheel
+    libclang numpy "maturin>=1.14,<2" "packaging>=24" build
 ( cd "$MONARCH_SRC" && \
     uv lock --check-exists && \
     USE_TENSOR_ENGINE=0 \

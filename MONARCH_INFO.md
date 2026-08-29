@@ -81,7 +81,7 @@ This is part of the Meta fbsource monorepo. The Monarch codebase is located in `
 
 Monarch uses a **dual build system**:
 
-### OSS Build (pip/uv + setuptools-rust)
+### OSS Build (pip/uv + maturin)
 
 For external/open-source development:
 
@@ -103,8 +103,7 @@ uv sync
 **Environment Variables:**
 - `USE_TENSOR_ENGINE=0` - Build actors only, without the tensor engine (no torch required)
 - `MONARCH_BUILD_MESH_ONLY=1` - Skip building legacy process_allocator binary (default)
-- `MONARCH_PACKAGE_NAME` - Override package name (default: `torchmonarch`)
-- `MONARCH_VERSION` - Override version (default: `0.0.1`)
+- `MONARCH_VERSION` - Override version (default: `0.7.0.dev0`)
 - `ENABLE_MESSAGE_LOGGING` - Enable hyperactor message logging
 - `MONARCH_GPU_PLATFORM` - Select GPU platform: `cuda`, `rocm`, or `none` (CPU-only tensor engine). Leave unset to auto-detect; required when both CUDA and ROCm are installed
 
@@ -263,18 +262,20 @@ Monarch implements a hierarchical actor model:
 
 ### Build Configuration
 
-The `setup.py` detects:
+The shared `build_support.py` configuration detects:
 1. **PyTorch installation** - locates libtorch, includes, and detects C++11 ABI
 2. **CUDA availability** - checks `CUDA_HOME` or searches for `nvcc`
 3. **Tensor Engine Flag** - uses `USE_TENSOR_ENGINE` env var to enable/disable GPU features
 
 **Rust Features:**
-- `tensor_engine` - Enables CUDA, RDMA, and distributed tensor support
+- `tensor_engine` - Enables distributed tensor support
+- `tensor_engine_gpu` - Enables CUDA/ROCm tensor and RDMA support
+- `embedded-cpp` - Embeds the Torch C++ modules in the PyO3 library
 - `extension-module` - Always enabled for Python bindings
 
 ### C++ Extensions
 
-When `tensor_engine` is enabled, two C++ extensions are built:
+When `tensor_engine` is enabled, two C++ modules are embedded in the PyO3 extension:
 - `monarch.common._C` - Core C++ utilities interfacing with PyTorch
 - `monarch.gradient._gradient_generator` - Gradient computation for distributed training
 
@@ -327,7 +328,8 @@ Default pytest timeout is 5 minutes (configured in `pyproject.toml`).
 ## Configuration Files
 
 - `pyproject.toml` - Python package metadata, dependencies, pytest config, uv sources
-- `setup.py` - Build configuration, extension definitions, environment detection
+- `build_backend.py` - PEP 517 wrapper for maturin and wheel/sdist assembly
+- `build_support.py` - Shared feature, toolchain, compiler, and frontend configuration
 - `Cargo.toml` - Rust workspace definition
 - `.cargo/config.toml` - Rust build flags (`tracing_unstable`)
 - `rust-toolchain` - Pinned to `nightly-2026-05-22`

@@ -173,11 +173,14 @@ use tokio as _;
 
 mod actions;
 mod app;
+mod cli;
 pub(crate) mod client;
 mod diagnostics;
 mod fetch;
 mod filter;
 mod format;
+
+pub use cli::run_cli;
 mod job;
 mod model;
 mod overlay;
