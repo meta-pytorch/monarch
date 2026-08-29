@@ -47,6 +47,7 @@ from typing import Final, Protocol
 
 from monarch._src.actor.host_mesh import HostMesh
 from monarch.actor import attach_to_workers, enable_transport
+from monarch.tools.network import get_consistent_sockaddr
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ def _worker_address(
     name: str,
     ipc_dir: str | None,
 ) -> str:
-    """Build a ZMQ-style listen address for ``run_worker_loop_forever``.
+    """Build a ZMQ-style listen address for this host's ``run_worker_loop_forever``.
 
     ``monarch_port == 0`` is rejected for TCP and metatls transports: the
     kernel would assign a free port at bind time, but the caller can't
@@ -84,6 +85,12 @@ def _worker_address(
     the port pre-spawn via a short-lived socket races against other
     listeners on the host. Forcing an explicit port keeps the parent's
     pre-computed address honest.
+
+    The TCP address is *resolved* here rather than published as a hostname: a
+    name in the store is resolved once by the worker that binds it and again by
+    the rank 0 that dials it, and a node can resolve its own name differently
+    from how its peers do. See
+    :func:`monarch.tools.network.get_consistent_sockaddr`.
     """
     if transport == "ipc":
         assert ipc_dir is not None
@@ -95,7 +102,14 @@ def _worker_address(
                 f"transport {transport!r}"
             )
         if transport == "tcp":
-            return f"tcp://{socket.getfqdn()}:{monarch_port}"
+            # gethostname() rather than getfqdn(): the name is now only resolver
+            # input, and it is what hyperactor's own ChannelAddr::any starts
+            # from for TcpMode::Hostname.
+            return (
+                f"tcp://{get_consistent_sockaddr(socket.gethostname(), monarch_port)}"
+            )
+        # TLS keeps the hostname: ChannelAddr::MetaTls stores it and resolves per
+        # dial, so the advertised name is the cert-validated name.
         return f"metatls://{socket.getfqdn()}:{monarch_port}"
     raise ValueError(
         f"unsupported transport {transport!r}; expected one of "
