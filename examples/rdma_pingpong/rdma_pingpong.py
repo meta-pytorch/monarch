@@ -56,6 +56,7 @@ class PingPongActor(Actor):
     @endpoint
     async def get_buffer(self) -> RDMABuffer:
         if self.buffer_type in ("cpu_tensor", "cuda_tensor"):
+            # pyrefly: ignore [missing-attribute]
             return RDMABuffer(self.data.view(torch.uint8).flatten())
         else:
             # pyrefly: ignore [bad-argument-type]
@@ -65,7 +66,9 @@ class PingPongActor(Actor):
     async def read_from(self, peer_buf: RDMABuffer) -> float:
         """Read peer's data into recv_buf, return elapsed seconds."""
         if self.buffer_type in ("cpu_tensor", "cuda_tensor"):
+            # pyrefly: ignore [missing-attribute]
             self.recv_buf.zero_()
+            # pyrefly: ignore [missing-attribute]
             local = self.recv_buf.view(torch.uint8).flatten()
         elif self.buffer_type == "bytearray":
             for i in range(len(self.recv_buf)):
@@ -89,6 +92,7 @@ class PingPongActor(Actor):
         if self.buffer_type in ("cpu_tensor", "cuda_tensor"):
             # .cpu() is a no-op on CPU tensors, required for cuda_tensor
             # since numpy doesn't accept CUDA storage.
+            # pyrefly: ignore [missing-attribute]
             raw = buf.cpu().numpy().tobytes()
         else:
             raw = bytes(buf)
