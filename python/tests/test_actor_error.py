@@ -2075,9 +2075,13 @@ def test_client_hard_exit_cleanup() -> None:
             # These pids should be gone because that client spawned the procs.
             pids = q.get()
             pids_on_ref = q.get()
+            q.close()
+            q.join_thread()
             # Make sure to terminate abnormally (SIGTERM), so we can test that this
             # works even without any involvement from the user.
             p.terminate()
+            p.join(timeout=10)
+            assert not p.is_alive()
             # Ensure the processes exit after waiting for the timeout specified.
             time.sleep(15)
             processes_exist = [pid for pid in pids if is_process_running(pid)]
@@ -2090,3 +2094,9 @@ def test_client_hard_exit_cleanup() -> None:
 
             # There is currently no Python API to determine if the actors spawned
             # by the subprocess are gone other than an undeliverable message.
+
+            # The referenced mesh should survive the subprocess, but it must be
+            # stopped before this test exits. Its bootstrap inherits Python's
+            # multiprocessing resource-tracker pipe and otherwise prevents the
+            # isolated test process from shutting down on macOS.
+            procs.stop().get()

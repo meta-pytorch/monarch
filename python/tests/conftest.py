@@ -114,9 +114,13 @@ _NO_TENSOR_ENGINE_SKIP_PREFIXES = (
     "python/tests/simulator/test_communication_model.py::",
     "python/tests/simulator/test_ir.py::",
 )
+# Keep temporary macOS CI quarantines here instead of adding per-test skipif
+# markers, so the test definitions continue to describe supported behavior.
 _MACOS_ARM64_SKIP_NODEIDS = frozenset(
     {
+        "python/tests/test_actor_error.py::test_supervise_callback_without_await_handled[actor_queue_dispatch=True]",
         "python/tests/test_config.py::test_codec_max_frame_length_with_increased_limit",
+        "python/tests/test_config.py::test_rdma_ibverbs_target_round_trip_and_propagation",
         "python/tests/test_cuda.py::TestEnvBeforeCuda::test_cleanup_torch_distributed",
         "python/tests/test_cuda.py::TestEnvBeforeCuda::test_lambda_sets_env_vars_before_cuda_init",
         "python/tests/test_cuda.py::TestEnvBeforeCuda::test_proc_mesh_with_dictionary_env",

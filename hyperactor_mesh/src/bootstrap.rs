@@ -159,10 +159,11 @@ declare_attrs! {
     ))
     pub attr MESH_TAIL_LOG_LINES: usize = 0;
 
-    /// If enabled (default), bootstrap child processes install
-    /// `PR_SET_PDEATHSIG(SIGKILL)` so the kernel reaps them if the
-    /// parent dies unexpectedly. This is a **production safety net**
-    /// against leaked children; tests usually disable it via
+    /// If enabled (default), bootstrap child processes arrange to exit when
+    /// their parent dies unexpectedly. Linux uses
+    /// `PR_SET_PDEATHSIG(SIGKILL)` and macOS monitors the parent process. This
+    /// is a **production safety net** against leaked children; tests usually
+    /// disable it via
     /// `std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG",
     /// "false")`.
     @meta(CONFIG = ConfigAttr::new(
@@ -199,6 +200,7 @@ pub const CLIENT_TRACE_ID_ENV: &str = "MONARCH_CLIENT_TRACE_ID";
 pub(crate) const BOOTSTRAP_LOG_CHANNEL: &str = "BOOTSTRAP_LOG_CHANNEL";
 
 pub(crate) const BOOTSTRAP_MODE_ENV: &str = "HYPERACTOR_MESH_BOOTSTRAP_MODE";
+pub(crate) const BOOTSTRAP_PARENT_PID_ENV: &str = "HYPERACTOR_MESH_BOOTSTRAP_PARENT_PID";
 pub(crate) const PROCESS_NAME_ENV: &str = "HYPERACTOR_PROCESS_NAME";
 
 #[macro_export]
@@ -587,6 +589,7 @@ impl Bootstrap {
                     // is a last-resort guard against leaks if that
                     // protocol is bypassed.
                     let _ = install_pdeathsig_kill();
+                    install_parent_death_monitor();
                 } else {
                     eprintln!("(bootstrap) PDEATHSIG disabled via config");
                 }
@@ -705,6 +708,49 @@ pub fn install_pdeathsig_kill() -> io::Result<()> {
     }
     Ok(())
 }
+
+/// Install the macOS fallback for Linux's `PR_SET_PDEATHSIG`.
+///
+/// macOS has no parent-death signal, so bootstrap procs periodically compare
+/// their current parent with the PID recorded by the native launcher. The
+/// initial comparison closes the race where the parent exits before this task
+/// starts.
+#[cfg(target_os = "macos")]
+fn install_parent_death_monitor() {
+    let expected_parent = std::env::var(BOOTSTRAP_PARENT_PID_ENV)
+        .ok()
+        .and_then(|value| value.parse::<libc::pid_t>().ok())
+        // SAFETY: `getppid()` is a side-effect-free libc syscall.
+        .unwrap_or_else(|| unsafe { libc::getppid() });
+
+    let parent_is_alive = move || {
+        // SAFETY: `getppid()` is a side-effect-free libc syscall.
+        unsafe { libc::getppid() == expected_parent }
+    };
+
+    if !parent_is_alive() {
+        // Match the uncatchable Linux `SIGKILL` behavior.
+        // SAFETY: both libc calls operate on the current process only.
+        unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
+        return;
+    }
+
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if !parent_is_alive() {
+                // SAFETY: both libc calls operate on the current process only.
+                unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
+                return;
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install_parent_death_monitor() {}
 
 /// Represents the lifecycle state of a **proc as hosted in an OS
 /// process** managed by `BootstrapProcManager`.

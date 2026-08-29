@@ -87,6 +87,7 @@ use tracing::Instrument;
 
 use crate::bootstrap::BOOTSTRAP_LOG_CHANNEL;
 use crate::bootstrap::BOOTSTRAP_MODE_ENV;
+use crate::bootstrap::BOOTSTRAP_PARENT_PID_ENV;
 use crate::bootstrap::Bootstrap;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcConfig;
@@ -327,6 +328,10 @@ impl ProcLauncher for NativeProcLauncher {
 
         // Bootstrap payload
         cmd.env(BOOTSTRAP_MODE_ENV, opts.bootstrap_payload);
+
+        // macOS has no PR_SET_PDEATHSIG, so the bootstrap process uses this
+        // value to detect when its native launcher has died.
+        cmd.env(BOOTSTRAP_PARENT_PID_ENV, std::process::id().to_string());
 
         // Diagnostics name
         cmd.env(PROCESS_NAME_ENV, opts.process_name);
