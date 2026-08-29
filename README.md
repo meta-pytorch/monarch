@@ -40,7 +40,7 @@ fut.get()
 ```
 
 The
-[introduction to monarch concepts](https://meta-pytorch.org/monarch/generated/examples/getting_started.html)
+[introduction to monarch concepts](https://meta-pytorch.org/monarch/stable/generated/examples/getting_started.html)
 provides an introduction to using these features.
 
 ## 📖 Documentation
@@ -92,9 +92,9 @@ brew install uv
 #### Understanding Tensor Engine
 
 Monarch includes
-[distributed tensor](https://meta-pytorch.org/monarch/generated/examples/getting_started.html#distributed-tensors)
+[distributed tensor](https://meta-pytorch.org/monarch/stable/generated/examples/getting_started.html#distributed-tensors)
 and
-[RDMA](https://meta-pytorch.org/monarch/generated/examples/getting_started.html#point-to-point-rdma)
+[RDMA](https://meta-pytorch.org/monarch/stable/generated/examples/getting_started.html#point-to-point-rdma)
 APIs. The tensor engine builds on any platform, including CPU-only hosts and
 macOS; GPU-specific pieces (NCCL, RDMA, rdmaxcel) layer on top and only build on
 Linux with a CUDA or ROCm toolchain installed. If you want a lighter-weight
