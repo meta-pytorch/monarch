@@ -108,7 +108,6 @@ class ControllerImporterServer:
                         )
                     elif isinstance(s.loader, ExtensionFileLoader):
                         with open(s.loader.path, "rb") as f:
-                            # pyrefly: ignore [bad-assignment]
                             s.loader = _ExtensionLoader(
                                 s.loader.name, s.loader.path, f.read()
                             )
@@ -683,7 +682,6 @@ def mast_mesh(
 
 
 def list_mast_jobs():
-    # pyrefly: ignore [missing-argument]
     for job in get_mast_notebook_jobs():
         print(job)
 

@@ -64,7 +64,7 @@ class Philosopher(Actor):
     """A philosopher that alternates between thinking and eating."""
 
     def __init__(self, size: int) -> None:
-        # pyrefly: ignore [bad-assignment, bad-override]
+        # pyrefly: ignore [bad-assignment]
         self.size = size
         self.rank: int = 0
         self.left_status = ChopstickStatus.NONE

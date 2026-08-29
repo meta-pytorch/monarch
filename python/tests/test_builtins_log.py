@@ -15,7 +15,6 @@ from monarch.builtins.log import log_remote, set_logging_level_remote
 
 @pytest.fixture(scope="module", autouse=True)
 def testing_context():
-    # pyrefly: ignore [unknown-name]
     global local
     with TestingContext() as local:
         yield
@@ -25,7 +24,6 @@ def testing_context():
 class TestLogFunctions:
     @classmethod
     def local_device_mesh(cls, num_hosts, gpu_per_host, activate=True):
-        # pyrefly: ignore [unknown-name]
         return local.local_device_mesh(
             num_hosts,
             gpu_per_host,

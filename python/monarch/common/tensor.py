@@ -307,7 +307,7 @@ class Tensor(Referenceable, BaseTensor):
         with InputChecker(
             ts,
             lambda ts: (
-                # pyrefly: ignore [bad-argument-type, no-matching-overload]
+                # pyrefly: ignore [bad-argument-type]
                 f"reduce({next(ts)}, {dims}, reduction={reduction}, out={next(ts, None)})"
             ),
         ) as checker:
@@ -403,7 +403,7 @@ class MeshSliceTensor:
 
         with InputChecker(
             [self.tensor],
-            # pyrefly: ignore [bad-argument-type, no-matching-overload]
+            # pyrefly: ignore [bad-argument-type]
             lambda ts: f"{next(ts)}.to_mesh({mesh})",
         ) as checker:
             checker.check_no_requires_grad()
@@ -634,12 +634,10 @@ class InputChecker:
         error_names: Dict["Tensor", "str"] = {}
         for i, (t, errors) in enumerate(self.errors.items()):
             name = f"ERROR_{i}"
-            # pyrefly: ignore [unsupported-operation]
             error_names[t] = name
             error_info.append(f"{name}:\n")
             error_info.extend(errors)
 
-        # pyrefly: ignore [no-matching-overload]
         call = self.format(_Symbol(error_names.get(t, ".")) for t in self.tensors)
         msg = f"Incorrect arguments to monarch operation:\n\n  {call}\n\n{''.join(error_info)}"
         raise TypeError(msg)

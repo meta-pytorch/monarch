@@ -136,9 +136,7 @@ def isend(t, destination, group=None):
     if isinstance(group, SingleControllerProcessGroupWrapper):
         group = group.process_group
     req = dist.isend(t, destination.item(), group=group)
-    # pyrefly: ignore [missing-attribute]
     assert isinstance(req.is_completed(), bool)
-    # pyrefly: ignore [missing-attribute]
     req.wait()
     return torch.ones(1)
 
@@ -154,9 +152,7 @@ def irecv(t, src, group=None):
     if isinstance(group, SingleControllerProcessGroupWrapper):
         group = group.process_group
     req = dist.irecv(tensor=t, src=src.item(), group=group)
-    # pyrefly: ignore [missing-attribute]
     assert isinstance(req.is_completed(), bool)
-    # pyrefly: ignore [missing-attribute]
     req.wait()
     return torch.ones(1)
 

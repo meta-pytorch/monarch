@@ -57,7 +57,6 @@ async def async_main(num_procs: int) -> None:
         print(f"\n{num_procs} workers alive. Stopping the actor mesh...", flush=True)
 
         # Coordinated mesh-level stop.
-        # pyre-ignore[16]: `stop` is on `ActorMesh`, not the proxy type.
         await workers.stop("mesh stopped by example")
 
         print("Actor mesh stopped. Tombstones are now visible in the TUI (press h).")
