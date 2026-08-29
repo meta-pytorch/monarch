@@ -1152,20 +1152,26 @@ macro_rules! context_span {
 }
 
 pub mod env {
-    /// Env var name set when monarch launches subprocesses to forward the execution context
+    use hyperactor_config::CONFIG;
+    use hyperactor_config::ConfigAttr;
+    use hyperactor_config::attrs::declare_attrs;
+
     pub const HYPERACTOR_EXECUTION_ID_ENV: &str = "HYPERACTOR_EXECUTION_ID";
     pub const OTEL_EXPORTER: &str = "HYPERACTOR_OTEL_EXPORTER";
     pub const MAST_ENVIRONMENT: &str = "MAST_ENVIRONMENT";
 
-    /// Forward or generate a uuid for this execution. When running in production on mast, this is provided to
-    /// us via the MAST_HPC_JOB_NAME env var. Subprocesses should either forward the MAST_HPC_JOB_NAME
-    /// variable, or set the "MONARCH_EXECUTION_ID" var for subprocesses launched by this process.
-    /// We keep these env vars separate so that other applications that depend on the MAST_HPC_JOB_NAME existing
-    /// to understand their environment do not get confused and think they are running on mast when we are doing
-    ///  local testing.
+    declare_attrs! {
+        /// Identifier shared by all processes in one Monarch execution.
+        @meta(CONFIG = ConfigAttr::new(
+            Some(HYPERACTOR_EXECUTION_ID_ENV.to_string()),
+            None,
+        ))
+        pub attr EXECUTION_ID: String;
+    }
+
+    /// Return the inherited execution ID, generating it for a new execution.
     pub fn execution_id() -> String {
-        let id = std::env::var(HYPERACTOR_EXECUTION_ID_ENV).unwrap_or_else(|_| {
-            // not able to find an existing id so generate a unique one: username + current_time + random number.
+        hyperactor_config::global::get_or_insert_with(EXECUTION_ID, || {
             let username = crate::username();
             let now = {
                 let now = std::time::SystemTime::now();
@@ -1173,15 +1179,8 @@ pub mod env {
                 datetime.format("%b-%d_%H:%M").to_string()
             };
             let random_number: u16 = (rand::random::<u32>() % 1000) as u16;
-            let execution_id = format!("{}_{}_{}", username, now, random_number);
-            execution_id
-        });
-        // Safety: Can be unsound if there are multiple threads
-        // reading and writing the environment.
-        unsafe {
-            std::env::set_var(HYPERACTOR_EXECUTION_ID_ENV, id.clone());
-        }
-        id
+            format!("{}_{}_{}", username, now, random_number)
+        })
     }
 
     #[derive(PartialEq)]
