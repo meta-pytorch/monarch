@@ -54,7 +54,9 @@ fn main() {
             &src_dir,
             &[
                 "rdmaxcel.h",
+                "rdmaxcel_core_impl.h",
                 "rdmaxcel.c",
+                "rdmaxcel_core.c",
                 "rdmaxcel.cpp",
                 "rdmaxcel.cu",
                 "driver_api.h",
@@ -72,30 +74,41 @@ fn main() {
 
     // Setup rerun triggers
     println!("cargo:rerun-if-changed=src/rdmaxcel.h");
+    println!("cargo:rerun-if-changed=src/rdmaxcel_core_impl.h");
     println!("cargo:rerun-if-changed=src/rdmaxcel.c");
+    println!("cargo:rerun-if-changed=src/rdmaxcel_core.c");
     println!("cargo:rerun-if-changed=src/rdmaxcel.cpp");
     println!("cargo:rerun-if-changed=src/rdmaxcel.cu");
     println!("cargo:rerun-if-changed=src/driver_api.h");
     println!("cargo:rerun-if-changed=src/driver_api.cpp");
 
+    // Kernel-launched RDMA feature (Cargo feature `cuda`, default OFF). When off,
+    // rdmaxcel-sys compiles NO GPU device code and links NO GPU runtime, so
+    // `monarch._rust_bindings` carries no `libamdhip64` DT_NEEDED and importing it
+    // never loads/initializes hip. CPU-initiated RDMA still works: it uses only
+    // the host cores (db_ring/send_wqe/recv_wqe) plus the HIP driver API that is
+    // dlopen'd at runtime in driver_api.cpp.
+    let kernels = std::env::var("CARGO_FEATURE_CUDA").is_ok();
+
     // Link against dl for dynamic loading (both platforms)
     println!("cargo:rustc-link-lib=dl");
 
-    // Platform-specific GPU runtime linking
-    if is_rocm {
-        // ROCm: Link dynamically to HIP runtime
-        // Note: Driver API functions (hipMemCreate, etc.) are loaded via dlopen in driver_api.cpp
-        println!("cargo:rustc-link-lib=amdhip64");
-        println!("cargo:rustc-link-search=native={}/lib", compute_home);
-    } else {
-        // CUDA: Link statically to CUDA runtime
-        // Note: Driver API functions (cuMemCreate, etc.) are loaded via dlopen in driver_api.cpp
-        let cuda_lib_dir = build_utils::get_cuda_lib_dir();
-        println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
-        println!("cargo:rustc-link-lib=static=cudart_static");
-        // cudart_static requires these
-        println!("cargo:rustc-link-lib=rt");
-        println!("cargo:rustc-link-lib=pthread");
+    // Platform-specific GPU runtime linking -- ONLY when kernel-launched RDMA is
+    // enabled. This is the link that would otherwise force hip to load on import.
+    if kernels {
+        if is_rocm {
+            // ROCm: Link dynamically to HIP runtime
+            println!("cargo:rustc-link-lib=amdhip64");
+            println!("cargo:rustc-link-search=native={}/lib", compute_home);
+        } else {
+            // CUDA: Link statically to CUDA runtime
+            let cuda_lib_dir = build_utils::get_cuda_lib_dir();
+            println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
+            println!("cargo:rustc-link-lib=static=cudart_static");
+            // cudart_static requires these
+            println!("cargo:rustc-link-lib=rt");
+            println!("cargo:rustc-link-lib=pthread");
+        }
     }
 
     // Get Python config
@@ -112,9 +125,26 @@ fn main() {
 
     // Discover source files (dynamically handles hipified vs original names)
     let header_path = find_header(&source_dir, is_rocm);
-    let c_sources = find_sources(&source_dir, "c", is_rocm);
+    // `rdmaxcel_core.c` carries the GPU-runtime-free cores (db_ring/send_wqe/
+    // recv_wqe/cqe_poll). It must be compiled ONLY when kernels are OFF; when ON,
+    // rdmaxcel.cu provides those same extern symbols, so compiling both would
+    // duplicate them. Exclude it from auto-discovery and add it back explicitly
+    // for the kernels-off build.
+    let core_stem = if is_rocm { "rdmaxcel_core_hip" } else { "rdmaxcel_core" };
+    let mut c_sources: Vec<PathBuf> = find_sources(&source_dir, "c", is_rocm)
+        .into_iter()
+        .filter(|p| p.file_stem().and_then(|s| s.to_str()) != Some(core_stem))
+        .collect();
+    if !kernels {
+        c_sources.push(source_dir.join(format!("{}.c", core_stem)));
+    }
     let cpp_sources = find_sources(&source_dir, "cpp", is_rocm);
-    let gpu_source = find_gpu_source(&source_dir, is_rocm);
+    // GPU device code (kernel-launched RDMA) is compiled only when enabled.
+    let gpu_source = if kernels {
+        Some(find_gpu_source(&source_dir, is_rocm))
+    } else {
+        None
+    };
 
     // Generate bindings
     let mut builder = bindgen::Builder::default()
@@ -254,6 +284,13 @@ fn main() {
                 .define("USE_ROCM", "1");
         }
 
+        // Include the GPU-Direct memory-registration functions (cudaHostRegister)
+        // only when kernel-launched RDMA is enabled; otherwise they are #ifdef'd
+        // out so rdmaxcel.c references no cuda/hip runtime symbols.
+        if kernels {
+            c_build.define("RDMAXCEL_CUDA", None);
+        }
+
         c_build.compile("rdmaxcel");
     }
 
@@ -287,16 +324,18 @@ fn main() {
     // Statically link libstdc++
     build_utils::link_libstdcpp_static();
 
-    // Compile GPU source
-    compile_gpu_source(
-        &gpu_source,
-        &compute_home,
-        &compute_include_path,
-        rdma_include,
-        &source_dir,
-        &out_dir,
-        is_rocm,
-    );
+    // Compile GPU source (kernel-launched RDMA) only when the feature is enabled.
+    if let Some(gpu_source) = &gpu_source {
+        compile_gpu_source(
+            gpu_source,
+            &compute_home,
+            &compute_include_path,
+            rdma_include,
+            &source_dir,
+            &out_dir,
+            is_rocm,
+        );
+    }
 }
 
 /// Find the main header file (rdmaxcel.h or rdmaxcel_hip.h)
