@@ -16,10 +16,17 @@ from typing import Any, Dict, FrozenSet, List, Optional, Sequence
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
+from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._batch_env import in_batch_job
 from monarch._src.job._slurm_batch import _WORKER_BOOTSTRAP
 from monarch._src.job.job import BatchJob, JobState, JobTrait
+from monarch._src.job.service_identity import (
+    allocate_service_proc_ids,
+    serialize_service_proc_ids,
+    service_proc_addrs,
+    SERVICE_PROC_IDS_ENV,
+)
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -118,7 +125,12 @@ class SlurmJob(JobTrait):
         # Track the single SLURM job ID and all allocated hostnames
         self._slurm_job_id: Optional[str] = None
         self._all_hostnames: List[str] = []
+        self._service_proc_ids: list[ProcId] = []
         super().__init__()
+
+    @staticmethod
+    def _allocate_service_proc_ids(num_nodes: int) -> list[ProcId]:
+        return allocate_service_proc_ids(num_nodes)
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
         # In batch mode the in-allocation client rehydrates this object via
@@ -178,6 +190,7 @@ class SlurmJob(JobTrait):
         instead of submitting a new one.
         """
         total_nodes = sum(self._meshes.values())
+        self._ensure_service_proc_ids(total_nodes)
         if client_script is not None:
             # Dumped before submit: the job id isn't known yet, and the client
             # resolves it from $SLURM_JOB_ID anyway.
@@ -190,6 +203,7 @@ class SlurmJob(JobTrait):
         self, num_nodes: int, client_script: Optional[str] = None
     ) -> str:
         """Submit a SLURM job for all nodes."""
+        self._ensure_service_proc_ids(num_nodes)
         unique_job_name = f"{self._job_name}_{os.getpid()}"
 
         # Create log directory if it doesn't exist
@@ -253,6 +267,10 @@ class SlurmJob(JobTrait):
                 sbatch_directives.append(f"#SBATCH {arg}")
 
         batch_script = "\n".join(sbatch_directives)
+        batch_script += (
+            f"\nexport {SERVICE_PROC_IDS_ENV}="
+            f"{shlex.quote(serialize_service_proc_ids(self._service_proc_ids))}\n"
+        )
         if client_script is None:
             # Workers only; an external controller attaches and manages the
             # lifetime. Shares _WORKER_BOOTSTRAP with the batch runner.
@@ -297,6 +315,14 @@ class SlurmJob(JobTrait):
 
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to submit SLURM job: {e.stderr}") from e
+
+    def _ensure_service_proc_ids(self, num_nodes: int) -> None:
+        if len(self._service_proc_ids) != num_nodes:
+            self._service_proc_ids = [
+                proc_id
+                for mesh_nodes in self._meshes.values()
+                for proc_id in self._allocate_service_proc_ids(mesh_nodes)
+            ]
 
     def _get_job_info_json(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get job information using squeue --json."""
@@ -378,22 +404,40 @@ class SlurmJob(JobTrait):
 
     def _state(self) -> JobState:
         self._prepare_client_gateway()
+        if not self._jobs_active():
+            raise RuntimeError("SLURM job is no longer active")
+
+        # Wait for job to start and get hostnames if not already done
+        if not self._all_hostnames:
+            job_id = self._resolved_job_id()
+            if job_id is None:
+                raise RuntimeError("SLURM job ID is not set")
+
+            total_nodes = sum(self._meshes.values())
+            self._all_hostnames = self._wait_for_job_start(
+                job_id, total_nodes, timeout=self._job_start_timeout
+            )
+
+        attach_to = self._attach_to
+        if self._out_of_cluster and attach_to is None:
+            attach_to = f"tcp://{self._all_hostnames[0]}:{self._port}"
+        self._attach_client(attach_to)
 
         # Distribute the allocated hostnames among meshes
         host_meshes = {}
         hostname_idx = 0
 
         for mesh_name, num_nodes in self._meshes.items():
-            mesh_hostnames = self._all_hostnames[
-                hostname_idx : hostname_idx + num_nodes
-            ]
-            hostname_idx += num_nodes
+            next_hostname_idx = hostname_idx + num_nodes
+            mesh_hostnames = self._all_hostnames[hostname_idx:next_hostname_idx]
+            service_proc_ids = self._service_proc_ids[hostname_idx:next_hostname_idx]
+            hostname_idx = next_hostname_idx
 
             workers = [f"tcp://{hostname}:{self._port}" for hostname in mesh_hostnames]
             host_mesh = attach_to_workers(
                 name=mesh_name,
                 ca="trust_all_connections",
-                workers=workers,  # type: ignore[arg-type]
+                workers=service_proc_addrs(workers, service_proc_ids),
             )
 
             host_meshes[mesh_name] = host_mesh

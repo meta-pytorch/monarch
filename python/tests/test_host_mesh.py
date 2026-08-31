@@ -35,6 +35,7 @@ from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.proc_mesh import get_or_spawn_controller
 from monarch._src.job.job import ProcessState
 from monarch._src.job.process import ProcessJob
+from monarch._src.job.service_identity import new_service_proc_id, service_proc_addr
 from monarch.config import configured
 from scoped_state import scoped_state
 
@@ -743,11 +744,8 @@ class DuplexProcessJob(ProcessJob):
             for i in range(count):
                 host_key = f"{mesh_name}_{i}"
                 addr = f"ipc://{self._tmpdir}/{host_key}"
-                worker_addr = (
-                    addr
-                    if self._service_proc_id is None
-                    else f"{self._service_proc_id}@{addr}"
-                )
+                service_proc_id = self._service_proc_id or new_service_proc_id()
+                proc_addr = service_proc_addr(addr, service_proc_id)
                 worker_env = {**os.environ, "HYPERACTOR_PROCESS_NAME": host_key}
                 if self._env is not None:
                     worker_env.update(self._env)
@@ -756,11 +754,11 @@ class DuplexProcessJob(ProcessJob):
                     sys.executable,
                     "-c",
                     "from monarch.actor import run_worker_loop_forever; "
-                    f"run_worker_loop_forever(address={worker_addr!r}, "
+                    f"run_worker_loop_forever(address={proc_addr!r}, "
                     'ca="trust_all_connections")',
                 ]
                 proc = subprocess.Popen(cmd, env=worker_env, start_new_session=True)
-                self._host_to_pid[host_key] = ProcessState(proc.pid, worker_addr)
+                self._host_to_pid[host_key] = ProcessState(proc.pid, proc_addr)
 
         # Wait for the first worker's frontend socket to appear.
         # The duplex server is now on the same address as the frontend.
@@ -892,10 +890,13 @@ def test_client_attach_addr_this_host_and_this_proc() -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_client_attach_addr_this_host_spawn_runs_on_client_host() -> None:
+def test_client_attach_service_singleton_spawns_on_client_host() -> None:
     worker_marker = "MONARCH_TEST_ATTACHED_WORKER"
     assert worker_marker not in os.environ
-    job = DuplexProcessJob(env={worker_marker: "1"})
+    job = DuplexProcessJob(
+        env={worker_marker: "1"},
+        service_proc_id=ProcId.from_string("service"),
+    )
     job.apply()
     attach(job.duplex_addr)
     with scoped_state(job, cached_path=None):

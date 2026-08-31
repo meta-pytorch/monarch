@@ -42,7 +42,6 @@ from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import (
     default_bootstrap_cmd,
     HostMesh,
-    hosts_from_config,
     this_host,
     this_proc,
 )
@@ -76,7 +75,6 @@ __all__ = [
     "default_bootstrap_cmd",
     "HostMesh",
     "context",
-    "hosts_from_config",
     "Port",
     "PortReceiver",
     "Endpoint",

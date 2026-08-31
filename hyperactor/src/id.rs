@@ -235,6 +235,11 @@ impl Uid {
         Uid::Instance(rand::random(), Some(label))
     }
 
+    /// Create an instance with an explicit uid and optional display label.
+    pub fn instance_from_value(uid: u64, label: Option<Label>) -> Self {
+        Uid::Instance(uid, label)
+    }
+
     /// Create a singleton with the given label.
     pub fn singleton(label: Label) -> Self {
         Uid::Singleton(label)

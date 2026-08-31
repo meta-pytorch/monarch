@@ -25,6 +25,7 @@ from unittest.mock import MagicMock, patch
 import monarch._src.job._job_sidecar_worker as js_worker
 import monarch._src.job.job_sidecar as js
 import pytest
+from monarch._rust_bindings.monarch_hyperactor.proc import ProcId, Uid
 
 # Import directly from _src since job module isn't properly exposed
 from monarch._src.job.job import (
@@ -43,7 +44,29 @@ from monarch._src.job.job_components import JobComponent, JobComponents, MountCo
 from monarch._src.job.mount_config import Mounts
 from monarch._src.job.process import ProcessJob
 from monarch._src.job.process_guard import _Shutdown, _wait_for_socket
+from monarch._src.job.service_identity import (
+    deserialize_service_proc_ids,
+    serialize_service_proc_ids,
+)
 from monarch.actor import Future, HostMesh
+
+
+def test_explicit_uid_values_are_instance_identities() -> None:
+    first = ProcId(Uid.instance_from_value(12, "service"))
+    second = ProcId(Uid.instance_from_value(13, "service"))
+
+    assert isinstance(first, ProcId)
+    assert first != second
+    assert first.label == "service"
+    assert first.uid.is_instance
+    assert ProcId.from_string(str(first)) == first
+    assert pickle.loads(pickle.dumps(first)) == first
+    assert deserialize_service_proc_ids(
+        serialize_service_proc_ids([first, second])
+    ) == [
+        first,
+        second,
+    ]
 
 
 def _append_line(path: str, line: str) -> None:

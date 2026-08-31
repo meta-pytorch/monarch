@@ -362,6 +362,10 @@ DriverAPI* DriverAPI::get() {
 extern "C" {
 
 // Memory management
+void rdmaxcel_set_mem_location_id(CUmemLocation* location, int id) noexcept {
+  location->id = id;
+}
+
 CUresult rdmaxcel_cuMemGetHandleForAddressRange(
     int* handle,
     CUdeviceptr dptr,

@@ -148,13 +148,14 @@ print(counters.get_value.call().get())
 # machines are obtained depends on the scheduling system (Slurm, Kubernetes, SkyPilot, etc.),
 # but these schedulers are typically encapsulated in a config file.
 
-from monarch.actor import context, HostMesh, hosts_from_config
+from monarch.actor import context, HostMesh
+from monarch.job import hosts_from_config
 
 
 # %%
 # We obtain the mesh of hosts for the job by loading that config:
 
-hosts: HostMesh = hosts_from_config("MONARCH_HOSTS")  # NYI: hosts_from_config
+hosts: HostMesh = hosts_from_config("MONARCH_HOSTS")
 print(hosts.extent)
 
 # An extent is the logical shape of a mesh. It is an ordered map, specifying the size of

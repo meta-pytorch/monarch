@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 # Re-export the job module directly
+from monarch._src.job.host_mesh import hosts_from_config
 from monarch._src.job.job import (
     DEFAULT_JOB_PATH,
     exec_command,
@@ -20,13 +21,25 @@ from monarch._src.job.job import (
 from monarch._src.job.job_state import JobState
 from monarch._src.job.port_forward import PortForwarder
 from monarch._src.job.process import ProcessJob
+from monarch._src.job.service_identity import (
+    deserialize_service_proc_ids,
+    new_service_proc_id,
+    ranked_service_proc_id_from_env,
+    serialize_service_proc_ids,
+    service_proc_addr,
+    service_proc_addrs,
+    SERVICE_PROC_IDS_ENV,
+    SERVICE_PROC_RANK_ENV,
+)
 from monarch._src.job.shell import shell
 from monarch._src.job.slurm import SlurmJob
 
 # Define exports
 __all__ = [
     "DEFAULT_JOB_PATH",
+    "deserialize_service_proc_ids",
     "exec_command",
+    "hosts_from_config",
     "JobTrait",
     "job_load",
     "job_loads",
@@ -34,8 +47,15 @@ __all__ = [
     "load_current_job",
     "LocalJob",
     "MeshAdminConfig",
+    "new_service_proc_id",
     "PortForwarder",
     "ProcessJob",
+    "ranked_service_proc_id_from_env",
+    "serialize_service_proc_ids",
+    "service_proc_addr",
+    "service_proc_addrs",
+    "SERVICE_PROC_IDS_ENV",
+    "SERVICE_PROC_RANK_ENV",
     "set_current_job",
     "shell",
     "SlurmJob",

@@ -64,6 +64,19 @@ impl PyUid {
     }
 
     #[staticmethod]
+    #[pyo3(signature = (value, label=None))]
+    fn instance_from_value(value: u64, label: Option<&str>) -> PyResult<Self> {
+        Ok(Self {
+            inner: Uid::instance_from_value(
+                value,
+                label.map(Label::new).transpose().map_err(|error| {
+                    PyValueError::new_err(format!("invalid uid label: {error}"))
+                })?,
+            ),
+        })
+    }
+
+    #[staticmethod]
     fn from_string(uid: &str) -> PyResult<Self> {
         Ok(Self {
             inner: uid
@@ -85,6 +98,11 @@ impl PyUid {
     #[getter]
     fn is_singleton(&self) -> bool {
         matches!(&self.inner, Uid::Singleton(..))
+    }
+
+    #[getter]
+    fn instance_value(&self) -> Option<u64> {
+        self.inner.instance_value()
     }
 
     fn __str__(&self) -> String {

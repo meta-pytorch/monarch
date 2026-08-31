@@ -13,8 +13,10 @@ import subprocess
 import sys
 import time
 from typing import Callable
+from unittest.mock import patch
 
 import pytest
+from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.spmd.host_mesh import (
     _IN_PAR,
     _spawn_worker_process,
@@ -60,8 +62,10 @@ class _InMemoryStore:
 def test_spawn_ipc_returns_addr_and_live_pid() -> None:
     addr, pid = _spawn_worker_process(transport="ipc", name="test_worker")
     try:
-        assert addr.startswith("ipc://")
-        socket_path = addr.removeprefix("ipc://")
+        proc_id, channel_addr = addr.split("@", 1)
+        assert ProcId.from_string(proc_id).uid.is_instance
+        assert channel_addr.startswith("ipc://")
+        socket_path = channel_addr.removeprefix("ipc://")
         assert "/monarch_worker_" in socket_path
         assert os.path.basename(socket_path) == "test_worker"
         assert pid > 0
@@ -73,7 +77,7 @@ def test_spawn_ipc_returns_addr_and_live_pid() -> None:
             os.kill(pid, signal.SIGKILL)
         except OSError:
             pass
-        ipc_dir = os.path.dirname(addr.removeprefix("ipc://"))
+        ipc_dir = os.path.dirname(channel_addr.removeprefix("ipc://"))
         shutil.rmtree(ipc_dir, ignore_errors=True)
 
 
@@ -159,6 +163,40 @@ def test_host_mesh_from_store_non_local_rank_zero_is_passive(
     assert host_mesh_from_store(store, transport="ipc") is None
     # This rank did not spawn; nobody published for group 1.
     assert _worker_addr_key(1) not in store._values
+
+
+@patch("monarch._src.spmd.host_mesh.attach_to_workers")
+@patch("monarch._src.spmd.host_mesh._spawn_worker_process")
+@patch("monarch._src.spmd.host_mesh.new_service_proc_id")
+def test_host_mesh_from_store_carries_worker_service_proc_identity(
+    mock_new_service_proc_id,
+    mock_spawn_worker_process,
+    mock_attach_to_workers,
+) -> None:
+    service_proc_id = ProcId.from_string("service<2>")
+    mock_new_service_proc_id.return_value = service_proc_id
+    mock_spawn_worker_process.return_value = ("service<2>@ipc://worker-0", 123)
+    expected_mesh = object()
+    mock_attach_to_workers.return_value = expected_mesh
+    store = _InMemoryStore()
+
+    mesh = host_mesh_from_store(
+        store,
+        rank=0,
+        local_rank=0,
+        world_size=1,
+        local_world_size=1,
+    )
+
+    assert mesh is expected_mesh
+    assert (
+        mock_spawn_worker_process.call_args.kwargs["service_proc_id"] == service_proc_id
+    )
+    mock_attach_to_workers.assert_called_once_with(
+        name="monarch_worker",
+        ca="trust_all_connections",
+        workers=["service<2>@ipc://worker-0"],
+    )
 
 
 def test_parent_death_kills_worker_via_pipe_eof() -> None:
