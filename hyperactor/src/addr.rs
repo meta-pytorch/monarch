@@ -118,6 +118,17 @@ impl Location {
         Location::Via(uid, Box::new(self))
     }
 
+    /// Append `uid` to the serialized via list, making it the innermost hop
+    /// while preserving the route through all existing gateways.
+    pub fn append_via(self, uid: Uid) -> Self {
+        match self {
+            Location::Addr(addr) => Location::Addr(addr).with_via(uid),
+            Location::Via(outer_uid, inner) => {
+                Location::Via(outer_uid, Box::new(inner.append_via(uid)))
+            }
+        }
+    }
+
     /// Pop the outermost via hop. Returns `Ok((uid, inner))` when this
     /// is a `Via`, or `Err(self)` when it is a terminal `Addr`, so the
     /// caller can recover the unchanged location.
@@ -887,6 +898,24 @@ mod tests {
     fn test_location_debug_same_as_display() {
         let loc: Location = ChannelAddr::Local(7).into();
         assert_eq!(format!("{:?}", loc), format!("{}", loc));
+    }
+
+    #[test]
+    fn test_location_append_via_preserves_existing_route_order() {
+        let outer = Uid::instance(Label::strip("outer"));
+        let inner = Uid::instance(Label::strip("inner"));
+        let location = Location::from(ChannelAddr::Local(7)).with_via(outer.clone());
+
+        assert_eq!(
+            location.append_via(inner.clone()),
+            Location::Via(
+                outer,
+                Box::new(Location::Via(
+                    inner,
+                    Box::new(Location::Addr(ChannelAddr::Local(7))),
+                )),
+            )
+        );
     }
 
     #[test]
