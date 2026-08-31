@@ -1299,6 +1299,7 @@ mod tests {
         let mut spans = SpanBuffer::default();
         for (id, timestamp_us, parent_id) in [(9, old_us, None), (10, fresh_us, Some(9))] {
             spans.insert(Span {
+                process_id: "test",
                 id,
                 name: format!("span-{id}"),
                 target: "test".to_string(),
@@ -1316,6 +1317,7 @@ mod tests {
         let mut span_events = SpanEventBuffer::default();
         for (timestamp_us, event_type) in [(old_us, "enter"), (fresh_us, "close")] {
             span_events.insert(SpanEvent {
+                process_id: "test",
                 id: 9,
                 timestamp_us,
                 event_type: event_type.to_string(),

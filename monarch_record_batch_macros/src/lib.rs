@@ -193,6 +193,10 @@ fn get_arrow_type_and_conversion(
             quote! { datafusion::arrow::datatypes::DataType::Utf8 },
             quote! { datafusion::arrow::array::StringArray::from },
         ),
+        "&'staticstr" => (
+            quote! { datafusion::arrow::datatypes::DataType::Utf8 },
+            quote! { datafusion::arrow::array::StringArray::from },
+        ),
         "bool" => (
             quote! { datafusion::arrow::datatypes::DataType::Boolean },
             quote! { datafusion::arrow::array::BooleanArray::from },
