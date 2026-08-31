@@ -93,6 +93,7 @@ pub mod trace_tables {
     /// Row data for the spans table.
     #[derive(RecordBatchRow)]
     pub struct Span {
+        pub process_id: &'static str,
         pub id: u64,
         pub name: String,
         pub target: String,
@@ -108,6 +109,7 @@ pub mod trace_tables {
     /// Row data for the span events table.
     #[derive(RecordBatchRow)]
     pub struct SpanEvent {
+        pub process_id: &'static str,
         pub id: u64,
         pub timestamp_us: i64,
         pub event_type: String,
@@ -354,6 +356,7 @@ mod tests {
     fn serialize_batch_round_trips_one_record_batch() {
         let mut buffer = SpanBuffer::default();
         buffer.insert(Span {
+            process_id: "process",
             id: 7,
             name: "span".to_string(),
             target: "target".to_string(),

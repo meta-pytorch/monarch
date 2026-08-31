@@ -27,6 +27,7 @@ use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
@@ -81,6 +82,26 @@ use crate::generate_sent_message_id;
 
 /// Maximum queued table batches before the tracing path starts dropping frames.
 const WORKER_QUEUE_CAPACITY: usize = 10_000;
+const HYPERACTOR_PROCESS_NAME_ENV: &str = "HYPERACTOR_PROCESS_NAME";
+const HOSTNAME_ENV: &str = "HOSTNAME";
+
+fn fallback_process_id() -> String {
+    let pid = std::process::id();
+    let hostname = std::env::var(HOSTNAME_ENV)
+        .ok()
+        .filter(|hostname| !hostname.is_empty())
+        .unwrap_or_else(|| format!("{:032x}", rand::random::<u128>()));
+
+    format!("unnamed@{hostname}:{pid}")
+}
+
+/// Namespace for process-local span IDs after distributed aggregation.
+static PROCESS_ID: LazyLock<String> = LazyLock::new(|| {
+    std::env::var(HYPERACTOR_PROCESS_NAME_ENV)
+        .ok()
+        .filter(|process_id| !process_id.is_empty())
+        .unwrap_or_else(fallback_process_id)
+});
 
 /// Process-global sink installed with the tracing subscriber and activated later.
 static UNIX_SOCKET_SINK: OnceLock<Arc<UnixSocketSink>> = OnceLock::new();
@@ -279,6 +300,7 @@ impl UnixSocketSink {
                 line,
             } => {
                 inner.spans_buffer.insert(Span {
+                    process_id: PROCESS_ID.as_str(),
                     id: *id,
                     name: name.to_string(),
                     target: target.to_string(),
@@ -293,6 +315,7 @@ impl UnixSocketSink {
             }
             TraceEvent::SpanEnter { id, timestamp, .. } => {
                 inner.span_events_buffer.insert(SpanEvent {
+                    process_id: PROCESS_ID.as_str(),
                     id: *id,
                     timestamp_us: timestamp_to_micros(timestamp),
                     event_type: "enter".to_string(),
@@ -300,6 +323,7 @@ impl UnixSocketSink {
             }
             TraceEvent::SpanExit { id, timestamp, .. } => {
                 inner.span_events_buffer.insert(SpanEvent {
+                    process_id: PROCESS_ID.as_str(),
                     id: *id,
                     timestamp_us: timestamp_to_micros(timestamp),
                     event_type: "exit".to_string(),
@@ -307,6 +331,7 @@ impl UnixSocketSink {
             }
             TraceEvent::SpanClose { id, timestamp } => {
                 inner.span_events_buffer.insert(SpanEvent {
+                    process_id: PROCESS_ID.as_str(),
                     id: *id,
                     timestamp_us: timestamp_to_micros(timestamp),
                     event_type: "close".to_string(),
