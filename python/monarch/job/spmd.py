@@ -14,8 +14,9 @@ and creates a Monarch mesh to run the training script, replicating torchrun beha
 Key components:
 - :func:`serve`: Launch an SPMD job from a torchx AppDef
 - :class:`SPMDJob`: Job class wrapping torchx for SPMD workloads
+- :class:`StoreJob`: Job API adapter for a torch distributed store rendezvous
 """
 
-from monarch._src.job.spmd import serve, SPMDJob
+from monarch._src.job.spmd import serve, SPMDJob, StoreJob
 
-__all__ = ["serve", "SPMDJob"]
+__all__ = ["serve", "SPMDJob", "StoreJob"]
