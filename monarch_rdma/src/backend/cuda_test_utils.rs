@@ -143,7 +143,7 @@ impl CudaAllocation {
             let mut prop: rdmaxcel_sys::CUmemAllocationProp = std::mem::zeroed();
             prop.type_ = rdmaxcel_sys::CU_MEM_ALLOCATION_TYPE_PINNED;
             prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
-            prop.location.id = self.inner.device;
+            rdmaxcel_sys::rdmaxcel_set_mem_location_id(&mut prop.location, self.inner.device);
             prop.allocFlags.gpuDirectRDMACapable = 1;
             prop.requestedHandleTypes = rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
 
@@ -167,7 +167,7 @@ impl CudaAllocation {
 
             let mut access: rdmaxcel_sys::CUmemAccessDesc = std::mem::zeroed();
             access.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
-            access.location.id = self.inner.device;
+            rdmaxcel_sys::rdmaxcel_set_mem_location_id(&mut access.location, self.inner.device);
             access.flags = rdmaxcel_sys::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
             let r = rdmaxcel_sys::rdmaxcel_cuMemSetAccess(
                 chunk_addr as rdmaxcel_sys::CUdeviceptr,
@@ -319,7 +319,7 @@ impl CudaAllocator {
             let mut prop: rdmaxcel_sys::CUmemAllocationProp = std::mem::zeroed();
             prop.type_ = rdmaxcel_sys::CU_MEM_ALLOCATION_TYPE_PINNED;
             prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
-            prop.location.id = device;
+            rdmaxcel_sys::rdmaxcel_set_mem_location_id(&mut prop.location, device);
             prop.allocFlags.gpuDirectRDMACapable = 1;
             prop.requestedHandleTypes = rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
 
@@ -367,7 +367,7 @@ impl CudaAllocator {
 
             let mut access: rdmaxcel_sys::CUmemAccessDesc = std::mem::zeroed();
             access.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
-            access.location.id = device;
+            rdmaxcel_sys::rdmaxcel_set_mem_location_id(&mut access.location, device);
             access.flags = rdmaxcel_sys::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
             let r = rdmaxcel_sys::rdmaxcel_cuMemSetAccess(dptr, padded_initial, &access, 1);
             if r != rdmaxcel_sys::CUDA_SUCCESS {

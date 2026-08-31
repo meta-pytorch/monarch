@@ -36,6 +36,9 @@ extern "C" {
 // These are loaded dynamically via dlopen and exported to Rust via bindgen
 
 // Memory management
+void rdmaxcel_set_mem_location_id(CUmemLocation* location, int id)
+    RDMAXCEL_NOEXCEPT;
+
 CUresult rdmaxcel_cuMemGetHandleForAddressRange(
     int* handle,
     CUdeviceptr dptr,

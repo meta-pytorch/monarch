@@ -50,6 +50,7 @@ from monarch._src.actor.logging import _pending_flush_tasks
 from monarch._src.actor.proc_mesh import get_or_spawn_controller, HyProcMesh
 from monarch._src.job.job import LoginJob, ProcessState
 from monarch._src.job.process import ProcessJob
+from monarch._src.job.service_identity import new_service_proc_id, service_proc_addr
 from monarch.actor import (
     Accumulator,
     Actor,
@@ -1730,16 +1731,20 @@ class FakeLocalLoginJob(LoginJob):
         if "FB_XAR_INVOKED_NAME" in os.environ:
             env["PYTHONPATH"] = ":".join(sys.path)
         addr = f"ipc://{self._dir}/{host}"
+        service_proc_id = new_service_proc_id()
+        proc_addr = service_proc_addr(addr, service_proc_id)
         proc = subprocess.Popen(
             [
                 sys.executable,
                 "-c",
-                f'from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(address={repr(addr)}, ca="trust_all_connections")',
+                "from monarch.actor import run_worker_loop_forever; "
+                f"run_worker_loop_forever(address={proc_addr!r}, "
+                'ca="trust_all_connections")',
             ],
             env=env,
             start_new_session=True,
         )
-        return ProcessState(proc.pid, addr)
+        return ProcessState(proc.pid, proc_addr)
 
 
 @isolate_in_subprocess

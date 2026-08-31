@@ -68,7 +68,10 @@ def main() -> None:
             daemon=True,
             name="monarch-worker-parent-watch",
         ).start()
-    run_worker_loop_forever(address=addr, ca="trust_all_connections")
+    run_worker_loop_forever(
+        address=addr,
+        ca="trust_all_connections",
+    )
 
 
 if __name__ == "__main__":

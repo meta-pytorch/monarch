@@ -18,9 +18,14 @@ import threading
 import time
 from typing import Callable, Dict, List, Optional, Union
 
+from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.future import Future
 from monarch._src.job.job import JobState, JobTrait, ProcessState
+from monarch._src.job.service_identity import (
+    allocate_service_proc_ids,
+    service_proc_addr,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +136,10 @@ class ProcessJob(JobTrait):
         self._host_to_pid: Dict[str, ProcessState] = {}
         self._tmpdir: Optional[str] = None
 
+    @staticmethod
+    def _allocate_service_proc_ids(num_hosts: int) -> list[ProcId]:
+        return allocate_service_proc_ids(num_hosts)
+
     def _create(self, client_script: Optional[str]) -> None:
         if client_script is not None:
             raise RuntimeError("ProcessJob cannot run batch-mode scripts")
@@ -139,12 +148,16 @@ class ProcessJob(JobTrait):
 
         try:
             for mesh_name, count in self._meshes.items():
+                service_proc_ids = self._allocate_service_proc_ids(count)
                 for i in range(count):
                     host_key = f"{mesh_name}_{i}"
                     addr = f"ipc://{self._tmpdir}/{host_key}"
+                    service_proc_id = service_proc_ids[i]
+                    proc_addr = service_proc_addr(addr, service_proc_id)
                     env = {**os.environ, "HYPERACTOR_PROCESS_NAME": host_key}
                     if self._env is not None:
                         env.update(self._env)
+                    env["_MONARCH_WORKER_ADDR"] = proc_addr
                     if _IN_PAR:
                         # In PAR/XAR mode, sys.executable is the bare
                         # Python interpreter which cannot import modules
@@ -152,14 +165,13 @@ class ProcessJob(JobTrait):
                         # (sys.argv[0]) with PAR_MAIN_OVERRIDE pointing
                         # to the worker module.
                         env["PAR_MAIN_OVERRIDE"] = _PROCESS_WORKER_MODULE
-                        env["_MONARCH_WORKER_ADDR"] = addr
                         cmd = [sys.argv[0]]
                     else:
                         cmd = [
                             sys.executable,
                             "-c",
                             "from monarch.actor import run_worker_loop_forever; "
-                            f'run_worker_loop_forever(address="{addr}", '
+                            f"run_worker_loop_forever(address={proc_addr!r}, "
                             'ca="trust_all_connections")',
                         ]
                     proc = subprocess.Popen(
@@ -170,7 +182,7 @@ class ProcessJob(JobTrait):
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                     )
-                    self._host_to_pid[host_key] = ProcessState(proc.pid, addr)
+                    self._host_to_pid[host_key] = ProcessState(proc.pid, proc_addr)
                     logger.info(
                         "ProcessJob: spawned worker pid=%d mesh=%s rank=%d addr=%s",
                         proc.pid,

@@ -21,11 +21,16 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence
 
+from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._batch_env import in_batch_job, MONARCH_BATCH_JOB_ENV
 from monarch._src.job._telemetry_query_client import QueryEngineClient
 from monarch._src.job.job_components import JobComponents, MeshAdminConfig
 from monarch._src.job.job_sidecar import create_job_sidecar, stop_job_sidecar
+from monarch._src.job.service_identity import (
+    allocate_service_proc_ids,
+    service_proc_addr,
+)
 from monarch._src.job.telemetry_config import TelemetryConfig
 
 # note: the jobs api is intended as a library so it should
@@ -1246,17 +1251,36 @@ class SSHJob(LoginJob):
             "metatls" if transport in ("metatls", "metatls-hostname") else "tcp"
         )
         super().__init__()
+        self._service_proc_ids_by_host: Dict[str, ProcId] = {}
+
+    @staticmethod
+    def _allocate_service_proc_ids(num_hosts: int) -> list[ProcId]:
+        return allocate_service_proc_ids(num_hosts)
+
+    def _create(self, client_script: Optional[str]) -> None:
+        self._service_proc_ids_by_host = {}
+        for hosts in self._meshes.values():
+            self._service_proc_ids_by_host.update(
+                zip(hosts, self._allocate_service_proc_ids(len(hosts)))
+            )
+        super()._create(client_script)
 
     def _start_host(self, host: str) -> ProcessState:
         addr = f"{self._scheme}://{host}:{self._port}"
-        startup = f'from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(address={repr(addr)}, ca="trust_all_connections")'
+        service_proc_id = self._service_proc_ids_by_host[host]
+        proc_addr = service_proc_addr(addr, service_proc_id)
+        startup = (
+            "from monarch.actor import run_worker_loop_forever; "
+            f"run_worker_loop_forever(address={proc_addr!r}, "
+            'ca="trust_all_connections")'
+        )
 
         command = f"{shlex.quote(self._python_exe)} -c {shlex.quote(startup)}"
         proc = subprocess.Popen(
             ["ssh", *self._ssh_args, host, "-n", command],
             start_new_session=True,
         )
-        return ProcessState(proc.pid, addr)
+        return ProcessState(proc.pid, proc_addr)
 
     def can_run(self, spec):
         return (
