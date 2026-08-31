@@ -47,16 +47,19 @@ def spawn_module(
     module_name: str,
     runtime_transport: str | None = None,
     attach_to: str | None = None,
+    process_name: str | None = None,
 ) -> ProcessGuard:
     """Launch a Python module as a ``ProcessGuard``-managed background process."""
+    env = (
+        {"HYPERACTOR_PROCESS_NAME": process_name} if process_name is not None else None
+    )
     if _IN_PAR:
         command = [sys.argv[0]]
-        env: dict[str, str] | None = {"PAR_MAIN_OVERRIDE": module_name}
+        env = {**(env or {}), "PAR_MAIN_OVERRIDE": module_name}
     else:
         if not sys.executable:
             raise RuntimeError("no python executable available")
         command = [sys.executable, "-m", module_name]
-        env = None
     if runtime_transport is not None:
         command.extend(["--runtime-transport", runtime_transport])
     if attach_to is not None:
@@ -76,6 +79,7 @@ def create_job_sidecar(
         _JOB_SIDECAR_WORKER_MODULE,
         runtime_transport=runtime_transport,
         attach_to=attach_to,
+        process_name="job_sidecar",
     )
 
 
