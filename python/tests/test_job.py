@@ -240,7 +240,9 @@ def test_create_job_sidecar_spawns_job_sidecar_worker_module():
         "--attach-to",
         "tcp://127.0.0.1:45678",
     ]
-    assert create.call_args.kwargs == {"env": None}
+    assert create.call_args.kwargs == {
+        "env": {"HYPERACTOR_PROCESS_NAME": "job_sidecar"}
+    }
 
 
 def test_mounts_ensure_open_clears_existing_sidecar_when_empty():
