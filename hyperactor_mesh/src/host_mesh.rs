@@ -160,8 +160,12 @@ pub(crate) fn legacy_host_agent_ref(host_addr: ChannelAddr) -> ActorRef<HostAgen
 }
 
 fn named_proc_on_host(agent: &ActorRef<HostAgent>, id: &ResourceId) -> ProcAddr {
-    let location =
-        hyperactor::Location::from(agent.actor_addr().addr().clone()).with_via(id.uid().clone());
+    let location = agent
+        .actor_addr()
+        .proc_addr()
+        .location()
+        .clone()
+        .append_via(id.uid().clone());
     id.proc_addr(location)
 }
 
@@ -922,24 +926,9 @@ impl HostMeshRef {
         })
     }
 
-    /// Create a unit HostMeshRef from a host mesh agent.
-    ///
-    /// Retains the service proc identity while canonicalizing the location to
-    /// its terminal dial address. Client-only via routes must not propagate
-    /// into addresses of procs spawned through this mesh.
+    /// Create a unit HostMeshRef that retains the host agent's complete location.
     pub fn from_host_agent(id: HostMeshId, agent: ActorRef<HostAgent>) -> crate::Result<Self> {
-        let region = Extent::unity().into();
-        let service_proc = agent.actor_addr().proc_addr();
-        let agent = host_agent_ref(ProcAddr::new(
-            service_proc.id().clone(),
-            service_proc.addr().clone().into_dial_addr().into(),
-        ));
-        let host_agent_mesh = Self::host_agent_mesh_ref_from_agents(&region, vec![agent])?;
-        Ok(Self {
-            id,
-            host_agent_mesh,
-            bootstrap_command: None,
-        })
+        Self::from_host_agents(id, vec![agent])
     }
 
     /// Return a new `HostMeshRef` that will use `cmd` when spawning procs,
@@ -2455,14 +2444,17 @@ mod tests {
     }
 
     #[test]
-    fn test_host_mesh_ref_from_host_agent_preserves_identity_and_uses_direct_location() {
+    fn test_host_mesh_ref_from_host_agent_preserves_identity_and_location() {
         let dial_addr = ChannelAddr::from_zmq_url("tcp://127.0.0.1:26600").unwrap();
         let service_proc_id: ProcId = "service<2>".parse().unwrap();
         let via_uid = ProcId::instance(Label::strip("client-gateway"))
             .uid()
             .clone();
         let service_location = hyperactor::Location::from(dial_addr.clone()).with_via(via_uid);
-        let agent = host_agent_ref(ProcAddr::new(service_proc_id.clone(), service_location));
+        let agent = host_agent_ref(ProcAddr::new(
+            service_proc_id.clone(),
+            service_location.clone(),
+        ));
 
         let mesh = HostMeshRef::from_host_agent(
             HostMeshId::singleton(Label::new("explicit-service").unwrap()),
@@ -2477,7 +2469,7 @@ mod tests {
         );
         assert_eq!(
             round_trip_agent.actor_addr().proc_addr().location(),
-            &hyperactor::Location::from(dial_addr)
+            &service_location
         );
     }
 

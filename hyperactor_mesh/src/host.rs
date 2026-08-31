@@ -528,16 +528,12 @@ impl<M: ProcManager> Host<M> {
                 return Err(HostError::ProcExists(name));
             }
 
-            // Advertise the child with a `Via(child_uid, host_location)`
-            // location so peers source-route through this host: the outer
-            // hop matches the peer entry installed below, and gets peeled
-            // to deliver to the child's gateway. The host location comes
-            // from the gateway's active routing state, so a later
-            // `serve`/`serve_via` controls newly spawned child refs.
+            // Preserve the route to this host, then append the child hop that
+            // is peeled by this host's gateway.
             let resource_id = ResourceId::from_name(&name);
             let proc_uid = resource_id.uid().clone();
             let proc_id =
-                resource_id.proc_addr(gateway.default_location().with_via(proc_uid.clone()));
+                resource_id.proc_addr(gateway.default_location().append_via(proc_uid.clone()));
             let handle = manager.spawn(proc_id.clone(), backend_addr, config).await?;
             let mut proc_handle_guard = ProcHandleKillGuard {
                 handle: Some(handle),
