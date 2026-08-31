@@ -24,6 +24,7 @@ from unittest.mock import patch
 import cloudpickle
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
+from monarch._rust_bindings.monarch_hyperactor.proc import ProcId, Uid
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Point, Shape, Slice
 from monarch._src.actor.actor_mesh import _client_context, Actor, attach, context
@@ -726,9 +727,11 @@ class DuplexProcessJob(ProcessJob):
         self,
         meshes: Optional[Dict[str, int]] = None,
         env: Optional[Dict[str, str]] = None,
+        service_proc_id: Optional[ProcId] = None,
     ) -> None:
         super().__init__(meshes or {"hosts": 1}, env)
         self._duplex_addr: Optional[str] = None
+        self._service_proc_id = service_proc_id
 
     def _create(self, client_script: Optional[str]) -> None:
         if client_script is not None:
@@ -740,6 +743,11 @@ class DuplexProcessJob(ProcessJob):
             for i in range(count):
                 host_key = f"{mesh_name}_{i}"
                 addr = f"ipc://{self._tmpdir}/{host_key}"
+                worker_addr = (
+                    addr
+                    if self._service_proc_id is None
+                    else f"{self._service_proc_id}@{addr}"
+                )
                 worker_env = {**os.environ, "HYPERACTOR_PROCESS_NAME": host_key}
                 if self._env is not None:
                     worker_env.update(self._env)
@@ -748,11 +756,11 @@ class DuplexProcessJob(ProcessJob):
                     sys.executable,
                     "-c",
                     "from monarch.actor import run_worker_loop_forever; "
-                    f'run_worker_loop_forever(address="{addr}", '
+                    f"run_worker_loop_forever(address={worker_addr!r}, "
                     'ca="trust_all_connections")',
                 ]
                 proc = subprocess.Popen(cmd, env=worker_env, start_new_session=True)
-                self._host_to_pid[host_key] = ProcessState(proc.pid, addr)
+                self._host_to_pid[host_key] = ProcessState(proc.pid, worker_addr)
 
         # Wait for the first worker's frontend socket to appear.
         # The duplex server is now on the same address as the frontend.
@@ -911,6 +919,28 @@ class RelayActor(Actor):
     @endpoint
     async def relay(self, msg: str) -> str:
         return await self._target.echo.call_one(msg)
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_client_attach_service_instance_spawns_on_client_host() -> None:
+    worker_marker = "MONARCH_TEST_ATTACHED_WORKER"
+    assert worker_marker not in os.environ
+    job = DuplexProcessJob(
+        env={worker_marker: "1"},
+        service_proc_id=ProcId(Uid.instance("service")),
+    )
+    job.apply()
+    attach(job.duplex_addr)
+    with scoped_state(job, cached_path=None):
+        context()
+
+        local_echo = (
+            this_host()
+            .spawn_procs(per_host={"local": 1})
+            .spawn("local_echo", EchoActor)
+        )
+        assert local_echo.getenv.call_one(worker_marker).get() is None
 
 
 @pytest.mark.timeout(120)
