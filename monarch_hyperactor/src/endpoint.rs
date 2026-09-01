@@ -348,6 +348,7 @@ async fn collect_valuemesh(
     extent: Extent,
     rx: OncePortReceiver<PythonMessage>,
     attrs: Arc<EndpointAttrs>,
+    record_telemetry: bool,
     supervision_monitor: Option<Arc<dyn Supervisable>>,
     instance: &Instance<PythonActor>,
     qualified_endpoint_name: Option<String>,
@@ -356,7 +357,8 @@ async fn collect_valuemesh(
 
     let expected_count = extent.num_ranks();
 
-    let record_guard = RecordEndpointGuard::new(start, attrs, EndpointAdverb::Call);
+    let record_guard =
+        record_telemetry.then(|| RecordEndpointGuard::new(start, attrs, EndpointAdverb::Call));
 
     enum RaceResult {
         Collected(Box<PythonMessage>),
@@ -429,7 +431,9 @@ async fn collect_valuemesh(
                                 parts.extend(range.clone().map(|_| part.clone()));
                             }
                             PythonResponseMessage::Exception { .. } => {
-                                record_guard.mark_error();
+                                if let Some(record_guard) = &record_guard {
+                                    record_guard.mark_error();
+                                }
                                 return Err(PyErr::from_value(
                                     payload.decode(py, instance)?.into_bound(py),
                                 ));
@@ -450,7 +454,9 @@ async fn collect_valuemesh(
                             objects.extend(range.clone().map(|_| obj.clone_ref(py)));
                         }
                         PythonResponseMessage::Exception { .. } => {
-                            record_guard.mark_error();
+                            if let Some(record_guard) = &record_guard {
+                                record_guard.mark_error();
+                            }
                             return Err(PyErr::from_value(
                                 payload.decode(py, instance)?.into_bound(py),
                             ));
@@ -464,14 +470,18 @@ async fn collect_valuemesh(
             })
         }
         RaceResult::RecvError(e) => {
-            record_guard.mark_error();
+            if let Some(record_guard) = &record_guard {
+                record_guard.mark_error();
+            }
             Err(pyo3::exceptions::PyEOFError::new_err(format!(
                 "Port closed: {}",
                 e
             )))
         }
         RaceResult::SupervisionError(err) => {
-            record_guard.mark_error();
+            if let Some(record_guard) = &record_guard {
+                record_guard.mark_error();
+            }
             Err(supervision_error_to_pyerr(err, &qualified_endpoint_name))
         }
     }
@@ -484,13 +494,14 @@ fn value_collector(
     instance: Instance<PythonActor>,
     qualified_endpoint_name: Option<String>,
     adverb: EndpointAdverb,
-    span_guard: SpanGuard,
+    span_guard: Option<SpanGuard>,
+    record_telemetry: bool,
 ) -> PyResult<PyPythonTask> {
     Ok(PythonTask::new(async move {
         let _span_guard = span_guard;
         let start = tokio::time::Instant::now();
 
-        let record_guard = RecordEndpointGuard::new(start, attrs, adverb);
+        let record_guard = record_telemetry.then(|| RecordEndpointGuard::new(start, attrs, adverb));
 
         match collect_value(
             &mut receiver,
@@ -508,7 +519,9 @@ fn value_collector(
                 state.unpickle_with_receiver(py, &instance)
             }),
             Err(e) => {
-                record_guard.mark_error();
+                if let Some(record_guard) = &record_guard {
+                    record_guard.mark_error();
+                }
                 Err(e)
             }
         }
@@ -534,6 +547,7 @@ pub struct PyValueStream {
     qualified_endpoint_name: Option<String>,
     start: tokio::time::Instant,
     future_class: Py<PyAny>,
+    record_telemetry: bool,
 }
 
 #[pymethods]
@@ -555,9 +569,11 @@ impl PyValueStream {
         let qualified_endpoint_name = self.qualified_endpoint_name.clone();
         let start = self.start;
         let attrs = self.attrs.clone();
+        let record_telemetry = self.record_telemetry;
 
         let task: PyPythonTask = PythonTask::new(async move {
-            let record_guard = RecordEndpointGuard::new(start, attrs, EndpointAdverb::Stream);
+            let record_guard = record_telemetry
+                .then(|| RecordEndpointGuard::new(start, attrs, EndpointAdverb::Stream));
 
             let mut rx_guard = receiver.lock().await;
 
@@ -577,7 +593,9 @@ impl PyValueStream {
                     state.unpickle_with_receiver(py, &instance)
                 }),
                 Err(e) => {
-                    record_guard.mark_error();
+                    if let Some(record_guard) = &record_guard {
+                        record_guard.mark_error();
+                    }
                     Err(e)
                 }
             }
@@ -607,6 +625,11 @@ pub(crate) trait Endpoint {
     /// once per endpoint; the adverbs hand a clone to the tasks that outlive
     /// the borrow of `self`.
     fn metric_attrs(&self) -> &Arc<EndpointAttrs>;
+
+    /// Whether calls to this endpoint should generate telemetry.
+    fn record_telemetry(&self) -> bool {
+        true
+    }
 
     /// Create and send a message with the given args/kwargs.
     fn send_message<'py>(
@@ -657,6 +680,9 @@ pub(crate) trait Endpoint {
         );
         let mut headers = hyperactor_config::Flattrs::new();
         crate::operation_context::stamp_operation_context(&mut headers, &attrs);
+        if !self.record_telemetry() {
+            headers.set(hyperactor::mailbox::headers::SUPPRESS_TELEMETRY, true);
+        }
         headers
     }
 
@@ -707,7 +733,9 @@ pub(crate) trait Endpoint {
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
         let instance = self.get_current_instance(py)?;
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::Call, instance.self_addr());
+        let record_telemetry = self.record_telemetry();
+        let span_guard = record_telemetry
+            .then(|| self.enter_endpoint_span(EndpointAdverb::Call, instance.self_addr()));
 
         let extent = self.get_extent(py)?;
         let attrs = self.metric_attrs().clone();
@@ -734,6 +762,7 @@ pub(crate) trait Endpoint {
                 extent,
                 receiver,
                 attrs,
+                record_telemetry,
                 supervision_monitor,
                 &instance_for_task,
                 qualified_endpoint_name,
@@ -757,7 +786,9 @@ pub(crate) trait Endpoint {
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
         let instance = self.get_current_instance(py)?;
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::Choose, instance.self_addr());
+        let record_telemetry = self.record_telemetry();
+        let span_guard = record_telemetry
+            .then(|| self.enter_endpoint_span(EndpointAdverb::Choose, instance.self_addr()));
         let (port_ref, receiver) = self.open_response_port(&instance);
 
         let caller_headers = self.build_operation_context_headers(EndpointAdverb::Choose);
@@ -779,6 +810,7 @@ pub(crate) trait Endpoint {
             self.get_qualified_name(),
             EndpointAdverb::Choose,
             span_guard,
+            record_telemetry,
         )?;
 
         wrap_in_future(py, task)
@@ -801,7 +833,9 @@ pub(crate) trait Endpoint {
         }
 
         let instance = self.get_current_instance(py)?;
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::CallOne, instance.self_addr());
+        let record_telemetry = self.record_telemetry();
+        let span_guard = record_telemetry
+            .then(|| self.enter_endpoint_span(EndpointAdverb::CallOne, instance.self_addr()));
         let (port_ref, receiver) = self.open_response_port(&instance);
 
         let caller_headers = self.build_operation_context_headers(EndpointAdverb::CallOne);
@@ -823,6 +857,7 @@ pub(crate) trait Endpoint {
             self.get_qualified_name(),
             EndpointAdverb::CallOne,
             span_guard,
+            record_telemetry,
         )?;
 
         wrap_in_future(py, task)
@@ -857,7 +892,10 @@ pub(crate) trait Endpoint {
         let qualified_endpoint_name = self.get_qualified_name();
         let future_class = make_future(py).unbind();
 
-        ENDPOINT_STREAM_THROUGHPUT.add(1, self.metric_attrs().as_slice());
+        let record_telemetry = self.record_telemetry();
+        if record_telemetry {
+            ENDPOINT_STREAM_THROUGHPUT.add(1, self.metric_attrs().as_slice());
+        }
 
         let stream = PyValueStream {
             receiver: Arc::new(tokio::sync::Mutex::new(receiver)),
@@ -868,6 +906,7 @@ pub(crate) trait Endpoint {
             qualified_endpoint_name,
             start,
             future_class,
+            record_telemetry,
         };
 
         Ok(stream.into_pyobject(py)?.unbind().into())
@@ -882,14 +921,32 @@ pub(crate) trait Endpoint {
     ) -> PyResult<()> {
         let instance = self.get_current_instance(py)?;
         let attributes = self.metric_attrs().as_slice();
+        let record_telemetry = self.record_telemetry();
 
-        match self.send_message(py, args, kwargs, None, AllOrChoose::All, &instance) {
+        let mut caller_headers = hyperactor_config::Flattrs::new();
+        if !record_telemetry {
+            caller_headers.set(hyperactor::mailbox::headers::SUPPRESS_TELEMETRY, true);
+        }
+        let result = self.send_message_with_headers(
+            py,
+            args,
+            kwargs,
+            None,
+            AllOrChoose::All,
+            &instance,
+            caller_headers,
+        );
+        match result {
             Ok(()) => {
-                ENDPOINT_BROADCAST_THROUGHPUT.add(1, attributes);
+                if record_telemetry {
+                    ENDPOINT_BROADCAST_THROUGHPUT.add(1, attributes);
+                }
                 Ok(())
             }
             Err(e) => {
-                ENDPOINT_BROADCAST_ERROR.add(1, attributes);
+                if record_telemetry {
+                    ENDPOINT_BROADCAST_ERROR.add(1, attributes);
+                }
                 Err(e)
             }
         }
@@ -911,6 +968,7 @@ pub struct ActorEndpoint {
     /// An endpoint outlives every invocation on it, so building its attributes
     /// once here keeps the per-invocation metrics allocation-free.
     attrs: Arc<EndpointAttrs>,
+    record_telemetry: bool,
 }
 
 impl ActorEndpoint {
@@ -943,7 +1001,10 @@ impl ActorEndpoint {
         let mut pending: PyRefMut<'_, PendingMessage> = result.extract()?;
         let message = pending.take()?;
 
-        ENDPOINT_MESSAGE_SIZE_HISTOGRAM.record(message.payload_len() as f64, self.attrs.as_slice());
+        if self.record_telemetry {
+            ENDPOINT_MESSAGE_SIZE_HISTOGRAM
+                .record(message.payload_len() as f64, self.attrs.as_slice());
+        }
 
         Ok(message)
     }
@@ -960,6 +1021,10 @@ impl Endpoint for ActorEndpoint {
 
     fn metric_attrs(&self) -> &Arc<EndpointAttrs> {
         &self.attrs
+    }
+
+    fn record_telemetry(&self) -> bool {
+        self.record_telemetry
     }
 
     fn send_message<'py>(
@@ -1009,7 +1074,7 @@ impl Endpoint for ActorEndpoint {
 impl ActorEndpoint {
     /// Create a new ActorEndpoint.
     #[new]
-    #[pyo3(signature = (actor_mesh, method, shape, mesh_name, signature=None, proc_mesh=None, propagator=None))]
+    #[pyo3(signature = (actor_mesh, method, shape, mesh_name, signature=None, proc_mesh=None, propagator=None, record_telemetry=true))]
     fn new(
         actor_mesh: PythonActorMesh,
         method: MethodSpecifier,
@@ -1018,6 +1083,7 @@ impl ActorEndpoint {
         signature: Option<Py<PyAny>>,
         proc_mesh: Option<Py<PyAny>>,
         propagator: Option<Py<PyAny>>,
+        record_telemetry: bool,
     ) -> Self {
         // `mesh_name` is the raw name Python spawned the mesh under, so it takes
         // the same stripping that produced the actors' own label. Only the
@@ -1034,6 +1100,7 @@ impl ActorEndpoint {
             proc_mesh,
             propagator,
             attrs,
+            record_telemetry,
         }
     }
 

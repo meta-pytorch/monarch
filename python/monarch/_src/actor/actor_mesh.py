@@ -1351,6 +1351,7 @@ class _Actor:
 
     def __init__(self) -> None:
         self.instance: object | None = None
+        self._record_telemetry: bool = True
         # TODO: (@pzhang) remove this with T229200522
         self._saved_error: ActorError | None = None
         self._method_cache: Dict[str, Tuple[Callable[..., Any], bool, bool]] = {}
@@ -1365,7 +1366,8 @@ class _Actor:
         mesh_references: List[Any],
         response_port: "PortProtocol[Any]",
     ) -> None:
-        MESSAGES_HANDLED.add(1)
+        if self._record_telemetry:
+            MESSAGES_HANDLED.add(1)
 
         # Initialize method_name before try block so it's always defined
         method_name = method.name
@@ -1389,6 +1391,7 @@ class _Actor:
                     (args,) = args
                     init_args = cast(ActorInitArgs, args)
                     Class = init_args.Class
+                    self._record_telemetry = getattr(Class, "_record_telemetry", True)
                     ins.proc_mesh = cast("ProcMesh", init_args.proc_mesh)
                     ins._controller_controller = cast(
                         "_ControllerController", init_args.controller_controller
@@ -1445,7 +1448,9 @@ class _Actor:
                 should_instrument = False
 
                 if isinstance(the_method, EndpointProperty):
-                    should_instrument = the_method._instrument
+                    should_instrument = (
+                        the_method._instrument and self._record_telemetry
+                    )
                     the_method = functools.partial(the_method._method, self.instance)
 
                 self._method_cache[method_name] = (
@@ -1487,7 +1492,8 @@ class _Actor:
             else:
                 await response
         except Exception as e:
-            log_endpoint_exception(e, method_name, ctx.actor_instance.actor_id)
+            if self._record_telemetry:
+                log_endpoint_exception(e, method_name, ctx.actor_instance.actor_id)
             self._post_mortem_debug(e.__traceback__)
             response_port.exception(
                 ActorError(
@@ -1874,6 +1880,7 @@ class ActorMesh(MeshTrait, Generic[T]):
             inspect.signature(impl),
             self._proc_mesh,
             propagator,
+            getattr(self._class, "_record_telemetry", True),
         )
 
     def __reduce_ex__(

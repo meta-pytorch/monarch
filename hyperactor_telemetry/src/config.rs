@@ -87,8 +87,8 @@ declare_attrs! {
 /// Build a `Targets` filter for tracing sinks.
 ///
 /// Reads the log level from `MONARCH_FILE_LOG_LEVEL` (defaulting to "info")
-/// and disables noisy internal targets (`hyperactor_telemetry`, `message`,
-/// `execution`, `opentelemetry`).
+/// and disables noisy internal targets (`hyperactor_telemetry`,
+/// `monarch_distributed_telemetry`, `message`, `execution`, `opentelemetry`).
 pub(crate) fn get_tracing_targets() -> Targets {
     let level = LevelFilter::from_level({
         let log_level_str = hyperactor_config::global::try_get_cloned(MONARCH_FILE_LOG_LEVEL)
@@ -97,6 +97,7 @@ pub(crate) fn get_tracing_targets() -> Targets {
     });
     Targets::new()
         .with_target("hyperactor_telemetry", LevelFilter::OFF)
+        .with_target("monarch_distributed_telemetry", LevelFilter::OFF)
         .with_target("message", LevelFilter::OFF)
         .with_target("execution", LevelFilter::OFF)
         .with_target("opentelemetry", LevelFilter::OFF)

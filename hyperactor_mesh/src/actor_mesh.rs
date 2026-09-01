@@ -1041,7 +1041,7 @@ impl<A: Referable> ManagedActorMeshRef<A> {
         A: RemoteHandles<M>,
         M: RemoteMessage + Clone,
     {
-        self.emit_sent_message_telemetry(cx, self.region());
+        self.emit_sent_message_telemetry(cx, self.region(), caller_headers);
 
         let mut headers = caller_headers.clone();
         headers.set(
@@ -1081,6 +1081,7 @@ impl<A: Referable> ManagedActorMeshRef<A> {
                 ndslice::Slice::new(0, Vec::new(), Vec::new())
                     .expect("zero-dimensional slice is valid"),
             ),
+            caller_headers,
         );
 
         let num_ranks = self.cast_domain.region().num_ranks();
@@ -1108,7 +1109,18 @@ impl<A: Referable> ManagedActorMeshRef<A> {
         self.post_cast_direct(cx, point, actor, message, caller_headers)
     }
 
-    fn emit_sent_message_telemetry(&self, cx: &impl context::Actor, region: &Region) {
+    fn emit_sent_message_telemetry(
+        &self,
+        cx: &impl context::Actor,
+        region: &Region,
+        headers: &Flattrs,
+    ) {
+        if headers
+            .get(hyperactor::mailbox::headers::SUPPRESS_TELEMETRY)
+            .unwrap_or(false)
+        {
+            return;
+        }
         hyperactor_telemetry::notify_sent_message(hyperactor_telemetry::SentMessageEvent {
             timestamp: std::time::SystemTime::now(),
             sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_addr().id()),

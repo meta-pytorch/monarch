@@ -57,6 +57,10 @@ declare_attrs! {
     /// Port index the message was delivered to, injected in post_unchecked().
     pub attr TELEMETRY_PORT_INDEX: u64;
 
+    /// Suppress telemetry generated while delivering this message and its reply.
+    @meta(OPERATION_CONTEXT_HEADER = true)
+    pub attr SUPPRESS_TELEMETRY: bool;
+
     // Operation-context headers (see `OPERATION_CONTEXT_HEADER` in
     // `hyperactor_config::attrs`). Carried from the caller's outgoing
     // request onto the reply envelope by a consumer-side helper that
