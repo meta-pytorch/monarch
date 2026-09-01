@@ -17,6 +17,26 @@ if os.environ.get("MONARCH_PRELOAD_TORCH", "0") == "1":
         import torch  # noqa: F401
     except ImportError:
         pass
+elif os.environ.get("MONARCH_PRELOAD_TORCH_HIP", "0") == "1":
+    # "Lite" preload for spawned procs: dlopen torch's bundled libamdhip64 (~ms)
+    # so it wins the rocprofiler-register race the same way a full `import torch`
+    # would -- torch itself loads this lib with RTLD_GLOBAL -- but without torch's
+    # ~10s import cost, which across the procs an RDMA test spawns overruns the
+    # Host::spawn readiness window on slow ROCm runners. proc_mesh sets this flag
+    # for spawned procs; the main process still uses `import torch` above.
+    try:
+        import ctypes as _ctypes
+        import importlib.util as _importlib_util
+
+        _torch_spec = _importlib_util.find_spec("torch")
+        if _torch_spec is not None and _torch_spec.origin is not None:
+            _hip_lib = os.path.join(
+                os.path.dirname(_torch_spec.origin), "lib", "libamdhip64.so"
+            )
+            if os.path.exists(_hip_lib):
+                _ctypes.CDLL(_hip_lib, mode=_ctypes.RTLD_GLOBAL)
+    except Exception:
+        pass
 
 # Import before monarch to pre-load torch DSOs as, in exploded wheel flows,
 # our RPATHs won't correctly find them.
