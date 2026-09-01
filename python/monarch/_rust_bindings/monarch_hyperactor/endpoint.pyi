@@ -76,6 +76,7 @@ class ActorEndpoint(Generic[P, R]):
         signature: Any | None = None,
         proc_mesh: Any | None = None,
         propagator: Any | None = None,
+        record_telemetry: bool = True,
     ) -> None: ...
     def _call_name(self) -> Any:
         """Something to use in InputChecker to represent calling this thingy."""

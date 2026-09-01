@@ -2770,3 +2770,88 @@ def test_public_custom_trace_is_queryable() -> None:
         assert result.get("name") == ["python_user_span"]
         fields = json.loads(result["fields_json"][0])
         assert fields["name"] == trace_name
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_query_does_not_generate_telemetry() -> None:
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+
+        scan_sql = "SELECT COUNT(*) AS count FROM messages WHERE endpoint = 'scan'"
+        mailbox_posts_sql = (
+            "SELECT COALESCE(SUM(sum_u64), 0) AS count FROM metric_sums "
+            "WHERE name = 'mailbox.posts' "
+            'AND attributes_json LIKE \'%"dest_actor_id":"telemetry<%\''
+        )
+        scan_counts = []
+        for _ in range(4):
+            rows = _sidecar_query_rows(state, scan_sql)
+            scan_counts.append(rows[0]["count"])
+            time.sleep(1)
+
+        assert scan_counts == [0, 0, 0, 0]
+
+        deadline = time.monotonic() + 10
+        mailbox_posts_before = 0
+        while mailbox_posts_before == 0 and time.monotonic() < deadline:
+            rows = _sidecar_query_rows(state, mailbox_posts_sql)
+            mailbox_posts_before = int(rows[0]["count"])
+            time.sleep(0.2)
+        assert mailbox_posts_before > 0
+
+        time.sleep(2)
+        rows = _sidecar_query_rows(state, mailbox_posts_sql)
+        mailbox_posts_before = int(rows[0]["count"])
+        for _ in range(3):
+            _sidecar_query_rows(state, mailbox_posts_sql)
+        time.sleep(2)
+        rows = _sidecar_query_rows(state, mailbox_posts_sql)
+        assert int(rows[0]["count"]) == mailbox_posts_before
+
+        query_telemetry_counts = {
+            "sent messages": (
+                "SELECT COUNT(*) AS count FROM sent_messages sent "
+                "JOIN meshes mesh ON sent.actor_mesh_id = mesh.id "
+                "WHERE mesh.given_name = 'telemetry'"
+            ),
+            "message statuses": (
+                "SELECT COUNT(*) AS count FROM message_status_events status "
+                "JOIN messages msg ON status.message_id = msg.id "
+                "WHERE msg.endpoint = 'scan'"
+            ),
+            "events": (
+                "SELECT COUNT(*) AS count FROM events "
+                "WHERE target IN ("
+                "'monarch_distributed_telemetry::database_scanner', "
+                "'monarch_distributed_telemetry::query_engine')"
+            ),
+            "spans": (
+                "SELECT COUNT(*) AS count FROM spans "
+                'WHERE fields_json LIKE \'%"method":"scan"%\' '
+                'OR fields_json LIKE \'%"name":"scan"%\''
+            ),
+            "span events": (
+                "SELECT COUNT(*) AS count FROM span_events span_event "
+                "JOIN spans span ON span_event.process_id = span.process_id "
+                "AND span_event.id = span.id "
+                'WHERE span.fields_json LIKE \'%"method":"scan"%\' '
+                'OR span.fields_json LIKE \'%"name":"scan"%\''
+            ),
+            "metric sums": (
+                "SELECT COUNT(*) AS count FROM metric_sums "
+                'WHERE attributes_json LIKE \'%"actor":"telemetry"%\' '
+                'AND attributes_json LIKE \'%"method":"scan"%\''
+            ),
+            "metric histograms": (
+                "SELECT COUNT(*) AS count FROM metric_histograms "
+                'WHERE attributes_json LIKE \'%"actor":"telemetry"%\' '
+                'AND attributes_json LIKE \'%"method":"scan"%\''
+            ),
+        }
+        for label, sql in query_telemetry_counts.items():
+            rows = _sidecar_query_rows(state, sql)
+            assert rows == [{"count": 0}], f"unexpected {label}: {rows}"

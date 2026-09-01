@@ -264,10 +264,6 @@ function ActivityPanel({ s, activity }: { s: Summary; activity: MessageActivity 
       <div className="panel-body">
         <EChart option={option} height={130} />
         <SessionTimeline start={start} end={end} errors={s.errors} failureOnset={fo} />
-        <div className="chart-note">
-          <IconEye size={12} />
-          <span>Live polling adds a small amount of <code>scan</code> telemetry traffic.</span>
-        </div>
       </div>
     </div>
   );

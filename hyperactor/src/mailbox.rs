@@ -2155,20 +2155,26 @@ impl MailboxSender for Mailbox {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        metrics::MAILBOX_POSTS.add(
-            1,
-            hyperactor_telemetry::kv_pairs!(
-                "actor_id" => envelope.sender.to_string(),
-                "dest_actor_id" => envelope.dest.actor_addr().to_string(),
-            ),
-        );
-        tracing::trace!(
-            name = "post",
-            actor_name = envelope.sender.label().map_or("?", |l| l.as_str()),
-            actor_id = envelope.sender.to_string(),
-            "posting message to {}",
-            envelope.dest
-        );
+        let suppress_telemetry = envelope
+            .headers()
+            .get(crate::mailbox::headers::SUPPRESS_TELEMETRY)
+            .unwrap_or(false);
+        if !suppress_telemetry {
+            metrics::MAILBOX_POSTS.add(
+                1,
+                hyperactor_telemetry::kv_pairs!(
+                    "actor_id" => envelope.sender.to_string(),
+                    "dest_actor_id" => envelope.dest.actor_addr().to_string(),
+                ),
+            );
+            tracing::trace!(
+                name = "post",
+                actor_name = envelope.sender.label().map_or("?", |l| l.as_str()),
+                actor_id = envelope.sender.to_string(),
+                "posting message to {}",
+                envelope.dest
+            );
+        }
 
         if envelope.dest().actor_id() != self.inner.actor_id.id() {
             let failure = DeliveryFailure::new(InvalidReference::new(
@@ -2258,26 +2264,33 @@ impl MailboxSender for Mailbox {
             return_undeliverable,
         } = metadata;
 
-        let to_actor_id = hash_to_u64(dest.actor_addr().id());
-        let message_id = hyperactor_telemetry::generate_message_id(to_actor_id);
-        headers.set(crate::mailbox::headers::TELEMETRY_MESSAGE_ID, message_id);
-        // A cast leaf stamps its trusted logical origin before this boundary.
-        // For other deliveries, the envelope sender is the logical origin.
-        if !headers.contains_key(crate::mailbox::headers::SENDER_ACTOR_ID_HASH) {
-            crate::mailbox::headers::stamp_sender_actor_id_hash(&mut headers, &sender);
-        }
-        headers.set(crate::mailbox::headers::TELEMETRY_PORT_INDEX, dest.index());
+        let message_id = if suppress_telemetry {
+            None
+        } else {
+            let to_actor_id = hash_to_u64(dest.actor_addr().id());
+            let message_id = hyperactor_telemetry::generate_message_id(to_actor_id);
+            headers.set(crate::mailbox::headers::TELEMETRY_MESSAGE_ID, message_id);
+            // A cast leaf stamps its trusted logical origin before this boundary.
+            // For other deliveries, the envelope sender is the logical origin.
+            if !headers.contains_key(crate::mailbox::headers::SENDER_ACTOR_ID_HASH) {
+                crate::mailbox::headers::stamp_sender_actor_id_hash(&mut headers, &sender);
+            }
+            headers.set(crate::mailbox::headers::TELEMETRY_PORT_INDEX, dest.index());
+            Some(message_id)
+        };
 
         match port_sender.send_serialized(headers, data) {
             Ok(disposition) => {
-                hyperactor_telemetry::notify_message_status(
-                    hyperactor_telemetry::MessageStatusEvent {
-                        timestamp: std::time::SystemTime::now(),
-                        id: hyperactor_telemetry::generate_status_event_id(message_id),
-                        message_id,
-                        status: "queued".to_string(),
-                    },
-                );
+                if let Some(message_id) = message_id {
+                    hyperactor_telemetry::notify_message_status(
+                        hyperactor_telemetry::MessageStatusEvent {
+                            timestamp: std::time::SystemTime::now(),
+                            id: hyperactor_telemetry::generate_status_event_id(message_id),
+                            message_id,
+                            status: "queued".to_string(),
+                        },
+                    );
+                }
 
                 if disposition == SerializedSendDisposition::DeliveredAndExhausted {
                     self.inner.ports.remove(&port);
@@ -5604,8 +5617,6 @@ mod tests {
             actor1,
             port_id: _,
             port_id1,
-            port_id2: _,
-            port_id2_1: _,
             ..
         } = setup_split_port_ids(
             Some(accum::sum::<u64>().reducer_spec().unwrap()),
@@ -5648,8 +5659,6 @@ mod tests {
             actor1,
             port_id: _,
             port_id1,
-            port_id2: _,
-            port_id2_1: _,
             ..
         } = setup_split_port_ids(
             Some(accum::sum::<u64>().reducer_spec().unwrap()),

@@ -62,6 +62,10 @@ def telemetry_socket_path(apply_id: str) -> str:
 class TelemetryActor(Actor):
     """Host-local telemetry collector actor."""
 
+    # ActorMesh reads this for caller instrumentation; PythonActor reads it for
+    # receiver instrumentation. Observing queries would change their results.
+    _record_telemetry = False
+
     def __init__(self, apply_id: str, retention_secs: int) -> None:
         # Job-instance identifier; namespaces the per-host socket path under
         # /tmp so concurrent jobs on the same host do not collide.
