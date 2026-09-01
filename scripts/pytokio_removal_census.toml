@@ -2580,14 +2580,19 @@ constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from PyRdmaAction::submit"
 consumer = "RDMAAction.submit via Future._from_coro"
 driver = "awaited by the caller through the public Future"
-start_point = "gated on RDMA readiness, then lazy until driven"
-abandonment = "possible; a caller may drop the returned Future"
-eager_effect = "starts a side effect"
-drop_behavior = "the transfer is never submitted"
-unobserved_error = "surfaced on observation"
-disposition = "intentionally become eager"
+start_point = "call time obtains or starts readiness and retains an observer; readiness wait, action lock, and transfer submission begin only when the returned Future is first driven"
+abandonment = "possible before first drive; async observation and timed get() are non-abortable after spawn, while untimed get() drives inline"
+eager_effect = "starts a side effect: an eager conversion would drive the retained readiness observer and then take the action lock and submit the queued operations even if the returned observer is discarded"
+drop_behavior = "discarding before first drive submits nothing and leaves the same action runnable"
+unobserved_error = "no operation error exists until driven; readiness retains exact RdmaInitError, and later operation failure is exact base Exception with RdmaAction.submit failed:"
+disposition = "require a binding-specific design"
 semantic_class = "deferred_side_effect"
-oracle = "test_rdma submit coverage"
+oracle = [
+  "fbcode//monarch/python/tests:test_rdma_initialization::test_discarded_submit_leaves_bytes_unchanged_and_same_action_runnable",
+  "fbcode//monarch/python/tests:test_rdma_initialization::test_public_submit_and_drop_resolve_to_none_after_tcp_init",
+  "fbcode//monarch/python/tests:test_rdma_initialization::test_public_paths_propagate_readiness_failure",
+  "fbcode//monarch/python/tests:test_rdma_initialization::test_submit_wraps_post_readiness_operation_failure",
+]
 
 [[site]]
 id = "np.lib.PyRdmaBuffer.drop"
@@ -2603,14 +2608,18 @@ constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from PyRdmaBuffer::drop"
 consumer = "RDMABuffer.drop via Future._from_coro"
 driver = "awaited by the caller through the public Future"
-start_point = "gated on RDMA readiness, then lazy until driven"
-abandonment = "possible; a caller may drop the returned Future"
-eager_effect = "starts a side effect"
-drop_behavior = "the buffer registration is never released"
-unobserved_error = "surfaced on observation"
-disposition = "intentionally become eager"
+start_point = "call time obtains or starts readiness and retains an observer plus cloned buffer state; readiness wait and release publication begin only when the returned Future is first driven"
+abandonment = "possible before first drive; async observation and timed get() are non-abortable after spawn, while untimed get() drives inline"
+eager_effect = "starts a side effect: an eager conversion would drive the retained readiness observer and then publish ReleaseBuffer even if the returned observer is discarded"
+drop_behavior = "discarding before first drive publishes no release and leaves the registration usable"
+unobserved_error = "no release error exists until driven; readiness retains exact RdmaInitError, while handler execution and delivery failures after the one-way post are outside this Future's result"
+disposition = "require a binding-specific design"
 semantic_class = "deferred_side_effect"
-oracle = "test_rdma drop coverage"
+oracle = [
+  "fbcode//monarch/python/tests:test_rdma_initialization::test_discarded_drop_leaves_buffer_usable",
+  "fbcode//monarch/python/tests:test_rdma_initialization::test_public_submit_and_drop_resolve_to_none_after_tcp_init",
+  "fbcode//monarch/python/tests:test_rdma_initialization::test_drop_propagates_readiness_failure_without_releasing_buffer",
+]
 
 [[site]]
 id = "im.actor_mesh.module"
