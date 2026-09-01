@@ -2059,16 +2059,19 @@ state = "legacy"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <ActorMeshRef<PythonActor> as ActorMeshProtocol>::name"
-consumer = "ActorMesh._name via Future._from_coro"
-driver = "awaited by the Python ActorMesh._name coroutine"
-start_point = "already complete; the name is read from the mesh ref before the future is built"
-abandonment = "possible; a caller may drop the returned task"
+consumer = "none in tree; both call sites that reach ActorMeshProtocol::name go through Arc<dyn SupervisableActorMesh>, and ActorMeshRef<PythonActor> implements neither Supervisable nor SupervisableActorMesh"
+driver = "none in tree; driven only by the in-crate characterization tests"
+start_point = "no deferred domain work; for a managed ref the id is read synchronously before the task is built, though observing the task still performs Python result conversion under the GIL. A data ref panics at the managed-only assertion before any task exists"
+abandonment = "possible in principle, but no in-tree caller holds a task to drop"
 eager_effect = "only wraps a ready value"
 drop_behavior = "no effect; the name was already computed"
-unobserved_error = "none"
+unobserved_error = "none through the task; a data ref fails as a synchronous panic instead"
 disposition = "replace with a direct value"
 semantic_class = "ready_no_op_wrapper"
-oracle = "actor mesh naming coverage"
+oracle = [
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::discarded_managed_name_wrappers_leave_exact_name_repeatable",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::data_name_wrappers_panic_before_returning_a_task",
+]
 
 [[site]]
 id = "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.__reduce__"
@@ -2174,16 +2177,19 @@ state = "legacy"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <PythonActorMeshImpl as ActorMeshProtocol>::name"
-consumer = "ActorMesh._name via Future._from_coro"
-driver = "awaited by the Python ActorMesh._name coroutine"
-start_point = "already complete; the name is read from the mesh ref before the future is built"
-abandonment = "possible; a caller may drop the returned task"
+consumer = "the queued closure in <AsyncActorMesh as ActorMeshProtocol>::name, which calls mesh.await?.name()?.take_task()?.await in the same frame"
+driver = "the per-mesh queue task, which takes and awaits the returned task immediately"
+start_point = "no deferred domain work; for a managed mesh the id is read synchronously before the task is built, though observing the task still performs Python result conversion under the GIL. A data mesh panics at the managed-only assertion before any task exists"
+abandonment = "not reachable publicly; the queued frame consumes the task in the same expression, so only the outer one-shot observer can be discarded"
 eager_effect = "only wraps a ready value"
 drop_behavior = "no effect; the name was already computed"
-unobserved_error = "none"
+unobserved_error = "none through the task; a data mesh fails as a synchronous panic instead"
 disposition = "replace with a direct value"
 semantic_class = "ready_no_op_wrapper"
-oracle = "actor mesh naming coverage"
+oracle = [
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::discarded_managed_name_wrappers_leave_exact_name_repeatable",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::data_name_wrappers_panic_before_returning_a_task",
+]
 
 [[site]]
 id = "np.actor_mesh.PythonActorMeshImpl_as_ActorMeshProtocol.stop"
@@ -2220,16 +2226,18 @@ state = "legacy"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from initialized"
-consumer = "ActorMesh.initialized via Future._from_coro"
-driver = "awaited by the Python ActorMesh.initialized coroutine"
-start_point = "already complete; the trait default resolves to None without work"
-abandonment = "possible; a caller may drop the returned task"
+consumer = "none in tree. PythonActorMesh::initialized forwards to its inner mesh, and AsyncActorMesh overrides this default rather than delegating to it. The one PythonActorMesh built over a bare PythonActorMeshImpl, in the pending AsyncActorMesh::__reduce__ branch, is consumed only by the pickler and never receives an initialized() call"
+driver = "none in tree; driven only by the in-crate characterization test"
+start_point = "no domain work; the default body resolves to None immediately, though observing the task still performs Python result conversion under the GIL"
+abandonment = "possible in principle, but no in-tree caller holds a task to drop"
 eager_effect = "only wraps a ready value"
 drop_behavior = "no effect; there is no underlying operation"
 unobserved_error = "none; resolves to Ok(None)"
 disposition = "replace with a direct value"
 semantic_class = "ready_no_op_wrapper"
-oracle = "actor mesh readiness coverage"
+oracle = [
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::default_initialized_wrappers_return_none_and_leave_mesh_usable",
+]
 
 [[site]]
 id = "np.bootstrap.attach_to_workers"

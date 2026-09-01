@@ -885,3 +885,263 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PyActorSupervisionEvent>()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::any::Any;
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
+
+    use hyperactor::ActorRef;
+    use hyperactor::ProcAddr;
+    use hyperactor::ProcId;
+    use hyperactor::channel::ChannelAddr;
+    use hyperactor::id::Label;
+    use hyperactor::id::Uid;
+    use hyperactor_mesh::host_mesh::HostMeshRef;
+    use hyperactor_mesh::mesh_id::ActorMeshId;
+    use hyperactor_mesh::mesh_id::HostMeshId;
+    use ndslice::extent;
+
+    use super::*;
+
+    /// The text both name wrappers assert on when handed a data mesh.
+    const MANAGED_ONLY_NAME: &str = "Python actor mesh names require a managed mesh";
+
+    /// A mesh id no implementation could return by accident: `instance` draws a
+    /// fresh uid, so a hard-coded name cannot match it.
+    fn fixture_mesh_id() -> ActorMeshId {
+        ActorMeshId::instance(Label::new("mesh_name_fixture").expect("test label should be valid"))
+    }
+
+    /// A managed `ActorMeshRef<PythonActor>` carrying `id`, obtained through the
+    /// public deserializer.
+    ///
+    /// `ActorMeshRef::new_managed` is not public outside `hyperactor_mesh`.
+    /// Starting a real mesh merely to obtain this value would introduce runtime
+    /// resources, so this fixture instead uses the public serde representation.
+    /// `HostMeshRef::from_hosts` is a synchronous constructor whose embedded
+    /// host-agent mesh is managed with no controller. The actor type occurs in
+    /// the managed wire form only in that absent controller field, which makes
+    /// the serialized value safe to decode as `ActorMeshRef<PythonActor>`. No
+    /// host is contacted and the local address is never connected.
+    ///
+    /// `ActorMeshRefRepr::Managed` is externally tagged and serializes as the
+    /// four-element tuple `(id, proc_mesh_id, controller, cast_domain)`. The
+    /// `HostMeshRef` constructor supplies a valid value for every element, but
+    /// always uses the fixed `host_agent` id. The fixture replaces tuple element
+    /// zero only; otherwise a name implementation incorrectly hard-coded to
+    /// `host_agent` would satisfy the test.
+    ///
+    /// The field lookup, variant lookup, and arity assertion below deliberately
+    /// make this dependency on the wire format explicit. A field, tag, or tuple
+    /// layout change fails before mutation, and the post-decode assertion proves
+    /// that the public deserializer retained the caller-selected id.
+    fn managed_mesh_ref(id: &ActorMeshId) -> ActorMeshRef<PythonActor> {
+        let host_mesh = HostMeshRef::from_hosts(
+            HostMeshId::singleton(Label::strip("managed_name_fixture")),
+            vec![ChannelAddr::Local(1)],
+        );
+        let mut wire = serde_json::to_value(&host_mesh).expect("HostMeshRef should serialize");
+        let payload = wire
+            .get_mut("host_agent_mesh")
+            .and_then(|mesh| mesh.get_mut("Managed"))
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("the host agent mesh should encode as the managed variant");
+        assert_eq!(
+            payload.len(),
+            4,
+            "the managed payload should be the (id, proc mesh, controller, cast domain) tuple"
+        );
+        payload[0] = serde_json::to_value(id).expect("ActorMeshId should serialize");
+
+        let mesh_ref: ActorMeshRef<PythonActor> =
+            serde_json::from_value(wire["host_agent_mesh"].clone())
+                .expect("the host agent mesh should decode as an ActorMeshRef");
+        assert_eq!(
+            mesh_ref
+                .as_managed()
+                .expect("the fixture must decode as the managed variant")
+                .id(),
+            id,
+            "the fixture must carry the caller-selected id, not the constructor default"
+        );
+        mesh_ref
+    }
+
+    /// A data `ActorMeshRef<PythonActor>`: the variant both name wrappers
+    /// reject. Its single member is never messaged.
+    fn data_mesh_ref() -> ActorMeshRef<PythonActor> {
+        let proc_addr = ProcAddr::new(
+            ProcId::new(
+                Uid::Instance(1, None),
+                Some(Label::new("local").expect("test label should be valid")),
+            ),
+            ChannelAddr::Local(1).into(),
+        );
+        let member: ActorRef<PythonActor> = ActorRef::attest(proc_addr.actor_addr("member"));
+        ActorMeshRef::try_new_data(extent!(members = 1).into(), vec![member])
+            .expect("a one-rank data mesh should be valid")
+    }
+
+    /// Drive a wrapper task to completion and return the string it yields.
+    fn drive_name(task: PyResult<PyPythonTask>) -> String {
+        let mut task = task.expect("name() should return a task");
+        let value = get_tokio_runtime()
+            .block_on(task.take_task().expect("a fresh task is not consumed"))
+            .expect("the name task should resolve");
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            value
+                .extract::<String>(py)
+                .expect("name() should resolve to a string")
+        })
+    }
+
+    fn panic_message(payload: &(dyn Any + Send)) -> String {
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| {
+                payload
+                    .downcast_ref::<&str>()
+                    .map(|text| (*text).to_string())
+            })
+            .unwrap_or_else(|| "<non-string panic payload>".to_string())
+    }
+
+    // Both managed name wrappers yield the mesh id, and discarding a wrapper
+    // consumes nothing: a later wrapper reports the same id.
+    //
+    // What these assertions establish and what they do not. They prove the
+    // value is repeatable across a discarded observation. They do NOT prove
+    // dynamically that the id is read at call time rather than inside the
+    // returned future; an implementation that cloned the mesh and read the id
+    // when driven would pass too. Call-time computation is source-grounded --
+    // both bodies compute the string and then move it into
+    // `PyPythonTask::new(async move { Ok(name) })` -- and its synchronous half
+    // is witnessed dynamically by the data-mesh panic below, which happens
+    // before any task exists. Nor is the returned task first-poll ready:
+    // `PyPythonTask::new` converts its result through `monarch_with_gil`, which
+    // may wait on the process-global GIL lock, so observation is not free.
+    #[test]
+    fn discarded_managed_name_wrappers_leave_exact_name_repeatable() {
+        pyo3::Python::initialize();
+        let id = fixture_mesh_id();
+        let mesh_ref = managed_mesh_ref(&id);
+        let mesh_impl = PythonActorMeshImpl::new_ref(mesh_ref.clone());
+        let expected = id.to_string();
+
+        drop(
+            <ActorMeshRef<PythonActor> as ActorMeshProtocol>::name(&mesh_ref)
+                .expect("the ref wrapper should return a task"),
+        );
+        drop(
+            <PythonActorMeshImpl as ActorMeshProtocol>::name(&mesh_impl)
+                .expect("the impl wrapper should return a task"),
+        );
+
+        assert_eq!(
+            drive_name(<ActorMeshRef<PythonActor> as ActorMeshProtocol>::name(
+                &mesh_ref
+            )),
+            expected,
+            "discarding a ref-wrapper task must not disturb the next one"
+        );
+        assert_eq!(
+            drive_name(<PythonActorMeshImpl as ActorMeshProtocol>::name(&mesh_impl)),
+            expected,
+            "discarding an impl-wrapper task must not disturb the next one"
+        );
+    }
+
+    // KNOWN-BAD CURRENT BEHAVIOR, recorded so a later conversion decides
+    // deliberately rather than by accident: a data mesh has no name, and both
+    // wrappers assert instead of returning a task that fails. The panic happens
+    // in the call itself, so no task ever reaches the caller.
+    #[test]
+    fn data_name_wrappers_panic_before_returning_a_task() {
+        pyo3::Python::initialize();
+        let mesh_ref = data_mesh_ref();
+        let mesh_impl = PythonActorMeshImpl::new_ref(mesh_ref.clone());
+
+        let from_ref = catch_unwind(AssertUnwindSafe(|| {
+            <ActorMeshRef<PythonActor> as ActorMeshProtocol>::name(&mesh_ref).map(|_| ())
+        }));
+        let from_impl = catch_unwind(AssertUnwindSafe(|| {
+            <PythonActorMeshImpl as ActorMeshProtocol>::name(&mesh_impl).map(|_| ())
+        }));
+
+        for (outcome, which) in [(from_ref, "ref"), (from_impl, "impl")] {
+            let payload = outcome
+                .err()
+                .unwrap_or_else(|| panic!("the {which} wrapper must panic on a data mesh"));
+            let message = panic_message(payload.as_ref());
+            assert!(
+                message.contains(MANAGED_ONLY_NAME),
+                "the {which} wrapper must fail the managed-mesh assertion, got: {message}"
+            );
+        }
+    }
+
+    // The trait-default `initialized` wrapper resolves to None and leaves the
+    // mesh usable, on both implementors that inherit it.
+    //
+    // What this establishes and what it does not. The absence of domain work is
+    // a property of the default's source body, `async { Ok(None::<()>) }`, not
+    // something these assertions measure: driving through `block_on` would also
+    // pass if the future yielded or did unrelated non-mutating work first, and
+    // `PyPythonTask::new` converts its result through `monarch_with_gil`, which
+    // may wait on the process-global GIL lock. So this is not a first-poll-ready
+    // claim. Re-reading the name afterwards shows the mesh is still usable; it
+    // is not a work counter.
+    //
+    // No Python-visible call reaches this default today, though not because
+    // every `PythonActorMesh` wraps an `AsyncActorMesh`. The pending
+    // `__reduce__` branch builds one directly over the resolved
+    // `PythonActorMeshImpl`, which inherits this default; that object is only
+    // ever consumed by the pickler, never handed to Python code that calls
+    // `initialized()`. Both inheriting implementors are exercised directly here
+    // because neither has a caller to exercise them through.
+    #[test]
+    fn default_initialized_wrappers_return_none_and_leave_mesh_usable() {
+        pyo3::Python::initialize();
+        let id = fixture_mesh_id();
+        let mesh_ref = managed_mesh_ref(&id);
+        let mesh_impl = PythonActorMeshImpl::new_ref(mesh_ref.clone());
+
+        drop(
+            <ActorMeshRef<PythonActor> as ActorMeshProtocol>::initialized(&mesh_ref)
+                .expect("the ref default should return a task"),
+        );
+        drop(
+            <PythonActorMeshImpl as ActorMeshProtocol>::initialized(&mesh_impl)
+                .expect("the impl default should return a task"),
+        );
+
+        for (task, which) in [
+            (
+                <ActorMeshRef<PythonActor> as ActorMeshProtocol>::initialized(&mesh_ref),
+                "ref",
+            ),
+            (
+                <PythonActorMeshImpl as ActorMeshProtocol>::initialized(&mesh_impl),
+                "impl",
+            ),
+        ] {
+            let mut task = task.expect("initialized() should return a task");
+            let value = get_tokio_runtime()
+                .block_on(task.take_task().expect("a fresh task is not consumed"))
+                .expect("the default initialized task should resolve");
+            assert!(
+                monarch_with_gil_blocking(GilSite::Test, |py| value.is_none(py)),
+                "the default {which} initialized wrapper must resolve to None"
+            );
+        }
+
+        assert_eq!(
+            drive_name(<PythonActorMeshImpl as ActorMeshProtocol>::name(&mesh_impl)),
+            id.to_string(),
+            "observing the default initialized wrapper must leave the mesh usable"
+        );
+    }
+}
