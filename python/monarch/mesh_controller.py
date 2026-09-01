@@ -450,6 +450,7 @@ def _create_call_method_indirect_message(
     client: MeshClient,
     seq: Seq,
     refs: Sequence[Any],
+    correlation_id: Optional[int] = None,
 ) -> Tuple[PythonMessageKind, Tuple[str, int]]:
     unflatten_args = [
         UnflattenArg.PyObject if isinstance(ref, Tensor) else UnflattenArg.Mailbox
@@ -462,6 +463,7 @@ def _create_call_method_indirect_message(
         broker_id,
         seq,
         unflatten_args,
+        correlation_id,
     )
 
     # pyrefly: ignore [bad-return]
@@ -473,6 +475,7 @@ def create_actor_message_kind(
     proc_mesh: Optional["ProcMesh"],
     refs: Sequence[Any],
     port: Optional[PortRef | OncePortRef],
+    correlation_id: Optional[int] = None,
 ) -> PythonMessageKind:
     tensors = [ref for ref in refs if isinstance(ref, Tensor)]
     # we have some monarch references, we need to ensure their
@@ -504,6 +507,7 @@ def create_actor_message_kind(
         checker.mesh,
         tensors,
         chosen_stream,
+        correlation_id,
     )
 
 
@@ -515,6 +519,7 @@ def _create_actor_message_kind(
     mesh: DeviceMesh,
     tensors: List[Tensor],
     chosen_stream: Stream,
+    correlation_id: Optional[int],
 ) -> PythonMessageKind:
     stream_ref = chosen_stream._to_ref(client)
     fut = (port, mesh._ndslice) if port is not None else None
@@ -530,7 +535,7 @@ def _create_actor_message_kind(
     # from the stream, then it will run the actor method, and send the result to response port.
 
     actor_msg, broker_id = _create_call_method_indirect_message(
-        method_name, client, ident, refs
+        method_name, client, ident, refs, correlation_id
     )
     # pyrefly: ignore [bad-argument-type]
     worker_msg = SendResultOfActorCall(ident, broker_id, tensors, [], stream_ref)

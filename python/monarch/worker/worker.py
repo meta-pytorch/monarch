@@ -14,7 +14,7 @@ import pdb  # noqa
 import queue
 import threading
 from collections import deque
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from traceback import extract_tb
 from typing import (
     Any,
@@ -36,6 +36,7 @@ import torch.distributed
 import torch.fx
 import zmq
 import zmq.asyncio
+from monarch._rust_bindings.monarch_hyperactor.telemetry import PySpan
 from monarch._src.actor.shape import NDSlice
 from monarch.common import messages
 from monarch.common.function import ResolvableFunction
@@ -473,11 +474,21 @@ class Stream:
         inputs: List["Cell"],
         unflatten: Any,
         pipe: Optional["WorkerPipe"],
+        correlation_id: Optional[int] = None,
     ):
         with self.try_define(ident, mutates):
             args, kwargs = unflatten(c.get() for c in inputs)
             function = (lambda x: x) if rfunction is None else rfunction.resolve()
-            result = function(*args, **kwargs)
+            trace_span = (
+                PySpan(
+                    getattr(function, "__qualname__", type(function).__qualname__),
+                    correlation_id=correlation_id,
+                )
+                if correlation_id is not None
+                else nullcontext()
+            )
+            with trace_span:
+                result = function(*args, **kwargs)
             if pipe is None:
                 self.worker.q.send(messages.FetchResult(ident, result))
             else:
@@ -712,7 +723,15 @@ class Worker:
         )
         inputs, unflatten = self._inputs((m.args, m.kwargs))
         mutates = tuple(self.resolve(r) for r in m.mutates)
-        stream.send_value(m.ident, m.function, mutates, inputs, unflatten, pipe)
+        stream.send_value(
+            m.ident,
+            m.function,
+            mutates,
+            inputs,
+            unflatten,
+            pipe,
+            m.correlation_id,
+        )
 
     def PipeRecv(self, m: messages.PipeRecv):
         stream: Stream = self.resolve(m.stream).get()
