@@ -6,15 +6,13 @@
 
 # pyre-strict
 
-"""
-Stand up a Monarch host mesh from a torchrun/torchx-style SPMD entry point,
-without going through the Monarch job API.
+"""Worker rendezvous for store-backed SPMD jobs.
 
-:func:`host_mesh_from_store` is the public entry point: called collectively
-on every rank, it spawns a worker subprocess on each local rank 0, publishes
-the worker addresses through the caller-supplied store, and on global rank 0
-calls :func:`monarch.actor.attach_to_workers` to build the host mesh. Non-
-primary ranks return ``None``.
+The rendezvous is called collectively on every rank. It spawns a worker
+subprocess on each local rank 0, publishes the worker addresses through the
+caller-supplied store, and returns all addresses on global rank 0. Non-primary
+ranks return ``None``. The job layer attaches to those workers after running
+its pre-connect lifecycle components.
 
 Worker subprocesses are fire-and-forget. Each child inherits the read end
 of an ``os.pipe()`` whose write end stays open in the parent for the
@@ -46,9 +44,8 @@ from collections.abc import Mapping
 from typing import Final, Protocol
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
-from monarch._src.actor.host_mesh import HostMesh
 from monarch._src.job.service_identity import new_service_proc_id, service_proc_addr
-from monarch.actor import attach_to_workers, enable_transport
+from monarch.actor import enable_transport
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -64,8 +61,8 @@ _ADDR_ENV: Final[str] = "_MONARCH_WORKER_ADDR"
 _PARENT_WATCH_FD_ENV: Final[str] = "_MONARCH_WORKER_PARENT_WATCH_FD"
 
 
-class _StoreLike(Protocol):
-    """Subset of ``torch.distributed.Store`` used by :func:`host_mesh_from_store`."""
+class StoreLike(Protocol):
+    """Subset of ``torch.distributed.Store`` used for worker rendezvous."""
 
     def set(self, key: str, value: str | bytes) -> None: ...
     def get(self, key: str) -> bytes: ...
@@ -166,15 +163,15 @@ def _resolve_topology_field(override: int | None, env_name: str) -> int:
     value = os.environ.get(env_name)
     if value is None:
         raise RuntimeError(
-            f"host_mesh_from_store requires the {env_name} env var "
+            f"StoreJob.from_store requires the {env_name} env var "
             "(torchelastic: RANK, LOCAL_RANK, WORLD_SIZE, LOCAL_WORLD_SIZE) "
             "or the matching keyword argument"
         )
     return int(value)
 
 
-def host_mesh_from_store(
-    store: _StoreLike,
+def _worker_addrs_from_store(
+    store: StoreLike,
     *,
     monarch_port: int = 0,
     name: str = "monarch_worker",
@@ -183,15 +180,14 @@ def host_mesh_from_store(
     local_rank: int | None = None,
     world_size: int | None = None,
     local_world_size: int | None = None,
-) -> HostMesh | None:
-    """Stand up a Monarch host mesh from a torchrun/torchx-style SPMD context.
+) -> list[str] | None:
+    """Publish local workers and return every worker address on global rank 0.
 
     Must be called collectively on every rank of an SPMD job. Each local
     rank 0 spawns a ``run_worker_loop_forever`` subprocess on its host via
     :func:`_spawn_worker_process` and publishes the worker's listen address
-    into ``store``. Global rank 0 then reads every address out of the store
-    and calls :func:`monarch.actor.attach_to_workers` to build the host
-    mesh, which it returns. Non-primary ranks return ``None``.
+    into ``store``. Global rank 0 reads and returns every address. Non-primary
+    ranks return ``None``.
 
     Rank topology defaults to the standard torchelastic env vars
     (``RANK``, ``LOCAL_RANK``, ``WORLD_SIZE``, ``LOCAL_WORLD_SIZE``). Any
@@ -252,13 +248,7 @@ def host_mesh_from_store(
     if env_rank != 0:
         return None
 
-    worker_addrs = [store.get(_worker_addr_key(i)).decode() for i in range(num_hosts)]
-    return attach_to_workers(
-        name=name,
-        # Currently "trust_all_connections" is the only supported option.
-        ca="trust_all_connections",
-        workers=list(worker_addrs),
-    )
+    return [store.get(_worker_addr_key(i)).decode() for i in range(num_hosts)]
 
 
 def _spawn_worker_process(

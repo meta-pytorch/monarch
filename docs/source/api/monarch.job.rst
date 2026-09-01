@@ -154,3 +154,9 @@ an AppDef and executes the training script across the mesh.
    :undoc-members:
    :show-inheritance:
    :exclude-members: __init__
+
+.. autoclass:: StoreJob
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :exclude-members: __init__
