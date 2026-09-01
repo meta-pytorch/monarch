@@ -9,7 +9,7 @@ SHELL ["/bin/bash", "-c"]
 
 # System dependencies.
 RUN apt-get update -y && \
-    apt-get install curl clang liblzma-dev libunwind-dev libibverbs-dev librdmacm-dev protobuf-compiler -y
+    apt-get install curl clang fuse3 liblzma-dev libunwind-dev libibverbs-dev librdmacm-dev protobuf-compiler -y
 
 # Install monarch w/ kubernetes.
 RUN pip install "torchmonarch[kubernetes]==${MONARCH_VERSION}" --break-system-packages
