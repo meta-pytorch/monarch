@@ -1001,11 +1001,15 @@ def _get_bootstrap_args() -> tuple[str, Optional[list[str]], dict[str, str]]:
         args = ["-m", _BOOTSTRAP_MAIN]
 
     # Propagate the torch-preload opt-in to spawned procs so their monarch import
-    # loads torch before the native extension (keeps torch's HIP runtime ahead of
-    # monarch's system libamdhip64 on ROCm, avoiding the fatal rocprofiler-register
-    # abort). Driven by the env var so it stays a single, honored opt-in; spawned
-    # procs otherwise start with a clean env and would not inherit it.
-    if os.environ.get("MONARCH_PRELOAD_TORCH") == "1":
-        env["MONARCH_PRELOAD_TORCH"] = "1"
+    # loads torch's HIP runtime ahead of monarch's system libamdhip64 on ROCm,
+    # avoiding the fatal rocprofiler-register abort. Spawned procs use the *lite*
+    # dlopen preload (MONARCH_PRELOAD_TORCH_HIP) rather than a full `import torch`
+    # (~10s each), so multi-proc RDMA spawns stay within the Host::spawn window.
+    # Propagated whether this proc did a full or lite preload. See monarch/__init__.py.
+    if (
+        os.environ.get("MONARCH_PRELOAD_TORCH") == "1"
+        or os.environ.get("MONARCH_PRELOAD_TORCH_HIP") == "1"
+    ):
+        env["MONARCH_PRELOAD_TORCH_HIP"] = "1"
 
     return cmd, args, env
