@@ -218,8 +218,11 @@ def _scope_torch_preload_to_rdma(request: pytest.FixtureRequest):
     it to "0" in its isolated subprocess). No-op when the flag isn't set (CUDA/CPU).
     """
     if _test_uses_rdma(request):
-        # RDMA tests need the preload on: their procs make the rdmaxcel HIP call
-        # that races with torch's libamdhip64, so torch must load first.
+        # RDMA tests keep the preload on. The procs they spawn use the lite dlopen
+        # preload (proc_mesh sets MONARCH_PRELOAD_TORCH_HIP), which is ~ms rather
+        # than the ~10s of a full `import torch`, so multi-proc RDMA spawns no
+        # longer overrun the Host::spawn readiness window -- no timeout override
+        # needed. The worker itself still full-imports torch for its inline calls.
         yield
         return
     previous = os.environ.get("MONARCH_PRELOAD_TORCH")
