@@ -73,6 +73,18 @@ def isolate_in_subprocess(test_fn=None, *, env=None):
 
         sub_env = {**os.environ, **env}
 
+        # Isolate subprocesses only need torch's libamdhip64 loaded before
+        # monarch._rust_bindings (the ROCm rocprofiler-register race), not the
+        # ~10s full `import torch`. Mirror proc_mesh._get_bootstrap_args: downgrade
+        # an inherited full-preload opt-in to the lite dlopen, unless the test
+        # explicitly pinned MONARCH_PRELOAD_TORCH itself (e.g. test_rdma_cpu_no_torch).
+        if (
+            "MONARCH_PRELOAD_TORCH" not in env
+            and sub_env.get("MONARCH_PRELOAD_TORCH") == "1"
+        ):
+            sub_env["MONARCH_PRELOAD_TORCH"] = "0"
+            sub_env["MONARCH_PRELOAD_TORCH_HIP"] = "1"
+
         if "FB_XAR_INVOKED_NAME" in os.environ:
             # PAR/XAR mode: sys.executable is the PAR's bundled Python
             # runtime which cannot run arbitrary scripts.  Re-invoke the
