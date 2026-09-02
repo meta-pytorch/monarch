@@ -14,8 +14,6 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -138,33 +136,33 @@ impl PartialOrd for Boundary {
     }
 }
 
-/// Collect distributed user telemetry for `duration` and write a Perfetto trace.
+/// Export a completed telemetry interval to a Perfetto trace.
 ///
 /// `output` selects the destination file. When it is absent, the trace is written
-/// under `/tmp/$USER/monarch_profiles`. The destination is checked before the
-/// collection interval starts and is never overwritten.
-pub fn collect_profile(
+/// under `/tmp/$USER/monarch_profiles`. The destination is never overwritten.
+pub fn export_profile(
     telemetry_url: &str,
-    duration: Duration,
+    start_us: i64,
+    end_us: i64,
     output: Option<PathBuf>,
 ) -> Result<PathBuf> {
-    if duration.is_zero() {
-        bail!("--time must be greater than zero");
+    if start_us < 0 || end_us <= start_us {
+        bail!("profile interval must satisfy 0 <= start_us < end_us");
     }
 
-    let output_timestamp_us = timestamp_us()?;
-    let output = resolve_output_path(output, output_timestamp_us)?;
-    validate_output_path(&output)?;
+    let output = resolve_output_path(output, start_us)?;
+    if output.exists() {
+        bail!("output already exists: {}", output.display());
+    }
+    export_profile_to_path(telemetry_url, start_us, end_us, output)
+}
 
-    eprintln!(
-        "Collecting traces for {}...",
-        humantime::format_duration(duration)
-    );
-
-    let start_us = timestamp_us()?;
-    std::thread::sleep(duration);
-    let end_us = timestamp_us()?;
-
+fn export_profile_to_path(
+    telemetry_url: &str,
+    start_us: i64,
+    end_us: i64,
+    output: PathBuf,
+) -> Result<PathBuf> {
     std::thread::sleep(DRAIN_DELAY);
 
     let rows = query_spans(telemetry_url, start_us, end_us)?;
@@ -488,15 +486,6 @@ fn micros_to_nanos(timestamp_us: i64) -> Result<u64> {
         .context("trace timestamp exceeds the Perfetto range")
 }
 
-fn timestamp_us() -> Result<i64> {
-    let micros = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock is before the Unix epoch")?
-        .as_micros();
-
-    i64::try_from(micros).context("system clock exceeds the telemetry timestamp range")
-}
-
 fn resolve_output_path(output: Option<PathBuf>, filename_timestamp_us: i64) -> Result<PathBuf> {
     let output = match output {
         Some(output) => output,
@@ -520,13 +509,6 @@ fn resolve_output_path(output: Option<PathBuf>, filename_timestamp_us: i64) -> R
     Ok(std::env::current_dir()
         .context("failed to get the current directory")?
         .join(output))
-}
-
-fn validate_output_path(output: &Path) -> Result<()> {
-    if output.exists() {
-        bail!("output already exists: {}", output.display());
-    }
-    create_output_parent(output)
 }
 
 fn create_output_file(output: &Path) -> Result<fs::File> {
