@@ -168,6 +168,10 @@ sequenceDiagram
 - `__cleanup__` runs, then the failure is propagated to the supervisor
 - Supervision tree handles recovery (see [Error Handling in Meshes](#error-handling-in-meshes))
 
+Abort cancels an active asynchronous message handler at its next yield, then
+follows the normal error-termination path. It cannot interrupt synchronous
+handler code.
+
 **The `__cleanup__` Method:**
 
 The same `__cleanup__` runs in both normal and error termination. The `exc` argument is `None` on a normal stop and carries the exception on an error stop.
