@@ -455,6 +455,30 @@ Mesh Admin
     ``MeshAdminAgent``, and as the default address assumed by admin
     clients connecting via ``mast_conda:///``.
 
+``pyspy_bin``
+    Path to the py-spy binary used by the mesh admin py-spy endpoints.
+
+    - **Type**: ``str``
+    - **Default**: ``""`` (empty; ``py-spy`` on ``PATH`` is used instead)
+    - **Environment**: ``PYSPY_BIN``
+
+    Tried ahead of ``py-spy`` on ``PATH``. The environment variable is
+    ``PYSPY_BIN`` rather than ``HYPERACTOR_*``, for compatibility with
+    deployments that already set it.
+
+    Resolved in the proc being dumped, not in the client, and read when
+    the dump runs -- so it has to be in place before that proc is
+    spawned. Setting it via :func:`configure` reaches procs spawned
+    afterwards; it does not change procs that are already running.
+
+    .. code-block:: python
+
+        from monarch.config import configure
+
+        # Some py-spy builds cannot unwind native frames on a given
+        # target; point at one that can.
+        configure(pyspy_bin="/path/to/py-spy")
+
 
 Mesh Attach
 -----------

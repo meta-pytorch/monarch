@@ -83,6 +83,7 @@ if TYPE_CHECKING:
             mesh_admin_addr: NotRequired[str]
             mesh_attach_config_timeout: NotRequired[str]
             mesh_orphan_timeout: NotRequired[str]
+            pyspy_bin: NotRequired[str]
             rdma_allow_tcp_fallback: NotRequired[bool]
             rdma_disable_ibverbs: NotRequired[bool]
             rdma_max_chunk_size_mb: NotRequired[int]
@@ -178,6 +179,14 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
             mesh_attach_config_timeout: Timeout for the config-push barrier
                 during ``attach_to_workers()`` (humantime, default ``"10s"``).
                 Best-effort: if exceeded, a warning is logged and attach continues.
+
+        Diagnostics:
+            pyspy_bin: Path to the py-spy binary used by the mesh admin
+                py-spy endpoints. Tried ahead of ``py-spy`` on ``PATH``;
+                empty uses ``PATH`` alone. Resolved in the proc being
+                dumped, so it must be set before that proc is spawned.
+                The environment variable is ``PYSPY_BIN``, not
+                ``HYPERACTOR_*``.
 
         RDMA configuration:
             rdma_allow_tcp_fallback: Allow TCP fallback when ibverbs RDMA

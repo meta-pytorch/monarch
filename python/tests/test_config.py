@@ -148,6 +148,17 @@ def test_rdma_runtime_worker_threads_round_trip() -> None:
     assert get_global_config()["rdma_runtime_worker_threads"] == 16
 
 
+def test_pyspy_bin_round_trip() -> None:
+    # Empty means the mesh admin py-spy path falls back to PATH.
+    assert get_global_config()["pyspy_bin"] == ""
+
+    path = "/tmp/py-spy"
+    with configured(pyspy_bin=path) as config:
+        assert config["pyspy_bin"] == path
+
+    assert get_global_config()["pyspy_bin"] == ""
+
+
 @isolate_in_subprocess
 def test_codec_max_frame_length_exceeds_default() -> None:
     """Test that sending 4 chunks of 256KiB fails with a 1 MiB limit."""
