@@ -47,7 +47,7 @@ wirevalue::register_type!(ParentExit);
 #[derive(Clone, Debug, Serialize, Deserialize, Named)]
 enum ParentControl {
     Exit(StopMode),
-    Kill,
+    Abort,
 }
 wirevalue::register_type!(ParentControl);
 
@@ -161,7 +161,7 @@ impl Handler<ParentControl> for ParentRoot {
             .expect("parent must be spawned before control message");
         match message {
             ParentControl::Exit(stop_mode) => parent.post(cx, ParentExit(stop_mode)),
-            ParentControl::Kill => parent.kill("test parent killed")?,
+            ParentControl::Abort => parent.abort("test parent aborted")?,
         }
         Ok(())
     }
@@ -191,12 +191,7 @@ impl Actor for SupervisedChild {
         reason: &str,
     ) -> anyhow::Result<()> {
         self.stopped.post(this, reason.to_string());
-        this.close();
-        match mode {
-            StopMode::Stop => this.exit(reason)?,
-            StopMode::DrainAndStop => this.exit_after_drain(reason)?,
-        }
-        Ok(())
+        hyperactor::actor::handle_stop(this, mode, reason)
     }
 }
 
@@ -251,7 +246,7 @@ impl Handler<WorkerControl> for WorkerRoot {
         self.worker
             .as_ref()
             .expect("worker must be spawned before control message")
-            .kill("test worker killed")?;
+            .abort("test worker aborted")?;
         Ok(())
     }
 }
@@ -397,7 +392,7 @@ async fn test_token_join_parent_exit_stops_child_first() -> anyhow::Result<()> {
         .post(&harness.observer, ParentControl::Exit(StopMode::Stop));
 
     let reason = recv(&mut harness.child_stopped_rx).await?;
-    assert_eq!(reason, "parent stopping");
+    assert_eq!(reason, "parent requested stop");
     harness.stop().await?;
     Ok(())
 }
@@ -412,38 +407,38 @@ async fn test_token_join_parent_exit_drain_and_stops_child_first() -> anyhow::Re
     );
 
     let reason = recv(&mut harness.child_stopped_rx).await?;
-    assert_eq!(reason, "parent draining");
+    assert_eq!(reason, "parent requested drain and stop");
     harness.stop().await?;
     Ok(())
 }
 
 // Same topology as `test_token_join_parent_exit_stops_child_first`.
 //
-// Killing the parent actor is the in-process hard-stop path. The parent still
-// owns a local supervision tree, so the runtime stops Supervisor while cleaning
-// up that tree, and Supervisor forwards the stop to Worker.
+// Aborting the parent actor is the in-process forced-stop path. The runtime aborts
+// the local Supervisor instead of running its graceful stop handler, so the
+// worker-side orphan policy stops the child when the liveness link fails.
 #[tokio::test]
-async fn test_token_join_parent_kill_stops_child() -> anyhow::Result<()> {
+async fn test_token_join_parent_abort_stops_child() -> anyhow::Result<()> {
     let mut harness = Harness::new().await?;
 
     harness
         .parent_root
-        .post(&harness.observer, ParentControl::Kill);
+        .post(&harness.observer, ParentControl::Abort);
 
     let reason = recv(&mut harness.child_stopped_rx).await?;
-    assert_eq!(reason, "parent stopping");
+    assert_eq!(reason, "supervision liveness failed");
     harness.stop().await?;
     Ok(())
 }
 
 // Same topology as `test_token_join_parent_exit_stops_child_first`.
 //
-// Killing the worker actor is the in-process equivalent of the child-side
+// Aborting the worker actor is the in-process equivalent of the child-side
 // process disappearing. The worker can no longer report the child lifecycle
 // directly, so the parent side observes a synthesized supervision event through
 // the keepalive link.
 #[tokio::test]
-async fn test_token_join_worker_kill_notifies_parent() -> anyhow::Result<()> {
+async fn test_token_join_worker_abort_notifies_parent() -> anyhow::Result<()> {
     let mut harness = Harness::new().await?;
 
     harness.worker_root.post(&harness.observer, WorkerControl);

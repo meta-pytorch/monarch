@@ -122,12 +122,7 @@ impl Actor for Calculator {
         reason: &str,
     ) -> anyhow::Result<()> {
         println!("calculator stopping before driver exits: {reason}");
-        this.close();
-        match mode {
-            StopMode::Stop => this.exit(reason)?,
-            StopMode::DrainAndStop => this.exit_after_drain(reason)?,
-        }
-        Ok(())
+        hyperactor::actor::handle_stop(this, mode, reason)
     }
 }
 
@@ -205,26 +200,6 @@ impl Actor for SpawnerBootstrap {
         write_text(&self.token_file, &token.to_string()).await?;
         println!("proc spawner token {}", token);
         self.proc_spawner = Some(proc_spawner);
-        Ok(())
-    }
-
-    async fn handle_stop(
-        &mut self,
-        this: &Instance<Self>,
-        mode: StopMode,
-        reason: &str,
-    ) -> anyhow::Result<()> {
-        if let Some(proc_spawner) = &self.proc_spawner {
-            let _ = match mode {
-                StopMode::Stop => proc_spawner.stop(reason),
-                StopMode::DrainAndStop => proc_spawner.drain_and_stop(reason),
-            };
-        }
-        this.close();
-        match mode {
-            StopMode::Stop => this.exit(reason)?,
-            StopMode::DrainAndStop => this.exit_after_drain(reason)?,
-        }
         Ok(())
     }
 }
@@ -352,7 +327,7 @@ impl Handler<CalculationResult> for Driver {
             result.lhs, result.rhs, result.sum
         );
         println!("driver exiting through this.exit(); calculator should stop first");
-        cx.exit("demo complete")?;
+        cx.drain_and_stop("demo complete")?;
         Ok(())
     }
 }

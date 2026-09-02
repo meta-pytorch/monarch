@@ -168,6 +168,10 @@ sequenceDiagram
 - `__cleanup__` runs, then the failure is propagated to the supervisor
 - Supervision tree handles recovery (see [Error Handling in Meshes](#error-handling-in-meshes))
 
+Abort cancels an active asynchronous message handler at its next yield, then
+follows the normal error-termination path. It cannot interrupt synchronous
+handler code.
+
 **The `__cleanup__` Method:**
 
 The same `__cleanup__` runs in both normal and error termination. The `exc` argument is `None` on a normal stop and carries the exception on an error stop.
@@ -190,11 +194,10 @@ class FileWriter(Actor):
 **When It Runs:**
 - Called automatically in both normal and error termination
 - *Not* called on fatal failures such as OOMs, panics, or fatal signals (e.g., `SIGSEGV`)
-- Cancelled if it exceeds `HYPERACTOR_CLEANUP_TIMEOUT`, which puts the actor in an error state
 
 **What Has Already Happened:**
-- Every mesh this actor owns has already been stopped recursively
-- Each owned actor's `__cleanup__` has already run
+- On graceful shutdown, owned actors normally finish first
+- On failure or forced teardown, residual direct children are transferred to proc supervision and aborted; each child repeats this for its own direct children, and their cleanup may not run
 - Owned actor meshes and proc meshes are no longer usable from this method
 - For shutdown work that needs an owned mesh, expose a dedicated endpoint and call it before `stop()`
 

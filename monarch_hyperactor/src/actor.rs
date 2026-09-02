@@ -1276,10 +1276,6 @@ impl PythonActor {
                                 break None;
                             },
                             Some(Signal::ExitRequested(_)) => break None,
-                            Some(Signal::ChildStopped(_)) => {},
-                            Some(Signal::Kill(reason)) => {
-                                break Some(ActorError { actor_id: Box::new(instance.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) })
-                            },
                             None => {
                                 break Some(ActorError {
                                     actor_id: Box::new(instance.self_addr().clone()),
