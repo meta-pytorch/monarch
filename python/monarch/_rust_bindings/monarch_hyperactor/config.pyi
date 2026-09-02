@@ -79,6 +79,7 @@ def configure(
     mesh_admin_addr: str = ...,
     mesh_attach_config_timeout: str = ...,
     mesh_orphan_timeout: str = ...,
+    pyspy_bin: str = ...,
     rdma_allow_tcp_fallback: bool = ...,
     rdma_disable_ibverbs: bool = ...,
     rdma_max_chunk_size_mb: int = ...,
@@ -173,6 +174,11 @@ def configure(
             HTTP server (e.g. "[::]:1729", "0.0.0.0:8080")
         mesh_attach_config_timeout: Timeout for the config-push barrier
             during attach_to_workers() (humantime, default "10s")
+        pyspy_bin: Path to the py-spy binary used by the mesh admin
+            py-spy endpoints. Tried ahead of "py-spy" on PATH; empty
+            uses PATH alone. Resolved in the proc being dumped, so it
+            must be set before that proc is spawned. The environment
+            variable is PYSPY_BIN, not HYPERACTOR_*.
         rdma_allow_tcp_fallback: Allow TCP fallback when ibverbs RDMA
             hardware is unavailable. When True (default), RDMA operations
             fall back to chunked hyperactor messaging over the default
