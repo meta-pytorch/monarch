@@ -2055,14 +2055,14 @@ struct ActorStopped {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ChildTeardown {
     Cooperative(StopMode),
-    Kill,
+    Abort,
 }
 
 impl ChildTeardown {
     fn from_run_result(result: &Result<ActorStopped, ActorError>) -> Self {
         match result {
             Ok(stopped) => Self::Cooperative(stopped.stop_mode),
-            Err(err) if matches!(err.kind.as_ref(), ActorErrorKind::Aborted(_)) => Self::Kill,
+            Err(err) if matches!(err.kind.as_ref(), ActorErrorKind::Aborted(_)) => Self::Abort,
             Err(_) => Self::Cooperative(StopMode::Stop),
         }
     }
@@ -2789,24 +2789,9 @@ impl<A: Actor> Instance<A> {
             .signal(Signal::DrainAndStop(reason.to_string()))
     }
 
-    /// Signal the actor to terminate immediately with a provided reason.
-    pub fn kill(&self, reason: &str) -> Result<(), ActorError> {
-        tracing::info!(
-            actor_id = %self.inner.cell.actor_addr(),
-            reason,
-            "instance kill called",
-        );
-        self.inner.cell.signal(Signal::Kill(reason.to_string()))
-    }
-
-    /// Backward-compatible alias for `kill()`.
+    /// Signal the actor to abort immediately with a provided reason.
     pub fn abort(&self, reason: &str) -> Result<(), ActorError> {
-        tracing::info!(
-            actor_id = %self.inner.cell.actor_addr(),
-            reason,
-            "instance abort called",
-        );
-        self.kill(reason)
+        self.inner.cell.signal(Signal::Abort(reason.to_string()))
     }
 
     /// Close handler ingress for this actor.
@@ -3178,8 +3163,8 @@ impl<A: Actor> Instance<A> {
         let mut to_unlink = Vec::new();
         let child_signal = match ChildTeardown::from_run_result(&result) {
             ChildTeardown::Cooperative(mode) => ChildTeardown::cooperative_signal(mode),
-            ChildTeardown::Kill => {
-                // TODO: fan out kill once child teardown can detach
+            ChildTeardown::Abort => {
+                // TODO: fan out abort once child teardown can detach
                 // unresponsive children without blocking this parent.
                 ChildTeardown::cooperative_signal(StopMode::Stop)
             }
@@ -3334,7 +3319,7 @@ impl<A: Actor> Instance<A> {
                         Signal::ExitRequested(reason) => {
                             break 'messages reason;
                         }
-                        Signal::Kill(reason) => {
+                        Signal::Abort(reason) => {
                             return Err(ActorError { actor_id: Box::new(self.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) });
                         }
                     }
@@ -8517,7 +8502,7 @@ mod tests {
     }
 
     #[test]
-    fn child_teardown_distinguishes_kill_from_failure() {
+    fn child_teardown_distinguishes_abort_from_failure() {
         let actor_addr = test_actor_id("proc", "actor");
 
         let stopped = Ok(ActorStopped {
@@ -8529,11 +8514,14 @@ mod tests {
             ChildTeardown::Cooperative(StopMode::DrainAndStop)
         );
 
-        let killed = Err(ActorError::new(
+        let aborted = Err(ActorError::new(
             &actor_addr,
-            ActorErrorKind::Aborted("test kill".to_string()),
+            ActorErrorKind::Aborted("test abort".to_string()),
         ));
-        assert_eq!(ChildTeardown::from_run_result(&killed), ChildTeardown::Kill);
+        assert_eq!(
+            ChildTeardown::from_run_result(&aborted),
+            ChildTeardown::Abort
+        );
 
         let failed = Err(ActorError::new(
             &actor_addr,

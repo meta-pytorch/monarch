@@ -279,14 +279,6 @@ class Instance(abc.ABC):
         ...
 
     @abstractmethod
-    def kill(self, reason: Optional[str] = None) -> None:
-        """
-        Terminate the current actor with a failure. A supervision error
-        propagates to its creator.
-        """
-        ...
-
-    @abstractmethod
     def stop(self, reason: Optional[str] = None) -> None:
         """
         Stop this actor instance and its children gracefully. The
@@ -1295,7 +1287,7 @@ async def _dispatch_loop(
     Args:
         actor: The Python actor object that implements ``handle``.
         receiver: Channel receiver for queued messages.
-        self_instance: The actor's own Instance, used to kill self on
+        self_instance: The actor's own Instance, used to abort self on
             an unhandled exception.
     """
     while True:
@@ -1306,7 +1298,7 @@ async def _dispatch_loop(
             return
         except BaseException as e:
             reason = "".join(TracebackException.from_exception(e).format())
-            self_instance.kill(reason)
+            self_instance.abort(reason)
             raise
 
 
