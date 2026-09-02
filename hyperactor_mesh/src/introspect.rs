@@ -223,9 +223,11 @@
 //!   subprocess inside the worker to `MESH_ADMIN_PYSPY_TIMEOUT`
 //!   (default 10s). The budget is sized for `--native --native-all`
 //!   which unwinds native stacks via libunwind — significantly
-//!   slower than Python-only capture on loaded hosts. On expiry the
-//!   child is killed and reaped, and the worker returns
-//!   `Failed { stderr: "…timed out…" }`.
+//!   slower than Python-only capture on loaded hosts. Each child
+//!   leads its own process group. On timeout or cancellation the
+//!   group is killed so descendants cannot retain inherited pipes;
+//!   the direct-child reap has its own one-second bound. The worker
+//!   returns `Failed { stderr: "…timed out…" }` on timeout.
 //! - **PS-6 (bridge timeout):** The HTTP bridge uses a separate
 //!   `MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT` (default 13s), which must
 //!   exceed `MESH_ADMIN_PYSPY_TIMEOUT` so the subprocess kill/reap
@@ -244,20 +246,25 @@
 //!   runs independently.
 //! - **PS-10 (nonblocking retry):** In nonblocking mode, `try_exec`
 //!   retries up to 3 times with 100ms backoff on failure, because
-//!   py-spy can segfault reading mutating process memory. All
-//!   attempts share a single deadline bounded by
-//!   `MESH_ADMIN_PYSPY_TIMEOUT` (PS-5).
+//!   py-spy can segfault reading mutating process memory. Attempts
+//!   and backoff share the `MESH_ADMIN_PYSPY_TIMEOUT` deadline;
+//!   timeout cleanup has the separate one-second reap bound in PS-5.
 //! - **PS-11a (native-all-immediate-downgrade):** If py-spy rejects
 //!   `--native-all` with the recognized unsupported-flag signature
-//!   (exit code 2, stderr mentions `--native-all`), `try_exec`
-//!   retries immediately with `native_all = false` in the same outer
-//!   attempt.
+//!   (exit code 2, stderr mentions `--native-all`), `try_exec` retries
+//!   immediately with `native_all = false` and `native = true` in the
+//!   same outer attempt. This also preserves native capture for an
+//!   actor caller that supplied `native_all = true, native = false`.
 //! - **PS-11b (native-all-no-retry-consumption):** That downgrade
 //!   retry does not consume an outer nonblocking retry slot (PS-10)
 //!   and does not incur the 100ms inter-attempt backoff.
 //! - **PS-11c (native-all-downgrade-warning):** A successful
-//!   downgraded result includes the warning `"--native-all
-//!   unsupported by this py-spy; fell back to --native"`.
+//!   downgraded result includes
+//!   `pyspy::native_all_downgrade_warning(label)`, which names how
+//!   the py-spy binary was resolved — PS-3 means the caller cannot
+//!   otherwise tell which one ran. The warning survives failed
+//!   downgraded outer retries and is attached to any eventual
+//!   successful result.
 //! - **PS-11d (native-all-failure-passthrough):** If the downgraded
 //!   retry also fails, the failure flows through the normal
 //!   nonblocking retry logic (PS-10) unchanged.
@@ -289,6 +296,31 @@
 //!   transient per-request machinery (spawned on `PySpyDump`,
 //!   stopped after replying) and is not part of the reachability
 //!   contract.
+//! - **PS-15a (native-immediate-downgrade):** Native frames matter —
+//!   a proc stuck in a collective or an allocator shows nothing
+//!   useful without them — but a partial dump beats no dump. If a
+//!   capture that requested `--native` or `--native-all` returns
+//!   `Failed` for any reason other than the PS-11a unsupported-flag
+//!   signature — libunwind rejecting the target with `UNW_EINVAL`,
+//!   say — `try_exec` drops both native flags and retries
+//!   Python-only in the same outer attempt, and PS-15c says so in
+//!   the result.
+//! - **PS-15b (native-no-retry-consumption):** That downgrade retry
+//!   does not consume an outer nonblocking retry slot (PS-10) and
+//!   does not incur the 100ms inter-attempt backoff.
+//! - **PS-15c (native-downgrade-warning):** A successful downgraded
+//!   result includes `pyspy::native_downgrade_warning(label)`, so a
+//!   caller can tell a Python-only dump from a full one. It is the
+//!   only signal that native frames are missing, so it names both
+//!   the py-spy that fell short and the remedy: point the
+//!   `PYSPY_BIN` environment variable on the dumped proc at a build
+//!   that can unwind the target. The warning survives failed
+//!   Python-only outer retries and is attached to any eventual
+//!   successful result.
+//! - **PS-15d (native-sticky-downgrade):** Once native capture has
+//!   failed, `effective_opts.native` and `effective_opts.native_all`
+//!   remain `false` for all subsequent outer retries. Native is not
+//!   re-tested on later attempts.
 //!
 //! v1 contract notes:
 //! - The current py-spy bridge expects a ProcAddr-form reference and
@@ -321,10 +353,10 @@
 //! - **PP-3 (temp file lifecycle):** `py-spy record` writes to a
 //!   temp file; the worker reads it after successful exit and
 //!   deletes via tempfile drop. On failure or timeout, stderr is
-//!   captured. On timeout, the child is explicitly killed and
-//!   reaped via `start_kill()` + `wait().await`. If the file is
-//!   missing, empty, or unreadable after successful exit, the
-//!   result is `OutputMissing`, `OutputEmpty`, or
+//!   captured. On timeout or cancellation, the child process group
+//!   is killed; the direct-child reap has its own one-second bound.
+//!   If the file is missing, empty, or unreadable after successful
+//!   exit, the result is `OutputMissing`, `OutputEmpty`, or
 //!   `OutputReadFailure`, not `Ok`.
 //! - **PP-4 (target locality):** Inherits PS-1 — always targets
 //!   `std::process::id()`, never a caller-supplied PID.

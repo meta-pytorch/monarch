@@ -1090,6 +1090,31 @@ pub(crate) fn pyspy_json_to_lines(
         lines.push(Line::from(header));
         lines.push(Line::from("")); // blank separator
 
+        // PY-6: warnings lead. A non-fatal warning explains why the
+        // frames below look the way they do -- a native-capture
+        // downgrade yields python-only frames -- and the overlay opens
+        // at scroll 0 while the stacks routinely run past a screen. A
+        // trailing warning is one the reader has to already suspect to
+        // go find.
+        let warnings = ok
+            .get("warnings")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let mut wrote_warning = false;
+        for w in warnings {
+            if let Some(s) = w.as_str() {
+                lines.push(Line::from(Span::styled(
+                    format!("warn: {s}"),
+                    scheme.detail_status_warn,
+                )));
+                wrote_warning = true;
+            }
+        }
+        if wrote_warning {
+            lines.push(Line::from("")); // blank separator
+        }
+
         let traces = ok
             .get("stack_traces")
             .and_then(|v| v.as_array())
@@ -1159,21 +1184,6 @@ pub(crate) fn pyspy_json_to_lines(
                 )));
             }
             lines.push(Line::from("")); // blank separator between threads
-        }
-
-        // Render non-fatal warnings (e.g., --native-all fallback).
-        let warnings = ok
-            .get("warnings")
-            .and_then(|v| v.as_array())
-            .map(Vec::as_slice)
-            .unwrap_or_default();
-        for w in warnings {
-            if let Some(s) = w.as_str() {
-                lines.push(Line::from(Span::styled(
-                    format!("warn: {s}"),
-                    scheme.detail_status_warn,
-                )));
-            }
         }
 
         return lines;

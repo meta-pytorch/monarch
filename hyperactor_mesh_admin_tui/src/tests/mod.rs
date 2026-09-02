@@ -1470,6 +1470,9 @@ fn refresh_churn_large_differential() {
 // PY-5 (overlay-isolation): covered by parse_error_envelope_* tests and
 //   the cancellation sites; the cross-overlay race (p then d) is
 //   manual-verification only until an async event-loop test is added.
+// PY-6 (warnings-lead): covered by pyspy_json_to_lines_warning_precedes_stack,
+//   pyspy_json_to_lines_warning_with_empty_stack, and
+//   pyspy_json_to_lines_no_warnings_no_padding.
 //
 
 /// Join all span content in a line into a single string for assertion.
@@ -1702,6 +1705,82 @@ fn pyspy_json_to_lines_ok_empty_stack() {
     assert_eq!(lines.len(), 3); // header + blank + sentinel
     assert_eq!(line_text(&lines[0]), "pid: 1  binary: py-spy");
     assert_eq!(line_text(&lines[1]), "");
+    assert_eq!(line_text(&lines[2]), "(empty stack)");
+}
+
+// PY-6: a warning renders before the first thread, not after the last
+// frame, so it is visible when the overlay opens at scroll 0.
+#[test]
+fn pyspy_json_to_lines_warning_precedes_stack() {
+    let json = serde_json::json!({"Ok": {
+        "pid": 1,
+        "binary": "py-spy",
+        "warnings": ["native capture failed; fell back to python-only frames"],
+        "stack_traces": [{
+            "pid": 1,
+            "thread_id": 0,
+            "thread_name": null,
+            "os_thread_id": null,
+            "active": false,
+            "owns_gil": false,
+            "frames": [{
+                "name": "foo",
+                "filename": "foo.py",
+                "module": null,
+                "short_filename": null,
+                "line": 1,
+                "locals": null,
+                "is_entry": false
+            }]
+        }]
+    }});
+    let scheme = ColorScheme::nord();
+    let lines = pyspy_json_to_lines(&json, &scheme);
+    // header + blank + warning + blank + thread header + frame + trailing blank
+    assert_eq!(lines.len(), 7);
+    assert_eq!(line_text(&lines[0]), "pid: 1  binary: py-spy");
+    assert_eq!(line_text(&lines[1]), "");
+    assert_eq!(
+        line_text(&lines[2]),
+        "warn: native capture failed; fell back to python-only frames"
+    );
+    assert_eq!(line_text(&lines[3]), "");
+    assert_eq!(line_text(&lines[4]), "Thread 0x0");
+}
+
+// PY-6: a warning survives an empty stack. The pre-PY-6 ordering
+// returned at the "(empty stack)" sentinel and dropped it entirely.
+#[test]
+fn pyspy_json_to_lines_warning_with_empty_stack() {
+    let json = serde_json::json!({"Ok": {
+        "pid": 1,
+        "binary": "py-spy",
+        "warnings": ["native capture failed; fell back to python-only frames"],
+        "stack_traces": []
+    }});
+    let scheme = ColorScheme::nord();
+    let lines = pyspy_json_to_lines(&json, &scheme);
+    // header + blank + warning + blank + sentinel
+    assert_eq!(lines.len(), 5);
+    assert_eq!(
+        line_text(&lines[2]),
+        "warn: native capture failed; fell back to python-only frames"
+    );
+    assert_eq!(line_text(&lines[4]), "(empty stack)");
+}
+
+// PY-6: no warnings means no blank-line padding is introduced.
+#[test]
+fn pyspy_json_to_lines_no_warnings_no_padding() {
+    let json = serde_json::json!({"Ok": {
+        "pid": 1,
+        "binary": "py-spy",
+        "warnings": [],
+        "stack_traces": []
+    }});
+    let scheme = ColorScheme::nord();
+    let lines = pyspy_json_to_lines(&json, &scheme);
+    assert_eq!(lines.len(), 3); // header + blank + sentinel
     assert_eq!(line_text(&lines[2]), "(empty stack)");
 }
 

@@ -126,6 +126,12 @@
 //!   `Diagnostics` variant (dropping any live `PySpy` receiver);
 //!   Esc calls `dismiss_job`; `recv_active_job` fires only for the
 //!   variant currently stored.
+//! - **PY-6 (warnings-lead):** Non-fatal warnings on an `Ok` result
+//!   render immediately after the metadata header, before the first
+//!   thread, and are emitted even when there are no stack traces. A
+//!   warning explains the frames beneath it, and the overlay opens at
+//!   scroll 0 while stacks routinely exceed a screen, so a trailing
+//!   warning is unreadable in practice.
 //!
 //! Config overlay invariants:
 //!

@@ -23,6 +23,7 @@ use hyperactor_mesh::mesh_admin::ApiErrorEnvelope;
 use hyperactor_mesh::pyspy::PySpyFrame;
 use hyperactor_mesh::pyspy::PySpyProfileOpts;
 use hyperactor_mesh::pyspy::PySpyResult;
+use hyperactor_mesh::pyspy::PySpyStackTrace;
 
 use crate::harness;
 use crate::harness::WorkloadFixture;
@@ -375,6 +376,41 @@ async fn check_preflight(s: &PyspyScenario) {
     }
 }
 
+const RESULT_DIAGNOSTIC_CHAR_LIMIT: usize = 1024;
+
+fn truncate_diagnostic(value: String) -> String {
+    if value.chars().count() <= RESULT_DIAGNOSTIC_CHAR_LIMIT {
+        return value;
+    }
+
+    let mut truncated = value
+        .chars()
+        .take(RESULT_DIAGNOSTIC_CHAR_LIMIT)
+        .collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
+/// Render a bounded result summary without including the stack payload.
+pub(crate) fn describe_result(result: &PySpyResult) -> String {
+    let summary = match result {
+        PySpyResult::Ok { warnings, .. } => format!("Ok(warnings={warnings:?})"),
+        PySpyResult::BinaryNotFound { searched } => {
+            format!("BinaryNotFound(searched: {})", searched.join(", "))
+        }
+        PySpyResult::Failed {
+            pid,
+            binary,
+            exit_code,
+            stderr,
+        } => format!(
+            "Failed(pid={pid}, binary={binary}, exit_code={exit_code:?}, stderr={})",
+            stderr.trim()
+        ),
+    };
+    truncate_diagnostic(summary)
+}
+
 /// MIT-16, MIT-17, MIT-18, MIT-19: Evidence-frame sampling over
 /// worker procs.
 async fn check_evidence(s: &PyspyScenario) {
@@ -386,6 +422,7 @@ async fn check_evidence(s: &PyspyScenario) {
     let mut total_not_found: usize = 0;
     let mut total_failed: usize = 0;
     let mut total_evidence: usize = 0;
+    let mut diagnostics: Vec<String> = Vec::new();
 
     for proc_ref in &s.workers {
         let encoded = urlencoding::encode(proc_ref);
@@ -398,8 +435,9 @@ async fn check_evidence(s: &PyspyScenario) {
             let result: PySpyResult =
                 match s.fixture.get_json(&format!("/v1/pyspy/{encoded}")).await {
                     Ok(r) => r,
-                    Err(_) => {
+                    Err(e) => {
                         failed += 1;
+                        diagnostics.push(format!("transport: {e:#}"));
                         continue;
                     }
                 };
@@ -419,9 +457,11 @@ async fn check_evidence(s: &PyspyScenario) {
                 }
                 PySpyResult::BinaryNotFound { .. } => {
                     not_found += 1;
+                    diagnostics.push(describe_result(&result));
                 }
                 PySpyResult::Failed { .. } => {
                     failed += 1;
+                    diagnostics.push(describe_result(&result));
                 }
             }
         }
@@ -432,11 +472,13 @@ async fn check_evidence(s: &PyspyScenario) {
         total_evidence += proc_evidence;
     }
 
+    let reasons = diagnostics.join("\n  ");
+
     // MIT-18: BinaryNotFound is unexpected under Buck-provisioned
     // PYSPY_BIN.
     if total_ok == 0 && total_failed == 0 && total_not_found > 0 {
         panic!(
-            "MIT-18: no Ok responses for mode={} and all {} sample(s) were BinaryNotFound despite harness-provisioned PYSPY_BIN",
+            "MIT-18: no Ok responses for mode={} and all {} sample(s) were BinaryNotFound despite harness-provisioned PYSPY_BIN\n  {reasons}",
             s.mode, total_not_found
         );
     }
@@ -444,7 +486,7 @@ async fn check_evidence(s: &PyspyScenario) {
     // All failures (or mix of Failed + BinaryNotFound), no Ok responses.
     if total_ok == 0 {
         panic!(
-            "MIT-17: no Ok responses for mode={} ({} failed, {} not-found)",
+            "MIT-17: no Ok responses for mode={} ({} failed, {} not-found)\n  {reasons}",
             s.mode, total_failed, total_not_found
         );
     }
@@ -481,6 +523,53 @@ async fn check_evidence(s: &PyspyScenario) {
             );
         }
     }
+}
+
+#[test]
+fn describe_result_omits_stack_payload() {
+    let result = PySpyResult::Ok {
+        pid: 1,
+        binary: "py-spy".to_string(),
+        stack_traces: vec![PySpyStackTrace {
+            pid: 1,
+            thread_id: 2,
+            thread_name: Some("payload-thread".to_string()),
+            os_thread_id: Some(3),
+            active: true,
+            owns_gil: true,
+            frames: vec![PySpyFrame {
+                name: "payload-frame".to_string(),
+                filename: "payload.py".to_string(),
+                module: None,
+                short_filename: None,
+                line: 4,
+                locals: None,
+                is_entry: false,
+            }],
+        }],
+        warnings: vec!["python-only".to_string()],
+    };
+
+    let description = describe_result(&result);
+    assert_eq!(description, "Ok(warnings=[\"python-only\"])");
+    assert!(!description.contains("payload-frame"));
+}
+
+#[test]
+fn describe_result_bounds_failure_stderr() {
+    let result = PySpyResult::Failed {
+        pid: 1,
+        binary: "py-spy".to_string(),
+        exit_code: Some(1),
+        stderr: "x".repeat(RESULT_DIAGNOSTIC_CHAR_LIMIT * 2),
+    };
+
+    let description = describe_result(&result);
+    assert_eq!(
+        description.chars().count(),
+        RESULT_DIAGNOSTIC_CHAR_LIMIT + 1
+    );
+    assert!(description.ends_with('…'));
 }
 
 // Integration tests (one scoped PyspyScenario per mode)

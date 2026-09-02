@@ -20,6 +20,7 @@ use hyperactor_mesh::mesh_admin::ApiErrorEnvelope;
 use hyperactor_mesh::mesh_admin::PyspyDumpAndStoreResponse;
 use hyperactor_mesh::mesh_admin::QueryRequest;
 use hyperactor_mesh::mesh_admin::QueryResponse;
+use hyperactor_mesh::pyspy::PySpyResult;
 
 use crate::harness;
 use crate::harness::WorkloadFixture;
@@ -149,22 +150,40 @@ pub async fn run_pyspy_dump_and_query() {
             "/v1/query",
             &QueryRequest {
                 sql: format!(
-                    "SELECT dump_id, proc_ref FROM pyspy_dumps WHERE dump_id = '{dump_id}'"
+                    "SELECT dump_id, proc_ref, warnings_json FROM pyspy_dumps WHERE dump_id = '{dump_id}'"
                 ),
             },
         )
         .await
         .expect("pyspy_dumps query should succeed");
     let rows = resp.rows.as_array().expect("rows should be an array");
-    assert!(
-        !rows.is_empty(),
-        "expected dump_id '{dump_id}' in pyspy_dumps table"
-    );
+    if rows.is_empty() {
+        // A missing row means either the dump never reached `Ok`, or
+        // the store/query path is broken: `store_pyspy_dump` writes
+        // rows only for `PySpyResult::Ok`, while `/v1/pyspy_dump`
+        // returns a dump_id either way. Re-dump to tell them apart --
+        // `Failed` indicts py-spy, `Ok` points downstream.
+        let observed = fixture
+            .get_json::<PySpyResult>(&format!("/v1/pyspy/{encoded}"))
+            .await;
+        let diagnostic = match &observed {
+            Ok(result) => crate::pyspy::describe_result(result),
+            Err(error) => format!("transport: {error:#}"),
+        };
+        panic!(
+            "expected dump_id '{dump_id}' in pyspy_dumps table; live py-spy dump for {proc_ref}: {diagnostic}"
+        );
+    }
     assert_eq!(
         rows[0]["proc_ref"].as_str().unwrap(),
         proc_ref,
         "proc_ref should match the queried proc"
     );
+    let warnings_json = rows[0]["warnings_json"]
+        .as_str()
+        .expect("warnings_json should be a string");
+    let _: Vec<String> =
+        serde_json::from_str(warnings_json).expect("warnings_json should be a JSON string array");
 
     fixture.shutdown().await;
 }
