@@ -719,9 +719,6 @@ pub enum Signal {
     /// Exit the actor loop with the provided stop reason.
     ExitRequested(String),
 
-    /// The direct child with the given uid was stopped.
-    ChildStopped(crate::id::Uid),
-
     /// Kill the actor. This will exit the actor loop with an error,
     /// causing a supervision event to propagate up the supervision
     /// hierarchy.
@@ -734,7 +731,6 @@ impl fmt::Display for Signal {
             Signal::DrainAndStop(reason) => write!(f, "DrainAndStop({})", reason),
             Signal::Stop(reason) => write!(f, "Stop({})", reason),
             Signal::ExitRequested(reason) => write!(f, "ExitRequested({})", reason),
-            Signal::ChildStopped(uid) => write!(f, "ChildStopped({})", uid),
             Signal::Kill(reason) => write!(f, "Kill({})", reason),
         }
     }
