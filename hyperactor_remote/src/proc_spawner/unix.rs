@@ -77,6 +77,7 @@ use hyperactor::ProcAddr;
 use hyperactor::Uid;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::StopMode;
+use hyperactor::actor::handle_stop as default_handle_stop;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
@@ -310,29 +311,6 @@ impl Actor for UnixProcSpawner {
             self.procs.remove(&uid);
         }
         Ok(!event.is_error())
-    }
-
-    async fn handle_stop(
-        &mut self,
-        this: &Instance<Self>,
-        mode: StopMode,
-        reason: &str,
-    ) -> anyhow::Result<()> {
-        // The caller-side supervision tree owns each spawned actor-spawn endpoint.
-        // `UnixProcSpawner` also owns the OS child processes, so spawner shutdown must
-        // stop every worker even if no individual caller has requested it.
-        for worker in self.procs.values() {
-            let _ = match mode {
-                StopMode::Stop => worker.stop(reason),
-                StopMode::DrainAndStop => worker.drain_and_stop(reason),
-            };
-        }
-        this.close();
-        match mode {
-            StopMode::Stop => this.exit(reason)?,
-            StopMode::DrainAndStop => this.exit_after_drain(reason)?,
-        }
-        Ok(())
     }
 }
 
@@ -885,12 +863,7 @@ impl Actor for UnixProcWorker {
             // the OS process directly.
             self.signal_child(Signal::SIGTERM, reason);
         }
-        this.close();
-        match mode {
-            StopMode::Stop => this.exit(reason)?,
-            StopMode::DrainAndStop => this.exit_after_drain(reason)?,
-        }
-        Ok(())
+        default_handle_stop(this, mode, reason)
     }
 }
 
