@@ -8,9 +8,12 @@
 import argparse
 import importlib.resources
 import os
+import re
 import sys
+import time
 from pathlib import Path
 
+from monarch._rust_bindings.monarch_extension.trace import export_profile
 from monarch.actor import shutdown_context
 from monarch.tools.commands import (
     apply_job,
@@ -20,11 +23,36 @@ from monarch.tools.commands import (
     context_use,
     debug,
     exec_on_job,
+    load_current_job,
     shell_on_job,
 )
 from monarch.tools.debug_env import _get_debug_server_host, _get_debug_server_port
 
 _DEFAULT_DASHBOARD_PORT: int = 8265
+
+
+def _parse_duration(value: str) -> float:
+    match = re.fullmatch(
+        r"\s*(\d+(?:\.\d*)?|\.\d+)\s*(ms|s|m|h)\s*",
+        value,
+    )
+    if match is None:
+        raise argparse.ArgumentTypeError(
+            "duration must be a positive number followed by ms, s, m, or h"
+        )
+
+    duration = (
+        float(match.group(1))
+        * {
+            "ms": 0.001,
+            "s": 1.0,
+            "m": 60.0,
+            "h": 3_600.0,
+        }[match.group(2)]
+    )
+    if duration <= 0:
+        raise argparse.ArgumentTypeError("duration must be greater than zero")
+    return duration
 
 
 class DebugCmd:
@@ -287,6 +315,100 @@ class KillCmd:
         print("Killed job")
 
 
+class ProfileCmd:
+    def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
+        subparser.add_argument(
+            "source",
+            nargs="?",
+            default=None,
+            help=(
+                "Mesh-admin URL, or 'mast' to discover it from a MAST job "
+                "(default: active job)"
+            ),
+        )
+        subparser.add_argument(
+            "mast_job",
+            nargs="?",
+            default=None,
+            help="MAST job ID when SOURCE is 'mast'",
+        )
+        subparser.add_argument(
+            "--time",
+            default="10s",
+            dest="duration",
+            type=_parse_duration,
+            help="Time to collect traces (default: 10s)",
+        )
+        subparser.add_argument(
+            "-o",
+            "--output",
+            type=Path,
+            default=None,
+            help="Output path (default: /tmp/$USER/monarch_profiles/)",
+        )
+        subparser.add_argument(
+            "--role-name",
+            type=str,
+            default=None,
+            help="MAST role that hosts mesh-admin (default: auto-detect)",
+        )
+        subparser.add_argument(
+            "--dashboard-port",
+            type=int,
+            default=_DEFAULT_DASHBOARD_PORT,
+            help="Mesh-admin dashboard port for a MAST target",
+        )
+
+    def run(self, args: argparse.Namespace) -> None:
+        telemetry_url = self._resolve_telemetry_url(args)
+
+        output = str(args.output) if args.output is not None else None
+        sys.stderr.write(f"Collecting traces for {args.duration:g}s...\n")
+        start_us = time.time_ns() // 1_000
+        time.sleep(args.duration)
+        end_us = time.time_ns() // 1_000
+        result = export_profile(
+            telemetry_url,
+            start_us,
+            end_us,
+            output,
+            upload=True,
+        )
+        sys.stdout.write(f"{result}\n")
+
+    def _resolve_telemetry_url(self, args: argparse.Namespace) -> str:
+        if args.source == "mast":
+            if args.mast_job is None:
+                raise RuntimeError("a MAST job ID is required after 'mast'")
+
+            try:
+                from monarch.monarch_dashboard.meta.mast import (
+                    resolve_mast_dashboard_target,
+                )
+            except ImportError as error:
+                raise RuntimeError(
+                    "MAST profile discovery is only available in Meta-internal builds"
+                ) from error
+
+            return resolve_mast_dashboard_target(
+                job_name=args.mast_job,
+                role_name=args.role_name,
+                dashboard_port=args.dashboard_port,
+            ).upstream_url
+
+        if args.mast_job is not None:
+            raise RuntimeError("pass one mesh-admin URL or 'mast MAST_JOB_ID'")
+
+        if args.source is not None:
+            return args.source
+
+        job = load_current_job()
+        telemetry_url = job.state().telemetry_url
+        if telemetry_url is None:
+            raise RuntimeError("distributed telemetry is not enabled for this job")
+        return telemetry_url
+
+
 class DashboardCmd:
     def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
         subparser.set_defaults(_dashboard_subparser=subparser)
@@ -369,6 +491,7 @@ def get_parser() -> argparse.ArgumentParser:
         ),
         ("shell", ShellCmd(), "Open an interactive shell on one worker"),
         ("kill", KillCmd(), "Kill the active job"),
+        ("profile", ProfileCmd(), "Collect a Perfetto trace from the active job"),
         ("debug", DebugCmd(), "Connect to the debug server"),
         ("dashboard", DashboardCmd(), "Serve Monarch dashboards"),
     ]:
