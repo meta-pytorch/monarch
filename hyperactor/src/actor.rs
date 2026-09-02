@@ -719,13 +719,10 @@ pub enum Signal {
     /// Exit the actor loop with the provided stop reason.
     ExitRequested(String),
 
-    /// The direct child with the given uid was stopped.
-    ChildStopped(crate::id::Uid),
-
-    /// Kill the actor. This will exit the actor loop with an error,
+    /// Abort the actor. This will exit the actor loop with an error,
     /// causing a supervision event to propagate up the supervision
     /// hierarchy.
-    Kill(String),
+    Abort(String),
 }
 
 impl fmt::Display for Signal {
@@ -734,8 +731,7 @@ impl fmt::Display for Signal {
             Signal::DrainAndStop(reason) => write!(f, "DrainAndStop({})", reason),
             Signal::Stop(reason) => write!(f, "Stop({})", reason),
             Signal::ExitRequested(reason) => write!(f, "ExitRequested({})", reason),
-            Signal::ChildStopped(uid) => write!(f, "ChildStopped({})", uid),
-            Signal::Kill(reason) => write!(f, "Kill({})", reason),
+            Signal::Abort(reason) => write!(f, "Abort({})", reason),
         }
     }
 }
@@ -784,7 +780,7 @@ impl fmt::Display for HandlerInfo {
 pub enum ActorStoppingReason {
     /// The actor is stopping through the normal cooperative shutdown path.
     Requested,
-    /// The actor did not respond to hard kill, and teardown stopped waiting on
+    /// The actor did not respond to abort, and teardown stopped waiting on
     /// it normally.
     Zombie(String),
 }
@@ -944,10 +940,9 @@ impl<A: Actor> ActorHandle<A> {
         self.cell.signal(Signal::Stop(reason.to_string()))
     }
 
-    /// Signal the actor to terminate immediately.
-    pub fn kill(&self, reason: &str) -> Result<(), ActorError> {
-        tracing::info!("actor handle kill called: {}", self.actor_addr());
-        self.cell.signal(Signal::Kill(reason.to_string()))
+    /// Signal the actor to abort immediately.
+    pub fn abort(&self, reason: &str) -> Result<(), ActorError> {
+        self.cell.signal(Signal::Abort(reason.to_string()))
     }
 
     /// A watch that observes the lifecycle state of the actor.
@@ -1071,9 +1066,9 @@ impl AnyActorHandle {
         self.cell.signal(Signal::Stop(reason.to_string()))
     }
 
-    /// Signal the actor to terminate immediately.
-    pub fn kill(&self, reason: &str) -> Result<(), ActorError> {
-        self.cell.signal(Signal::Kill(reason.to_string()))
+    /// Signal the actor to abort immediately.
+    pub fn abort(&self, reason: &str) -> Result<(), ActorError> {
+        self.cell.signal(Signal::Abort(reason.to_string()))
     }
 
     /// A watch that observes the lifecycle state of the actor.

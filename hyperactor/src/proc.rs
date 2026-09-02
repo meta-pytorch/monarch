@@ -2055,14 +2055,14 @@ struct ActorStopped {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ChildTeardown {
     Cooperative(StopMode),
-    Kill,
+    Abort,
 }
 
 impl ChildTeardown {
     fn from_run_result(result: &Result<ActorStopped, ActorError>) -> Self {
         match result {
             Ok(stopped) => Self::Cooperative(stopped.stop_mode),
-            Err(err) if matches!(err.kind.as_ref(), ActorErrorKind::Aborted(_)) => Self::Kill,
+            Err(err) if matches!(err.kind.as_ref(), ActorErrorKind::Aborted(_)) => Self::Abort,
             Err(_) => Self::Cooperative(StopMode::Stop),
         }
     }
@@ -2789,24 +2789,9 @@ impl<A: Actor> Instance<A> {
             .signal(Signal::DrainAndStop(reason.to_string()))
     }
 
-    /// Signal the actor to terminate immediately with a provided reason.
-    pub fn kill(&self, reason: &str) -> Result<(), ActorError> {
-        tracing::info!(
-            actor_id = %self.inner.cell.actor_addr(),
-            reason,
-            "instance kill called",
-        );
-        self.inner.cell.signal(Signal::Kill(reason.to_string()))
-    }
-
-    /// Backward-compatible alias for `kill()`.
+    /// Signal the actor to abort immediately with a provided reason.
     pub fn abort(&self, reason: &str) -> Result<(), ActorError> {
-        tracing::info!(
-            actor_id = %self.inner.cell.actor_addr(),
-            reason,
-            "instance abort called",
-        );
-        self.kill(reason)
+        self.inner.cell.signal(Signal::Abort(reason.to_string()))
     }
 
     /// Close handler ingress for this actor.
@@ -3055,14 +3040,14 @@ impl<A: Actor> Instance<A> {
                     status.clone(),
                     None,
                 );
-                (status, Some(event))
+                (status, event)
             }
             Err(err) => match *err.kind {
                 ActorErrorKind::UnhandledSupervisionEvent(box event) => {
                     // We use the event's actor_status as this actor's terminal status.
                     assert!(event.actor_status.is_terminal());
                     let status = event.actor_status.clone();
-                    (status, Some(event))
+                    (status, event)
                 }
                 ActorErrorKind::SyntheticSupervision(synthetic) => {
                     let local_fence = synthetic.local_fence.clone();
@@ -3075,7 +3060,7 @@ impl<A: Actor> Instance<A> {
                         None,
                     )
                     .with_local_fence(local_fence);
-                    (status, Some(event))
+                    (status, event)
                 }
                 _ => {
                     let error_kind = ActorErrorKind::Generic(err.kind.to_string());
@@ -3086,7 +3071,7 @@ impl<A: Actor> Instance<A> {
                         status.clone(),
                         None,
                     );
-                    (status, Some(event))
+                    (status, event)
                 }
             },
         };
@@ -3095,52 +3080,33 @@ impl<A: Actor> Instance<A> {
         // FI-9: supervisors observe the zombie lifecycle verdict, while the event
         // stored below must describe the terminal status for introspection.
         let event_to_deliver = if current_status.is_zombie() {
-            Some(ActorSupervisionEvent::new(
+            ActorSupervisionEvent::new(
                 self.inner.cell.actor_addr().clone(),
                 actor.display_name(),
                 current_status,
                 None,
-            ))
+            )
         } else {
             event.clone()
         };
 
         self.mailbox().close(terminal_status.clone());
         // FI-1: store supervision_event BEFORE change_status.
-        if let Some(event) = &event {
-            *self.inner.cell.inner.supervision_event.lock().unwrap() = Some(event.clone());
-        }
+        *self.inner.cell.inner.supervision_event.lock().unwrap() = Some(event);
 
         // Deliver the supervision event to the parent/proc BEFORE
         // change_status so that any observer waiting for this actor's
         // terminal state can only see it once the event has been
-        // enqueued at its destination.
-        if let Some(parent) = self.inner.cell.maybe_unlink_parent() {
-            if let Some(event) = event_to_deliver {
-                // Parent exists, failure should be propagated to the parent.
-                parent.send_supervision_event_or_crash(event);
-            }
-            // TODO: we should get rid of this signal, and use *only* supervision events for
-            // the purpose of conveying lifecycle changes
-            if let Err(err) = parent.signal(Signal::ChildStopped(self.inner.cell.uid().clone())) {
-                tracing::error!(
-                    "{}: failed to send stop message to parent uid {}: {:?}",
-                    self.self_addr(),
-                    parent.uid(),
-                    err
-                );
-            }
-        } else {
-            // Failure happened to the root actor or orphaned child actors.
-            // In either case, the failure should be propagated to proc.
-            //
-            // Note that orphaned actor is unexpected and would only happen if
-            // there is a bug.
-            if let Some(event) = event_to_deliver {
-                self.inner
-                    .proc
-                    .handle_unhandled_supervision_event(&self, event);
-            }
+        // enqueued at its destination. A returned event had no owning parent
+        // — the root actor, or an orphaned child, which would be a bug.
+        if let Some(event) = self
+            .inner
+            .cell
+            .try_send_completion_event_to_parent(event_to_deliver)
+        {
+            self.inner
+                .proc
+                .handle_unhandled_supervision_event(&self, event);
         }
 
         self.stop_introspect(terminal_status.clone()).await;
@@ -3197,8 +3163,8 @@ impl<A: Actor> Instance<A> {
         let mut to_unlink = Vec::new();
         let child_signal = match ChildTeardown::from_run_result(&result) {
             ChildTeardown::Cooperative(mode) => ChildTeardown::cooperative_signal(mode),
-            ChildTeardown::Kill => {
-                // TODO: fan out kill once child teardown can detach
+            ChildTeardown::Abort => {
+                // TODO: fan out abort once child teardown can detach
                 // unresponsive children without blocking this parent.
                 ChildTeardown::cooperative_signal(StopMode::Stop)
             }
@@ -3219,18 +3185,22 @@ impl<A: Actor> Instance<A> {
             self.inner.cell.unlink(&child);
         }
 
-        let (mut signal_receiver, _) = actor_loop_receivers;
+        let (_, mut supervision_event_receiver) = actor_loop_receivers;
         while self.inner.cell.child_count() > 0 {
-            match tokio::time::timeout(Duration::from_millis(500), signal_receiver.recv()).await {
-                Ok(Some(Signal::ChildStopped(uid))) => {
-                    assert!(self.inner.cell.get_child(&uid).is_none());
+            match tokio::time::timeout(
+                Duration::from_millis(500),
+                supervision_event_receiver.recv(),
+            )
+            .await
+            {
+                Ok(Some(event)) => {
+                    if let Some(child_id) = &event.child_to_unlink {
+                        self.inner.cell.inner.unlink_child_by_id(child_id);
+                    }
                 }
-                // Drain only tracks child termination; other signals are
-                // intentionally swallowed here.
-                Ok(Some(_)) => {}
                 Ok(None) => {
-                    // Signal channel closed: no further ChildStopped will
-                    // arrive, so we can no longer track child termination.
+                    // The supervision channel closed, so no further child
+                    // completion events can arrive.
                     // Drop remaining links and exit the drain loop, mirroring
                     // the timeout branch below.
                     self.inner.cell.unlink_all();
@@ -3238,7 +3208,7 @@ impl<A: Actor> Instance<A> {
                 }
                 Err(_) => {
                     tracing::warn!(
-                        "timeout waiting for ChildStopped signal from child on actor: {}, ignoring",
+                        "timeout waiting for child supervision event on actor: {}, ignoring",
                         self.self_addr()
                     );
                     // No more waiting to receive messages. Unlink all remaining
@@ -3346,13 +3316,10 @@ impl<A: Actor> Instance<A> {
                                 .await
                                 .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))?;
                         },
-                        Signal::ChildStopped(uid) => {
-                            assert!(self.inner.cell.get_child(&uid).is_none());
-                        },
                         Signal::ExitRequested(reason) => {
                             break 'messages reason;
                         }
-                        Signal::Kill(reason) => {
+                        Signal::Abort(reason) => {
                             return Err(ActorError { actor_id: Box::new(self.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) });
                         }
                     }
@@ -3415,6 +3382,12 @@ impl<A: Actor> Instance<A> {
         actor: &mut A,
         supervision_event: ActorSupervisionEvent,
     ) -> Result<(), ActorError> {
+        // `actor_id` may identify a propagated descendant. `child_to_unlink`
+        // identifies the local ownership edge for this delivery.
+        if let Some(child_id) = &supervision_event.child_to_unlink {
+            self.inner.cell.inner.unlink_child_by_id(child_id);
+        }
+
         if supervision_event.is_locally_cancelled() {
             return Ok(());
         }
@@ -4063,6 +4036,30 @@ struct InstanceCellState {
 }
 
 impl InstanceCellState {
+    /// Route this instance's terminal event according to current supervision
+    /// ownership.
+    ///
+    /// If the parent still owns this child, enqueue the event while retaining
+    /// that ownership. The parent removes the child when it consumes the event,
+    /// so a queued terminal event remains visible to its shutdown policy.
+    /// Returns the event when no parent owns the child so the caller can route
+    /// it through proc supervision.
+    fn try_send_completion_event_to_parent(
+        &self,
+        event: ActorSupervisionEvent,
+    ) -> Option<ActorSupervisionEvent> {
+        let Some(parent) = self.parent.upgrade() else {
+            return Some(event);
+        };
+        let Some(child_entry) = parent.inner.children.get(self.actor_id.uid()) else {
+            return Some(event);
+        };
+
+        parent.send_supervision_event_or_crash(event.with_child_to_unlink(self.actor_id.clone()));
+        drop(child_entry);
+        None
+    }
+
     /// Unlink this instance from its parent, if it has one. If it was unlinked,
     /// the parent is returned.
     fn maybe_unlink_parent(&self) -> Option<InstanceCell> {
@@ -4075,6 +4072,20 @@ impl InstanceCellState {
     fn unlink(&self, child: &InstanceCellState) -> bool {
         assert_eq!(self.actor_id.proc_id(), child.actor_id.proc_id());
         self.children.remove(child.actor_id.uid()).is_some()
+    }
+
+    /// Unlink a child when its terminal event is consumed by this actor.
+    fn unlink_child_by_id(&self, child_id: &ActorAddr) -> bool {
+        if self.actor_id.proc_id() != child_id.proc_id() {
+            return false;
+        }
+        match self.children.entry(child_id.uid().clone()) {
+            Entry::Occupied(entry) if entry.get().actor_addr() == child_id => {
+                entry.remove();
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -4498,10 +4509,11 @@ impl InstanceCell {
         }
     }
 
-    /// Unlink this instance from its parent, if it has one. If it was unlinked,
-    /// the parent is returned.
-    fn maybe_unlink_parent(&self) -> Option<InstanceCell> {
-        self.inner.maybe_unlink_parent()
+    fn try_send_completion_event_to_parent(
+        &self,
+        event: ActorSupervisionEvent,
+    ) -> Option<ActorSupervisionEvent> {
+        self.inner.try_send_completion_event_to_parent(event)
     }
 
     /// Return an iterator over this instance's children. This may deadlock if the
@@ -4524,7 +4536,7 @@ impl InstanceCell {
             .collect()
     }
 
-    /// Get a child by its uid.
+    #[cfg(test)]
     fn get_child(&self, uid: &crate::id::Uid) -> Option<InstanceCell> {
         self.inner.children.get(uid).map(|child| child.clone())
     }
@@ -6435,7 +6447,13 @@ mod tests {
             third_cell.parent().unwrap().actor_addr(),
             second.actor_addr()
         );
-        assert!(second.cell().get_child(third_cell.uid()).is_none());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while second.cell().get_child(third_cell.uid()).is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("parent must consume the terminal event and unlink the child");
         drop(third_cell);
         validate_link(second.cell(), first.cell());
 
@@ -7205,6 +7223,40 @@ mod tests {
         assert!(!root_1_1_1_state.load(Ordering::SeqCst));
         assert!(!root_2_state.load(Ordering::SeqCst));
         assert!(!root_2_1_state.load(Ordering::SeqCst));
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn terminal_event_unlinks_child_when_consumed() {
+        let proc = Proc::isolated();
+        let mut parent = proc.actor_instance::<TestActor>("parent").unwrap();
+        let parent_cell = parent.handle.cell().clone();
+        let child = parent.instance.spawn(TestActor);
+        let child_addr = child.actor_addr().clone();
+
+        child.drain_and_stop("test").unwrap();
+        assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "test");
+        assert_eq!(
+            parent_cell.child_count(),
+            1,
+            "child must remain linked until its terminal event is consumed"
+        );
+
+        let event = parent
+            .supervision
+            .recv()
+            .await
+            .expect("child must publish a terminal supervision event");
+        assert_eq!(event.child_to_unlink.as_ref(), Some(&child_addr));
+        parent
+            .instance
+            .handle_supervision_event(&mut TestActor, event)
+            .await
+            .expect("clean child completion should be handled");
+        assert_eq!(
+            parent_cell.child_count(),
+            0,
+            "consuming the terminal event must unlink the child"
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -8450,7 +8502,7 @@ mod tests {
     }
 
     #[test]
-    fn child_teardown_distinguishes_kill_from_failure() {
+    fn child_teardown_distinguishes_abort_from_failure() {
         let actor_addr = test_actor_id("proc", "actor");
 
         let stopped = Ok(ActorStopped {
@@ -8462,11 +8514,14 @@ mod tests {
             ChildTeardown::Cooperative(StopMode::DrainAndStop)
         );
 
-        let killed = Err(ActorError::new(
+        let aborted = Err(ActorError::new(
             &actor_addr,
-            ActorErrorKind::Aborted("test kill".to_string()),
+            ActorErrorKind::Aborted("test abort".to_string()),
         ));
-        assert_eq!(ChildTeardown::from_run_result(&killed), ChildTeardown::Kill);
+        assert_eq!(
+            ChildTeardown::from_run_result(&aborted),
+            ChildTeardown::Abort
+        );
 
         let failed = Err(ActorError::new(
             &actor_addr,
