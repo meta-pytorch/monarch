@@ -51,7 +51,7 @@ import urllib.parse
 
 from monarch._src.actor.telemetry import TracingForwarder
 from monarch.actor import Actor, context, endpoint
-from monarch.job import ProcessJob
+from monarch.job import ProcessJob, TelemetryConfig
 
 logger: logging.Logger = logging.getLogger("inbound_ordering_workload")
 logger.addHandler(TracingForwarder())
@@ -102,7 +102,7 @@ class Sender(Actor):
 
 
 async def async_main(args: argparse.Namespace) -> None:
-    job = ProcessJob({"hosts": 1}).enable_telemetry()
+    job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(dashboard_port=0))
     try:
         state = job.state(cached_path=None)
         host = state.hosts

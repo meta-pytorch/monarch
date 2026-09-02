@@ -62,7 +62,7 @@ import sys
 from monarch._src.actor.actor_mesh import Channel, Port, PortReceiver
 from monarch._src.actor.telemetry import TracingForwarder
 from monarch.actor import Actor, concurrent_endpoint, context, endpoint
-from monarch.job import ProcessJob
+from monarch.job import ProcessJob, TelemetryConfig
 
 logger: logging.Logger = logging.getLogger("execution_workload")
 logger.addHandler(TracingForwarder())
@@ -211,7 +211,7 @@ async def _hold_task(actor, id: str, entered_port: "Port[str]") -> None:
 
 
 async def async_main() -> None:
-    job = ProcessJob({"hosts": 1}).enable_telemetry()
+    job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(dashboard_port=0))
     # In-flight held invocations, tracked so they can be cancelled at
     # shutdown.
     holds: dict[str, asyncio.Task] = {}
