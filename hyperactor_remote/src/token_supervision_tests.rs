@@ -191,12 +191,7 @@ impl Actor for SupervisedChild {
         reason: &str,
     ) -> anyhow::Result<()> {
         self.stopped.post(this, reason.to_string());
-        this.close();
-        match mode {
-            StopMode::Stop => this.exit(reason)?,
-            StopMode::DrainAndStop => this.exit_after_drain(reason)?,
-        }
-        Ok(())
+        hyperactor::actor::handle_stop(this, mode, reason)
     }
 }
 
@@ -397,7 +392,7 @@ async fn test_token_join_parent_exit_stops_child_first() -> anyhow::Result<()> {
         .post(&harness.observer, ParentControl::Exit(StopMode::Stop));
 
     let reason = recv(&mut harness.child_stopped_rx).await?;
-    assert_eq!(reason, "parent stopping");
+    assert_eq!(reason, "parent requested stop");
     harness.stop().await?;
     Ok(())
 }
@@ -412,7 +407,7 @@ async fn test_token_join_parent_exit_drain_and_stops_child_first() -> anyhow::Re
     );
 
     let reason = recv(&mut harness.child_stopped_rx).await?;
-    assert_eq!(reason, "parent draining");
+    assert_eq!(reason, "parent requested drain and stop");
     harness.stop().await?;
     Ok(())
 }

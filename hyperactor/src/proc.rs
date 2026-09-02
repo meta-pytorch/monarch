@@ -2026,6 +2026,9 @@ struct InstanceState<A: Actor> {
     /// Runtime-owned delayed-post scheduler.
     delayed_posts: DelayedPosts<A>,
 
+    /// Stop request retained while direct children terminate.
+    pending_stop: Mutex<Option<StopRequest>>,
+
     /// Shutdown signal for the runtime-owned introspection task.
     introspect_shutdown_tx: Mutex<Option<oneshot::Sender<ActorStatus>>>,
 
@@ -2047,32 +2050,13 @@ struct InstanceState<A: Actor> {
     instance_locals: ActorLocalStorage,
 }
 
-struct ActorStopped {
+/// A cooperative stop request retained until direct children terminate.
+#[derive(Debug)]
+struct StopRequest {
+    /// The requested child shutdown mode.
+    mode: StopMode,
+    /// The caller-supplied reason that becomes the clean terminal reason.
     reason: String,
-    stop_mode: StopMode,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ChildTeardown {
-    Cooperative(StopMode),
-    Abort,
-}
-
-impl ChildTeardown {
-    fn from_run_result(result: &Result<ActorStopped, ActorError>) -> Self {
-        match result {
-            Ok(stopped) => Self::Cooperative(stopped.stop_mode),
-            Err(err) if matches!(err.kind.as_ref(), ActorErrorKind::Aborted(_)) => Self::Abort,
-            Err(_) => Self::Cooperative(StopMode::Stop),
-        }
-    }
-
-    fn cooperative_signal(mode: StopMode) -> Signal {
-        match mode {
-            StopMode::DrainAndStop => Signal::DrainAndStop("parent draining".to_string()),
-            StopMode::Stop => Signal::Stop("parent stopping".to_string()),
-        }
-    }
 }
 
 type DelayedPost<A> = Box<dyn FnOnce(&Instance<A>) + Send>;
@@ -2510,6 +2494,7 @@ impl<A: Actor> Instance<A> {
             mailbox,
             ports,
             delayed_posts: DelayedPosts::new(),
+            pending_stop: Mutex::new(None),
             introspect_shutdown_tx: Mutex::new(None),
             introspect_task_handle: Mutex::new(None),
             detached_introspect_shutdown_tx: Mutex::new(None),
@@ -2800,6 +2785,15 @@ impl<A: Actor> Instance<A> {
         self.inner.mailbox.drain();
     }
 
+    /// Return a point-in-time snapshot of direct children.
+    pub(crate) fn children(&self) -> Vec<AnyActorHandle> {
+        self.inner
+            .cell
+            .child_iter()
+            .map(|child| AnyActorHandle::new(child.value().clone()))
+            .collect()
+    }
+
     /// Subscribe to this actor's status changes.
     pub fn status(&self) -> watch::Receiver<ActorStatus> {
         self.inner.cell.status().clone()
@@ -2831,6 +2825,63 @@ impl<A: Actor> Instance<A> {
             Box::pin(async move {
                 this.exit(&reason).map_err(anyhow::Error::from)?;
                 Ok(())
+            })
+        });
+        self.enqueue_runtime_work(work)
+    }
+
+    /// Handle a stop request by stopping direct children before exiting.
+    pub(crate) fn handle_stop(&self, mode: StopMode, reason: &str) -> Result<(), ActorError> {
+        self.close();
+        {
+            let mut pending = self.inner.pending_stop.lock().unwrap();
+            if pending.is_some() {
+                return Ok(());
+            }
+            *pending = Some(StopRequest {
+                mode,
+                reason: reason.to_string(),
+            });
+        }
+
+        for child in self.children() {
+            let result = match mode {
+                StopMode::Stop => child.stop(reason),
+                StopMode::DrainAndStop => child.drain_and_stop(reason),
+            };
+            if let Err(err) = result {
+                tracing::debug!(
+                    child = %child.actor_id(),
+                    "failed to forward stop request to child: {err:?}"
+                );
+            }
+        }
+        self.handle_child_stopped()
+    }
+
+    /// Handle direct-child completion while a stop request is pending.
+    pub(crate) fn handle_child_stopped(&self) -> Result<(), ActorError> {
+        if self.inner.cell.child_count() != 0 {
+            return Ok(());
+        }
+        let Some(request) = self.inner.pending_stop.lock().unwrap().take() else {
+            return Ok(());
+        };
+        match request.mode {
+            StopMode::Stop => self.exit(&request.reason),
+            StopMode::DrainAndStop => self.exit_after_drain(&request.reason),
+        }
+    }
+
+    /// Queue the actor's stop hook behind already accepted ordinary work.
+    fn handle_stop_after_drain(&self, reason: String) -> Result<(), ActorError> {
+        let work = WorkCell::new(move |actor: &mut A, instance: &Instance<A>| {
+            Box::pin(async move {
+                instance
+                    .inner
+                    .proc
+                    .with_current(actor.handle_stop(instance, StopMode::DrainAndStop, &reason))
+                    .await
             })
         });
         self.enqueue_runtime_work(work)
@@ -3161,14 +3212,9 @@ impl<A: Actor> Instance<A> {
         // After this point, we know we won't spawn any more children,
         // so we can safely read the current child keys.
         let mut to_unlink = Vec::new();
-        let child_signal = match ChildTeardown::from_run_result(&result) {
-            ChildTeardown::Cooperative(mode) => ChildTeardown::cooperative_signal(mode),
-            ChildTeardown::Abort => {
-                // TODO: fan out abort once child teardown can detach
-                // unresponsive children without blocking this parent.
-                ChildTeardown::cooperative_signal(StopMode::Stop)
-            }
-        };
+        // TODO: Detach and abort residual children instead of initiating another
+        // cooperative stop after the parent actor loop has exited.
+        let child_signal = Signal::Stop("parent stopping".to_string());
         for child in self.inner.cell.child_iter() {
             if let Err(err) = child.value().signal(child_signal.clone()) {
                 tracing::error!(
@@ -3194,6 +3240,8 @@ impl<A: Actor> Instance<A> {
             .await
             {
                 Ok(Some(event)) => {
+                    // TODO: Remove this post-loop event drain when residual
+                    // children are detached and aborted instead of awaited.
                     if let Some(child_id) = &event.child_to_unlink {
                         self.inner.cell.inner.unlink_child_by_id(child_id);
                     }
@@ -3201,9 +3249,6 @@ impl<A: Actor> Instance<A> {
                 Ok(None) => {
                     // The supervision channel closed, so no further child
                     // completion events can arrive.
-                    // Drop remaining links and exit the drain loop, mirroring
-                    // the timeout branch below.
-                    self.inner.cell.unlink_all();
                     break;
                 }
                 Err(_) => {
@@ -3211,12 +3256,14 @@ impl<A: Actor> Instance<A> {
                         "timeout waiting for child supervision event on actor: {}, ignoring",
                         self.self_addr()
                     );
-                    // No more waiting to receive messages. Unlink all remaining
-                    // children.
-                    self.inner.cell.unlink_all();
                     break;
                 }
             }
+        }
+        // TODO: Remove this fallback unlink when residual children are detached
+        // and aborted instead of discarded from the parent topology.
+        for child in self.children() {
+            self.inner.cell.inner.unlink_child_by_id(child.actor_id());
         }
         // Run the actor cleanup function before the actor stops to delete
         // resources. If it times out, continue with stopping the actor.
@@ -3259,12 +3306,25 @@ impl<A: Actor> Instance<A> {
         }
         // If the original exit was not an error, let cleanup errors be
         // surfaced.
-        result.and_then(|stopped| cleanup_result.map(|_| stopped.reason))
+        result.and_then(|reason| cleanup_result.map(|_| reason))
+    }
+
+    /// Deliver all queued supervision events before committing a competing
+    /// terminal result.
+    async fn process_queued_supervision_events(
+        &self,
+        actor: &mut A,
+        supervision_event_receiver: &mut mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+    ) -> Result<(), ActorError> {
+        while let Ok(supervision_event) = supervision_event_receiver.try_recv() {
+            self.handle_supervision_event(actor, supervision_event)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Initialize and run the actor until it fails or is stopped. On success,
-    /// returns why the actor stopped and the mode that child actors inherit.
-    /// On failure, returns the error that caused the failure.
+    /// returns why the actor stopped. On failure, returns the error that caused the failure.
     async fn run(
         &mut self,
         actor: &mut A,
@@ -3273,9 +3333,8 @@ impl<A: Actor> Instance<A> {
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
         work_rx: &mut ActorWorkReceiver<A>,
-    ) -> Result<ActorStopped, ActorError> {
+    ) -> Result<String, ActorError> {
         let (signal_receiver, supervision_event_receiver) = actor_loop_receivers;
-        let mut stop_mode = StopMode::Stop;
 
         self.change_status(ActorStatus::Initializing);
         self.inner
@@ -3284,6 +3343,7 @@ impl<A: Actor> Instance<A> {
             .await
             .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::init(err)))?;
         let actor_id_str = self.self_addr().to_string();
+        let mut stop_requested = false;
         let stop_reason = 'messages: loop {
             if !self.is_stopping() {
                 self.change_status(ActorStatus::Idle);
@@ -3299,27 +3359,36 @@ impl<A: Actor> Instance<A> {
                     tracing::debug!("received signal {signal:?}");
                     match signal {
                         Signal::Stop(reason) => {
-                            stop_mode = StopMode::Stop;
+                            if stop_requested {
+                                continue 'messages;
+                            }
+                            stop_requested = true;
                             self.change_status(ActorStatus::stopping());
                             self.inner
                                 .proc
                                 .with_current(actor.handle_stop(self, StopMode::Stop, &reason))
                                 .await
-                                .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))?;
+                                .map_err(|err| {
+                                    ActorError::new(
+                                        self.self_addr(),
+                                        ActorErrorKind::processing(err),
+                                    )
+                                })?;
                         },
                         Signal::DrainAndStop(reason) => {
-                            stop_mode = StopMode::DrainAndStop;
+                            if stop_requested {
+                                continue 'messages;
+                            }
+                            stop_requested = true;
                             self.change_status(ActorStatus::stopping());
-                            self.inner
-                                .proc
-                                .with_current(actor.handle_stop(self, StopMode::DrainAndStop, &reason))
-                                .await
-                                .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))?;
+                            self.handle_stop_after_drain(reason)?;
                         },
                         Signal::ExitRequested(reason) => {
                             break 'messages reason;
                         }
                         Signal::Abort(reason) => {
+                            // TODO: Move Abort out of the signal queue so it can
+                            // preempt an in-progress actor hook.
                             return Err(ActorError { actor_id: Box::new(self.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) });
                         }
                     }
@@ -3330,9 +3399,8 @@ impl<A: Actor> Instance<A> {
                     let _ = ACTOR_MESSAGE_HANDLER_DURATION.start(metric_pairs);
                     let work = work.expect("inconsistent work queue state");
                     if let Err(err) = work.handle(actor, self).await {
-                        while let Ok(supervision_event) = supervision_event_receiver.try_recv() {
-                            self.handle_supervision_event(actor, supervision_event).await?;
-                        }
+                        self.process_queued_supervision_events(actor, supervision_event_receiver)
+                            .await?;
                         let kind = ActorErrorKind::processing(err);
                         return Err(ActorError {
                             actor_id: Box::new(self.self_addr().clone()),
@@ -3370,10 +3438,7 @@ impl<A: Actor> Instance<A> {
             reason = stop_reason,
             "exited actor loop",
         );
-        Ok(ActorStopped {
-            reason: stop_reason,
-            stop_mode,
-        })
+        Ok(stop_reason)
     }
 
     /// Handle a supervision event using the provided actor.
@@ -3384,8 +3449,24 @@ impl<A: Actor> Instance<A> {
     ) -> Result<(), ActorError> {
         // `actor_id` may identify a propagated descendant. `child_to_unlink`
         // identifies the local ownership edge for this delivery.
-        if let Some(child_id) = &supervision_event.child_to_unlink {
-            self.inner.cell.inner.unlink_child_by_id(child_id);
+        if supervision_event
+            .child_to_unlink
+            .as_ref()
+            .is_some_and(|child_id| self.inner.cell.inner.unlink_child_by_id(child_id))
+        {
+            self.inner
+                .proc
+                .with_current(actor.handle_child_stopped(self))
+                .await
+                .map_err(|err| {
+                    ActorError::new(
+                        self.self_addr(),
+                        ActorErrorKind::ErrorDuringHandlingSupervision(
+                            err.to_string(),
+                            Box::new(supervision_event.clone()),
+                        ),
+                    )
+                })?;
         }
 
         if supervision_event.is_locally_cancelled() {
@@ -4495,11 +4576,6 @@ impl InstanceCell {
     fn unlink(&self, child: &InstanceCell) {
         assert_eq!(self.actor_addr().proc_id(), child.actor_addr().proc_id());
         self.inner.children.remove(child.uid());
-    }
-
-    /// Unlink this instance from all children.
-    fn unlink_all(&self) {
-        self.inner.children.clear();
     }
 
     /// Link this instance to its parent, if it has one.
@@ -6565,7 +6641,7 @@ mod tests {
 
         parent.drain_and_stop("test").unwrap();
         assert_matches!(parent.await, ActorStatus::Stopped(reason) if reason == "test");
-        assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "parent draining");
+        assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "test");
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -6710,7 +6786,7 @@ mod tests {
                     .try_post(&client, TestActorMessage::Noop())
                     .is_err()
             );
-            assert_matches!(actor.await, ActorStatus::Stopped(reason) if reason == "parent draining");
+            assert_matches!(actor.await, ActorStatus::Stopped(reason) if reason == "test");
         }
     }
 
@@ -6725,6 +6801,7 @@ mod tests {
     enum DrainCountingMessage {
         Block(oneshot::Sender<()>, oneshot::Receiver<()>),
         Count(),
+        Spawn(oneshot::Sender<ActorHandle<TestActor>>),
     }
 
     #[async_trait]
@@ -6743,6 +6820,15 @@ mod tests {
 
         async fn count(&mut self, _cx: &crate::Context<Self>) -> Result<(), anyhow::Error> {
             self.handled.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn spawn(
+            &mut self,
+            cx: &crate::Context<Self>,
+            child: oneshot::Sender<ActorHandle<TestActor>>,
+        ) -> Result<(), anyhow::Error> {
+            child.send(cx.spawn(TestActor)).unwrap();
             Ok(())
         }
     }
@@ -6780,8 +6866,64 @@ mod tests {
         release.send(()).unwrap();
 
         assert_matches!(parent.await, ActorStatus::Stopped(reason) if reason == "test");
-        assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "parent draining");
+        assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "test");
         assert_eq!(handled.load(Ordering::SeqCst), 5);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn drain_includes_children_spawned_by_accepted_work() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let parent = proc.spawn(DrainCountingActor {
+            handled: Arc::new(AtomicUsize::new(0)),
+        });
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        parent.post(&client, DrainCountingMessage::Block(entered_tx, release_rx));
+        entered_rx.await.unwrap();
+        let (child_tx, child_rx) = oneshot::channel();
+        parent.post(&client, DrainCountingMessage::Spawn(child_tx));
+
+        parent.drain_and_stop("test").unwrap();
+        release_tx.send(()).unwrap();
+        let child = child_rx.await.unwrap();
+
+        assert_matches!(parent.await, ActorStatus::Stopped(reason) if reason == "test");
+        assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "test");
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn stopping_parent_waits_for_blocked_child() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let parent = proc.spawn(TestActor);
+        let child = proc.spawn_child(
+            parent.cell().clone(),
+            DrainCountingActor {
+                handled: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        let release = block_and_queue_counts(&client, &child, 0).await;
+        let mut parent_status = parent.status();
+
+        parent.stop("test").unwrap();
+        parent_status
+            .wait_for(ActorStatus::is_stopping)
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                parent_status.wait_for(ActorStatus::is_terminal),
+            )
+            .await
+            .is_err(),
+            "parent stopped before its child"
+        );
+
+        release.send(()).unwrap();
+        assert_matches!(parent.await, ActorStatus::Stopped(reason) if reason == "test");
+        assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "test");
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -6803,8 +6945,8 @@ mod tests {
         release.send(()).unwrap();
 
         assert_matches!(grandparent.await, ActorStatus::Stopped(reason) if reason == "test");
-        assert_matches!(parent.await, ActorStatus::Stopped(reason) if reason == "parent draining");
-        assert_matches!(grandchild.await, ActorStatus::Stopped(reason) if reason == "parent draining");
+        assert_matches!(parent.await, ActorStatus::Stopped(reason) if reason == "test");
+        assert_matches!(grandchild.await, ActorStatus::Stopped(reason) if reason == "test");
         assert_eq!(handled.load(Ordering::SeqCst), 7);
     }
 
@@ -6833,6 +6975,25 @@ mod tests {
         parent.drain_and_stop("test").unwrap();
 
         assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "parent stopping");
+        assert_matches!(
+            parent.await,
+            ActorStatus::Failed(err) if err.to_string().contains("stop failed")
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn parent_observes_child_failure_during_stop() {
+        let proc = Proc::isolated();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let parent = proc.spawn(TestActor);
+        let child = proc.spawn_child(parent.cell().clone(), StopFailingActor);
+
+        parent.stop("test").unwrap();
+
+        assert_matches!(
+            child.await,
+            ActorStatus::Failed(err) if err.to_string().contains("stop failed")
+        );
         assert_matches!(
             parent.await,
             ActorStatus::Failed(err) if err.to_string().contains("stop failed")
@@ -6893,6 +7054,74 @@ mod tests {
 
         release_stop.notify_one();
         assert_matches!(handle.await, ActorStatus::Stopped(reason) if reason == "test");
+    }
+
+    #[derive(Debug)]
+    struct MessageDrivenStopActor {
+        stop_started: Option<oneshot::Sender<()>>,
+    }
+
+    #[async_trait]
+    impl Actor for MessageDrivenStopActor {
+        async fn handle_stop(
+            &mut self,
+            _this: &Instance<Self>,
+            _mode: StopMode,
+            _reason: &str,
+        ) -> Result<(), anyhow::Error> {
+            self.stop_started
+                .take()
+                .expect("stop hook should run once")
+                .send(())
+                .expect("test should wait for stop hook");
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Handler<()> for MessageDrivenStopActor {
+        async fn handle(&mut self, cx: &crate::Context<Self>, _message: ()) -> anyhow::Result<()> {
+            cx.exit("shutdown message handled")?;
+            Ok(())
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn continuing_stop_processes_ordinary_work() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (stop_started_tx, stop_started_rx) = oneshot::channel();
+        let actor = proc.spawn(MessageDrivenStopActor {
+            stop_started: Some(stop_started_tx),
+        });
+
+        actor.stop("test").unwrap();
+        stop_started_rx.await.unwrap();
+        actor.post(&client, ());
+
+        assert_matches!(
+            actor.await,
+            ActorStatus::Stopped(reason) if reason == "shutdown message handled"
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn continuing_drain_and_stop_processes_ordinary_work() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (stop_started_tx, stop_started_rx) = oneshot::channel();
+        let actor = proc.spawn(MessageDrivenStopActor {
+            stop_started: Some(stop_started_tx),
+        });
+
+        actor.drain_and_stop("test").unwrap();
+        stop_started_rx.await.unwrap();
+        actor.post(&client, ());
+
+        assert_matches!(
+            actor.await,
+            ActorStatus::Stopped(reason) if reason == "shutdown message handled"
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -8499,38 +8728,6 @@ mod tests {
         // would panic in debug builds if running_total had wrapped to u64::MAX.
         account_enqueue(&depth, &stats, "a");
         assert_eq!(stats.running_total(), 1);
-    }
-
-    #[test]
-    fn child_teardown_distinguishes_abort_from_failure() {
-        let actor_addr = test_actor_id("proc", "actor");
-
-        let stopped = Ok(ActorStopped {
-            reason: "test".to_string(),
-            stop_mode: StopMode::DrainAndStop,
-        });
-        assert_eq!(
-            ChildTeardown::from_run_result(&stopped),
-            ChildTeardown::Cooperative(StopMode::DrainAndStop)
-        );
-
-        let aborted = Err(ActorError::new(
-            &actor_addr,
-            ActorErrorKind::Aborted("test abort".to_string()),
-        ));
-        assert_eq!(
-            ChildTeardown::from_run_result(&aborted),
-            ChildTeardown::Abort
-        );
-
-        let failed = Err(ActorError::new(
-            &actor_addr,
-            ActorErrorKind::Generic("test failure".to_string()),
-        ));
-        assert_eq!(
-            ChildTeardown::from_run_result(&failed),
-            ChildTeardown::Cooperative(StopMode::Stop)
-        );
     }
 
     hyperactor_config::attrs::declare_attrs! {

@@ -304,8 +304,7 @@ impl Handler<SupervisorEvent> for Supervisor {
                     child,
                     display_name,
                 });
-                self.send_pending_worker_stop(cx)?;
-                Ok(())
+                self.send_pending_worker_stop(cx)
             }
             SupervisorEvent::SuperviseRejected { session_id, reason } => {
                 self.ensure_session(&session_id)?;
@@ -321,8 +320,12 @@ impl Handler<SupervisorEvent> for Supervisor {
             }
             SupervisorEvent::Unlinked { session_id, reason } => {
                 self.ensure_session(&session_id)?;
-                cx.exit(&reason)?;
-                Ok(())
+                cx.close();
+                if let Some(liveness) = self.liveness_handle.take() {
+                    let _ = liveness.stop("remote supervision ended");
+                    let _ = liveness.await;
+                }
+                cx.exit(&reason).map_err(Into::into)
             }
         }
     }
@@ -852,12 +855,7 @@ mod tests {
             reason: &str,
         ) -> anyhow::Result<()> {
             self.stopped.post(this, reason.to_string());
-            this.close();
-            match mode {
-                StopMode::Stop => this.exit(reason)?,
-                StopMode::DrainAndStop => this.exit_after_drain(reason)?,
-            }
-            Ok(())
+            hyperactor::actor::handle_stop(this, mode, reason)
         }
     }
 
@@ -1016,6 +1014,7 @@ mod tests {
         link_started: PortHandle<()>,
         release_link: Arc<Notify>,
         received_stop: PortHandle<String>,
+        unlink_reason: Option<String>,
         session: Option<(hyperactor::Uid, PortRef<SupervisorEvent>)>,
     }
 
@@ -1051,8 +1050,10 @@ mod tests {
                     anyhow::bail!("stop received before supervise");
                 };
                 anyhow::ensure!(session_id == expected_session_id, "unexpected session id");
-                self.received_stop.post(cx, reason.clone());
-                let _ = supervisor.post(cx, SupervisorEvent::Unlinked { session_id, reason });
+                self.received_stop.post(cx, reason);
+                if let Some(reason) = self.unlink_reason.take() {
+                    let _ = supervisor.post(cx, SupervisorEvent::Unlinked { session_id, reason });
+                }
             }
             Ok(())
         }
@@ -1111,7 +1112,7 @@ mod tests {
     // ├── client instance
     // │   ├── ready port: receives the child address
     // │   ├── stopped port: receives the child stop reason
-    // │   └── events port: present but not expected to receive an event
+    // │   └── events port: receives the remote child's terminal event
     // ├── worker: Worker
     // │   ├── child: TestChild
     // │   └── worker-side liveness actor: KeepaliveWorker
@@ -1122,13 +1123,12 @@ mod tests {
     // Stopping Parent stops Supervisor, Supervisor forwards the same stop mode
     // and reason to Worker, Worker stops TestChild, and TestChild reports the
     // reason through the client stopped port before the handles complete.
-    #[tokio::test]
-    async fn test_parent_stop_stops_remote_child_before_parent_finishes() {
+    async fn assert_parent_stop_stops_remote_child_before_parent_finishes(mode: StopMode) {
         let proc = Proc::isolated();
         let client = proc.client("client");
         let session_id = Uid::anonymous();
 
-        let (_child_addr, worker, parent, mut stopped_rx, _event_rx) = spawn_supervised_pair(
+        let (child_addr, worker, parent, mut stopped_rx, mut event_rx) = spawn_supervised_pair(
             &proc,
             &client,
             session_id.clone(),
@@ -1138,13 +1138,23 @@ mod tests {
         .await;
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        parent.stop("test parent stopping").unwrap();
+        match mode {
+            StopMode::Stop => parent.stop("test parent stopping").unwrap(),
+            StopMode::DrainAndStop => parent.drain_and_stop("test parent stopping").unwrap(),
+        }
 
         let reason = tokio::time::timeout(Duration::from_secs(5), stopped_rx.recv())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(reason, "parent stopping");
+        assert_eq!(reason, "test parent stopping");
+
+        let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.actor_id, child_addr);
+        assert!(matches!(event.actor_status, ActorStatus::Stopped(_)));
 
         tokio::time::timeout(Duration::from_secs(5), parent)
             .await
@@ -1152,6 +1162,16 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), worker)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_parent_stop_stops_remote_child_before_parent_finishes() {
+        assert_parent_stop_stops_remote_child_before_parent_finishes(StopMode::Stop).await;
+    }
+
+    #[tokio::test]
+    async fn test_parent_drain_and_stop_stops_remote_child_before_parent_finishes() {
+        assert_parent_stop_stops_remote_child_before_parent_finishes(StopMode::DrainAndStop).await;
     }
 
     // proc
@@ -1690,29 +1710,31 @@ mod tests {
     //     └── supervisor: Supervisor (constructed with a known session id)
     //         └── supervisor-side liveness actor: KeepaliveSupervisor
     //
-    // Protocol-surface test for `Supervisor::pending_stop`. The
+    // Protocol-surface test for pending remote shutdown. The
     // fake worker records the session, signals link_started, and
     // blocks on a Notify the test holds. The test calls
     // `parent.stop` while the worker is still in Handler<Supervise>,
     // then releases the worker. The pending_stop machinery must
     // have already queued `WorkerCommand::Stop` carrying the
     // parent's reason and the matching session_id. The worker
-    // validates the session_id, sends the reason via
-    // `received_stop`, then emits a synthetic `Unlinked` so the
-    // supervisor exits cleanly via cx.exit (the Unlinked arm only
-    // checks session_id; it does not require a prior Linked).
+    // validates the session_id, sends the stop reason via
+    // `received_stop`, then emits a synthetic `Unlinked` with a distinct
+    // reason. Once Stop is forwarded, the unlink reason determines the
+    // supervisor event (the Unlinked arm only checks session_id; it does not
+    // require a prior Linked).
     #[tokio::test]
     async fn test_stop_before_linked_propagates_via_pending_stop() {
         let proc = Proc::isolated();
         let inst = proc.client("inst");
         let (link_started, mut link_started_rx) = inst.open_port::<()>();
         let (received_stop, mut received_stop_rx) = inst.open_port::<String>();
-        let (events, _events_rx) = inst.open_port::<ActorSupervisionEvent>();
+        let (events, mut events_rx) = inst.open_port::<ActorSupervisionEvent>();
         let release_link = Arc::new(Notify::new());
         let worker = proc.spawn(TestSlowWorker {
             link_started,
             release_link: Arc::clone(&release_link),
             received_stop,
+            unlink_reason: Some("test unlink".to_string()),
             session: None,
         });
         let session_id = Uid::anonymous();
@@ -1743,11 +1765,89 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(stop_reason, "parent stopping");
+        assert_eq!(stop_reason, "test stop");
 
-        tokio::time::timeout(Duration::from_secs(5), parent)
+        let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(&event.actor_status, ActorStatus::Stopped(reason) if reason == "test unlink"),
+            "expected stopped supervisor event, got: {event}"
+        );
+
+        let status = tokio::time::timeout(Duration::from_secs(5), parent)
             .await
             .unwrap();
+        assert!(
+            matches!(&status, ActorStatus::Stopped(reason) if reason == "test stop"),
+            "expected stopped parent, got: {status:?}"
+        );
+        worker.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_liveness_failure_while_stop_pending_remains_a_failure() {
+        let proc = Proc::isolated();
+        let inst = proc.client("inst");
+        let (link_started, mut link_started_rx) = inst.open_port::<()>();
+        let (received_stop, mut received_stop_rx) = inst.open_port::<String>();
+        let (events, mut events_rx) = inst.open_port::<ActorSupervisionEvent>();
+        let release_link = Arc::new(Notify::new());
+        let worker = proc.spawn(TestSlowWorker {
+            link_started,
+            release_link: Arc::clone(&release_link),
+            received_stop,
+            unlink_reason: None,
+            session: None,
+        });
+        let session_id = Uid::anonymous();
+        let parent = proc.spawn(Parent {
+            supervisor: Some(Supervisor::new_uid(
+                worker.bind::<WorkerLike>(),
+                KeepaliveLink::new(Duration::from_millis(5), Duration::from_millis(300)),
+                SupervisionOptions::default(),
+                session_id,
+            )),
+            events,
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), link_started_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        parent.stop("test stop").unwrap();
+        release_link.notify_one();
+
+        let stop_reason = tokio::time::timeout(Duration::from_secs(5), received_stop_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stop_reason, "test stop");
+
+        let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(&event.actor_status, ActorStatus::Failed(_)),
+            "expected failed supervisor event, got: {event}"
+        );
+        assert!(
+            event.to_string().contains("supervision liveness failed"),
+            "expected liveness failure, got: {event}"
+        );
+
+        let status = tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+        assert!(
+            matches!(&status, ActorStatus::Stopped(reason) if reason == "test stop"),
+            "expected stopped parent, got: {status:?}"
+        );
         worker.stop("test").unwrap();
         tokio::time::timeout(Duration::from_secs(5), worker)
             .await
