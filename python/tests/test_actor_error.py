@@ -306,14 +306,14 @@ def test_actor_init_exception_sync(mesh, actor_class, num_procs) -> None:
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("actor_class", [ExceptionActor, ExceptionActorSync])
 @isolate_in_subprocess
-async def test_broadcast_exception_with_no_reply_port_kills_actor(actor_class) -> None:
+async def test_broadcast_exception_with_no_reply_port_aborts_actor(actor_class) -> None:
     """A plain `Exception` from an endpoint invoked with *no reply port*
     (fire-and-forget `broadcast()`) fails the actor: the return is dropped, the
-    exception escapes through `DroppingPort.exception`, and the actor is killed,
+    exception escapes through `DroppingPort.exception`, and the actor is aborted,
     surfacing as a supervision fault at the client. Parametrized over both
-    dispatch modes because the kill reaches `Signal::Kill` by different paths
-    (direct: the endpoint task resolves `Err`; queue: `_dispatch_loop` calls
-    `self_instance.kill`). The existing broadcast-failure coverage uses a
+    dispatch modes because Abort reaches the actor by different paths (direct:
+    the endpoint task resolves `Err`; queue: `_dispatch_loop` calls
+    `self_instance.abort`). The existing broadcast-failure coverage uses a
     `BaseException`; this pins the plain-`Exception` path."""
     faults = []
     faulted = asyncio.Event()

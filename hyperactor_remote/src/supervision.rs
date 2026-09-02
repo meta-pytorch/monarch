@@ -804,8 +804,8 @@ mod tests {
     wirevalue::register_type!(TestChildCommand);
 
     #[derive(Clone, Debug, Serialize, Deserialize, Named)]
-    struct KillParent;
-    wirevalue::register_type!(KillParent);
+    struct AbortParent;
+    wirevalue::register_type!(AbortParent);
 
     #[derive(Debug)]
     enum TestChildAction {
@@ -869,7 +869,7 @@ mod tests {
             message: TestChildCommand,
         ) -> anyhow::Result<()> {
             match message {
-                TestChildCommand::Fail => cx.kill("test child failed")?,
+                TestChildCommand::Fail => cx.abort("test child failed")?,
                 TestChildCommand::Drain(tag) => {
                     if let Some(ref port) = self.drain_observer {
                         port.post(cx, tag);
@@ -908,7 +908,7 @@ mod tests {
     }
 
     #[derive(Debug)]
-    #[hyperactor::export(KillParent)]
+    #[hyperactor::export(AbortParent)]
     struct Grandparent {
         parent: Option<Parent>,
         parent_addr: PortHandle<ActorAddr>,
@@ -940,16 +940,16 @@ mod tests {
     }
 
     #[async_trait]
-    impl Handler<KillParent> for Grandparent {
+    impl Handler<AbortParent> for Grandparent {
         async fn handle(
             &mut self,
             _cx: &Context<Self>,
-            _message: KillParent,
+            _message: AbortParent,
         ) -> anyhow::Result<()> {
             self.parent_handle
                 .as_ref()
-                .expect("parent must be spawned before kill")
-                .kill("test parent killed")?;
+                .expect("parent must be spawned before abort")
+                .abort("test parent aborted")?;
             Ok(())
         }
     }
@@ -1245,12 +1245,12 @@ mod tests {
     //         └── supervisor: Supervisor
     //             └── supervisor-side liveness actor: KeepaliveSupervisor
     //
-    // Killing Parent still tears down its local supervision subtree. Grandparent
+    // Aborting Parent still tears down its local supervision subtree. Grandparent
     // handles the parent failure so the test process does not treat it as an
     // unhandled root failure. Parent stops Supervisor, Supervisor forwards the
     // stop to Worker, and Worker stops TestChild.
     #[tokio::test]
-    async fn test_parent_kill_stops_remote_child() {
+    async fn test_parent_abort_stops_remote_child() {
         let proc = Proc::isolated();
         let client = proc.client("client");
         let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
@@ -1276,7 +1276,7 @@ mod tests {
         let parent_addr = parent_addr_rx.recv().await.unwrap();
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        grandparent.post(&client, KillParent);
+        grandparent.post(&client, AbortParent);
 
         let reason = tokio::time::timeout(Duration::from_secs(5), stopped_rx.recv())
             .await
