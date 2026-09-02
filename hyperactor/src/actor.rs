@@ -103,12 +103,13 @@ pub trait Actor: Sized + Send + 'static {
 
     /// Handle a stop request from the runtime.
     ///
-    /// The default implementation closes handler ingress and then
-    /// either exits immediately or queues an exit after already
-    /// accepted handler work drains. Actors that need to coordinate
-    /// asynchronous shutdown work can override this method and call
-    /// `Instance::exit()` / `Instance::exit_after_drain()` later,
-    /// once they are ready to terminate.
+    /// The default implementation closes handler ingress, propagates the stop
+    /// mode to direct children, and requests exit after all of them stop.
+    /// Actors that override this hook control their own shutdown policy and
+    /// must call [`Instance::exit`] when they are ready to terminate.
+    ///
+    /// Return from this hook if shutdown depends on ordinary messages or child
+    /// supervision events so the actor loop can continue delivering them.
     async fn handle_stop(
         &mut self,
         this: &Instance<Self>,
@@ -116,6 +117,17 @@ pub trait Actor: Sized + Send + 'static {
         reason: &str,
     ) -> Result<(), anyhow::Error> {
         handle_stop(this, mode, reason)
+    }
+
+    /// Handle completion of a directly supervised child before the terminal
+    /// event is passed to [`Actor::handle_supervision_event`].
+    ///
+    /// The default implementation completes a stop initiated by the default
+    /// [`Actor::handle_stop`] implementation once no direct children remain.
+    /// Overrides that retain the default stop policy must delegate to
+    /// [`crate::actor::handle_child_stopped`].
+    async fn handle_child_stopped(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        handle_child_stopped(this)
     }
 
     /// Cleanup things used by this actor before shutting down. Notably this function
@@ -299,18 +311,21 @@ pub fn handle_expired_delivery<A: Actor>(
 /// Default implementation of [`Actor::handle_stop`]. Defined as a free
 /// function so that `Actor` implementations that override
 /// [`Actor::handle_stop`] can fall back to this default.
+///
+/// This closes handler ingress, retains the original mode and reason, and
+/// forwards the stop request to direct children. Child completion events drive
+/// the eventual actor exit.
 pub fn handle_stop<A: Actor>(
     this: &Instance<A>,
     mode: StopMode,
     reason: &str,
 ) -> Result<(), anyhow::Error> {
-    // After `close`, no more messages may be enqueued.
-    // exit_after_drain will drain any pending messages before exiting.
-    this.close();
-    match mode {
-        StopMode::Stop => this.exit(reason).map_err(anyhow::Error::from),
-        StopMode::DrainAndStop => this.exit_after_drain(reason).map_err(anyhow::Error::from),
-    }
+    this.handle_stop(mode, reason).map_err(anyhow::Error::from)
+}
+
+/// Default implementation of [`Actor::handle_child_stopped`].
+pub fn handle_child_stopped<A: Actor>(this: &Instance<A>) -> Result<(), anyhow::Error> {
+    this.handle_child_stopped().map_err(anyhow::Error::from)
 }
 
 /// An actor that does nothing. It is used to represent "client only" actors,
@@ -1051,6 +1066,11 @@ pub struct AnyActorHandle {
 }
 
 impl AnyActorHandle {
+    /// Create a lifecycle-only handle without changing supervision ownership.
+    pub(crate) fn new(cell: InstanceCell) -> Self {
+        Self { cell }
+    }
+
     /// The [`ActorAddr`] of the actor represented by this handle.
     pub fn actor_id(&self) -> &ActorAddr {
         self.cell.actor_addr()
