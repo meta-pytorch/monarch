@@ -4634,6 +4634,7 @@ dependencies = [
  "monarch_hyperactor",
  "monarch_introspection_snapshot",
  "monarch_messages",
+ "monarch_perfetto_trace",
  "monarch_rdma_extension",
  "monarch_tensor_worker",
  "nccl-sys",
@@ -4792,7 +4793,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
- "humantime",
  "prost",
  "reqwest 0.13.4",
  "serde",
