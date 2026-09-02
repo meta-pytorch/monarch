@@ -240,27 +240,46 @@ fn offset_packet_uuids(packet: &mut TracePacket, offset: u64) {
 /// A [`Sink`] that writes trace packets to a file, flushing every 100 packets.
 pub struct Collector {
     trace: Trace,
-    path: String,
+    destination: CollectorDestination,
+}
+
+enum CollectorDestination {
+    Path(String),
+    File(fs::File),
 }
 
 impl Collector {
     pub fn new(path: &Path) -> Self {
         Self {
-            path: path.to_string_lossy().to_string(),
             trace: Trace::default(),
+            destination: CollectorDestination::Path(path.to_string_lossy().to_string()),
+        }
+    }
+
+    pub(crate) fn from_file(file: fs::File) -> Self {
+        Self {
+            trace: Trace::default(),
+            destination: CollectorDestination::File(file),
         }
     }
 
     pub fn flush(&mut self) -> Result<()> {
         let tr = std::mem::take(&mut self.trace);
-        let mut file = fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&self.path)?;
-
         let bytes = prost::Message::encode_to_vec(&tr);
-        file.write_all(&bytes)?;
-        file.flush()?;
+        match &mut self.destination {
+            CollectorDestination::Path(path) => {
+                let mut file = fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(path)?;
+                file.write_all(&bytes)?;
+                file.flush()?;
+            }
+            CollectorDestination::File(file) => {
+                file.write_all(&bytes)?;
+                file.flush()?;
+            }
+        }
         Ok(())
     }
 }

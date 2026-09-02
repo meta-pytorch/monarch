@@ -7,6 +7,7 @@
  */
 
 pub mod local;
+pub mod profile;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
