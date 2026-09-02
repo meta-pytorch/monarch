@@ -190,11 +190,10 @@ class FileWriter(Actor):
 **When It Runs:**
 - Called automatically in both normal and error termination
 - *Not* called on fatal failures such as OOMs, panics, or fatal signals (e.g., `SIGSEGV`)
-- Cancelled if it exceeds `HYPERACTOR_CLEANUP_TIMEOUT`, which puts the actor in an error state
 
 **What Has Already Happened:**
-- Every mesh this actor owns has already been stopped recursively
-- Each owned actor's `__cleanup__` has already run
+- On graceful shutdown, owned actors normally finish first
+- On failure or forced teardown, residual direct children are transferred to proc supervision and aborted; each child repeats this for its own direct children, and their cleanup may not run
 - Owned actor meshes and proc meshes are no longer usable from this method
 - For shutdown work that needs an owned mesh, expose a dedicated endpoint and call it before `stop()`
 
