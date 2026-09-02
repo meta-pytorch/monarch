@@ -24,6 +24,15 @@ Quick start:
   # Open an interactive shell on rank 0
   monarch shell
 
+  # Collect a 10-second distributed Perfetto trace
+  monarch profile
+
+  # Collect from an existing MAST job
+  monarch profile mast <mast-job-id>
+
+  # Collect from a mesh-admin URL directly
+  monarch profile https://<mesh-admin-host>:8265
+
   # Kill the job when done
   monarch kill
 
@@ -33,6 +42,7 @@ Commands:
   exec    Run a command on workers
   shell   Open an interactive shell on one worker
   kill    Kill the active job
+  profile Collect a distributed Perfetto trace
   context Manage named job contexts
   debug   Connect to the debug server
 
