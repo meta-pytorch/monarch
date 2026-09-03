@@ -279,14 +279,6 @@ class Instance(abc.ABC):
         ...
 
     @abstractmethod
-    def kill(self, reason: Optional[str] = None) -> None:
-        """
-        Terminate the current actor with a failure. A supervision error
-        propagates to its creator.
-        """
-        ...
-
-    @abstractmethod
     def stop(self, reason: Optional[str] = None) -> None:
         """
         Stop this actor instance and its children gracefully. The
@@ -296,10 +288,10 @@ class Instance(abc.ABC):
         lifecycle pattern (map-reduce shards, batch processing,
         worker pools, etc.; see ``sleep_actors.py`` for an example).
 
-        This is observable in the mesh: on exit the actor emits
-        ``Signal::ChildStopped`` to its parent (always), so
-        ProcAgent *does* see the stop, and terminated snapshots
-        preserve post‑mortem state for introspection.
+        This is observable in the mesh: on exit the runtime emits an
+        ``ActorSupervisionEvent`` to the actor's supervisor, so ProcAgent
+        *does* see the stop, and terminated snapshots preserve post‑mortem
+        state for introspection.
 
         Use ``ActorMesh.stop()`` when you need coordinated, mesh-wide
         shutdown.
@@ -1295,7 +1287,7 @@ async def _dispatch_loop(
     Args:
         actor: The Python actor object that implements ``handle``.
         receiver: Channel receiver for queued messages.
-        self_instance: The actor's own Instance, used to kill self on
+        self_instance: The actor's own Instance, used to abort self on
             an unhandled exception.
     """
     while True:
@@ -1306,7 +1298,7 @@ async def _dispatch_loop(
             return
         except BaseException as e:
             reason = "".join(TracebackException.from_exception(e).format())
-            self_instance.kill(reason)
+            self_instance.abort(reason)
             raise
 
 
@@ -1742,14 +1734,15 @@ class Actor(MeshTrait):
         because of an error. The same ``__cleanup__`` runs in both cases;
         ``exc`` is ``None`` on a normal stop and carries the exception on an
         error stop. It is *not* called on fatal failures such as OOMs, panics,
-        or signals like ``SIGSEGV``. If it exceeds ``HYPERACTOR_CLEANUP_TIMEOUT``,
-        it is cancelled and the actor is placed in an error state.
+        or signals like ``SIGSEGV``.
 
-        By the time this runs, every mesh this actor owns has already been
-        stopped recursively, and each owned actor's ``__cleanup__`` has already
-        run. Owned actor meshes and proc meshes are no longer usable from this
-        method. For shutdown work that needs an owned mesh, expose a dedicated
-        endpoint and call it before ``stop()``.
+        On graceful shutdown, owned actors normally finish first. On failure or
+        forced teardown, residual direct children are transferred to proc
+        supervision and aborted. Each child repeats this for its own direct
+        children, and their cleanup may not run. Owned actor meshes and proc
+        meshes are no longer usable from this method. For shutdown work that
+        needs an owned mesh, expose a dedicated endpoint and call it before
+        ``stop()``.
 
         Use ``__cleanup__`` to release resources the actor owns directly: open
         files, network connections, background threads, asyncio tasks, and the

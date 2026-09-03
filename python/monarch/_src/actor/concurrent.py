@@ -60,7 +60,7 @@ def _cancelled_for_cleanup(record: _TaskRecord | None) -> bool:
 def _fail_actor(actor_instance: Any, exception: BaseException) -> None:
     reason = "".join(TracebackException.from_exception(exception).format())
     try:
-        actor_instance.kill(reason)
+        actor_instance.abort(reason)
     except Exception:
         # The actor's signal channel may already be closed if it has finished
         # stopping; there is then nothing left to fail.
