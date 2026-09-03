@@ -199,6 +199,21 @@
 #                    whether it actually exercises the row, is a review
 #                    question it cannot answer.
 #
+# Test code and the defining module. Rust `#[cfg(test)]` code outside
+# pytokio.rs is scanned like any other Rust source. A test that adds a distinct,
+# non-collapsed constructor hit there is a real inventory site and takes a
+# `scope = "test"` row. Symbol-capture and per-file operations still collapse,
+# so a further reference to a symbol already captured in that file adds no row
+# and no total. Constructor operations *inside* the defining module are a different case:
+# discover() drops them, because pytokio.rs's own constructors disappear when the
+# type does. That is a pre-existing rule pinned by
+# test_defining_module_producers_are_not_migration_targets.
+#
+# The boundary is where the construction belongs, not where its spelling sits. A
+# forwarder in pytokio.rs that a scanned file calls does not move the site; it
+# only hides it, and this manifest treats that as evasion. Route a test through a
+# construction-free API if one exists, and otherwise record the site.
+#
 # coroutine_root rows add public_operation, caller_contexts, and
 # first_side_effect: the user-facing API, the calling contexts it supports,
 # and the first externally visible effect once the coroutine runs.
@@ -322,7 +337,7 @@ pytokio_import = "monarch._rust_bindings.monarch_hyperactor.pytokio"
 doc_legacy_surface = "PythonTask|PyShared|pytokio"
 
 [totals]
-py_python_task_new = 25
+py_python_task_new = 26
 raw_python_task_new = 5
 from_coro = 19
 rust_from_coro = 2
@@ -642,6 +657,7 @@ owns = [
   "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.initialized",
   "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.name",
   "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.stop",
+  "np.actor_mesh.ControlledActorMesh_as_ActorMeshProtocol.name",
   "np.actor_mesh.PythonActorMeshImpl_as_ActorMeshProtocol.name",
   "np.actor_mesh.PythonActorMeshImpl_as_ActorMeshProtocol.stop",
   "np.actor_mesh.initialized",
@@ -2085,16 +2101,21 @@ state = "legacy"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::__reduce__"
-consumer = "reserve_mesh_reference_if_active, or Shared.block_on named in the payload"
+consumer = "under active Monarch pickling, reserve_mesh_reference_if_active takes the observer into the out-of-band refs table and the reducer becomes pop_mesh_reference; under ordinary bare pickle no slot is reserved, the reducer is Shared.block_on over the observer, and pickle then blocks in reduce_shared until initialization resolves"
 driver = "spawn_abortable onto the shared tokio runtime, immediately after construction"
-start_point = "eager; spawn_abortable drives it as soon as __reduce__ returns"
+start_point = "eager; spawn_abortable submits the observer inside __reduce__, before it returns"
 abandonment = "possible; the pickler may drop the reduction observer before it resolves"
-eager_effect = "observes already-running work"
-drop_behavior = "aborts the transient waiter only; new_queue drives root initialization independently, and a sliced derived Shared remains re-observable rather than cancelled"
+eager_effect = "mixed, and the two cases differ. For a root the observer only watches already-running queue-driven work. For an otherwise idle slice, spawn_abortable is what begins the retained derived-region computation, which no queue item would otherwise start"
+drop_behavior = "aborts the transient waiter only. It cancels neither a root's initialization, which its own queued item drives independently, nor a slice's retained derived Shared, which stays re-observable. Evidence boundary: the in-crate tests prove abandonment does not cancel an already-enqueued equivalent initializer, since they enqueue that item themselves in order to retain and join the driver; that production new_queue supplies it is source-grounded rather than pinned"
 unobserved_error = "send_result logs an unobserved error"
 disposition = "require a binding-specific design"
 semantic_class = "abortable_observer"
-oracle = "root and sliced reduction abandonment (6.0c items 3 and 4)"
+oracle = [
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::pending_bare_actor_mesh_pickle_waits_for_release",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::dropped_root_observers_do_not_cancel_initialization",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::dropped_slice_observers_leave_the_slice_reobservable",
+  "fbcode//monarch/python/tests:test_deferred_pickle_characterization::test_pending_mesh_sent_as_endpoint_argument_resolves_on_receiver",
+]
 
 [[site]]
 id = "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.initialized"
@@ -2110,14 +2131,17 @@ constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::initialized"
 consumer = "ActorMesh.initialized via Future._from_coro"
 driver = "awaits a clone of the shared mesh future; for a root, new_queue drives that clone independently, while a slice from new_with_region has a derived Shared with no independent driver"
-start_point = "the root is already running under its queue driver; a sliced derived Shared is driven only by whoever polls it"
+start_point = "a root is already running under its own queued initializer; a slice from new_with_region enqueues nothing, so its derived Shared is driven only by whoever polls it, absent another mesh operation"
 abandonment = "possible; root initialization continues, and a dropped slice observer leaves the derived Shared re-observable"
-eager_effect = "observes already-running work"
-drop_behavior = "abandons this observer only; it never cancels root initialization, and a slice stays re-observable"
+eager_effect = "mixed, and the two cases differ. For a root an eager carrier only observes already-running queue-driven work. For an otherwise idle slice it begins the retained derived-region computation, which no queue item would otherwise start"
+drop_behavior = "abandons this observer only; it never cancels root initialization, and a slice stays re-observable and undriven. Evidence boundary: the in-crate tests enqueue the root initializer themselves so they can retain and join the driver, so they pin behaviour given an equivalent enqueued item; production new_queue supplying it is source-grounded"
 unobserved_error = "surfaced on the next observation of the shared future"
 disposition = "preserve timing"
 semantic_class = "already_started_lazy_observer"
-oracle = "root and sliced readiness abandonment (6.0c items 3 and 4)"
+oracle = [
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::dropped_root_observers_do_not_cancel_initialization",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::dropped_slice_observers_leave_the_slice_reobservable",
+]
 
 [[site]]
 id = "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.name"
@@ -2164,6 +2188,32 @@ unobserved_error = "the queue driver panics rather than reporting"
 disposition = "require a binding-specific design"
 semantic_class = "already_started_lazy_observer"
 oracle = "queued observer abandonment (6.0c item 8)"
+
+[[site]]
+id = "np.actor_mesh.ControlledActorMesh_as_ActorMeshProtocol.name"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "<ControlledActorMesh as ActorMeshProtocol>::name"
+operation = "py_python_task_new"
+scope = "test"
+state = "legacy"
+transition = "6.3c"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from the characterization fixture's name implementation"
+consumer = "the queued closure in <AsyncActorMesh as ActorMeshProtocol>::name, which calls this implementation, takes its task and awaits it in the same expression"
+driver = "the per-mesh queue task"
+start_point = "no deferred domain work; the fixed name is cloned before the task is constructed, though observing the task still performs Python result conversion under the GIL"
+abandonment = "not reachable independently; the queued frame consumes the task in the same expression, and no test drops it"
+eager_effect = "only wraps a ready value"
+drop_behavior = "no independent drop path is exercised"
+unobserved_error = "none; this fixture path always returns Ok(name)"
+disposition = "replace with a direct value"
+semantic_class = "ready_no_op_wrapper"
+oracle = [
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::dropped_root_observers_do_not_cancel_initialization",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::dropped_slice_observers_leave_the_slice_reobservable",
+]
 
 [[site]]
 id = "np.actor_mesh.PythonActorMeshImpl_as_ActorMeshProtocol.name"
