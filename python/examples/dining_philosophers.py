@@ -192,7 +192,10 @@ async def async_main(
         print("\nPress Ctrl+C to stop.\n", flush=True)
 
         # Spawn philosopher processes and actors.
-        procs = host.spawn_procs(per_host={"replica": NUM_PHILOSOPHERS})
+        procs = host.spawn_procs(
+            name="philosopher",
+            per_host={"replica": NUM_PHILOSOPHERS},
+        )
 
         # Spawn waiter on its own proc mesh so it appears in the dashboard hierarchy.
         waiter_proc = host.spawn_procs(name="waiter")

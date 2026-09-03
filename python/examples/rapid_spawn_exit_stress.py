@@ -66,7 +66,10 @@ async def main():
     job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(dashboard_port=0))
     try:
         job_state = job.state(cached_path=None)
-        proc_mesh = job_state.hosts.spawn_procs(per_host={"gpus": 1})
+        proc_mesh = job_state.hosts.spawn_procs(
+            name="tensor_engine",
+            per_host={"gpus": 1},
+        )
 
         print("\nPress Ctrl+C to stop.\n", flush=True)
 
