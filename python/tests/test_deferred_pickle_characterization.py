@@ -22,20 +22,25 @@ handles and fills the slots with the payload bytes unchanged (no re-pickle). A
 change to how pending references serialize must preserve these outcomes. This is
 the safety net such a change checks against.
 
-There is no hook to force the pending path; it relies on the
+The argument tests have no hook to force the pending path; they rely on the
 spawn-then-immediately-send race, which the synchronous pickle wins in practice
 (the async mesh init cannot complete in the gap). Every test asserts the
 end-to-end outcome. The argument tests also assert the reserve counter: a slot
 is reserved only for a mesh still pending at pickle, so a nonzero count proves
-the risky send-side pending path ran instead of resolving inline. That leans on
-the race timescale (init is milliseconds, the synchronous gap microseconds); if
-it ever flips the assertion goes red rather than passing hollow, and the
-hardening then is a barrier holding init until after the pickle. The return
-tests assert the pop counter, which proves the reply's reference reunited from
-the out-of-band table (received and reconstructed), not that it was pending: a
-resolved mesh also travels out-of-band, so pop cannot distinguish. Return-side
-pending-ness happens in the spawner subprocess, invisible here, so it stays
-outcome-only.
+the risky send-side pending path ran instead of resolving inline.
+
+``test_pending_proc_mesh_bare_pickle_round_trips_to_a_working_mesh`` does
+establish its precondition, asserting ``poll() is None`` before pickling, so it
+pins a real pending-before-pickle round trip. It does not show that
+``reduce_shared`` took its blocking branch: the producer is already spawned and
+can resolve between the assertion and the reducer.
+
+ActorMesh bare-pickle coverage is split across two tests.
+``actor_mesh::tests::pending_bare_actor_mesh_pickle_waits_for_release`` gates
+the producer and pins the blocking branch deterministically;
+``test_resolved_mesh_survives_bare_pickle_outside_monarch`` pins production
+reference encoding, reconstruction and a live endpoint. No single deterministic
+test combines a real pending ActorMesh with the complete production round trip.
 """
 
 from __future__ import annotations
@@ -233,35 +238,23 @@ def test_resolved_proc_mesh_survives_bare_pickle_outside_monarch() -> None:
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
-def test_unresolved_mesh_bare_pickle_blocks_then_survives() -> None:
-    """An unresolved (still-initializing) actor mesh bare-pickled outside monarch's
-    messaging has no reference to inline and no reserve slot to fill, so the reduce
-    falls back to blocking on init and then ships the resolved reference. This pins
-    that block-then-survive behavior; a change making it raise instead would turn
-    this red. The actor mesh has no sync accessor to assert unresolved-ness (its
-    `peek` is internal, `initialized` is async), so this pins the round-trip
-    outcome and relies on spawn-then-immediately-pickle to hit the unresolved
-    path (init is ms, the synchronous pickle gap is us)."""
-    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
-        host = state.hosts
-        # Spawned and pickled in the same breath: unresolved at pickle time.
-        target = host.spawn_procs(name="target_proc").spawn("target", _Target)
-        restored = pickle.loads(pickle.dumps(target))
-        assert restored.ping.call_one().get() == "pong"
+def test_pending_proc_mesh_bare_pickle_round_trips_to_a_working_mesh() -> None:
+    """A proc mesh pending at pickle time bare-pickles to a working mesh.
 
-
-@pytest.mark.timeout(60)
-@isolate_in_subprocess
-def test_unresolved_proc_mesh_bare_pickle_blocks_then_survives() -> None:
-    """Same for a proc mesh, which reduces through the generic `reduce_shared`
-    block. Here `poll()` is exposed, so we can prove the mesh was unresolved at
-    pickle time rather than relying on timing: `poll() is None`, then the reduce
-    blocks on init and round-trips to a working mesh. A change making it raise
-    would turn this red."""
+    This reduces through the generic `reduce_shared`. `poll()` is exposed here,
+    so unlike a bare actor mesh the pending precondition is established rather
+    than raced: `poll() is None` immediately before `dumps`. It does not follow
+    that `reduce_shared` took its blocking branch -- the producer is already
+    spawned, so it may resolve between that assertion and the reducer's own
+    `poll()`, and the ready fast path is then taken. What is pinned is the
+    round-trip outcome from a pending start. The blocking branch itself is
+    pinned deterministically by
+    `actor_mesh::tests::pending_bare_actor_mesh_pickle_waits_for_release`."""
     with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
         host = state.hosts
         proc_mesh = host.spawn_procs(name="target_proc")
-        # Unresolved at pickle time (init not driven); the reduce blocks on it.
+        # Pending immediately before pickle. The producer is already spawned,
+        # so it may still resolve before the reducer polls it.
         assert proc_mesh._proc_mesh.poll() is None
         restored = pickle.loads(pickle.dumps(proc_mesh))
         assert restored.spawn("t", _Target).ping.call_one().get() == "pong"

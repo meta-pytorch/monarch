@@ -855,6 +855,12 @@ impl PyShared {
         // Explicitly drop the reference so that if another thread attempts to borrow
         // this object mutably during signal_safe_block_on, it won't throw an exception.
         drop(slf);
+        // The pending branch is now committed: `poll()` above returned `None` and the
+        // next statement blocks. A characterization test releases its producer here so
+        // that it cannot resolve early and let the ready fast path stand in for a
+        // genuine block.
+        #[cfg(test)]
+        notify_pending_block_on();
         signal_safe_block_on(py, wait)?
     }
 
@@ -1036,5 +1042,132 @@ mod tests {
                 );
             }
         });
+    }
+}
+
+/// Test-only support that must live in this module.
+///
+/// These are associated functions on a type callers already import, so no call
+/// site needs a `crate::pytokio::` path. That is an ergonomic choice, not a
+/// census one: `collapse()` keys `helper_symbol` on (path, captured symbol,
+/// operation), and `actor_mesh.rs` already claims the `PyPythonTask` capture
+/// through its `use`, so a qualified spelling would add no hit either way.
+/// Task *construction* is a counted operation and belongs at its real call
+/// site, not behind a forwarder here.
+#[cfg(test)]
+mod test_support {
+    use std::cell::RefCell;
+    use std::sync::mpsc::SyncSender;
+
+    thread_local! {
+        /// Where the next `PyShared::block_on` pending acknowledgement on this
+        /// thread should go. Caller-thread scoped rather than process-global so
+        /// parallel tests in one binary cannot observe each other's signal.
+        static PENDING_BLOCK_ON: RefCell<Option<SyncSender<()>>> =
+            const { RefCell::new(None) };
+    }
+
+    /// Restores the previous routing when dropped, so a test scope cannot leak
+    /// its sender into an unrelated test that reuses the thread.
+    pub(crate) struct PendingBlockOnGuard {
+        previous: Option<SyncSender<()>>,
+    }
+
+    impl Drop for PendingBlockOnGuard {
+        fn drop(&mut self) {
+            let previous = self.previous.take();
+            PENDING_BLOCK_ON.with(|slot| *slot.borrow_mut() = previous);
+        }
+    }
+
+    pub(crate) fn route_pending_block_on(tx: SyncSender<()>) -> PendingBlockOnGuard {
+        let previous = PENDING_BLOCK_ON.with(|slot| slot.borrow_mut().replace(tx));
+        PendingBlockOnGuard { previous }
+    }
+
+    pub(crate) fn notify_pending_block_on() {
+        PENDING_BLOCK_ON.with(|slot| {
+            if let Some(tx) = slot.borrow().as_ref() {
+                // A full or closed channel means the test is no longer waiting.
+                let _ = tx.try_send(());
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+use test_support::notify_pending_block_on;
+
+#[cfg(test)]
+impl PyPythonTask {
+    /// Route the next pending-`block_on` acknowledgement on this thread to `tx`.
+    ///
+    /// Dropping the returned guard restores the previous routing.
+    pub(crate) fn route_pending_block_on(
+        tx: std::sync::mpsc::SyncSender<()>,
+    ) -> test_support::PendingBlockOnGuard {
+        test_support::route_pending_block_on(tx)
+    }
+
+    /// Make `monarch._rust_bindings.monarch_hyperactor.pytokio.Shared` resolvable
+    /// from `sys.modules` in a Rust unit binary, where the extension module is
+    /// not loaded.
+    ///
+    /// `shared_class()` resolves through `PyOnceLock::import(..).unwrap()`, so a
+    /// missing module aborts the frame rather than raising. Both `shared_class`
+    /// sites cache independently but read the same `sys.modules`, so one install
+    /// serves both.
+    ///
+    /// Conservative by construction: existing parents are reused, only missing
+    /// children are created, nothing already present is replaced, and the
+    /// hierarchy stays resident. The GIL held for the whole walk is what makes
+    /// it atomic against other tests in the same binary.
+    pub(crate) fn install_test_module(py: Python<'_>) -> PyResult<()> {
+        use pyo3::types::PyDict;
+
+        let sys_modules = py
+            .import("sys")?
+            .getattr("modules")?
+            .cast_into::<PyDict>()
+            .map_err(PyErr::from)?;
+
+        let mut path = String::new();
+        let mut parent: Option<Bound<'_, PyModule>> = None;
+        for part in "monarch._rust_bindings.monarch_hyperactor.pytokio".split('.') {
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(part);
+
+            let module = match sys_modules.get_item(&path)? {
+                Some(existing) => existing.cast_into::<PyModule>().map_err(PyErr::from)?,
+                None => {
+                    let created = PyModule::new(py, &path)?;
+                    sys_modules.set_item(&path, &created)?;
+                    created
+                }
+            };
+            if let Some(parent) = &parent
+                && parent.getattr(part).is_err()
+            {
+                parent.setattr(part, &module)?;
+            }
+            parent = Some(module);
+        }
+
+        let leaf = parent.expect("the dotted module path is not empty");
+        let ours = py.get_type::<PyShared>();
+        match leaf.getattr("Shared") {
+            Ok(existing) => {
+                if !existing.is(&ours) {
+                    return Err(PyRuntimeError::new_err(
+                        "sys.modules already exposes a different Shared class; this binary's \
+                         PyShared instances would be rejected by it",
+                    ));
+                }
+            }
+            Err(_) => leaf.setattr("Shared", &ours)?,
+        }
+        Ok(())
     }
 }
