@@ -30,6 +30,7 @@ monarch_gil = { version = "0.0.0", path = "../monarch_gil" }
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 monarch_introspection_snapshot = { version = "0.0.0", path = "../monarch_introspection_snapshot", optional = true }
 monarch_messages = { version = "0.0.0", path = "../monarch_messages", optional = true, default-features = false }
+monarch_perfetto_trace = { version = "0.0.0", path = "../monarch_perfetto_trace" }
 monarch_rdma_extension = { version = "0.0.0", path = "../monarch_rdma/extension", optional = true }
 monarch_tensor_worker = { version = "0.0.0", path = "../monarch_tensor_worker", optional = true, default-features = false }
 nccl-sys = { version = "0.0.0", path = "../nccl-sys", optional = true }
