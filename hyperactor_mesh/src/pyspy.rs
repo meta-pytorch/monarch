@@ -25,6 +25,8 @@ use typeuri::Named;
 use crate::config::MESH_ADMIN_PYSPY_TIMEOUT;
 use crate::config::PYSPY_BIN;
 
+const SUBPROCESS_REAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Result of a py-spy stack dump request.
 ///
 /// See PS-2, PS-4 in `introspect` module doc.
@@ -484,6 +486,7 @@ impl PySpyRunner {
             searched.push(label.clone());
             if let Some(result) = try_exec(
                 binary,
+                label,
                 pid,
                 opts,
                 hyperactor_config::global::get(MESH_ADMIN_PYSPY_TIMEOUT),
@@ -660,6 +663,77 @@ fn build_command(binary: &str, pid: u32, opts: &PySpyOpts) -> tokio::process::Co
     cmd
 }
 
+/// A spawned subprocess whose process-group cleanup invariant is established
+/// by construction.
+struct GuardedSubprocess {
+    group: ProcessGroupGuard,
+    child: tokio::process::Child,
+}
+
+/// Keeps the process group killable until the direct child has been reaped.
+/// Dropping this guard covers cancellation of the async collector.
+struct ProcessGroupGuard {
+    pgid: Option<i32>,
+}
+
+impl ProcessGroupGuard {
+    fn kill(&self) {
+        #[cfg(unix)]
+        if let Some(pgid) = self.pgid {
+            // SAFETY: the child was spawned with `process_group(0)`, so its
+            // positive pid names a process group owned by this invocation.
+            unsafe {
+                libc::killpg(pgid, libc::SIGKILL);
+            }
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.pgid = None;
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// Spawn a subprocess in its own process group and return it coupled to the
+/// guard that owns group cleanup.
+fn spawn_guarded_subprocess(
+    mut command: tokio::process::Command,
+) -> std::io::Result<GuardedSubprocess> {
+    #[cfg(unix)]
+    command.process_group(0);
+    command.kill_on_drop(true);
+    let child = command.spawn()?;
+    let group = ProcessGroupGuard {
+        pgid: child
+            .id()
+            .and_then(|pid| i32::try_from(pid).ok())
+            .filter(|pid| *pid > 0),
+    };
+    Ok(GuardedSubprocess { group, child })
+}
+
+/// Kill the process tree and wait a bounded interval for the direct child.
+async fn kill_and_reap(subprocess: &mut GuardedSubprocess) -> Option<String> {
+    subprocess.group.kill();
+    let _ = subprocess.child.start_kill();
+    match tokio::time::timeout(SUBPROCESS_REAP_TIMEOUT, subprocess.child.wait()).await {
+        Ok(Ok(_)) => {
+            subprocess.group.disarm();
+            None
+        }
+        Ok(Err(error)) => Some(format!("failed to reap killed py-spy subprocess: {error}")),
+        Err(_) => Some(format!(
+            "timed out after {}s waiting to reap killed py-spy subprocess",
+            SUBPROCESS_REAP_TIMEOUT.as_secs()
+        )),
+    }
+}
+
 /// Map a process::Output to a PySpyResult, parsing the `--json`
 /// output into structured `PySpyStackTrace` values.
 /// See PS-2, PS-4 in `introspect` module doc.
@@ -704,6 +778,28 @@ fn is_unsupported_native_all(result: &PySpyResult) -> bool {
     )
 }
 
+/// The warning attached to a result that dropped `--native-all`
+/// because the py-spy binary does not support it (PS-11c). Takes the
+/// candidate's resolution label (`PYSPY_BIN=…` or `py-spy on PATH`)
+/// rather than the bare argv0, so the reader learns which candidate
+/// PS-3 picked and how.
+fn native_all_downgrade_warning(label: &str) -> String {
+    format!("--native-all unsupported by py-spy ({label}); fell back to --native")
+}
+
+/// The warning attached to a result that fell back to Python-only
+/// frames after native capture failed (PS-15c). This is the only
+/// signal an operator gets that native frames are missing, so it
+/// names the candidate that fell short -- by resolution label, so a
+/// `PYSPY_BIN` that is already set is visible -- and the remedy.
+fn native_downgrade_warning(label: &str) -> String {
+    format!(
+        "native capture failed; fell back to python-only frames. py-spy ({label}) could not \
+         unwind native frames on this target. py-spy 0.4.1 or newer (PyPI wheel) can; to restore \
+         them, point PYSPY_BIN on the dumped proc at such a binary"
+    )
+}
+
 /// Result of a single spawn → collect execution step.
 enum ExecOnce {
     /// py-spy produced a result (success or failure).
@@ -732,8 +828,8 @@ async fn exec_once(
             stderr: format!("py-spy subprocess timed out after {}s", timeout.as_secs()),
         });
     }
-    let child = match build_command(binary, pid, opts).spawn() {
-        Ok(child) => child,
+    let subprocess = match spawn_guarded_subprocess(build_command(binary, pid, opts)) {
+        Ok(subprocess) => subprocess,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ExecOnce::NotFound,
         Err(e) => {
             return ExecOnce::Result(PySpyResult::Failed {
@@ -744,7 +840,7 @@ async fn exec_once(
             });
         }
     };
-    ExecOnce::Result(collect_with_timeout(child, pid, binary, remaining).await)
+    ExecOnce::Result(collect_with_timeout(subprocess, pid, binary, remaining).await)
 }
 
 /// Try to execute py-spy with the given binary path. Returns `None`
@@ -753,15 +849,22 @@ async fn exec_once(
 ///
 /// In nonblocking mode, retries up to 3 times with 100ms backoff
 /// because py-spy can segfault reading mutating process memory
-/// (PS-10). All attempts share a single deadline so total wall time
-/// never exceeds the caller's timeout budget (PS-5).
+/// (PS-10). Attempts and backoff share one deadline; timeout cleanup
+/// has a separate bounded reap interval (PS-5).
 ///
 /// If `native_all` is requested but the py-spy binary does not
 /// support `--native-all` (exit code 2), the flag is dropped and the
 /// command is retried immediately within the same attempt (PS-11a
 /// through PS-11e).
+///
+/// If native capture fails for any other reason — libunwind cannot
+/// unwind the target, say — both native flags are dropped and the
+/// command is retried Python-only (PS-15a through PS-15d). Native
+/// frames are not optional to a caller debugging a stuck proc, but a
+/// partial dump beats no dump, and the result says which it is.
 async fn try_exec(
     binary: &str,
+    label: &str,
     pid: u32,
     opts: &PySpyOpts,
     timeout: std::time::Duration,
@@ -770,10 +873,15 @@ async fn try_exec(
     let retries = if opts.nonblocking { 3 } else { 1 };
     let mut last_result = None;
     let mut effective_opts = opts.clone();
+    let mut fallback_warnings = Vec::new();
 
     for attempt in 0..retries {
         if attempt > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let wake_at = tokio::time::Instant::now() + std::time::Duration::from_millis(100);
+            if wake_at >= deadline {
+                break;
+            }
+            tokio::time::sleep_until(wake_at).await;
         }
         let mut result = match exec_once(binary, pid, &effective_opts, deadline, timeout).await {
             ExecOnce::NotFound => return None,
@@ -786,18 +894,37 @@ async fn try_exec(
             // PS-11e: sticky downgrade — later outer retries keep
             // native_all = false.
             effective_opts.native_all = false;
+            // `native_all` implies native capture. Preserve that intent when
+            // an older py-spy requires the flags to be expressed separately.
+            effective_opts.native = true;
+            fallback_warnings.push(native_all_downgrade_warning(label));
             result = match exec_once(binary, pid, &effective_opts, deadline, timeout).await {
                 ExecOnce::NotFound => return None,
                 ExecOnce::Result(r) => r,
             };
-            // PS-11c: inject warning on successful downgraded result.
-            if let PySpyResult::Ok { warnings, .. } = &mut result {
-                warnings.push(
-                    "--native-all unsupported by this py-spy; fell back to --native".to_string(),
-                );
-            }
             // PS-11d: if the downgraded retry also failed, fall
-            // through to the normal last_result path below.
+            // through to the native downgrade below.
+        }
+        // PS-15a: native capture failed; drop the native flags and
+        // retry Python-only in the same attempt (PS-15b: no backoff,
+        // no retry slot consumed).
+        let native_requested = effective_opts.native || effective_opts.native_all;
+        if native_requested && matches!(result, PySpyResult::Failed { .. }) {
+            // PS-15d: sticky downgrade — later outer retries stay
+            // Python-only.
+            effective_opts.native = false;
+            effective_opts.native_all = false;
+            fallback_warnings.push(native_downgrade_warning(label));
+            result = match exec_once(binary, pid, &effective_opts, deadline, timeout).await {
+                ExecOnce::NotFound => return None,
+                ExecOnce::Result(r) => r,
+            };
+        }
+        // PS-11c, PS-15c: warnings describe the effective capture mode, so
+        // they survive failed downgraded attempts and are attached to any
+        // later successful outer retry.
+        if let PySpyResult::Ok { warnings, .. } = &mut result {
+            warnings.extend(fallback_warnings.iter().cloned());
         }
         match &result {
             PySpyResult::Ok { .. } => return Some(result),
@@ -810,45 +937,49 @@ async fn try_exec(
     last_result
 }
 
-/// Collect stdout/stderr from a spawned child concurrently with wait,
-/// bounded by `timeout`. On expiry the child is killed and reaped.
+/// Drain stdout/stderr concurrently and wait for the child, all bounded by
+/// `timeout`. On expiry the child process group is killed and the direct child
+/// is given a separate bounded interval to be reaped.
 ///
-/// Reads stdout/stderr concurrently with wait to avoid pipe-buffer
-/// deadlock. Keeps the `Child` handle alive so we can `start_kill`
-/// and `wait` on timeout for deterministic termination and reaping.
+/// Draining both pipes before waiting prevents pipe-buffer deadlock while
+/// keeping an exited group leader unreaped until inherited descriptors close.
+/// The process-group guard handles cancellation before explicit cleanup runs.
 ///
 /// See PS-5 in `introspect` module doc.
 async fn collect_with_timeout(
-    mut child: tokio::process::Child,
+    mut subprocess: GuardedSubprocess,
     pid: u32,
     binary: &str,
     timeout: std::time::Duration,
 ) -> PySpyResult {
-    let mut stdout_handle = child.stdout.take();
-    let mut stderr_handle = child.stderr.take();
+    // `subprocess` already owns its guard before this future is created. If a
+    // caller cancels before the first poll, dropping it still kills the group.
+    let mut stdout_handle = subprocess.child.stdout.take();
+    let mut stderr_handle = subprocess.child.stderr.take();
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
 
     let collect = async {
         let stdout_fut = async {
-            let mut buf = Vec::new();
             if let Some(ref mut r) = stdout_handle {
-                let _ = tokio::io::AsyncReadExt::read_to_end(r, &mut buf).await;
+                let _ = tokio::io::AsyncReadExt::read_to_end(r, &mut stdout_bytes).await;
             }
-            buf
         };
         let stderr_fut = async {
-            let mut buf = Vec::new();
             if let Some(ref mut r) = stderr_handle {
-                let _ = tokio::io::AsyncReadExt::read_to_end(r, &mut buf).await;
+                let _ = tokio::io::AsyncReadExt::read_to_end(r, &mut stderr_bytes).await;
             }
-            buf
         };
-        let (stdout_bytes, stderr_bytes, status) =
-            tokio::join!(stdout_fut, stderr_fut, child.wait());
-        (stdout_bytes, stderr_bytes, status)
+        tokio::join!(stdout_fut, stderr_fut);
+        let status = subprocess.child.wait().await;
+        if status.is_ok() {
+            subprocess.group.disarm();
+        }
+        status
     };
 
     match tokio::time::timeout(timeout, collect).await {
-        Ok((stdout_bytes, stderr_bytes, Ok(status))) => {
+        Ok(Ok(status)) => {
             let output = std::process::Output {
                 status,
                 stdout: stdout_bytes,
@@ -856,21 +987,31 @@ async fn collect_with_timeout(
             };
             map_output(output, pid, binary)
         }
-        Ok((_, _, Err(e))) => PySpyResult::Failed {
-            pid,
-            binary: binary.to_string(),
-            exit_code: None,
-            stderr: format!("failed to wait for child: {}", e),
-        },
-        Err(_) => {
-            // Timeout — kill and reap deterministically.
-            let _ = child.start_kill();
-            let _ = child.wait().await;
+        Ok(Err(e)) => {
+            let cleanup = kill_and_reap(&mut subprocess).await;
             PySpyResult::Failed {
                 pid,
                 binary: binary.to_string(),
                 exit_code: None,
-                stderr: format!("py-spy subprocess timed out after {}s", timeout.as_secs()),
+                stderr: match cleanup {
+                    Some(cleanup) => format!("failed to wait for child: {e}; {cleanup}"),
+                    None => format!("failed to wait for child: {e}"),
+                },
+            }
+        }
+        Err(_) => {
+            let cleanup = kill_and_reap(&mut subprocess).await;
+            PySpyResult::Failed {
+                pid,
+                binary: binary.to_string(),
+                exit_code: None,
+                stderr: match cleanup {
+                    Some(cleanup) => format!(
+                        "py-spy subprocess timed out after {}s; {cleanup}",
+                        timeout.as_secs()
+                    ),
+                    None => format!("py-spy subprocess timed out after {}s", timeout.as_secs()),
+                },
             }
         }
     }
@@ -911,51 +1052,63 @@ fn build_record_command(
     cmd
 }
 
-/// Collect stderr and wait for exit, bounded by `timeout`. On
-/// expiry the child is explicitly killed and reaped. See PP-2, PP-3.
+/// Drain stderr and wait for exit, bounded by `timeout`. On expiry the child
+/// process group is killed and the direct child is given a separate bounded
+/// interval to be reaped. See PP-2, PP-3.
 async fn collect_profile_with_timeout(
-    mut child: tokio::process::Child,
+    mut subprocess: GuardedSubprocess,
     pid: u32,
     binary: &str,
     timeout: std::time::Duration,
 ) -> Result<(std::process::ExitStatus, String), ProfileExecOutcome> {
-    // Drain stderr on a separate task so it does not block the
-    // child.wait() path and so `child` stays in this scope for
-    // explicit kill/reap on timeout.
-    let stderr_handle = child.stderr.take();
-    let stderr_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        if let Some(mut r) = stderr_handle {
-            let _ = tokio::io::AsyncReadExt::read_to_end(&mut r, &mut buf).await;
+    // As with dump collection, the guard exists before the first poll.
+    let mut stderr_handle = subprocess.child.stderr.take();
+    let mut stderr_bytes = Vec::new();
+    let collect = async {
+        if let Some(ref mut stderr) = stderr_handle {
+            let _ = tokio::io::AsyncReadExt::read_to_end(stderr, &mut stderr_bytes).await;
         }
-        buf
-    });
+        let status = subprocess.child.wait().await;
+        if status.is_ok() {
+            subprocess.group.disarm();
+        }
+        status
+    };
 
-    match tokio::time::timeout(timeout, child.wait()).await {
+    match tokio::time::timeout(timeout, collect).await {
         Ok(Ok(status)) => {
-            let stderr_bytes = stderr_task.await.unwrap_or_default();
             let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
             Ok((status, stderr))
         }
         Ok(Err(e)) => {
-            stderr_task.abort();
+            let cleanup = kill_and_reap(&mut subprocess).await;
             Err(ProfileExecOutcome::WaitFailure {
                 pid,
                 binary: binary.to_string(),
-                error: e.to_string(),
+                error: match cleanup {
+                    Some(cleanup) => format!("{e}; {cleanup}"),
+                    None => e.to_string(),
+                },
             })
         }
         Err(_) => {
-            // Timeout — explicit kill and reap.
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            let stderr_bytes = stderr_task.await.unwrap_or_default();
+            let cleanup = kill_and_reap(&mut subprocess).await;
+            let drain_stderr = async {
+                if let Some(ref mut stderr) = stderr_handle {
+                    let _ = tokio::io::AsyncReadExt::read_to_end(stderr, &mut stderr_bytes).await;
+                }
+            };
+            let _ = tokio::time::timeout(SUBPROCESS_REAP_TIMEOUT, drain_stderr).await;
             let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
             Err(ProfileExecOutcome::TimedOut {
                 pid,
                 binary: binary.to_string(),
                 timeout,
-                stderr,
+                stderr: match cleanup {
+                    Some(cleanup) if stderr.is_empty() => cleanup,
+                    Some(cleanup) => format!("{stderr}; {cleanup}"),
+                    None => stderr,
+                },
             })
         }
     }
@@ -981,22 +1134,24 @@ async fn try_profile(
     };
     let svg_path = tmp_dir.path().join("profile.svg");
 
-    let child = match build_record_command(binary, pid, request, &svg_path).spawn() {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(e) => {
-            return Some(ProfileExecOutcome::SubprocessSpawnFailure {
-                pid,
-                binary: binary.to_string(),
-                error: e.to_string(),
-            });
-        }
-    };
+    let subprocess =
+        match spawn_guarded_subprocess(build_record_command(binary, pid, request, &svg_path)) {
+            Ok(subprocess) => subprocess,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                return Some(ProfileExecOutcome::SubprocessSpawnFailure {
+                    pid,
+                    binary: binary.to_string(),
+                    error: e.to_string(),
+                });
+            }
+        };
 
-    let (status, stderr) = match collect_profile_with_timeout(child, pid, binary, timeout).await {
-        Ok(pair) => pair,
-        Err(outcome) => return Some(outcome),
-    };
+    let (status, stderr) =
+        match collect_profile_with_timeout(subprocess, pid, binary, timeout).await {
+            Ok(pair) => pair,
+            Err(outcome) => return Some(outcome),
+        };
 
     if !status.success() {
         return Some(ProfileExecOutcome::ExitFailure {
@@ -1036,11 +1191,24 @@ mod tests {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::ExitStatusExt;
+    use std::path::Path;
     use std::time::Duration;
 
     use tokio::process::Command;
 
     use super::*;
+
+    // PS-* verification map:
+    // - PS-1: `output_preserves_caller_pid`; actor target locality is fixed by
+    //   `dump_self` and exercised through the mesh-admin integration tests.
+    // - PS-2, PS-4: `output_*` and `exec_*` result-shape tests.
+    // - PS-3: `candidates_*` and `exec_missing_binary_returns_none`.
+    // - PS-5: dump/profile timeout and immediate-cancellation tests.
+    // - PS-6 through PS-9 and PS-12 through PS-14: source-grounded actor and
+    //   bridge contracts exercised by the mesh-admin integration tests.
+    // - PS-10: the sticky downgrade tests exercise outer retries.
+    // - PS-11a through PS-11e: `native_all_downgrade_*`.
+    // - PS-15a through PS-15d: `native_downgrade_*`.
 
     #[test]
     fn pyspy_result_wirevalue_roundtrip() {
@@ -1073,6 +1241,35 @@ mod tests {
         let any: wirevalue::Any = wirevalue::Any::serialize(&original).expect("serialize");
         let restored: PySpyResult = any.deserialized().expect("deserialize");
         assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn warnings_report_the_resolution_label() {
+        // Both candidate labels from resolve_candidates must read as a
+        // sentence subject, and an already-set PYSPY_BIN must be
+        // visible -- the remedy text tells the reader to point that
+        // variable somewhere, which is confusing if it is already set
+        // and they cannot tell.
+        let candidates = resolve_candidates(Some("/tmp/py-spy".to_string()));
+        let env_label = candidates[0].1.clone();
+        let path_label = candidates[1].1.clone();
+
+        let env = native_downgrade_warning(&env_label);
+        assert!(
+            env.contains("py-spy (PYSPY_BIN=/tmp/py-spy) could not unwind"),
+            "unexpected: {env}"
+        );
+
+        let looked_up = native_downgrade_warning(&path_label);
+        assert!(
+            looked_up.contains("py-spy (py-spy on PATH) could not unwind"),
+            "unexpected: {looked_up}"
+        );
+
+        assert_eq!(
+            native_all_downgrade_warning(&path_label),
+            "--native-all unsupported by py-spy (py-spy on PATH); fell back to --native"
+        );
     }
 
     #[test]
@@ -1227,6 +1424,7 @@ mod tests {
         // PS-3: NotFound from exec → None (triggers fallback).
         let result = try_exec(
             "/definitely/not/a/real/binary",
+            "PYSPY_BIN=/definitely/not/a/real/binary",
             1,
             &default_opts(),
             std::time::Duration::from_secs(5),
@@ -1241,6 +1439,7 @@ mod tests {
         // py-spy JSON. We expect a Failed result from parse error.
         let result = try_exec(
             "true",
+            "PYSPY_BIN=true",
             1,
             &default_opts(),
             std::time::Duration::from_secs(5),
@@ -1257,24 +1456,31 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn collect_timeout_kills_child_and_returns_failed() {
-        // PS-5: subprocess that hangs past timeout → Failed with
-        // "timed out" message; child is killed and reaped.
-        let child = Command::new("sleep")
-            .arg("100")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("sleep must be available");
+        // PS-5: a subprocess that hangs past its timeout returns even when a
+        // descendant inherited both output descriptors. Killing only the
+        // direct shell would leave those descriptors open and strand cleanup.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ready = dir.path().join("grandchild-ready");
+        let survived = dir.path().join("grandchild-survived");
+        let mut target_command = Command::new("sleep");
+        target_command.arg("60");
+        let mut unrelated_target =
+            spawn_guarded_subprocess(target_command).expect("spawn target-process fixture");
+        let target_pid = unrelated_target
+            .child
+            .id()
+            .expect("target process must have a pid");
+        let child = spawn_process_tree(&ready, &survived).await;
 
-        let result = collect_with_timeout(
-            child,
-            std::process::id(),
-            "sleep",
-            std::time::Duration::from_millis(100),
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            collect_with_timeout(child, target_pid, "sh", Duration::from_millis(200)),
         )
-        .await;
+        .await
+        .expect("timeout cleanup must itself be bounded");
 
         match result {
             PySpyResult::Failed { stderr, .. } => {
@@ -1285,6 +1491,83 @@ mod tests {
             }
             other => panic!("expected Failed, got {:?}", other),
         }
+        assert!(
+            ready.exists(),
+            "grandchild must start before timeout cleanup"
+        );
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(
+            !survived.exists(),
+            "grandchild outlived py-spy timeout cleanup"
+        );
+        assert!(
+            unrelated_target
+                .child
+                .try_wait()
+                .expect("inspect target process")
+                .is_none(),
+            "py-spy timeout cleanup killed a process in an unrelated group"
+        );
+        let cleanup = kill_and_reap(&mut unrelated_target).await;
+        assert!(cleanup.is_none(), "target cleanup failed: {cleanup:?}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn collect_cancellation_kills_descendants() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ready = dir.path().join("grandchild-ready");
+        let survived = dir.path().join("grandchild-survived");
+        let child = spawn_process_tree(&ready, &survived).await;
+
+        let task = tokio::spawn(collect_with_timeout(
+            child,
+            std::process::id(),
+            "sh",
+            Duration::from_secs(30),
+        ));
+        task.abort();
+        let join_error = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("cancelled collector must return within the bound")
+            .expect_err("collector task must be cancelled");
+        assert!(
+            join_error.is_cancelled(),
+            "unexpected task error: {join_error}"
+        );
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(
+            !survived.exists(),
+            "grandchild outlived collector cancellation"
+        );
+    }
+
+    #[cfg(unix)]
+    async fn spawn_process_tree(ready: &Path, survived: &Path) -> GuardedSubprocess {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("echo diag >&2; ( touch \"$1\"; sleep 2; touch \"$2\" ) & wait")
+            .arg("pyspy-process-tree-test")
+            .arg(ready)
+            .arg(survived)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let subprocess = spawn_guarded_subprocess(command).expect("spawn process-tree fixture");
+        wait_for_file(ready).await;
+        subprocess
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_file(path: &Path) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while tokio::fs::metadata(path).await.is_err() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("grandchild did not start");
     }
 
     #[tokio::test]
@@ -1292,6 +1575,7 @@ mod tests {
         // "false" exists on all unix systems and exits 1.
         let result = try_exec(
             "false",
+            "PYSPY_BIN=false",
             42,
             &default_opts(),
             std::time::Duration::from_secs(5),
@@ -1363,8 +1647,10 @@ exit 0
             native_all: true,
             nonblocking: false,
         };
+        let label = format!("PYSPY_BIN={}", script.to_str().unwrap());
         let result = try_exec(
             script.to_str().unwrap(),
+            &label,
             1,
             &opts,
             std::time::Duration::from_secs(5),
@@ -1374,9 +1660,10 @@ exit 0
         let result = result.expect("expected Some");
         match &result {
             PySpyResult::Ok { warnings, .. } => {
+                let expected = native_all_downgrade_warning(&label);
                 assert!(
-                    warnings.iter().any(|w| w.contains("fell back to --native")),
-                    "PS-11c: expected fallback warning, got: {warnings:?}"
+                    warnings.contains(&expected),
+                    "PS-11c: expected fallback warning naming the binary, got: {warnings:?}"
                 );
             }
             other => panic!("expected Ok, got: {other:?}"),
@@ -1397,6 +1684,54 @@ exit 0
         assert!(
             !log[1].contains("--native-all"),
             "PS-11a: second invocation must NOT include --native-all, got: {}",
+            log[1]
+        );
+        assert!(
+            log[1].contains("--native"),
+            "PS-11a: second invocation must retain native capture, got: {}",
+            log[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn native_all_downgrade_enables_native() {
+        let script = write_fake_pyspy(
+            r#"
+echo "$@" >> "$0.log"
+for arg in "$@"; do
+    if [ "$arg" = "--native-all" ]; then
+        echo "unrecognized option --native-all" >&2
+        exit 2
+    fi
+done
+echo "[]"
+exit 0
+"#,
+        );
+        let opts = PySpyOpts {
+            threads: false,
+            native: false,
+            native_all: true,
+            nonblocking: false,
+        };
+        let label = format!("PYSPY_BIN={}", script.to_str().unwrap());
+        let result = try_exec(
+            script.to_str().unwrap(),
+            &label,
+            1,
+            &opts,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("expected Some");
+        assert!(matches!(result, PySpyResult::Ok { .. }));
+
+        let log = read_log(&script);
+        assert_eq!(log.len(), 2, "expected one native-all downgrade");
+        assert!(log[0].contains("--native-all"));
+        assert!(
+            log[1].contains("--native") && !log[1].contains("--native-all"),
+            "native-all fallback must retain native capture: {}",
             log[1]
         );
     }
@@ -1424,8 +1759,10 @@ exit 1
             native_all: true,
             nonblocking: true, // 3 outer retries
         };
+        let label = format!("PYSPY_BIN={}", script.to_str().unwrap());
         let result = try_exec(
             script.to_str().unwrap(),
+            &label,
             1,
             &opts,
             std::time::Duration::from_secs(10),
@@ -1445,45 +1782,285 @@ exit 1
             }
             other => panic!("expected Failed, got: {other:?}"),
         }
-        // Check invocation log: 4 calls total.
-        //   Attempt 0: --native-all (fail) → downgrade (fail)
-        //   Attempt 1: without --native-all (fail)
-        //   Attempt 2: without --native-all (fail)
+        // Check invocation log: 5 calls total.
+        //   Attempt 0: --native-all (fail) → --native (fail)
+        //              → python-only (fail)
+        //   Attempt 1: python-only (fail)
+        //   Attempt 2: python-only (fail)
         let log = read_log(&script);
-        assert_eq!(log.len(), 4, "expected 4 invocations, got {}", log.len());
+        assert_eq!(log.len(), 5, "expected 5 invocations, got {}", log.len());
         assert!(
             log[0].contains("--native-all"),
             "PS-11a: first invocation must include --native-all, got: {}",
             log[0]
         );
+        assert!(
+            log[1].contains("--native") && !log[1].contains("--native-all"),
+            "PS-11a: second invocation must keep --native but drop --native-all, got: {}",
+            log[1]
+        );
+        for (i, line) in log[2..].iter().enumerate() {
+            assert!(
+                !line.contains("--native"),
+                "PS-15d: invocation {} must be python-only, got: {}",
+                i + 2,
+                line
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn native_all_downgrade_warnings_survive_outer_retry() {
+        let script = write_fake_pyspy(
+            r#"
+echo "$@" >> "$0.log"
+for arg in "$@"; do
+    if [ "$arg" = "--native-all" ]; then
+        echo "unrecognized option --native-all" >&2
+        exit 2
+    fi
+done
+for arg in "$@"; do
+    if [ "$arg" = "--native" ]; then
+        echo "native capture failed" >&2
+        exit 1
+    fi
+done
+attempt=$(wc -l < "$0.log")
+if [ "$attempt" -eq 3 ]; then
+    echo "transient python-only failure" >&2
+    exit 1
+fi
+echo "[]"
+exit 0
+"#,
+        );
+        let opts = PySpyOpts {
+            threads: false,
+            native: true,
+            native_all: true,
+            nonblocking: true,
+        };
+        let label = format!("PYSPY_BIN={}", script.to_str().unwrap());
+        let result = try_exec(
+            script.to_str().unwrap(),
+            &label,
+            1,
+            &opts,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("expected Some");
+
+        match result {
+            PySpyResult::Ok { warnings, .. } => assert_eq!(
+                warnings,
+                vec![
+                    native_all_downgrade_warning(&label),
+                    native_downgrade_warning(&label),
+                ]
+            ),
+            other => panic!("expected Ok, got: {other:?}"),
+        }
+
+        let log = read_log(&script);
+        assert_eq!(
+            log.len(),
+            4,
+            "expected native-all, native, and two Python-only attempts"
+        );
+        assert!(log[0].contains("--native-all"));
+        assert!(log[1].contains("--native") && !log[1].contains("--native-all"));
+        assert!(log[2..].iter().all(|line| !line.contains("--native")));
+    }
+
+    /// PS-15a, PS-15b, PS-15c: a native capture that fails for a
+    /// reason other than the unsupported-flag signature downgrades to
+    /// python-only in the same attempt, and the successful result
+    /// carries the fallback warning.
+    #[tokio::test]
+    async fn native_downgrade_succeeds() {
+        let script = write_fake_pyspy(
+            r#"
+echo "$@" >> "$0.log"
+for arg in "$@"; do
+    if [ "$arg" = "--native" ]; then
+        echo "Error: UNW_EINVAL: unsupported operation or bad value" >&2
+        exit 1
+    fi
+done
+echo "[]"
+exit 0
+"#,
+        );
+        let opts = PySpyOpts {
+            threads: false,
+            native: true,
+            native_all: false,
+            nonblocking: false,
+        };
+        let label = format!("PYSPY_BIN={}", script.to_str().unwrap());
+        let result = try_exec(
+            script.to_str().unwrap(),
+            &label,
+            1,
+            &opts,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        let result = result.expect("expected Some");
+        match &result {
+            PySpyResult::Ok { warnings, .. } => {
+                let expected = native_downgrade_warning(&label);
+                assert!(
+                    warnings.contains(&expected),
+                    "PS-15c: expected native fallback warning naming the binary, got: {warnings:?}"
+                );
+            }
+            other => panic!("expected Ok, got: {other:?}"),
+        }
+        let log = read_log(&script);
+        assert_eq!(
+            log.len(),
+            2,
+            "PS-15b: expected exactly 2 invocations, got {}",
+            log.len()
+        );
+        assert!(
+            log[0].contains("--native"),
+            "PS-15a: first invocation must include --native, got: {}",
+            log[0]
+        );
+        assert!(
+            !log[1].contains("--native"),
+            "PS-15a: second invocation must be python-only, got: {}",
+            log[1]
+        );
+    }
+
+    /// PS-15d: once native capture has failed, later nonblocking
+    /// retries stay python-only rather than re-testing native.
+    #[tokio::test]
+    async fn native_downgrade_is_sticky_across_retries() {
+        let script = write_fake_pyspy(
+            r#"
+echo "$@" >> "$0.log"
+echo "Permission denied" >&2
+exit 1
+"#,
+        );
+        let opts = PySpyOpts {
+            threads: false,
+            native: true,
+            native_all: false,
+            nonblocking: true, // 3 outer retries
+        };
+        let label = format!("PYSPY_BIN={}", script.to_str().unwrap());
+        let result = try_exec(
+            script.to_str().unwrap(),
+            &label,
+            1,
+            &opts,
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+        assert!(
+            matches!(result, Some(PySpyResult::Failed { .. })),
+            "expected Failed, got: {result:?}"
+        );
+        // Attempt 0: --native (fail) → python-only (fail).
+        // Attempts 1 and 2: python-only only.
+        let log = read_log(&script);
+        assert_eq!(log.len(), 4, "expected 4 invocations, got {}", log.len());
+        assert!(
+            log[0].contains("--native"),
+            "PS-15a: first invocation must include --native, got: {}",
+            log[0]
+        );
         for (i, line) in log[1..].iter().enumerate() {
             assert!(
-                !line.contains("--native-all"),
-                "PS-11e: invocation {} must NOT include --native-all, got: {}",
+                !line.contains("--native"),
+                "PS-15d: invocation {} must be python-only, got: {}",
                 i + 1,
                 line
             );
         }
     }
 
-    /// PP-2: subprocess timeout yields `TimedOut` with partial stderr.
+    #[tokio::test]
+    async fn native_downgrade_warning_survives_outer_retry() {
+        let script = write_fake_pyspy(
+            r#"
+echo "$@" >> "$0.log"
+for arg in "$@"; do
+    if [ "$arg" = "--native" ]; then
+        echo "Error: UNW_EINVAL: unsupported operation or bad value" >&2
+        exit 1
+    fi
+done
+attempt=$(wc -l < "$0.log")
+if [ "$attempt" -eq 2 ]; then
+    echo "transient python-only failure" >&2
+    exit 1
+fi
+echo "[]"
+exit 0
+"#,
+        );
+        let opts = PySpyOpts {
+            threads: false,
+            native: true,
+            native_all: false,
+            nonblocking: true,
+        };
+        let label = format!("PYSPY_BIN={}", script.to_str().unwrap());
+        let result = try_exec(
+            script.to_str().unwrap(),
+            &label,
+            1,
+            &opts,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("expected Some");
+        match result {
+            PySpyResult::Ok { warnings, .. } => {
+                assert_eq!(warnings, vec![native_downgrade_warning(&label)]);
+            }
+            other => panic!("expected Ok, got: {other:?}"),
+        }
+
+        let log = read_log(&script);
+        assert_eq!(
+            log.len(),
+            3,
+            "expected native plus two Python-only attempts"
+        );
+        assert!(log[0].contains("--native"));
+        assert!(log[1..].iter().all(|line| !line.contains("--native")));
+    }
+
+    /// PP-2: subprocess timeout yields `TimedOut` with partial stderr and
+    /// kills descendants that inherited the stderr descriptor.
+    #[cfg(unix)]
     #[tokio::test]
     async fn profile_collect_timeout_returns_timed_out() {
-        let child = Command::new("sh")
-            .arg("-c")
-            .arg("echo diag >&2; sleep 60")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("sh must be available");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ready = dir.path().join("grandchild-ready");
+        let survived = dir.path().join("grandchild-survived");
+        let child = spawn_process_tree(&ready, &survived).await;
 
-        let result = collect_profile_with_timeout(
-            child,
-            std::process::id(),
-            "sh",
-            std::time::Duration::from_millis(200),
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            collect_profile_with_timeout(
+                child,
+                std::process::id(),
+                "sh",
+                Duration::from_millis(200),
+            ),
         )
-        .await;
+        .await
+        .expect("profile timeout cleanup must itself be bounded");
 
         match result {
             Err(ProfileExecOutcome::TimedOut { stderr, .. }) => {
@@ -1494,6 +2071,48 @@ exit 1
             }
             other => panic!("expected TimedOut, got: {other:?}"),
         }
+        assert!(
+            ready.exists(),
+            "grandchild must start before timeout cleanup"
+        );
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(
+            !survived.exists(),
+            "grandchild outlived py-spy profile timeout cleanup"
+        );
+    }
+
+    /// PP-3: cancellation before the collector's first poll still kills the
+    /// process group, including descendants that inherited stderr.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn profile_collect_cancellation_kills_descendants() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ready = dir.path().join("grandchild-ready");
+        let survived = dir.path().join("grandchild-survived");
+        let child = spawn_process_tree(&ready, &survived).await;
+
+        let task = tokio::spawn(collect_profile_with_timeout(
+            child,
+            std::process::id(),
+            "sh",
+            Duration::from_secs(30),
+        ));
+        task.abort();
+        let join_error = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("cancelled profile collector must return within the bound")
+            .expect_err("profile collector task must be cancelled");
+        assert!(
+            join_error.is_cancelled(),
+            "unexpected task error: {join_error}"
+        );
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(
+            !survived.exists(),
+            "grandchild outlived profile collector cancellation"
+        );
     }
 
     fn test_request() -> ValidatedProfileRequest {

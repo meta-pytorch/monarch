@@ -831,7 +831,7 @@ impl DatabaseScanner {
     /// Parse a py-spy result JSON and store data in normalized py-spy tables.
     ///
     /// Populates four tables matching the `hyperactor_mesh::pyspy` structs:
-    /// - `pyspy_dumps`: one row per dump
+    /// - `pyspy_dumps`: one row per dump, including warnings as JSON
     /// - `pyspy_stack_traces`: one row per thread (matches `PySpyStackTrace`)
     /// - `pyspy_frames`: one row per frame (matches `PySpyFrame`)
     /// - `pyspy_local_variables`: one row per local variable (matches `PySpyLocalVariable`)
@@ -876,6 +876,12 @@ impl DatabaseScanner {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let warnings = ok
+            .get("warnings")
+            .and_then(|value| value.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let warnings_json = serde_json::to_string(warnings)?;
         let traces = ok.get("stack_traces").and_then(|v| v.as_array());
 
         let now_us = timestamp_to_micros(&SystemTime::now());
@@ -888,6 +894,7 @@ impl DatabaseScanner {
             pid,
             binary,
             proc_ref: proc_ref.to_string(),
+            warnings_json,
         });
         Self::push_batch_to_tables(
             &self.table_data,
@@ -1845,7 +1852,7 @@ mod tests {
                          ], "is_entry": true}
                     ]
                 }],
-                "warnings": []
+                "warnings": ["native capture failed; fell back to python-only frames"]
             }
         }"#;
 
@@ -1883,10 +1890,20 @@ mod tests {
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
+        let warnings_json = batch
+            .column_by_name("warnings_json")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(dump_ids.value(0), "dump-1");
         assert_eq!(pids.value(0), 1234);
         assert_eq!(binaries.value(0), "python3");
         assert_eq!(proc_refs.value(0), "proc[0]");
+        assert_eq!(
+            warnings_json.value(0),
+            r#"["native capture failed; fell back to python-only frames"]"#
+        );
 
         // Verify pyspy_stack_traces content
         let batches = table_batches(&scanner, "pyspy_stack_traces");

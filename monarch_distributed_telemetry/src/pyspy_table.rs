@@ -9,7 +9,7 @@
 //! DataFusion table schemas for py-spy stack trace data.
 //!
 //! Four normalized tables matching the structures in `hyperactor_mesh::pyspy`:
-//! - `pyspy_dumps`: one row per dump (top-level `PySpyResult::Ok` metadata)
+//! - `pyspy_dumps`: one row per dump (top-level `PySpyResult::Ok` metadata and warnings)
 //! - `pyspy_stack_traces`: one row per thread (matches `PySpyStackTrace`)
 //! - `pyspy_frames`: one row per frame (matches `PySpyFrame`)
 //! - `pyspy_local_variables`: one row per local variable (matches `PySpyLocalVariable`)
@@ -29,6 +29,9 @@ pub struct PySpyDump {
     pub pid: i32,
     pub binary: String,
     pub proc_ref: String,
+    /// JSON array of non-fatal capture warnings. An empty array means the dump
+    /// completed without a reported fallback.
+    pub warnings_json: String,
 }
 
 /// Row data for the pyspy_stack_traces table.
