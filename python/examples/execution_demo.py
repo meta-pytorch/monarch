@@ -135,7 +135,10 @@ async def async_main(args: argparse.Namespace) -> None:
 
         # N philosophers (one per replica) + a single fork manager on its own proc
         # so it is a distinct, easy-to-find node in the TUI tree.
-        phil_procs = host.spawn_procs(per_host={"replica": n})
+        phil_procs = host.spawn_procs(
+            name="philosopher",
+            per_host={"replica": n},
+        )
         fork_proc = host.spawn_procs(name="fork_manager")
 
         fork_manager = fork_proc.spawn("fork_manager", ForkManager, n)

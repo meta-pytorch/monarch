@@ -49,7 +49,10 @@ async def async_main(num_procs: int) -> None:
         state = job.state(cached_path=None)
         host = state.hosts
 
-        procs = host.spawn_procs(per_host={"replica": num_procs})
+        procs = host.spawn_procs(
+            name="worker",
+            per_host={"replica": num_procs},
+        )
         workers = procs.spawn("worker", Worker)
 
         # Let each actor announce itself.

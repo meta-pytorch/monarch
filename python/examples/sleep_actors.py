@@ -65,7 +65,10 @@ async def async_main(num_procs: int) -> None:
         print(f"\nSpawning batches of sleepers across {num_procs} procs.")
         print("Press Ctrl+C to stop.\n", flush=True)
 
-        procs = host.spawn_procs(per_host={"replica": num_procs})
+        procs = host.spawn_procs(
+            name="sleeper",
+            per_host={"replica": num_procs},
+        )
 
         batch = 0
         # Keep references alive so actors aren't torn down prematurely.
