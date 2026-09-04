@@ -86,10 +86,30 @@ def create_app(adapter: DBAdapter) -> Flask:
     return app
 
 
+def _create_api_server(app: Flask) -> tuple[str, threading.Thread]:
+    server = make_server(
+        "127.0.0.1",
+        0,
+        app,
+        threaded=True,
+        ssl_context=None,
+    )
+    return (
+        f"http://127.0.0.1:{server.server_port}",
+        threading.Thread(
+            target=server.serve_forever,
+            daemon=True,
+            name="monarch-dashboard-api",
+        ),
+    )
+
+
 def start_dashboard(
     adapter: DBAdapter,
     port: int = 8265,
     host: str = "::",
+    *,
+    include_dashboard: bool = True,
 ) -> dict:
     """Start the dashboard server in a daemon thread.
 
@@ -97,9 +117,10 @@ def start_dashboard(
     in-memory as DataFusion MemTables. There is no on-disk database, so
     the dashboard must share the process to access the QueryEngine.
 
-    On devvm / DevGPU / OnDemand hosts with a local TLS cert, the
-    server uses HTTPS and advertises a Nest Dev Proxy URL for direct
-    browser access without port forwarding.
+    The loopback API server is always started. When the dashboard is included,
+    a browser-facing server is started as well. On devvm / DevGPU / OnDemand
+    hosts with a local TLS cert, that server uses HTTPS and advertises a Nest
+    Dev Proxy URL for direct browser access without port forwarding.
 
     Tupperware / MAST hosts are **not supported**: the Nest Dev Proxy
     edge does not route to ``.tw.fbinfra.net`` task pods. On those
@@ -114,16 +135,38 @@ def start_dashboard(
             the Linux kernel default ``IPV6_V6ONLY=0`` for dual-stack;
             IPv4 clients (including ``localhost``) still work via
             v4-mapped addresses.
+        include_dashboard: Whether to start the browser-facing server. The
+            loopback API remains available when this is false.
 
     Returns:
         A dict with keys: ``url`` (external, browser-openable), ``local_url``
         (in-process URL matching the cert SAN), ``api_url`` (loopback
         plaintext URL for internal API clients), ``port``, ``pid`` (always
-        None), ``handle`` (Thread), and ``api_handle`` (Thread).
+        None), ``handle`` (Thread), and ``api_handle`` (Thread). The public
+        URL, port, and handle fields are None when the dashboard is disabled.
 
     Raises:
-        OSError: If the port is already in use.
+        OSError: If a requested server cannot bind its socket.
     """
+    app = create_app(adapter)
+    # Suppress per-request werkzeug logs (they are noisy in production).
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+    # A free ephemeral port can still receive traffic from systems configured
+    # to probe it. Do not open a public listener unless the dashboard is enabled.
+    if not include_dashboard:
+        api_url, api_thread = _create_api_server(app)
+        api_thread.start()
+        return {
+            "url": None,
+            "local_url": None,
+            "api_url": api_url,
+            "port": None,
+            "pid": None,
+            "handle": None,
+            "api_handle": api_thread,
+        }
+
     ssl_ctx: ssl.SSLContext | None = None
     tls_hostname: str | None = None
     try:
@@ -137,10 +180,6 @@ def start_dashboard(
             ssl_ctx, tls_hostname = result
     except ImportError:
         pass
-
-    app = create_app(adapter)
-    # Suppress per-request werkzeug logs (they are noisy in production).
-    logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
     try:
         server = make_server(
@@ -163,14 +202,7 @@ def start_dashboard(
         url = f"http://localhost:{actual_port}"
         local_url = url
 
-    api_server = make_server(
-        "127.0.0.1",
-        0,
-        app,
-        threaded=True,
-        ssl_context=None,
-    )
-    api_url = f"http://127.0.0.1:{api_server.server_port}"
+    api_url, api_thread = _create_api_server(app)
 
     thread = threading.Thread(
         target=server.serve_forever,
@@ -178,11 +210,7 @@ def start_dashboard(
         name="monarch-dashboard",
     )
     thread.start()
-    api_thread = threading.Thread(
-        target=api_server.serve_forever,
-        daemon=True,
-        name="monarch-dashboard-api",
-    )
+
     api_thread.start()
     logger.info("Monarch Dashboard running at %s", url)
 

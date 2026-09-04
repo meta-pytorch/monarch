@@ -105,7 +105,7 @@ class TelemetryConfig:
 # before the cast.
 class _TelemetryResponse(TypedDict):
     telemetry_url: str
-    dashboard_url: str
+    dashboard_url: str | None
     socket_path: str
 
 
@@ -277,7 +277,9 @@ class _TelemetryHandle:
             raise RuntimeError("telemetry handle is not open")
         api_url = dashboard_info["api_url"]
         url = dashboard_info["url"]
-        if not isinstance(api_url, str) or not isinstance(url, str):
+        if not isinstance(api_url, str) or (
+            url is not None and not isinstance(url, str)
+        ):
             raise RuntimeError(f"invalid dashboard info: {dashboard_info!r}")
         return {
             "telemetry_url": api_url,
@@ -307,6 +309,7 @@ class _TelemetryHandle:
         dashboard_info = start_dashboard(
             adapter=QueryEngineAdapter(query_engine),
             port=config.dashboard_port,
+            include_dashboard=config.include_dashboard,
         )
         # Self-activate the sidecar process's own `UnixSocketSink` against
         # the client socket so telemetry emitted *by* the sidecar (dashboard
