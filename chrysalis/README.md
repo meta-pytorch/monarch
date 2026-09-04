@@ -70,7 +70,7 @@ The bare `sqlite` command opens an ordinary in-memory SQLite shell:
 fbcode/monarch/bin/chrysalis sqlite
 ```
 
-Use an explicit file to retain the local replica after exit:
+Use an explicit file to retain the database after exit:
 
 ```bash
 fbcode/monarch/bin/chrysalis sqlite repl /tmp/chrysalis.db
@@ -86,6 +86,8 @@ CREATE TABLE items (
   id INTEGER PRIMARY KEY NOT NULL,
   value TEXT NOT NULL
 );
+INSERT INTO items VALUES (1, 'hello');
+SELECT * FROM items;
 ```
 
 Replicated applications use `chrysalis-sqlite` directly. They register trusted

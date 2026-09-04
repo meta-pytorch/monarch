@@ -1269,6 +1269,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrysalis-scale"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "chrysalis",
+ "chrysalis-identity-meta",
+ "chrysalis-sqlite",
+ "clap",
+ "futures 0.3.34",
+ "hostname",
+ "libc",
+ "libsql",
+ "rcgen",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "chrysalis-sqlite"
 version = "0.0.0"
 dependencies = [
