@@ -62,6 +62,10 @@ async fn read_bounded(recv: &mut chrysalis::RecvStream, limit: usize) -> io::Res
 
 #[tokio::main]
 async fn main() {
+    run().await;
+}
+
+async fn run() {
     // Build a direct two-node namespace: Alice is the root and Bob is
     // her child. Both nodes share one in-memory carrier and mutually
     // trust each other.
@@ -123,6 +127,13 @@ async fn main() {
         panic!("Bob should be present in Alice's namespace");
     };
 
+    assert_eq!(
+        alice_entry.pid,
+        alice.pid(),
+        "Bob should resolve Alice's PID"
+    );
+    assert_eq!(bob_entry.pid, bob.pid(), "Alice should resolve Bob's PID");
+
     println!("tiny-actors, checkpoint 1: Alice and Bob exist");
     println!("Alice PID: {}", format_pid(alice.pid()));
     println!("Bob PID: {}", format_pid(bob.pid()));
@@ -135,6 +146,17 @@ async fn main() {
     let envelope = Envelope::new(ActorId::Echo, ECHO_PAYLOAD);
     let encoded = envelope.encode();
     let decoded = Envelope::decode(&encoded).expect("decode Alice's actor envelope");
+
+    assert_eq!(
+        decoded.actor(),
+        ActorId::Echo,
+        "the envelope should retain its actor ID"
+    );
+    assert_eq!(
+        decoded.payload(),
+        ECHO_PAYLOAD,
+        "the envelope should retain its payload"
+    );
 
     // Show the actor's wire value and confirm that decoding recovered
     // both fields.
@@ -150,7 +172,7 @@ async fn main() {
     );
 
     // Start Echo's mailbox task before serving the request; Bob's
-    // dispatcher uses the actor handle, while main retains the task
+    // dispatcher uses the actor handle, while this scenario retains the task
     // handle for graceful shutdown.
     let (echo_actor, echo_task) = EchoActorHandle::new();
 
@@ -224,6 +246,22 @@ async fn main() {
         })
         .await
         .expect("the Echo request should complete within five seconds");
+
+    assert_eq!(
+        authenticated_source,
+        alice.pid(),
+        "Bob should authenticate Alice as the request source"
+    );
+    assert_eq!(
+        dispatched_actor,
+        ActorId::Echo,
+        "Bob should dispatch the request to Echo"
+    );
+    assert_eq!(
+        echo_response.as_slice(),
+        ECHO_PAYLOAD,
+        "Alice should receive Echo's response unchanged"
+    );
 
     println!("tiny-actors, checkpoint 3: Alice calls Bob's Echo actor");
     println!(
@@ -335,6 +373,26 @@ async fn main() {
         .await
         .expect("the actor requests should complete within five seconds");
 
+    assert!(
+        actor_sources_are_alice,
+        "Bob should authenticate every actor request as coming from Alice"
+    );
+    assert_eq!(
+        dispatched_actors.as_slice(),
+        [ActorId::Echo, ActorId::Counter, ActorId::Counter],
+        "one Bob PID should dispatch to both local actors"
+    );
+    assert_eq!(
+        echo_again.as_slice(),
+        ECHO_PAYLOAD,
+        "Echo should return its payload through the shared dispatcher"
+    );
+    assert_eq!(
+        counter_values.as_slice(),
+        [1, 2],
+        "Counter should retain private state across requests"
+    );
+
     println!("tiny-actors, checkpoint 5: Counter owns private state");
     println!("Bob authenticated all actor requests from Alice: {actor_sources_are_alice}");
     println!("Bob dispatched actors: {dispatched_actors:?}");
@@ -404,4 +462,16 @@ async fn call_actor(node: &Node, process: Pid, envelope: &[u8], response_limit: 
     read_bounded(stream.recv_mut(), response_limit)
         .await
         .expect("read the actor response")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn tiny_actors_completes_all_checkpoints() {
+        tokio::time::timeout(Duration::from_secs(30), super::run())
+            .await
+            .expect("tiny-actors should complete within thirty seconds");
+    }
 }
