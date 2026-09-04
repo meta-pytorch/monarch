@@ -40,6 +40,7 @@ wezterm-dynamic-derive = "0.1.1"
 members = [
   "algebra",
   "build_utils",
+  "chrysalis",
   "chrysalis-core",
   "chrysalis-nameserver",
   "chrysalis-transport",
@@ -99,6 +100,7 @@ members = [
 default-members = [
   "algebra",
   "build_utils",
+  "chrysalis",
   "chrysalis-core",
   "chrysalis-nameserver",
   "chrysalis-transport",
