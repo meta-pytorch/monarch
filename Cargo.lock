@@ -1164,7 +1164,12 @@ version = "0.0.0"
 dependencies = [
  "bytes",
  "chrysalis-core",
+ "chrysalis-transport-core",
+ "chrysalis-transport-quiche",
+ "chrysalis-transport-tokio",
+ "chrysalis-transport-uring",
  "libc",
+ "quiche",
  "thiserror 2.0.20",
  "tokio",
 ]
