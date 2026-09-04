@@ -1172,6 +1172,20 @@ name = "chrysalis-core"
 version = "0.0.0"
 
 [[package]]
+name = "chrysalis-identity-meta"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrysalis-transport",
+ "pem",
+ "rcgen",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "tokio",
+ "x509-parser",
+]
+
+[[package]]
 name = "chrysalis-nameserver"
 version = "0.0.0"
 dependencies = [
