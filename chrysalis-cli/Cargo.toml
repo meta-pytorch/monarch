@@ -20,6 +20,7 @@ libc = "0.2.186"
 libsql = { version = "0.9.30", features = ["core", "remote", "tls"], default-features = false }
 libsql-sys = "0.9.30"
 rcgen = { version = "0.14.9", features = ["x509-parser"] }
+rustyline = { version = "18.0.1", features = ["derive"] }
 tokio = { version = "1.53.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.23", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
