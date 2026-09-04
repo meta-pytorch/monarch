@@ -31,7 +31,7 @@ fbcode/monarch/bin/chrysalis \
 fbcode/monarch/bin/chrysalis \
   --identity=meta \
   --carrier 'udp://[<client-ipv6>]:0' \
-  --join '<root-pid>@udp://[<root-ipv6>]:5000' ps
+  --cluster 'udp://[<root-ipv6>]:5000?authority=<root-pid>' ps
 ```
 
 The Meta identity crate retains an explicit `load` API for applications that
@@ -46,12 +46,12 @@ child.
 
 ## Deployment resolvers
 
-`--join` accepts deployment resolver URLs in addition to direct join tokens.
+`--cluster` accepts deployment resolver URLs in addition to direct locators.
 For a Chrysalis MAST deployment, the job name is sufficient:
 
 ```bash
 fbcode/monarch/bin/chrysalis \
-  --join 'mast://chrysalis_scale_meriksen_1000n_10t_...' \
+  --cluster 'mast://chrysalis_scale_meriksen_1000n_10t_...' \
   ps
 ```
 
@@ -60,7 +60,7 @@ well-known port `26600`, binds a matching wildcard UDP carrier, and selects the
 Meta identity provider. Explicit `--carrier` or `--identity` options override
 the corresponding resolved values. Additional resolver schemes can implement
 the same join, carrier, and identity contract without changing commands such as
-`ps`, `cat`, or `sqlite`.
+`ps` or `cat`.
 
 ## SQLite shell
 
@@ -70,80 +70,22 @@ The bare `sqlite` command opens an ordinary in-memory SQLite shell:
 fbcode/monarch/bin/chrysalis sqlite
 ```
 
-Pass the usual mesh options before entering the shell. For example, this creates
-an in-memory replica attached to an existing root:
-
-```bash
-fbcode/monarch/bin/chrysalis \
-  --identity=meta \
-  --carrier 'udp://[::]:0' \
-  --join 'udp://[<root-ipv6>]:26600' \
-  sqlite
-```
-
-For a MAST deployment, the equivalent command needs only its job name:
-
-```bash
-fbcode/monarch/bin/chrysalis \
-  --join 'mast://<job-name>' \
-  sqlite
-```
-
-The shell and replication run in the same process. This is necessary because
-the vendored cr-sqlite extension uses libSQL's extended loadable-extension ABI
-and cannot be loaded safely into an arbitrary system `sqlite3` binary.
-
 Use an explicit file to retain the local replica after exit:
 
 ```bash
 fbcode/monarch/bin/chrysalis sqlite repl /tmp/chrysalis.db
 ```
 
-The shell supports multiline SQL, `.tables`, `.schema`, and `.quit`:
+The shell supports multiline SQL, `.tables`, `.schema`, and `.quit`. It accesses
+an ordinary local SQLite database and does not join the process mesh; mesh
+options such as `--cluster`, `--carrier`, and `--identity` are rejected for
+SQLite commands.
 
 ```sql
 CREATE TABLE items (
   id INTEGER PRIMARY KEY NOT NULL,
   value TEXT NOT NULL
 );
-SELECT crsql_as_crr('items');
-```
-
-New replicas receive CRR table definitions before their row changes, so a
-joining database may start empty.
-
-### Start the root
-
-In the first terminal:
-
-```bash
-buck run fbcode//monarch/chrysalis-cli -- sqlite sync /tmp/root.db
-```
-
-The command prints its join token on standard output:
-
-```text
-32be1d32b140059f96786e3bbc79eaa1@udp://127.0.0.1:34778
-```
-
-It continues synchronizing until interrupted.
-
-### Join the child
-
-In the second terminal, substitute the root token:
-
-```bash
-buck run fbcode//monarch/chrysalis-cli -- \
-  --join 32be1d32b140059f96786e3bbc79eaa1@udp://127.0.0.1:34778 \
-  sqlite sync /tmp/child.db
-```
-
-Alternatively, attach an interactive child replica directly:
-
-```bash
-buck run fbcode//monarch/chrysalis-cli -- \
-  --join 32be1d32b140059f96786e3bbc79eaa1@udp://127.0.0.1:34778 \
-  sqlite repl /tmp/child.db
 ```
 
 Replicated applications use `chrysalis-sqlite` directly. They register trusted
@@ -158,35 +100,35 @@ The CLI can also demonstrate the base process mesh without SQLite:
 ```bash
 # Terminal 1
 buck run fbcode//monarch/chrysalis-cli -- serve
-# prints: <root-pid>@udp://127.0.0.1:<port>
+# prints: udp://127.0.0.1:<port>?authority=<root-pid>
 
 # Terminal 2
 buck run fbcode//monarch/chrysalis-cli -- \
-  --join <root-pid>@udp://127.0.0.1:<port> serve
-# prints: <child-pid>@udp://127.0.0.1:<port>
+  --cluster 'udp://127.0.0.1:<port>?authority=<root-pid>' serve
+# prints: udp://127.0.0.1:<child-port>?authority=<child-pid>
 
 # Terminal 3
 echo hello | buck run fbcode//monarch/chrysalis-cli -- \
-  --join <root-pid>@udp://127.0.0.1:<port> cat <child-pid>
+  cat '<child-pid-prefix>@udp://127.0.0.1:<port>?authority=<root-pid>'
 ```
 
-`--join` also accepts an address without a PID, such as
-`--join udp://127.0.0.1:<port>`. This discovers the authenticated parent PID on
+`--cluster` also accepts an address without an authority, such as
+`--cluster udp://127.0.0.1:<port>`. This discovers the authenticated parent PID on
 the first successful nameserver handshake and pins it for subsequent reconnects.
-Use the printed `<pid>@<address>` form when the parent identity must be pinned
-before dialing.
+Use the printed `address?authority=<pid>` form when the parent identity must be
+pinned before dialing. `--join` remains as a deprecated alias for `--cluster`.
 
 IPv6 socket addresses use brackets. For example, start a root on the IPv6
 loopback address, then join it from another IPv6 carrier:
 
 ```bash
-# Terminal 1; prints <root-pid>@udp://[::1]:<port>
+# Terminal 1; prints udp://[::1]:<port>?authority=<root-pid>
 fbcode/monarch/bin/chrysalis --carrier 'udp://[::1]:0' serve
 
 # Terminal 2
 fbcode/monarch/bin/chrysalis \
   --carrier 'udp://[::1]:0' \
-  --join 'udp://[::1]:<port>' ps
+  ps 'udp://[::1]:<port>'
 ```
 
 Every process in this example needs an IPv6 carrier. Without the second
