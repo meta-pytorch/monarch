@@ -129,6 +129,32 @@ _MACOS_ARM64_SKIP_NODEIDS = frozenset(
 )
 
 
+def _is_rocm71() -> bool:
+    """True on the rocm7.1 CI runner (torch built against ROCm 7.1)."""
+    try:
+        import torch
+
+        return (getattr(torch.version, "hip", None) or "").startswith("7.1")
+    except Exception:
+        return False
+
+
+_IS_ROCM71 = _is_rocm71()
+
+# EXPERIMENT (temporary -- PR #4341 debugging; REVERT after): on the rocm7.1 runner,
+# deselect the RDMA tests that spawn GPU procs. The lite torch preload made these run
+# to completion (before, they hit the 30s Host::spawn timeout and never ran). We are
+# testing whether their *running* is what leaves rocm7.1's GPU/RCCL state such that the
+# later tensor-engine / cuda / builtins GPU workers hang (the deterministic 14 failures).
+# If those now pass with these removed, the RDMA-GPU-test interaction is confirmed.
+_ROCM71_EXPERIMENT_SKIP_PREFIXES = (
+    "python/tests/test_rdma.py::test_proc_mesh_rdma",
+    "python/tests/test_rdma.py::test_gpu_trainer_generator",
+    "python/tests/test_rdma_bench_e2e.py::",
+    "python/tests/test_rdma_bench_peer.py::",
+)
+
+
 def _load_disabled_tests() -> frozenset[str]:
     if not _DISABLED_TESTS_FILE.exists():
         return frozenset()
@@ -176,6 +202,13 @@ def pytest_collection_modifyitems(
         if _IS_MACOS_ARM64 and node_id in _MACOS_ARM64_SKIP_NODEIDS:
             item.add_marker(
                 pytest.mark.skip(reason="unsupported or flaky on macOS arm64 CPU CI")
+            )
+
+        if _IS_ROCM71 and node_id.startswith(_ROCM71_EXPERIMENT_SKIP_PREFIXES):
+            item.add_marker(
+                pytest.mark.skip(
+                    reason="EXPERIMENT (PR#4341): rocm7.1 RDMA-GPU-test deselect"
+                )
             )
 
         if not disabled:
