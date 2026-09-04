@@ -190,7 +190,7 @@ impl ExperimentKind {
         }
     }
 
-    fn parse(value: &str) -> Result<Self> {
+    pub(crate) fn parse(value: &str) -> Result<Self> {
         match value {
             "echo" => Ok(Self::Echo),
             "delivery" => Ok(Self::Delivery),
@@ -231,23 +231,12 @@ impl ExperimentTargets {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by persistent administration in the next stack change"
-    )
-)]
 pub(crate) enum ExperimentStatus {
     Pending,
     Processing,
     Done,
 }
 
-#[expect(
-    dead_code,
-    reason = "used by persistent administration in the next stack change"
-)]
 impl ExperimentStatus {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
@@ -311,10 +300,6 @@ fn table_schemas() -> Result<Vec<TableSchema>> {
     ])
 }
 
-#[expect(
-    dead_code,
-    reason = "used by persistent administration in the next stack change"
-)]
 impl ExperimentStore {
     pub(crate) async fn open(path: &Path) -> Result<Self> {
         let path_str = path
@@ -460,6 +445,7 @@ impl ExperimentStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) async fn nodes(&self) -> Result<Vec<Pid>> {
         let capacity = self.node_count().await?;
         let mut rows = self
@@ -516,6 +502,7 @@ impl ExperimentStore {
         Ok(nodes)
     }
 
+    #[cfg(test)]
     async fn node_count(&self) -> Result<usize> {
         let mut rows = self
             .connection
@@ -541,13 +528,17 @@ impl ExperimentStore {
             return Ok(None);
         };
         let expected: i64 = row.get(0)?;
+        if expected == 0 {
+            return Ok(None);
+        }
         anyhow::ensure!(expected > 0, "root expected node count is invalid");
         Ok(Some(
             usize::try_from(expected).context("expected node count is invalid")?,
         ))
     }
 
-    pub(crate) async fn has_node(&self, pid: Pid) -> Result<bool> {
+    #[cfg(test)]
+    async fn has_node(&self, pid: Pid) -> Result<bool> {
         let mut rows = self
             .connection
             .query(
@@ -639,6 +630,22 @@ impl ExperimentStore {
         };
         let status: String = row.get(0)?;
         Ok(Some(ExperimentStatus::parse(&status)?))
+    }
+
+    pub(crate) async fn experiment_kind(&self, name: &str) -> Result<Option<ExperimentKind>> {
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT kind FROM experiments WHERE name = ?1",
+                vec![Value::Text(name.into())],
+            )
+            .await
+            .context("query experiment kind")?;
+        let Some(row) = rows.next().await.context("read experiment kind")? else {
+            return Ok(None);
+        };
+        let kind: String = row.get(0)?;
+        Ok(Some(ExperimentKind::parse(&kind)?))
     }
 
     pub(crate) async fn claim_experiment(

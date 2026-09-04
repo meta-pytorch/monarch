@@ -2025,9 +2025,13 @@ fn root_join_token(pid: Pid, address: SocketAddr) -> String {
     format!("udp://{address}?authority={}", format_pid(pid))
 }
 
-fn format_pid(pid: Pid) -> String {
-    let mut output = String::with_capacity(32);
-    for byte in pid.as_bytes() {
+pub(crate) fn format_pid(pid: Pid) -> String {
+    format_bytes(pid.as_bytes())
+}
+
+pub(crate) fn format_bytes(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
         write!(&mut output, "{byte:02x}").expect("writing to a string cannot fail");
     }
     output

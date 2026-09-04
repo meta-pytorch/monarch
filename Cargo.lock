@@ -1276,6 +1276,7 @@ dependencies = [
  "bytes",
  "chrysalis",
  "chrysalis-identity-meta",
+ "chrysalis-resolver",
  "chrysalis-sqlite",
  "clap",
  "futures 0.3.34",
