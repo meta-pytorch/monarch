@@ -21,6 +21,7 @@ const TERMINATED: u8 = 2;
 #[derive(Debug, Default)]
 pub(crate) struct ShutdownState {
     state: AtomicU8,
+    shutdown: Notify,
     terminated: Notify,
     wakers: Mutex<ShutdownWakers>,
 }
@@ -42,9 +43,20 @@ impl ShutdownState {
             .compare_exchange(RUNNING, SHUTTING_DOWN, Ordering::AcqRel, Ordering::Acquire)
             .is_ok();
         if changed {
+            self.shutdown.notify_waiters();
             self.wake_all();
         }
         changed
+    }
+
+    pub(crate) async fn cancelled(&self) {
+        loop {
+            let notified = self.shutdown.notified();
+            if !self.is_running() {
+                return;
+            }
+            notified.await;
+        }
     }
 
     pub(crate) fn terminate(&self) {
@@ -92,6 +104,18 @@ impl ShutdownState {
         }
     }
 
+    pub(crate) fn wake_send(&self) {
+        let waker = self
+            .wakers
+            .lock()
+            .expect("shutdown state waker lock poisoned")
+            .send
+            .take();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
     fn wake_all(&self) {
         let wakers = std::mem::take(
             &mut *self
@@ -102,5 +126,23 @@ impl ShutdownState {
         for waker in [wakers.send, wakers.receive].into_iter().flatten() {
             waker.wake();
         }
+    }
+}
+
+/// Marks shutdown complete when its owning task exits or is aborted.
+#[derive(Debug)]
+pub(crate) struct CompletionGuard<'a> {
+    shutdown_state: &'a ShutdownState,
+}
+
+impl<'a> CompletionGuard<'a> {
+    pub(crate) fn new(shutdown_state: &'a ShutdownState) -> Self {
+        Self { shutdown_state }
+    }
+}
+
+impl Drop for CompletionGuard<'_> {
+    fn drop(&mut self) {
+        self.shutdown_state.terminate();
     }
 }

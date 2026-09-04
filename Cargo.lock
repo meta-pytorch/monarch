@@ -1144,8 +1144,10 @@ version = "0.0.0"
 name = "chrysalis-transport"
 version = "0.0.0"
 dependencies = [
+ "chrysalis-core",
  "libc",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

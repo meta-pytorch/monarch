@@ -10,5 +10,7 @@ repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
 
 [dependencies]
+chrysalis-core = { version = "0.0.0", path = "../chrysalis-core" }
 libc = "0.2.186"
 tokio = { version = "1.53.1", features = ["full", "test-util", "tracing"] }
+tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
