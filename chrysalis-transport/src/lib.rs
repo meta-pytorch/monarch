@@ -10,8 +10,10 @@
 
 mod datagram;
 mod inproc;
+mod route;
 mod shutdown;
 mod socket_set;
+mod switch;
 mod udp;
 #[cfg(unix)]
 mod unix;
@@ -24,7 +26,14 @@ pub use datagram::RecvFrom;
 pub use inproc::InprocAddr;
 pub use inproc::InprocNetwork;
 pub use inproc::InprocSocket;
+pub use route::DropReason;
+pub use route::ForwardDisposition;
+pub use route::Route;
+pub use route::RouteGate;
+pub use route::Router;
 pub use socket_set::DatagramSocketSet;
+pub use switch::DatagramSwitch;
+pub use switch::SwitchSocket;
 pub use udp::UdpSocket;
 #[cfg(unix)]
 pub use unix::UnixDatagramSocket;
