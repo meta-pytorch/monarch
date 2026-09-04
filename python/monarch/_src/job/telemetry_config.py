@@ -64,7 +64,7 @@ from monarch._src.job.telemetry_actor import (
 )
 from monarch.actor import context, HostMesh, shutdown_context
 from monarch.distributed_telemetry.engine import QueryEngine
-from monarch.monarch_dashboard.server.app import start_dashboard
+from monarch.monarch_dashboard.server.app import start_telemetry_servers
 from monarch.monarch_dashboard.server.query_engine_adapter import QueryEngineAdapter
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -306,7 +306,7 @@ class _TelemetryHandle:
         client_actor.activate.call_one().get()
 
         query_engine = QueryEngine(client_actor)
-        dashboard_info = start_dashboard(
+        dashboard_info = start_telemetry_servers(
             adapter=QueryEngineAdapter(query_engine),
             port=config.dashboard_port,
             include_dashboard=config.include_dashboard,

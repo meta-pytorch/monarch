@@ -104,14 +104,14 @@ def _create_api_server(app: Flask) -> tuple[str, threading.Thread]:
     )
 
 
-def start_dashboard(
+def start_telemetry_servers(
     adapter: DBAdapter,
     port: int = 8265,
     host: str = "::",
     *,
     include_dashboard: bool = True,
 ) -> dict:
-    """Start the dashboard server in a daemon thread.
+    """Start the telemetry HTTP servers in daemon threads.
 
     The dashboard runs in-process because telemetry data lives entirely
     in-memory as DataFusion MemTables. There is no on-disk database, so
