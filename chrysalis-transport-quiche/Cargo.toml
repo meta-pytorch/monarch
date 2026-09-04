@@ -17,3 +17,7 @@ chrysalis-transport-uring = { version = "0.0.0", path = "../chrysalis-transport-
 quiche = { version = "0.24.6", git = "https://github.com/mariusae/quiche", rev = "e173aec2d8b005aab8a9ce5b951541ff8b9efb85" }
 ring = "0.17.14"
 sha2 = "0.11.0"
+
+[dev-dependencies]
+rcgen = { version = "0.14.9", features = ["x509-parser"] }
+tempfile = "3.27.0"

@@ -44,7 +44,7 @@ use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
 
 /// Format version stored in the first byte of every Retry token body.
-const TOKEN_VERSION: u8 = 1;
+const TOKEN_VERSION: u8 = 2;
 /// Bytes of operating-system randomness used as the HMAC-SHA256 key.
 const SECRET_BYTES: usize = 32;
 /// Bytes in the HMAC-SHA256 tag appended to each serialized token body.
@@ -85,15 +85,25 @@ impl RetryTokens {
         }
     }
 
-    pub(crate) fn mint(&mut self, peer: SocketAddr, original_dcid: &[u8]) -> Vec<u8> {
+    pub(crate) fn mint(
+        &mut self,
+        peer: SocketAddr,
+        original_dcid: &[u8],
+        retry_cid: &[u8],
+    ) -> Vec<u8> {
         self.rotate();
-        let mut token = token_body(peer, original_dcid);
+        let mut token = token_body(peer, original_dcid, retry_cid);
         let key = hmac::Key::new(hmac::HMAC_SHA256, &self.current.bytes);
         token.extend_from_slice(hmac::sign(&key, &token).as_ref());
         token
     }
 
-    pub(crate) fn validate(&mut self, peer: SocketAddr, token: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn validate(
+        &mut self,
+        peer: SocketAddr,
+        token: &[u8],
+        retry_cid: &[u8],
+    ) -> Option<Vec<u8>> {
         self.rotate();
         let (body, tag) = token.split_at_checked(token.len().checked_sub(TAG_BYTES)?)?;
         let valid = verify(&self.current, body, tag)
@@ -104,7 +114,7 @@ impl RetryTokens {
         if !valid {
             return None;
         }
-        parse_body(peer, body)
+        parse_body(peer, body, retry_cid)
     }
 
     fn rotate(&mut self) {
@@ -120,8 +130,9 @@ fn verify(secret: &Secret, body: &[u8], tag: &[u8]) -> bool {
     hmac::verify(&key, body, tag).is_ok()
 }
 
-fn token_body(peer: SocketAddr, original_dcid: &[u8]) -> Vec<u8> {
-    let mut body = Vec::with_capacity(1 + 8 + 1 + 16 + 2 + 1 + original_dcid.len());
+fn token_body(peer: SocketAddr, original_dcid: &[u8], retry_cid: &[u8]) -> Vec<u8> {
+    let mut body =
+        Vec::with_capacity(1 + 8 + 1 + 16 + 2 + 1 + original_dcid.len() + 1 + retry_cid.len());
     body.push(TOKEN_VERSION);
     body.extend_from_slice(&unix_seconds().to_be_bytes());
     match peer.ip() {
@@ -137,14 +148,16 @@ fn token_body(peer: SocketAddr, original_dcid: &[u8]) -> Vec<u8> {
     body.extend_from_slice(&peer.port().to_be_bytes());
     body.push(u8::try_from(original_dcid.len()).expect("QUIC CID length fits in one byte"));
     body.extend_from_slice(original_dcid);
+    body.push(u8::try_from(retry_cid.len()).expect("QUIC CID length fits in one byte"));
+    body.extend_from_slice(retry_cid);
     body
 }
 
-fn parse_body(peer: SocketAddr, body: &[u8]) -> Option<Vec<u8>> {
-    parse_body_at(peer, body, unix_seconds())
+fn parse_body(peer: SocketAddr, body: &[u8], retry_cid: &[u8]) -> Option<Vec<u8>> {
+    parse_body_at(peer, body, retry_cid, unix_seconds())
 }
 
-fn parse_body_at(peer: SocketAddr, body: &[u8], now: u64) -> Option<Vec<u8>> {
+fn parse_body_at(peer: SocketAddr, body: &[u8], retry_cid: &[u8], now: u64) -> Option<Vec<u8>> {
     let (&version, rest) = body.split_first()?;
     if version != TOKEN_VERSION {
         return None;
@@ -169,8 +182,11 @@ fn parse_body_at(peer: SocketAddr, body: &[u8], now: u64) -> Option<Vec<u8>> {
     if u16::from_be_bytes(port.try_into().ok()?) != peer.port() {
         return None;
     }
-    let (&cid_length, cid) = rest.split_first()?;
-    (cid.len() == usize::from(cid_length)).then(|| cid.to_vec())
+    let (&original_length, rest) = rest.split_first()?;
+    let (original_dcid, rest) = rest.split_at_checked(usize::from(original_length))?;
+    let (&retry_length, encoded_retry_cid) = rest.split_first()?;
+    (encoded_retry_cid.len() == usize::from(retry_length) && encoded_retry_cid == retry_cid)
+        .then(|| original_dcid.to_vec())
 }
 
 fn address_bytes(address: IpAddr) -> Vec<u8> {
@@ -195,28 +211,35 @@ mod tests {
     fn retry_token_authenticates_source_and_original_dcid() {
         let peer: SocketAddr = "[::1]:1234".parse().unwrap();
         let mut tokens = RetryTokens::new();
-        let token = tokens.mint(peer, b"original");
+        let token = tokens.mint(peer, b"original", b"retry");
 
-        assert_eq!(tokens.validate(peer, &token).unwrap(), b"original");
+        assert_eq!(
+            tokens.validate(peer, &token, b"retry").unwrap(),
+            b"original"
+        );
         assert!(
             tokens
-                .validate("[::1]:1235".parse().unwrap(), &token)
+                .validate("[::1]:1235".parse().unwrap(), &token, b"retry")
                 .is_none()
         );
+        assert!(tokens.validate(peer, &token, b"another-retry").is_none());
         let mut forged = token;
         forged[10] ^= 1;
-        assert!(tokens.validate(peer, &forged).is_none());
+        assert!(tokens.validate(peer, &forged, b"retry").is_none());
     }
 
     #[test]
     fn retry_token_tolerates_bounded_clock_skew() {
         let peer: SocketAddr = "127.0.0.1:1234".parse().unwrap();
         let now = unix_seconds();
-        let mut body = token_body(peer, b"original");
+        let mut body = token_body(peer, b"original", b"retry");
         body[1..9].copy_from_slice(&(now + 1).to_be_bytes());
 
-        assert_eq!(parse_body_at(peer, &body, now).unwrap(), b"original");
+        assert_eq!(
+            parse_body_at(peer, &body, b"retry", now).unwrap(),
+            b"original"
+        );
         body[1..9].copy_from_slice(&(now + TOKEN_LIFETIME.as_secs() + 1).to_be_bytes());
-        assert!(parse_body_at(peer, &body, now).is_none());
+        assert!(parse_body_at(peer, &body, b"retry", now).is_none());
     }
 }
