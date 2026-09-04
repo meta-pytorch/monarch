@@ -526,6 +526,9 @@ def test_job_sidecar_hosts_telemetry_query_api() -> None:
     """Launch the real job sidecar process, open telemetry over the command
     socket, and confirm the data socket is bound and the query API answers."""
     apply_id = _new_apply_id()
+    dashboard_port_guard = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    dashboard_port_guard.bind(("127.0.0.1", 0))
+    dashboard_port = dashboard_port_guard.getsockname()[1]
     socket_dir = telemetry_socket_dir(apply_id)
     _remove_socket_dir(apply_id)
     os.makedirs(socket_dir, mode=0o700)
@@ -534,7 +537,7 @@ def test_job_sidecar_hosts_telemetry_query_api() -> None:
             TelemetryConfig(
                 retention_secs=0,
                 include_dashboard=False,
-                dashboard_port=0,
+                dashboard_port=dashboard_port,
             )
         ).ensure_open(
             apply_id,
@@ -542,9 +545,15 @@ def test_job_sidecar_hosts_telemetry_query_api() -> None:
         )
         assert isinstance(response, dict)
         telemetry_url = response["telemetry_url"]
+        assert response["dashboard_url"] is None
         socket_path = response["socket_path"]
         assert isinstance(telemetry_url, str)
         assert socket_path == telemetry_socket_path(apply_id)
+
+        dashboard_port_guard.close()
+        with pytest.raises(ConnectionRefusedError):
+            with socket.create_connection(("127.0.0.1", dashboard_port), timeout=2):
+                pass
 
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
@@ -584,5 +593,6 @@ def test_job_sidecar_hosts_telemetry_query_api() -> None:
             )
         assert error.value.code == 400
     finally:
+        dashboard_port_guard.close()
         js.stop_job_sidecar(apply_id)
         _remove_socket_dir(apply_id)
