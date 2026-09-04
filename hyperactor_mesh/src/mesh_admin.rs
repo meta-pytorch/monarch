@@ -2055,7 +2055,7 @@ pub fn build_openapi_spec() -> serde_json::Value {
                 "post": {
                     "summary": "Trigger py-spy dump and store in telemetry",
                     "operationId": "pyspyDumpAndStore",
-                    "description": "Runs py-spy against the target process, stores the result in the dashboard's DataFusion pyspy tables, and returns the dump_id.",
+                    "description": "Runs py-spy against the target process, stores a successful result in the dashboard's DataFusion pyspy tables, and returns the dump_id. Failed captures return an error without a dump_id.",
                     "parameters": [{
                         "name": "proc_reference",
                         "in": "path",
@@ -2074,7 +2074,8 @@ pub fn build_openapi_spec() -> serde_json::Value {
                         },
                         "400": error_response("Bad request (malformed proc reference)"),
                         "404": error_response("Proc or dashboard not found"),
-                        "500": error_response("Internal error"),
+                        "500": error_response("Capture, storage, or internal error"),
+                        "503": error_response("py-spy binary unavailable"),
                         "504": error_response("Gateway timeout")
                     }
                 }
@@ -2510,6 +2511,46 @@ pub struct PyspyDumpAndStoreResponse {
     pub dump_id: String,
 }
 
+fn serialize_storable_pyspy_result(pyspy_result: &PySpyResult) -> Result<String, ApiError> {
+    match pyspy_result {
+        PySpyResult::Ok { .. } => serde_json::to_string(pyspy_result).map_err(|e| ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to serialize PySpyResult: {}", e),
+            details: None,
+        }),
+        PySpyResult::BinaryNotFound { searched } => Err(ApiError {
+            code: "service_unavailable".to_string(),
+            message: format!(
+                "py-spy not available on target host; searched: {}",
+                searched.join(", ")
+            ),
+            details: None,
+        }),
+        PySpyResult::Failed {
+            pid,
+            binary,
+            exit_code,
+            stderr,
+        } => {
+            let exit_code =
+                exit_code.map_or_else(|| "unknown".to_string(), |code| code.to_string());
+            let stderr = stderr.trim();
+            let message = if stderr.is_empty() {
+                format!("py-spy dump failed for pid {pid} using {binary} (exit code {exit_code})")
+            } else {
+                format!(
+                    "py-spy dump failed for pid {pid} using {binary} (exit code {exit_code}): {stderr}"
+                )
+            };
+            Err(ApiError {
+                code: "pyspy_failed".to_string(),
+                message,
+                details: None,
+            })
+        }
+    }
+}
+
 /// Resolve the telemetry URL from bridge state, returning an
 /// `ApiError` if not configured.
 fn require_telemetry_url(state: &BridgeState) -> Result<&str, ApiError> {
@@ -2581,9 +2622,10 @@ async fn query_proxy(
 ///
 /// 1. Performs a py-spy dump via `do_pyspy_dump` (same as
 ///    `pyspy_bridge`).
-/// 2. POSTs the serialized result to the dashboard's
+/// 2. Rejects unsuccessful captures without generating a dump id.
+/// 3. POSTs the serialized successful result to the dashboard's
 ///    `/api/pyspy_dump` endpoint for persistent storage.
-/// 3. Returns the generated dump id.
+/// 4. Returns the generated dump id.
 async fn pyspy_dump_and_store(
     State(state): State<Arc<BridgeState>>,
     AxumPath(proc_reference): AxumPath<String>,
@@ -2591,12 +2633,8 @@ async fn pyspy_dump_and_store(
     let telemetry_url = require_telemetry_url(&state)?;
     let pyspy_result = do_pyspy_dump(&state, &proc_reference).await?;
 
+    let pyspy_json = serialize_storable_pyspy_result(&pyspy_result)?;
     let dump_id = uuid::Uuid::new_v4().to_string();
-    let pyspy_json = serde_json::to_string(&pyspy_result).map_err(|e| ApiError {
-        code: "internal_error".to_string(),
-        message: format!("failed to serialize PySpyResult: {}", e),
-        details: None,
-    })?;
 
     let store_body = StorePyspyDumpRequest {
         dump_id: dump_id.clone(),
@@ -3280,6 +3318,63 @@ mod tests {
     // ephemeral port. The default (`None`) reads MESH_ADMIN_ADDR
     // config which is `[::]:1729` — a fixed port that causes bind
     // conflicts when tests run concurrently.
+
+    #[test]
+    fn failed_pyspy_dump_is_rejected_before_storage() {
+        let error = serialize_storable_pyspy_result(&PySpyResult::Failed {
+            pid: 1234,
+            binary: "py-spy".to_string(),
+            exit_code: Some(1),
+            stderr: "capture failed".to_string(),
+        })
+        .expect_err("a failed capture must not be sent to storage");
+
+        assert_eq!(error.code, "pyspy_failed");
+        assert_eq!(
+            error.message,
+            "py-spy dump failed for pid 1234 using py-spy (exit code 1): capture failed"
+        );
+        assert_eq!(
+            error.into_response().status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn missing_pyspy_binary_is_rejected_before_storage() {
+        let error = serialize_storable_pyspy_result(&PySpyResult::BinaryNotFound {
+            searched: vec!["configured-py-spy".to_string(), "py-spy".to_string()],
+        })
+        .expect_err("a missing binary must not be sent to storage");
+
+        assert_eq!(error.code, "service_unavailable");
+        assert_eq!(
+            error.message,
+            "py-spy not available on target host; searched: configured-py-spy, py-spy"
+        );
+        assert_eq!(
+            error.into_response().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn successful_pyspy_dump_is_serialized_for_storage() {
+        let result = PySpyResult::Ok {
+            pid: 1234,
+            binary: "py-spy".to_string(),
+            stack_traces: vec![],
+            warnings: vec![],
+        };
+
+        let serialized = serialize_storable_pyspy_result(&result)
+            .expect("a successful capture should be sent to storage");
+
+        assert_eq!(
+            serde_json::from_str::<PySpyResult>(&serialized).unwrap(),
+            result
+        );
+    }
 
     #[test]
     fn mesh_admin_access_instructions_print_file_tls_paths() {

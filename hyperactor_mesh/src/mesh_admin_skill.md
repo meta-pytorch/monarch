@@ -33,11 +33,13 @@ first when building against this API.
 Errors return an `ApiErrorEnvelope` JSON body (see error schema).
 The `error.code` field is authoritative for programmatic decisions,
 not the HTTP status code. Stable codes: `not_found`, `bad_request`,
-`gateway_timeout`, `service_unavailable`, `internal_error`.
+`gateway_timeout`, `service_unavailable`, `pyspy_failed`,
+`internal_error`.
 
-`service_unavailable` is transient (server at capacity) — retry
-with backoff. `gateway_timeout` means a downstream host did not
-respond in time; the node may still exist.
+Retry a capacity-related `service_unavailable` with backoff. The same
+code can also mean a required tool is unavailable on the target.
+`gateway_timeout` means a downstream host did not respond in time;
+the node may still exist.
 
 ## Schema-first workflow
 
@@ -245,7 +247,7 @@ Most endpoints are read-only (`GET`). Three endpoints accept `POST`:
   The endpoint performs two steps:
   1. Sends a `PySpyDump` message to the target proc's agent
      (same routing as `GET /v1/pyspy/{proc_reference}`).
-  2. Stores the result in DataFusion via the dashboard, keyed
+  2. Stores a successful result in DataFusion via the dashboard, keyed
      by a generated UUID.
 
   Success returns a `PyspyDumpAndStoreResponse`:
@@ -262,9 +264,10 @@ Most endpoints are read-only (`GET`). Three endpoints accept `POST`:
   string array. Read it before interpreting a stored dump; a native-capture
   fallback is recorded there.
 
-  Error handling follows the same conventions as
-  `GET /v1/pyspy/{proc_reference}`: `not_found` if the target
-  agent is unreachable, `gateway_timeout` on timeout.
+  A failed capture returns `pyspy_failed`, and a missing py-spy binary
+  returns `service_unavailable`. Neither response includes a `dump_id`.
+  An unreachable target returns `not_found`; a bridge timeout returns
+  `gateway_timeout`.
 
   Runs the same native-frame capture as `GET /v1/pyspy`, with the
   same best-effort fallback. See "py-spy: missing native frames".
