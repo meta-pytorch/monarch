@@ -345,19 +345,10 @@ impl ProcLauncher for NativeProcLauncher {
         }
 
         // Put child in its own process group so we can kill the entire
-        // tree with kill(-pgid, ...).
-        //
-        // SAFETY: runs in the child between fork and exec. We must not
-        // allocate or do anything complex here.
-        unsafe {
-            cmd.pre_exec(|| {
-                // setpgid(0, 0) => make this process the leader of a new process group.
-                if libc::setpgid(0, 0) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+        // tree with kill(-pgid, ...). CommandExt::process_group preserves
+        // the posix_spawn path; pre_exec would force a fork from a
+        // multithreaded CUDA/NCCL/Folly process and can deadlock before exec.
+        cmd.process_group(0);
 
         let started_at = std::time::SystemTime::now();
 
