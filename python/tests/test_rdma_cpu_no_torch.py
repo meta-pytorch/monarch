@@ -53,7 +53,10 @@ class CpuActor(Actor):
 
 
 @pytest.mark.parametrize("rdma_backend", RDMA_BACKENDS)
-@isolate_in_subprocess
+# This test asserts torch is never imported. Opt out of MONARCH_PRELOAD_TORCH
+# (which the ROCm CI sets job-wide to dodge the rocprofiler import race) so the
+# isolated subprocess exercises the real default, no-preload CPU-RDMA path.
+@isolate_in_subprocess(env={"MONARCH_PRELOAD_TORCH": "0"})
 async def test_rdma_buffer_cpu_memoryview(rdma_backend):
     """RDMABuffer works with bytearray/memoryview CPU buffers without importing torch."""
     if rdma_backend == "tcp":
