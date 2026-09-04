@@ -337,7 +337,7 @@ pytokio_import = "monarch._rust_bindings.monarch_hyperactor.pytokio"
 doc_legacy_surface = "PythonTask|PyShared|pytokio"
 
 [totals]
-py_python_task_new = 26
+py_python_task_new = 27
 raw_python_task_new = 5
 from_coro = 19
 rust_from_coro = 2
@@ -658,6 +658,7 @@ owns = [
   "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.name",
   "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.stop",
   "np.actor_mesh.ControlledActorMesh_as_ActorMeshProtocol.name",
+  "np.actor_mesh.ControlledActorMesh_as_ActorMeshProtocol.stop",
   "np.actor_mesh.PythonActorMeshImpl_as_ActorMeshProtocol.name",
   "np.actor_mesh.PythonActorMeshImpl_as_ActorMeshProtocol.stop",
   "np.actor_mesh.initialized",
@@ -2156,15 +2157,17 @@ transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::name"
 consumer = "ActorMesh._name via Future._from_coro"
-driver = "the per-mesh queue task runs the work; the returned task only reads a oneshot rx"
-start_point = "already started; push() enqueues the work before the observer is returned, so the returned task is a lazy observer of an operation already in flight"
-abandonment = "possible and currently fatal; the observer may be dropped while the queue task runs"
+driver = "the awaiting Future caller; the returned task is the oneshot rx observer and completes only when that caller drives it"
+start_point = "already started; push() enqueues the work before the observer is returned, so the returned task is a lazy observer of an operation already in flight. The per-mesh queue task, not the observer's caller, drives that underlying operation"
+abandonment = "possible and currently fatal, but only in a narrow window: the observer must be destroyed while the operation is still pending, before the queue closure reaches tx.send. tokio oneshot send fails only if the receiver has been deallocated, so an observer that is merely unpolled still takes delivery; destroying it after a successful send loses the buffered result and leaves the driver alone. Cancelling an asyncio future is not this case either: as_asyncio() consumes the task into non-abortable spawned state, so the receiver stays alive"
 eager_effect = "observes already-running work"
-drop_behavior = "dropping rx makes tx.send fail and the queue task panics with 'oneshot failed'"
+drop_behavior = "destroying rx before tx.send runs makes that send fail and the queue task panics with 'oneshot failed'; destroying an unpolled rx after a successful send only discards the buffered result. The panic follows the inner operation completing, or an earlier ? short-circuiting: mesh.await?/name()?/take_task()? each bind result and still reach the send. Blast radius is the whole queue -- pending items are dropped and every later push() panics at its send().unwrap() -- and slices share it, because new_with_region clones the queue"
 unobserved_error = "the queue driver panics rather than reporting"
 disposition = "require a binding-specific design"
 semantic_class = "already_started_lazy_observer"
-oracle = "queued observer abandonment (6.0c item 8)"
+oracle = [
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::async_name_runs_before_a_dropped_observer_panics_the_queue",
+]
 
 [[site]]
 id = "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.stop"
@@ -2179,15 +2182,18 @@ transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::stop"
 consumer = "ActorMesh.stop via Future._from_coro"
-driver = "the per-mesh queue task runs the work; the returned task only reads a oneshot rx"
-start_point = "already started; push() enqueues the work before the observer is returned, so the returned task is a lazy observer of an operation already in flight"
-abandonment = "possible and currently fatal; the observer may be dropped while the queue task runs"
+driver = "the awaiting Future caller; the returned task is the oneshot rx observer and completes only when that caller drives it"
+start_point = "already started; the instance is cloned under GilSite::Stop and push() enqueues the work, both before the observer is returned, so the returned task is a lazy observer of an operation already in flight. The per-mesh queue task, not the observer's caller, drives that underlying operation"
+abandonment = "possible and currently fatal, but only in a narrow window: the observer must be destroyed while the operation is still pending, before the queue closure reaches tx.send. tokio oneshot send fails only if the receiver has been deallocated, so an observer that is merely unpolled still takes delivery; destroying it after a successful send loses the buffered result and leaves the driver alone. Cancelling an asyncio future is not this case either: as_asyncio() consumes the task into non-abortable spawned state, so the receiver stays alive"
 eager_effect = "observes already-running work"
-drop_behavior = "dropping rx makes tx.send fail and the queue task panics with 'oneshot failed'"
+drop_behavior = "destroying rx before tx.send runs makes that send fail and the queue task panics with 'oneshot failed'; destroying an unpolled rx after a successful send only discards the buffered result. The panic follows the inner operation completing, or an earlier ? short-circuiting: mesh.await?/stop()?/take_task()? each bind result and still reach the send. Blast radius is the whole queue -- pending items are dropped and every later push() panics at its send().unwrap() -- and slices share it, because new_with_region clones the queue"
 unobserved_error = "the queue driver panics rather than reporting"
 disposition = "require a binding-specific design"
 semantic_class = "already_started_lazy_observer"
-oracle = "queued observer abandonment (6.0c item 8)"
+oracle = [
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::async_stop_runs_before_a_dropped_observer_panics_the_queue",
+  "fbcode//monarch/python/tests:test_actor_error::test_actor_mesh_stop",
+]
 
 [[site]]
 id = "np.actor_mesh.ControlledActorMesh_as_ActorMeshProtocol.name"
@@ -2203,16 +2209,42 @@ constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from the characterization fixture's name implementation"
 consumer = "the queued closure in <AsyncActorMesh as ActorMeshProtocol>::name, which calls this implementation, takes its task and awaits it in the same expression"
 driver = "the per-mesh queue task"
-start_point = "no deferred domain work; the fixed name is cloned before the task is constructed, though observing the task still performs Python result conversion under the GIL"
+start_point = "no deferred domain work; the fixed name is cloned before the task is constructed. Under the default control the returned task increments an otherwise-unread completion counter and performs Python result conversion under the GIL; under an injected control it also acknowledges entry and waits on a release gate before that increment"
 abandonment = "not reachable independently; the queued frame consumes the task in the same expression, and no test drops it"
-eager_effect = "only wraps a ready value"
+eager_effect = "entry signalling, the gate wait and the counter path all begin at construction rather than at first observation; the gate is still respected, so an eager carrier changes when the work starts, not whether it waits"
 drop_behavior = "no independent drop path is exercised"
-unobserved_error = "none; this fixture path always returns Ok(name)"
-disposition = "replace with a direct value"
-semantic_class = "ready_no_op_wrapper"
+unobserved_error = "reachable only through the outer observer: the queued frame always takes and awaits this task, so its result is never unobserved on its own. If the outer one-shot receiver is destroyed before tx.send runs, that send fails and the driver panics, discarding whatever this task produced -- including the fixed PyValueError. A receiver that survives the send takes delivery, and destroying it unobserved afterwards loses only the buffered result"
+disposition = "require a binding-specific design"
+semantic_class = "deferred_side_effect"
 oracle = [
   "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::dropped_root_observers_do_not_cancel_initialization",
   "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::dropped_slice_observers_leave_the_slice_reobservable",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::async_name_runs_before_a_dropped_observer_panics_the_queue",
+]
+
+[[site]]
+id = "np.actor_mesh.ControlledActorMesh_as_ActorMeshProtocol.stop"
+category = "native_producer"
+language = "rust"
+path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
+symbol = "<ControlledActorMesh as ActorMeshProtocol>::stop"
+operation = "py_python_task_new"
+scope = "test"
+state = "legacy"
+transition = "6.3c"
+constructor = "PyPythonTask"
+return_surface = "PyPythonTask returned from the characterization fixture's stop implementation"
+consumer = "the queued closure in <AsyncActorMesh as ActorMeshProtocol>::stop, which calls this implementation, takes its task and awaits it in the same expression"
+driver = "the per-mesh queue task"
+start_point = "no deferred domain work; the fixture holds no mesh to stop. Under the default control the returned task increments an otherwise-unread completion counter and resolves to (), which pyo3 converts to an empty tuple rather than None; under an injected control it also acknowledges entry and waits on a release gate before that increment"
+abandonment = "not reachable independently; the queued frame consumes the task in the same expression, and no test drops it"
+eager_effect = "entry signalling, the gate wait and the counter path all begin at construction rather than at first observation; the gate is still respected, so an eager carrier changes when the work starts, not whether it waits"
+drop_behavior = "no independent drop path is exercised"
+unobserved_error = "reachable only through the outer observer: the queued frame always takes and awaits this task, so its result is never unobserved on its own. If the outer one-shot receiver is destroyed before tx.send runs, that send fails and the driver panics, discarding whatever this task produced -- including the fixed PyValueError. A receiver that survives the send takes delivery, and destroying it unobserved afterwards loses only the buffered result"
+disposition = "require a binding-specific design"
+semantic_class = "deferred_side_effect"
+oracle = [
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::async_stop_runs_before_a_dropped_observer_panics_the_queue",
 ]
 
 [[site]]
@@ -2253,16 +2285,19 @@ state = "legacy"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <PythonActorMeshImpl as ActorMeshProtocol>::stop"
-consumer = "ActorMesh.stop via Future._from_coro"
-driver = "awaited by the Python ActorMesh.stop coroutine"
-start_point = "lazy; the boxed future is not polled until the returned task is driven"
-abandonment = "possible; a caller may drop the returned task"
-eager_effect = "starts a side effect"
-drop_behavior = "the mesh is never stopped"
-unobserved_error = "surfaced on observation"
-disposition = "intentionally become eager"
+consumer = "route-dependent, in three cases. A normally spawned Owned mesh reaches this constructor through the queued frame in <AsyncActorMesh as ActorMeshProtocol>::stop, which takes the task and awaits it immediately. A sliced or reconstructed mesh is a Ref -- new_with_region calls PythonActorMeshImpl::new_ref, as do py_actor_mesh_from_bytes and MeshRef::Actor::reconstruct -- so its outer queue reaches this method but the Ref arm rejects with PyNotImplementedError before this constructor runs, and no inner task exists. Third, the pending reducer can produce a temporary PythonActorMesh around the resolved implementation; ordinary pickle recursively reduces that value into an Async-wrapped reference, but if the resolved implementation is Owned, a caller that retains the bare wrapper and calls stop on it receives this task. Only the non-reserved pending-reducer branch can expose that wrapper: it returns (Shared.block_on, (shared,)), and a caller that invokes Shared.block_on itself retains the result. Under active Monarch pickling the callable is pop_mesh_reference instead, which reconstructs async-wrapped, so that branch never exposes it"
+driver = "the per-mesh queue task on the normal Owned route, which is the only route on which the queue constructs and drives this task; whatever driver the caller chooses on a directly retained Owned bare wrapper. A Ref constructs no task, so it has no driver"
+start_point = "two arms. Ref rejects with PyNotImplementedError before constructing a task, synchronously with respect to its own call, though the GilSite::Stop clone of self and the instance still runs first. Owned is lazy; its boxed future is not polled until the returned task is driven"
+abandonment = "route-dependent. The normal queued frame consumes the Owned task immediately, so it cannot be abandoned independently there. A caller that retains the pending reducer's temporary wrapper receives the lazy task directly, and dropping it before drive means stop never starts. That alternate route is source-grounded; no in-tree caller was found that retains the wrapper"
+eager_effect = "starts the owned stop side effect at construction"
+drop_behavior = "on the normal queued route the inner task has no independent drop path, and the outer observer behavior is recorded on the AsyncActorMesh row. On an Owned implementation reached through a directly retained reducer result, dropping this task before drive means this stop request never runs. Ref returns no task"
+unobserved_error = "on the normal queued route the inner result is forwarded to the outer observer, or replaced by that queue's panic if the outer receiver was destroyed before tx.send. On an Owned implementation reached through a directly retained reducer result, dropping before drive prevents both the operation and its result; when driven, the task reports the owned stop result directly. Ref rejects synchronously"
+disposition = "require a binding-specific design"
 semantic_class = "deferred_side_effect"
-oracle = "actor mesh stop coverage"
+oracle = [
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::actor_mesh_impl_ref_stop_rejects_before_returning_a_task",
+  "fbcode//monarch/python/tests:test_actor_error::test_actor_mesh_stop",
+]
 
 [[site]]
 id = "np.actor_mesh.initialized"
@@ -2276,10 +2311,10 @@ state = "legacy"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from initialized"
-consumer = "none in tree. PythonActorMesh::initialized forwards to its inner mesh, and AsyncActorMesh overrides this default rather than delegating to it. The one PythonActorMesh built over a bare PythonActorMeshImpl, in the pending AsyncActorMesh::__reduce__ branch, is consumed only by the pickler and never receives an initialized() call"
-driver = "none in tree; driven only by the in-crate characterization test"
+consumer = "no production caller found in tree. Normal PythonActorMesh construction and reconstruction use AsyncActorMesh, which overrides this default. The pending reducer can produce a temporary wrapper around a bare implementation; ordinary pickle recursively reduces it into an Async-wrapped reference, but a caller that retains the bare wrapper can call initialized() on it and reach this default. Only the non-reserved pending-reducer branch can expose that wrapper: it returns (Shared.block_on, (shared,)), and a caller that invokes Shared.block_on itself retains the result. Under active Monarch pickling the callable is pop_mesh_reference instead, which reconstructs async-wrapped, so that branch never exposes it. Unlike the stop row this does not depend on which arm resolved: neither PythonActorMeshImpl nor ActorMeshRef<PythonActor> overrides initialized, so both inherit this default. The alternate route is source-grounded; no oracle exercises it"
+driver = "no production caller in tree; driven by the in-crate characterization test, and on the source-grounded direct-reducer route by whatever driver the retaining caller chooses"
 start_point = "no domain work; the default body resolves to None immediately, though observing the task still performs Python result conversion under the GIL"
-abandonment = "possible in principle, but no in-tree caller holds a task to drop"
+abandonment = "exercised by the in-crate characterization test, which drops the ready wrapper; also possible on the source-grounded direct-reducer route, though no production caller was found. Dropping it has no domain effect"
 eager_effect = "only wraps a ready value"
 drop_behavior = "no effect; there is no underlying operation"
 unobserved_error = "none; resolves to Ok(None)"

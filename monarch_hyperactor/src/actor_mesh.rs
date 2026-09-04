@@ -906,6 +906,7 @@ mod tests {
     use std::time::Duration;
 
     use hyperactor::ActorRef;
+    use hyperactor::Proc;
     use hyperactor::ProcAddr;
     use hyperactor::ProcId;
     use hyperactor::channel::ChannelAddr;
@@ -915,6 +916,7 @@ mod tests {
     use hyperactor_mesh::mesh_id::ActorMeshId;
     use hyperactor_mesh::mesh_id::HostMeshId;
     use ndslice::extent;
+    use pyo3::PyTypeInfo;
     use tokio::sync::watch;
 
     use super::*;
@@ -1109,13 +1111,23 @@ mod tests {
     // claim. Re-reading the name afterwards shows the mesh is still usable; it
     // is not a work counter.
     //
-    // No Python-visible call reaches this default today, though not because
-    // every `PythonActorMesh` wraps an `AsyncActorMesh`. The pending
-    // `__reduce__` branch builds one directly over the resolved
-    // `PythonActorMeshImpl`, which inherits this default; that object is only
-    // ever consumed by the pickler, never handed to Python code that calls
-    // `initialized()`. Both inheriting implementors are exercised directly here
-    // because neither has a caller to exercise them through.
+    // No production caller reaches this default today. Normal `PythonActorMesh`
+    // construction and reconstruction use `AsyncActorMesh`, which overrides it.
+    //
+    // One alternate route exists. When the mesh is still pending, and only on
+    // the non-reserved branch, `AsyncActorMesh::__reduce__` returns
+    // `(Shared.block_on, (shared,))` over an observer that builds a wrapper
+    // directly around the resolved implementation. Ordinary pickle reduces that
+    // value again into an async-wrapped reference, but a caller that invokes
+    // `Shared.block_on` itself can retain the bare wrapper and make
+    // `PythonActorMesh::initialized` dispatch here. Under active Monarch
+    // pickling the callable is `pop_mesh_reference` instead, which reconstructs
+    // async-wrapped, so that branch cannot expose the wrapper at all.
+    //
+    // The route is source-grounded rather than exercised below, and it does not
+    // depend on which arm resolved: neither `PythonActorMeshImpl` nor
+    // `ActorMeshRef` overrides `initialized`. Both inheriting implementors are
+    // exercised directly because no production caller was found.
     #[test]
     fn default_initialized_wrappers_return_none_and_leave_mesh_usable() {
         pyo3::Python::initialize();
@@ -1283,11 +1295,103 @@ mod tests {
         }
     }
 
+    /// The fixed result a controlled operation yields once it is released.
+    #[derive(Default)]
+    enum OpOutcome {
+        #[default]
+        Succeed,
+        /// Resolves to a `PyValueError` carrying exactly this message.
+        Fail(&'static str),
+    }
+
+    /// Opt-in control over one `ControlledActorMesh` operation.
+    ///
+    /// `Default` is no entry signal, no gate, immediate success. It is not
+    /// literally inert: `run` always increments `completed`, so a defaulted
+    /// operation still performs one sequentially consistent atomic increment
+    /// that nothing reads. Every externally visible property -- value, error, and timing --
+    /// matches returning the value directly, which is what lets a caller that
+    /// does not care about ordering ignore the control entirely.
+    #[derive(Default)]
+    struct OpControl {
+        /// `None` leaves the operation ungated.
+        release: Option<watch::Receiver<bool>>,
+        /// `None` emits no entry acknowledgement.
+        entered: Option<SyncSender<()>>,
+        /// Incremented once per released run, after the wait and before the
+        /// outcome is produced.
+        completed: Arc<AtomicUsize>,
+        outcome: OpOutcome,
+    }
+
+    impl OpControl {
+        /// Gated: acknowledges entry, then waits for `gate` before completing.
+        fn gated(gate: &Arc<Gate>, release: watch::Receiver<bool>, outcome: OpOutcome) -> Self {
+            Self {
+                release: Some(release),
+                entered: Some(gate.entered.clone()),
+                completed: Arc::new(AtomicUsize::new(0)),
+                outcome,
+            }
+        }
+
+        /// Ungated but still counted, for a subcase that needs a fixed outcome
+        /// without an ordering rendezvous.
+        fn immediate(outcome: OpOutcome) -> Self {
+            Self {
+                outcome,
+                ..Self::default()
+            }
+        }
+
+        fn completions(&self) -> usize {
+            self.completed.load(Ordering::SeqCst)
+        }
+
+        /// Acknowledge entry, wait for release, count the completion, then
+        /// yield the fixed outcome.
+        ///
+        /// The acknowledgement is emitted before the wait, so an observer of it
+        /// learns that the caller reached this operation -- not that it
+        /// finished. The counter is incremented after the wait, so a reader
+        /// that has not synchronized with completion can legitimately see zero.
+        async fn run(&self) -> PyResult<()> {
+            if let Some(entered) = &self.entered {
+                let _ = entered.try_send(());
+            }
+            if let Some(release) = &self.release {
+                let mut release = release.clone();
+                while !*release.borrow() {
+                    if release.changed().await.is_err() {
+                        break;
+                    }
+                }
+            }
+            self.completed.fetch_add(1, Ordering::SeqCst);
+            match self.outcome {
+                OpOutcome::Succeed => Ok(()),
+                OpOutcome::Fail(message) => Err(PyValueError::new_err(message)),
+            }
+        }
+    }
+
+    /// The per-operation controls a controlled mesh carries. Both default to no
+    /// gate, no entry signal and immediate success -- externally
+    /// indistinguishable from returning the value directly, though `run` still
+    /// performs its unread completion increment. Both are shared with every
+    /// slice derived from the mesh.
+    #[derive(Default, Clone)]
+    struct ControlledOps {
+        name: Arc<OpControl>,
+        stop: Arc<OpControl>,
+    }
+
     /// A closed `SupervisableActorMesh`: fixed results and internal gates only,
     /// never Python callables, coroutines or caller-supplied work.
     struct ControlledActorMesh {
         name: String,
         slices: Arc<AtomicUsize>,
+        ops: ControlledOps,
     }
 
     impl ActorMeshProtocol for ControlledActorMesh {
@@ -1324,7 +1428,25 @@ mod tests {
 
         fn name(&self) -> PyResult<PyPythonTask> {
             let name = self.name.clone();
-            PyPythonTask::new(async move { Ok(name) })
+            let ops = self.ops.name.clone();
+            PyPythonTask::new(async move {
+                ops.run().await?;
+                Ok(name)
+            })
+        }
+
+        /// Resolves to `()`, mirroring the owned production arm, whose
+        /// `ActorMesh::stop` returns `Result<()>`. On the Python side that is
+        /// an empty tuple, not `None`: pyo3 defines `IntoPyObject for ()` as
+        /// `PyTuple::empty`. Without this method the trait default returns
+        /// `PyNotImplementedError` synchronously, and a queued caller's `?`
+        /// would short-circuit before any inner work ran.
+        fn stop(&self, _instance: &PyInstance, _reason: String) -> PyResult<PyPythonTask> {
+            let ops = self.ops.stop.clone();
+            PyPythonTask::new(async move {
+                ops.run().await?;
+                Ok(())
+            })
         }
     }
 
@@ -1341,6 +1463,10 @@ mod tests {
             Ok(Box::new(ControlledActorMesh {
                 name: format!("{}-slice", self.name),
                 slices: self.slices.clone(),
+                // Shared, not defaulted: a slice that reverted to the default
+                // control would have no gate and no entry signal, making any
+                // ordering measurement taken through it vacuous.
+                ops: self.ops.clone(),
             }))
         }
     }
@@ -1351,6 +1477,7 @@ mod tests {
         gate: &Arc<Gate>,
         mut release: watch::Receiver<bool>,
         slices: Option<Arc<AtomicUsize>>,
+        ops: ControlledOps,
     ) -> ActorMeshFut {
         let entered = gate.entered.clone();
         let slices = slices.unwrap_or_default();
@@ -1364,6 +1491,7 @@ mod tests {
             Ok::<Arc<dyn SupervisableActorMesh>, ClonePyErr>(Arc::new(ControlledActorMesh {
                 name: "controlled".to_string(),
                 slices,
+                ops,
             }))
         }
         .boxed()
@@ -1436,15 +1564,22 @@ mod tests {
         })
     }
 
-    /// Owns the release gate and the retained queue driver for one test.
+    /// Owns every release gate and the retained queue driver for one test.
     ///
     /// The success path calls `join`, which drops the driver handle and waits
     /// for the loop to exit once its senders close. `Drop` is the failure path
-    /// only: on unwind it opens any gate still shut and aborts a driver still
+    /// only: on unwind it opens every gate still shut and aborts a driver still
     /// held, so an assertion failure cannot leave the runtime wedged. `Drop`
-    /// cannot await, which is why it aborts rather than joins.
+    /// cannot await, which is why it aborts rather than joins -- `abort()` only
+    /// requests cancellation, so the guarantee is a bounded return, not that no
+    /// task outlives the test.
+    ///
+    /// Ownership of the operation gates is what makes that promise reachable: a
+    /// gate held only by the test body stays shut on an unwinding path, and the
+    /// future waiting on it never wakes.
     struct Teardown {
         gate: Arc<Gate>,
+        op_gates: Vec<Arc<Gate>>,
         driver: Option<tokio::task::JoinHandle<()>>,
     }
 
@@ -1452,7 +1587,23 @@ mod tests {
         fn new(gate: Arc<Gate>, driver: tokio::task::JoinHandle<()>) -> Self {
             Self {
                 gate,
+                op_gates: Vec::new(),
                 driver: Some(driver),
+            }
+        }
+
+        /// Hand an operation gate to the teardown so every exit path opens it.
+        #[must_use]
+        fn with_op_gate(mut self, gate: Arc<Gate>) -> Self {
+            self.op_gates.push(gate);
+            self
+        }
+
+        /// Open the root gate and every operation gate. Idempotent.
+        fn open_all(&self) {
+            self.gate.open();
+            for gate in &self.op_gates {
+                gate.open();
             }
         }
 
@@ -1474,8 +1625,10 @@ mod tests {
                     self.driver.take();
                     result.is_ok()
                 }
-                // Wedged. Abort and reap rather than dropping the handle, which
-                // would only detach and let the task outlive the test.
+                // Wedged. Request cancellation and wait once more rather than
+                // dropping the handle, which would only detach. The second wait
+                // can itself elapse, so this attempts a bounded reap; it does
+                // not establish one.
                 Err(_) => {
                     if let Some(driver) = self.driver.take() {
                         driver.abort();
@@ -1486,11 +1639,93 @@ mod tests {
                 }
             }
         }
+
+        /// `join` for a caller already inside a runtime.
+        async fn join_async(&mut self) -> bool {
+            let Some(driver) = self.driver.as_mut() else {
+                return false;
+            };
+            match tokio::time::timeout(WAIT, driver).await {
+                Ok(result) => {
+                    self.driver.take();
+                    result.is_ok()
+                }
+                Err(_) => {
+                    if let Some(driver) = self.driver.take() {
+                        driver.abort();
+                        let _ = tokio::time::timeout(WAIT, driver).await;
+                    }
+                    false
+                }
+            }
+        }
+
+        /// The inverse of `join`: the panic payload if the loop panicked, and
+        /// `None` otherwise.
+        ///
+        /// A sibling rather than a relaxation of `join`, which must keep
+        /// rejecting `Ok(Err(JoinError))` for the assertions that depend on it.
+        /// Returning the payload rather than a bool is what lets a caller check
+        /// the `oneshot failed` boundary instead of merely "something panicked".
+        /// A normal return yields `None`, so a driver that exited cleanly cannot
+        /// satisfy an expected-panic assertion.
+        fn join_expecting_panic(&mut self) -> Option<String> {
+            let driver = self.driver.as_mut()?;
+            let outcome =
+                get_tokio_runtime().block_on(async { tokio::time::timeout(WAIT, driver).await });
+            match outcome {
+                Ok(Err(join_error)) if join_error.is_panic() => {
+                    self.driver.take();
+                    Some(panic_message(join_error.into_panic().as_ref()))
+                }
+                Ok(_) => {
+                    self.driver.take();
+                    None
+                }
+                // Wedged. Attempt bounded reaping rather than detaching; the
+                // second wait can itself elapse, so this requests cancellation
+                // and returns under a bound rather than proving a reap.
+                Err(_) => {
+                    if let Some(driver) = self.driver.take() {
+                        driver.abort();
+                        let _ = get_tokio_runtime()
+                            .block_on(async { tokio::time::timeout(WAIT, driver).await });
+                    }
+                    None
+                }
+            }
+        }
+
+        /// `join_expecting_panic` for a caller already inside a runtime.
+        async fn join_expecting_panic_async(&mut self) -> Option<String> {
+            let driver = self.driver.as_mut()?;
+            let outcome = tokio::time::timeout(WAIT, driver).await;
+            match outcome {
+                Ok(Err(join_error)) if join_error.is_panic() => {
+                    self.driver.take();
+                    Some(panic_message(join_error.into_panic().as_ref()))
+                }
+                Ok(_) => {
+                    self.driver.take();
+                    None
+                }
+                // Wedged. Attempt bounded reaping rather than detaching; the
+                // second await can itself elapse, so this requests cancellation
+                // and returns under a bound rather than proving a reap.
+                Err(_) => {
+                    if let Some(driver) = self.driver.take() {
+                        driver.abort();
+                        let _ = tokio::time::timeout(WAIT, driver).await;
+                    }
+                    None
+                }
+            }
+        }
     }
 
     impl Drop for Teardown {
         fn drop(&mut self) {
-            self.gate.open();
+            self.open_all();
             if let Some(driver) = self.driver.take() {
                 driver.abort();
             }
@@ -1522,7 +1757,11 @@ mod tests {
         let (gate, release) = Gate::new(entered_tx);
         let (queue, driver) = test_queue();
         // No init item is pushed: the reduction observer is the only driver.
-        let mesh = AsyncActorMesh::new(queue, true, controlled_root(&gate, release, None));
+        let mesh = AsyncActorMesh::new(
+            queue,
+            true,
+            controlled_root(&gate, release, None, ControlledOps::default()),
+        );
         let mut teardown = Teardown::new(gate.clone(), driver);
         let mesh = monarch_with_gil_blocking(GilSite::Test, |py| {
             Py::new(py, PythonActorMesh::from_impl(Arc::new(mesh)))
@@ -1658,7 +1897,11 @@ mod tests {
         let (entered_tx, _entered_rx) = signal();
         let (gate, release) = Gate::new(entered_tx);
         let (queue, driver) = test_queue();
-        let mesh = AsyncActorMesh::new(queue, true, controlled_root(&gate, release, None));
+        let mesh = AsyncActorMesh::new(
+            queue,
+            true,
+            controlled_root(&gate, release, None, ControlledOps::default()),
+        );
         let mut teardown = Teardown::new(gate.clone(), driver);
 
         // The independent root initializer, equivalent to the one `new_queue`
@@ -1763,7 +2006,12 @@ mod tests {
         let mesh = AsyncActorMesh::new(
             queue,
             true,
-            controlled_root(&gate, release, Some(slices.clone())),
+            controlled_root(
+                &gate,
+                release,
+                Some(slices.clone()),
+                ControlledOps::default(),
+            ),
         );
         let mut teardown = Teardown::new(gate.clone(), driver);
 
@@ -1850,5 +2098,662 @@ mod tests {
             joined,
             "the queue driver must return once its senders close"
         );
+    }
+
+    // Queued name and stop characterization
+
+    /// The fixed message a controlled operation fails with, so a test can
+    /// assert the exact error text rather than merely that an error arrived.
+    const CONTROLLED_FAILURE: &str = "controlled operation failed";
+
+    /// The message the `Ref` arm rejects with. Pinned here so a wording change
+    /// in production fails this test rather than silently weakening it.
+    const REF_STOP_REJECTION: &str =
+        "Cannot call stop on an ActorMeshRef, requires an owned ActorMesh";
+
+    /// A real `PyInstance` over an isolated proc.
+    ///
+    /// `actor_instance` spawns detached introspect tasks, so every caller must
+    /// be a `#[tokio::test]`: cleanup is the per-test runtime being dropped, and
+    /// building this on the shared runtime would leak those tasks for the life
+    /// of the test binary.
+    fn isolated_py_instance(name: &str) -> PyInstance {
+        let instance = Proc::isolated()
+            .actor_instance::<PythonActor>(name)
+            .expect("an isolated proc should host a client instance")
+            .instance;
+        PyInstance::from(instance)
+    }
+
+    /// A controlled mesh over a retained queue driver.
+    ///
+    /// The teardown owns the root gate, every operation gate passed here, and
+    /// the driver, so an unwinding assertion cannot strand a future behind a
+    /// gate that only the test body held.
+    fn controlled_fixture(
+        ops: ControlledOps,
+        op_gates: &[Arc<Gate>],
+    ) -> (AsyncActorMesh, Arc<Gate>, Receiver<()>, Teardown) {
+        let (root_entered_tx, root_entered_rx) = signal();
+        let (root_gate, release) = Gate::new(root_entered_tx);
+        let (queue, driver) = test_queue();
+        let mesh =
+            AsyncActorMesh::new(queue, true, controlled_root(&root_gate, release, None, ops));
+        let mut teardown = Teardown::new(root_gate.clone(), driver);
+        for gate in op_gates {
+            teardown = teardown.with_op_gate(gate.clone());
+        }
+        (mesh, root_gate, root_entered_rx, teardown)
+    }
+
+    /// Drive the queued closure as far as the inner operation, reporting what
+    /// was observed instead of asserting it.
+    ///
+    /// Returns `(root entered, operation entered)`. Both waits are bounded, and
+    /// neither is asserted here: a failed wait must not unwind while the gates
+    /// are shut and the driver is live, because `Teardown::Drop` only requests
+    /// cancellation. Callers collect this evidence, run their cleanup, and
+    /// assert afterwards.
+    ///
+    /// The order is fixed and load-bearing. This seam builds the mesh with
+    /// `AsyncActorMesh::new`, which enqueues no initializer, so nothing polls
+    /// the root future until a queued operation awaits it. With the root gate
+    /// still shut the closure parks at that await and never reaches the inner
+    /// method, so the operation acknowledgement would never arrive. Opening the
+    /// root gate only after the root acknowledgement is what makes the
+    /// operation acknowledgement mean "entered the inner method".
+    fn reach_inner_operation(
+        root_entered: &Receiver<()>,
+        root_gate: &Arc<Gate>,
+        op_entered: &Receiver<()>,
+    ) -> (bool, bool) {
+        let reached_root = awaited(root_entered);
+        root_gate.open();
+        (reached_root, awaited(op_entered))
+    }
+
+    /// Destroy the observer the call actually returned, reporting whether one
+    /// was returned at all.
+    ///
+    /// The outer observer is constructed *after* its work is enqueued, and
+    /// `PyPythonTask::new` is fallible -- it propagates `current_traceback()?`.
+    /// A construction failure therefore drops the receiver too, so the queued
+    /// work still runs, still fails at `tx.send`, and still panics the driver.
+    /// Without proving construction succeeded, "the caller discarded a returned
+    /// observer" and "the observer was never returned" satisfy the same
+    /// assertions, and they are different public boundaries.
+    ///
+    /// No GIL scope: `PyPythonTask` owns `Option<PythonTask>`, which owns the
+    /// boxed future directly, so dropping this Rust value destroys the future
+    /// and the `rx` it captured immediately. Only the task's optional
+    /// `Py<PyAny>` traceback defers a decref, and nothing here depends on when
+    /// that happens.
+    fn discard_observer(task: PyResult<PyPythonTask>) -> Result<(), PyErr> {
+        match task {
+            Ok(observer) => {
+                drop(observer);
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Everything driving a wrapper task can produce, as data rather than as a
+    /// panic. Nothing here asserts: a subcase collects an outcome, runs its
+    /// cleanup, and only then decides whether it is the expected one.
+    enum DriveOutcome {
+        /// The call returned an error instead of an observer.
+        NotConstructed(PyErr),
+        /// The observer existed but its future had already been taken.
+        TaskConsumed,
+        /// The observer did not resolve within `WAIT`.
+        TimedOut,
+        Resolved(PyResult<Py<PyAny>>),
+    }
+
+    impl DriveOutcome {
+        /// The resolved result, or a description of why there is not one.
+        fn resolved(self, context: &str) -> PyResult<Py<PyAny>> {
+            match self {
+                DriveOutcome::Resolved(result) => result,
+                DriveOutcome::NotConstructed(err) => {
+                    panic!("{context}: the wrapper returned no observer: {err:?}")
+                }
+                DriveOutcome::TaskConsumed => {
+                    panic!("{context}: the observer's future was already taken")
+                }
+                DriveOutcome::TimedOut => panic!("{context}: the observer did not resolve"),
+            }
+        }
+    }
+
+    /// Drive a wrapper task under a bound without asserting anything.
+    fn drive_evidence(task: PyResult<PyPythonTask>) -> DriveOutcome {
+        let mut task = match task {
+            Ok(task) => task,
+            Err(err) => return DriveOutcome::NotConstructed(err),
+        };
+        let Ok(fut) = task.take_task() else {
+            return DriveOutcome::TaskConsumed;
+        };
+        match get_tokio_runtime().block_on(async { tokio::time::timeout(WAIT, fut).await }) {
+            Ok(resolved) => DriveOutcome::Resolved(resolved),
+            Err(_) => DriveOutcome::TimedOut,
+        }
+    }
+
+    /// `drive_evidence` for a caller already inside a runtime.
+    async fn drive_evidence_async(task: PyResult<PyPythonTask>) -> DriveOutcome {
+        let mut task = match task {
+            Ok(task) => task,
+            Err(err) => return DriveOutcome::NotConstructed(err),
+        };
+        let Ok(fut) = task.take_task() else {
+            return DriveOutcome::TaskConsumed;
+        };
+        match tokio::time::timeout(WAIT, fut).await {
+            Ok(resolved) => DriveOutcome::Resolved(resolved),
+            Err(_) => DriveOutcome::TimedOut,
+        }
+    }
+
+    /// Enqueue a barrier behind the work already queued and wait for it.
+    ///
+    /// The queue runs one item at a time to completion, so observing the
+    /// barrier proves the preceding closure finished -- including its
+    /// `tx.send`. That is a rendezvous with the send, not a delay.
+    ///
+    /// Sends on the queue directly rather than through `push`, whose
+    /// `send(..).unwrap()` would panic before the caller's cleanup if the
+    /// driver had already died. A closed queue is reported, not raised.
+    fn queue_barrier(mesh: &AsyncActorMesh) -> bool {
+        let (passed_tx, passed_rx) = signal();
+        let queued = mesh
+            .queue
+            .send(
+                async move {
+                    let _ = passed_tx.try_send(());
+                }
+                .boxed(),
+            )
+            .is_ok();
+        queued && awaited(&passed_rx)
+    }
+
+    /// Require an error to be exactly `E`, by type identity rather than by
+    /// subclass or message, and to carry exactly `message`.
+    fn assert_exact_error<E: PyTypeInfo>(err: &PyErr, message: &str, context: &str) {
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            assert!(
+                err.get_type(py).is(py.get_type::<E>()),
+                "{context}: expected exactly {}, got {}",
+                std::any::type_name::<E>(),
+                err.get_type(py),
+            );
+            assert_eq!(
+                err.value(py).to_string(),
+                message,
+                "{context}: unexpected error message"
+            );
+        });
+    }
+
+    // `AsyncActorMesh::name` enqueues its work when it is called, not when the
+    // returned observer is awaited, and reports through a one-shot channel. A
+    // retained observer receives the inner value, or the inner error verbatim.
+    //
+    // The queue panics when the receiver has been destroyed at the moment
+    // `tx.send` runs. That is narrower than "never observed": tokio's
+    // `oneshot::Sender::send` fails only if the receiver has been deallocated,
+    // so an observer that is merely unpolled still takes delivery, and dropping
+    // it afterwards loses the buffered value without touching the driver. Both
+    // sides are covered below.
+    //
+    // This panic is current behavior being characterized, not behavior the
+    // migration should preserve.
+    //
+    // Every subcase collects evidence, opens its gates, closes the queue and
+    // joins the driver, and only then asserts. Unwinding earlier would leave a
+    // gate shut and the driver merely abort-requested, since `Teardown::Drop`
+    // cannot await.
+    //
+    // A plain `#[test]`: no subcase needs a `PyInstance`, so nothing here
+    // requires a per-test runtime and the sync helpers apply.
+    #[test]
+    fn async_name_runs_before_a_dropped_observer_panics_the_queue() {
+        pyo3::Python::initialize();
+
+        // Retained observer, success: the inner value reaches the caller.
+        {
+            let name_ops = Arc::new(OpControl::immediate(OpOutcome::Succeed));
+            let (mesh, root_gate, root_entered, mut teardown) = controlled_fixture(
+                ControlledOps {
+                    name: name_ops.clone(),
+                    stop: Arc::default(),
+                },
+                &[],
+            );
+
+            let task = <AsyncActorMesh as ActorMeshProtocol>::name(&mesh);
+            let reached_root = awaited(&root_entered);
+            root_gate.open();
+            let outcome = drive_evidence(task);
+
+            teardown.open_all();
+            drop(mesh);
+            let joined = teardown.join();
+
+            assert!(
+                reached_root,
+                "the queued closure should reach root initialization"
+            );
+            let value = outcome
+                .resolved("retained name success")
+                .expect("the controlled name should succeed");
+            let observed = monarch_with_gil_blocking(GilSite::Test, move |py| {
+                value
+                    .extract::<String>(py)
+                    .expect("name() should resolve to a string")
+            });
+            assert_eq!(
+                observed, "controlled",
+                "a retained observer must receive the inner name"
+            );
+            assert_eq!(
+                name_ops.completions(),
+                1,
+                "the inner operation must run exactly once"
+            );
+            assert!(joined, "the driver must return once its senders close");
+        }
+
+        // Retained observer, error: the inner error reaches the caller intact.
+        // It must be read through a retained observer, because once the
+        // receiver is gone the queue panic replaces the inner result and a
+        // discarded observer can never be the error oracle.
+        {
+            let name_ops = Arc::new(OpControl::immediate(OpOutcome::Fail(CONTROLLED_FAILURE)));
+            let (mesh, root_gate, root_entered, mut teardown) = controlled_fixture(
+                ControlledOps {
+                    name: name_ops.clone(),
+                    stop: Arc::default(),
+                },
+                &[],
+            );
+
+            let task = <AsyncActorMesh as ActorMeshProtocol>::name(&mesh);
+            let reached_root = awaited(&root_entered);
+            root_gate.open();
+            let outcome = drive_evidence(task);
+
+            teardown.open_all();
+            drop(mesh);
+            let joined = teardown.join();
+
+            assert!(
+                reached_root,
+                "the queued closure should reach root initialization"
+            );
+            let err = outcome
+                .resolved("retained name error")
+                .expect_err("the fixed-error control must surface as an error");
+            assert_exact_error::<PyValueError>(&err, CONTROLLED_FAILURE, "retained name error");
+            assert_eq!(
+                name_ops.completions(),
+                1,
+                "the failing inner operation must still run exactly once"
+            );
+            assert!(joined, "the driver must return once its senders close");
+        }
+
+        // Unpolled observer destroyed *after* the send: no panic.
+        //
+        // The complement of the case below, and what limits the panic claim to
+        // receiver destruction before `tx.send`. The barrier is a rendezvous
+        // with the send, not a delay: the queue is serial, so observing an item
+        // enqueued behind the name closure proves that closure finished.
+        {
+            let name_ops = Arc::new(OpControl::immediate(OpOutcome::Succeed));
+            let (mesh, root_gate, root_entered, mut teardown) = controlled_fixture(
+                ControlledOps {
+                    name: name_ops.clone(),
+                    stop: Arc::default(),
+                },
+                &[],
+            );
+
+            let task = <AsyncActorMesh as ActorMeshProtocol>::name(&mesh);
+            let reached_root = awaited(&root_entered);
+            root_gate.open();
+            let sent = queue_barrier(&mesh);
+            // Never polled, and destroyed only after the send succeeded.
+            let construction = discard_observer(task);
+
+            teardown.open_all();
+            drop(mesh);
+            let joined = teardown.join();
+
+            assert!(
+                reached_root,
+                "the queued closure should reach root initialization"
+            );
+            assert!(sent, "the barrier should prove the name closure completed");
+            assert!(
+                construction.is_ok(),
+                "the outer observer must have been constructed: {:?}",
+                construction.err()
+            );
+            assert_eq!(
+                name_ops.completions(),
+                1,
+                "the inner operation must run exactly once"
+            );
+            assert!(
+                joined,
+                "destroying an unpolled observer after a successful send must not panic the driver"
+            );
+        }
+
+        // Observer destroyed while the operation is still pending: the work
+        // completes, then the report fails.
+        {
+            let (op_entered_tx, op_entered) = signal();
+            let (op_gate, op_release) = Gate::new(op_entered_tx);
+            let name_ops = Arc::new(OpControl::gated(&op_gate, op_release, OpOutcome::Succeed));
+            let (mesh, root_gate, root_entered, mut teardown) = controlled_fixture(
+                ControlledOps {
+                    name: name_ops.clone(),
+                    stop: Arc::default(),
+                },
+                std::slice::from_ref(&op_gate),
+            );
+
+            let task = <AsyncActorMesh as ActorMeshProtocol>::name(&mesh);
+            let (reached_root, entered_op) =
+                reach_inner_operation(&root_entered, &root_gate, &op_entered);
+            let construction = discard_observer(task);
+
+            teardown.open_all();
+            // Join before reading the counter. `Gate::open` is a `watch` send
+            // with no rendezvous, so it returns before the released future has
+            // been polled; a counter read here could legitimately see zero. The
+            // join is the ordering: the driver terminates only after the queued
+            // closure reached its send, which is after the increment.
+            let payload = teardown.join_expecting_panic();
+            drop(mesh);
+
+            assert!(
+                reached_root,
+                "the queued closure should reach root initialization"
+            );
+            assert!(
+                entered_op,
+                "the queued closure should enter the inner operation"
+            );
+            assert!(
+                construction.is_ok(),
+                "the outer observer must have been constructed: {:?}",
+                construction.err()
+            );
+            let payload = payload.expect("discarding the observer must panic the driver");
+            assert!(
+                payload.contains("oneshot failed"),
+                "the driver must fail at the report boundary, got: {payload}"
+            );
+            assert_eq!(
+                name_ops.completions(),
+                1,
+                "the inner operation must have completed once, and the panic must not re-run it"
+            );
+        }
+    }
+
+    // `AsyncActorMesh::stop` has the same queued shape as `name`, plus a
+    // `GilSite::Stop` instance clone taken before the work is enqueued. A
+    // retained observer receives the success value -- an empty tuple, since the
+    // owned production arm wraps `ActorMesh::stop`, whose `Ok` type is `()`,
+    // and pyo3 converts the unit type with `IntoPyObject for () ->
+    // PyTuple::empty` -- or the inner error verbatim. Destroying the receiver
+    // while the operation is still pending panics the driver at `tx.send`.
+    //
+    // This panic is current behavior being characterized, not behavior the
+    // migration should preserve.
+    //
+    // A `#[tokio::test]`: `stop` needs a real `PyInstance`, and `actor_instance`
+    // spawns detached introspect tasks that the per-test runtime reaps. That in
+    // turn rules out the `block_on` helpers, so this test uses the async
+    // siblings throughout.
+    #[tokio::test]
+    async fn async_stop_runs_before_a_dropped_observer_panics_the_queue() {
+        pyo3::Python::initialize();
+        let instance = isolated_py_instance("stop_characterization_client");
+
+        // Retained observer, success: the caller sees the unit conversion.
+        {
+            let stop_ops = Arc::new(OpControl::immediate(OpOutcome::Succeed));
+            let (mesh, root_gate, root_entered, mut teardown) = controlled_fixture(
+                ControlledOps {
+                    name: Arc::default(),
+                    stop: stop_ops.clone(),
+                },
+                &[],
+            );
+
+            let task = <AsyncActorMesh as ActorMeshProtocol>::stop(
+                &mesh,
+                &instance,
+                "characterization".to_string(),
+            );
+            let reached_root = awaited(&root_entered);
+            root_gate.open();
+            let outcome = drive_evidence_async(task).await;
+
+            teardown.open_all();
+            drop(mesh);
+            let joined = teardown.join_async().await;
+
+            assert!(
+                reached_root,
+                "the queued closure should reach root initialization"
+            );
+            let value = outcome
+                .resolved("retained stop success")
+                .expect("the controlled stop should succeed");
+            monarch_with_gil_blocking(GilSite::Test, move |py| {
+                // An empty tuple, not None: pyo3 converts the unit type with
+                // `IntoPyObject for () -> PyTuple::empty`, and the fixture
+                // mirrors production's `Result<()>` exactly.
+                let bound = value.bind(py);
+                let tuple = bound
+                    .cast::<PyTuple>()
+                    .expect("the unit result should convert to a tuple");
+                assert!(
+                    tuple.is_empty(),
+                    "a successful owned stop resolves to the unit conversion, the empty tuple"
+                );
+            });
+            assert_eq!(
+                stop_ops.completions(),
+                1,
+                "the inner operation must run exactly once"
+            );
+            assert!(joined, "the driver must return once its senders close");
+        }
+
+        // Retained observer, error: the inner error reaches the caller intact.
+        {
+            let stop_ops = Arc::new(OpControl::immediate(OpOutcome::Fail(CONTROLLED_FAILURE)));
+            let (mesh, root_gate, root_entered, mut teardown) = controlled_fixture(
+                ControlledOps {
+                    name: Arc::default(),
+                    stop: stop_ops.clone(),
+                },
+                &[],
+            );
+
+            let task = <AsyncActorMesh as ActorMeshProtocol>::stop(
+                &mesh,
+                &instance,
+                "characterization".to_string(),
+            );
+            let reached_root = awaited(&root_entered);
+            root_gate.open();
+            let outcome = drive_evidence_async(task).await;
+
+            teardown.open_all();
+            drop(mesh);
+            let joined = teardown.join_async().await;
+
+            assert!(
+                reached_root,
+                "the queued closure should reach root initialization"
+            );
+            let err = outcome
+                .resolved("retained stop error")
+                .expect_err("the fixed-error control must surface as an error");
+            assert_exact_error::<PyValueError>(&err, CONTROLLED_FAILURE, "retained stop error");
+            assert_eq!(
+                stop_ops.completions(),
+                1,
+                "the failing inner operation must still run exactly once"
+            );
+            assert!(joined, "the driver must return once its senders close");
+        }
+
+        // Unpolled observer destroyed after the send: no panic. See the name
+        // test's equivalent subcase for why the barrier is a rendezvous.
+        {
+            let stop_ops = Arc::new(OpControl::immediate(OpOutcome::Succeed));
+            let (mesh, root_gate, root_entered, mut teardown) = controlled_fixture(
+                ControlledOps {
+                    name: Arc::default(),
+                    stop: stop_ops.clone(),
+                },
+                &[],
+            );
+
+            let task = <AsyncActorMesh as ActorMeshProtocol>::stop(
+                &mesh,
+                &instance,
+                "characterization".to_string(),
+            );
+            let reached_root = awaited(&root_entered);
+            root_gate.open();
+            let sent = queue_barrier(&mesh);
+            let construction = discard_observer(task);
+
+            teardown.open_all();
+            drop(mesh);
+            let joined = teardown.join_async().await;
+
+            assert!(
+                reached_root,
+                "the queued closure should reach root initialization"
+            );
+            assert!(sent, "the barrier should prove the stop closure completed");
+            assert!(
+                construction.is_ok(),
+                "the outer observer must have been constructed: {:?}",
+                construction.err()
+            );
+            assert_eq!(
+                stop_ops.completions(),
+                1,
+                "the inner operation must run exactly once"
+            );
+            assert!(
+                joined,
+                "destroying an unpolled observer after a successful send must not panic the driver"
+            );
+        }
+
+        // Observer destroyed while the operation is still pending.
+        {
+            let (op_entered_tx, op_entered) = signal();
+            let (op_gate, op_release) = Gate::new(op_entered_tx);
+            let stop_ops = Arc::new(OpControl::gated(&op_gate, op_release, OpOutcome::Succeed));
+            let (mesh, root_gate, root_entered, mut teardown) = controlled_fixture(
+                ControlledOps {
+                    name: Arc::default(),
+                    stop: stop_ops.clone(),
+                },
+                std::slice::from_ref(&op_gate),
+            );
+
+            let task = <AsyncActorMesh as ActorMeshProtocol>::stop(
+                &mesh,
+                &instance,
+                "characterization".to_string(),
+            );
+            let (reached_root, entered_op) =
+                reach_inner_operation(&root_entered, &root_gate, &op_entered);
+            let construction = discard_observer(task);
+
+            teardown.open_all();
+            let payload = teardown.join_expecting_panic_async().await;
+            drop(mesh);
+
+            assert!(
+                reached_root,
+                "the queued closure should reach root initialization"
+            );
+            assert!(
+                entered_op,
+                "the queued closure should enter the inner operation"
+            );
+            assert!(
+                construction.is_ok(),
+                "the outer observer must have been constructed: {:?}",
+                construction.err()
+            );
+            let payload = payload.expect("discarding the observer must panic the driver");
+            assert!(
+                payload.contains("oneshot failed"),
+                "the driver must fail at the report boundary, got: {payload}"
+            );
+            assert_eq!(
+                stop_ops.completions(),
+                1,
+                "the inner operation must have completed once, and the panic must not re-run it"
+            );
+        }
+    }
+
+    // Asking a `PythonActorMeshImpl::Ref` to stop is rejected by the inner arm
+    // itself, with no task returned: there is nothing to observe, nothing to
+    // drop, and no queue involved.
+    //
+    // The assertions cover what is returned. "No task was constructed" is read
+    // off the source -- the `Ref` arm returns before reaching any
+    // `PyPythonTask::new` -- and is not proven here, because an `Err` return
+    // cannot distinguish "never constructed" from "constructed and dropped".
+    // The arm is also not side-effect free: `stop` clones `self` and the
+    // instance under `GilSite::Stop` before the match, so this rejection still
+    // takes the GIL once.
+    //
+    // This is the inner arm only. A deserialized public ref is wrapped in
+    // `AsyncActorMesh`, so `ActorMesh.stop()` on one still enqueues and surfaces
+    // this error through an outer observer instead of at the call.
+    //
+    // A `#[tokio::test]` for the same reason as the queued stop test: the
+    // signature takes a `&PyInstance`.
+    #[tokio::test]
+    async fn actor_mesh_impl_ref_stop_rejects_before_returning_a_task() {
+        pyo3::Python::initialize();
+        // Built outside the assertion boundary, so a fixture failure cannot
+        // satisfy the rejection assertion below.
+        let mesh_impl = PythonActorMeshImpl::new_ref(data_mesh_ref());
+        let instance = isolated_py_instance("ref_stop_characterization_client");
+
+        let rejected = <PythonActorMeshImpl as ActorMeshProtocol>::stop(
+            &mesh_impl,
+            &instance,
+            "characterization".to_string(),
+        );
+
+        let Err(err) = rejected else {
+            panic!("the Ref arm must reject rather than return a task");
+        };
+        assert_exact_error::<PyNotImplementedError>(&err, REF_STOP_REJECTION, "Ref stop rejection");
     }
 }
