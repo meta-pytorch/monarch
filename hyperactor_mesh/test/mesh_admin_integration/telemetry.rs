@@ -20,7 +20,6 @@ use hyperactor_mesh::mesh_admin::ApiErrorEnvelope;
 use hyperactor_mesh::mesh_admin::PyspyDumpAndStoreResponse;
 use hyperactor_mesh::mesh_admin::QueryRequest;
 use hyperactor_mesh::mesh_admin::QueryResponse;
-use hyperactor_mesh::pyspy::PySpyResult;
 
 use crate::harness;
 use crate::harness::WorkloadFixture;
@@ -131,18 +130,11 @@ pub async fn run_pyspy_dump_and_query() {
     let encoded = urlencoding::encode(&proc_ref);
     let pyspy_path = format!("/v1/pyspy_dump/{encoded}");
 
-    let mut dump_id = String::new();
-    let resp = fixture
-        .post(&pyspy_path, &serde_json::json!(null))
+    let result: PyspyDumpAndStoreResponse = fixture
+        .post_json(&pyspy_path, &serde_json::json!(null))
         .await
-        .expect("transport should succeed");
-    if resp.status().is_success() {
-        let body = resp.text().await.unwrap();
-        let result: PyspyDumpAndStoreResponse =
-            serde_json::from_str(&body).expect("should deserialize as PyspyDumpAndStoreResponse");
-        dump_id = result.dump_id;
-    }
-    assert!(!dump_id.is_empty(), "dump_id should be set");
+        .expect("py-spy dump should succeed and be stored");
+    let dump_id = result.dump_id;
 
     // 3. Verify the dump exists in the pyspy_dumps table via SQL.
     let resp: QueryResponse = fixture
@@ -157,23 +149,10 @@ pub async fn run_pyspy_dump_and_query() {
         .await
         .expect("pyspy_dumps query should succeed");
     let rows = resp.rows.as_array().expect("rows should be an array");
-    if rows.is_empty() {
-        // A missing row means either the dump never reached `Ok`, or
-        // the store/query path is broken: `store_pyspy_dump` writes
-        // rows only for `PySpyResult::Ok`, while `/v1/pyspy_dump`
-        // returns a dump_id either way. Re-dump to tell them apart --
-        // `Failed` indicts py-spy, `Ok` points downstream.
-        let observed = fixture
-            .get_json::<PySpyResult>(&format!("/v1/pyspy/{encoded}"))
-            .await;
-        let diagnostic = match &observed {
-            Ok(result) => crate::pyspy::describe_result(result),
-            Err(error) => format!("transport: {error:#}"),
-        };
-        panic!(
-            "expected dump_id '{dump_id}' in pyspy_dumps table; live py-spy dump for {proc_ref}: {diagnostic}"
-        );
-    }
+    assert!(
+        !rows.is_empty(),
+        "expected dump_id '{dump_id}' in pyspy_dumps table"
+    );
     assert_eq!(
         rows[0]["proc_ref"].as_str().unwrap(),
         proc_ref,

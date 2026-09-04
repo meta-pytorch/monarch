@@ -1188,7 +1188,7 @@
     },
     "/v1/pyspy_dump/{proc_reference}": {
       "post": {
-        "description": "Runs py-spy against the target process, stores the result in the dashboard's DataFusion pyspy tables, and returns the dump_id.",
+        "description": "Runs py-spy against the target process, stores a successful result in the dashboard's DataFusion pyspy tables, and returns the dump_id. Failed captures return an error without a dump_id.",
         "operationId": "pyspyDumpAndStore",
         "parameters": [
           {
@@ -1240,7 +1240,17 @@
                 }
               }
             },
-            "description": "Internal error"
+            "description": "Capture, storage, or internal error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "py-spy binary unavailable"
           },
           "504": {
             "content": {
