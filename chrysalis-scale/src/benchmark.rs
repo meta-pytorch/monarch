@@ -88,6 +88,7 @@ const META_NETWORK_MAX_UDP_PAYLOAD: u16 = 1_450;
 const EXPERIMENT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const EXPERIMENT_LEASE_GRACE: Duration = Duration::from_secs(60);
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const STREAM_FIN_TIMEOUT: Duration = Duration::from_secs(5);
 const PERSISTENCE_SCHEMA_VERSION: u32 = 8;
 pub(crate) const DEFAULT_NODES_PER_TASK: usize = 100;
 pub(crate) const DEFAULT_IDENTITY_CONCURRENCY: usize = 8;
@@ -665,22 +666,18 @@ async fn create_local_node(args: LocalNodeArgs<'_>) -> Result<LocalNode> {
     let is_root = role == NodeRole::Root;
     let udp_address = socket.address();
     let identity = issue_scale_identity(rank).await?;
+    let quic_config = scale_quic_config()?;
     let transport = match unix_path {
         Some(path) => {
-            let primary: Arc<dyn DatagramSocket> = Arc::new(socket);
-            let alternatives: Vec<Arc<dyn DatagramSocket>> = vec![Arc::new(
+            let fallback: Arc<dyn DatagramSocket> = Arc::new(
                 UnixDatagramSocket::bind(path)
                     .with_context(|| format!("bind task-head Unix carrier {}", path.display()))?,
-            )];
-            let sockets = Arc::new(
-                DatagramSocketSet::new(primary, alternatives)
-                    .context("create task-head socket set")?,
             );
-            TransportConfig::new(sockets, identity)
+            TransportConfig::routed_udp(socket.into_std()?, Some(fallback), identity)?
         }
         None => TransportConfig::direct_udp(socket.into_std()?, identity)?,
     }
-    .with_quic_config(scale_quic_config()?);
+    .with_quic_config(quic_config);
     let mut config = NodeConfig::new(transport);
     config = config.with_labels(scale_labels(rank, level, role, task, topology));
     if let Some(parent) = parent {
@@ -1853,7 +1850,16 @@ fn spawn_operation(
                 read_delivery_receipt(&mut recv, size).await?;
             }
         }
-        Ok(started.elapsed())
+        let elapsed = started.elapsed();
+        let mut trailing = [0];
+        anyhow::ensure!(
+            tokio::time::timeout(STREAM_FIN_TIMEOUT, recv.read(&mut trailing))
+                .await
+                .context("timed out waiting for benchmark response FIN")??
+                == 0,
+            "benchmark response contains trailing data"
+        );
+        Ok(elapsed)
     });
 }
 

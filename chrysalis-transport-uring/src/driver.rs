@@ -114,6 +114,7 @@ use std::io;
 use std::mem;
 use std::net::SocketAddr;
 use std::net::UdpSocket;
+use std::ops::Range;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
@@ -712,6 +713,47 @@ impl UdpDriver {
         &mut slot.data[..datagram.length]
     }
 
+    /// Copies a held receive range directly into a free transmit slot and queues it.
+    ///
+    /// Returns `false` without copying when no transmit slot is free or the range
+    /// exceeds one transmit slot. The receive slot remains held in either case.
+    pub fn try_forward_received(
+        &mut self,
+        datagram: ReceivedDatagram,
+        range: Range<usize>,
+        destination: SocketAddr,
+        send_at: Instant,
+    ) -> io::Result<bool> {
+        if range.end > datagram.length {
+            return Err(invalid_input("forward range exceeds the received datagram"));
+        }
+        let Some(length) = range.end.checked_sub(range.start) else {
+            return Err(invalid_input("forward range is reversed"));
+        };
+        if length == 0 {
+            return Err(invalid_input("forward length is zero"));
+        }
+        let Some(transmit_slot) = self.free_transmit.pop_front() else {
+            return Ok(false);
+        };
+        if length > self.transmit_slots[transmit_slot].data.len() {
+            self.free_transmit.push_front(transmit_slot);
+            return Ok(false);
+        }
+        let receive = &self.receive_slots[datagram.slot.0];
+        assert_eq!(
+            receive.state,
+            ReceiveState::Held,
+            "receive slot is not held"
+        );
+        self.transmit_slots[transmit_slot].data[..length].copy_from_slice(&receive.data[range]);
+        if let Err(error) = self.submit_slot(transmit_slot, length, destination, send_at) {
+            self.release_unsent_slot(transmit_slot);
+            return Err(error);
+        }
+        Ok(true)
+    }
+
     /// Releases a receive slot so the kernel can write another datagram into it.
     pub fn release_receive(&mut self, slot: ReceiveSlotId) {
         let receive = &mut self.receive_slots[slot.0];
@@ -1165,6 +1207,37 @@ mod tests {
         let mut received = [0; 16];
         let (length, _) = receiver.recv_from(&mut received).unwrap();
         assert_eq!(&received[..length], b"hello");
+    }
+
+    #[test]
+    fn held_receive_range_can_be_forwarded_directly() {
+        let input = loopback_socket();
+        let input_address = input.local_addr().unwrap();
+        let mut driver = UdpDriver::new(input, test_config(1, false)).unwrap();
+        let sender = loopback_socket();
+        sender.send_to(b"hello", input_address).unwrap();
+        let IoEvent::Received(datagram) = poll_until_event(&mut driver) else {
+            panic!("expected receive completion");
+        };
+
+        let output = loopback_socket();
+        output
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        assert!(
+            driver
+                .try_forward_received(datagram, 1..4, output.local_addr().unwrap(), Instant::now())
+                .unwrap()
+        );
+        driver.release_receive(datagram.slot());
+        let IoEvent::Transmitted(completion) = poll_until_event(&mut driver) else {
+            panic!("expected transmit completion");
+        };
+        assert_eq!(completion.len(), 3);
+
+        let mut received = [0; 8];
+        let (length, _) = output.recv_from(&mut received).unwrap();
+        assert_eq!(&received[..length], b"ell");
     }
 
     #[test]

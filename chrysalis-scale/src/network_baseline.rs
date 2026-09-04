@@ -19,7 +19,6 @@ use anyhow::Context;
 use anyhow::Result;
 use bytes::Bytes;
 use chrysalis::DatagramSocket;
-use chrysalis::DatagramSwitch;
 use chrysalis::Pid;
 use chrysalis::QuicConnectionStats;
 use chrysalis::QuicIoStats;
@@ -985,22 +984,23 @@ async fn receive_switched_quic(
     timeout: Duration,
     profile: NetworkBaselineProfile,
 ) -> Result<()> {
-    let physical = UdpSocket::bind(local)
-        .await
-        .with_context(|| format!("bind switched QUIC receiver {local}"))?;
+    let quic_config = scale_quic_config()?;
     let router = Arc::new(Router::new());
     router.insert(
         peer,
         Route::permanent(UdpSocket::datagram_addr(peer_address)),
     );
-    let datagram_switch = DatagramSwitch::spawn(physical, router);
-    let binding = Arc::new(
-        datagram_switch
-            .bind_routed(identity.pid())
-            .context("bind switched QUIC receiver PID")?,
-    );
-    let transport = QuicTransport::spawn_with_config(binding, identity, scale_quic_config()?)
-        .context("start switched QUIC receiver")?;
+    let transport = QuicTransport::spawn_routed_udp_with_config(
+        UdpSocket::bind(local)
+            .await
+            .with_context(|| format!("bind switched QUIC receiver {local}"))?
+            .into_std()?,
+        None,
+        router,
+        identity,
+        quic_config,
+    )
+    .context("start switched QUIC receiver")?;
     control.write_all(&[PHASE_READY]).await?;
 
     let (warmup_source, connection_before) = receive_quic_stream(
@@ -1037,9 +1037,6 @@ async fn receive_switched_quic(
     signal_phase_complete(control).await?;
     transport.shutdown();
     transport.join().await;
-    drop(transport);
-    datagram_switch.shutdown();
-    datagram_switch.join().await;
     Ok(())
 }
 
@@ -1056,22 +1053,23 @@ async fn send_switched_quic(
     let mut ready = [0];
     control.read_exact(&mut ready).await?;
     anyhow::ensure!(ready == [PHASE_READY], "invalid switched QUIC start marker");
-    let physical = UdpSocket::bind(local)
-        .await
-        .with_context(|| format!("bind switched QUIC sender {local}"))?;
+    let quic_config = scale_quic_config()?;
     let router = Arc::new(Router::new());
     router.insert(
         target,
         Route::permanent(UdpSocket::datagram_addr(peer_address)),
     );
-    let datagram_switch = DatagramSwitch::spawn(physical, router);
-    let binding = Arc::new(
-        datagram_switch
-            .bind_routed(identity.pid())
-            .context("bind switched QUIC sender PID")?,
-    );
-    let transport = QuicTransport::spawn_with_config(binding, identity, scale_quic_config()?)
-        .context("start switched QUIC sender")?;
+    let transport = QuicTransport::spawn_routed_udp_with_config(
+        UdpSocket::bind(local)
+            .await
+            .with_context(|| format!("bind switched QUIC sender {local}"))?
+            .into_std()?,
+        None,
+        router,
+        identity,
+        quic_config,
+    )
+    .context("start switched QUIC sender")?;
     let destination = UdpSocket::datagram_addr(peer_address);
 
     let connection_before = send_quic_stream(
@@ -1115,9 +1113,6 @@ async fn send_switched_quic(
     wait_for_phase_complete(control).await?;
     transport.shutdown();
     transport.join().await;
-    drop(transport);
-    datagram_switch.shutdown();
-    datagram_switch.join().await;
     Ok(())
 }
 

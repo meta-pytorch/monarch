@@ -163,6 +163,25 @@ impl Route {
         }
     }
 
+    pub(crate) fn destination(&self) -> &DatagramAddr {
+        &self.destination
+    }
+
+    pub(crate) fn try_with_destination<T>(
+        &self,
+        use_destination: impl FnOnce(&DatagramAddr) -> io::Result<T>,
+    ) -> io::Result<Option<T>> {
+        match &self.gate {
+            Some(gate) => {
+                let Some(_permit) = gate.acquire() else {
+                    return Ok(None);
+                };
+                use_destination(&self.destination).map(Some)
+            }
+            None => use_destination(&self.destination).map(Some),
+        }
+    }
+
     fn try_send(&self, socket: &dyn DatagramSocket, datagram: &[u8]) -> io::Result<bool> {
         match &self.gate {
             Some(gate) => gate.try_send(socket, datagram, &self.destination),

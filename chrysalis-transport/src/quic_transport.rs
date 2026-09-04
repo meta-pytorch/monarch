@@ -55,9 +55,12 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::DatagramAddr;
 use crate::DatagramSocket;
+use crate::Router;
 use crate::packet_io::CarrierAddressBook;
 use crate::packet_io::CarrierIoStats;
 use crate::packet_io::CarrierPacketIo;
+use crate::packet_io::RoutedUdpIoStats;
+use crate::packet_io::RoutedUdpPacketIo;
 use crate::udp::decode_udp_addr;
 
 const APPLICATION_PROTOCOL: &[u8] = b"chrysalis/1";
@@ -123,6 +126,24 @@ impl QuicConfig {
     pub fn with_max_idle_timeout(mut self, timeout: Duration) -> Self {
         self.max_idle_timeout = timeout;
         self
+    }
+
+    pub(crate) fn udp_driver_config(&self) -> DriverConfig {
+        let segment_size = NonZeroUsize::new(usize::from(self.max_udp_payload_size))
+            .expect("QUIC UDP payload size is nonzero");
+        let maximum_segments = (u16::MAX as usize / segment_size.get()).max(1);
+        let max_segments =
+            NonZeroUsize::new(self.max_transmit_batch_segments.get().min(maximum_segments))
+                .expect("UDP transmit segment count is nonzero");
+        DriverConfig::default()
+            .with_ring_depth(NonZeroU32::new(256).expect("UDP ring depth is nonzero"))
+            .with_receive_depth(NonZeroUsize::new(64).expect("UDP receive depth is nonzero"))
+            .with_segment_size(segment_size)
+            .with_max_gso_segments(max_segments)
+            .with_socket_buffer_bytes(
+                NonZeroUsize::new(64 * 1024 * 1024).expect("UDP socket buffer size is nonzero"),
+            )
+            .with_gro(true)
     }
 
     fn build(&self, identity: &QuicIdentity) -> Result<quiche::Config, QuicTransportError> {
@@ -678,6 +699,7 @@ enum PeerAddresses {
 enum PacketIoStats {
     Carrier(Arc<CarrierIoStats>),
     DirectUdp(DriverStatsHandle),
+    RoutedUdp(RoutedUdpIoStats),
 }
 
 impl PeerAddresses {
@@ -812,6 +834,18 @@ impl<T: DatagramSocket> QuicTransport<T> {
                     receive_calls: stats.receives_completed,
                     receive_datagrams: stats.datagrams_received,
                     receive_bytes: stats.bytes_received,
+                }
+            }
+            PacketIoStats::RoutedUdp(io_stats) => {
+                let stats = io_stats.snapshot();
+                QuicIoStats {
+                    transmit_calls: stats.transmit_calls,
+                    transmit_datagrams: stats.transmit_datagrams,
+                    transmit_bytes: stats.transmit_bytes,
+                    transmit_blocked: stats.transmit_blocked,
+                    receive_calls: stats.receive_calls,
+                    receive_datagrams: stats.receive_datagrams,
+                    receive_bytes: stats.receive_bytes,
                 }
             }
         }
@@ -986,37 +1020,62 @@ impl<T: DatagramSocket> QuicTransport<T> {
 }
 
 impl QuicTransport<crate::SwitchSocket> {
+    /// Starts a routed endpoint whose thread owns QUIC, CID routing, pacing, and UDP completions.
+    pub fn spawn_routed_udp_with_config(
+        socket: std::net::UdpSocket,
+        fallback: Option<Arc<dyn DatagramSocket>>,
+        router: Arc<Router>,
+        identity: QuicIdentity,
+        config: QuicConfig,
+    ) -> Result<Self, QuicTransportError> {
+        let udp = UdpDriver::new(socket, config.udp_driver_config())?;
+        let (io, addresses, io_stats) =
+            RoutedUdpPacketIo::new(udp, identity.pid(), router, fallback);
+        let endpoint_identity = EndpointIdentity::from_leaf_certificate(&identity.leaf_certificate);
+        let driver = DriverId::from_u16(NEXT_DRIVER.fetch_add(1, Ordering::Relaxed));
+        let limits = SubmissionLimits::new(
+            NonZeroUsize::new(DEFAULT_QUEUE_CAPACITY).expect("default queue capacity is nonzero"),
+            NonZeroUsize::new(DEFAULT_RETAINED_BYTES)
+                .expect("default retained byte limit is nonzero"),
+            NonZeroUsize::new(DEFAULT_RETAINED_BYTES)
+                .expect("default posted receive byte limit is nonzero"),
+        );
+        let completion_capacity = NonZeroUsize::new(DEFAULT_COMPLETION_CAPACITY)
+            .expect("default completion capacity is nonzero");
+        let client = config.build(&identity)?;
+        let server = config.build(&identity)?;
+        let endpoint = Transport::spawn_duplex_routed(
+            driver,
+            io,
+            identity.pid(),
+            DuplexTransportConfig::new(
+                endpoint_identity,
+                client,
+                server,
+                TransportLimits::new(limits, completion_capacity),
+            ),
+        )?;
+        Ok(Self {
+            pid: identity.pid(),
+            link_local: false,
+            identity,
+            addresses: PeerAddresses::Carrier(addresses),
+            endpoint: Arc::new(endpoint),
+            connections: AsyncMutex::new(HashMap::new()),
+            link_local_connections: AsyncMutex::new(HashMap::new()),
+            shutdown: AtomicBool::new(false),
+            io_stats: PacketIoStats::RoutedUdp(io_stats),
+            _socket: PhantomData,
+        })
+    }
+
     /// Starts a globally routed transport that owns a direct io_uring UDP driver.
     pub fn spawn_direct_udp_with_config(
         socket: std::net::UdpSocket,
         identity: QuicIdentity,
         config: QuicConfig,
     ) -> Result<Self, QuicTransportError> {
-        let segment_size = NonZeroUsize::new(usize::from(config.max_udp_payload_size))
-            .expect("QUIC UDP payload size is nonzero");
-        let maximum_segments = (u16::MAX as usize / segment_size.get()).max(1);
-        let max_segments = NonZeroUsize::new(
-            config
-                .max_transmit_batch_segments
-                .get()
-                .min(maximum_segments),
-        )
-        .expect("direct UDP transmit segment count is nonzero");
-        let io = UdpDriver::new(
-            socket,
-            DriverConfig::default()
-                .with_ring_depth(NonZeroU32::new(256).expect("direct UDP ring depth is nonzero"))
-                .with_receive_depth(
-                    NonZeroUsize::new(64).expect("direct UDP receive depth is nonzero"),
-                )
-                .with_segment_size(segment_size)
-                .with_max_gso_segments(max_segments)
-                .with_socket_buffer_bytes(
-                    NonZeroUsize::new(64 * 1024 * 1024)
-                        .expect("direct UDP socket buffer size is nonzero"),
-                )
-                .with_gro(true),
-        )?;
+        let io = UdpDriver::new(socket, config.udp_driver_config())?;
         let io_stats = io.stats_handle();
         let endpoint_identity = EndpointIdentity::from_leaf_certificate(&identity.leaf_certificate);
         let driver = DriverId::from_u16(NEXT_DRIVER.fetch_add(1, Ordering::Relaxed));

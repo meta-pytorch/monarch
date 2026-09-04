@@ -79,6 +79,11 @@ enum TransportBinding {
         socket: StdUdpSocket,
         local_addr: DatagramAddr,
     },
+    RoutedUdp {
+        socket: std::net::UdpSocket,
+        fallback: Option<Arc<dyn DatagramSocket>>,
+        local_addr: chrysalis_transport::DatagramAddr,
+    },
 }
 
 impl TransportConfig {
@@ -114,6 +119,24 @@ impl TransportConfig {
         }
     }
 
+    /// Constructs a routed UDP transport with an optional non-UDP link-local carrier.
+    pub fn routed_udp(
+        socket: std::net::UdpSocket,
+        fallback: Option<Arc<dyn DatagramSocket>>,
+        identity: QuicIdentity,
+    ) -> io::Result<Self> {
+        let local_addr = UdpSocket::datagram_addr(socket.local_addr()?);
+        Ok(Self {
+            binding: TransportBinding::RoutedUdp {
+                socket,
+                fallback,
+                local_addr,
+            },
+            identity,
+            quic: QuicConfig::default(),
+        })
+    }
+
     /// Replaces the application endpoint and connection QUIC policy.
     pub fn with_quic_config(mut self, quic: QuicConfig) -> Self {
         self.quic = quic;
@@ -123,7 +146,8 @@ impl TransportConfig {
     fn local_addr(&self) -> &DatagramAddr {
         match &self.binding {
             TransportBinding::Carrier(socket) => socket.local_addr(),
-            TransportBinding::DirectUdp { local_addr, .. } => local_addr,
+            TransportBinding::DirectUdp { local_addr, .. }
+            | TransportBinding::RoutedUdp { local_addr, .. } => local_addr,
         }
     }
 }
@@ -341,6 +365,18 @@ impl Node {
                 None,
                 Arc::new(QuicTransport::spawn_direct_udp_with_config(
                     socket, identity, quic,
+                )?),
+            ),
+            TransportBinding::RoutedUdp {
+                socket, fallback, ..
+            } => (
+                None,
+                Arc::new(QuicTransport::spawn_routed_udp_with_config(
+                    socket,
+                    fallback,
+                    router.clone(),
+                    identity,
+                    quic,
                 )?),
             ),
         };
