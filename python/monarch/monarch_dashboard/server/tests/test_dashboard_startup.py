@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Unit tests for start_dashboard() thread mode.
+"""Unit tests for start_telemetry_servers() thread mode.
 
 Each test is isolated in a subprocess so the daemon Flask thread is
 cleaned up when the subprocess exits.
@@ -18,7 +18,7 @@ import threading
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch.monarch_dashboard.fake_data.generate import generate
-from monarch.monarch_dashboard.server.app import start_dashboard
+from monarch.monarch_dashboard.server.app import start_telemetry_servers
 from monarch.monarch_dashboard.server.db import SQLiteAdapter
 
 
@@ -40,7 +40,7 @@ def _free_port() -> int:
 def test_returns_dict_with_expected_keys() -> None:
     adapter = _make_adapter()
     port = _free_port()
-    info = start_dashboard(adapter=adapter, port=port, host="127.0.0.1")
+    info = start_telemetry_servers(adapter=adapter, port=port, host="127.0.0.1")
     assert "url" in info
     assert "port" in info
     assert "handle" in info
@@ -60,4 +60,8 @@ def test_occupied_port_raises() -> None:
         s.bind(("127.0.0.1", 0))
         occupied = s.getsockname()[1]
         with pytest.raises(OSError):
-            start_dashboard(adapter=adapter, port=occupied, host="127.0.0.1")
+            start_telemetry_servers(
+                adapter=adapter,
+                port=occupied,
+                host="127.0.0.1",
+            )
