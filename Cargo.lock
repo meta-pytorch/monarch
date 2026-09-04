@@ -4676,6 +4676,7 @@ dependencies = [
  "bytes",
  "dir-diff",
  "erased-serde",
+ "fastrand",
  "futures 0.3.34",
  "humantime",
  "hyperactor",

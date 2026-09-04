@@ -45,7 +45,15 @@ _gspawn_uid_init_rank = None
 
 class GspawnUidInitActor:
     async def handle(
-        self, context, method, message, panic_flag, local_state, refs, response_port
+        self,
+        context,
+        method,
+        message,
+        panic_flag,
+        local_state,
+        refs,
+        response_port,
+        correlation_id=None,
     ):
         global _gspawn_uid_init_rank
         _gspawn_uid_init_rank = context.message_rank.rank
@@ -60,6 +68,7 @@ class GspawnUidInitActor:
             PythonMessageKind::CallMethod {
                 name: MethodSpecifier::Init {},
                 response_port: None,
+                correlation_id: None,
             },
             Vec::<u8>::new(),
         );

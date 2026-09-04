@@ -192,9 +192,11 @@ pub struct AccumulatedResponses(ValueOverlay<PythonResponseMessage>);
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq)]
 pub enum PythonMessageKind {
+    #[pyo3(constructor = (name, response_port, correlation_id=None))]
     CallMethod {
         name: MethodSpecifier,
         response_port: Option<EitherPortRef>,
+        correlation_id: Option<u64>,
     },
     Result {
         rank: Option<usize>,
@@ -203,6 +205,7 @@ pub enum PythonMessageKind {
         rank: Option<usize>,
     },
     Uninit {},
+    #[pyo3(constructor = (name, local_state_broker, id, unflatten_args, correlation_id=None))]
     CallMethodIndirect {
         name: MethodSpecifier,
         local_state_broker: (String, usize),
@@ -210,6 +213,7 @@ pub enum PythonMessageKind {
         // specify whether the argument to unflatten the local mailbox,
         // or the next argument of the local state.
         unflatten_args: Vec<UnflattenArg>,
+        correlation_id: Option<u64>,
     },
     AccumulatedResponses(AccumulatedResponses),
 }
@@ -433,6 +437,7 @@ struct ResolvedCallMethod {
     /// Implements PortProtocol
     /// Concretely either a Port, DroppingPort, or LocalPort
     response_port: ResponsePort,
+    correlation_id: Option<u64>,
 }
 
 enum ResponsePort {
@@ -468,6 +473,8 @@ pub struct QueuedMessage {
     #[pyo3(get)]
     pub response_port: Py<PyAny>,
     telemetry_message_id: Option<u64>,
+    #[pyo3(get)]
+    pub correlation_id: Option<u64>,
 }
 
 fn report_message_status(message_id: Option<u64>, status: &str) {
@@ -535,6 +542,7 @@ impl PythonMessage {
                 local_state_broker,
                 id,
                 unflatten_args,
+                correlation_id,
             } => {
                 let broker = BrokerId::new(local_state_broker).resolve(cx).await;
                 let (send, recv) = cx.open_once_port();
@@ -570,6 +578,7 @@ impl PythonMessage {
                         local_state,
                         mesh_references: self.refs,
                         response_port,
+                        correlation_id,
                     })
                 })
                 .await
@@ -577,6 +586,7 @@ impl PythonMessage {
             PythonMessageKind::CallMethod {
                 name,
                 response_port,
+                correlation_id,
             } => {
                 let method_name = name.name().to_string();
                 let response_port = response_port.map_or(ResponsePort::Dropping, |port_ref| {
@@ -615,6 +625,7 @@ impl PythonMessage {
                     local_state: None,
                     mesh_references: self.refs,
                     response_port,
+                    correlation_id,
                 })
             }
             _ => {
@@ -1168,6 +1179,7 @@ impl PythonActor {
             PythonMessageKind::CallMethod {
                 name: MethodSpecifier::Init {},
                 response_port: None,
+                correlation_id: None,
             },
             init_frozen_buffer,
         );
@@ -1745,6 +1757,7 @@ impl PythonActor {
                     telemetry_message_id: cx
                         .headers()
                         .get(hyperactor::mailbox::headers::TELEMETRY_MESSAGE_ID),
+                    correlation_id: resolved.correlation_id,
                 })
             },
         )
@@ -2134,6 +2147,27 @@ mod tests {
     use crate::actor::to_py_error;
 
     #[test]
+    fn test_call_method_indirect_correlation_id_round_trip() {
+        let kind = PythonMessageKind::CallMethodIndirect {
+            name: MethodSpecifier::ReturnsResponse {
+                name: "forward".to_string(),
+            },
+            local_state_broker: ("broker".to_string(), 3),
+            id: 7,
+            unflatten_args: vec![UnflattenArg::Mailbox, UnflattenArg::PyObject],
+            correlation_id: Some(42),
+        };
+
+        let serialized = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&kind)
+            .expect("indirect call message should serialize");
+        let decoded = serialized
+            .deserialized_unchecked::<PythonMessageKind>()
+            .expect("serialized indirect call message should deserialize");
+
+        assert_eq!(decoded, kind);
+    }
+
+    #[test]
     fn test_python_message_part_codec() {
         let reducer_spec = ReducerSpec {
             typehash: 123,
@@ -2150,6 +2184,7 @@ mod tests {
                     name: "test".to_string(),
                 },
                 response_port: Some(EitherPortRef::Unbounded(port_ref.clone().into())),
+                correlation_id: None,
             },
             message: Part::from(vec![1, 2, 3]),
             refs: Vec::new(),
@@ -2186,6 +2221,7 @@ mod tests {
                     name: "test".to_string(),
                 },
                 response_port: None,
+                correlation_id: None,
             },
             ..message
         };
@@ -2242,6 +2278,7 @@ mod tests {
                     name: "test".to_string(),
                 },
                 response_port: None,
+                correlation_id: None,
             },
             message: Part::from(vec![1, 2, 3]),
             refs: vec![proc_mesh_ref(1, "a"), proc_mesh_ref(2, "b")],
