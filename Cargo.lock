@@ -1192,6 +1192,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrysalis-transport-tokio"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "chrysalis-core",
+ "chrysalis-transport-core",
+ "chrysalis-transport-quiche",
+ "chrysalis-transport-uring",
+ "quiche",
+ "rcgen",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "chrysalis-transport-uring"
 version = "0.0.0"
 dependencies = [
