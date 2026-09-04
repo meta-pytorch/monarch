@@ -1137,6 +1137,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrysalis-core"
+version = "0.0.0"
+
+[[package]]
+name = "chrysalis-transport"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "chrysalis-core",
+ "libc",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "chrysalis-transport-core"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "chrysalis-core",
+]
+
+[[package]]
 name = "ciborium"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
