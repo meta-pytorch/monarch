@@ -70,6 +70,7 @@
 mod protocol;
 mod replica;
 mod storage;
+mod topology;
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -87,6 +88,7 @@ pub use storage::Change;
 pub(crate) use storage::Mutation;
 pub use storage::TableSchema;
 use thiserror::Error;
+pub use topology::ReplicationTopology;
 
 /// The fixed width of a replica site identifier.
 pub const SITE_ID_LEN: usize = 16;
