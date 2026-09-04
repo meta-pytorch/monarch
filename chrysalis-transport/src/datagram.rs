@@ -170,6 +170,10 @@ pub trait DatagramSocket: fmt::Debug + Send + Sync + 'static {
 
     /// Polls for one complete datagram.
     ///
+    /// On success, implementations append the datagram after the existing
+    /// filled prefix and preserve that prefix. On [`Poll::Pending`] or error,
+    /// implementations leave the filled length unchanged.
+    ///
     /// The caller must not leave another receive operation pending on this
     /// socket.
     fn poll_recv_from(
