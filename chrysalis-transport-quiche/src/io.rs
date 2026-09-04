@@ -35,16 +35,16 @@ pub trait PacketSendSlot {
     fn buffer_mut(&mut self) -> &mut [u8];
 
     /// Queues the initialized prefix for transmission.
-    fn submit(
-        self: Box<Self>,
-        length: usize,
-        destination: SocketAddr,
-        send_at: Instant,
-    ) -> io::Result<()>;
+    fn submit(self, length: usize, destination: SocketAddr, send_at: Instant) -> io::Result<()>;
 }
 
 /// Runtime-neutral packet I/O consumed by one quiche endpoint thread.
 pub trait PacketIo: Send {
+    /// Driver-owned transmit allocation borrowed by [`Self::try_send_slot`].
+    type SendSlot<'a>: PacketSendSlot
+    where
+        Self: 'a;
+
     /// Returns whether an authenticated upstream boundary validated source addresses.
     fn peer_addresses_validated(&self) -> bool {
         false
@@ -63,7 +63,7 @@ pub trait PacketIo: Send {
     fn notifier(&self) -> Arc<dyn Notifier>;
 
     /// Borrows a free transmit allocation.
-    fn try_send_slot(&mut self) -> Option<Box<dyn PacketSendSlot + '_>>;
+    fn try_send_slot(&mut self) -> Option<Self::SendSlot<'_>>;
 
     /// Waits for packet I/O, pacing, or an application notification.
     fn poll(&mut self, timeout: Duration) -> io::Result<()>;
@@ -78,25 +78,19 @@ pub trait PacketIo: Send {
     ) -> Result<(), Error>;
 }
 
-struct UringSendSlot<'a>(SendSlot<'a>);
-
-impl PacketSendSlot for UringSendSlot<'_> {
+impl PacketSendSlot for SendSlot<'_> {
     fn buffer_mut(&mut self) -> &mut [u8] {
-        self.0.buffer_mut()
+        SendSlot::buffer_mut(self)
     }
 
-    fn submit(
-        self: Box<Self>,
-        length: usize,
-        destination: SocketAddr,
-        send_at: Instant,
-    ) -> io::Result<()> {
-        let Self(slot) = *self;
-        slot.submit(length, destination, send_at)
+    fn submit(self, length: usize, destination: SocketAddr, send_at: Instant) -> io::Result<()> {
+        SendSlot::submit(self, length, destination, send_at)
     }
 }
 
 impl PacketIo for UdpDriver {
+    type SendSlot<'a> = SendSlot<'a>;
+
     fn local_addr(&self) -> io::Result<SocketAddr> {
         UdpDriver::local_addr(self)
     }
@@ -113,9 +107,8 @@ impl PacketIo for UdpDriver {
         Arc::new(UdpDriver::notifier(self))
     }
 
-    fn try_send_slot(&mut self) -> Option<Box<dyn PacketSendSlot + '_>> {
+    fn try_send_slot(&mut self) -> Option<Self::SendSlot<'_>> {
         UdpDriver::try_send_slot(self)
-            .map(|slot| Box::new(UringSendSlot(slot)) as Box<dyn PacketSendSlot>)
     }
 
     fn poll(&mut self, timeout: Duration) -> io::Result<()> {

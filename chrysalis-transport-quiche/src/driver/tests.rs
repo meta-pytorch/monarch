@@ -102,12 +102,7 @@ impl PacketSendSlot for ShortSendSlot {
         &mut self.buffer
     }
 
-    fn submit(
-        self: Box<Self>,
-        _length: usize,
-        _destination: SocketAddr,
-        _send_at: Instant,
-    ) -> io::Result<()> {
+    fn submit(self, _length: usize, _destination: SocketAddr, _send_at: Instant) -> io::Result<()> {
         panic!("undersized send slot should be rejected before submission")
     }
 }
@@ -117,6 +112,8 @@ struct ShortSlotIo {
 }
 
 impl PacketIo for ShortSlotIo {
+    type SendSlot<'a> = ShortSendSlot;
+
     fn local_addr(&self) -> io::Result<SocketAddr> {
         Ok("[::1]:0".parse().unwrap())
     }
@@ -133,10 +130,8 @@ impl PacketIo for ShortSlotIo {
         Arc::new(NoopNotifier)
     }
 
-    fn try_send_slot(&mut self) -> Option<Box<dyn PacketSendSlot + '_>> {
-        self.slot
-            .take()
-            .map(|buffer| Box::new(ShortSendSlot { buffer }) as Box<dyn PacketSendSlot>)
+    fn try_send_slot(&mut self) -> Option<Self::SendSlot<'_>> {
+        self.slot.take().map(|buffer| ShortSendSlot { buffer })
     }
 
     fn poll(&mut self, _timeout: Duration) -> io::Result<()> {
@@ -158,8 +153,8 @@ fn drain(handle: &EndpointHandle, events: &mut Vec<Completion>) {
 }
 
 fn drive_until(
-    client: &mut Endpoint,
-    server: &mut Endpoint,
+    client: &mut Endpoint<UdpDriver>,
+    server: &mut Endpoint<UdpDriver>,
     client_handle: &EndpointHandle,
     server_handle: &EndpointHandle,
     client_events: &mut Vec<Completion>,
@@ -177,9 +172,9 @@ fn drive_until(
 }
 
 fn endpoint_pair() -> (
-    Endpoint,
+    Endpoint<UdpDriver>,
     EndpointHandle,
-    Endpoint,
+    Endpoint<UdpDriver>,
     EndpointHandle,
     std::net::SocketAddr,
     Pid,
@@ -190,9 +185,9 @@ fn endpoint_pair() -> (
 fn endpoint_pair_with_completion_capacity(
     completion_capacity: usize,
 ) -> (
-    Endpoint,
+    Endpoint<UdpDriver>,
     EndpointHandle,
-    Endpoint,
+    Endpoint<UdpDriver>,
     EndpointHandle,
     std::net::SocketAddr,
     Pid,

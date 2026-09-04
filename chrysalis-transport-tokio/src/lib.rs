@@ -814,9 +814,9 @@ impl Transport {
         )
     }
 
-    fn spawn(
+    fn spawn<I: PacketIo + 'static>(
         pid: Pid,
-        mut endpoint: Endpoint,
+        mut endpoint: Endpoint<I>,
         handle: EndpointHandle,
         notifier: Arc<TokioNotifier>,
         completion_capacity: NonZeroUsize,
