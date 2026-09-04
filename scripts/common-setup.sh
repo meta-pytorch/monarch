@@ -344,7 +344,8 @@ run_test_groups() {
   export LD_PRELOAD="${CONDA_LIBSTDCPP}${LD_PRELOAD:+:$LD_PRELOAD}"
   export RUST_BACKTRACE=1
   mkdir -p "$test_results_dir"
-  LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+  LC_ALL=C pytest python/tests/ python/monarch/experimental/tests/ \
+      -s -v -m "not oss_skip" \
       --ignore-glob="**/meta/**" \
       --crash-recovery \
       --max-crashes=10 \
