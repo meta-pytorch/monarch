@@ -1155,6 +1155,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrysalis"
+version = "0.0.0"
+dependencies = [
+ "chrysalis-core",
+ "chrysalis-nameserver",
+ "chrysalis-transport",
+ "rcgen",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "chrysalis-core"
 version = "0.0.0"
 
