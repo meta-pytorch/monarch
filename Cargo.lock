@@ -1212,6 +1212,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrysalis-cli"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrysalis",
+ "chrysalis-identity-meta",
+ "chrysalis-resolver",
+ "clap",
+ "libc",
+ "libsql",
+ "libsql-sys",
+ "rcgen",
+ "tokio",
+]
+
+[[package]]
 name = "chrysalis-core"
 version = "0.0.0"
 
@@ -1235,6 +1251,15 @@ version = "0.0.0"
 dependencies = [
  "chrysalis-core",
  "chrysalis-transport",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "chrysalis-resolver"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
  "thiserror 2.0.20",
  "tokio",
 ]
