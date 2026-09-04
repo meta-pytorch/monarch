@@ -231,23 +231,12 @@ impl ExperimentTargets {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by persistent administration in the next stack change"
-    )
-)]
 pub(crate) enum ExperimentStatus {
     Pending,
     Processing,
     Done,
 }
 
-#[expect(
-    dead_code,
-    reason = "used by persistent administration in the next stack change"
-)]
 impl ExperimentStatus {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
@@ -311,10 +300,6 @@ fn table_schemas() -> Result<Vec<TableSchema>> {
     ])
 }
 
-#[expect(
-    dead_code,
-    reason = "used by persistent administration in the next stack change"
-)]
 impl ExperimentStore {
     pub(crate) async fn open(path: &Path) -> Result<Self> {
         let path_str = path
@@ -460,6 +445,7 @@ impl ExperimentStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) async fn nodes(&self) -> Result<Vec<Pid>> {
         let mut rows = self
             .connection
@@ -530,7 +516,8 @@ impl ExperimentStore {
         ))
     }
 
-    pub(crate) async fn has_node(&self, pid: Pid) -> Result<bool> {
+    #[cfg(test)]
+    async fn has_node(&self, pid: Pid) -> Result<bool> {
         let mut rows = self
             .connection
             .query(
