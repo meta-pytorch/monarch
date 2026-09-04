@@ -31,13 +31,6 @@ pub enum MessageStreamError {
     Codec(#[from] CodecError),
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the dependent link-supervisor revision consumes the framing helpers"
-    )
-)]
 pub(crate) async fn receive_message<R>(
     reader: &mut R,
 ) -> Result<Option<Message>, MessageStreamError>
@@ -58,13 +51,6 @@ where
     Ok(Some(decode_frame(&frame)?))
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the dependent link-supervisor revision consumes the framing helpers"
-    )
-)]
 pub(crate) async fn send_message<W>(
     writer: &mut W,
     message: &Message,
@@ -78,13 +64,6 @@ where
     Ok(())
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the dependent link-supervisor revision consumes the framing helpers"
-    )
-)]
 async fn read_frame_remainder<R>(reader: &mut R, bytes: &mut [u8]) -> Result<(), MessageStreamError>
 where
     R: AsyncRead + Unpin,

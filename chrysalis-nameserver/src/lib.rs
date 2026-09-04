@@ -88,6 +88,15 @@
 //! one nameserver, but there is no transaction or globally comparable revision
 //! spanning the hierarchy; updates converge upward asynchronously.
 //!
+//! The deterministic directory state machine and parent-link session driver
+//! are independent of socket I/O and replication. The session driver emits
+//! commands for an external replication layer and sends acknowledgements only
+//! after that layer returns committed effects. [`NameserverService`] is the
+//! concrete singleton executor: it consumes transport-authenticated streams,
+//! frames messages, applies commands to one in-memory [`Nameserver`], answers
+//! from that authoritative directory, and removes every link-owned publication
+//! before returning from a closed link.
+//!
 //! Frames use a four-byte big-endian body length followed by a body containing
 //! a framing version, a message tag, and the message fields. The length does
 //! not include the prefix and cannot exceed [`MAX_FRAME_BODY_LEN`]. This
@@ -107,7 +116,12 @@
 mod cache;
 mod child;
 mod codec;
+mod link;
+mod manager;
 mod protocol;
+mod routes;
+mod server;
+mod service;
 mod session;
 mod state;
 mod stream;
@@ -123,6 +137,16 @@ pub use codec::MAX_FRAME_BODY_LEN;
 pub use codec::decode_frame;
 pub use codec::encode_frame;
 pub use codec::frame_body_len;
+pub use link::ParentLink;
+pub use link::ParentLinkError;
+pub use link::ResolveError;
+pub use manager::NamespaceConfig;
+pub use manager::NamespaceConfigError;
+pub use manager::ParentEndpoint;
+pub use manager::ParentIdentity;
+pub use manager::ParentLinkManager;
+pub use manager::ParentManagerError;
+pub use manager::ParentManagerStatus;
 pub use protocol::DEFAULT_ENUMERATION_PAGE_SIZE;
 pub use protocol::EnumerationCursor;
 pub use protocol::EnumerationPage;
@@ -149,6 +173,10 @@ pub use protocol::VERSION_1;
 pub use protocol::VERSION_2;
 pub use protocol::VERSION_3;
 pub use protocol::VersionRange;
+pub use server::ChildLinkServer;
+pub use service::LinkError;
+pub use service::LocalEntryError;
+pub use service::NameserverService;
 pub use session::EnumerateRequest;
 pub use session::ParentAction;
 pub use session::ParentSession;
@@ -161,6 +189,8 @@ pub use state::DirectoryChange;
 pub use state::LinkResponse;
 pub use state::Nameserver;
 pub use stream::MessageStreamError;
+pub use upstream::UpstreamNameserver;
+mod upstream;
 
 /// The reserved link-local stream protocol used by the nameserver.
 pub const NAMESERVER_LINK_PROTOCOL: chrysalis_transport::LinkLocalProtocolId =

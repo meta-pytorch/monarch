@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::ops::Bound;
 
 use chrysalis_core::Pid;
 use thiserror::Error;
@@ -225,6 +226,13 @@ impl Nameserver {
             .values()
             .map(|record| record.entry.clone())
             .collect()
+    }
+
+    pub(crate) fn entries_after(&self, after: Option<Pid>) -> impl Iterator<Item = &ProcEntry> {
+        let start = after.map_or(Bound::Unbounded, Bound::Excluded);
+        self.directory
+            .range((start, Bound::Unbounded))
+            .map(|(_, record)| &record.entry)
     }
 
     /// Returns one visible process entry.
