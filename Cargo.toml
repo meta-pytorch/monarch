@@ -40,6 +40,7 @@ wezterm-dynamic-derive = "0.1.1"
 members = [
   "algebra",
   "build_utils",
+  "chrysalis-core",
   "erased_lifetime",
   "hyper",
   "hyperactor",
@@ -92,6 +93,7 @@ members = [
 default-members = [
   "algebra",
   "build_utils",
+  "chrysalis-core",
   "erased_lifetime",
   "hyper",
   "hyperactor",
