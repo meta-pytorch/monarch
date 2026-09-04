@@ -8,46 +8,49 @@
 
 use std::ffi::CString;
 use std::io::Write as _;
+use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
 use libsql::Connection;
 use libsql::Rows;
 use libsql::Value;
-use tokio::io::AsyncBufReadExt as _;
-use tokio::io::BufReader;
+use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
 
 pub(crate) async fn run(connection: &Connection) -> Result<()> {
-    eprintln!("Chrysalis SQLite shell. Enter .help for help.");
-    let mut input = BufReader::new(tokio::io::stdin());
+    eprintln!("Chrysalis SQLite shell. Enter .help for help, or press Ctrl-D to exit.");
+    let history_path = history_path();
+    let mut editor = create_editor(history_path.clone()).await?;
     let mut sql = String::new();
-    loop {
-        print!(
-            "{}",
-            if sql.is_empty() {
-                "sqlite> "
-            } else {
-                "   ...> "
-            }
-        );
-        std::io::stdout().flush().context("flush SQLite prompt")?;
-        let mut line = String::new();
-        let length = tokio::select! {
-            length = input.read_line(&mut line) => length.context("read SQLite input")?,
-            result = tokio::signal::ctrl_c() => {
-                result.context("wait for SQLite interrupt")?;
-                println!();
-                return Ok(());
-            }
+    let result = loop {
+        let prompt = if sql.is_empty() {
+            "sqlite> "
+        } else {
+            "   ...> "
         };
-        if length == 0 {
-            println!();
-            return Ok(());
-        }
+        let (next_editor, line) = read_line(editor, prompt).await?;
+        editor = next_editor;
+        let line = match line {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted) => {
+                sql.clear();
+                println!();
+                continue;
+            }
+            Err(ReadlineError::Eof) => {
+                println!();
+                break Ok(());
+            }
+            Err(error) => break Err(error).context("read SQLite input"),
+        };
 
         if sql.is_empty() && is_meta_command(&line) {
+            if let Err(error) = editor.add_history_entry(line.trim()) {
+                eprintln!("Warning: could not add SQLite command to history: {error}");
+            }
             match run_meta_command(connection, line.trim()).await {
-                Ok(true) => return Ok(()),
+                Ok(true) => break Ok(()),
                 Ok(false) => {}
                 Err(error) => eprintln!("Error: {error:#}"),
             }
@@ -55,6 +58,7 @@ pub(crate) async fn run(connection: &Connection) -> Result<()> {
         }
 
         sql.push_str(&line);
+        sql.push('\n');
         match is_complete(&sql) {
             Ok(false) => continue,
             Ok(true) => {}
@@ -64,14 +68,65 @@ pub(crate) async fn run(connection: &Connection) -> Result<()> {
                 continue;
             }
         }
+        if let Err(error) = editor.add_history_entry(sql.trim_end()) {
+            eprintln!("Warning: could not add SQL to history: {error}");
+        }
         match execute(connection, &sql).await {
             Ok(output) => {
                 print!("{output}");
-                std::io::stdout().flush().context("flush SQLite output")?;
+                if let Err(error) = std::io::stdout().flush().context("flush SQLite output") {
+                    break Err(error);
+                }
             }
             Err(error) => eprintln!("Error: {error:#}"),
         }
         sql.clear();
+    };
+    if let Some(path) = history_path {
+        save_history(editor, path).await;
+    }
+    result
+}
+
+fn history_path() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .map(|home| home.join(".chrysalis_sqlite_history"))
+}
+
+async fn create_editor(history_path: Option<PathBuf>) -> Result<DefaultEditor> {
+    tokio::task::spawn_blocking(move || {
+        let mut editor = DefaultEditor::new().context("initialize SQLite line editor")?;
+        if let Some(path) = history_path.filter(|path| path.exists())
+            && let Err(error) = editor.load_history(&path)
+        {
+            eprintln!("Warning: could not load SQLite history: {error}");
+        }
+        Ok(editor)
+    })
+    .await
+    .context("join SQLite line editor initialization")?
+}
+
+async fn read_line(
+    mut editor: DefaultEditor,
+    prompt: &'static str,
+) -> Result<(DefaultEditor, rustyline::Result<String>)> {
+    tokio::task::spawn_blocking(move || {
+        let result = editor.readline(prompt);
+        (editor, result)
+    })
+    .await
+    .context("join SQLite line editor")
+}
+
+async fn save_history(mut editor: DefaultEditor, path: PathBuf) {
+    let result = tokio::task::spawn_blocking(move || editor.save_history(&path)).await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => eprintln!("Warning: could not save SQLite history: {error}"),
+        Err(error) => eprintln!("Warning: could not join SQLite history writer: {error}"),
     }
 }
 
