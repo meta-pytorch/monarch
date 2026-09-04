@@ -107,7 +107,9 @@
 mod cache;
 mod codec;
 mod protocol;
+mod session;
 mod state;
+mod stream;
 
 pub use cache::CacheError;
 pub use cache::CacheTime;
@@ -143,12 +145,18 @@ pub use protocol::VERSION_1;
 pub use protocol::VERSION_2;
 pub use protocol::VERSION_3;
 pub use protocol::VersionRange;
+pub use session::EnumerateRequest;
+pub use session::ParentAction;
+pub use session::ParentSession;
+pub use session::ResolveRequest;
+pub use session::SessionError;
 pub use state::ApplyEffects;
 pub use state::ApplyError;
 pub use state::Command;
 pub use state::DirectoryChange;
 pub use state::LinkResponse;
 pub use state::Nameserver;
+pub use stream::MessageStreamError;
 
 /// The reserved link-local stream protocol used by the nameserver.
 pub const NAMESERVER_LINK_PROTOCOL: chrysalis_transport::LinkLocalProtocolId =
