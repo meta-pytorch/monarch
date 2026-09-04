@@ -42,7 +42,8 @@ run_test_groups() {
         pkill -9 python || true
         pkill -9 pytest || true
         sleep 2
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+        LC_ALL=C pytest python/tests/ python/monarch/experimental/tests/ \
+            -s -v -m "not oss_skip" \
             --ignore-glob="**/meta/**" \
             --dist=no \
             --group="$GROUP" \
