@@ -142,7 +142,7 @@ pub async fn run_pyspy_dump_and_query() {
             "/v1/query",
             &QueryRequest {
                 sql: format!(
-                    "SELECT dump_id, proc_ref, warnings_json FROM pyspy_dumps WHERE dump_id = '{dump_id}'"
+                    "SELECT dump_id, proc_ref, capture_mode, warnings_json FROM pyspy_dumps WHERE dump_id = '{dump_id}'"
                 ),
             },
         )
@@ -157,6 +157,13 @@ pub async fn run_pyspy_dump_and_query() {
         rows[0]["proc_ref"].as_str().unwrap(),
         proc_ref,
         "proc_ref should match the queried proc"
+    );
+    assert!(
+        matches!(
+            rows[0]["capture_mode"].as_str(),
+            Some("python_only" | "native" | "native_all")
+        ),
+        "capture_mode should be directly queryable"
     );
     let warnings_json = rows[0]["warnings_json"]
         .as_str()

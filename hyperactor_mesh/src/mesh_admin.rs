@@ -3312,6 +3312,7 @@ mod tests {
     use super::*;
     use crate::host::SERVICE_PROC_NAME;
     use crate::mesh_id::ResourceId;
+    use crate::pyspy::PySpyCaptureMode;
 
     // Integration tests that spawn MeshAdminAgent must pass
     // `Some("[::]:0".parse().unwrap())` as the admin_addr to get an
@@ -3363,6 +3364,7 @@ mod tests {
         let result = PySpyResult::Ok {
             pid: 1234,
             binary: "py-spy".to_string(),
+            capture_mode: PySpyCaptureMode::PythonOnly,
             stack_traces: vec![],
             warnings: vec![],
         };

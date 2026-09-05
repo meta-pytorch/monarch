@@ -656,6 +656,26 @@
         },
         "type": "object"
       },
+      "PySpyCaptureMode": {
+        "description": "py-spy mode used by the successful stack-dump attempt.",
+        "oneOf": [
+          {
+            "const": "python_only",
+            "description": "The successful attempt used neither `--native` nor `--native-all`.",
+            "type": "string"
+          },
+          {
+            "const": "native",
+            "description": "The successful attempt used `--native` but not `--native-all`.",
+            "type": "string"
+          },
+          {
+            "const": "native_all",
+            "description": "The successful attempt used `--native-all`.",
+            "type": "string"
+          }
+        ]
+      },
       "PySpyFrame": {
         "description": "A single frame in a py-spy stack trace.",
         "properties": {
@@ -793,6 +813,10 @@
                     "description": "Path or name of the py-spy binary that produced the dump.",
                     "type": "string"
                   },
+                  "capture_mode": {
+                    "$ref": "#/components/schemas/PySpyCaptureMode",
+                    "description": "Invocation mode used for the successful attempt."
+                  },
                   "pid": {
                     "description": "OS process ID that was dumped.",
                     "format": "uint32",
@@ -817,6 +841,7 @@
                 "required": [
                   "pid",
                   "binary",
+                  "capture_mode",
                   "stack_traces",
                   "warnings"
                 ],

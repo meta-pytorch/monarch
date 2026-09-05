@@ -876,6 +876,13 @@ impl DatabaseScanner {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let capture_mode = ok
+            .get("capture_mode")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("missing py-spy capture_mode"))?;
+        if !matches!(capture_mode, "python_only" | "native" | "native_all") {
+            anyhow::bail!("invalid py-spy capture_mode: {capture_mode}");
+        }
         let warnings = ok
             .get("warnings")
             .and_then(|value| value.as_array())
@@ -894,6 +901,7 @@ impl DatabaseScanner {
             pid,
             binary,
             proc_ref: proc_ref.to_string(),
+            capture_mode: capture_mode.to_string(),
             warnings_json,
         });
         Self::push_batch_to_tables(
@@ -1836,6 +1844,7 @@ mod tests {
         let json = r#"{
             "Ok": {
                 "pid": 1234, "binary": "python3",
+                "capture_mode": "native",
                 "stack_traces": [{
                     "pid": 1234, "thread_id": 100,
                     "thread_name": "MainThread", "os_thread_id": 5678,
@@ -1852,7 +1861,7 @@ mod tests {
                          ], "is_entry": true}
                     ]
                 }],
-                "warnings": ["native capture failed; fell back to python-only frames"]
+                "warnings": ["--native-all unsupported; fell back to --native"]
             }
         }"#;
 
@@ -1890,6 +1899,12 @@ mod tests {
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
+        let capture_modes = batch
+            .column_by_name("capture_mode")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         let warnings_json = batch
             .column_by_name("warnings_json")
             .unwrap()
@@ -1900,9 +1915,10 @@ mod tests {
         assert_eq!(pids.value(0), 1234);
         assert_eq!(binaries.value(0), "python3");
         assert_eq!(proc_refs.value(0), "proc[0]");
+        assert_eq!(capture_modes.value(0), "native");
         assert_eq!(
             warnings_json.value(0),
-            r#"["native capture failed; fell back to python-only frames"]"#
+            r#"["--native-all unsupported; fell back to --native"]"#
         );
 
         // Verify pyspy_stack_traces content
@@ -2088,12 +2104,22 @@ mod tests {
     }
 
     #[test]
+    fn test_store_pyspy_dump_invalid_capture_mode_errors() {
+        let scanner = test_scanner(0);
+        let json = r#"{"Ok": {"capture_mode": "unknown"}}"#;
+
+        assert!(scanner.store_pyspy_dump("x", "p", json).is_err());
+        assert_eq!(table_row_count(&scanner, "pyspy_dumps"), 0);
+    }
+
+    #[test]
     fn test_store_pyspy_dump_multiple_threads() {
         let scanner = test_scanner(0);
 
         let json = r#"{
             "Ok": {
                 "pid": 1, "binary": "python3",
+                "capture_mode": "python_only",
                 "stack_traces": [
                     {"pid": 1, "thread_id": 1, "thread_name": "Main", "os_thread_id": 10,
                      "active": true, "owns_gil": true,

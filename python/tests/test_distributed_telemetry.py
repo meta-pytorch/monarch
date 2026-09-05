@@ -207,6 +207,7 @@ def _sample_pyspy_dump_json() -> str:
             "Ok": {
                 "pid": 1234,
                 "binary": "python3",
+                "capture_mode": "native",
                 "stack_traces": [
                     {
                         "pid": 1234,
@@ -2139,6 +2140,7 @@ def test_store_pyspy_dump_and_query() -> None:
                 "Ok": {
                     "pid": 1234,
                     "binary": "python3",
+                    "capture_mode": "python_only",
                     "stack_traces": [
                         {
                             "pid": 1234,
@@ -2195,6 +2197,13 @@ def test_store_pyspy_dump_and_query() -> None:
         )
 
         _store_pyspy_dump(state, "dump-1", "proc[0]", pyspy_json)
+
+        dump = _query(
+            state,
+            "SELECT capture_mode FROM pyspy_dumps "
+            "WHERE dump_id = 'dump-1' AND capture_mode = 'python_only'",
+        )
+        assert dump["capture_mode"] == ["python_only"]
 
         result_dict = _query(
             state,
@@ -2277,6 +2286,7 @@ def test_store_pyspy_dump_with_child_proc_ref() -> None:
                 "Ok": {
                     "pid": 9999,
                     "binary": "python3",
+                    "capture_mode": "native_all",
                     "stack_traces": [
                         {
                             "pid": 9999,
@@ -2345,6 +2355,7 @@ def test_store_pyspy_dump_with_unknown_proc_ref() -> None:
                 "Ok": {
                     "pid": 7777,
                     "binary": "python3",
+                    "capture_mode": "python_only",
                     "stack_traces": [
                         {
                             "pid": 7777,

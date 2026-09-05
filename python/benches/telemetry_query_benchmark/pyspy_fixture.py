@@ -49,6 +49,7 @@ def make_dump(shape: DatasetShape) -> str:
     """Build one compact PySpy JSON payload."""
     payload = {
         "Ok": {
+            "capture_mode": "python_only",
             "stack_traces": [
                 _make_trace(shape, thread_index)
                 for thread_index in range(shape.threads_per_dump)

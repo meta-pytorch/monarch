@@ -217,8 +217,9 @@
 //!   If the first attempt is not found, the fallback attempt is
 //!   required.
 //! - **PS-4 (structured JSON output):** py-spy runs with `--json`;
-//!   output is parsed into `Vec<PySpyStackTrace>`. Parse failure
-//!   maps to `PySpyResult::Failed`.
+//!   output is parsed into `Vec<PySpyStackTrace>`. A successful result's
+//!   `capture_mode` records whether it used `native_all`, `native`, or
+//!   `python_only`. Parse failure maps to `PySpyResult::Failed`.
 //! - **PS-5 (subprocess timeout):** `try_exec` bounds the py-spy
 //!   subprocess inside the worker to `MESH_ADMIN_PYSPY_TIMEOUT`
 //!   (default 10s). The budget is sized for `--native --native-all`
@@ -264,7 +265,7 @@
 //!   the py-spy binary was resolved — PS-3 means the caller cannot
 //!   otherwise tell which one ran. The warning survives failed
 //!   downgraded outer retries and is attached to any eventual
-//!   successful result.
+//!   successful result, whose `capture_mode` is `native`.
 //! - **PS-11d (native-all-failure-passthrough):** If the downgraded
 //!   retry also fails, the failure flows through the normal
 //!   nonblocking retry logic (PS-10) unchanged.
@@ -309,14 +310,13 @@
 //!   does not consume an outer nonblocking retry slot (PS-10) and
 //!   does not incur the 100ms inter-attempt backoff.
 //! - **PS-15c (native-downgrade-warning):** A successful downgraded
-//!   result includes `pyspy::native_downgrade_warning(label)`, so a
-//!   caller can tell a Python-only dump from a full one. It is the
-//!   only signal that native frames are missing, so it names both
-//!   the py-spy that fell short and the remedy: point the
-//!   `PYSPY_BIN` environment variable on the dumped proc at a build
-//!   that can unwind the target. The warning survives failed
-//!   Python-only outer retries and is attached to any eventual
-//!   successful result.
+//!   result has `capture_mode = python_only` and includes
+//!   `pyspy::native_downgrade_warning(label)`. The enum provides a
+//!   queryable capture-mode signal, while the warning names both the
+//!   py-spy that fell short and the remedy: point the `PYSPY_BIN`
+//!   environment variable on the dumped proc at a build that can
+//!   unwind the target. The warning survives failed Python-only outer
+//!   retries and is attached to any eventual successful result.
 //! - **PS-15d (native-sticky-downgrade):** Once native capture has
 //!   failed, `effective_opts.native` and `effective_opts.native_all`
 //!   remain `false` for all subsequent outer retries. Native is not
