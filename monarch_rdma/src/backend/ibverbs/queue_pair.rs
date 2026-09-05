@@ -22,12 +22,8 @@ use std::io::Error;
 use std::result::Result;
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::Instant;
 
 use async_trait::async_trait;
-use backoff::ExponentialBackoff;
-use backoff::ExponentialBackoffBuilder;
-use backoff::backoff::Backoff;
 use hyperactor::Actor;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
@@ -35,12 +31,12 @@ use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::PortHandle;
 use hyperactor::actor::Referable;
 use hyperactor::actor::RemoteHandles;
 use hyperactor::context::Mailbox;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::mpsc;
 use typeuri::Named;
 
 use super::cq_pool::CqLease;
@@ -775,68 +771,6 @@ impl IbvQueuePair for RCQueuePair {
     }
 }
 
-/// Adaptive backoff for the scheduler's `Tick` self-message. Use
-/// [`Self::next_interval`] to ask "how long should I wait before the
-/// next poll attempt?"; call [`Self::reset`] whenever the previous
-/// poll observed completions (so the actor stays tight while work
-/// is making progress).
-///
-/// While the elapsed time since the first non-zero interval is below
-/// `yield_window`, the policy returns `Duration::ZERO` so the actor
-/// just re-sends `Tick` to itself with no delay — keeping latency
-/// tight when WRs are about to complete. Past the window, it walks
-/// an exponential backoff (1ms initial, doubling, capped at 10ms)
-/// so a long-running op doesn't keep the runtime spinning. When
-/// `yield_window` is `None` (the default for
-/// `RDMA_CQ_BUSY_POLL_WINDOW`) the policy always returns
-/// `Duration::ZERO`.
-#[derive(Debug)]
-struct PollSleepPolicy {
-    yield_window: Option<Duration>,
-    started_at: Option<Instant>,
-    backoff: Option<ExponentialBackoff>,
-}
-
-impl PollSleepPolicy {
-    fn new() -> Self {
-        let yield_window = hyperactor_config::global::get(crate::config::RDMA_CQ_BUSY_POLL_WINDOW);
-        Self {
-            yield_window,
-            started_at: None,
-            backoff: None,
-        }
-    }
-
-    /// Forget all accumulated backoff state. Called after a poll
-    /// returns completions, so the next idle stretch starts fresh.
-    fn reset(&mut self) {
-        self.started_at = None;
-        self.backoff = None;
-    }
-
-    /// Suggested delay before the next `Tick`. `Duration::ZERO`
-    /// means "send `Tick` immediately".
-    fn next_interval(&mut self) -> Duration {
-        let Some(window) = self.yield_window else {
-            return Duration::ZERO;
-        };
-        let started = *self.started_at.get_or_insert_with(Instant::now);
-        if started.elapsed() < window {
-            return Duration::ZERO;
-        }
-        let backoff = self.backoff.get_or_insert_with(|| {
-            ExponentialBackoffBuilder::new()
-                .with_initial_interval(Duration::from_millis(1))
-                .with_max_interval(Duration::from_millis(10))
-                .with_multiplier(2.0)
-                .with_randomization_factor(0.0)
-                .with_max_elapsed_time(None)
-                .build()
-        });
-        backoff.next_backoff().unwrap_or(Duration::ZERO)
-    }
-}
-
 /// Bundle of trait bounds for an actor type that can serve as the
 /// peer manager — i.e. the recipient of [`CreatePeerQueuePair`].
 pub(super) trait Manager:
@@ -846,13 +780,7 @@ pub(super) trait Manager:
 
 impl<T> Manager for T where T: Actor + Referable + RemoteHandles<CreatePeerQueuePair<T>> {}
 
-/// Per-op completion reply emitted by [`QueuePairActor`] back to the
-/// manager via [`ProcessOps::reply`]. A named newtype (rather than a
-/// raw `(usize, Result<…>)` tuple) so the manager can identify
-/// undeliverable `OpResult`s by type name in
-/// `handle_undeliverable_message` and absorb them when the original
-/// caller has gone away (typical at test teardown).
-#[allow(dead_code)] // not yet referenced by IbvManagerActor
+/// Per-op completion result sent from a queue-pair actor to the submitter.
 #[derive(Debug)]
 pub(super) struct OpResult {
     pub(super) op_idx: usize,
@@ -881,7 +809,7 @@ pub(super) struct QueuePairOp {
 #[derive(Debug)]
 pub(super) struct ProcessOps {
     pub(super) items: Vec<QueuePairOp>,
-    pub(super) reply: PortHandle<OpResult>,
+    pub(super) reply: mpsc::UnboundedSender<OpResult>,
 }
 
 /// Local-only self-message that drives one round of the scheduler.
@@ -892,7 +820,7 @@ struct Tick;
 #[derive(Debug)]
 struct PendingOp {
     op: QueuePairOp,
-    reply: PortHandle<OpResult>,
+    reply: mpsc::UnboundedSender<OpResult>,
     /// WR count this op will issue when posted, computed once at
     /// construction so retries from a credit head-block don't redo
     /// the work.
@@ -909,11 +837,37 @@ struct PostedOpEntry {
     /// Kept alive so the memory *registration* outlives every in-flight
     /// WR touching it.
     _local_mrv: IbvMemoryRegionView,
-    reply: PortHandle<OpResult>,
+    reply: mpsc::UnboundedSender<OpResult>,
     /// First per-WR error observed for this op. The op's final reply is
     /// held back until `pending_wrs.is_empty()`, so the two fields above
     /// outlive every WR still in flight.
     first_error: Option<String>,
+}
+
+/// Owns one queue pair and the state used to schedule and complete its work.
+#[derive(Debug)]
+struct QueuePairState<Qp: IbvQueuePair> {
+    qp_key: QpKey,
+    qp: Qp,
+    /// QP-wide cap on outstanding send-queue WRs (reads + writes).
+    max_send_wr: u32,
+    /// Single FIFO of ops awaiting their first post attempt. If the head
+    /// op does not fit in the free send-queue slots, ops queued behind it
+    /// stall even where they would have fit; smarter interleaving is
+    /// future work.
+    queue: VecDeque<PendingOp>,
+    /// op-id → entry, for tracking WR completion. op-ids are local
+    /// to this queue pair (monotonic counter); they exist so we can
+    /// route per-WR completions to the right `PostedOpEntry`
+    /// without making any assumptions about uniqueness of `op_idx`
+    /// across batches.
+    posted: HashMap<u64, PostedOpEntry>,
+    /// wr_id → local op-id.
+    wr_to_op: HashMap<u64, u64>,
+    next_op_id: u64,
+    /// WRs posted to the send queue and not yet reaped:
+    /// what `max_send_wr` gates against.
+    in_flight: u32,
 }
 
 /// Per-peer queue-pair actor.
@@ -925,13 +879,12 @@ struct PostedOpEntry {
 /// drops it when the actor stops.
 #[derive(Debug)]
 pub(super) struct QueuePairActor<M: Manager, Qp: IbvQueuePair> {
-    qp_key: QpKey,
     /// Filled into [`CreatePeerQueuePair::sender`] so the peer can
     /// build its own [`QpKey`] from our identity.
     local_manager: ActorRef<M>,
     /// Recipient of [`CreatePeerQueuePair`].
     peer_manager: ActorRef<M>,
-    qp: Qp,
+    state: QueuePairState<Qp>,
     /// `true` when the peer QP is colocated with this actor's QP —
     /// i.e. both endpoints live in the same `IbvManagerActor` *and*
     /// target the same RDMA device. In that case `init` connects
@@ -939,29 +892,9 @@ pub(super) struct QueuePairActor<M: Manager, Qp: IbvQueuePair> {
     /// handshake.
     is_loopback: bool,
     init_timeout: Duration,
-    /// QP-wide cap on outstanding send-queue WRs (reads + writes).
-    max_send_wr: u32,
-    /// Single FIFO of ops awaiting their first post attempt. If the head
-    /// op does not fit in the free send-queue slots, ops queued behind it
-    /// stall even where they would have fit; smarter interleaving is
-    /// future work.
-    queue: VecDeque<PendingOp>,
-    /// op-id → entry, for tracking WR completion. op-ids are local
-    /// to this actor (monotonic counter); they exist so we can
-    /// route per-WR completions to the right `PostedOpEntry`
-    /// without making any assumptions about uniqueness of `op_idx`
-    /// across batches.
-    posted: HashMap<u64, PostedOpEntry>,
-    /// wr_id → local op-id.
-    wr_to_op: HashMap<u64, u64>,
-    next_op_id: u64,
-    /// WRs posted to the send queue and not yet reaped:
-    /// what `max_send_wr` gates against.
-    in_flight: u32,
     /// `true` while a `Tick` self-message is already in flight; the
     /// flag prevents stacking redundant ticks.
     tick_armed: bool,
-    poll_policy: PollSleepPolicy,
     /// This queue pair's lease on the device's completion queue. Never read: it
     /// is held so the lease -- and the completion queue itself -- outlive the
     /// queue pair, which drops with this actor. This placement is temporary and
@@ -984,30 +917,56 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
     ) -> Self {
         let init_timeout = hyperactor_config::global::get(crate::config::RDMA_QP_INIT_TIMEOUT);
         Self {
-            qp_key,
+            state: QueuePairState::new(qp_key, qp, max_send_wr),
             local_manager,
             peer_manager,
-            qp,
             is_loopback,
             init_timeout,
+            tick_armed: false,
+            _cq_lease: cq_lease,
+        }
+    }
+
+    /// One scheduler round: post everything that fits, poll for
+    /// completions, emit replies for finished ops, and re-arm
+    /// `Tick` if work remains. Returns `Err` for fatal QP-level
+    /// failures; the surrounding handler propagates the error so
+    /// supervision tears the actor down.
+    fn advance(&mut self, cx: &Instance<Self>) -> Result<(), anyhow::Error> {
+        self.state.post_ready()?;
+
+        self.state.poll_completions()?;
+
+        if self.state.has_work() && !self.tick_armed {
+            self.tick_armed = true;
+            cx.handle().try_post(cx, Tick)?;
+        }
+        Ok(())
+    }
+}
+
+impl<Qp: IbvQueuePair> QueuePairState<Qp> {
+    fn new(qp_key: QpKey, qp: Qp, max_send_wr: u32) -> Self {
+        Self {
+            qp_key,
+            qp,
             max_send_wr,
             queue: VecDeque::new(),
             posted: HashMap::new(),
             wr_to_op: HashMap::new(),
             next_op_id: 0,
             in_flight: 0,
-            tick_armed: false,
-            poll_policy: PollSleepPolicy::new(),
-            _cq_lease: cq_lease,
         }
     }
 
-    /// Number of WRs the QP will issue for an op that targets
-    /// `local_size` bytes. The QP splits large transfers into
-    /// [`IbvQueuePair::max_msg_size`]-bound chunks; a zero-byte op still
-    /// consumes one WR.
-    fn wr_count(&self, local_size: usize) -> u32 {
-        local_size.div_ceil(self.qp.max_msg_size()).max(1) as u32
+    fn enqueue(&mut self, message: ProcessOps) {
+        let max_msg_size = self.qp.max_msg_size();
+        self.queue
+            .extend(message.items.into_iter().map(|op| PendingOp {
+                wrs: op.local_memory.size().div_ceil(max_msg_size).max(1) as u32,
+                op,
+                reply: message.reply.clone(),
+            }));
     }
 
     /// Try to post the head of `queue`.
@@ -1021,7 +980,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
     /// * `Err(_)` — `qp.put`/`qp.get` failed (e.g. the QP is in
     ///   error state). Fatal: the actor's handler returns this,
     ///   which raises a supervision event.
-    fn try_post_head(&mut self, cx: &Instance<Self>) -> Result<bool, anyhow::Error> {
+    fn try_post_head(&mut self) -> Result<bool, anyhow::Error> {
         let pending = self.queue.pop_front().expect("non-empty queue");
         let PendingOp { op, reply, wrs } = pending;
         let op_idx = op.op_idx;
@@ -1032,13 +991,10 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
                 "op too large for this QP [op_idx={}, qp_key={:?}, op_type={:?}, wrs={}, max_send_wr={}, local: {:?}, remote: {:?}]",
                 op_idx, self.qp_key, op.op_type, wrs, self.max_send_wr, op.local_memory, op.remote,
             );
-            reply.try_post(
-                cx,
-                OpResult {
-                    op_idx,
-                    result: Err(err),
-                },
-            )?;
+            let _ = reply.send(OpResult {
+                op_idx,
+                result: Err(err),
+            });
             return Ok(true);
         }
 
@@ -1094,26 +1050,17 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
         Ok(true)
     }
 
-    /// One scheduler round: post everything that fits, poll for
-    /// completions, emit replies for finished ops, and re-arm
-    /// `Tick` if work remains. Returns `Err` for fatal QP-level
-    /// failures; the surrounding handler propagates the error so
-    /// supervision tears the actor down.
-    fn advance(&mut self, cx: &Instance<Self>) -> Result<(), anyhow::Error> {
-        // 1. Post from the queue head until either it's empty or
-        //    the head is credit-blocked.
+    fn post_ready(&mut self) -> Result<(), anyhow::Error> {
         while !self.queue.is_empty() {
-            if !self.try_post_head(cx)? {
+            if !self.try_post_head()? {
                 break;
             }
         }
+        Ok(())
+    }
 
-        // 2. Drain the send CQ. Each completion identifies its WR by
-        //    `wr_id`; we correlate it back to its op and, once every WR
-        //    for an op has reported, emit the op's reply. Polling only
-        //    while WRs are outstanding keeps the loop from spinning on an
-        //    empty queue, and draining to `None` ensures no completion is
-        //    left behind.
+    /// Drain the send CQ and return whether any completion was observed.
+    fn poll_completions(&mut self) -> Result<bool, anyhow::Error> {
         let mut progressed = false;
         while !self.wr_to_op.is_empty() {
             let completion = self
@@ -1151,31 +1098,17 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
                     Some(err) => Err(err),
                     None => Ok(()),
                 };
-                entry.reply.try_post(
-                    cx,
-                    OpResult {
-                        op_idx: entry.op_idx,
-                        result,
-                    },
-                )?;
+                let _ = entry.reply.send(OpResult {
+                    op_idx: entry.op_idx,
+                    result,
+                });
             }
         }
-        if progressed {
-            self.poll_policy.reset();
-        }
+        Ok(progressed)
+    }
 
-        // 3. Re-arm Tick if any work remains.
-        let pending_work = !self.queue.is_empty() || !self.posted.is_empty();
-        if pending_work && !self.tick_armed {
-            self.tick_armed = true;
-            let interval = self.poll_policy.next_interval();
-            if interval.is_zero() {
-                cx.handle().try_post(cx, Tick)?;
-            } else {
-                cx.post_after(cx, Tick, interval);
-            }
-        }
-        Ok(())
+    fn has_work(&self) -> bool {
+        !self.queue.is_empty() || !self.posted.is_empty()
     }
 }
 
@@ -1183,8 +1116,8 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
 impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
-        let local_info = self.qp.get_qp_info().map_err(|e| {
-            tracing::error!(qp_key = ?self.qp_key, error = %e, "QueuePairActor init: get_qp_info failed");
+        let local_info = self.state.qp.get_qp_info().map_err(|e| {
+            tracing::error!(qp_key = ?self.state.qp_key, error = %e, "QueuePairActor init: get_qp_info failed");
             anyhow::anyhow!("could not extract local QP info: {e}")
         })?;
 
@@ -1198,8 +1131,8 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
                 this,
                 CreatePeerQueuePair {
                     sender: self.local_manager.clone(),
-                    sender_device: self.qp_key.self_device.clone(),
-                    receiver_device: self.qp_key.other_device.clone(),
+                    sender_device: self.state.qp_key.self_device.clone(),
+                    receiver_device: self.state.qp_key.other_device.clone(),
                     sender_info: local_info,
                     reply: reply.bind(),
                 },
@@ -1208,7 +1141,7 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
                 Ok(Ok(Ok(info))) => info,
                 Ok(Ok(Err(e))) => {
                     tracing::error!(
-                        qp_key = ?self.qp_key,
+                        qp_key = ?self.state.qp_key,
                         peer_manager = ?self.peer_manager,
                         error = %e,
                         "QueuePairActor init: peer manager rejected CreatePeerQueuePair",
@@ -1217,7 +1150,7 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
                 }
                 Ok(Err(e)) => {
                     tracing::error!(
-                        qp_key = ?self.qp_key,
+                        qp_key = ?self.state.qp_key,
                         peer_manager = ?self.peer_manager,
                         error = %e,
                         "QueuePairActor init: peer reply port closed",
@@ -1226,7 +1159,7 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
                 }
                 Err(_) => {
                     tracing::error!(
-                        qp_key = ?self.qp_key,
+                        qp_key = ?self.state.qp_key,
                         peer_manager = ?self.peer_manager,
                         timeout = ?self.init_timeout,
                         "QueuePairActor init: timed out waiting for peer reply",
@@ -1239,9 +1172,9 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
             }
         };
 
-        self.qp.connect(&peer_info).map_err(|e| {
+        self.state.qp.connect(&peer_info).map_err(|e| {
             tracing::error!(
-                qp_key = ?self.qp_key,
+                qp_key = ?self.state.qp_key,
                 peer_info = ?peer_info,
                 error = %e,
                 "QueuePairActor init: connect failed",
@@ -1266,14 +1199,7 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
 #[async_trait]
 impl<M: Manager, Qp: IbvQueuePair> Handler<ProcessOps> for QueuePairActor<M, Qp> {
     async fn handle(&mut self, cx: &Context<Self>, msg: ProcessOps) -> Result<(), anyhow::Error> {
-        for op in msg.items.into_iter() {
-            let wrs = self.wr_count(op.local_memory.size());
-            self.queue.push_back(PendingOp {
-                op,
-                reply: msg.reply.clone(),
-                wrs,
-            });
-        }
+        self.state.enqueue(msg);
         // If a tick is already armed it will pick up the new ops on
         // its next round; advancing here would just duplicate work.
         if !self.tick_armed {
@@ -2189,14 +2115,14 @@ mod tests {
         }
     }
 
-    /// Open a multi-shot port and send a `ProcessOps` batch. Returns
+    /// Open a result channel and send a `ProcessOps` batch. Returns
     /// the receiver so the caller can await per-op results.
     fn submit_ops(
         harness: &QpaHarness,
         actor: &ActorHandle<QueuePairActor<QpaMockManager, MockQp>>,
         items: Vec<QueuePairOp>,
-    ) -> Result<hyperactor::mailbox::PortReceiver<OpResult>> {
-        let (reply, rx) = harness.client.mailbox().open_port::<OpResult>();
+    ) -> Result<mpsc::UnboundedReceiver<OpResult>> {
+        let (reply, rx) = mpsc::unbounded_channel();
         actor.try_post(&harness.client, ProcessOps { items, reply })?;
         Ok(rx)
     }
@@ -2204,7 +2130,7 @@ mod tests {
     /// Collect exactly `n` replies with a per-recv timeout, sorted
     /// by op_idx for deterministic comparison.
     async fn collect_replies(
-        rx: &mut hyperactor::mailbox::PortReceiver<OpResult>,
+        rx: &mut mpsc::UnboundedReceiver<OpResult>,
         n: usize,
     ) -> Vec<(usize, Result<(), String>)> {
         let mut out = Vec::with_capacity(n);
@@ -2212,7 +2138,7 @@ mod tests {
             let m = tokio::time::timeout(Duration::from_secs(5), rx.recv())
                 .await
                 .expect("timed out waiting for ProcessOps reply")
-                .expect("ProcessOps reply port closed");
+                .expect("ProcessOps result channel closed");
             out.push((m.op_idx, m.result));
         }
         out.sort_by_key(|(i, _)| *i);
@@ -2222,12 +2148,12 @@ mod tests {
     /// Try to recv with a short timeout, returning `None` on timeout
     /// so callers can assert "no reply yet".
     async fn try_recv(
-        rx: &mut hyperactor::mailbox::PortReceiver<OpResult>,
+        rx: &mut mpsc::UnboundedReceiver<OpResult>,
         wait: Duration,
     ) -> Option<(usize, Result<(), String>)> {
         match tokio::time::timeout(wait, rx.recv()).await {
-            Ok(Ok(m)) => Some((m.op_idx, m.result)),
-            Ok(Err(e)) => panic!("ProcessOps reply port closed: {e}"),
+            Ok(Some(m)) => Some((m.op_idx, m.result)),
+            Ok(None) => panic!("ProcessOps result channel closed"),
             Err(_) => None,
         }
     }
