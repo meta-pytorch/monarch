@@ -1244,12 +1244,14 @@ dependencies = [
 name = "chrysalis-sqlite"
 version = "0.0.0"
 dependencies = [
+ "chrysalis",
  "chrysalis-core",
  "chrysalis-transport",
  "libsql",
  "sha2 0.11.0",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
