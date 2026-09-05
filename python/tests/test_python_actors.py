@@ -1332,24 +1332,9 @@ def test_long_endpoint_completes() -> None:
     pm.stop().get()
 
 
-class UndeliverableMessageReceiver(Actor):
-    def __init__(self):
-        self._messages = asyncio.Queue()
-
-    @endpoint
-    async def receive_undeliverable(
-        self, sender: str, dest: str, error_msg: str
-    ) -> None:
-        await self._messages.put((sender, dest, error_msg))
-
-    @concurrent_endpoint
-    async def get_messages(self) -> Tuple[str, str, str]:
-        return await self._messages.get()
-
-
 class UndeliverableMessageSender(Actor):
     @endpoint
-    def send_undeliverable(self) -> None:
+    async def send_undeliverable(self) -> None:
         actor_instance = context().actor_instance
         port_id = PortId(
             actor_id=ActorAddr(addr="local:0", proc_name="bogus", actor_name="bogus"),
@@ -1366,14 +1351,18 @@ class UndeliverableMessageSender(Actor):
 
 
 class UndeliverableMessageSenderWithOverride(UndeliverableMessageSender):
-    def __init__(self, receiver: UndeliverableMessageReceiver):
-        self._receiver = receiver
+    def __init__(self):
+        self._messages: asyncio.Queue[Tuple[str, str, str]] = asyncio.Queue()
+
+    @concurrent_endpoint
+    async def get_messages(self) -> Tuple[str, str, str]:
+        return await self._messages.get()
 
     def _handle_undeliverable_message(
         self, message: UndeliverableMessageEnvelope
     ) -> bool:
-        self._receiver.receive_undeliverable.broadcast(
-            str(message.sender()), str(message.dest()), message.error_msg()
+        self._messages.put_nowait(
+            (str(message.sender()), str(message.dest()), message.error_msg())
         )
         return True
 
@@ -1382,12 +1371,9 @@ class UndeliverableMessageSenderWithOverride(UndeliverableMessageSender):
 @isolate_in_subprocess
 async def test_undeliverable_message_with_override() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 1})
-    receiver = pm.spawn("undeliverable_receiver", UndeliverableMessageReceiver)
-    sender = pm.spawn(
-        "undeliverable_sender", UndeliverableMessageSenderWithOverride, receiver
-    )
+    sender = pm.spawn("undeliverable_sender", UndeliverableMessageSenderWithOverride)
     await sender.send_undeliverable.call()
-    sender, dest, error_msg = await receiver.get_messages.call_one()
+    sender, dest, error_msg = await sender.get_messages.call_one()
     assert sender != ""
     assert "bogus" in dest
     assert error_msg is not None
