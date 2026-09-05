@@ -27,6 +27,27 @@ use crate::config::PYSPY_BIN;
 
 const SUBPROCESS_REAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// py-spy mode used by the successful stack-dump attempt.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PySpyCaptureMode {
+    /// The successful attempt used neither `--native` nor `--native-all`.
+    PythonOnly,
+    /// The successful attempt used `--native` but not `--native-all`.
+    Native,
+    /// The successful attempt used `--native-all`.
+    NativeAll,
+}
+
 /// Result of a py-spy stack dump request.
 ///
 /// See PS-2, PS-4 in `introspect` module doc.
@@ -46,6 +67,8 @@ pub enum PySpyResult {
         pid: u32,
         /// Path or name of the py-spy binary that produced the dump.
         binary: String,
+        /// Invocation mode used for the successful attempt.
+        capture_mode: PySpyCaptureMode,
         /// Per-thread stack traces from py-spy.
         stack_traces: Vec<PySpyStackTrace>,
         /// Non-fatal warnings from the capture (e.g., flag
@@ -136,6 +159,18 @@ pub struct PySpyOpts {
     /// Use nonblocking mode — py-spy reads without pausing the
     /// target process (`--nonblocking`). Enables retry logic (PS-10).
     pub nonblocking: bool,
+}
+
+impl From<&PySpyOpts> for PySpyCaptureMode {
+    fn from(opts: &PySpyOpts) -> Self {
+        if opts.native_all {
+            Self::NativeAll
+        } else if opts.native {
+            Self::Native
+        } else {
+            Self::PythonOnly
+        }
+    }
 }
 
 /// Public JSON-facing options for a py-spy profile capture.
@@ -737,12 +772,18 @@ async fn kill_and_reap(subprocess: &mut GuardedSubprocess) -> Option<String> {
 /// Map a process::Output to a PySpyResult, parsing the `--json`
 /// output into structured `PySpyStackTrace` values.
 /// See PS-2, PS-4 in `introspect` module doc.
-fn map_output(output: std::process::Output, pid: u32, binary: &str) -> PySpyResult {
+fn map_output(
+    output: std::process::Output,
+    pid: u32,
+    binary: &str,
+    capture_mode: PySpyCaptureMode,
+) -> PySpyResult {
     if output.status.success() {
         match serde_json::from_slice::<Vec<PySpyStackTrace>>(&output.stdout) {
             Ok(stack_traces) => PySpyResult::Ok {
                 pid,
                 binary: binary.to_string(),
+                capture_mode,
                 stack_traces,
                 warnings: vec![],
             },
@@ -788,10 +829,10 @@ fn native_all_downgrade_warning(label: &str) -> String {
 }
 
 /// The warning attached to a result that fell back to Python-only
-/// frames after native capture failed (PS-15c). This is the only
-/// signal an operator gets that native frames are missing, so it
-/// names the candidate that fell short -- by resolution label, so a
-/// `PYSPY_BIN` that is already set is visible -- and the remedy.
+/// frames after native capture failed (PS-15c). The result's
+/// `capture_mode` field identifies the mode; this message names the
+/// candidate that fell short -- by resolution label, so a `PYSPY_BIN`
+/// that is already set is visible -- and the remedy.
 fn native_downgrade_warning(label: &str) -> String {
     format!(
         "native capture failed; fell back to python-only frames. py-spy ({label}) could not \
@@ -806,6 +847,13 @@ enum ExecOnce {
     Result(PySpyResult),
     /// The binary was not found (NotFound from spawn).
     NotFound,
+}
+
+#[derive(Clone, Copy)]
+struct DumpAttempt<'a> {
+    pid: u32,
+    binary: &'a str,
+    capture_mode: PySpyCaptureMode,
 }
 
 /// Spawn the py-spy binary once, collect output, and return the
@@ -840,7 +888,12 @@ async fn exec_once(
             });
         }
     };
-    ExecOnce::Result(collect_with_timeout(subprocess, pid, binary, remaining).await)
+    let attempt = DumpAttempt {
+        pid,
+        binary,
+        capture_mode: PySpyCaptureMode::from(opts),
+    };
+    ExecOnce::Result(collect_with_timeout(subprocess, attempt, remaining).await)
 }
 
 /// Try to execute py-spy with the given binary path. Returns `None`
@@ -948,8 +1001,7 @@ async fn try_exec(
 /// See PS-5 in `introspect` module doc.
 async fn collect_with_timeout(
     mut subprocess: GuardedSubprocess,
-    pid: u32,
-    binary: &str,
+    attempt: DumpAttempt<'_>,
     timeout: std::time::Duration,
 ) -> PySpyResult {
     // `subprocess` already owns its guard before this future is created. If a
@@ -985,13 +1037,13 @@ async fn collect_with_timeout(
                 stdout: stdout_bytes,
                 stderr: stderr_bytes,
             };
-            map_output(output, pid, binary)
+            map_output(output, attempt.pid, attempt.binary, attempt.capture_mode)
         }
         Ok(Err(e)) => {
             let cleanup = kill_and_reap(&mut subprocess).await;
             PySpyResult::Failed {
-                pid,
-                binary: binary.to_string(),
+                pid: attempt.pid,
+                binary: attempt.binary.to_string(),
                 exit_code: None,
                 stderr: match cleanup {
                     Some(cleanup) => format!("failed to wait for child: {e}; {cleanup}"),
@@ -1002,8 +1054,8 @@ async fn collect_with_timeout(
         Err(_) => {
             let cleanup = kill_and_reap(&mut subprocess).await;
             PySpyResult::Failed {
-                pid,
-                binary: binary.to_string(),
+                pid: attempt.pid,
+                binary: attempt.binary.to_string(),
                 exit_code: None,
                 stderr: match cleanup {
                     Some(cleanup) => format!(
@@ -1219,6 +1271,7 @@ mod tests {
         let original = PySpyResult::Ok {
             pid: 42,
             binary: "py-spy".to_string(),
+            capture_mode: PySpyCaptureMode::Native,
             stack_traces: vec![PySpyStackTrace {
                 pid: 42,
                 thread_id: 1,
@@ -1324,16 +1377,18 @@ mod tests {
             stdout: serde_json::to_vec(&json).unwrap(),
             stderr: vec![],
         };
-        let result = map_output(output, 42, "/usr/bin/py-spy");
+        let result = map_output(output, 42, "/usr/bin/py-spy", PySpyCaptureMode::Native);
         match result {
             PySpyResult::Ok {
                 pid,
                 binary,
+                capture_mode,
                 stack_traces,
                 ..
             } => {
                 assert_eq!(pid, 42);
                 assert_eq!(binary, "/usr/bin/py-spy");
+                assert_eq!(capture_mode, PySpyCaptureMode::Native);
                 assert_eq!(stack_traces.len(), 1);
                 assert_eq!(stack_traces[0].thread_id, 1234);
                 assert_eq!(stack_traces[0].thread_name.as_deref(), Some("MainThread"));
@@ -1355,7 +1410,7 @@ mod tests {
             stdout: b"not valid json".to_vec(),
             stderr: vec![],
         };
-        let result = map_output(output, 42, "py-spy");
+        let result = map_output(output, 42, "py-spy", PySpyCaptureMode::PythonOnly);
         match result {
             PySpyResult::Failed { pid, stderr, .. } => {
                 assert_eq!(pid, 42);
@@ -1377,7 +1432,7 @@ mod tests {
             stdout: vec![],
             stderr: b"Permission denied".to_vec(),
         };
-        let result = map_output(output, 99, "py-spy");
+        let result = map_output(output, 99, "py-spy", PySpyCaptureMode::PythonOnly);
         match result {
             PySpyResult::Failed {
                 pid,
@@ -1403,7 +1458,7 @@ mod tests {
             stdout: serde_json::to_vec(&json).unwrap(),
             stderr: vec![],
         };
-        let result = map_output(output, 12345, "bin");
+        let result = map_output(output, 12345, "bin", PySpyCaptureMode::PythonOnly);
         match result {
             PySpyResult::Ok { pid, .. } => assert_eq!(pid, 12345),
             other => panic!("expected Ok, got {:?}", other),
@@ -1417,6 +1472,19 @@ mod tests {
             native_all: false,
             nonblocking: false,
         }
+    }
+
+    #[test]
+    fn capture_mode_matches_effective_options() {
+        let mut opts = default_opts();
+        assert_eq!(PySpyCaptureMode::from(&opts), PySpyCaptureMode::PythonOnly);
+
+        opts.native = true;
+        assert_eq!(PySpyCaptureMode::from(&opts), PySpyCaptureMode::Native);
+
+        opts.native = false;
+        opts.native_all = true;
+        assert_eq!(PySpyCaptureMode::from(&opts), PySpyCaptureMode::NativeAll);
     }
 
     #[tokio::test]
@@ -1477,7 +1545,15 @@ mod tests {
 
         let result = tokio::time::timeout(
             Duration::from_secs(2),
-            collect_with_timeout(child, target_pid, "sh", Duration::from_millis(200)),
+            collect_with_timeout(
+                child,
+                DumpAttempt {
+                    pid: target_pid,
+                    binary: "sh",
+                    capture_mode: PySpyCaptureMode::PythonOnly,
+                },
+                Duration::from_millis(200),
+            ),
         )
         .await
         .expect("timeout cleanup must itself be bounded");
@@ -1522,8 +1598,11 @@ mod tests {
 
         let task = tokio::spawn(collect_with_timeout(
             child,
-            std::process::id(),
-            "sh",
+            DumpAttempt {
+                pid: std::process::id(),
+                binary: "sh",
+                capture_mode: PySpyCaptureMode::PythonOnly,
+            },
             Duration::from_secs(30),
         ));
         task.abort();
@@ -1659,7 +1738,12 @@ exit 0
         // Must succeed with the downgraded result.
         let result = result.expect("expected Some");
         match &result {
-            PySpyResult::Ok { warnings, .. } => {
+            PySpyResult::Ok {
+                capture_mode,
+                warnings,
+                ..
+            } => {
+                assert_eq!(*capture_mode, PySpyCaptureMode::Native);
                 let expected = native_all_downgrade_warning(&label);
                 assert!(
                     warnings.contains(&expected),
@@ -1724,7 +1808,13 @@ exit 0
         )
         .await
         .expect("expected Some");
-        assert!(matches!(result, PySpyResult::Ok { .. }));
+        assert!(matches!(
+            result,
+            PySpyResult::Ok {
+                capture_mode: PySpyCaptureMode::Native,
+                ..
+            }
+        ));
 
         let log = read_log(&script);
         assert_eq!(log.len(), 2, "expected one native-all downgrade");
@@ -1853,13 +1943,20 @@ exit 0
         .expect("expected Some");
 
         match result {
-            PySpyResult::Ok { warnings, .. } => assert_eq!(
+            PySpyResult::Ok {
+                capture_mode,
                 warnings,
-                vec![
-                    native_all_downgrade_warning(&label),
-                    native_downgrade_warning(&label),
-                ]
-            ),
+                ..
+            } => {
+                assert_eq!(capture_mode, PySpyCaptureMode::PythonOnly);
+                assert_eq!(
+                    warnings,
+                    vec![
+                        native_all_downgrade_warning(&label),
+                        native_downgrade_warning(&label),
+                    ]
+                );
+            }
             other => panic!("expected Ok, got: {other:?}"),
         }
 
@@ -1910,7 +2007,12 @@ exit 0
         .await;
         let result = result.expect("expected Some");
         match &result {
-            PySpyResult::Ok { warnings, .. } => {
+            PySpyResult::Ok {
+                capture_mode,
+                warnings,
+                ..
+            } => {
+                assert_eq!(*capture_mode, PySpyCaptureMode::PythonOnly);
                 let expected = native_downgrade_warning(&label);
                 assert!(
                     warnings.contains(&expected),
@@ -2024,7 +2126,12 @@ exit 0
         .await
         .expect("expected Some");
         match result {
-            PySpyResult::Ok { warnings, .. } => {
+            PySpyResult::Ok {
+                capture_mode,
+                warnings,
+                ..
+            } => {
+                assert_eq!(capture_mode, PySpyCaptureMode::PythonOnly);
                 assert_eq!(warnings, vec![native_downgrade_warning(&label)]);
             }
             other => panic!("expected Ok, got: {other:?}"),

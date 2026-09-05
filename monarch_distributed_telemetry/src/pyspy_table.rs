@@ -29,6 +29,9 @@ pub struct PySpyDump {
     pub pid: i32,
     pub binary: String,
     pub proc_ref: String,
+    /// Successful py-spy invocation mode: `python_only`, `native`, or
+    /// `native_all`.
+    pub capture_mode: String,
     /// JSON array of non-fatal capture warnings. An empty array means the dump
     /// completed without a reported fallback.
     pub warnings_json: String,

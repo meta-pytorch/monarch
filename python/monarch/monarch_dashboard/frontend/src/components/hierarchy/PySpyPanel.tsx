@@ -29,7 +29,15 @@ interface PySpyThread {
   frames: PySpyFrame[];
 }
 type PySpyResult =
-  | { Ok: { pid: number; binary: string; stack_traces: PySpyThread[]; warnings: string[] } }
+  | {
+      Ok: {
+        pid: number;
+        binary: string;
+        capture_mode: "python_only" | "native" | "native_all";
+        stack_traces: PySpyThread[];
+        warnings: string[];
+      };
+    }
   | { BinaryNotFound: { searched: string[] } }
   | { Failed: { pid: number; binary: string; exit_code?: number | null; stderr: string } };
 

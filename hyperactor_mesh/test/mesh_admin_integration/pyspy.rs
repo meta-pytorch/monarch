@@ -20,6 +20,7 @@ use anyhow::Result;
 use anyhow::bail;
 use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::mesh_admin::ApiErrorEnvelope;
+use hyperactor_mesh::pyspy::PySpyCaptureMode;
 use hyperactor_mesh::pyspy::PySpyFrame;
 use hyperactor_mesh::pyspy::PySpyProfileOpts;
 use hyperactor_mesh::pyspy::PySpyResult;
@@ -394,7 +395,11 @@ fn truncate_diagnostic(value: String) -> String {
 /// Render a bounded result summary without including the stack payload.
 pub(crate) fn describe_result(result: &PySpyResult) -> String {
     let summary = match result {
-        PySpyResult::Ok { warnings, .. } => format!("Ok(warnings={warnings:?})"),
+        PySpyResult::Ok {
+            capture_mode,
+            warnings,
+            ..
+        } => format!("Ok(capture_mode={capture_mode:?}, warnings={warnings:?})"),
         PySpyResult::BinaryNotFound { searched } => {
             format!("BinaryNotFound(searched: {})", searched.join(", "))
         }
@@ -530,6 +535,7 @@ fn describe_result_omits_stack_payload() {
     let result = PySpyResult::Ok {
         pid: 1,
         binary: "py-spy".to_string(),
+        capture_mode: PySpyCaptureMode::PythonOnly,
         stack_traces: vec![PySpyStackTrace {
             pid: 1,
             thread_id: 2,
@@ -551,7 +557,10 @@ fn describe_result_omits_stack_payload() {
     };
 
     let description = describe_result(&result);
-    assert_eq!(description, "Ok(warnings=[\"python-only\"])");
+    assert_eq!(
+        description,
+        "Ok(capture_mode=PythonOnly, warnings=[\"python-only\"])"
+    );
     assert!(!description.contains("payload-frame"));
 }
 

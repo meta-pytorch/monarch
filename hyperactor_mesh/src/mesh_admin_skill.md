@@ -119,13 +119,14 @@ Most endpoints are read-only (`GET`). Three endpoints accept `POST`:
   target environment and ptrace permissions.
 
   Success returns a `PySpyResult` JSON variant:
-  - `{"Ok": {"pid": N, "binary": "...", "stack_traces": [...], "warnings": [...]}}` — structured stack dump
+  - `{"Ok": {"pid": N, "binary": "...", "capture_mode": "native_all", "stack_traces": [...], "warnings": [...]}}` — structured stack dump
   - `{"BinaryNotFound": {"searched": [...]}}` — py-spy not available
   - `{"Failed": {"pid": N, "binary": "...", "exit_code": N, "stderr": "..."}}` — py-spy error
 
   Native frames are requested server-side and are best-effort: on
-  failure the server retries python-only and still returns `Ok`, so
-  a degraded dump is only distinguishable via `warnings`. See
+  failure the server retries python-only and still returns `Ok`.
+  `capture_mode` records whether the successful attempt used `--native-all`,
+  `--native`, or neither flag. `warnings` explains any fallback. See
   "py-spy: missing native frames".
 
   The endpoint supports worker procs and the service proc. A
@@ -260,9 +261,9 @@ Most endpoints are read-only (`GET`). Three endpoints accept `POST`:
   {"sql": "SELECT * FROM pyspy_dumps WHERE dump_id = '550e8400-...'"}
   ```
 
-  `pyspy_dumps.warnings_json` preserves the result's warnings as a JSON
-  string array. Read it before interpreting a stored dump; a native-capture
-  fallback is recorded there.
+  `pyspy_dumps.capture_mode` records the successful py-spy invocation mode as
+  a queryable string. `pyspy_dumps.warnings_json` preserves the result's
+  warnings as a JSON string array with fallback details.
 
   A failed capture returns `pyspy_failed`, and a missing py-spy binary
   returns `service_unavailable`. Neither response includes a `dump_id`.
@@ -277,9 +278,11 @@ Most endpoints are read-only (`GET`). Three endpoints accept `POST`:
 
 ### py-spy: missing native frames
 
-**If every frame in a dump is a `.py` file, read `warnings` before
+**If every frame in a dump is a `.py` file, check `capture_mode` before
 drawing any conclusion about the process.** An all-Python stack is
-ambiguous: it may be the truth, or it may be a degraded capture.
+ambiguous when the successful attempt used a native flag;
+`capture_mode: "python_only"` confirms that it used neither native flag. Read
+`warnings` for the reason.
 
 This matters because a proc blocked in a collective, an allocator, or a
 hyperactor C++ path shows nothing useful in Python-only frames -- one
@@ -288,7 +291,7 @@ opaque call into an extension module, the real state invisible. Reading
 mistake this prevents.
 
 `GET /v1/pyspy` and `POST /v1/pyspy_dump` request native frames
-(`--native --native-all`) server-side, so a healthy dump interleaves
+(`--native --native-all`) server-side, which can make a dump interleave
 interpreter and extension frames with the Python ones:
 
 ```
@@ -301,13 +304,16 @@ task_step_impl       _asyncio.cpython-312-x86_64-linux-gnu.so:0
 
 For stack dumps, native capture is best-effort: on failure the server
 retries python-only rather than erroring, so you get `200`, an `Ok`
-result, and no error anywhere. `warnings` is the only signal:
+result, and no error anywhere. Check `capture_mode` first;
+`python_only` definitively identifies an attempt that used neither native
+flag. `warnings` explains why:
 
 - `native capture failed; fell back to python-only frames. py-spy
   (<resolution>) could not unwind native frames …` — Python-only. Do not
   treat the stack as complete.
 - `--native-all unsupported by py-spy (<resolution>); fell back to
-  --native` — native frames are present; the stack is usable.
+  --native` — the successful attempt used `--native`. Inspect the returned
+  frames to determine whether native frames appeared.
 
 `<resolution>` is how py-spy was found: `PYSPY_BIN=/path` if set, else
 `py-spy on PATH`. A `PYSPY_BIN=…` prefix means the variable is already
