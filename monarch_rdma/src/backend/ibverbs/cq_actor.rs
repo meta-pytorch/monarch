@@ -14,6 +14,8 @@
 // Nothing outside the tests below uses this module.
 #![allow(dead_code)]
 
+use tokio::sync::mpsc;
+
 use super::primitives::IbvCq;
 use super::primitives::IbvWc;
 use super::queue_pair::PollCompletionError;
@@ -95,6 +97,49 @@ impl IbvCompletionQueue for IbvCq {
     }
 }
 
+pub(super) type CompletionResult = Result<IbvWc, WorkRequestError>;
+
+/// Producer-side route used by a CQ poller to deliver one queue pair's
+/// completions directly to its data-plane task.
+#[derive(Clone, Debug)]
+pub(super) struct CompletionRoute {
+    sender: mpsc::UnboundedSender<CompletionResult>,
+}
+
+/// Consumer-side queue owned by a queue pair's data-plane task.
+#[derive(Debug)]
+pub(super) struct CompletionInbox {
+    receiver: mpsc::UnboundedReceiver<CompletionResult>,
+}
+
+impl CompletionInbox {
+    pub(super) fn new() -> (Self, CompletionRoute) {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        (Self { receiver }, CompletionRoute { sender })
+    }
+
+    pub(super) async fn recv(&mut self) -> Option<CompletionResult> {
+        self.receiver.recv().await
+    }
+
+    pub(super) fn try_recv(&mut self) -> Result<CompletionResult, mpsc::error::TryRecvError> {
+        self.receiver.try_recv()
+    }
+}
+
+impl CompletionRoute {
+    #[cfg(test)]
+    pub(super) fn sender_for_test(&self) -> mpsc::UnboundedSender<CompletionResult> {
+        self.sender.clone()
+    }
+
+    fn deliver(&self, qp_num: u32, cq_id: CqId, result: CompletionResult) {
+        if let Err(error) = self.sender.send(result) {
+            tracing::error!(qp_num, ?cq_id, %error, "queueing a completion for a queue pair failed");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +166,40 @@ mod tests {
         // handed and so nothing else polls.
         unsafe { cq.poll(&mut consumed) }.expect("polling an empty CQ should succeed");
         assert!(consumed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn completion_inbox_preserves_order() {
+        let (mut inbox, route) = CompletionInbox::new();
+        route.deliver(7, CqId(1), Ok(IbvWc::for_test(100, true)));
+        route.deliver(7, CqId(1), Ok(IbvWc::for_test(200, true)));
+        assert_eq!(
+            inbox
+                .recv()
+                .await
+                .expect("first completion")
+                .expect("successful completion")
+                .wr_id(),
+            100,
+        );
+        assert_eq!(
+            inbox
+                .recv()
+                .await
+                .expect("second completion")
+                .expect("successful completion")
+                .wr_id(),
+            200,
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_inbox_closes_when_its_route_is_dropped() {
+        let (mut inbox, route) = CompletionInbox::new();
+        drop(route);
+        assert!(
+            inbox.recv().await.is_none(),
+            "dropping the producer must close the completion channel",
+        );
     }
 }
