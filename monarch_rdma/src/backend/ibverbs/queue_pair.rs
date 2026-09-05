@@ -35,12 +35,12 @@ use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::PortHandle;
 use hyperactor::actor::Referable;
 use hyperactor::actor::RemoteHandles;
 use hyperactor::context::Mailbox;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::mpsc;
 use typeuri::Named;
 
 use super::cq_pool::CqLease;
@@ -846,13 +846,7 @@ pub(super) trait Manager:
 
 impl<T> Manager for T where T: Actor + Referable + RemoteHandles<CreatePeerQueuePair<T>> {}
 
-/// Per-op completion reply emitted by [`QueuePairActor`] back to the
-/// manager via [`ProcessOps::reply`]. A named newtype (rather than a
-/// raw `(usize, Result<…>)` tuple) so the manager can identify
-/// undeliverable `OpResult`s by type name in
-/// `handle_undeliverable_message` and absorb them when the original
-/// caller has gone away (typical at test teardown).
-#[allow(dead_code)] // not yet referenced by IbvManagerActor
+/// Per-op completion result sent from a queue-pair actor to the submitter.
 #[derive(Debug)]
 pub(super) struct OpResult {
     pub(super) op_idx: usize,
@@ -881,7 +875,7 @@ pub(super) struct QueuePairOp {
 #[derive(Debug)]
 pub(super) struct ProcessOps {
     pub(super) items: Vec<QueuePairOp>,
-    pub(super) reply: PortHandle<OpResult>,
+    pub(super) reply: mpsc::UnboundedSender<OpResult>,
 }
 
 /// Local-only self-message that drives one round of the scheduler.
@@ -892,7 +886,7 @@ struct Tick;
 #[derive(Debug)]
 struct PendingOp {
     op: QueuePairOp,
-    reply: PortHandle<OpResult>,
+    reply: mpsc::UnboundedSender<OpResult>,
     /// WR count this op will issue when posted, computed once at
     /// construction so retries from a credit head-block don't redo
     /// the work.
@@ -909,7 +903,7 @@ struct PostedOpEntry {
     /// Kept alive so the memory *registration* outlives every in-flight
     /// WR touching it.
     _local_mrv: IbvMemoryRegionView,
-    reply: PortHandle<OpResult>,
+    reply: mpsc::UnboundedSender<OpResult>,
     /// First per-WR error observed for this op. The op's final reply is
     /// held back until `pending_wrs.is_empty()`, so the two fields above
     /// outlive every WR still in flight.
@@ -1021,7 +1015,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
     /// * `Err(_)` — `qp.put`/`qp.get` failed (e.g. the QP is in
     ///   error state). Fatal: the actor's handler returns this,
     ///   which raises a supervision event.
-    fn try_post_head(&mut self, cx: &Instance<Self>) -> Result<bool, anyhow::Error> {
+    fn try_post_head(&mut self) -> Result<bool, anyhow::Error> {
         let pending = self.queue.pop_front().expect("non-empty queue");
         let PendingOp { op, reply, wrs } = pending;
         let op_idx = op.op_idx;
@@ -1032,13 +1026,10 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
                 "op too large for this QP [op_idx={}, qp_key={:?}, op_type={:?}, wrs={}, max_send_wr={}, local: {:?}, remote: {:?}]",
                 op_idx, self.qp_key, op.op_type, wrs, self.max_send_wr, op.local_memory, op.remote,
             );
-            reply.try_post(
-                cx,
-                OpResult {
-                    op_idx,
-                    result: Err(err),
-                },
-            )?;
+            let _ = reply.send(OpResult {
+                op_idx,
+                result: Err(err),
+            });
             return Ok(true);
         }
 
@@ -1103,7 +1094,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
         // 1. Post from the queue head until either it's empty or
         //    the head is credit-blocked.
         while !self.queue.is_empty() {
-            if !self.try_post_head(cx)? {
+            if !self.try_post_head()? {
                 break;
             }
         }
@@ -1151,13 +1142,10 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
                     Some(err) => Err(err),
                     None => Ok(()),
                 };
-                entry.reply.try_post(
-                    cx,
-                    OpResult {
-                        op_idx: entry.op_idx,
-                        result,
-                    },
-                )?;
+                let _ = entry.reply.send(OpResult {
+                    op_idx: entry.op_idx,
+                    result,
+                });
             }
         }
         if progressed {
@@ -2189,14 +2177,14 @@ mod tests {
         }
     }
 
-    /// Open a multi-shot port and send a `ProcessOps` batch. Returns
+    /// Open a result channel and send a `ProcessOps` batch. Returns
     /// the receiver so the caller can await per-op results.
     fn submit_ops(
         harness: &QpaHarness,
         actor: &ActorHandle<QueuePairActor<QpaMockManager, MockQp>>,
         items: Vec<QueuePairOp>,
-    ) -> Result<hyperactor::mailbox::PortReceiver<OpResult>> {
-        let (reply, rx) = harness.client.mailbox().open_port::<OpResult>();
+    ) -> Result<mpsc::UnboundedReceiver<OpResult>> {
+        let (reply, rx) = mpsc::unbounded_channel();
         actor.try_post(&harness.client, ProcessOps { items, reply })?;
         Ok(rx)
     }
@@ -2204,7 +2192,7 @@ mod tests {
     /// Collect exactly `n` replies with a per-recv timeout, sorted
     /// by op_idx for deterministic comparison.
     async fn collect_replies(
-        rx: &mut hyperactor::mailbox::PortReceiver<OpResult>,
+        rx: &mut mpsc::UnboundedReceiver<OpResult>,
         n: usize,
     ) -> Vec<(usize, Result<(), String>)> {
         let mut out = Vec::with_capacity(n);
@@ -2212,7 +2200,7 @@ mod tests {
             let m = tokio::time::timeout(Duration::from_secs(5), rx.recv())
                 .await
                 .expect("timed out waiting for ProcessOps reply")
-                .expect("ProcessOps reply port closed");
+                .expect("ProcessOps result channel closed");
             out.push((m.op_idx, m.result));
         }
         out.sort_by_key(|(i, _)| *i);
@@ -2222,12 +2210,12 @@ mod tests {
     /// Try to recv with a short timeout, returning `None` on timeout
     /// so callers can assert "no reply yet".
     async fn try_recv(
-        rx: &mut hyperactor::mailbox::PortReceiver<OpResult>,
+        rx: &mut mpsc::UnboundedReceiver<OpResult>,
         wait: Duration,
     ) -> Option<(usize, Result<(), String>)> {
         match tokio::time::timeout(wait, rx.recv()).await {
-            Ok(Ok(m)) => Some((m.op_idx, m.result)),
-            Ok(Err(e)) => panic!("ProcessOps reply port closed: {e}"),
+            Ok(Some(m)) => Some((m.op_idx, m.result)),
+            Ok(None) => panic!("ProcessOps result channel closed"),
             Err(_) => None,
         }
     }
