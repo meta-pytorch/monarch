@@ -107,9 +107,17 @@ impl CqLease {
     /// a device.
     #[cfg(test)]
     pub(super) fn for_test() -> Self {
+        Self::for_test_counted(Arc::new(AtomicU32::new(0)))
+    }
+
+    /// A lease on no completion queue that counts against `leases`, for tests
+    /// that observe when it is released.
+    #[cfg(test)]
+    pub(super) fn for_test_counted(leases: Arc<AtomicU32>) -> Self {
+        leases.fetch_add(1, Ordering::Relaxed);
         Self {
             cq: Arc::new(IbvCq::null()),
-            leases: Arc::new(AtomicU32::new(1)),
+            leases,
         }
     }
 }
