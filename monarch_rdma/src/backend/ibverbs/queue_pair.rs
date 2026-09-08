@@ -21,10 +21,13 @@ use std::collections::VecDeque;
 use std::io::Error;
 use std::result::Result;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
@@ -39,6 +42,16 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use typeuri::Named;
 
+use super::cq_actor::Attach;
+use super::cq_actor::CompletionInbox;
+use super::cq_actor::CompletionQueueActor;
+use super::cq_actor::CompletionResult;
+use super::cq_actor::CompletionRoute;
+use super::cq_actor::CqId;
+use super::cq_actor::Detach;
+use super::cq_actor::DetachedQueuePair;
+use super::cq_actor::IbvCompletionQueue as _;
+use super::cq_actor::PollerWake;
 use super::cq_pool::CqLease;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
@@ -53,6 +66,7 @@ use super::primitives::IbvCq;
 use super::primitives::IbvOperation;
 use super::primitives::IbvQp;
 use super::primitives::IbvQpInfo;
+#[cfg(test)]
 use super::primitives::IbvWc;
 use super::primitives::resolve_qp_type;
 use crate::RdmaOpType;
@@ -117,7 +131,6 @@ impl WorkRequestError {
 
 /// A CQ-level poll failure: `ibv_poll_cq` itself failed, naming no work request.
 /// The entry that caused it, if any, has been consumed.
-/// [`IbvQueuePair::poll_completion`] treats it as poisoning its queue pair.
 #[derive(Debug)]
 pub struct PollCompletionError {
     message: String,
@@ -247,21 +260,6 @@ pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
         local_dst: IbvMemoryRegionView,
         remote_src: IbvRemoteMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error>;
-
-    /// Poll `target`'s completion queue for a single work completion.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(None)` — the CQ is currently empty.
-    /// * `Ok(Some(Ok(wc)))` — a completion landed with success status.
-    /// * `Ok(Some(Err(_)))` — a completion landed with a non-success
-    ///   status; the [`WorkRequestError`] names the failed request.
-    /// * `Err(_)` — `ibv_poll_cq` itself failed; the QP should be treated
-    ///   as poisoned.
-    fn poll_completion(
-        &mut self,
-        target: PollTarget,
-    ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError>;
 }
 
 /// Queries the local endpoint info for `qp`, whose device `context` and the QP
@@ -432,70 +430,6 @@ pub(super) unsafe fn connect(
         ));
     }
     Ok(())
-}
-
-/// Polls `target`'s completion queue on `qp` for a single work completion,
-/// through the device context's `poll_cq` verb. Shared by every queue-pair
-/// implementation built on an [`IbvQp`]; see
-/// [`IbvQueuePair::poll_completion`] for the meaning of the return value.
-///
-/// # Safety
-///
-/// `qp` must hold a non-null, live `ibv_qp` whose send and receive completion
-/// queues and device context are likewise non-null and live: this invokes the
-/// `poll_cq` verb through them without re-checking. A placeholder [`IbvQp`]
-/// built from null handles does not qualify.
-///
-/// No other thread may be polling `target`'s completion queue for the duration.
-pub(super) unsafe fn poll_one(
-    qp: &IbvQp,
-    target: PollTarget,
-) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
-    let (cq, cq_type) = match target {
-        PollTarget::Send => (qp.send_cq().as_ptr(), "send"),
-        PollTarget::Recv => (qp.recv_cq().as_ptr(), "recv"),
-    };
-    let context = qp.context().as_ptr();
-    // SAFETY: `context` is `qp`'s live device context (caller contract); we
-    // invoke its `poll_cq` verb through the ops table.
-    let poll_cq = unsafe {
-        (*context)
-            .ops
-            .poll_cq
-            .expect("poll_cq verb missing from ibv_context ops")
-    };
-    let mut wc = rdmaxcel_sys::ibv_wc::default();
-    // SAFETY: `cq` is a live `ibv_cq` belonging to `qp` (caller contract);
-    // `&mut wc` has room for the single entry requested, and `poll_cq`
-    // overwrites it whenever it returns a completion (`ret >= 1`).
-    let ret = unsafe { poll_cq(cq, 1, &mut wc) };
-
-    if ret < 0 {
-        return Err(PollCompletionError {
-            message: format!("{} CQ poll failed (ibv_poll_cq returned {})", cq_type, ret),
-        });
-    }
-    if ret == 0 {
-        return Ok(None);
-    }
-
-    // `ret >= 1`: a single entry was requested, so `wc` holds one completion.
-    // `error()` is `Some` exactly when the status is not `IBV_WC_SUCCESS`.
-    if let Some((status, vendor_err)) = wc.error() {
-        return Ok(Some(Err(WorkRequestError {
-            wr_id: wc.wr_id(),
-            status,
-            vendor_err,
-            message: format!(
-                "{} completion failed for wr_id={}: status={:?}, vendor_err={}",
-                cq_type,
-                wc.wr_id(),
-                status,
-                vendor_err,
-            ),
-        })));
-    }
-    Ok(Some(Ok(IbvWc::from(wc))))
 }
 
 /// An RDMA reliable-connected (RC) queue pair built on plain ibverbs
@@ -757,18 +691,6 @@ impl IbvQueuePair for RCQueuePair {
             remote_src.size,
         )
     }
-
-    fn poll_completion(
-        &mut self,
-        target: PollTarget,
-    ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
-        // SAFETY: `self.qp` wraps a live, fully non-null `ibv_qp` — everything
-        // reached through it included — per `from_qp`'s contract, and it stays
-        // alive for `self`'s lifetime. `&mut self` excludes another poll through
-        // this queue pair, and its lease leaves it the only queue pair polling
-        // that completion queue, so no other thread is polling it.
-        unsafe { poll_one(&self.qp, target) }
-    }
 }
 
 /// Bundle of trait bounds for an actor type that can serve as the
@@ -868,6 +790,17 @@ struct QueuePairState<Qp: IbvQueuePair> {
     /// WRs posted to the send queue and not yet reaped:
     /// what `max_send_wr` gates against.
     in_flight: u32,
+    /// Work requests posted by this queue pair. The completion poller compares
+    /// this with its consumed count to decide when polling is useful.
+    posted_wrs: Arc<AtomicU64>,
+    completions: CompletionInbox,
+    poller_wake: Option<PollerWake>,
+}
+
+#[derive(Debug)]
+struct DetachedQueuePairResources<Qp> {
+    _qp: Qp,
+    _posted: HashMap<u64, PostedOpEntry>,
 }
 
 /// Per-peer queue-pair actor.
@@ -875,8 +808,8 @@ struct QueuePairState<Qp: IbvQueuePair> {
 /// Generic over the manager actor type `M` (so tests can swap in a
 /// mock) and the queue-pair type `Qp` (so unit tests run without
 /// RDMA hardware). The QP is constructed by the spawning manager
-/// and handed in as a spawn param; the actor owns it for life and
-/// drops it when the actor stops.
+/// and handed in as a spawn param. On teardown, the actor transfers the QP to
+/// its completion poller, which drops it after its final CQE has been consumed.
 #[derive(Debug)]
 pub(super) struct QueuePairActor<M: Manager, Qp: IbvQueuePair> {
     /// Filled into [`CreatePeerQueuePair::sender`] so the peer can
@@ -884,7 +817,10 @@ pub(super) struct QueuePairActor<M: Manager, Qp: IbvQueuePair> {
     local_manager: ActorRef<M>,
     /// Recipient of [`CreatePeerQueuePair`].
     peer_manager: ActorRef<M>,
-    state: QueuePairState<Qp>,
+    state: Option<QueuePairState<Qp>>,
+    cq_poller: ActorHandle<CompletionQueueActor<IbvCq>>,
+    completion_route: Option<CompletionRoute>,
+    detach_target: Option<(CqId, u32)>,
     /// `true` when the peer QP is colocated with this actor's QP —
     /// i.e. both endpoints live in the same `IbvManagerActor` *and*
     /// target the same RDMA device. In that case `init` connects
@@ -895,14 +831,10 @@ pub(super) struct QueuePairActor<M: Manager, Qp: IbvQueuePair> {
     /// `true` while a `Tick` self-message is already in flight; the
     /// flag prevents stacking redundant ticks.
     tick_armed: bool,
-    /// This queue pair's lease on the device's completion queue. Never read: it
-    /// is held so the lease -- and the completion queue itself -- outlive the
-    /// queue pair, which drops with this actor. This placement is temporary and
-    /// works now only because each queue pair still gets its own unique CQ. Once
-    /// multiple QPs share a CQ (and polling is handled elsewhere), the CQ's poller
-    /// will own the lease, ensuring it isn't dropped until all of a QP's pending
-    /// work requests have been drained.
-    _cq_lease: CqLease,
+    /// Transferred to the completion poller with the queue pair during teardown.
+    cq_lease: Option<CqLease>,
+    #[cfg(test)]
+    completion_sender: mpsc::UnboundedSender<CompletionResult>,
 }
 
 impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
@@ -911,33 +843,64 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
         local_manager: ActorRef<M>,
         peer_manager: ActorRef<M>,
         qp: Qp,
+        cq_poller: ActorHandle<CompletionQueueActor<IbvCq>>,
         cq_lease: CqLease,
         is_loopback: bool,
         max_send_wr: u32,
     ) -> Self {
         let init_timeout = hyperactor_config::global::get(crate::config::RDMA_QP_INIT_TIMEOUT);
+        let posted_wrs = Arc::new(AtomicU64::new(0));
+        let (completions, completion_route) = CompletionInbox::new();
+        #[cfg(test)]
+        let completion_sender = completion_route.sender_for_test();
         Self {
-            state: QueuePairState::new(qp_key, qp, max_send_wr),
+            state: Some(QueuePairState::new(
+                qp_key,
+                qp,
+                max_send_wr,
+                posted_wrs,
+                completions,
+            )),
             local_manager,
             peer_manager,
+            cq_poller,
+            completion_route: Some(completion_route),
+            detach_target: None,
             is_loopback,
             init_timeout,
             tick_armed: false,
-            _cq_lease: cq_lease,
+            cq_lease: Some(cq_lease),
+            #[cfg(test)]
+            completion_sender,
         }
     }
 
-    /// One scheduler round: post everything that fits, poll for
+    fn state(&self) -> &QueuePairState<Qp> {
+        self.state
+            .as_ref()
+            .expect("the queue pair has not been detached")
+    }
+
+    fn state_mut(&mut self) -> &mut QueuePairState<Qp> {
+        self.state
+            .as_mut()
+            .expect("the queue pair has not been detached")
+    }
+
+    /// One scheduler round: post everything that fits, consume routed
     /// completions, emit replies for finished ops, and re-arm
     /// `Tick` if work remains. Returns `Err` for fatal QP-level
     /// failures; the surrounding handler propagates the error so
     /// supervision tears the actor down.
     fn advance(&mut self, cx: &Instance<Self>) -> Result<(), anyhow::Error> {
-        self.state.post_ready()?;
+        let has_work = {
+            let state = self.state_mut();
+            state.post_ready()?;
+            state.drain_completions()?;
+            state.has_work()
+        };
 
-        self.state.poll_completions()?;
-
-        if self.state.has_work() && !self.tick_armed {
+        if has_work && !self.tick_armed {
             self.tick_armed = true;
             cx.handle().try_post(cx, Tick)?;
         }
@@ -946,7 +909,13 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
 }
 
 impl<Qp: IbvQueuePair> QueuePairState<Qp> {
-    fn new(qp_key: QpKey, qp: Qp, max_send_wr: u32) -> Self {
+    fn new(
+        qp_key: QpKey,
+        qp: Qp,
+        max_send_wr: u32,
+        posted_wrs: Arc<AtomicU64>,
+        completions: CompletionInbox,
+    ) -> Self {
         Self {
             qp_key,
             qp,
@@ -956,6 +925,9 @@ impl<Qp: IbvQueuePair> QueuePairState<Qp> {
             wr_to_op: HashMap::new(),
             next_op_id: 0,
             in_flight: 0,
+            posted_wrs,
+            completions,
+            poller_wake: None,
         }
     }
 
@@ -1047,6 +1019,20 @@ impl<Qp: IbvQueuePair> QueuePairState<Qp> {
                 first_error: None,
             },
         );
+        // This state is the counter's only writer. The following `unpark`
+        // publishes the increment before a parked poller checks the count.
+        self.posted_wrs
+            .fetch_add(wr_ids.len() as u64, Ordering::Relaxed);
+        self.poller_wake
+            .as_ref()
+            .expect("the queue pair attached before posting work")
+            .notify()
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "could not wake the completion queue poller [qp_key={:?}]: {error}",
+                    self.qp_key,
+                )
+            })?;
         Ok(true)
     }
 
@@ -1059,56 +1045,98 @@ impl<Qp: IbvQueuePair> QueuePairState<Qp> {
         Ok(())
     }
 
-    /// Drain the send CQ and return whether any completion was observed.
-    fn poll_completions(&mut self) -> Result<bool, anyhow::Error> {
-        let mut progressed = false;
-        while !self.wr_to_op.is_empty() {
-            let completion = self
-                .qp
-                .poll_completion(PollTarget::Send)
-                .map_err(|e| anyhow::anyhow!("CQ poll failed for qp_key={:?}: {e}", self.qp_key))?;
-            let Some(wc_result) = completion else {
-                break;
-            };
-            progressed = true;
-
-            let (wr_id, wr_error) = match wc_result {
-                Ok(wc) => (wc.wr_id(), None),
-                Err(per_wr) => (per_wr.wr_id, Some(per_wr.to_string())),
-            };
-
-            let op_id = self
-                .wr_to_op
-                .remove(&wr_id)
-                .expect("completed wr_id missing from wr_to_op");
-            let entry = self
-                .posted
-                .get_mut(&op_id)
-                .expect("op_id missing from posted");
-            entry.pending_wrs.remove(&wr_id);
-            self.in_flight -= 1;
-            if let Some(err) = wr_error
-                && entry.first_error.is_none()
-            {
-                entry.first_error = Some(err);
-            }
-            if entry.pending_wrs.is_empty() {
-                let entry = self.posted.remove(&op_id).expect("just verified");
-                let result = match entry.first_error {
-                    Some(err) => Err(err),
-                    None => Ok(()),
-                };
-                let _ = entry.reply.send(OpResult {
-                    op_idx: entry.op_idx,
-                    result,
-                });
+    fn drain_completions(&mut self) -> Result<(), anyhow::Error> {
+        loop {
+            match self.completions.try_recv() {
+                Ok(completion) => self.complete_wr(completion)?,
+                Err(mpsc::error::TryRecvError::Empty) => return Ok(()),
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    return Err(anyhow::anyhow!("completion queue poller stopped"));
+                }
             }
         }
-        Ok(progressed)
+    }
+
+    fn complete_wr(&mut self, completion: CompletionResult) -> Result<(), anyhow::Error> {
+        let (wr_id, wr_error) = match completion {
+            Ok(wc) => (wc.wr_id(), None),
+            Err(per_wr) => (per_wr.wr_id, Some(per_wr.to_string())),
+        };
+        let op_id = self
+            .wr_to_op
+            .remove(&wr_id)
+            .expect("completed wr_id missing from wr_to_op");
+        let entry = self
+            .posted
+            .get_mut(&op_id)
+            .expect("op_id missing from posted");
+        entry.pending_wrs.remove(&wr_id);
+        self.in_flight -= 1;
+        if let Some(err) = wr_error
+            && entry.first_error.is_none()
+        {
+            entry.first_error = Some(err);
+        }
+        if entry.pending_wrs.is_empty() {
+            let entry = self.posted.remove(&op_id).expect("just verified");
+            let result = match entry.first_error {
+                Some(err) => Err(err),
+                None => Ok(()),
+            };
+            let _ = entry.reply.send(OpResult {
+                op_idx: entry.op_idx,
+                result,
+            });
+        }
+        Ok(())
     }
 
     fn has_work(&self) -> bool {
         !self.queue.is_empty() || !self.posted.is_empty()
+    }
+
+    fn into_detached(self) -> DetachedQueuePair {
+        DetachedQueuePair::new(DetachedQueuePairResources {
+            _qp: self.qp,
+            // If we dropped these now, the user would get an error immediately
+            // even though the operations are still being processed and it isn't
+            // safe for them to access the relevant memory yet.
+            _posted: self.posted,
+        })
+    }
+}
+
+impl<M: Manager, Qp: IbvQueuePair> Drop for QueuePairActor<M, Qp> {
+    fn drop(&mut self) {
+        let Some((cq_id, qp_num)) = self.detach_target else {
+            return;
+        };
+        let state = self
+            .state
+            .take()
+            .expect("a queue pair with a detach target has state");
+        let lease = self
+            .cq_lease
+            .take()
+            .expect("a queue pair with a detach target has a CQ lease");
+        let qp_key = state.qp_key.clone();
+        if let Err(error) = self.cq_poller.try_post(
+            Instance::<Self>::self_client(),
+            Detach {
+                cq_id,
+                qp_num,
+                qp: state.into_detached(),
+                lease,
+            },
+        ) {
+            tracing::warn!(
+                ?qp_key,
+                qp_num,
+                ?cq_id,
+                %error,
+                "handing the queue pair to its poller failed",
+            );
+        }
     }
 }
 
@@ -1116,10 +1144,41 @@ impl<Qp: IbvQueuePair> QueuePairState<Qp> {
 impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
-        let local_info = self.state.qp.get_qp_info().map_err(|e| {
-            tracing::error!(qp_key = ?self.state.qp_key, error = %e, "QueuePairActor init: get_qp_info failed");
+        let qp_key = self.state().qp_key.clone();
+        let local_info = self.state_mut().qp.get_qp_info().map_err(|e| {
+            tracing::error!(?qp_key, error = %e, "QueuePairActor init: get_qp_info failed");
             anyhow::anyhow!("could not extract local QP info: {e}")
         })?;
+
+        let qp_num = local_info.qp_num;
+        let cq = Arc::clone(
+            self.cq_lease
+                .as_ref()
+                .expect("the queue pair was constructed with a CQ lease")
+                .cq(),
+        );
+        let cq_id = cq.cq_id();
+        let (reply, installed) = this.mailbox().open_once_port();
+        self.cq_poller
+            .try_post(
+                Instance::<Self>::self_client(),
+                Attach {
+                    cq,
+                    qp_num,
+                    route: self
+                        .completion_route
+                        .take()
+                        .expect("the completion route has not been attached"),
+                    posted: Arc::clone(&self.state().posted_wrs),
+                    reply,
+                },
+            )
+            .map_err(|error| anyhow::anyhow!("could not reach the CQ poller: {error}"))?;
+        self.detach_target = Some((cq_id, qp_num));
+        self.state_mut().poller_wake =
+            Some(installed.recv().await.map_err(|error| {
+                anyhow::anyhow!("CQ poller did not attach queue pair: {error}")
+            })?);
 
         let peer_info = if self.is_loopback {
             // The "peer" is ourselves; skip the round-trip and
@@ -1131,8 +1190,8 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
                 this,
                 CreatePeerQueuePair {
                     sender: self.local_manager.clone(),
-                    sender_device: self.state.qp_key.self_device.clone(),
-                    receiver_device: self.state.qp_key.other_device.clone(),
+                    sender_device: qp_key.self_device.clone(),
+                    receiver_device: qp_key.other_device.clone(),
                     sender_info: local_info,
                     reply: reply.bind(),
                 },
@@ -1141,7 +1200,7 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
                 Ok(Ok(Ok(info))) => info,
                 Ok(Ok(Err(e))) => {
                     tracing::error!(
-                        qp_key = ?self.state.qp_key,
+                        ?qp_key,
                         peer_manager = ?self.peer_manager,
                         error = %e,
                         "QueuePairActor init: peer manager rejected CreatePeerQueuePair",
@@ -1150,7 +1209,7 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
                 }
                 Ok(Err(e)) => {
                     tracing::error!(
-                        qp_key = ?self.state.qp_key,
+                        ?qp_key,
                         peer_manager = ?self.peer_manager,
                         error = %e,
                         "QueuePairActor init: peer reply port closed",
@@ -1159,7 +1218,7 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
                 }
                 Err(_) => {
                     tracing::error!(
-                        qp_key = ?self.state.qp_key,
+                        ?qp_key,
                         peer_manager = ?self.peer_manager,
                         timeout = ?self.init_timeout,
                         "QueuePairActor init: timed out waiting for peer reply",
@@ -1172,9 +1231,9 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
             }
         };
 
-        self.state.qp.connect(&peer_info).map_err(|e| {
+        self.state_mut().qp.connect(&peer_info).map_err(|e| {
             tracing::error!(
-                qp_key = ?self.state.qp_key,
+                ?qp_key,
                 peer_info = ?peer_info,
                 error = %e,
                 "QueuePairActor init: connect failed",
@@ -1199,7 +1258,7 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
 #[async_trait]
 impl<M: Manager, Qp: IbvQueuePair> Handler<ProcessOps> for QueuePairActor<M, Qp> {
     async fn handle(&mut self, cx: &Context<Self>, msg: ProcessOps) -> Result<(), anyhow::Error> {
-        self.state.enqueue(msg);
+        self.state_mut().enqueue(msg);
         // If a tick is already armed it will pick up the new ops on
         // its next round; advancing here would just duplicate work.
         if !self.tick_armed {
@@ -1410,15 +1469,19 @@ mod tests {
     impl Handler<SpawnQpaChild> for QpaMockManager {
         async fn handle(&mut self, cx: &Context<Self>, msg: SpawnQpaChild) -> Result<()> {
             let local_manager = cx.bind::<QpaMockManager>();
+            let cq_poller = cx.spawn(CompletionQueueActor::<IbvCq>::new());
+            let test_qp = msg.qp.clone();
             let actor = QueuePairActor::new(
                 msg.qp_key,
                 local_manager,
                 msg.peer_manager,
                 msg.qp,
+                cq_poller,
                 CqLease::for_test(),
                 msg.is_loopback,
                 msg.max_send_wr,
             );
+            test_qp.set_completion_sender(actor.completion_sender.clone());
             let handle = cx.spawn(actor);
             msg.reply.try_post(cx, handle)?;
             Ok(())
@@ -1448,12 +1511,7 @@ mod tests {
         /// Every `put`/`get` call is forwarded here in order, so the
         /// test body can `await` rather than poll.
         posted_tx: tokio::sync::mpsc::UnboundedSender<PostedOp>,
-        /// FIFO of completions the next `poll_completion` calls hand
-        /// back, one per call. Each entry is either `Ok(IbvWc)`
-        /// (success) or `Err(...)` (per-WR completion failure).
-        pending_completions: VecDeque<std::result::Result<IbvWc, WorkRequestError>>,
-        /// One-shot CQ-level error; cleared after the next poll consumes it.
-        poll_error: Option<PollCompletionError>,
+        completion_sender: Option<mpsc::UnboundedSender<CompletionResult>>,
         /// One-shot error for the next `put` or `get` call.
         post_error: Option<String>,
     }
@@ -1484,8 +1542,7 @@ mod tests {
                     connect_calls: Vec::new(),
                     next_wr_id: 0,
                     posted_tx,
-                    pending_completions: VecDeque::new(),
-                    poll_error: None,
+                    completion_sender: None,
                     post_error: None,
                 })),
             };
@@ -1496,31 +1553,27 @@ mod tests {
             self.inner.lock().unwrap().connect_calls.clone()
         }
 
-        /// Queue a successful WC for `wr_id`. A subsequent
-        /// `poll_completion` call returns it in FIFO order.
+        fn set_completion_sender(&self, sender: mpsc::UnboundedSender<CompletionResult>) {
+            self.inner.lock().unwrap().completion_sender = Some(sender);
+        }
+
         fn queue_completion(&self, wr_id: u64) {
-            self.inner
-                .lock()
-                .unwrap()
-                .pending_completions
-                .push_back(Ok(IbvWc::for_test(wr_id, true)));
+            self.queue_completion_result(Ok(IbvWc::for_test(wr_id, true)));
         }
 
-        /// Queue a per-WR completion failure for `wr_id` — the actor
-        /// receives it as the inner `Err` from `poll_completion` and
-        /// should fail just that op (not poison the QP).
         fn queue_per_wr_error(&self, wr_id: u64, message: &str) {
+            self.queue_completion_result(Err(WorkRequestError::for_test(wr_id, message)));
+        }
+
+        fn queue_completion_result(&self, result: CompletionResult) {
             self.inner
                 .lock()
                 .unwrap()
-                .pending_completions
-                .push_back(Err(WorkRequestError::for_test(wr_id, message)));
-        }
-
-        /// Queue a CQ-level poll error (one-shot). The next poll
-        /// returns this as the outer `Err`, simulating a poisoned QP.
-        fn queue_poll_error(&self, err: PollCompletionError) {
-            self.inner.lock().unwrap().poll_error = Some(err);
+                .completion_sender
+                .as_ref()
+                .expect("the mock queue pair is attached")
+                .send(result)
+                .expect("the completion inbox should remain open");
         }
 
         /// Make the next `put`/`get` return this error (one-shot).
@@ -1598,20 +1651,6 @@ mod tests {
                 wr_ids: wr_ids.clone(),
             });
             Ok(wr_ids)
-        }
-
-        fn poll_completion(
-            &mut self,
-            _target: PollTarget,
-        ) -> std::result::Result<
-            Option<std::result::Result<IbvWc, WorkRequestError>>,
-            PollCompletionError,
-        > {
-            let mut inner = self.inner.lock().unwrap();
-            if let Some(err) = inner.poll_error.take() {
-                return Err(err);
-            }
-            Ok(inner.pending_completions.pop_front())
         }
     }
 
@@ -2186,6 +2225,32 @@ mod tests {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_survives_a_dropped_operation_result_receiver() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(1).await?;
+        let abandoned = submit_ops(
+            &harness,
+            &actor,
+            vec![make_op(0, RdmaOpType::WriteFromLocal, 0x1000, 4096)],
+        )?;
+        drop(abandoned);
+        let (_, _, first_wrs) = expect_put(recv_posted(&mut posted_rx).await);
+        qp.queue_completion(first_wrs[0]);
+
+        let mut reply = submit_ops(
+            &harness,
+            &actor,
+            vec![make_op(1, RdmaOpType::WriteFromLocal, 0x2000, 4096)],
+        )?;
+        let (_, _, second_wrs) = expect_put(recv_posted(&mut posted_rx).await);
+        qp.queue_completion(second_wrs[0]);
+
+        assert_eq!(collect_replies(&mut reply, 1).await, vec![(1, Ok(()))]);
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn qpa_posted_op_pins_local_memory() -> Result<()> {
         let harness = QpaHarness::build()?;
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4).await?;
@@ -2584,32 +2649,6 @@ mod tests {
             .expect_err("op_idx 0 should fail as too large");
         assert!(err.contains("too large"), "expected too-large error: {err}");
         assert_eq!(replies[1], (1usize, Ok(())));
-        harness.teardown().await;
-        Ok(())
-    }
-
-    #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn qpa_poll_error_kills_actor_via_supervision() -> Result<()> {
-        let mut harness = QpaHarness::build()?;
-        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4).await?;
-
-        // Post one op so the next poll has something to look at.
-        let items = vec![make_op(0, RdmaOpType::WriteFromLocal, 0x1000, 4096)];
-        let _rx = submit_ops(&harness, &actor, items)?;
-        let _ = recv_posted(&mut posted_rx).await;
-        qp.queue_poll_error(PollCompletionError::new("simulated CQ poison".to_string()));
-
-        let event = harness.next_supervision_failure().await;
-        assert_eq!(&event.actor_id, actor.actor_addr());
-        let report = event.failure_report().expect("event should be a failure");
-        assert!(
-            report.contains("CQ poll failed") && report.contains("simulated CQ poison"),
-            "supervision report should name the poll failure: {report}",
-        );
-        await_status(&actor, |s| {
-            matches!(s, hyperactor::actor::ActorStatus::Failed(_))
-        })
-        .await;
         harness.teardown().await;
         Ok(())
     }
