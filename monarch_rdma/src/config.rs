@@ -57,18 +57,6 @@ declare_attrs! {
     ))
     pub attr RDMA_TCP_FALLBACK_PARALLELISM: usize = 1;
 
-    /// Cooperative-yield window for the ibverbs CQ poll loop. While
-    /// the policy is within this window it calls
-    /// `tokio::task::yield_now` between polls; past it, polls fall
-    /// into an exponential backoff sleep (1ms initial, x2, capped at
-    /// 10ms). `None` (the default) disables the cutoff entirely:
-    /// the loop only ever yields, never sleeps.
-    @meta(CONFIG = ConfigAttr::new(
-        Some("MONARCH_RDMA_CQ_BUSY_POLL_WINDOW".to_string()),
-        Some("rdma_cq_busy_poll_window".to_string()),
-    ))
-    pub attr RDMA_CQ_BUSY_POLL_WINDOW: Option<Duration> = None;
-
     /// Per-side budget for the `QueuePairInitializer` handshake. The
     /// timer arms once when we send `EnsureQueuePair` and is rearmed
     /// after we hit RTS while still waiting for the peer's

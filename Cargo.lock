@@ -4894,7 +4894,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "backoff",
  "bytes",
  "dashmap",
  "erased-serde",
