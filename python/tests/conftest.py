@@ -130,7 +130,10 @@ _MACOS_ARM64_SKIP_NODEIDS = frozenset(
 
 
 def _is_rocm71() -> bool:
-    """True on the rocm7.1 CI runner (torch built against ROCm 7.1)."""
+    """True on the rocm7.1 CI runner. Prefers ROCM_VERSION (exported by the CI's
+    setup_rocm_environment), falls back to torch's HIP build version."""
+    if os.environ.get("ROCM_VERSION", "").startswith("7.1"):
+        return True
     try:
         import torch
 
@@ -139,7 +142,24 @@ def _is_rocm71() -> bool:
         return False
 
 
-_IS_ROCM71 = _is_rocm71()
+# Env-cache like _HAS_TENSOR_ENGINE / _HAS_CUDA so the crash-recovery worker
+# subprocess inherits the controller's value. The worker dispatches tests by nodeid
+# and honors only its OWN collection's skip markers, so an independent recompute in
+# the worker (which returned False last run) would silently disable the deselect.
+if "_CRASH_RECOVERY_IS_ROCM71" in os.environ:
+    _IS_ROCM71 = os.environ["_CRASH_RECOVERY_IS_ROCM71"] == "1"
+else:
+    _IS_ROCM71 = _is_rocm71()
+    os.environ["_CRASH_RECOVERY_IS_ROCM71"] = "1" if _IS_ROCM71 else "0"
+
+# TEMP debug (PR#4341 experiment): surface the detection in the CI log.
+print(
+    f"[PR4341-exp] _IS_ROCM71={_IS_ROCM71} "
+    f"ROCM_VERSION={os.environ.get('ROCM_VERSION')!r} "
+    f"cached={'_CRASH_RECOVERY_IS_ROCM71' in os.environ}",
+    file=sys.stderr,
+    flush=True,
+)
 
 # EXPERIMENT (temporary -- PR #4341 debugging; REVERT after): on the rocm7.1 runner,
 # deselect the RDMA tests that spawn GPU procs. The lite torch preload made these run
