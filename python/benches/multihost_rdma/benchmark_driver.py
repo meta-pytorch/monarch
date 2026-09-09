@@ -153,6 +153,10 @@ class BenchConfig:
     # How many NICs a buffer is registered on, at most. `None` sets no limit,
     # so every equally good NIC serves it.
     rdma_max_nics_per_buffer: int | None
+    # How many queue pairs share one completion queue.
+    rdma_qps_per_cq: int
+    # Whether each RDMA device gets a separate completion-queue poller.
+    rdma_cq_poller_per_device: bool
     # Path to the file where the output will live.
     output_csv: str
     # Batch or non-batch mode.
@@ -315,6 +319,18 @@ def _add_workload_args(parser: argparse.ArgumentParser) -> None:
             "How many NICs a buffer is registered on, at most. Pass 0 for no "
             "limit, which registers it on every equally good NIC (default: 1)."
         ),
+    )
+    parser.add_argument(
+        "--rdma-qps-per-cq",
+        type=int,
+        default=1,
+        help="How many queue pairs share one completion queue (default: 1).",
+    )
+    parser.add_argument(
+        "--rdma-cq-poller-per-device",
+        choices=["true", "false"],
+        default="true",
+        help="Whether each RDMA device gets its own CQ poller (default: true).",
     )
 
     mode_group = parser.add_mutually_exclusive_group()
@@ -482,6 +498,8 @@ def config_from_args(args: argparse.Namespace) -> BenchConfig:
         max_host_gb_per_host=float(args.max_host_gb_per_host),
         rdma_runtime_threads=args.rdma_runtime_threads,
         rdma_max_nics_per_buffer=args.rdma_max_nics_per_buffer or None,
+        rdma_qps_per_cq=int(args.rdma_qps_per_cq),
+        rdma_cq_poller_per_device=args.rdma_cq_poller_per_device == "true",
         output_csv=args.output_csv,
         command=args.command,
         # These exist only on the `run` subparser.
@@ -500,6 +518,8 @@ def config_from_args(args: argparse.Namespace) -> BenchConfig:
         raise ValueError("--runs must be at least 1")
     if args.rdma_max_nics_per_buffer < 0:
         raise ValueError("--rdma-max-nics-per-buffer cannot be negative")
+    if cfg.rdma_qps_per_cq < 1:
+        raise ValueError("--rdma-qps-per-cq must be at least 1")
     return cfg
 
 
@@ -513,6 +533,8 @@ def _rdma_settings(cfg: BenchConfig) -> dict[str, Any]:
     if cfg.rdma_runtime_threads is not None:
         settings["rdma_runtime_worker_threads"] = cfg.rdma_runtime_threads
     settings["rdma_max_nics_per_buffer"] = cfg.rdma_max_nics_per_buffer
+    settings["rdma_qps_per_cq"] = cfg.rdma_qps_per_cq
+    settings["rdma_cq_poller_per_device"] = cfg.rdma_cq_poller_per_device
     return settings
 
 
@@ -722,6 +744,8 @@ def _config_columns(cfg: BenchConfig, record: RunRecord) -> ConfigColumns:
         verify_mode=cfg.verify,
         rdma_runtime_threads=str(get_global_config()["rdma_runtime_worker_threads"]),
         rdma_max_nics_per_buffer=str(get_global_config()["rdma_max_nics_per_buffer"]),
+        rdma_qps_per_cq=str(get_global_config()["rdma_qps_per_cq"]),
+        rdma_cq_poller_per_device=str(get_global_config()["rdma_cq_poller_per_device"]),
         integrity_ok=_flag(record.integrity_ok),
         negative_control_ok=_flag(record.negative_control_ok),
     )

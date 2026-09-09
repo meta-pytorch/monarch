@@ -49,7 +49,7 @@ from typing import Any, Iterable, Sequence, TextIO
 from bench_topology import PHASES, Slot, WARM
 
 
-SCHEMA_VERSION: int = 2
+SCHEMA_VERSION: int = 3
 
 
 def _gbs(num_bytes: int, milliseconds: float) -> float:
@@ -242,6 +242,8 @@ class ConfigColumns:
     verify_mode: str
     rdma_runtime_threads: str
     rdma_max_nics_per_buffer: str
+    rdma_qps_per_cq: str
+    rdma_cq_poller_per_device: str
     integrity_ok: str
     negative_control_ok: str
 
