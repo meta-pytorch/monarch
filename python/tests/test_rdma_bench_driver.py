@@ -144,6 +144,8 @@ def test_the_defaults_describe_a_two_host_gpu_run() -> None:
     assert cfg.runs == 3
     assert (cfg.source_on_gpu, cfg.dest_on_gpu) == (True, True)
     assert cfg.verify == "sampled"
+    assert cfg.rdma_qps_per_cq == 1
+    assert cfg.rdma_cq_poller_per_device is True
     assert cfg.command == bd.RUN_COMMAND
     assert cfg.local_only is False
     assert cfg.cached_path is None
@@ -208,6 +210,40 @@ def test_a_run_is_its_ramp_plus_its_warm_iterations() -> None:
     cfg = _config("--warmup-iters-per-run", "4", "--warm-iters-per-run", "10")
 
     assert cfg.iterations_per_run == 14
+
+
+def test_rdma_completion_queue_flags_reach_the_runtime_config(monkeypatch) -> None:
+    cfg = _config(
+        "--rdma-qps-per-cq",
+        "64",
+        "--rdma-cq-poller-per-device",
+        "false",
+        "--rdma-runtime-threads",
+        "4",
+        "--rdma-max-nics-per-buffer",
+        "0",
+    )
+
+    settings = {
+        "rdma_allow_tcp_fallback": False,
+        "rdma_runtime_worker_threads": 4,
+        "rdma_max_nics_per_buffer": None,
+        "rdma_qps_per_cq": 64,
+        "rdma_cq_poller_per_device": False,
+    }
+    assert bd._rdma_settings(cfg) == settings
+
+    monkeypatch.setattr(bd, "get_global_config", lambda: settings)
+    columns = bd._config_columns(cfg, _record())
+    assert (
+        columns.rdma_qps_per_cq,
+        columns.rdma_cq_poller_per_device,
+    ) == ("64", "False")
+
+
+def test_zero_qps_per_cq_is_refused() -> None:
+    with pytest.raises(ValueError, match="--rdma-qps-per-cq"):
+        _config("--rdma-qps-per-cq", "0")
 
 
 def test_local_only_provisions_nothing() -> None:
@@ -406,12 +442,16 @@ def test_the_config_is_pinned_before_any_proc_starts(
     assert settings[0] == {
         "rdma_allow_tcp_fallback": False,
         "rdma_max_nics_per_buffer": 1,
+        "rdma_qps_per_cq": 1,
+        "rdma_cq_poller_per_device": True,
     }
     assert settings[1] == {
         "rdma_disable_ibverbs": True,
         "rdma_allow_tcp_fallback": True,
         "rdma_runtime_worker_threads": 16,
         "rdma_max_nics_per_buffer": 1,
+        "rdma_qps_per_cq": 1,
+        "rdma_cq_poller_per_device": True,
     }
     assert settings[2]["rdma_max_nics_per_buffer"] is None
 
@@ -479,6 +519,8 @@ async def test_every_proc_must_have_the_configuration_the_client_pinned() -> Non
         "rdma_allow_tcp_fallback": True,
         "rdma_runtime_worker_threads": 16,
         "rdma_max_nics_per_buffer": 1,
+        "rdma_qps_per_cq": 1,
+        "rdma_cq_poller_per_device": True,
     }, "exactly what _configure_rdma pinned on the client"
 
 
@@ -1029,6 +1071,8 @@ def test_the_nic_limit_reaches_the_config_and_the_csv(
         lambda: {
             "rdma_runtime_worker_threads": 16,
             "rdma_max_nics_per_buffer": configured,
+            "rdma_qps_per_cq": 1,
+            "rdma_cq_poller_per_device": True,
         },
     )
     columns = bd._config_columns(cfg, _record())

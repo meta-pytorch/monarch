@@ -82,6 +82,8 @@ def _config(
         max_host_gb_per_host=1.0,
         rdma_runtime_threads=None,
         rdma_max_nics_per_buffer=1,
+        rdma_qps_per_cq=1,
+        rdma_cq_poller_per_device=True,
         output_csv=output_csv,
         command=bd.RUN_COMMAND,
         local_only=True,
