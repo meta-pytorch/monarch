@@ -129,45 +129,22 @@ _MACOS_ARM64_SKIP_NODEIDS = frozenset(
 )
 
 
-def _is_rocm71() -> bool:
-    """True on the rocm7.1 CI runner. Prefers ROCM_VERSION (exported by the CI's
-    setup_rocm_environment), falls back to torch's HIP build version."""
-    if os.environ.get("ROCM_VERSION", "").startswith("7.1"):
-        return True
-    try:
-        import torch
-
-        return (getattr(torch.version, "hip", None) or "").startswith("7.1")
-    except Exception:
-        return False
-
-
-# Env-cache like _HAS_TENSOR_ENGINE / _HAS_CUDA so the crash-recovery worker
-# subprocess inherits the controller's value. The worker dispatches tests by nodeid
-# and honors only its OWN collection's skip markers, so an independent recompute in
-# the worker (which returned False last run) would silently disable the deselect.
-if "_CRASH_RECOVERY_IS_ROCM71" in os.environ:
-    _IS_ROCM71 = os.environ["_CRASH_RECOVERY_IS_ROCM71"] == "1"
-else:
-    _IS_ROCM71 = _is_rocm71()
-    os.environ["_CRASH_RECOVERY_IS_ROCM71"] = "1" if _IS_ROCM71 else "0"
-
-# TEMP debug (PR#4341 experiment): surface the detection in the CI log.
+# EXPERIMENT (temporary, PR#4341): gate on the job-wide MONARCH_PRELOAD_TORCH=1, which
+# the workflow exports ONLY for rocm (both 7.1 and 7.2) and which the crash-recovery worker
+# inherits directly -- no per-process recompute. torch.version.hip / ROCM_VERSION both came
+# back False/None in the CI collection context (setup_rocm_environment does not export
+# ROCM_VERSION), so this is the reliable signal. Deselecting on rocm7.2 too is harmless: it
+# already passes these tests (acts as a control). The signal we care about is whether
+# rocm7.1's 14 tensor-engine/cuda/builtins failures disappear.
+_IS_ROCM = os.environ.get("MONARCH_PRELOAD_TORCH") == "1"
 print(
-    f"[PR4341-exp] _IS_ROCM71={_IS_ROCM71} "
-    f"ROCM_VERSION={os.environ.get('ROCM_VERSION')!r} "
-    f"cached={'_CRASH_RECOVERY_IS_ROCM71' in os.environ}",
+    f"[PR4341-exp] _IS_ROCM={_IS_ROCM} "
+    f"MONARCH_PRELOAD_TORCH={os.environ.get('MONARCH_PRELOAD_TORCH')!r}",
     file=sys.stderr,
     flush=True,
 )
 
-# EXPERIMENT (temporary -- PR #4341 debugging; REVERT after): on the rocm7.1 runner,
-# deselect the RDMA tests that spawn GPU procs. The lite torch preload made these run
-# to completion (before, they hit the 30s Host::spawn timeout and never ran). We are
-# testing whether their *running* is what leaves rocm7.1's GPU/RCCL state such that the
-# later tensor-engine / cuda / builtins GPU workers hang (the deterministic 14 failures).
-# If those now pass with these removed, the RDMA-GPU-test interaction is confirmed.
-_ROCM71_EXPERIMENT_SKIP_PREFIXES = (
+_ROCM_EXPERIMENT_SKIP_PREFIXES = (
     "python/tests/test_rdma.py::test_proc_mesh_rdma",
     "python/tests/test_rdma.py::test_gpu_trainer_generator",
     "python/tests/test_rdma_bench_e2e.py::",
@@ -224,10 +201,10 @@ def pytest_collection_modifyitems(
                 pytest.mark.skip(reason="unsupported or flaky on macOS arm64 CPU CI")
             )
 
-        if _IS_ROCM71 and node_id.startswith(_ROCM71_EXPERIMENT_SKIP_PREFIXES):
+        if _IS_ROCM and node_id.startswith(_ROCM_EXPERIMENT_SKIP_PREFIXES):
             item.add_marker(
                 pytest.mark.skip(
-                    reason="EXPERIMENT (PR#4341): rocm7.1 RDMA-GPU-test deselect"
+                    reason="EXPERIMENT (PR#4341): rocm RDMA-GPU-test deselect"
                 )
             )
 
