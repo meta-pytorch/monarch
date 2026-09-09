@@ -63,6 +63,7 @@ use super::queue_pair::OpResult;
 use super::queue_pair::ProcessOps;
 use super::queue_pair::QpKey;
 use super::queue_pair::QueuePairActor;
+use super::queue_pair::QueuePairHandle;
 use super::queue_pair::QueuePairOp;
 use super::queue_pair::legacy;
 use crate::RdmaOp;
@@ -164,13 +165,13 @@ const DEFAULT_DOMAIN: &str = "default";
 pub struct IbvManagerActor<I: IbvDeviceImpl> {
     owner: OnceLock<ActorHandle<RdmaManagerActor>>,
 
-    /// Active-side [`QueuePairActor`] children, keyed from this
-    /// manager's perspective. Lazily populated on the first
+    /// Active-side queue-pair workers and their supervising actor, keyed
+    /// from this manager's perspective. Lazily populated on the first
     /// [`SubmitOps`] that targets a new `(self_device, peer,
     /// other_device)` triple.
     qp_handles: HashMap<
         QpKey,
-        ActorHandle<QueuePairActor<IbvManagerActor<I>, <I::Domain as IbvDomainImpl>::QueuePair>>,
+        QueuePairHandle<IbvManagerActor<I>, <I::Domain as IbvDomainImpl>::QueuePair>,
     >,
 
     /// Passive-side mirror QPs, created in response to a peer's
@@ -226,10 +227,8 @@ impl<I: IbvDeviceImpl> Actor for IbvManagerActor<I> {
 
 impl<I: IbvDeviceImpl> Drop for IbvManagerActor<I> {
     fn drop(&mut self) {
-        // Drain active-side QP actors. Each child owns its
-        // `IbvQueuePair`; `drain_and_stop` schedules the actor to
-        // finish in-flight ops and exit, dropping the QP via its
-        // own `Drop`.
+        // Stop each supervising QP actor; its cleanup cancels and joins the
+        // data-plane worker that owns the QP.
         for (_key, handle) in self.qp_handles.drain() {
             let _ = handle.drain_and_stop("IbvManagerActor dropped");
         }
@@ -519,19 +518,16 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             .clone()
     }
 
-    /// Lazy active-side QP actor: if `qp_key` is absent from
+    /// Lazy active-side QP worker: if `qp_key` is absent from
     /// [`Self::qp_handles`], create an [`IbvQueuePair`] on the
-    /// requested device and spawn a [`QueuePairActor`] to drive its
-    /// handshake + data path. Returns a clone of the actor handle.
+    /// requested device and spawn a [`QueuePairActor`] to drive its handshake
+    /// and supervise its data-plane task. Returns a handle to the QP actor.
     fn ensure_qp_actor(
         &mut self,
         cx: &Context<'_, Self>,
         qp_key: &QpKey,
         peer_manager: ActorRef<Self>,
-    ) -> Result<
-        ActorHandle<QueuePairActor<Self, <I::Domain as IbvDomainImpl>::QueuePair>>,
-        anyhow::Error,
-    > {
+    ) -> Result<QueuePairHandle<Self, <I::Domain as IbvDomainImpl>::QueuePair>, anyhow::Error> {
         if let Some(h) = self.qp_handles.get(qp_key) {
             return Ok(h.clone());
         }
@@ -545,7 +541,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         let local_manager: ActorRef<Self> = cx.bind();
         let is_loopback = local_manager.actor_addr() == peer_manager.actor_addr()
             && qp_key.self_device == qp_key.other_device;
-        let actor = cx.spawn(QueuePairActor::new(
+        let (actor, sender) = QueuePairActor::new(
             qp_key.clone(),
             local_manager,
             peer_manager,
@@ -554,9 +550,10 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             cq_lease,
             is_loopback,
             config.max_send_wr,
-        ));
-        self.qp_handles.insert(qp_key.clone(), actor.clone());
-        Ok(actor)
+        );
+        let handle = QueuePairHandle::new(cx.spawn(actor), sender);
+        self.qp_handles.insert(qp_key.clone(), handle.clone());
+        Ok(handle)
     }
 }
 
@@ -605,19 +602,16 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
                     continue;
                 }
             };
-            handle.try_post(
-                cx,
-                ProcessOps {
-                    items: vec![QueuePairOp {
-                        op_idx: i,
-                        op_type: op.op_type,
-                        local_memory: op.local_memory,
-                        local,
-                        remote,
-                    }],
-                    reply: reply.clone(),
-                },
-            )?;
+            handle.send(ProcessOps {
+                items: vec![QueuePairOp {
+                    op_idx: i,
+                    op_type: op.op_type,
+                    local_memory: op.local_memory,
+                    local,
+                    remote,
+                }],
+                reply: reply.clone(),
+            })?;
         }
         Ok(())
     }

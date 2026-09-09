@@ -31,10 +31,10 @@ use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::OncePortHandle;
 use hyperactor::PortHandle;
 use hyperactor::actor::ActorError;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 use super::cq_pool::CqLease;
 use super::primitives::IbvCq;
@@ -157,11 +157,11 @@ impl CompletionInbox {
         (Self { receiver }, CompletionRoute { sender })
     }
 
-    #[cfg(test)]
     pub(super) async fn recv(&mut self) -> Option<CompletionResult> {
         self.receiver.recv().await
     }
 
+    #[cfg(test)]
     pub(super) fn try_recv(&mut self) -> Result<CompletionResult, mpsc::error::TryRecvError> {
         self.receiver.try_recv()
     }
@@ -432,7 +432,7 @@ pub(super) struct Attach<Cq: IbvCompletionQueue> {
     pub(super) qp_num: u32,
     pub(super) route: CompletionRoute,
     pub(super) posted: Arc<AtomicU64>,
-    pub(super) reply: OncePortHandle<PollerWake>,
+    pub(super) reply: oneshot::Sender<PollerWake>,
 }
 
 /// Transfers a stopped queue pair and its CQ lease to the poller until every
@@ -463,7 +463,7 @@ enum PollerCommand<Cq> {
         qp_num: u32,
         route: CompletionRoute,
         posted: Arc<AtomicU64>,
-        reply: Box<OncePortHandle<PollerWake>>,
+        reply: oneshot::Sender<PollerWake>,
     },
     Detach {
         cq_id: CqId,
@@ -526,13 +526,13 @@ impl<Cq: IbvCompletionQueue> Poller<Cq> {
                     reply,
                 }) => {
                     self.state.attach(cq, qp_num, route, posted)?;
-                    if let Err(error) = reply.try_post(
-                        Instance::<CompletionQueueActor<Cq>>::self_client(),
-                        PollerWake {
+                    if reply
+                        .send(PollerWake {
                             signal: Arc::clone(&self.signal),
-                        },
-                    ) {
-                        tracing::warn!(qp_num, %error, "failed to deliver Attach reply");
+                        })
+                        .is_err()
+                    {
+                        tracing::warn!(qp_num, "failed to deliver Attach reply");
                     }
                 }
                 Ok(PollerCommand::Detach {
@@ -697,7 +697,7 @@ impl<Cq: IbvCompletionQueue> Handler<Attach<Cq>> for CompletionQueueActor<Cq> {
             qp_num,
             route,
             posted,
-            reply: Box::new(reply),
+            reply,
         })
     }
 }
@@ -737,6 +737,7 @@ mod tests {
 
     use anyhow::Result;
     use hyperactor::ActorHandle;
+    use hyperactor::OncePortHandle;
     use hyperactor::context::Mailbox;
     use hyperactor::proc::Proc;
 
@@ -937,7 +938,7 @@ mod tests {
             let posted = Arc::new(AtomicU64::new(0));
             let leases = Arc::new(std::sync::atomic::AtomicU32::new(0));
             let lease = CqLease::for_test_counted(Arc::clone(&leases));
-            let (reply, receiver) = self.client.mailbox().open_once_port();
+            let (reply, receiver) = oneshot::channel();
             poller.try_post(
                 &self.client,
                 Attach {
@@ -948,7 +949,7 @@ mod tests {
                     reply,
                 },
             )?;
-            let wake = receiver.recv().await?;
+            let wake = receiver.await?;
             Ok(TestRoute {
                 inbox,
                 posted,
