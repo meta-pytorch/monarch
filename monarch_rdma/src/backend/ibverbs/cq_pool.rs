@@ -86,11 +86,10 @@ struct CqEntry {
 /// One queue pair's lease on a completion queue.
 ///
 /// Holding a lease is what entitles a queue pair to post: the completion queue
-/// has room for its full `max_send_wr` of work requests, and -- while
-/// `rdma_qps_per_cq` is 1 -- the leaseholder is the only queue pair polling it.
-/// Dropping the lease returns that room to the pool, so a lease must outlive
-/// every completion its queue pair can still produce -- including the flush
-/// entries a teardown generates.
+/// has room for its full `max_send_wr` of work requests. Dropping the lease
+/// returns that room to the pool, so a lease must outlive every completion its
+/// queue pair can still produce -- including the flush entries a teardown
+/// generates.
 #[derive(Debug)]
 pub(crate) struct CqLease {
     cq: Arc<IbvCq>,
@@ -156,15 +155,6 @@ impl CqPool {
     ) -> anyhow::Result<Self> {
         let configured: usize =
             hyperactor_config::global::get(crate::config::RDMA_QPS_PER_CQ).into();
-        // Each queue pair polls its own completion queue, so two of them sharing
-        // one would give it two pollers, splitting its completions between them.
-        // The cap is temporary while each queue pair is responsible for polling
-        // its CQ.
-        anyhow::ensure!(
-            configured == 1,
-            "rdma_qps_per_cq is {configured}, but only 1 queue pair per completion \
-             queue is supported: each polls its own",
-        );
         let queue_pairs_per_cq = u32::try_from(configured)
             .map_err(|_| anyhow::anyhow!("rdma_qps_per_cq {configured} does not fit a u32"))?;
         let cq_entries = cq_entries_for(queue_pairs_per_cq, max_send_wr, device_info.max_cqe())?;
@@ -177,8 +167,7 @@ impl CqPool {
     }
 
     /// A pool that admits `queue_pairs_per_cq` leases per completion queue,
-    /// bypassing the config. Lets the sharing and reuse logic be exercised while
-    /// the configured value is held at 1.
+    /// bypassing the config.
     #[cfg(test)]
     pub(super) fn for_test(
         context: Arc<IbvContext>,
@@ -240,8 +229,7 @@ impl CqPool {
     /// Such a queue pair still needs a completion queue to be created against,
     /// but produces no entries, so it consumes no capacity and takes no lease:
     /// it shares whichever queue is already there rather than pinning one of its
-    /// own. It must not poll that queue either, which is what leaves the
-    /// leaseholder as the only poller.
+    /// own.
     pub(super) fn cq_without_lease(&mut self) -> anyhow::Result<Arc<IbvCq>> {
         if let Some(entry) = self.completion_queues.first() {
             return Ok(Arc::clone(&entry.cq));
@@ -323,10 +311,8 @@ mod tests {
         assert_eq!(leases.load(Ordering::Relaxed), 0);
     }
 
-    /// The configured value is held at 1 while each queue pair polls its own
-    /// completion queue.
     #[test]
-    fn pool_refuses_a_configured_value_above_one() {
+    fn pool_accepts_multiple_configured_queue_pairs_per_cq() {
         let info =
             IbvDeviceInfo::first_available().expect("test runs on machines with RDMA devices");
         let lock = hyperactor_config::global::lock();
@@ -336,12 +322,11 @@ mod tests {
                 .expect("2 is non-zero")
                 .into(),
         );
-        let err = CqPool::new(Arc::new(IbvContext::null()), &info, 512)
-            .expect_err("two queue pairs per completion queue is not supported");
-        assert!(
-            err.to_string().contains("rdma_qps_per_cq"),
-            "the error should name the knob: {err}",
-        );
+
+        let pool = CqPool::new(Arc::new(IbvContext::null()), &info, 512)
+            .expect("two queue pairs per completion queue should be supported");
+
+        assert_eq!(pool.queue_pairs_per_cq, 2);
     }
 
     /// Queue pairs share a completion queue up to `queue_pairs_per_cq`, the next

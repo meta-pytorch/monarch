@@ -9,6 +9,7 @@
 use super::*;
 use crate::backend::ibverbs::cq_pool::cq_entries_for;
 use crate::backend::ibverbs::primitives::IbvPd;
+use crate::backend::ibverbs::primitives::IbvWc;
 
 /// An RDMA Queue Pair (QP) for communication between two endpoints.
 ///

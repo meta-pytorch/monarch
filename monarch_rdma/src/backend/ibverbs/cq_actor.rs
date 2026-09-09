@@ -13,9 +13,6 @@
 //! produced it. Detached queue-pair resources remain alive until their final
 //! CQEs have been consumed.
 
-// Nothing outside the tests below uses this module.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -160,6 +157,7 @@ impl CompletionInbox {
         (Self { receiver }, CompletionRoute { sender })
     }
 
+    #[cfg(test)]
     pub(super) async fn recv(&mut self) -> Option<CompletionResult> {
         self.receiver.recv().await
     }
@@ -211,6 +209,8 @@ impl QpSlot {
         //  it never posts again; when the poller receives the message, it
         //  synchronizes-with the QP's thread and so is guaranteed to see the final
         //  value for `posted`, even with this relaxed load.
+        // A CQE may briefly make `consumed` exceed `posted` between hardware
+        // posting and the counter increment; saturating at zero is safe then.
         self.posted
             .load(Ordering::Relaxed)
             .saturating_sub(self.consumed)
