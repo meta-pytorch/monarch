@@ -307,24 +307,24 @@ def _add_workload_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--rdma-runtime-threads",
         type=int,
-        default=None,
-        help="How many threads the RDMA runtime should use (default: monarch's own).",
+        default=4,
+        help="How many threads the RDMA runtime should use (default: 4).",
     )
 
     parser.add_argument(
         "--rdma-max-nics-per-buffer",
         type=int,
-        default=1,
+        default=0,
         help=(
             "How many NICs a buffer is registered on, at most. Pass 0 for no "
-            "limit, which registers it on every equally good NIC (default: 1)."
+            "limit, which registers it on every equally good NIC (default: no limit)."
         ),
     )
     parser.add_argument(
         "--rdma-qps-per-cq",
         type=int,
-        default=1,
-        help="How many queue pairs share one completion queue (default: 1).",
+        default=64,
+        help="How many queue pairs share one completion queue (default: 64).",
     )
     parser.add_argument(
         "--rdma-cq-poller-per-device",

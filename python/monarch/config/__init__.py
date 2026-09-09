@@ -90,6 +90,8 @@ if TYPE_CHECKING:
             rdma_ibverbs_target: NotRequired[str]
             rdma_peer_device_affinity: NotRequired[str]
             rdma_max_nics_per_buffer: NotRequired[int | None]
+            rdma_qps_per_cq: NotRequired[int]
+            rdma_cq_poller_per_device: NotRequired[bool]
             rdma_runtime_worker_threads: NotRequired[int]
 
         # pyrefly: ignore [invalid-annotation]
@@ -209,11 +211,15 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
                 disjoint. Empty, the default, means ``"any"``. Value syntax is
                 validated when the RDMA manager starts.
             rdma_max_nics_per_buffer: How many NICs a buffer is registered on,
-                at most (default 1); ``None`` sets no limit.
+                at most; ``None``, the default, sets no limit.
+            rdma_qps_per_cq: How many queue pairs share one completion queue
+                (default 64).
+            rdma_cq_poller_per_device: Whether each RDMA device gets a separate
+                completion-queue poller (default ``True``).
             rdma_runtime_worker_threads: Worker threads for the shared RDMA
-                data-plane runtime, which every queue pair's poll loop runs on.
-                Latched at the first RDMA use in a process; setting it later
-                has no effect.
+                data-plane runtime (default 4), which runs RDMA actors and
+                queue-pair worker tasks. Latched at the first RDMA use in a
+                process; setting it later has no effect.
 
         **kwargs: Reserved for future configuration keys exposed by Rust bindings.
     """

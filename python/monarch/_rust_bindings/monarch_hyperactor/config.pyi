@@ -86,6 +86,9 @@ def configure(
     rdma_ibverbs_target: str = ...,
     rdma_peer_device_affinity: str = ...,
     rdma_max_nics_per_buffer: Optional[int] = ...,
+    rdma_qps_per_cq: int = ...,
+    rdma_cq_poller_per_device: bool = ...,
+    rdma_runtime_worker_threads: int = ...,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.
@@ -201,7 +204,15 @@ def configure(
             disjoint. Empty, the default, means "any". Value syntax is
             validated when the RDMA manager starts.
         rdma_max_nics_per_buffer: How many NICs a buffer is registered
-            on, at most (default: 1); None sets no limit.
+            on, at most; None, the default, sets no limit.
+        rdma_qps_per_cq: How many queue pairs share one completion queue
+            (default: 64).
+        rdma_cq_poller_per_device: Whether each RDMA device gets a separate
+            completion-queue poller (default: True).
+        rdma_runtime_worker_threads: Worker threads for the shared RDMA
+            data-plane runtime (default: 4), which runs RDMA actors and
+            queue-pair worker tasks. Latched at the first RDMA use in a process;
+            setting it later has no effect.
         **kwargs: Reserved for future configuration keys
 
     For historical reasons, this API is named ``configure(...)``;

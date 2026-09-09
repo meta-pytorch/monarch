@@ -121,16 +121,12 @@ def test_rdma_peer_device_affinity_round_trip() -> None:
 
 
 def test_rdma_max_nics_per_buffer_round_trip() -> None:
-    assert get_global_config()["rdma_max_nics_per_buffer"] == 1
+    assert get_global_config()["rdma_max_nics_per_buffer"] == None
 
     with configured(rdma_max_nics_per_buffer=4) as config:
         assert config["rdma_max_nics_per_buffer"] == 4
 
-    # None means no limit: every equally good NIC serves the buffer.
-    with configured(rdma_max_nics_per_buffer=None) as config:
-        assert config["rdma_max_nics_per_buffer"] is None
-
-    assert get_global_config()["rdma_max_nics_per_buffer"] == 1
+    assert get_global_config()["rdma_max_nics_per_buffer"] == None
 
     # The attribute is non-zero, so zero is rejected rather than silently
     # meaning "no NIC".
@@ -140,12 +136,12 @@ def test_rdma_max_nics_per_buffer_round_trip() -> None:
 
 
 def test_rdma_runtime_worker_threads_round_trip() -> None:
-    assert get_global_config()["rdma_runtime_worker_threads"] == 16
+    assert get_global_config()["rdma_runtime_worker_threads"] == 4
 
-    with configured(rdma_runtime_worker_threads=32) as config:
-        assert config["rdma_runtime_worker_threads"] == 32
+    with configured(rdma_runtime_worker_threads=16) as config:
+        assert config["rdma_runtime_worker_threads"] == 16
 
-    assert get_global_config()["rdma_runtime_worker_threads"] == 16
+    assert get_global_config()["rdma_runtime_worker_threads"] == 4
 
 
 def test_pyspy_bin_round_trip() -> None:

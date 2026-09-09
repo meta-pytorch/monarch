@@ -95,9 +95,9 @@ declare_attrs! {
     ))
     pub attr RDMA_PEER_DEVICE_AFFINITY: String = String::new();
 
-    /// How many NICs a buffer is registered on, at most. `None`, which an
-    /// empty environment value parses to, sets no limit: every equally good
-    /// NIC serves the buffer.
+    /// How many NICs a buffer is registered on, at most. `None`, the default,
+    /// sets no limit: every equally good NIC serves the buffer. An empty
+    /// environment value parses to `None`.
     ///
     /// Depending on where in memory a buffer lives, there may be many
     /// NICs that would be equally good for serving it. Registering the
@@ -122,8 +122,7 @@ declare_attrs! {
         Some("MONARCH_RDMA_MAX_NICS_PER_BUFFER".to_string()),
         Some("rdma_max_nics_per_buffer".to_string()),
     ))
-    pub attr RDMA_MAX_NICS_PER_BUFFER: Option<NonZeroUsize> =
-        Some(NonZeroUsize::new(1).expect("1 is non-zero"));
+    pub attr RDMA_MAX_NICS_PER_BUFFER: Option<NonZeroUsize> = None;
 
     /// How many queue pairs share one completion queue.
     ///
@@ -132,12 +131,13 @@ declare_attrs! {
     /// (`rdma_qps_per_cq * max_send_wr` entries), so raising this trades
     /// completion-queue memory for fewer completion queues to poll. Opening a
     /// device fails outright if it cannot hold a completion queue that large.
+    /// The default is 64.
     @meta(CONFIG = ConfigAttr::new(
         Some("MONARCH_RDMA_QPS_PER_CQ".to_string()),
         Some("rdma_qps_per_cq".to_string()),
     ))
     pub attr RDMA_QPS_PER_CQ: NonZeroUsize =
-        NonZeroUsize::new(1).expect("1 is non-zero");
+        NonZeroUsize::new(64).expect("64 is non-zero");
 
     /// Whether each device gets its own completion-queue poller.
     ///
@@ -150,7 +150,7 @@ declare_attrs! {
     pub attr RDMA_CQ_POLLER_PER_DEVICE: bool = true;
 
     /// Worker-thread count for the shared rdma data-plane runtime, which runs
-    /// each `QueuePairActor`.
+    /// RDMA actors and queue-pair worker tasks. The default is 4.
     ///
     /// The runtime is built once, lazily, so this value is latched at the
     /// first RDMA use in a process and later changes have no effect.
@@ -158,5 +158,5 @@ declare_attrs! {
         Some("MONARCH_RDMA_RUNTIME_WORKER_THREADS".to_string()),
         Some("rdma_runtime_worker_threads".to_string()),
     ))
-    pub attr RDMA_RUNTIME_WORKER_THREADS: usize = 16;
+    pub attr RDMA_RUNTIME_WORKER_THREADS: usize = 4;
 }

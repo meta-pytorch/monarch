@@ -144,7 +144,9 @@ def test_the_defaults_describe_a_two_host_gpu_run() -> None:
     assert cfg.runs == 3
     assert (cfg.source_on_gpu, cfg.dest_on_gpu) == (True, True)
     assert cfg.verify == "sampled"
-    assert cfg.rdma_qps_per_cq == 1
+    assert cfg.rdma_runtime_threads == 4
+    assert cfg.rdma_max_nics_per_buffer is None
+    assert cfg.rdma_qps_per_cq == 64
     assert cfg.rdma_cq_poller_per_device is True
     assert cfg.command == bd.RUN_COMMAND
     assert cfg.local_only is False
@@ -441,16 +443,17 @@ def test_the_config_is_pinned_before_any_proc_starts(
 
     assert settings[0] == {
         "rdma_allow_tcp_fallback": False,
-        "rdma_max_nics_per_buffer": 1,
-        "rdma_qps_per_cq": 1,
+        "rdma_runtime_worker_threads": 4,
+        "rdma_max_nics_per_buffer": None,
+        "rdma_qps_per_cq": 64,
         "rdma_cq_poller_per_device": True,
     }
     assert settings[1] == {
         "rdma_disable_ibverbs": True,
         "rdma_allow_tcp_fallback": True,
         "rdma_runtime_worker_threads": 16,
-        "rdma_max_nics_per_buffer": 1,
-        "rdma_qps_per_cq": 1,
+        "rdma_max_nics_per_buffer": None,
+        "rdma_qps_per_cq": 64,
         "rdma_cq_poller_per_device": True,
     }
     assert settings[2]["rdma_max_nics_per_buffer"] is None
@@ -518,8 +521,8 @@ async def test_every_proc_must_have_the_configuration_the_client_pinned() -> Non
         "rdma_disable_ibverbs": True,
         "rdma_allow_tcp_fallback": True,
         "rdma_runtime_worker_threads": 16,
-        "rdma_max_nics_per_buffer": 1,
-        "rdma_qps_per_cq": 1,
+        "rdma_max_nics_per_buffer": None,
+        "rdma_qps_per_cq": 64,
         "rdma_cq_poller_per_device": True,
     }, "exactly what _configure_rdma pinned on the client"
 
@@ -1050,7 +1053,7 @@ def test_a_failing_run_kills_the_job_and_reraises(monkeypatch) -> None:
 @pytest.mark.parametrize(
     ("flag", "configured"),
     [
-        ((), 1),
+        ((), None),
         (("--rdma-max-nics-per-buffer", "4"), 4),
         (("--rdma-max-nics-per-buffer", "0"), None),
     ],
@@ -1071,7 +1074,7 @@ def test_the_nic_limit_reaches_the_config_and_the_csv(
         lambda: {
             "rdma_runtime_worker_threads": 16,
             "rdma_max_nics_per_buffer": configured,
-            "rdma_qps_per_cq": 1,
+            "rdma_qps_per_cq": 64,
             "rdma_cq_poller_per_device": True,
         },
     )

@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn worker_threads_reads_config() {
         let lock = hyperactor_config::global::lock();
-        assert_eq!(worker_threads(), 16, "the default is 16");
+        assert_eq!(worker_threads(), 4, "the default is 4");
         let _guard = lock.override_key(crate::config::RDMA_RUNTIME_WORKER_THREADS, 32);
         assert_eq!(worker_threads(), 32);
     }
