@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! A shared, dedicated Tokio runtime for the RDMA manager actors.
+//! A shared, dedicated Tokio runtime for RDMA actors and data-plane tasks.
 //!
 //! RDMA buffer registration scans `torch.cuda` segments under the GIL
 //! (`backend::ibverbs::mlx_domain` -> `pytorch_cuda_segments`), so the RDMA actor
@@ -17,9 +17,9 @@
 //! - **RR-1 (process-singleton):** one shared rdma runtime exists per process
 //!   (built once, lazily), serving all RDMA actors rather than one per actor.
 //!   Sharing is safe because RDMA keeps no per-thread state that would pin an
-//!   actor to a worker, and the `QueuePairActor`s are cooperative (each re-arms a
-//!   `Tick` and yields rather than busy-polling), so a small worker pool serves
-//!   many without starving.
+//!   actor or queue-pair task to a worker. Queue-pair tasks await tokio channels,
+//!   whose cooperative scheduling prevents a ready task from monopolizing a
+//!   runtime worker.
 //! - **RR-2 (shared-runtime-routing):** the RDMA actors (`RdmaManagerActor`,
 //!   `IbvManagerActor`, `QueuePairActor`) route `spawn_server_task` through
 //!   [`spawn_on_rdma_runtime`], not ad hoc `tokio::spawn`.
@@ -49,10 +49,9 @@ fn rdma_runtime() -> &'static tokio::runtime::Handle {
     RT.get_or_init(|| build_data_plane_runtime("rdma", worker_threads()))
 }
 
-/// Spawn an actor server loop onto the shared rdma runtime and return its
-/// `JoinHandle`. Used as `Actor::spawn_server_task` by the RDMA actors. The
-/// rdma-runtime handle is returned directly: a tokio `JoinHandle` can be awaited
-/// from any runtime, including the caller's.
+/// Spawn an actor server loop or data-plane task onto the shared RDMA runtime
+/// and return its `JoinHandle`. The handle can be awaited from any runtime,
+/// including the caller's.
 ///
 /// Must not be called after `shutdown_data_plane_runtimes` has torn the rdma
 /// runtime down: the cached handle would then point at a dropped runtime and
