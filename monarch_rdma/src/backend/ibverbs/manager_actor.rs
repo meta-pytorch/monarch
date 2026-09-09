@@ -33,11 +33,11 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::OncePortRef;
-use hyperactor::PortHandle;
 use hyperactor::actor::Referable;
 use rand::seq::IteratorRandom;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::mpsc;
 use typeuri::Named;
 
 use super::IbvOp;
@@ -108,7 +108,7 @@ wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<EfaDevice>>);
 /// [`OpResult`] values.
 pub(super) struct SubmitOps<I: IbvDeviceImpl> {
     pub(super) ops: Vec<IbvOp<IbvManagerActor<I>>>,
-    pub(super) reply: PortHandle<OpResult>,
+    pub(super) reply: mpsc::UnboundedSender<OpResult>,
 }
 
 /// Local-only message: create a fresh, unconnected legacy
@@ -543,26 +543,20 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
             let local_mrs = match self.resolve_local_mrs(&op.local_memory) {
                 Ok(mrs) => mrs,
                 Err(e) => {
-                    reply.try_post(
-                        cx,
-                        OpResult {
-                            op_idx: i,
-                            result: Err(e.to_string()),
-                        },
-                    )?;
+                    let _ = reply.send(OpResult {
+                        op_idx: i,
+                        result: Err(e.to_string()),
+                    });
                     continue;
                 }
             };
             let (local, remote) = match self.pick_peer_pair(&local_mrs, &op.remote_buffers) {
                 Ok((local, remote)) => (local.clone(), remote.clone()),
                 Err(e) => {
-                    reply.try_post(
-                        cx,
-                        OpResult {
-                            op_idx: i,
-                            result: Err(e.to_string()),
-                        },
-                    )?;
+                    let _ = reply.send(OpResult {
+                        op_idx: i,
+                        result: Err(e.to_string()),
+                    });
                     continue;
                 }
             };
@@ -574,13 +568,10 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
             let handle = match self.ensure_qp_actor(cx, &qp_key, op.remote_manager) {
                 Ok(h) => h,
                 Err(e) => {
-                    reply.try_post(
-                        cx,
-                        OpResult {
-                            op_idx: i,
-                            result: Err(e.to_string()),
-                        },
-                    )?;
+                    let _ = reply.send(OpResult {
+                        op_idx: i,
+                        result: Err(e.to_string()),
+                    });
                     continue;
                 }
             };
@@ -826,7 +817,7 @@ where
         }
         let n = ibv_ops.len();
 
-        let (reply, mut reply_rx) = cx.mailbox().open_port::<OpResult>();
+        let (reply, mut reply_rx) = mpsc::unbounded_channel();
 
         self.0.try_post(
             cx,
@@ -851,14 +842,15 @@ where
                 }
                 recv = reply_rx.recv() => {
                     match recv {
-                        Ok(OpResult { result: Ok(()), .. }) => received += 1,
-                        Ok(OpResult { op_idx, result: Err(e) }) => {
+                        Some(OpResult { result: Ok(()), .. }) => received += 1,
+                        Some(OpResult { op_idx, result: Err(e) }) => {
                             received += 1;
                             failures.push((op_idx, e));
                         }
-                        Err(e) => {
+                        None => {
                             terminal = Some(format!(
-                                "SubmitOps reply port closed after {received}/{n} replies with {} failures: {e}",
+                                "operation result channel closed after {received}/{n} replies with {} failures: \
+                                some built-in RDMA actor likely stopped or failed, see logs for more details",
                                 failures.len()
                             ));
                             break;
