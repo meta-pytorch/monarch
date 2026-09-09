@@ -177,7 +177,7 @@ impl Handler<CudaActorMessage> for CudaActor {
                     let mut prop: rdmaxcel_sys::CUmemAllocationProp = std::mem::zeroed();
                     prop.type_ = rdmaxcel_sys::CU_MEM_ALLOCATION_TYPE_PINNED;
                     prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
-                    prop.location.id = device;
+                    rdmaxcel_sys::rdmaxcel_set_mem_location_id(&mut prop.location, device);
                     prop.allocFlags.gpuDirectRDMACapable = 1;
                     // ROCm bindgen generates a different struct layout with anonymous union
                     #[cfg(feature = "rocm")]
@@ -224,7 +224,7 @@ impl Handler<CudaActorMessage> for CudaActor {
 
                     let mut access_desc: rdmaxcel_sys::CUmemAccessDesc = std::mem::zeroed();
                     access_desc.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
-                    access_desc.location.id = device;
+                    rdmaxcel_sys::rdmaxcel_set_mem_location_id(&mut access_desc.location, device);
                     access_desc.flags = rdmaxcel_sys::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
                     cu_check!(rdmaxcel_sys::rdmaxcel_cuMemSetAccess(
                         dptr,
