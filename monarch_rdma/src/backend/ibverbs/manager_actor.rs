@@ -41,6 +41,7 @@ use tokio::sync::mpsc;
 use typeuri::Named;
 
 use super::IbvOp;
+use super::cq_actor::CompletionQueueActor;
 use super::device::IbvDevice;
 use super::device::IbvDeviceImpl;
 use super::device_selection::PeerDeviceAffinityPolicy;
@@ -54,6 +55,7 @@ use super::memory_region::IbvMemoryRegionView;
 use super::memory_region::IbvRemoteMemoryRegionView;
 use super::mlx_device::MlxDevice;
 use super::primitives::IbvConfig;
+use super::primitives::IbvCq;
 use super::primitives::IbvQpInfo;
 use super::primitives::ibverbs_supported;
 use super::queue_pair::IbvQueuePair;
@@ -188,6 +190,10 @@ pub struct IbvManagerActor<I: IbvDeviceImpl> {
     /// Read once, when the manager starts.
     peer_device_affinity: PeerDeviceAffinityPolicy,
 
+    /// Completion pollers, keyed by device name when each device gets its own
+    /// poller and by the empty string when all devices share one.
+    cq_pollers: HashMap<String, ActorHandle<CompletionQueueActor<IbvCq>>>,
+
     config: IbvConfig,
 }
 
@@ -226,6 +232,10 @@ impl<I: IbvDeviceImpl> Drop for IbvManagerActor<I> {
         // own `Drop`.
         for (_key, handle) in self.qp_handles.drain() {
             let _ = handle.drain_and_stop("IbvManagerActor dropped");
+        }
+
+        for (_key, poller) in self.cq_pollers.drain() {
+            let _ = poller.drain_and_stop("IbvManagerActor dropped");
         }
 
         // The remaining fields (`peer_created_qps`, `devices`) free their FFI
@@ -282,6 +292,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             peer_created_qps: HashMap::new(),
             devices: HashMap::new(),
             peer_device_affinity: configured_peer_device_affinity()?,
+            cq_pollers: HashMap::new(),
             config,
         };
 
@@ -491,6 +502,23 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         Ok(local_info)
     }
 
+    /// Returns the poller for `device`, spawning it on first use.
+    fn ensure_cq_poller(
+        &mut self,
+        cx: &Context<'_, Self>,
+        device: &str,
+    ) -> ActorHandle<CompletionQueueActor<IbvCq>> {
+        let key = if hyperactor_config::global::get(crate::config::RDMA_CQ_POLLER_PER_DEVICE) {
+            device.to_owned()
+        } else {
+            String::new()
+        };
+        self.cq_pollers
+            .entry(key)
+            .or_insert_with(|| cx.spawn(CompletionQueueActor::new()))
+            .clone()
+    }
+
     /// Lazy active-side QP actor: if `qp_key` is absent from
     /// [`Self::qp_handles`], create an [`IbvQueuePair`] on the
     /// requested device and spawn a [`QueuePairActor`] to drive its
@@ -509,6 +537,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         }
         let self_device = qp_key.self_device.clone();
         let config = self.config.clone();
+        let cq_poller = self.ensure_cq_poller(cx, &self_device);
         let (qp, cq_lease) = self
             .get_or_create_device(&self_device)?
             .create_queue_pair(DEFAULT_DOMAIN, &config)
@@ -521,6 +550,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             local_manager,
             peer_manager,
             qp,
+            cq_poller,
             cq_lease,
             is_loopback,
             config.max_send_wr,
@@ -538,7 +568,7 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
         // Interleave MR resolution with QP dispatch: as soon as op `i`'s
         // local MRs are resolved and its QP actor is in place, ship a
         // one-item `ProcessOps` to that QP. The QP can then post and
-        // poll op `i` while we run `resolve_local_mrs` for op `i+1`.
+        // retire op `i` while we run `resolve_local_mrs` for op `i+1`.
         for (i, op) in ops.into_iter().enumerate() {
             let local_mrs = match self.resolve_local_mrs(&op.local_memory) {
                 Ok(mrs) => mrs,
