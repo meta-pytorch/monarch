@@ -375,7 +375,7 @@ impl RemoteSpawn for CudaRdmaActor {
             let mut prop: rdmaxcel_sys::CUmemAllocationProp = std::mem::zeroed();
             prop.type_ = rdmaxcel_sys::CU_MEM_ALLOCATION_TYPE_PINNED;
             prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
-            prop.location.id = device;
+            rdmaxcel_sys::rdmaxcel_set_mem_location_id(&mut prop.location, device);
             prop.allocFlags.gpuDirectRDMACapable = 1;
             prop.requestedHandleTypes = rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
 
@@ -421,7 +421,7 @@ impl RemoteSpawn for CudaRdmaActor {
             // set access
             let mut access_desc: rdmaxcel_sys::CUmemAccessDesc = std::mem::zeroed();
             access_desc.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
-            access_desc.location.id = device;
+            rdmaxcel_sys::rdmaxcel_set_mem_location_id(&mut access_desc.location, device);
             access_desc.flags = rdmaxcel_sys::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
             cu_check!(rdmaxcel_sys::rdmaxcel_cuMemSetAccess(
                 dptr,

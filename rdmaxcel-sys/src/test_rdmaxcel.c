@@ -10,7 +10,10 @@
 #include "rdmaxcel.h"
 
 int main() {
-  void* func_ptr = (void*)&cu_db_ring;
-  printf("cu_db_ring function address: %p\n", func_ptr);
+  // Reference the host launcher rather than the `cu_db_ring` kernel itself:
+  // CUDA 13 emits `__global__` host stubs with hidden visibility, so they are
+  // not linkable from another translation unit.
+  void* func_ptr = (void*)&launch_db_ring;
+  printf("launch_db_ring function address: %p\n", func_ptr);
   return 0;
 }
