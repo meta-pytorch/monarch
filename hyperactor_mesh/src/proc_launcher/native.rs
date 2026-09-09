@@ -155,7 +155,7 @@ impl NativeProcLauncher {
     /// - Otherwise returns a launcher error in the provided `kind`.
     ///
     /// Note: We signal the process *group* (negative PID) because the
-    /// child is started in its own process group via `setpgid(0, 0)`.
+    /// child is started in its own process group via `Command::process_group(0)`.
     /// This ensures we kill the entire process tree, including any
     /// sub-processes spawned by wrappers (e.g., shell scripts, python
     /// launchers).
@@ -344,20 +344,9 @@ impl ProcLauncher for NativeProcLauncher {
             cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
         }
 
-        // Put child in its own process group so we can kill the entire
-        // tree with kill(-pgid, ...).
-        //
-        // SAFETY: runs in the child between fork and exec. We must not
-        // allocate or do anything complex here.
-        unsafe {
-            cmd.pre_exec(|| {
-                // setpgid(0, 0) => make this process the leader of a new process group.
-                if libc::setpgid(0, 0) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+        // Put the child in its own process group so kill(-pgid, ...) reaches
+        // its entire process tree.
+        cmd.process_group(0);
 
         let started_at = std::time::SystemTime::now();
 
@@ -625,6 +614,10 @@ impl Drop for NativeProcLauncher {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    #[cfg(target_os = "linux")]
+    use std::sync::atomic::AtomicBool;
+    #[cfg(target_os = "linux")]
+    use std::sync::atomic::Ordering;
 
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
@@ -653,6 +646,14 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    static ATFORK_PREPARE_RAN: AtomicBool = AtomicBool::new(false);
+
+    #[cfg(target_os = "linux")]
+    extern "C" fn record_atfork_prepare() {
+        ATFORK_PREPARE_RAN.store(true, Ordering::SeqCst);
+    }
+
     /// Consume captured stdout/stderr pipes from
     /// `StdioHandling::Captured` and return their contents.
     async fn read_captured_lines(stdio: StdioHandling) -> (Vec<String>, Vec<u8>) {
@@ -676,6 +677,99 @@ mod tests {
     }
 
     // Tests
+
+    /// An absolute, unbound bootstrap command must not invoke `pthread_atfork`
+    /// handlers while spawning.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unbound_launch_does_not_invoke_atfork_handlers() {
+        // The marker is passed in argv, not the environment. argv always
+        // survives to the child, so a runner that sanitizes the environment
+        // cannot make the helper take the outer branch again and re-spawn
+        // itself without bound. libtest treats it as an extra `--exact`
+        // filter, which matches no test and is otherwise inert.
+        const HELPER_MARKER: &str = "__atfork_isolated_helper__";
+
+        if !std::env::args().any(|arg| arg == HELPER_MARKER) {
+            // `pthread_atfork` handlers cannot be unregistered, so run the
+            // assertion in a dedicated process rather than the shared test process.
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("current test executable"),
+            )
+            // `--exact` and single-threaded matter for correctness, not speed:
+            // a substring filter could match sibling tests, whose `/bin/sh`
+            // children would fork concurrently and set the process-global flag.
+            .arg("proc_launcher::native::tests::unbound_launch_does_not_invoke_atfork_handlers")
+            .arg(HELPER_MARKER)
+            .arg("--exact")
+            .arg("--test-threads=1")
+            .arg("--nocapture")
+            .output()
+            .expect("run isolated atfork helper test");
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "isolated atfork helper failed\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            );
+            // A filter matching nothing still exits 0, so require the helper to
+            // report an executed test or this assertion is silently vacuous.
+            assert!(
+                stdout.contains("1 passed"),
+                "isolated atfork helper ran no test; the filter matched nothing \
+                 (was the test renamed?)\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            );
+            return;
+        }
+
+        // SAFETY: the callback has the required C ABI and static lifetime.
+        let rc = unsafe { libc::pthread_atfork(Some(record_atfork_prepare), None, None) };
+        assert_eq!(rc, 0, "pthread_atfork registration failed: {rc}");
+        ATFORK_PREPARE_RAN.store(false, Ordering::SeqCst);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build helper runtime");
+        runtime.block_on(async {
+            let launcher = NativeProcLauncher::new();
+            let bootstrap = Bootstrap::Host {
+                addr: any_unix_addr(),
+                callback_addr: any_unix_addr(),
+                command: None,
+                config: None,
+                exit_on_shutdown: false,
+            };
+            let proc_id = test_proc_id("unbound-posix-spawn");
+            let opts = LaunchOptions {
+                command: with_sh("exit 0"),
+                bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
+                process_name: format_process_name(&proc_id),
+                want_stdio: false,
+                tail_lines: 0,
+                log_channel: None,
+                proc_bind: None,
+            };
+
+            let result = launcher.launch(&proc_id, opts).await.expect("launch");
+            let invoked_atfork = ATFORK_PREPARE_RAN.load(Ordering::SeqCst);
+            let exit = tokio::time::timeout(Duration::from_secs(2), result.exit_rx)
+                .await
+                .expect("timed out waiting for exit_rx")
+                .expect("exit_rx dropped");
+
+            assert!(
+                matches!(exit.kind, ProcExitKind::Exited { code: 0 }),
+                "helper child should exit 0, got {:?}",
+                exit.kind
+            );
+            assert!(
+                !invoked_atfork,
+                "unbound native launch invoked a pthread_atfork handler"
+            );
+        });
+    }
 
     /// Launch propagates bootstrap/diagnostic environment variables
     /// into the child.
