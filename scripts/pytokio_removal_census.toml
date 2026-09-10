@@ -548,7 +548,7 @@ owns = [
   "mr.actor.file",
   "np.actor.DroppingPort.resolve_and_send",
   "np.actor.LocalPort.resolve_and_send",
-  "np.bootstrap.run_worker_loop_forever",
+  "np.bootstrap.run_worker_loop",
   "np.lib.PyRdmaAction.submit",
   "np.lib.PyRdmaBuffer.drop",
   "np.pickle.PendingMessage.py_resolve"
@@ -2411,18 +2411,18 @@ oracle = [
 ]
 
 [[site]]
-id = "np.bootstrap.run_worker_loop_forever"
+id = "np.bootstrap.run_worker_loop"
 category = "native_producer"
 language = "rust"
 path = "fbcode/monarch/monarch_hyperactor/src/bootstrap.rs"
-symbol = "run_worker_loop_forever"
+symbol = "run_worker_loop"
 operation = "py_python_task_new"
 scope = "production"
 state = "legacy"
 transition = "6.2"
 constructor = "PyPythonTask"
-return_surface = "PyPythonTask returned from run_worker_loop_forever"
-consumer = "monarch._src.actor.bootstrap.run_worker_loop_forever, which calls block_on immediately after its argument checks; bootstrap_main is the child command captured during construction, not the consumer"
+return_surface = "PyPythonTask returned from the shared private helper run_worker_loop, surfaced to Python by both public wrappers: run_worker_loop_forever (exit_on_shutdown = true) and run_worker_loop_until_shutdown (exit_on_shutdown = false)"
+consumer = "monarch._src.actor.bootstrap.run_worker_loop_forever and monarch._src.actor.bootstrap.run_worker_loop_until_shutdown, each of which calls block_on immediately after its argument checks; bootstrap_main is the child command captured during construction, not the consumer"
 driver = "PythonTask.block_on consumes the task; on the Python main thread signal_safe_block_on spawns it onto the embedded runtime and blocks the caller while checking signals, while the non-main branch uses runtime.block_on"
 start_point = "source inspection places service-address parsing and child-command/environment capture in the call and host(...) in the returned task. The Rust ownership tests prove that a non-alias TCP host:fdN location calls listen and transfers its listener before return, while a TCP alias listens on and closes any nested fdN listener during parsing. The same parser handles non-alias tls, metatls, quic, and metaquic host:fdN locations"
 abandonment = "possible through the private native binding; the public wrapper offers no ordinary caller-controlled gap before block_on, while signal interruption follows the shared signal_safe_block_on policy"
