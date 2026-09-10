@@ -98,6 +98,7 @@ def test_batch_mode_invokes_in_allocation_runner(tmp_path, monkeypatch):
     # sbatch body is a single call to the runner with the (quoted) client command
     assert "-m monarch._src.job._slurm_batch" in script
     assert "--port 22222" in script
+    assert "--bind-to" not in script
     assert shlex.quote(client) in script
     assert "--nodes=2" in script
     # the shell stays dumb: worker srun + teardown now live in the runner
@@ -131,6 +132,28 @@ def test_external_controller_mode_has_no_client(tmp_path, monkeypatch):
     assert "MONARCH_BATCH_JOB" not in script
     assert f"export {SERVICE_PROC_IDS_ENV}=" in script
     assert not (tmp_path / ".monarch" / "job_state.pkl").exists()
+
+
+def test_external_controller_mode_uses_bind_alias(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with patch(
+        "monarch._src.job.slurm.subprocess.run", side_effect=_fake_sbatch
+    ) as mock:
+        _make_job(bind_to="0.0.0.0").apply()
+
+    script = _submitted_script(mock)
+    assert 'f"tcp://{socket.gethostname()}:22222@tcp://0.0.0.0:22222"' in script
+
+
+def test_batch_mode_passes_bind_to_to_runner(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with patch(
+        "monarch._src.job.slurm.subprocess.run", side_effect=_fake_sbatch
+    ) as mock:
+        _make_job(bind_to="0.0.0.0").apply(client_script="/venv/bin/python train.py")
+
+    script = _submitted_script(mock)
+    assert "--bind-to 0.0.0.0" in script
 
 
 def test_out_of_cluster_attaches_through_first_worker_before_meshes():
@@ -245,12 +268,51 @@ def test_worker_bootstrap_uses_preallocated_service_proc_id(monkeypatch):
         patch("socket.gethostname", return_value="worker-a"),
         patch("monarch.actor.run_worker_loop_forever") as run_worker,
     ):
-        exec(_slurm_batch._WORKER_BOOTSTRAP % 22222, {})
+        exec(_slurm_batch._worker_bootstrap(22222, None), {})
 
     run_worker.assert_called_once_with(
         address=f"{service_proc_ids[7]}@tcp://worker-a:22222",
         ca="trust_all_connections",
     )
+
+
+@pytest.mark.parametrize(
+    ("bind_to", "expected_bind_url"),
+    [
+        ("0.0.0.0", "tcp://0.0.0.0:22222"),
+        ("::", "tcp://[::]:22222"),
+    ],
+)
+def test_worker_bootstrap_uses_bind_alias(monkeypatch, bind_to, expected_bind_url):
+    service_proc_ids = SlurmJob._allocate_service_proc_ids(1)
+    monkeypatch.setenv(
+        SERVICE_PROC_IDS_ENV, serialize_service_proc_ids(service_proc_ids)
+    )
+    monkeypatch.setenv("SLURM_NODEID", "0")
+
+    with (
+        patch("socket.gethostname", return_value="worker-a"),
+        patch("monarch.actor.run_worker_loop_forever") as run_worker,
+    ):
+        exec(_slurm_batch._worker_bootstrap(22222, bind_to), {})
+
+    run_worker.assert_called_once_with(
+        address=(f"{service_proc_ids[0]}@tcp://worker-a:22222@{expected_bind_url}"),
+        ca="trust_all_connections",
+    )
+
+
+@pytest.mark.parametrize("bind_to", ["0.0.0.0:22222", "tcp://0.0.0.0", "worker"])
+def test_bind_to_rejects_values_that_are_not_ip_addresses(bind_to):
+    with pytest.raises(ValueError, match="without a port"):
+        _make_job(bind_to=bind_to)
+
+
+def test_can_run_compares_bind_to():
+    job = _make_job(bind_to="0.0.0.0")
+    with patch.object(job, "_jobs_active", return_value=True):
+        assert job.can_run(_make_job(bind_to="0.0.0.0"))
+        assert not job.can_run(_make_job(bind_to="127.0.0.1"))
 
 
 def test_state_pairs_controller_addresses_with_worker_service_proc_ids():

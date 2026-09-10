@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+import ipaddress
 import json
 import logging
 import os
@@ -19,7 +20,7 @@ from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._batch_env import in_batch_job
-from monarch._src.job._slurm_batch import _WORKER_BOOTSTRAP
+from monarch._src.job._slurm_batch import _worker_bootstrap
 from monarch._src.job.job import BatchJob, JobState, JobTrait
 from monarch._src.job.service_identity import (
     allocate_service_proc_ids,
@@ -76,6 +77,7 @@ class SlurmJob(JobTrait):
         qos: Optional[str] = None,
         out_of_cluster: bool = False,
         attach_to: Optional[str] = None,
+        bind_to: Optional[str] = None,
     ) -> None:
         """
         Args:
@@ -102,6 +104,10 @@ class SlurmJob(JobTrait):
             attach_to: ZMQ-style address of the worker gateway for out-of-cluster
                       access. When omitted in out-of-cluster mode, the first
                       allocated worker's Monarch address is used.
+            bind_to: Optional IP address on which workers listen, without a port.
+                      When set, workers advertise their Slurm hostname while
+                      binding this address through the ``dial_to@bind_to`` alias
+                      format. The bind address uses ``monarch_port``.
         """
         configure(default_transport=ChannelTransport.TcpWithHostname)
         self._meshes = meshes
@@ -122,6 +128,14 @@ class SlurmJob(JobTrait):
         self._qos = qos
         self._out_of_cluster = out_of_cluster
         self._attach_to = attach_to
+        try:
+            self._bind_to = (
+                str(ipaddress.ip_address(bind_to)) if bind_to is not None else None
+            )
+        except ValueError as error:
+            raise ValueError(
+                "bind_to must be an IPv4 or IPv6 address without a port"
+            ) from error
         # Track the single SLURM job ID and all allocated hostnames
         self._slurm_job_id: Optional[str] = None
         self._all_hostnames: List[str] = []
@@ -139,6 +153,8 @@ class SlurmJob(JobTrait):
         # address remote workers can dial back, instead of an abstract unix
         # socket whose namespace is local to the original (head) node.
         self.__dict__.update(state)
+        if "_bind_to" not in state:
+            self._bind_to = None
         # Attachment belongs to this process's global client context, not the
         # serialized job state.
         self._client_attached_to = None
@@ -273,16 +289,21 @@ class SlurmJob(JobTrait):
         )
         if client_script is None:
             # Workers only; an external controller attaches and manages the
-            # lifetime. Shares _WORKER_BOOTSTRAP with the batch runner.
-            worker_cmd = _WORKER_BOOTSTRAP % self._port
+            # lifetime. Shares worker bootstrap generation with the batch runner.
+            worker_cmd = _worker_bootstrap(self._port, self._bind_to)
             batch_script += f"\nsrun {self._python_exe} -c '{worker_cmd}'\n"
         else:
             # Batch mode: the in-allocation runner seeds the workers, runs the
             # client (MONARCH_BATCH_JOB=1 so its cached BatchJob reconnects to
             # this allocation), and tears the workers down in a finally.
+            bind_to_arg = (
+                f" --bind-to {shlex.quote(self._bind_to)}"
+                if self._bind_to is not None
+                else ""
+            )
             batch_script += (
                 f"\n{self._python_exe} -m monarch._src.job._slurm_batch "
-                f"--port {self._port} {shlex.quote(client_script)}\n"
+                f"--port {self._port}{bind_to_arg} {shlex.quote(client_script)}\n"
             )
 
         logger.info(f"Submitting SLURM job with {num_nodes} nodes")
@@ -464,6 +485,7 @@ class SlurmJob(JobTrait):
             and spec._qos == self._qos
             and spec._out_of_cluster == self._out_of_cluster
             and spec._attach_to == self._attach_to
+            and spec._bind_to == self._bind_to
             and self._jobs_active()
         )
 

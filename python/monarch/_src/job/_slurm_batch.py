@@ -20,6 +20,7 @@ When this process exits the allocation is freed with the client's exit status.
 """
 
 import argparse
+import ipaddress
 import os
 import shlex
 import subprocess
@@ -29,20 +30,30 @@ from typing import List, Optional
 from monarch._src.job._batch_env import MONARCH_BATCH_JOB_ENV
 
 
-# Bootstraps one monarch worker bound to this node's hostname. Passed as python
-# ``-c`` argv (no shell), so quoting inside is irrelevant.
+# Bootstraps one Monarch worker that advertises this node's hostname. Passed as
+# Python ``-c`` argv (no shell), so quoting inside is irrelevant.
 _WORKER_BOOTSTRAP: str = (
     "import os, socket; from monarch.actor import run_worker_loop_forever; "
     "from monarch._src.job.service_identity import service_proc_addr, ranked_service_proc_id_from_env; "
-    'run_worker_loop_forever(address=service_proc_addr(f"tcp://{socket.gethostname()}:%d", '
+    'run_worker_loop_forever(address=service_proc_addr(f"%s", '
     'ranked_service_proc_id_from_env(rank_env="SLURM_NODEID")), '
     'ca="trust_all_connections")'
 )
 
 
+def _worker_bootstrap(port: int, bind_to: Optional[str]) -> str:
+    address = f"tcp://{{socket.gethostname()}}:{port}"
+    if bind_to is not None:
+        bind_ip = ipaddress.ip_address(bind_to)
+        bind_host = f"[{bind_ip}]" if bind_ip.version == 6 else str(bind_ip)
+        address += f"@tcp://{bind_host}:{port}"
+    return _WORKER_BOOTSTRAP % address
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(prog="monarch._src.job._slurm_batch")
     parser.add_argument("--port", type=int, default=22222)
+    parser.add_argument("--bind-to")
     parser.add_argument("client", help="client command to run inside the allocation")
     args = parser.parse_args(argv)
 
@@ -54,7 +65,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             "--ntasks-per-node=1",
             sys.executable,
             "-c",
-            _WORKER_BOOTSTRAP % args.port,
+            _worker_bootstrap(args.port, args.bind_to),
         ]
     )
     try:
