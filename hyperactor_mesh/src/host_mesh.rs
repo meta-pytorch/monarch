@@ -72,6 +72,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hyperactor::ActorAddr;
+use hyperactor::ActorId;
 use hyperactor::ProcAddr;
 use hyperactor::ProcId;
 use hyperactor::channel::ChannelAddr;
@@ -1739,15 +1740,38 @@ impl HostMeshRef {
     }
 }
 
-/// An ordered set of host entries, deduplicated by `HostAgent` `ActorAddr`
-/// in first-seen order.
+/// A key that identifies a host agent independently of its advertised location.
 ///
-/// Insertion is idempotent by construction — SA-3 (dedup by ActorAddr)
+/// Legacy service pseudo-singletons still require their location because their
+/// actor IDs are shared by every host.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum HostAgentKey {
+    /// A host agent with a globally unique actor ID.
+    Id(ActorId),
+    /// A legacy host agent whose location disambiguates its singleton ID.
+    Legacy(ActorAddr),
+}
+
+impl HostAgentKey {
+    /// Construct the identity key for a host-agent address.
+    pub(crate) fn new(addr: &ActorAddr) -> Self {
+        if addr.proc_id() == &legacy_service_proc_id() {
+            Self::Legacy(addr.clone())
+        } else {
+            Self::Id(addr.id().clone())
+        }
+    }
+}
+
+/// An ordered set of host entries, deduplicated by host-agent identity in
+/// first-seen order.
+///
+/// Insertion is idempotent by construction — SA-3 (dedup by identity)
 /// is a property of this type, not a comment on careful control flow.
 /// First-seen order is preserved: the first occurrence of a given
-/// ActorAddr wins; subsequent duplicates are silently dropped.
+/// identity wins; subsequent duplicates are silently dropped.
 struct HostSet {
-    seen: HashSet<ActorAddr>,
+    seen: HashSet<HostAgentKey>,
     entries: Vec<(String, ActorRef<HostAgent>)>,
 }
 
@@ -1759,10 +1783,10 @@ impl HostSet {
         }
     }
 
-    /// Insert a host entry. No-op if `ActorAddr` already present (SA-3).
+    /// Insert a host entry. No-op if its identity is already present (SA-3).
     /// First-seen order is preserved.
     fn insert(&mut self, addr: String, agent_ref: ActorRef<HostAgent>) {
-        if self.seen.insert(agent_ref.actor_addr().clone()) {
+        if self.seen.insert(HostAgentKey::new(agent_ref.actor_addr())) {
             self.entries.push((addr, agent_ref));
         }
     }
@@ -1779,9 +1803,8 @@ impl HostSet {
     }
 }
 
-/// Ordered union of hosts from meshes and optional client host
-/// entries, deduplicated by `HostAgent` `ActorAddr` in first-seen
-/// order.
+/// Ordered union of hosts from meshes and optional client host entries,
+/// deduplicated by host-agent identity in first-seen order.
 ///
 /// SA-3 dedup and SA-6 client-host merge are structural properties
 /// of [`HostSet`], not invariants on this function's control flow.
@@ -2591,7 +2614,7 @@ mod tests {
     }
 
     /// SA-3: `HostSet::insert` is idempotent — inserting the same
-    /// `ActorAddr` twice does not add a duplicate entry, and first-seen
+    /// host identity twice does not add a duplicate entry, and first-seen
     /// order is preserved. This is a structural property of `HostSet`,
     /// not an invariant on `aggregate_hosts` control flow.
     #[test]
@@ -2612,7 +2635,7 @@ mod tests {
         assert_eq!(
             result.len(),
             2,
-            "SA-3: duplicate ActorAddr must not add entry"
+            "SA-3: duplicate host identity must not add entry"
         );
         assert_eq!(
             result[0].0,

@@ -106,9 +106,9 @@ impl _Controller {
         let proc_mesh = py_proc_mesh.cast::<PyProcMesh>()?.borrow().mesh_ref()?;
 
         // Build rank map from proc ids to ranks.
-        let rank_map: HashMap<reference::ProcAddr, usize> = proc_mesh
+        let rank_map: HashMap<reference::ProcId, usize> = proc_mesh
             .iter()
-            .map(|(point, proc)| (proc.proc_addr().clone(), point.rank()))
+            .map(|(point, proc)| (proc.proc_addr().id().clone(), point.rank()))
             .collect();
 
         let region = Ranked::region(&proc_mesh);
@@ -736,13 +736,13 @@ struct MeshControllerActor {
     id: usize,
     debugger_active: Option<reference::ActorRef<DebuggerActor>>,
     debugger_paused: VecDeque<reference::ActorRef<DebuggerActor>>,
-    rank_map: HashMap<reference::ProcAddr, usize>,
+    rank_map: HashMap<reference::ProcId, usize>,
 }
 
 struct MeshControllerActorParams {
     proc_mesh_ref: ProcMeshRef,
     id: usize,
-    rank_map: HashMap<reference::ProcAddr, usize>,
+    rank_map: HashMap<reference::ProcId, usize>,
 }
 
 impl MeshControllerActor {
@@ -960,7 +960,7 @@ impl MeshControllerActor {
     fn rank_of_worker(&self, actor_id: &reference::ActorAddr) -> usize {
         *self
             .rank_map
-            .get(&actor_id.proc_addr())
+            .get(actor_id.proc_id())
             .expect("rank map should contain worker")
     }
 }
