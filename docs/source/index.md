@@ -69,8 +69,8 @@ actors
 
 Monarch is BSD-3 licensed, as found in the [LICENSE](https://github.com/meta-pytorch/monarch/blob/main/LICENSE) file.
 
-* `Terms of Use <https://opensource.fb.com/legal/terms>`_
-* `Privacy Policy <https://opensource.fb.com/legal/privacy>`_
+* [Terms of Use](https://opensource.fb.com/legal/terms)
+* [Privacy Policy](https://opensource.fb.com/legal/privacy)
 
 ## Community
 
