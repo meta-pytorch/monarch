@@ -13,6 +13,7 @@ from typing import Literal, Optional, Sequence, Union
 from monarch._rust_bindings.monarch_hyperactor.bootstrap import (
     attach_to_workers as _attach_to_workers,
     run_worker_loop_forever as _run_worker_loop_forever,
+    run_worker_loop_until_shutdown as _run_worker_loop_until_shutdown,
 )
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import HostMesh as HyHostMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
@@ -35,6 +36,20 @@ def _as_python_task(s: str | Future[str]) -> "PythonTask[str]":
         return PythonTask.from_coroutine(just())
     else:
         return s._take_inner()
+
+
+def _validate_worker_loop_args(
+    *,
+    private_key: PrivateKey,
+    ca: CA,
+    address: str,
+) -> None:
+    if private_key is not None or ca != "trust_all_connections":
+        raise NotImplementedError("TLS security plumbing")
+    if "tcp://*" in address:
+        raise NotImplementedError(
+            "implementation does not get the host name right if it was specified as a wild card. We have to fix this"
+        )
 
 
 def run_worker_loop_forever(
@@ -95,16 +110,26 @@ def run_worker_loop_forever(
     is going to worry about worker machines opening unencrypted ports and waiting for connections
     on a service that evals python code, so we should just build it in.
     """
-    if private_key is not None or ca != "trust_all_connections":
-        raise NotImplementedError("TLS security plumbing")
+    _validate_worker_loop_args(private_key=private_key, ca=ca, address=address)
     # we maybe want to actually return the future and let you do other stuff,
     # not sure ...
-    if "tcp://*" in address:
-        raise NotImplementedError(
-            "implementation does not get the host name right if it was specified as a wild card. We have to fix this"
-        )
-
     _run_worker_loop_forever(address).block_on()
+
+
+def run_worker_loop_until_shutdown(
+    *,
+    private_key: PrivateKey = None,
+    ca: CA,
+    address: str,
+) -> None:
+    """Run a worker server until its owning ``HostMesh`` shuts it down.
+
+    This variant returns after the host drain protocol completes instead of
+    terminating the process. Address and security arguments have the same
+    meaning as in :func:`run_worker_loop_forever`.
+    """
+    _validate_worker_loop_args(private_key=private_key, ca=ca, address=address)
+    _run_worker_loop_until_shutdown(address).block_on()
 
 
 def attach_to_workers(

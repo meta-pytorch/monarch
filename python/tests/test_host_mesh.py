@@ -10,6 +10,7 @@ import asyncio
 import os
 import pathlib
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -19,8 +20,8 @@ import textwrap
 import threading
 import time
 import weakref
-from contextlib import ExitStack
-from typing import Any, cast, Dict, Generator, List, Optional, Set
+from contextlib import ExitStack, suppress
+from typing import Any, cast, Dict, Generator, IO, List, Optional, Set
 from unittest.mock import patch
 
 import cloudpickle
@@ -34,7 +35,13 @@ from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId, Uid
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Point, Shape, Slice
-from monarch._src.actor.actor_mesh import _client_context, Actor, attach, context
+from monarch._src.actor.actor_mesh import (
+    _client_context,
+    Actor,
+    attach,
+    context,
+    shutdown_context,
+)
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
@@ -579,6 +586,82 @@ def test_shutdown_waits_for_a_pending_proc_spawn_after_caller_drops_mesh() -> No
                 match="HostMesh has already been shut down",
             ):
                 hm.spawn_procs()
+
+
+def _spawn_embedded_worker(addr: str, child_output: IO[str]) -> "subprocess.Popen[str]":
+    env = {**os.environ}
+    if "FB_XAR_INVOKED_NAME" in os.environ:
+        env["PYTHONPATH"] = ":".join(sys.path)
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "from monarch.actor import run_worker_loop_until_shutdown; "
+            f"run_worker_loop_until_shutdown(address={addr!r}, "
+            'ca="trust_all_connections"); print("RETURNED", flush=True)',
+        ],
+        env=env,
+        stdout=child_output,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+
+
+def _reap_embedded_worker(child: "subprocess.Popen[str]", *, body_failed: bool) -> None:
+    """Tear the worker down without masking a failure from the test body.
+
+    Only raises on an otherwise-clean run; `body_failed` is passed in rather
+    than inferred from `sys.exc_info()`, which reports the currently *handled*
+    exception and can belong to an enclosing frame.
+    """
+    cleanup_failures: List[Exception] = []
+    try:
+        shutdown_context().get()
+    except Exception as e:
+        cleanup_failures.append(e)
+    if child.poll() is None:
+        with suppress(ProcessLookupError):
+            os.killpg(child.pid, signal.SIGKILL)
+        try:
+            child.wait(timeout=10.0)
+        except subprocess.TimeoutExpired as e:
+            cleanup_failures.append(e)
+    if cleanup_failures and not body_failed:
+        raise ExceptionGroup("embedded worker cleanup failed", cleanup_failures)
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_embedded_worker_loop_returns_after_host_shutdown() -> None:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    addr = f"{new_service_proc_id()}@tcp://127.0.0.1:{port}"
+    with tempfile.TemporaryFile(mode="w+t") as child_output:
+        child = _spawn_embedded_worker(addr, child_output)
+
+        def read_child_output() -> str:
+            child_output.seek(0)
+            return child_output.read()
+
+        body_failed = False
+        try:
+            hosts = attach_to_workers(ca="trust_all_connections", workers=[addr])
+            hosts.initialized.get()
+            hosts.shutdown().get()
+            child.wait(timeout=20)
+        except BaseException as e:
+            body_failed = True
+            e.add_note(f"embedded worker output:\n{read_child_output()}")
+            raise
+        finally:
+            _reap_embedded_worker(child, body_failed=body_failed)
+
+        output = read_child_output()
+        assert child.returncode == 0, f"embedded worker failed:\n{output}"
+        assert "RETURNED" in output
 
 
 @pytest.mark.timeout(60)

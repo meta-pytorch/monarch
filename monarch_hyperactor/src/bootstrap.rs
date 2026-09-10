@@ -15,7 +15,6 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor::id::Label;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap::bootstrap;
-use hyperactor_mesh::bootstrap::halt;
 use hyperactor_mesh::bootstrap::host;
 use hyperactor_mesh::host_mesh::HostMesh;
 use hyperactor_mesh::mesh_id::HostMeshId;
@@ -120,8 +119,7 @@ pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
     })
 }
 
-#[pyfunction]
-pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPythonTask> {
+fn run_worker_loop(address: &str, exit_on_shutdown: bool) -> PyResult<PyPythonTask> {
     let (service_proc_addr, listener) = parse_service_proc_addr_for_serve(address)
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
     // Check if we're running in a PAR/XAR build by looking for FB_XAR_INVOKED_NAME environment variable
@@ -175,17 +173,32 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
             service_proc_addr,
             command,
             None,
-            true,
+            exit_on_shutdown,
             listener,
             Gateway::new(),
             None,
         )
         .await
         .map_pyerr()?;
+        // No halt() here: `host` was given the same `exit_on_shutdown`, so
+        // `DrainedHostShutdown::stop_and_join` already calls
+        // `std::process::exit(0)` when it is true. Anything after this line
+        // only runs on the embedded (`exit_on_shutdown == false`) path.
         shutdown.stop_and_join().await;
-        halt::<()>().await;
         Ok(())
     })
+}
+
+/// Run a worker loop that halts the process after host shutdown.
+#[pyfunction]
+pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPythonTask> {
+    run_worker_loop(address, true)
+}
+
+/// Run an embedded worker loop that returns after host shutdown.
+#[pyfunction]
+pub fn run_worker_loop_until_shutdown(_py: Python<'_>, address: &str) -> PyResult<PyPythonTask> {
+    run_worker_loop(address, false)
 }
 
 #[pyfunction]
@@ -238,6 +251,13 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_function(f)?;
 
     let f = wrap_pyfunction!(run_worker_loop_forever, hyperactor_mod)?;
+    f.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.bootstrap",
+    )?;
+    hyperactor_mod.add_function(f)?;
+
+    let f = wrap_pyfunction!(run_worker_loop_until_shutdown, hyperactor_mod)?;
     f.setattr(
         "__module__",
         "monarch._rust_bindings.monarch_hyperactor.bootstrap",

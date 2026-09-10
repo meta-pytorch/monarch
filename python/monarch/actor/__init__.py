@@ -35,7 +35,11 @@ from monarch._src.actor.actor_mesh import (
     shutdown_context,
     ValueMesh,
 )
-from monarch._src.actor.bootstrap import attach_to_workers, run_worker_loop_forever
+from monarch._src.actor.bootstrap import (
+    attach_to_workers,
+    run_worker_loop_forever,
+    run_worker_loop_until_shutdown,
+)
 from monarch._src.actor.debugger.debug_controller import debug_controller
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
@@ -80,6 +84,7 @@ __all__ = [
     "Endpoint",
     "Extent",
     "run_worker_loop_forever",
+    "run_worker_loop_until_shutdown",
     "attach_to_workers",
     "attach",
     "enable_transport",
