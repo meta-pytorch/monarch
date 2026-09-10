@@ -1026,7 +1026,9 @@ def test_fm_exception_identity_preserves_object(make_observable):
 
 
 @pytest.mark.parametrize("make_gated", GATED_TARGETS)
-def test_fm_timeout_then_success_is_non_cancelling(make_gated):
+def test_fm_timeout_then_success_is_non_cancelling(
+    make_gated: "Callable[[], tuple[Any, Any]]",
+) -> None:
     """A timed-out get() leaves the producer running, so a later observer still
     sees the value."""
     _assert_timeout_then_success(make_gated)
