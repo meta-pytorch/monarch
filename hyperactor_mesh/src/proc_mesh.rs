@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hyperactor::ActorAddr;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
@@ -518,16 +519,14 @@ impl ProcMeshRef {
             self.proc_agent_mesh.cast(cx, get_state)?;
         }
         let expected = self.ranks.len();
-        // Map each managed-actor `ActorAddr` to its rank in *this* (current)
-        // view, so a reply is positioned by the current view rather than the
-        // payload's historical `create_rank` (a reused singleton's `create_rank`
-        // is its rank in the view it was first spawned over). Built once per
-        // query: O(N) to build, O(1) per reply.
-        let rank_of_actor: HashMap<ActorAddr, usize> = self
+        // Map each managed actor's identity to its rank in *this* (current)
+        // view. Locations may differ between the controller and worker, while
+        // `create_rank` is relative to the view where the actor was first spawned.
+        let rank_of_actor: HashMap<ActorId, usize> = self
             .ranks
             .iter()
             .enumerate()
-            .map(|(rank, proc_ref)| (proc_ref.actor_addr(&id), rank))
+            .map(|(rank, proc_ref)| (proc_ref.actor_addr(&id).id().clone(), rank))
             .collect();
         let mut states = Vec::with_capacity(expected);
         let timeout = hyperactor_config::global::get(GET_ACTOR_STATE_MAX_IDLE);
@@ -545,7 +544,7 @@ impl ProcMeshRef {
                     Some(ref inner) => {
                         // Position by this actor's rank in the current view, not
                         // its historical `create_rank`.
-                        let rank = *rank_of_actor.get(&inner.actor_id).ok_or_else(|| {
+                        let rank = *rank_of_actor.get(inner.actor_id.id()).ok_or_else(|| {
                             anyhow::anyhow!(
                                 "state reply from {} is not a member of the queried view",
                                 inner.actor_id,
@@ -1395,6 +1394,12 @@ mod tests {
     #[cfg(fbcode_build)]
     use std::collections::HashSet;
     #[cfg(fbcode_build)]
+    use std::net::IpAddr;
+    #[cfg(fbcode_build)]
+    use std::net::Ipv4Addr;
+    #[cfg(fbcode_build)]
+    use std::net::SocketAddr;
+    #[cfg(fbcode_build)]
     use std::ops::Deref;
     #[cfg(fbcode_build)]
     use std::time::Duration;
@@ -1402,9 +1407,17 @@ mod tests {
     #[cfg(fbcode_build)]
     use hyperactor::ActorEnvironment;
     #[cfg(fbcode_build)]
+    use hyperactor::ActorRef;
+    #[cfg(fbcode_build)]
     use hyperactor::Instance;
     #[cfg(fbcode_build)]
+    use hyperactor::ProcAddr;
+    #[cfg(fbcode_build)]
     use hyperactor::accum::StreamingReducerOpts;
+    #[cfg(fbcode_build)]
+    use hyperactor::channel::BindSpec;
+    #[cfg(fbcode_build)]
+    use hyperactor::channel::ChannelAddr;
     #[cfg(fbcode_build)]
     use hyperactor::context::Mailbox;
     #[cfg(fbcode_build)]
@@ -1425,15 +1438,27 @@ mod tests {
     #[cfg(fbcode_build)]
     use super::ACTOR_SPAWN_MAX_IDLE;
     #[cfg(fbcode_build)]
+    use super::ProcMeshRef;
+    #[cfg(fbcode_build)]
+    use super::ProcRef;
+    #[cfg(fbcode_build)]
     use super::USE_DIRECT_SPAWN;
     #[cfg(fbcode_build)]
     use crate::ActorMesh;
     #[cfg(fbcode_build)]
     use crate::casting::CAST_POINT;
     #[cfg(fbcode_build)]
+    use crate::host_mesh::HostMesh;
+    #[cfg(fbcode_build)]
     use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
     #[cfg(fbcode_build)]
     use crate::mesh_id::ActorMeshId;
+    #[cfg(fbcode_build)]
+    use crate::mesh_id::ProcMeshId;
+    #[cfg(fbcode_build)]
+    use crate::proc_agent::PROC_AGENT_ACTOR_NAME;
+    #[cfg(fbcode_build)]
+    use crate::proc_agent::ProcAgent;
     #[cfg(fbcode_build)]
     use crate::resource::RankedValues;
     #[cfg(fbcode_build)]
@@ -1442,6 +1467,8 @@ mod tests {
     use crate::testactor;
     #[cfg(fbcode_build)]
     use crate::testing;
+    #[cfg(fbcode_build)]
+    use crate::transport::DEFAULT_TRANSPORT;
 
     #[cfg(fbcode_build)]
     async fn execute_spawn_actor() {
@@ -1891,6 +1918,94 @@ mod tests {
         hm.shutdown(instance)
             .await
             .expect("host mesh shutdown should complete");
+    }
+
+    /// Actor-state replies match the queried view when the controller carries
+    /// an IPv4 location and the worker reports IPv6 for the same actor identity.
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn test_actor_states_matches_actor_identity_across_ipv4_and_ipv6() {
+        let instance = testing::instance();
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(
+            DEFAULT_TRANSPORT,
+            BindSpec::Addr(ChannelAddr::Tcp("[::1]:0".parse().unwrap())),
+        );
+        let mut host_mesh = HostMesh::local().await.unwrap();
+        let mut worker_mesh = host_mesh
+            .spawn(
+                instance,
+                "location_mismatch_worker",
+                extent!(gpus = 1),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let worker_proc_addr = worker_mesh.get(0).unwrap().proc_addr().clone();
+        let ChannelAddr::Tcp(worker_socket_addr) = worker_proc_addr.addr() else {
+            panic!("worker proc must use TCP")
+        };
+        assert!(worker_socket_addr.is_ipv6(), "worker must use IPv6");
+        let proc_agent: ActorRef<ProcAgent> =
+            ActorRef::attest(worker_proc_addr.actor_addr(PROC_AGENT_ACTOR_NAME).clone());
+        let controller_proc_addr = ProcAddr::new(
+            worker_proc_addr.id().clone(),
+            ChannelAddr::Tcp(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                worker_socket_addr.port(),
+            ))
+            .into(),
+        );
+        let controller_view = ProcMeshRef::new_singleton(
+            ProcMeshId::singleton(Label::strip("location_mismatch_view")),
+            ProcRef::new(controller_proc_addr, 0, proc_agent),
+        )
+        .unwrap();
+
+        let actor_mesh = controller_view
+            .spawn_controllerless_service::<testactor::TestActor, _>(
+                instance,
+                "location_mismatch_actor",
+                &(),
+            )
+            .await
+            .unwrap();
+        let expected_actor = actor_mesh.get(0).unwrap().actor_addr();
+        let states = controller_view
+            .actor_states(instance, actor_mesh.id().unwrap().clone())
+            .await
+            .unwrap();
+        let reported_actor = &states
+            .get(0)
+            .and_then(|state| state.state.as_ref())
+            .unwrap()
+            .actor_id;
+
+        assert_ne!(
+            reported_actor, expected_actor,
+            "IPv6 worker and IPv4 controller addresses must differ",
+        );
+        assert_eq!(
+            reported_actor.id(),
+            expected_actor.id(),
+            "worker and controller addresses must identify the same actor",
+        );
+        assert!(
+            matches!(reported_actor.addr(), ChannelAddr::Tcp(addr) if addr.is_ipv6()),
+            "worker must report an IPv6 location",
+        );
+        assert!(
+            matches!(expected_actor.addr(), ChannelAddr::Tcp(addr) if addr.is_ipv4()),
+            "controller must retain an IPv4 location",
+        );
+
+        worker_mesh
+            .stop(instance, "test complete".to_string())
+            .await
+            .unwrap();
+        host_mesh.shutdown(instance).await.unwrap();
     }
 
     #[async_timed_test(timeout_secs = 120)]
