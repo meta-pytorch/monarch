@@ -386,6 +386,7 @@ use typeuri::Named;
 
 use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
+use crate::host_mesh::HostAgentKey;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::introspect::NodePayload;
@@ -680,16 +681,16 @@ pub struct MeshAdminAgent {
     /// fan out our target admin queries.
     hosts: HashMap<String, ActorRef<HostAgent>>,
 
-    /// Reverse index: `HostAgent` `ActorAddr` → host address
+    /// Reverse index: `HostAgent` identity → host address
     /// string.
     ///
     /// The host agent itself is an actor that can appear in multiple
     /// places (e.g., as a host node and as a child actor under a
     /// system proc). This index lets reference resolution treat that
-    /// `ActorAddr` as a *Host* node (via `resolve_host_node`) rather
+    /// identity as a *Host* node (via `resolve_host_node`) rather
     /// than a generic *Actor* node, avoiding cycles / dropped nodes
     /// in clients like the TUI.
-    host_agents_by_actor_id: HashMap<hyperactor::ActorAddr, String>,
+    host_agents_by_identity: HashMap<HostAgentKey, String>,
 
     /// `ActorAddr` of the process-global root client (`client[0]` on
     /// the singleton Host's `local_proc`), exposed as a first-class
@@ -748,8 +749,8 @@ impl MeshAdminAgent {
     /// Builds both:
     /// - `hosts`: the forward map used to route admin queries to the
     ///   correct `HostAgent`, and
-    /// - `host_agents_by_actor_id`: a reverse index used during
-    ///   reference resolution to recognize host-agent `ActorAddr`s and
+    /// - `host_agents_by_identity`: a reverse index used during
+    ///   reference resolution to recognize host-agent identities and
     ///   resolve them as `NodeProperties::Host` rather than as
     ///   generic actors.
     ///
@@ -765,9 +766,9 @@ impl MeshAdminAgent {
         admin_addr: Option<std::net::SocketAddr>,
         telemetry_url: Option<String>,
     ) -> Self {
-        let host_agents_by_actor_id: HashMap<hyperactor::ActorAddr, String> = hosts
+        let host_agents_by_identity: HashMap<HostAgentKey, String> = hosts
             .iter()
-            .map(|(addr, agent_ref)| (agent_ref.actor_addr().clone(), addr.clone()))
+            .map(|(addr, agent_ref)| (HostAgentKey::new(agent_ref.actor_addr()), addr.clone()))
             .collect();
 
         // Capture start time and username
@@ -778,7 +779,7 @@ impl MeshAdminAgent {
 
         Self {
             hosts: hosts.into_iter().collect(),
-            host_agents_by_actor_id,
+            host_agents_by_identity,
             root_client_actor_id,
             self_actor_id: None,
             admin_addr_override: admin_addr,
@@ -795,7 +796,7 @@ impl std::fmt::Debug for MeshAdminAgent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MeshAdminAgent")
             .field("hosts", &self.hosts.keys().collect::<Vec<_>>())
-            .field("host_agents", &self.host_agents_by_actor_id.len())
+            .field("host_agents", &self.host_agents_by_identity.len())
             .field("root_client_actor_id", &self.root_client_actor_id)
             .field("self_actor_id", &self.self_actor_id)
             .field("admin_addr", &self.admin_addr)
@@ -860,7 +861,7 @@ struct BridgeState {
     /// reference resolution.
     admin_ref: ActorRef<MeshAdminAgent>,
     /// Exact actor identities of the HostAgents managed by this admin.
-    host_agents: HashSet<hyperactor::ActorAddr>,
+    host_agents: HashSet<HostAgentKey>,
     /// Dedicated client mailbox on system_proc for HTTP bridge reply
     /// ports. Using a separate `Instance<()>` avoids sharing the
     /// actor's own mailbox with the HTTP bridge and ensures the
@@ -1056,7 +1057,7 @@ impl Actor for MeshAdminAgent {
             mesh_admin_access_instructions(&admin_url, tls.as_ref().map(|(_, bundle)| bundle));
         let bridge_state = Arc::new(BridgeState {
             admin_ref: ActorRef::attest(this.self_addr().clone()),
-            host_agents: self.host_agents_by_actor_id.keys().cloned().collect(),
+            host_agents: self.host_agents_by_identity.keys().cloned().collect(),
             bridge_cx,
             resolve_semaphore: tokio::sync::Semaphore::new(hyperactor_config::global::get(
                 crate::config::MESH_ADMIN_MAX_CONCURRENT_RESOLVES,
@@ -2324,12 +2325,12 @@ impl ResolvedProcHandler {
 /// minting point. Used by `config_bridge` which intentionally skips
 /// the probe (CFG-4).
 fn route_proc_handler(
-    host_agents: &HashSet<hyperactor::ActorAddr>,
+    host_agents: &HashSet<HostAgentKey>,
     raw_proc_reference: &str,
 ) -> Result<ResolvedProcHandler, ApiError> {
     let (_proc_reference, proc_id) = parse_proc_reference(raw_proc_reference)?;
     let host_agent_id = proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME);
-    if host_agents.contains(&host_agent_id) {
+    if host_agents.contains(&HostAgentKey::new(&host_agent_id)) {
         return Ok(ResolvedProcHandler::Host(ActorRef::attest(host_agent_id)));
     }
 
@@ -4593,7 +4594,9 @@ mod tests {
     fn route_proc_handler_service_proc_yields_host() {
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
         let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Tcp(addr), SERVICE_PROC_NAME);
-        let host_agents = HashSet::from([proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME)]);
+        let host_agents = HashSet::from([HostAgentKey::new(
+            &proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME),
+        )]);
         let handler = route_proc_handler(&host_agents, &proc_id.to_string()).unwrap();
         assert!(
             matches!(handler, ResolvedProcHandler::Host(_)),
@@ -4621,7 +4624,9 @@ mod tests {
             ProcId::instance(Label::strip("host-control")),
             ChannelAddr::Tcp(addr).into(),
         );
-        let host_agents = HashSet::from([proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME)]);
+        let host_agents = HashSet::from([HostAgentKey::new(
+            &proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME),
+        )]);
         let handler = route_proc_handler(&host_agents, &proc_id.to_string()).unwrap();
         assert!(
             matches!(handler, ResolvedProcHandler::Host(_)),
