@@ -45,6 +45,11 @@ jobs:
           setup_cuda_environment
         elif [[ "${{ matrix.gpu-arch-type }}" == "rocm" ]]; then
           setup_rocm_environment
+          # Enable torch preload so the test worker's own RDMA HIP calls win the
+          # rocprofiler-register race (hip.cpp:512 "hipApiName ..."). conftest.py
+          # scopes it back OFF for non-RDMA tests so their spawned procs don't pay
+          # the ~10s torch import. See monarch/__init__.py + python/tests/conftest.py.
+          export MONARCH_PRELOAD_TORCH=1
         fi
 
         # Install torch nightly before installing the wheel,
