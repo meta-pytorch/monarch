@@ -18,14 +18,17 @@ use std::mem::take;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use backoff::ExponentialBackoffBuilder;
 use backoff::backoff::Backoff;
 use dashmap::DashSet;
 use hyperactor_config::Flattrs;
+use hyperactor_config::NonZeroUsize;
 use hyperactor_config::attrs::OPERATION_CONTEXT_HEADER;
 use hyperactor_config::attrs::copy_marked_flattrs;
+use hyperactor_config::attrs::declare_attrs;
 
 use crate::ActorAddr;
 use crate::Instance;
@@ -43,6 +46,11 @@ use crate::mailbox::MessageEnvelope;
 use crate::ordering::SEQ_INFO;
 use crate::port::Port;
 use crate::time::Alarm;
+
+declare_attrs! {
+    /// Number of logical replies accumulated into a reduced update.
+    attr REDUCER_ACCUMULATED_UPDATES: NonZeroUsize;
+}
 
 /// Policy for handling SEQ_INFO in message headers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -449,6 +457,147 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                         }
                     })
                 }
+                ReducerMode::IdleFlush {
+                    expected,
+                    idle_timeout,
+                    abandon_timeout,
+                } => {
+                    let buffer: Arc<Mutex<IdleFlushBuffer>> =
+                        Arc::new(Mutex::new(IdleFlushBuffer::new(reducer, expected)));
+                    let mut alarm = Alarm::new();
+                    alarm.arm(abandon_timeout);
+                    let alarm = Arc::new(Mutex::new(alarm));
+
+                    // The alarm starts with `abandon_timeout`, so a split port that
+                    // receives no updates is eventually removed. Each buffered update
+                    // switches the alarm to `idle_timeout`. After flushing, the alarm is
+                    // rearmed for the remaining `abandon_timeout` measured from the last
+                    // update. If no further update arrives, the buffer is marked done and
+                    // the split port is unbound from the mailbox.
+                    {
+                        let mut sleeper = alarm.lock().unwrap().sleeper();
+                        let buffer = Arc::clone(&buffer);
+                        let alarm = Arc::clone(&alarm);
+                        let port_id = port_id.clone();
+                        let proc = proc.clone();
+                        let sender = sender.clone();
+                        let sequencer = sequencer.clone();
+                        let mailbox = self.mailbox().clone();
+                        let split_port = split_port.clone();
+
+                        tokio::spawn(async move {
+                            while sleeper.sleep().await {
+                                let mut buf = buffer.lock().unwrap();
+
+                                if buf.done {
+                                    break;
+                                }
+
+                                let timeout = if buf.has_buffered_updates() {
+                                    idle_timeout
+                                } else {
+                                    abandon_timeout
+                                };
+
+                                let duration_until_timeout =
+                                    timeout.saturating_sub(buf.inactive_for());
+
+                                if !duration_until_timeout.is_zero() {
+                                    alarm.lock().unwrap().arm(duration_until_timeout);
+                                    continue;
+                                }
+
+                                if let Some((mut headers, reduced, count)) = buf.flush() {
+                                    headers.set(REDUCER_ACCUMULATED_UPDATES, count);
+
+                                    post(
+                                        &proc,
+                                        &sender,
+                                        &sequencer,
+                                        port_id.clone(),
+                                        headers,
+                                        reduced,
+                                        return_undeliverable,
+                                    );
+
+                                    let duration_until_abandonment =
+                                        abandon_timeout.saturating_sub(buf.inactive_for());
+
+                                    if !duration_until_abandonment.is_zero() {
+                                        alarm.lock().unwrap().arm(duration_until_abandonment);
+                                        continue;
+                                    }
+                                }
+
+                                buf.done = true;
+
+                                drop(buf);
+
+                                mailbox.unbind_untyped(&split_port);
+                                break;
+                            }
+                        });
+                    }
+
+                    let error_port_id = split_port.clone();
+                    let sequencer = sequencer.clone();
+
+                    Box::new(move |headers: Flattrs, update: wirevalue::Any| {
+                        let accumulated_updates = headers
+                            .get(REDUCER_ACCUMULATED_UPDATES)
+                            .unwrap_or(NonZeroUsize::MIN);
+
+                        let mut buf = buffer.lock().unwrap();
+
+                        if buf.done {
+                            return Err(mailbox::SerializedSendFailure::Dead {
+                                data: update,
+                                headers,
+                            });
+                        }
+
+                        match buf.push(headers.clone(), update, accumulated_updates) {
+                            Ok(IdleFlushPush::Complete {
+                                mut headers,
+                                reduced,
+                                count,
+                            }) => {
+                                alarm.lock().unwrap().fire();
+
+                                headers.set(REDUCER_ACCUMULATED_UPDATES, count);
+
+                                post(
+                                    &proc,
+                                    &sender,
+                                    &sequencer,
+                                    port_id.clone(),
+                                    headers,
+                                    reduced,
+                                    return_undeliverable,
+                                );
+
+                                Ok(mailbox::SerializedSendDisposition::DeliveredAndExhausted)
+                            }
+                            Ok(IdleFlushPush::Buffered) => {
+                                // This is an idle-flush interval. Each accepted reply
+                                // starts a fresh countdown from now.
+                                alarm.lock().unwrap().arm(idle_timeout);
+
+                                Ok(mailbox::SerializedSendDisposition::Delivered)
+                            }
+                            Err((data, error)) => Err(mailbox::SerializedSendFailure::Error(
+                                mailbox::SerializedSendError {
+                                    data,
+                                    error: crate::mailbox::MailboxSenderError::new_bound(
+                                        error_port_id.clone(),
+                                        crate::mailbox::MailboxSenderErrorKind::Other(error),
+                                    ),
+                                    headers,
+                                },
+                            )),
+                        }
+                    })
+                }
             },
         };
         self.mailbox().bind_untyped(
@@ -506,7 +655,7 @@ impl UpdateBuffer {
         if self.buffered.is_empty() {
             None
         } else {
-            let headers = self.headers.take().unwrap_or_else(Flattrs::new);
+            let headers = self.headers.take().unwrap_or_default();
             match self.reducer.reduce_updates(take(&mut self.buffered)) {
                 Ok(reduced) => Some(Ok((headers, reduced))),
                 Err((e, b)) => {
@@ -571,9 +720,136 @@ impl OnceBuffer {
             Ok(self
                 .accumulated
                 .take()
-                .map(|reduced| (self.headers.take().unwrap_or_else(Flattrs::new), reduced)))
+                .map(|reduced| (self.headers.take().unwrap_or_default(), reduced)))
         } else {
             Ok(None)
         }
+    }
+}
+
+struct IdleFlushBuffer {
+    accumulated: Option<wirevalue::Any>,
+    headers: Option<Flattrs>,
+    reducer: Box<dyn ErasedCommReducer + Send + Sync + 'static>,
+    expected: NonZeroUsize,
+    received: usize,
+    buffered: usize,
+    last_activity: tokio::time::Instant,
+    done: bool,
+}
+
+enum IdleFlushPush {
+    Buffered,
+    Complete {
+        headers: Flattrs,
+        reduced: wirevalue::Any,
+        count: NonZeroUsize,
+    },
+}
+
+impl IdleFlushBuffer {
+    fn new(
+        reducer: Box<dyn ErasedCommReducer + Send + Sync + 'static>,
+        expected: NonZeroUsize,
+    ) -> Self {
+        Self {
+            accumulated: None,
+            headers: None,
+            reducer,
+            expected,
+            received: 0,
+            buffered: 0,
+            last_activity: tokio::time::Instant::now(),
+            done: false,
+        }
+    }
+
+    /// Add an update that represents one or more logical replies. A completed
+    /// batch is returned when all expected replies have arrived.
+    fn push(
+        &mut self,
+        headers: Flattrs,
+        value: wirevalue::Any,
+        accumulated_updates: NonZeroUsize,
+    ) -> Result<IdleFlushPush, (wirevalue::Any, anyhow::Error)> {
+        let received = match self.received.checked_add(accumulated_updates.get()) {
+            Some(received) if received <= self.expected.get() => received,
+            _ => {
+                return Err((
+                    value,
+                    anyhow::anyhow!(
+                        "received more reducer updates than expected: {} + {} > {}",
+                        self.received,
+                        accumulated_updates,
+                        self.expected
+                    ),
+                ));
+            }
+        };
+
+        let buffered = self
+            .buffered
+            .checked_add(accumulated_updates.get())
+            .expect("buffered reply count cannot exceed expected reply count");
+
+        if self.headers.is_none() {
+            self.headers = Some(operation_context_headers(&headers));
+        }
+
+        self.accumulated = match self.accumulated.take() {
+            None => Some(value),
+            Some(acc) => match self.reducer.reduce_updates(vec![acc, value]) {
+                Ok(reduced) => Some(reduced),
+                Err((error, mut rejected)) => {
+                    let value = rejected.pop().unwrap_or_else(|| {
+                        wirevalue::Any::serialize(&()).expect("unit serialization must succeed")
+                    });
+
+                    self.accumulated = rejected.pop();
+
+                    return Err((value, error));
+                }
+            },
+        };
+
+        self.received = received;
+        self.buffered = buffered;
+        self.last_activity = tokio::time::Instant::now();
+
+        if self.received == self.expected.get() {
+            self.done = true;
+
+            let (headers, reduced, count) = self
+                .flush()
+                .expect("a completed idle-flush buffer contains an update");
+
+            Ok(IdleFlushPush::Complete {
+                headers,
+                reduced,
+                count,
+            })
+        } else {
+            Ok(IdleFlushPush::Buffered)
+        }
+    }
+
+    fn has_buffered_updates(&self) -> bool {
+        self.accumulated.is_some()
+    }
+
+    fn inactive_for(&self) -> Duration {
+        tokio::time::Instant::now().saturating_duration_since(self.last_activity)
+    }
+
+    /// Return the current reduced batch without completing the buffer.
+    fn flush(&mut self) -> Option<(Flattrs, wirevalue::Any, NonZeroUsize)> {
+        self.accumulated.take().map(|reduced| {
+            let headers = self.headers.take().unwrap_or_default();
+
+            let count = NonZeroUsize::new(take(&mut self.buffered))
+                .expect("a nonempty idle-flush buffer represents at least one reply");
+
+            (headers, reduced, count)
+        })
     }
 }

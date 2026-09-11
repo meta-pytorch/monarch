@@ -2094,6 +2094,16 @@ impl Mailbox {
         }
     }
 
+    pub(crate) fn unbind_untyped(&self, port_id: &PortAddr) {
+        assert_eq!(
+            port_id.actor_addr(),
+            *self.actor_addr(),
+            "port does not belong to mailbox"
+        );
+
+        self.inner.ports.remove(&port_id.port());
+    }
+
     pub(crate) fn close(&self, status: ActorStatus) {
         let mut closed = self.inner.closed.write().unwrap();
         if closed.is_some() {
@@ -3979,6 +3989,7 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
+    use hyperactor_config::NonZeroUsize;
     use timed_test::async_timed_test;
 
     use super::*;
@@ -5676,6 +5687,179 @@ mod tests {
         // No further messages
         let msg = receiver.try_recv().unwrap();
         assert_eq!(msg, None);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_split_port_idle_flush_complete() {
+        let proc = Proc::isolated();
+        let actor = proc.client("actor");
+
+        let (port_handle, mut receiver) = actor.open_port::<u64>();
+
+        let port_id = port_handle.bind().port_addr().clone();
+
+        let split_port_id = port_id
+            .split(
+                &actor,
+                accum::sum::<u64>().reducer_spec(),
+                ReducerMode::IdleFlush {
+                    expected: NonZeroUsize::new(3).expect("3 is non-zero"),
+                    idle_timeout: Duration::from_secs(10),
+                    abandon_timeout: Duration::from_secs(30),
+                },
+                true,
+            )
+            .unwrap();
+
+        post(&actor, split_port_id.clone(), 10);
+        post(&actor, split_port_id.clone(), 20);
+
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            None,
+            "the reducer should not emit before receiving all expected updates"
+        );
+
+        post(&actor, split_port_id, 30);
+
+        let reduced = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+            .await
+            .expect("complete idle-flush result should arrive")
+            .unwrap();
+
+        assert_eq!(reduced, 60, "10 + 20 + 30 should reduce to 60");
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_split_port_idle_flush_partial() {
+        let proc = Proc::isolated();
+        let actor = proc.client("actor");
+        let (port_handle, mut receiver) = actor.open_port::<u64>();
+        let port_id = port_handle.bind().port_addr().clone();
+        let split_port_id = port_id
+            .split(
+                &actor,
+                accum::sum::<u64>().reducer_spec(),
+                ReducerMode::IdleFlush {
+                    expected: NonZeroUsize::new(3).expect("3 is non-zero"),
+                    idle_timeout: Duration::from_millis(50),
+                    abandon_timeout: Duration::from_secs(30),
+                },
+                true,
+            )
+            .unwrap();
+
+        post(&actor, split_port_id.clone(), 10);
+        post(&actor, split_port_id, 20);
+
+        let reduced = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+            .await
+            .expect("partial idle-flush result should arrive after the idle interval")
+            .unwrap();
+        assert_eq!(reduced, 30, "10 + 20 should reduce to the partial value 30");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_split_port_idle_flush_restarts_idle_timeout() {
+        let proc = Proc::isolated();
+        let actor = proc.client("actor");
+        let (port_handle, mut receiver) = actor.open_port::<u64>();
+        let port_id = port_handle.bind().port_addr().clone();
+        let split_port_id = port_id
+            .split(
+                &actor,
+                accum::sum::<u64>().reducer_spec(),
+                ReducerMode::IdleFlush {
+                    expected: NonZeroUsize::new(6).expect("6 is non-zero"),
+                    idle_timeout: Duration::from_millis(50),
+                    abandon_timeout: Duration::from_secs(30),
+                },
+                true,
+            )
+            .unwrap();
+
+        post(&actor, split_port_id.clone(), 10);
+        tokio::task::yield_now().await;
+
+        for update in [20, 30, 40, 50] {
+            tokio::time::advance(Duration::from_millis(25)).await;
+            post(&actor, split_port_id.clone(), update);
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            None,
+            "the reducer should not flush while replies arrive within the idle timeout"
+        );
+
+        tokio::time::advance(Duration::from_millis(49)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            None,
+            "the final reply should restart the full idle timeout"
+        );
+
+        tokio::time::advance(Duration::from_millis(11)).await;
+        let reduced = receiver.recv().await.unwrap();
+        assert_eq!(reduced, 150, "10 + 20 + 30 + 40 + 50 should reduce to 150");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_split_port_idle_flush_abandons_incomplete_port() {
+        let proc = Proc::isolated();
+        let actor = proc.client("actor");
+        let (port_handle, mut receiver) = actor.open_port::<u64>();
+        let port_id = port_handle.bind().port_addr().clone();
+        let split_port_id = port_id
+            .split(
+                &actor,
+                accum::sum::<u64>().reducer_spec(),
+                ReducerMode::IdleFlush {
+                    expected: NonZeroUsize::new(2).expect("2 is non-zero"),
+                    idle_timeout: Duration::from_millis(50),
+                    abandon_timeout: Duration::from_millis(200),
+                },
+                false,
+            )
+            .unwrap();
+
+        assert!(
+            actor
+                .mailbox()
+                .inner
+                .ports
+                .contains_key(&split_port_id.port()),
+            "the split port should initially be bound"
+        );
+
+        post(&actor, split_port_id.clone(), 10);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        assert_eq!(receiver.recv().await.unwrap(), 10);
+
+        tokio::time::advance(Duration::from_millis(149)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            actor
+                .mailbox()
+                .inner
+                .ports
+                .contains_key(&split_port_id.port()),
+            "the incomplete split port should remain bound before abandonment"
+        );
+
+        tokio::time::advance(Duration::from_millis(2)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !actor
+                .mailbox()
+                .inner
+                .ports
+                .contains_key(&split_port_id.port()),
+            "the incomplete split port should be removed after abandonment"
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
