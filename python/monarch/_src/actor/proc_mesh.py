@@ -98,55 +98,84 @@ _COMMON_CUDA_ENV_VARS: Tuple[str, ...] = (
     "PYTORCH_CUDA_ALLOC_CONF",
 )
 
+_COMMON_XPU_ENV_VARS: Tuple[str, ...] = (
+    "ZE_AFFINITY_MASK",
+    "ZE_ENABLE_PCI_ID_DEVICE_ORDER",
+    "PYTORCH_XPU_ALLOC_CONF",
+)
+
+
+def _get_accelerator_env_vars() -> Tuple[str, ...]:
+    """Return the relevant env vars based on the active accelerator."""
+    import torch
+
+    if torch.accelerator.current_accelerator() == "xpu":
+        return _COMMON_XPU_ENV_VARS + _COMMON_CUDA_ENV_VARS
+    return _COMMON_CUDA_ENV_VARS
+
 
 T = TypeVar("T")
 TActor = TypeVar("TActor", bound=Actor)
 
 
-def _cuda_env_snapshot() -> Dict[str, Optional[str]]:
-    return {key: os.environ.get(key) for key in _COMMON_CUDA_ENV_VARS}
+def _accel_env_snapshot() -> Dict[str, Optional[str]]:
+    env_vars = _get_accelerator_env_vars()
+    return {key: os.environ.get(key) for key in env_vars}
 
 
-def _torch_cuda_already_initialized() -> bool:
+def _torch_accelerator_already_initialized() -> bool:
+    import torch
+
+    accel = torch.accelerator.current_accelerator()
+    if accel == "xpu":
+        torch_xpu = sys.modules.get("torch.xpu")
+        if torch_xpu is None:
+            return False
+        is_initialized = getattr(torch_xpu, "is_initialized", None)
+        if not callable(is_initialized):
+            return False
+        return bool(is_initialized())
+
     torch_cuda = sys.modules.get("torch.cuda")
     if torch_cuda is None:
         return False
-
     is_initialized = getattr(torch_cuda, "is_initialized", None)
     if not callable(is_initialized):
         return False
     return bool(is_initialized())
 
 
-def _changed_cuda_env_vars(
+def _changed_accel_env_vars(
     before: Dict[str, Optional[str]],
     after: Dict[str, Optional[str]],
 ) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
+    env_vars = _get_accelerator_env_vars()
     return {
         key: (before.get(key), after.get(key))
-        for key in _COMMON_CUDA_ENV_VARS
+        for key in env_vars
         if before.get(key) != after.get(key)
     }
 
 
 @contextmanager
-def _warn_if_setup_changed_cuda_env_too_late() -> Iterator[None]:
-    cuda_initialized_before = _torch_cuda_already_initialized()
-    cuda_env_before = _cuda_env_snapshot()
+def _warn_if_setup_changed_accel_env_too_late() -> Iterator[None]:
+    accel_initialized_before = _torch_accelerator_already_initialized()
+    env_before = _accel_env_snapshot()
     yield
 
-    if cuda_initialized_before:
-        cuda_env_after = _cuda_env_snapshot()
-        changed_cuda_env_vars = _changed_cuda_env_vars(cuda_env_before, cuda_env_after)
-        if changed_cuda_env_vars:
+    if accel_initialized_before:
+        env_after = _accel_env_snapshot()
+        changed_env_vars = _changed_accel_env_vars(env_before, env_after)
+        if changed_env_vars:
             changed_desc = ", ".join(
                 f"{key}: {before!r} -> {after!r}"
-                for key, (before, after) in changed_cuda_env_vars.items()
+                for key, (before, after) in changed_env_vars.items()
             )
             log_with_tracing(
                 logging.WARNING,
-                "setup actor changed CUDA environment variables after torch.cuda "
-                "was already initialized; these changes may be ignored: %s",
+                "setup actor changed accelerator environment variables after "
+                "the device runtime was already initialized; "
+                "these changes may be ignored: %s",
                 changed_desc,
                 stacklevel=2,
                 logger=logger,
@@ -155,7 +184,7 @@ def _warn_if_setup_changed_cuda_env_too_late() -> Iterator[None]:
 
     log_with_tracing(
         logging.INFO,
-        "setup actor ran without late CUDA environment variable changes",
+        "setup actor ran without late accelerator environment variable changes",
         stacklevel=2,
         logger=logger,
     )
@@ -258,7 +287,7 @@ class SetupActor(Actor):
         """
         from monarch._src.actor.sync_state import fake_sync_state
 
-        with _warn_if_setup_changed_cuda_env_too_late():
+        with _warn_if_setup_changed_accel_env_too_late():
             # Run startup callables first (always synchronous)
             # Use local variable so pyre can narrow the type after the None check
             startup_callables = self._startup_callables
