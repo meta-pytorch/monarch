@@ -36,7 +36,10 @@
 //! every controller monitoring that actor reports the failure to the owner.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::OnceLock;
+use std::sync::RwLock;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -49,11 +52,13 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::OncePortRef;
+use hyperactor::ProcAddr;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::context;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::OnceCell;
 use typeuri::Named;
 
 use crate::backend::RdmaBackendHandle;
@@ -68,6 +73,12 @@ use crate::rdma_manager_owner::RdmaManagerOwnerActor;
 use crate::rdma_manager_owner::RdmaManagerReady;
 use crate::rdma_manager_owner::RdmaManagerReadyHandler;
 use crate::rdma_manager_owner::ReadyAckClient;
+
+// Each proc has one RDMA manager for its lifetime, so its backend handles never
+// need replacement or invalidation while they can still be used.
+static BACKEND_HANDLE_CACHE: LazyLock<
+    RwLock<HashMap<ProcAddr, Arc<OnceCell<Vec<RdmaBackendHandle>>>>>,
+> = LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Helper function to get detailed error messages from RDMAXCEL error codes
 pub fn get_rdmaxcel_error_message(error_code: i32) -> String {
@@ -155,6 +166,29 @@ impl RdmaManagerActor {
         actor_ref
             .downcast_handle(client)
             .expect("RdmaManagerActor is not in the local process")
+    }
+
+    pub async fn local_backend_handles(
+        client: &(impl context::Actor + Send + Sync),
+    ) -> Result<Vec<RdmaBackendHandle>, anyhow::Error> {
+        let key = client.mailbox().actor_addr().proc_addr();
+        let cell = BACKEND_HANDLE_CACHE
+            .read()
+            .expect("backend handle cache lock should not be poisoned")
+            .get(&key)
+            .cloned();
+        let cell = cell.unwrap_or_else(|| {
+            Arc::clone(
+                BACKEND_HANDLE_CACHE
+                    .write()
+                    .expect("backend handle cache lock should not be poisoned")
+                    .entry(key)
+                    .or_insert_with(|| Arc::new(OnceCell::new())),
+            )
+        });
+        cell.get_or_try_init(async || Self::local_handle(client).get_backend_handles(client).await)
+            .await
+            .cloned()
     }
 }
 

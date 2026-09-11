@@ -18,11 +18,14 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
@@ -34,7 +37,7 @@ use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::OncePortRef;
 use hyperactor::actor::Referable;
-use rand::seq::IteratorRandom;
+use rand::seq::SliceRandom;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -59,14 +62,16 @@ use super::primitives::IbvCq;
 use super::primitives::IbvQpInfo;
 use super::primitives::ibverbs_supported;
 use super::queue_pair::IbvQueuePair;
-use super::queue_pair::OpResult;
 use super::queue_pair::ProcessOps;
 use super::queue_pair::QpKey;
 use super::queue_pair::QueuePairActor;
 use super::queue_pair::QueuePairHandle;
 use super::queue_pair::QueuePairOp;
+use super::queue_pair::StripeId;
+use super::queue_pair::StripeResult;
 use super::queue_pair::legacy;
 use crate::RdmaOp;
+use crate::RdmaOpType;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
 use crate::backend::RdmaConfig;
@@ -75,6 +80,21 @@ use crate::local_memory::KeepaliveLocalMemory;
 use crate::rdma_components::RdmaRemoteBuffer;
 use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::validate_execution_context;
+
+const KIB: usize = 1024;
+// GB200 host-memory RDMA reaches full bandwidth only when each stripe starts
+// on a cache-line boundary.
+const STRIPE_ALIGNMENT: usize = 64;
+
+fn configured_min_stripe_size() -> NonZeroUsize {
+    let kilobytes = hyperactor_config::global::get(crate::config::RDMA_MIN_STRIPE_SIZE_KB).get();
+    NonZeroUsize::new(
+        kilobytes
+            .checked_mul(KIB)
+            .expect("RDMA_MIN_STRIPE_SIZE_KB fits in bytes"),
+    )
+    .expect("a non-zero KiB count produces a non-zero byte count")
+}
 
 /// Cross-proc message: the active side asks the peer's manager to
 /// create and connect a mirror QP for an in-flight [`QueuePairActor`].
@@ -99,19 +119,181 @@ wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<EfaDevice>>);
 
 /// Local-only message: submit a batch of RDMA ops for end-to-end
 /// execution. The manager iterates the batch, resolves each op's
-/// local MRs via [`IbvManagerActor::resolve_local_mrs`], settles on the
-/// NIC pair to run it over with
-/// [`IbvManagerActor::pick_peer_pair`], looks up (or spawns) the
-/// active-side [`QueuePairActor`] for the op's [`QpKey`], and
-/// immediately dispatches a one-item [`ProcessOps`] to that QP — so
-/// the QP can start posting op `i` while the manager resolves the MRs
-/// for op `i+1`.
+/// local MRs via [`IbvManagerActor::resolve_local_mrs`], splits the operation
+/// across compatible registration pairs with [`QueuePairRouter::plan_ops`],
+/// and dispatches each stripe to the active-side [`QueuePairActor`] for its
+/// [`QpKey`].
 ///
-/// Per-op completion notifications stream back on `reply` as
-/// [`OpResult`] values.
+/// Per-stripe completion notifications stream back on `reply` as
+/// [`StripeResult`] values.
 pub(super) struct SubmitOps<I: IbvDeviceImpl> {
-    pub(super) ops: Vec<IbvOp<IbvManagerActor<I>>>,
-    pub(super) reply: mpsc::UnboundedSender<OpResult>,
+    pub(super) ops: Vec<(usize, IbvOp<IbvManagerActor<I>>)>,
+    pub(super) reply: mpsc::UnboundedSender<StripeResult>,
+}
+
+/// Shared state for selecting a compatible registration pair and dispatching
+/// operations directly to initialized queue-pair workers.
+///
+/// The manager installs a route after creating a queue pair and removes all
+/// routes before tearing its queue pairs down. Each [`IbvBackend`] shares this
+/// router with the manager so warm submissions can bypass the manager mailbox;
+/// operations without local registrations or a matching route fall back to
+/// [`SubmitOps`].
+#[derive(Debug)]
+struct QueuePairRouter {
+    peer_device_affinity: PeerDeviceAffinityPolicy,
+    queue_pairs: DashMap<QpKey, mpsc::UnboundedSender<ProcessOps>>,
+}
+
+impl QueuePairRouter {
+    fn new(peer_device_affinity: PeerDeviceAffinityPolicy) -> Self {
+        Self {
+            peer_device_affinity,
+            queue_pairs: DashMap::new(),
+        }
+    }
+
+    /// Returns a disjoint list of registration pairings allowed by the affinity policy.
+    fn pair_registrations<'a>(
+        &self,
+        local: &'a [IbvMemoryRegionView],
+        remote: &'a [IbvRemoteMemoryRegionView],
+    ) -> Result<Vec<(&'a IbvMemoryRegionView, &'a IbvRemoteMemoryRegionView)>, anyhow::Error> {
+        // `PeerDeviceAffinityPolicy::pairs` is sensitive to input order. Sort
+        // both sides so selection depends only on the unordered registration
+        // sets and is consistent across processes.
+        let mut local: Vec<&IbvMemoryRegionView> = local.iter().collect();
+        local.sort_by(|a, b| a.device_name.cmp(&b.device_name));
+        let mut remote: Vec<&IbvRemoteMemoryRegionView> = remote.iter().collect();
+        remote.sort_by(|a, b| a.device_name.cmp(&b.device_name));
+
+        let local_names: Vec<String> = local.iter().map(|mr| mr.device_name.clone()).collect();
+        let remote_names: Vec<String> = remote.iter().map(|mr| mr.device_name.clone()).collect();
+        let pairs = self
+            .peer_device_affinity
+            .pairs(&local_names, &remote_names)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, peer)| peer.map(|j| (local[i], remote[j])))
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            !pairs.is_empty(),
+            "no NIC of {local_names:?} pairs with a peer NIC of {remote_names:?} under {:?}",
+            self.peer_device_affinity,
+        );
+        Ok(pairs)
+    }
+
+    /// Splits an operation across a random subset of its compatible NIC pairs.
+    fn plan_ops<I: IbvDeviceImpl>(
+        &self,
+        op_idx: usize,
+        op: &IbvOp<IbvManagerActor<I>>,
+    ) -> Result<Vec<QueuePairOp>, anyhow::Error> {
+        let local_mrs = op.local_memory.registered_mrs::<I>();
+        let mut pairs = self.pair_registrations(&local_mrs, &op.remote_buffers)?;
+
+        let size = match op.op_type {
+            RdmaOpType::WriteFromLocal => op.local_memory.size(),
+            RdmaOpType::ReadIntoLocal => op
+                .remote_buffers
+                .first()
+                .map(|remote| remote.size)
+                .unwrap_or(0),
+        };
+        let stripe_count = pairs
+            .len()
+            .min((size / configured_min_stripe_size().get()).max(1));
+        if stripe_count < pairs.len() {
+            pairs.shuffle(&mut rand::rng());
+        }
+
+        let stripe_size = size / stripe_count / STRIPE_ALIGNMENT * STRIPE_ALIGNMENT;
+        let mut offset = 0;
+        pairs
+            .into_iter()
+            .take(stripe_count)
+            .enumerate()
+            .map(|(stripe_idx, (local, remote))| {
+                let size = if stripe_idx + 1 == stripe_count {
+                    size - offset
+                } else {
+                    stripe_size
+                };
+                let op = QueuePairOp {
+                    stripe_id: StripeId {
+                        op_idx,
+                        stripe_idx,
+                        stripe_count,
+                    },
+                    op_type: op.op_type,
+                    local_memory: op.local_memory.clone(),
+                    local: local.try_slice(offset, size)?,
+                    remote: remote.try_slice(offset, size)?,
+                };
+                offset += size;
+                Ok(op)
+            })
+            .collect()
+    }
+
+    fn try_dispatch<I: IbvDeviceImpl>(
+        &self,
+        op_idx: usize,
+        op: IbvOp<IbvManagerActor<I>>,
+        reply: &mpsc::UnboundedSender<StripeResult>,
+    ) -> Option<IbvOp<IbvManagerActor<I>>> {
+        if op.local_memory.registered_mrs::<I>().is_empty() {
+            return Some(op);
+        }
+        let planned = match self.plan_ops(op_idx, &op) {
+            Ok(planned) => planned,
+            Err(error) => {
+                let _ = reply.send(StripeResult {
+                    stripe_id: StripeId {
+                        op_idx,
+                        stripe_idx: 0,
+                        stripe_count: 1,
+                    },
+                    result: Err(error.to_string()),
+                });
+                return None;
+            }
+        };
+        let senders = planned
+            .iter()
+            .map(|planned| {
+                let key = QpKey {
+                    self_device: planned.local.device_name.clone(),
+                    other_id: op.remote_manager.actor_addr().id().clone(),
+                    other_device: planned.remote.device_name.clone(),
+                };
+                self.queue_pairs
+                    .get(&key)
+                    .map(|sender| sender.value().clone())
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(senders) = senders else {
+            return Some(op);
+        };
+
+        for (sender, planned) in senders.into_iter().zip(planned) {
+            let stripe_id = planned.stripe_id;
+            if sender
+                .send(ProcessOps {
+                    items: vec![planned],
+                    reply: reply.clone(),
+                })
+                .is_err()
+            {
+                let _ = reply.send(StripeResult {
+                    stripe_id,
+                    result: Err("queue pair worker stopped".to_owned()),
+                });
+            }
+        }
+        None
+    }
 }
 
 /// Local-only message: create a fresh, unconnected legacy
@@ -191,6 +373,10 @@ pub struct IbvManagerActor<I: IbvDeviceImpl> {
     /// Read once, when the manager starts.
     peer_device_affinity: PeerDeviceAffinityPolicy,
 
+    /// Warm QP routes shared with [`IbvBackend`] for direct steady-state
+    /// submission without a manager-mailbox round trip.
+    queue_pair_router: Arc<QueuePairRouter>,
+
     /// Completion pollers, keyed by device name when each device gets its own
     /// poller and by the empty string when all devices share one.
     cq_pollers: HashMap<String, ActorHandle<CompletionQueueActor<IbvCq>>>,
@@ -227,6 +413,8 @@ impl<I: IbvDeviceImpl> Actor for IbvManagerActor<I> {
 
 impl<I: IbvDeviceImpl> Drop for IbvManagerActor<I> {
     fn drop(&mut self) {
+        self.queue_pair_router.queue_pairs.clear();
+
         // Stop each supervising QP actor; its cleanup cancels and joins the
         // data-plane worker that owns the QP.
         for (_key, handle) in self.qp_handles.drain() {
@@ -285,17 +473,23 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             }
         }
 
+        let peer_device_affinity = configured_peer_device_affinity()?;
         let actor = Self {
             owner: OnceLock::new(),
             qp_handles: HashMap::new(),
             peer_created_qps: HashMap::new(),
             devices: HashMap::new(),
-            peer_device_affinity: configured_peer_device_affinity()?,
+            peer_device_affinity: peer_device_affinity.clone(),
+            queue_pair_router: Arc::new(QueuePairRouter::new(peer_device_affinity)),
             cq_pollers: HashMap::new(),
             config,
         };
 
         Ok(actor)
+    }
+
+    fn queue_pair_router(&self) -> Arc<QueuePairRouter> {
+        Arc::clone(&self.queue_pair_router)
     }
 
     /// Get or create the `DEFAULT_DOMAIN` for the named RDMA device, opening
@@ -439,40 +633,6 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             .choose(&names, max.map(hyperactor_config::NonZeroUsize::into_std)))
     }
 
-    /// Given a list of local registrations and remote registrations, uses
-    /// [`Self::peer_device_affinity`] to decide on one local/remote pair
-    /// to use. Errors when the policy gives no valid pair.
-    fn pick_peer_pair<'a>(
-        &self,
-        local: &'a [IbvMemoryRegionView],
-        remote: &'a [IbvRemoteMemoryRegionView],
-    ) -> Result<(&'a IbvMemoryRegionView, &'a IbvRemoteMemoryRegionView), anyhow::Error> {
-        // Sort both sides by device name because `PeerDeviceAffinityPolicy::pairs` is
-        // sensitive to input order. This ensures that `pick_peer_pair`'s behavior is
-        // dependent only on the unordered set of local and remote devices, and it is
-        // therefore consistent across processes.
-        let mut local: Vec<&IbvMemoryRegionView> = local.iter().collect();
-        local.sort_by(|a, b| a.device_name.cmp(&b.device_name));
-        let mut remote: Vec<&IbvRemoteMemoryRegionView> = remote.iter().collect();
-        remote.sort_by(|a, b| a.device_name.cmp(&b.device_name));
-
-        let local_names: Vec<String> = local.iter().map(|mr| mr.device_name.clone()).collect();
-        let remote_names: Vec<String> = remote.iter().map(|mr| mr.device_name.clone()).collect();
-        self.peer_device_affinity
-            .pairs(&local_names, &remote_names)
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, peer)| peer.map(|j| (local[i], remote[j])))
-            .choose(&mut rand::rng())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no NIC of {local_names:?} pairs with a peer NIC of {remote_names:?} under \
-                     {:?}",
-                    self.peer_device_affinity,
-                )
-            })
-    }
-
     /// Build a passive-side mirror QP for `qp_key`, connect it to
     /// `sender_info`, and store it in [`Self::peer_created_qps`].
     /// Returns the local endpoint the active side needs to finish
@@ -552,6 +712,9 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             config.max_send_wr,
         );
         let handle = QueuePairHandle::new(cx.spawn(actor), sender);
+        self.queue_pair_router
+            .queue_pairs
+            .insert(qp_key.clone(), handle.sender());
         self.qp_handles.insert(qp_key.clone(), handle.clone());
         Ok(handle)
     }
@@ -562,56 +725,60 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
     async fn handle(&mut self, cx: &Context<Self>, msg: SubmitOps<I>) -> Result<(), anyhow::Error> {
         let SubmitOps { ops, reply } = msg;
 
-        // Interleave MR resolution with QP dispatch: as soon as op `i`'s
-        // local MRs are resolved and its QP actor is in place, ship a
-        // one-item `ProcessOps` to that QP. The QP can then post and
-        // retire op `i` while we run `resolve_local_mrs` for op `i+1`.
-        for (i, op) in ops.into_iter().enumerate() {
-            let local_mrs = match self.resolve_local_mrs(&op.local_memory) {
-                Ok(mrs) => mrs,
-                Err(e) => {
-                    let _ = reply.send(OpResult {
-                        op_idx: i,
-                        result: Err(e.to_string()),
+        // Interleave MR resolution with QP dispatch: as soon as an op is
+        // planned, send its stripes to their queue-pair workers. They can post
+        // the stripes while the manager resolves the next op's registrations.
+        for (i, op) in ops {
+            let whole_op = StripeId {
+                op_idx: i,
+                stripe_idx: 0,
+                stripe_count: 1,
+            };
+            if let Err(error) = self.resolve_local_mrs(&op.local_memory) {
+                let _ = reply.send(StripeResult {
+                    stripe_id: whole_op,
+                    result: Err(error.to_string()),
+                });
+                continue;
+            }
+            let planned = match self.queue_pair_router.plan_ops(i, &op) {
+                Ok(planned) => planned,
+                Err(error) => {
+                    let _ = reply.send(StripeResult {
+                        stripe_id: whole_op,
+                        result: Err(error.to_string()),
                     });
                     continue;
                 }
             };
-            let (local, remote) = match self.pick_peer_pair(&local_mrs, &op.remote_buffers) {
-                Ok((local, remote)) => (local.clone(), remote.clone()),
-                Err(e) => {
-                    let _ = reply.send(OpResult {
-                        op_idx: i,
-                        result: Err(e.to_string()),
+
+            for planned in planned {
+                let stripe_id = planned.stripe_id;
+                let qp_key = QpKey {
+                    self_device: planned.local.device_name.clone(),
+                    other_id: op.remote_manager.actor_addr().id().clone(),
+                    other_device: planned.remote.device_name.clone(),
+                };
+                let handle = match self.ensure_qp_actor(cx, &qp_key, op.remote_manager.clone()) {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        let _ = reply.send(StripeResult {
+                            stripe_id,
+                            result: Err(error.to_string()),
+                        });
+                        continue;
+                    }
+                };
+                if let Err(error) = handle.send(ProcessOps {
+                    items: vec![planned],
+                    reply: reply.clone(),
+                }) {
+                    let _ = reply.send(StripeResult {
+                        stripe_id,
+                        result: Err(error.to_string()),
                     });
-                    continue;
                 }
-            };
-            let qp_key = QpKey {
-                self_device: local.device_name.clone(),
-                other_id: op.remote_manager.actor_addr().id().clone(),
-                other_device: remote.device_name.clone(),
-            };
-            let handle = match self.ensure_qp_actor(cx, &qp_key, op.remote_manager) {
-                Ok(h) => h,
-                Err(e) => {
-                    let _ = reply.send(OpResult {
-                        op_idx: i,
-                        result: Err(e.to_string()),
-                    });
-                    continue;
-                }
-            };
-            handle.send(ProcessOps {
-                items: vec![QueuePairOp {
-                    op_idx: i,
-                    op_type: op.op_type,
-                    local_memory: op.local_memory,
-                    local,
-                    remote,
-                }],
-                reply: reply.clone(),
-            })?;
+            }
         }
         Ok(())
     }
@@ -696,18 +863,24 @@ impl<I: IbvDeviceImpl> Handler<IbvManagerLocalMessage> for IbvManagerActor<I> {
 /// state-mutating operations (MR registration/deregistration, QP management)
 /// serialized through actor messages.
 #[derive(Debug)]
-pub struct IbvBackend<I: IbvDeviceImpl>(pub ActorHandle<IbvManagerActor<I>>);
+pub struct IbvBackend<I: IbvDeviceImpl> {
+    manager: ActorHandle<IbvManagerActor<I>>,
+    queue_pair_router: Arc<QueuePairRouter>,
+}
 
 impl<I: IbvDeviceImpl> Clone for IbvBackend<I> {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self {
+            manager: self.manager.clone(),
+            queue_pair_router: Arc::clone(&self.queue_pair_router),
+        }
     }
 }
 
 impl<I: IbvDeviceImpl> std::ops::Deref for IbvBackend<I> {
     type Target = ActorHandle<IbvManagerActor<I>>;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.manager
     }
 }
 
@@ -777,7 +950,11 @@ where
         config: &RdmaConfig,
     ) -> Result<Self> {
         let actor = IbvManagerActor::<I>::new(config.ibv.clone()).await?;
-        Ok(IbvBackend(cx.spawn(actor)))
+        let queue_pair_router = actor.queue_pair_router();
+        Ok(Self {
+            manager: cx.spawn(actor),
+            queue_pair_router,
+        })
     }
 
     async fn register_remote_buffer(
@@ -787,12 +964,12 @@ where
         local: KeepaliveLocalMemory,
     ) -> Result<IbvRemoteBackendContext<I>> {
         let buffers = self
-            .0
+            .manager
             .register_remote_buffer(cx, local)
             .await?
             .map_err(|e| anyhow::anyhow!(e))?;
         Ok(IbvRemoteBackendContext {
-            manager: self.0.bind(),
+            manager: self.manager.bind(),
             buffers,
         })
     }
@@ -810,16 +987,14 @@ where
 
     /// Submit a batch of RDMA operations.
     ///
-    /// Translates each op to an `IbvOp`, then ships the whole batch to
-    /// [`IbvManagerActor`] via [`SubmitOps`]. The manager interleaves
-    /// local-MR resolution with per-op dispatch: each op is sent to its
-    /// [`QueuePairActor`] as a one-item [`ProcessOps`] the moment its MRs
-    /// are ready, so QP work on op `i` overlaps MR registration for op
-    /// `i+1`.
+    /// Translates each op to an `IbvOp`, then forwards them directly to the
+    /// relevant queue-pairs when possible; any ops that cannot be forwarded
+    /// directly (memory registration needed, QPs don't exist yet) are shipped to
+    /// [`IbvManagerActor`] via [`SubmitOps`]. The manager interleaves local-MR
+    /// resolution with dispatch.
     ///
-    /// Always waits for exactly `ops.len()` per-op replies before
-    /// returning. Per-op failures are collected and formatted into a single
-    /// multi-line `Err` listing each `op_idx` and its error message.
+    /// Waits for every stripe of every operation. Per-operation failures are
+    /// collected into a single error.
     async fn submit(
         &self,
         cx: &(impl hyperactor::context::Actor + Send + Sync),
@@ -840,40 +1015,60 @@ where
             });
         }
         let n = ibv_ops.len();
-
         let (reply, mut reply_rx) = mpsc::unbounded_channel();
 
-        self.0.try_post(
-            cx,
-            SubmitOps {
-                ops: ibv_ops,
-                reply,
-            },
-        )?;
+        let mut manager_ops = Vec::new();
+        for (op_idx, op) in ibv_ops.into_iter().enumerate() {
+            if let Some(op) = self.queue_pair_router.try_dispatch::<I>(op_idx, op, &reply) {
+                manager_ops.push((op_idx, op));
+            }
+        }
+        if !manager_ops.is_empty() {
+            self.manager.try_post(
+                cx,
+                SubmitOps {
+                    ops: manager_ops,
+                    reply,
+                },
+            )?;
+        }
 
-        let mut failures: Vec<(usize, String)> = Vec::with_capacity(n);
-        let mut received = 0usize;
+        let mut outstanding: HashMap<usize, usize> = HashMap::with_capacity(n);
+        let mut failures: HashMap<usize, String> = HashMap::new();
+        let mut completed = 0usize;
+        let mut received_stripes = 0usize;
         let mut terminal: Option<String> = None;
         let deadline = tokio::time::Instant::now() + timeout;
-        while received < n {
+        while completed < n {
             tokio::select! {
                 () = tokio::time::sleep_until(deadline) => {
                     terminal = Some(format!(
-                        "submit timed out after {received}/{n} replies with {} failures",
+                        "submit timed out after {completed}/{n} ops ({received_stripes} stripe replies) with {} failures",
                         failures.len()
                     ));
                     break;
                 }
                 recv = reply_rx.recv() => {
                     match recv {
-                        Some(OpResult { result: Ok(()), .. }) => received += 1,
-                        Some(OpResult { op_idx, result: Err(e) }) => {
-                            received += 1;
-                            failures.push((op_idx, e));
+                        Some(StripeResult { stripe_id, result }) => {
+                            received_stripes += 1;
+                            if let Err(error) = result {
+                                failures.entry(stripe_id.op_idx).or_insert(error);
+                            }
+                            let remaining = outstanding
+                                .entry(stripe_id.op_idx)
+                                .or_insert(stripe_id.stripe_count);
+                            *remaining = remaining
+                                .checked_sub(1)
+                                .expect("an operation reports no more than its stripe count");
+                            if *remaining == 0 {
+                                outstanding.remove(&stripe_id.op_idx);
+                                completed += 1;
+                            }
                         }
                         None => {
                             terminal = Some(format!(
-                                "operation result channel closed after {received}/{n} replies with {} failures: \
+                                "operation result channel closed after {completed}/{n} ops ({received_stripes} stripe replies) with {} failures: \
                                 some built-in RDMA actor likely stopped or failed, see logs for more details",
                                 failures.len()
                             ));
@@ -888,6 +1083,7 @@ where
             return Ok(());
         }
 
+        let mut failures: Vec<_> = failures.into_iter().collect();
         failures.sort_by_key(|(idx, _)| *idx);
         let mut msg = terminal.unwrap_or_else(|| format!("{}/{n} ops failed", failures.len()));
         if !failures.is_empty() {
@@ -924,6 +1120,7 @@ mod tests {
 
     use async_trait::async_trait;
     use hyperactor::Actor;
+    use hyperactor::ActorAddr;
     use hyperactor::ActorEnvironment;
     use hyperactor::ActorRef;
     use hyperactor::Context;
@@ -942,6 +1139,9 @@ mod tests {
     use serde::Serialize;
     use typeuri::Named;
 
+    use super::IbvOp;
+    use super::KIB;
+    use super::QueuePairRouter;
     use crate::IbvConfig;
     use crate::RdmaManagerActor;
     use crate::RdmaManagerMessageClient;
@@ -953,8 +1153,11 @@ mod tests {
     use crate::backend::cuda_test_utils::CudaAllocator;
     use crate::backend::ibverbs::device::list_all_devices;
     use crate::backend::ibverbs::device_selection::IbvDeviceTarget;
+    use crate::backend::ibverbs::device_selection::PeerDeviceAffinityPolicy;
     use crate::backend::ibverbs::device_selection::resolve_target;
     use crate::backend::ibverbs::device_selection::select_optimal_ibv_devices;
+    use crate::backend::ibverbs::memory_region::IbvMemoryRegionView;
+    use crate::backend::ibverbs::memory_region::IbvRemoteMemoryRegionView;
     use crate::backend::ibverbs::mlx_device::MlxDevice;
     use crate::backend::ibverbs::primitives::IbvQpType;
     use crate::device_selection::MemoryLocation;
@@ -1439,6 +1642,82 @@ mod tests {
         }
     }
 
+    fn plan_ranges(size: usize, pair_count: usize, min_stripe_kb: usize) -> Vec<(usize, usize)> {
+        let allocation: Box<[u8]> = vec![0; size.max(1)].into_boxed_slice();
+        let local_memory =
+            KeepaliveLocalMemory::try_new(Arc::new(allocation)).expect("valid CPU allocation");
+        let mut remote_buffers = Vec::with_capacity(pair_count);
+        for pair in 0..pair_count {
+            let device = format!("mlx5_{pair}");
+            let mut local = IbvMemoryRegionView::for_test(&device, pair as u32);
+            local.virtual_addr = local_memory.addr();
+            local.rdma_addr = local_memory.addr();
+            local.size = local_memory.size();
+            local_memory
+                .install_mr::<MlxDevice>(local)
+                .expect("install test registration");
+            remote_buffers.push(IbvRemoteMemoryRegionView {
+                rkey: pair as u32,
+                addr: 0x1000,
+                size,
+                device_name: device,
+            });
+        }
+        let remote_manager = ActorRef::attest(
+            "manager.proc@inproc://0"
+                .parse::<ActorAddr>()
+                .expect("valid test actor address"),
+        );
+        let op = IbvOp {
+            op_type: RdmaOpType::ReadIntoLocal,
+            local_memory: local_memory.clone(),
+            remote_buffers,
+            remote_manager,
+        };
+        let lock = hyperactor_config::global::lock();
+        let _stripe_guard = lock.override_key(
+            crate::config::RDMA_MIN_STRIPE_SIZE_KB,
+            hyperactor_config::NonZeroUsize::new(min_stripe_kb)
+                .expect("minimum stripe size is non-zero"),
+        );
+        let router = QueuePairRouter::new(PeerDeviceAffinityPolicy::Any);
+        let mut ranges: Vec<_> = router
+            .plan_ops::<MlxDevice>(0, &op)
+            .expect("plan test operation")
+            .into_iter()
+            .map(|op| (op.local.virtual_addr - local_memory.addr(), op.local.size))
+            .collect();
+        ranges.sort_unstable();
+        ranges
+    }
+
+    #[test]
+    fn plan_ops_balances_stripes_without_an_undersized_tail() {
+        assert_eq!(plan_ranges(511 * KIB, 4, 512), vec![(0, 511 * KIB)]);
+        assert_eq!(plan_ranges(513 * KIB, 4, 512), vec![(0, 513 * KIB)]);
+        assert_eq!(
+            plan_ranges(12 * KIB, 3, 1),
+            vec![(0, 4 * KIB), (4 * KIB, 4 * KIB), (8 * KIB, 4 * KIB)]
+        );
+        assert_eq!(
+            plan_ranges(15 * KIB, 8, 4),
+            vec![(0, 5 * KIB), (5 * KIB, 5 * KIB), (10 * KIB, 5 * KIB)]
+        );
+        assert_eq!(
+            plan_ranges(10 * KIB, 3, 1),
+            vec![(0, 3392), (3392, 3392), (6784, 3456)]
+        );
+        assert_eq!(
+            plan_ranges(32_000_000, 4, 8192),
+            vec![
+                (0, 10_666_624),
+                (10_666_624, 10_666_624),
+                (21_333_248, 10_666_752),
+            ]
+        );
+        assert_eq!(plan_ranges(0, 4, 1), vec![(0, 0)]);
+    }
+
     // ====================================================================
     // Tests
     // ====================================================================
@@ -1515,6 +1794,35 @@ mod tests {
             run_cross_actor_write(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, pattern, 5)
                 .await?;
         }
+        env.shutdown().await
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 120)]
+    async fn test_striped_transfers_land_every_byte() -> Result<(), anyhow::Error> {
+        require_rdma();
+        const MAX_NICS: usize = 4;
+        const MIN_STRIPE_KB: usize = 512;
+        const SIZE: usize = MAX_NICS * MIN_STRIPE_KB * KIB;
+        let tied = select_optimal_ibv_devices::<MlxDevice>(MemoryLocation::Cpu(None))?.len();
+        if tied < 2 {
+            panic!("SKIPPED: this host has fewer than two NICs tied for host memory");
+        }
+
+        let lock = hyperactor_config::global::lock();
+        let _max_guard = lock.override_key(
+            crate::config::RDMA_MAX_NICS_PER_BUFFER,
+            Some(hyperactor_config::NonZeroUsize::new(MAX_NICS).expect("MAX_NICS is non-zero")),
+        );
+        let _stripe_guard = lock.override_key(
+            crate::config::RDMA_MIN_STRIPE_SIZE_KB,
+            hyperactor_config::NonZeroUsize::new(MIN_STRIPE_KB).expect("MIN_STRIPE_KB is non-zero"),
+        );
+        let _policy_guard =
+            lock.override_key(crate::config::RDMA_PEER_DEVICE_AFFINITY, "any".to_string());
+
+        let env = TestEnv::same_config(IbvConfig::default()).await?;
+        run_cross_actor_write(&env, BufferDevice::Cpu, BufferDevice::Cpu, SIZE, 0x6d, 20).await?;
+        run_cross_actor_read(&env, BufferDevice::Cpu, BufferDevice::Cpu, SIZE, 0xa7, 20).await?;
         env.shutdown().await
     }
 

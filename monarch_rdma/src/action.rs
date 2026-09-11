@@ -18,7 +18,6 @@ use std::time::Duration;
 use hyperactor::context;
 
 use crate::RdmaManagerActor;
-use crate::RdmaManagerMessageClient;
 use crate::RdmaOp;
 use crate::RdmaOpType;
 use crate::backend::RdmaBackendHandle;
@@ -111,9 +110,7 @@ impl RdmaAction {
         }
 
         // This proc's spawned backends, in priority order.
-        let handles = RdmaManagerActor::local_handle(client)
-            .get_backend_handles(client)
-            .await?;
+        let handles = RdmaManagerActor::local_backend_handles(client).await?;
         let mut buckets: Vec<(RdmaBackendHandle, Vec<RdmaOp>)> =
             handles.into_iter().map(|h| (h, Vec::new())).collect();
 

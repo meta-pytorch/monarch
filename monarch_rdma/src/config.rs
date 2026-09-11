@@ -124,6 +124,17 @@ declare_attrs! {
     ))
     pub attr RDMA_MAX_NICS_PER_BUFFER: Option<NonZeroUsize> = None;
 
+    /// Minimum RDMA stripe size, in KiB.
+    ///
+    /// A transfer uses as many compatible NIC pairs as this minimum allows.
+    /// Transfers smaller than the minimum use one pair.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_MIN_STRIPE_SIZE_KB".to_string()),
+        Some("rdma_min_stripe_size_kb".to_string()),
+    ))
+    pub attr RDMA_MIN_STRIPE_SIZE_KB: NonZeroUsize =
+        NonZeroUsize::new(512).expect("512 is non-zero");
+
     /// How many queue pairs share one completion queue.
     ///
     /// Sharing is what lets one poller reap for several queue pairs. Each

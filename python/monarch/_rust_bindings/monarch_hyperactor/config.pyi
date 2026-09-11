@@ -86,6 +86,7 @@ def configure(
     rdma_ibverbs_target: str = ...,
     rdma_peer_device_affinity: str = ...,
     rdma_max_nics_per_buffer: Optional[int] = ...,
+    rdma_min_stripe_size_kb: int = ...,
     rdma_qps_per_cq: int = ...,
     rdma_cq_poller_per_device: bool = ...,
     rdma_runtime_worker_threads: int = ...,
@@ -213,6 +214,8 @@ def configure(
             data-plane runtime (default: 4), which runs RDMA actors and
             queue-pair worker tasks. Latched at the first RDMA use in a process;
             setting it later has no effect.
+        rdma_min_stripe_size_kb: Minimum RDMA stripe size in KiB (default: 512).
+            Transfers use as many compatible NIC pairs as this minimum allows.
         **kwargs: Reserved for future configuration keys
 
     For historical reasons, this API is named ``configure(...)``;

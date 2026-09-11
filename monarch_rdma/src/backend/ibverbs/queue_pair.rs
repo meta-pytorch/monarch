@@ -707,43 +707,58 @@ pub(super) trait Manager:
 
 impl<T> Manager for T where T: Actor + Referable + RemoteHandles<CreatePeerQueuePair<T>> {}
 
-/// Per-op completion result sent from a queue-pair worker to the submitter.
-#[derive(Debug)]
-pub(super) struct OpResult {
+/// Identifies one stripe of an operation in a submission batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct StripeId {
     pub(super) op_idx: usize,
+    pub(super) stripe_idx: usize,
+    pub(super) stripe_count: usize,
+}
+
+impl std::fmt::Display for StripeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "op_idx={}, stripe {}/{}",
+            self.op_idx, self.stripe_idx, self.stripe_count
+        )
+    }
+}
+
+/// Per-stripe completion result sent from a queue-pair worker to the submitter.
+#[derive(Debug)]
+pub(super) struct StripeResult {
+    pub(super) stripe_id: StripeId,
     pub(super) result: Result<(), String>,
 }
 
-/// One op the manager has assigned to a queue pair.
+/// One transfer stripe assigned to a queue pair.
 #[derive(Debug)]
 pub(super) struct QueuePairOp {
-    /// Index of the op in the caller's `submit` batch, echoed back in the
-    /// [`OpResult`] so the manager can correlate replies across the batches it
-    /// sliced per QP.
-    pub(super) op_idx: usize,
+    pub(super) stripe_id: StripeId,
     pub(super) op_type: RdmaOpType,
     pub(super) local_memory: KeepaliveLocalMemory,
-    /// `local_memory`'s registration on this queue pair's own device.
+    /// The local and remote views are already sliced to this stripe's range.
     pub(super) local: IbvMemoryRegionView,
     pub(super) remote: IbvRemoteMemoryRegionView,
 }
 
 /// Local-only request: enqueue a batch of ops on this QP. As each op resolves
-/// the worker sends one [`OpResult`] on `reply`. Its inner `Result` is `Ok(())`
+/// the worker sends one [`StripeResult`] on `reply`. Its inner `Result` is `Ok(())`
 /// if every WR for the op completed successfully, otherwise `Err` carrying the
 /// first per-WR error observed (held back until the op's other WRs also report,
 /// so the memory handle and MR registration outlive the data path).
 #[derive(Debug)]
 pub(super) struct ProcessOps {
     pub(super) items: Vec<QueuePairOp>,
-    pub(super) reply: mpsc::UnboundedSender<OpResult>,
+    pub(super) reply: mpsc::UnboundedSender<StripeResult>,
 }
 
 /// An op accepted by the worker but not yet posted to the QP.
 #[derive(Debug)]
 struct PendingOp {
     op: QueuePairOp,
-    reply: mpsc::UnboundedSender<OpResult>,
+    reply: mpsc::UnboundedSender<StripeResult>,
     /// WR count this op will issue when posted, computed once at
     /// construction so retries from a credit head-block don't redo
     /// the work.
@@ -753,14 +768,14 @@ struct PendingOp {
 /// State of an op whose WRs are in flight on the QP.
 #[derive(Debug)]
 struct PostedOpEntry {
-    op_idx: usize,
+    stripe_id: StripeId,
     pending_wrs: HashSet<u64>,
     /// Kept alive so the memory outlives every in-flight WR touching it.
     _local_memory: KeepaliveLocalMemory,
     /// Kept alive so the memory *registration* outlives every in-flight
     /// WR touching it.
     _local_mrv: IbvMemoryRegionView,
-    reply: mpsc::UnboundedSender<OpResult>,
+    reply: mpsc::UnboundedSender<StripeResult>,
     /// First per-WR error observed for this op. The op's final reply is
     /// held back until `pending_wrs.is_empty()`, so the two fields above
     /// outlive every WR still in flight.
@@ -837,6 +852,10 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairHandle<M, Qp> {
         self.sender
             .send(message)
             .map_err(|_| anyhow::anyhow!("queue pair worker stopped"))
+    }
+
+    pub(super) fn sender(&self) -> mpsc::UnboundedSender<ProcessOps> {
+        self.sender.clone()
     }
 
     pub(super) fn drain_and_stop(&self, reason: &str) -> Result<(), ActorError> {
@@ -964,7 +983,7 @@ impl<Qp: IbvQueuePair> QueuePairState<Qp> {
         let max_msg_size = self.qp.max_msg_size();
         self.queue
             .extend(message.items.into_iter().map(|op| PendingOp {
-                wrs: op.local_memory.size().div_ceil(max_msg_size).max(1) as u32,
+                wrs: op.local.size.div_ceil(max_msg_size).max(1) as u32,
                 op,
                 reply: message.reply.clone(),
             }));
@@ -983,16 +1002,16 @@ impl<Qp: IbvQueuePair> QueuePairState<Qp> {
     fn try_post_head(&mut self) -> Result<bool, anyhow::Error> {
         let pending = self.queue.pop_front().expect("non-empty queue");
         let PendingOp { op, reply, wrs } = pending;
-        let op_idx = op.op_idx;
+        let stripe_id = op.stripe_id;
 
         // 1. Per-op fatal: op alone exceeds the QP's capacity.
         if wrs > self.max_send_wr {
             let err = format!(
-                "op too large for this QP [op_idx={}, qp_key={:?}, op_type={:?}, wrs={}, max_send_wr={}, local: {:?}, remote: {:?}]",
-                op_idx, self.qp_key, op.op_type, wrs, self.max_send_wr, op.local_memory, op.remote,
+                "op too large for this QP [{stripe_id}, qp_key={:?}, op_type={:?}, wrs={}, max_send_wr={}, local: {:?}, remote: {:?}]",
+                self.qp_key, op.op_type, wrs, self.max_send_wr, op.local_memory, op.remote,
             );
-            let _ = reply.send(OpResult {
-                op_idx,
+            let _ = reply.send(StripeResult {
+                stripe_id,
                 result: Err(err),
             });
             return Ok(true);
@@ -1014,13 +1033,12 @@ impl<Qp: IbvQueuePair> QueuePairState<Qp> {
         };
         let wr_ids = post_result.map_err(|e| {
             anyhow::anyhow!(
-                "qp.{} failed [op_idx={}, qp_key={:?}, local: {:?}, remote: {:?}]: {e}",
+                "qp.{} failed [{stripe_id}, qp_key={:?}, local: {:?}, remote: {:?}]: {e}",
                 if matches!(op.op_type, RdmaOpType::ReadIntoLocal) {
                     "get"
                 } else {
                     "put"
                 },
-                op_idx,
                 self.qp_key,
                 local,
                 op.remote,
@@ -1039,7 +1057,7 @@ impl<Qp: IbvQueuePair> QueuePairState<Qp> {
         self.posted.insert(
             op_id,
             PostedOpEntry {
-                op_idx,
+                stripe_id,
                 pending_wrs,
                 _local_memory: op.local_memory,
                 _local_mrv: local,
@@ -1099,8 +1117,8 @@ impl<Qp: IbvQueuePair> QueuePairState<Qp> {
                 Some(err) => Err(err),
                 None => Ok(()),
             };
-            let _ = entry.reply.send(OpResult {
-                op_idx: entry.op_idx,
+            let _ = entry.reply.send(StripeResult {
+                stripe_id: entry.stripe_id,
                 result,
             });
         }
@@ -2107,17 +2125,41 @@ mod tests {
     const PEER_DEVICE: &str = "mlx5_0";
 
     fn make_op(op_idx: usize, op_type: RdmaOpType, addr: usize, size: usize) -> QueuePairOp {
+        make_stripe(op_idx, 0, 1, op_type, addr, size, 0, size)
+    }
+
+    #[expect(clippy::too_many_arguments, reason = "a test fixture for one stripe")]
+    fn make_stripe(
+        op_idx: usize,
+        stripe_idx: usize,
+        stripe_count: usize,
+        op_type: RdmaOpType,
+        addr: usize,
+        region_size: usize,
+        offset: usize,
+        size: usize,
+    ) -> QueuePairOp {
+        let local = fake_mrv(addr, region_size)
+            .try_slice(offset, size)
+            .expect("a valid local slice");
+        let remote = IbvRemoteMemoryRegionView {
+            rkey: 0,
+            addr: 0x4000_0000,
+            size: region_size,
+            device_name: PEER_DEVICE.to_string(),
+        }
+        .try_slice(offset, size)
+        .expect("a valid remote slice");
         QueuePairOp {
-            op_idx,
-            op_type,
-            local_memory: fake_local_memory(addr, size),
-            local: fake_mrv(addr, size),
-            remote: IbvRemoteMemoryRegionView {
-                rkey: 0,
-                addr: 0x4000_0000,
-                size,
-                device_name: PEER_DEVICE.to_string(),
+            stripe_id: StripeId {
+                op_idx,
+                stripe_idx,
+                stripe_count,
             },
+            op_type,
+            local_memory: fake_local_memory(addr, region_size),
+            local,
+            remote,
         }
     }
 
@@ -2271,7 +2313,7 @@ mod tests {
     fn submit_ops(
         actor: &QueuePairHandle<QpaMockManager, MockQp>,
         items: Vec<QueuePairOp>,
-    ) -> Result<mpsc::UnboundedReceiver<OpResult>> {
+    ) -> Result<mpsc::UnboundedReceiver<StripeResult>> {
         let (reply, rx) = mpsc::unbounded_channel();
         actor.send(ProcessOps { items, reply })?;
         Ok(rx)
@@ -2280,7 +2322,7 @@ mod tests {
     /// Collect exactly `n` replies with a per-recv timeout, sorted
     /// by op_idx for deterministic comparison.
     async fn collect_replies(
-        rx: &mut mpsc::UnboundedReceiver<OpResult>,
+        rx: &mut mpsc::UnboundedReceiver<StripeResult>,
         n: usize,
     ) -> Vec<(usize, Result<(), String>)> {
         let mut out = Vec::with_capacity(n);
@@ -2289,7 +2331,7 @@ mod tests {
                 .await
                 .expect("timed out waiting for ProcessOps reply")
                 .expect("ProcessOps result channel closed");
-            out.push((m.op_idx, m.result));
+            out.push((m.stripe_id.op_idx, m.result));
         }
         out.sort_by_key(|(i, _)| *i);
         out
@@ -2298,11 +2340,11 @@ mod tests {
     /// Try to recv with a short timeout, returning `None` on timeout
     /// so callers can assert "no reply yet".
     async fn try_recv(
-        rx: &mut mpsc::UnboundedReceiver<OpResult>,
+        rx: &mut mpsc::UnboundedReceiver<StripeResult>,
         wait: Duration,
     ) -> Option<(usize, Result<(), String>)> {
         match tokio::time::timeout(wait, rx.recv()).await {
-            Ok(Some(m)) => Some((m.op_idx, m.result)),
+            Ok(Some(m)) => Some((m.stripe_id.op_idx, m.result)),
             Ok(None) => panic!("ProcessOps result channel closed"),
             Err(_) => None,
         }
@@ -2331,6 +2373,45 @@ mod tests {
         qp.queue_completion(0);
         let replies = collect_replies(&mut rx, 1).await;
         assert_eq!(replies, vec![(7, Ok(()))]);
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_posts_only_its_stripe() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4).await?;
+
+        let items = vec![make_stripe(
+            7,
+            2,
+            4,
+            RdmaOpType::WriteFromLocal,
+            0x1000,
+            4096,
+            2048,
+            1024,
+        )];
+        let mut rx = submit_ops(&actor, items)?;
+
+        let (local, remote, wr_ids) = expect_put(recv_posted(&mut posted_rx).await);
+        assert_eq!((local.rdma_addr, local.size), (0x1800, 1024));
+        assert_eq!((remote.addr, remote.size), (0x4000_0800, 1024));
+
+        qp.queue_completion(wr_ids[0]);
+        let reply = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for the stripe reply")
+            .expect("reply channel closed");
+        assert_eq!(
+            reply.stripe_id,
+            StripeId {
+                op_idx: 7,
+                stripe_idx: 2,
+                stripe_count: 4,
+            }
+        );
+        assert_eq!(reply.result, Ok(()));
         harness.teardown().await;
         Ok(())
     }
