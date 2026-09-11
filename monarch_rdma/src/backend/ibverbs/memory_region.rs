@@ -80,6 +80,28 @@ impl IbvMemoryRegionView {
         }
     }
 
+    /// Returns a view of `size` bytes starting at `offset`.
+    ///
+    /// The slice shares the same registration, keys, and device, and keeps the
+    /// registration alive.
+    pub fn try_slice(&self, offset: usize, size: usize) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            offset.checked_add(size).is_some_and(|end| end <= self.size),
+            "slice [{offset}, {offset}+{size}) is out of bounds for a {}-byte registration of \
+             [{:#x}, {:#x}) on {}",
+            self.size,
+            self.rdma_addr,
+            self.rdma_addr + self.size,
+            self.device_name,
+        );
+        Ok(Self {
+            virtual_addr: self.virtual_addr + offset,
+            rdma_addr: self.rdma_addr + offset,
+            size,
+            ..self.clone()
+        })
+    }
+
     /// Fabricate a zero-sized view naming `device_name` and carrying `key` as
     /// both its `lkey` and its `rkey`, over a null MR keepalive whose `Drop`
     /// is a no-op. For tests that care only about which device a registration
@@ -116,6 +138,27 @@ pub struct IbvRemoteMemoryRegionView {
     pub device_name: String,
 }
 
+impl IbvRemoteMemoryRegionView {
+    /// Returns a view of `size` bytes starting at `offset` in the peer's region.
+    /// The slice retains the remote key and device.
+    pub fn try_slice(&self, offset: usize, size: usize) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            offset.checked_add(size).is_some_and(|end| end <= self.size),
+            "slice [{offset}, {offset}+{size}) is out of bounds for a {}-byte peer registration \
+             of [{:#x}, {:#x}) on {}",
+            self.size,
+            self.addr,
+            self.addr + self.size,
+            self.device_name,
+        );
+        Ok(Self {
+            addr: self.addr + offset,
+            size,
+            ..self.clone()
+        })
+    }
+}
+
 impl From<&IbvMemoryRegionView> for IbvRemoteMemoryRegionView {
     /// The wire transport details are fully derived from the registered MR
     /// view: the remote key, the RDMA address, the size, and the device name.
@@ -126,5 +169,55 @@ impl From<&IbvMemoryRegionView> for IbvRemoteMemoryRegionView {
             size: view.size,
             device_name: view.device_name.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view(rdma_addr: usize, size: usize) -> IbvMemoryRegionView {
+        IbvMemoryRegionView::new(
+            0x1000,
+            rdma_addr,
+            size,
+            0x1234,
+            0x5678,
+            "mlx5_0".to_string(),
+            Arc::new(IbvMr::null()),
+        )
+    }
+
+    #[test]
+    fn a_slice_moves_both_addresses_and_keeps_the_keys() {
+        let sliced = view(0x4000, 4096)
+            .try_slice(1024, 512)
+            .expect("a slice inside the region");
+        assert_eq!(sliced.rdma_addr, 0x4400, "the RDMA address advances");
+        assert_eq!(sliced.virtual_addr, 0x1400, "so does the virtual address");
+        assert_eq!(sliced.size, 512);
+        assert_eq!((sliced.lkey, sliced.rkey), (0x1234, 0x5678));
+        assert_eq!(sliced.device_name, "mlx5_0");
+    }
+
+    #[test]
+    fn a_remote_slice_moves_the_address_and_keeps_the_rkey() {
+        let remote = IbvRemoteMemoryRegionView::from(&view(0x4000, 4096));
+        let sliced = remote.try_slice(2048, 2048).expect("a slice at the end");
+        assert_eq!((sliced.addr, sliced.size), (0x4800, 2048));
+        assert_eq!(sliced.rkey, 0x5678);
+        assert_eq!(sliced.device_name, "mlx5_0");
+    }
+
+    #[test]
+    fn slices_are_bounded_by_the_registration() {
+        let local = view(0x4000, 4096);
+        let remote = IbvRemoteMemoryRegionView::from(&local);
+        assert!(local.try_slice(0, 4096).is_ok());
+        assert!(local.try_slice(4096, 0).is_ok());
+        assert!(local.try_slice(0, 4097).is_err());
+        assert!(local.try_slice(4096, 1).is_err());
+        assert!(local.try_slice(1, usize::MAX).is_err());
+        assert!(remote.try_slice(2048, 2049).is_err());
     }
 }
