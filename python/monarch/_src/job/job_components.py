@@ -191,6 +191,10 @@ class TelemetryComponent(JobComponent):
         self._dashboard_url: Optional[str] = None
         self._query_engine_client: Optional[QueryEngineClient] = None
 
+    @property
+    def telemetry_url(self) -> Optional[str]:
+        return self._telemetry_url
+
     def reset_runtime(self) -> None:
         self._query_engine_client = None
         self._telemetry_url = None

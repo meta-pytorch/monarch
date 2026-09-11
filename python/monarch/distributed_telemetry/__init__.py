@@ -17,9 +17,14 @@ Sidecar architecture:
 Usage:
     from monarch.job import ProcessJob, TelemetryConfig
 
-    state = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig()).state()
+    job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig())
+    state = job.state()
     client = state.query_engine_client
     assert client is not None
     # ... spawn procs, they're automatically tracked ...
     result = client.query("SELECT * FROM metric_sums")
 """
+
+from monarch.distributed_telemetry import profiler
+
+__all__ = ["profiler"]
