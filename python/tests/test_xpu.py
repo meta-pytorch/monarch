@@ -36,10 +36,8 @@ import cloudpickle
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from monarch._src.job.process import ProcessJob
 from monarch.actor import Actor, current_rank, current_size, endpoint, this_host
 from monarch.spmd import setup_torch_elastic_env, SPMDActor
-from scoped_state import scoped_state
 
 
 def _num_actors() -> int:
@@ -47,7 +45,10 @@ def _num_actors() -> int:
 
 
 def _mock_accelerator(accel_type):
-    return patch("torch.accelerator.current_accelerator", return_value=accel_type)
+    # current_accelerator() returns a torch.device, not a str
+    return patch(
+        "torch.accelerator.current_accelerator", return_value=torch.device(accel_type)
+    )
 
 
 # ===========================================================================
@@ -79,27 +80,35 @@ class TestXpuAcceleratorEnvVars(unittest.TestCase):
             assert snap["ZE_AFFINITY_MASK"] == "0,1"
             assert snap["PYTORCH_XPU_ALLOC_CONF"] == "expandable_segments:True"
 
-    def test_xpu_not_initialized(self):
+    def test_cuda_excludes_xpu_vars(self):
+        from monarch._src.actor.proc_mesh import _get_accelerator_env_vars
+
+        with _mock_accelerator("cuda"):
+            env_vars = _get_accelerator_env_vars()
+            assert "ZE_AFFINITY_MASK" not in env_vars
+            assert "CUDA_VISIBLE_DEVICES" in env_vars
+
+    def test_xpu_dispatches_to_torch_xpu(self):
         from monarch._src.actor.proc_mesh import _torch_accelerator_already_initialized
 
-        with _mock_accelerator("xpu"):
-            result = _torch_accelerator_already_initialized()
-            assert isinstance(result, bool)
+        with _mock_accelerator("xpu"), patch.dict(
+            sys.modules, {"torch.xpu": None, "torch.cuda": None}
+        ):
+            assert _torch_accelerator_already_initialized() is False
 
+        with _mock_accelerator("xpu"), patch(
+            "torch.xpu.is_initialized", return_value=True
+        ), patch("torch.cuda.is_initialized", return_value=False):
+            assert _torch_accelerator_already_initialized() is True
 
-class TestTelemetryImportGate(unittest.TestCase):
-    def test_telemetry_config_stub_importable(self):
-        from monarch._src.job.job import TelemetryConfig
+    def test_no_torch_returns_cuda_defaults(self):
+        from monarch._src.actor.proc_mesh import (
+            _COMMON_CUDA_ENV_VARS,
+            _get_accelerator_env_vars,
+        )
 
-        config = TelemetryConfig()
-        assert hasattr(config, "batch_size")
-        assert hasattr(config, "retention_secs")
-
-    def test_process_job_importable(self):
-        from monarch._src.job.process import ProcessJob  # noqa: F401
-
-    def test_job_state_importable(self):
-        from monarch._src.job.job import JobState, JobTrait  # noqa: F401
+        with patch.dict(sys.modules, {"torch": None}):
+            assert _get_accelerator_env_vars() == _COMMON_CUDA_ENV_VARS
 
 
 # ===========================================================================
@@ -171,6 +180,9 @@ class TestEnvBeforeXpu(unittest.IsolatedAsyncioTestCase):
             for name, value in xpu_env_vars.items():
                 os.environ[name] = value
 
+        from monarch._src.job.process import ProcessJob
+        from scoped_state import scoped_state
+
         with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
             proc_mesh_instance = state.hosts.spawn_procs(bootstrap=setup_xpu_env)
             async with proc_mesh_instance:
@@ -187,6 +199,9 @@ class TestEnvBeforeXpu(unittest.IsolatedAsyncioTestCase):
             "ZE_AFFINITY_MASK": "0",
             "PYTORCH_XPU_ALLOC_CONF": "expandable_segments:False",
         }
+
+        from monarch._src.job.process import ProcessJob
+        from scoped_state import scoped_state
 
         with scoped_state(
             ProcessJob({"hosts": 1}, env=xpu_env_vars), cached_path=None

@@ -105,11 +105,17 @@ _COMMON_XPU_ENV_VARS: Tuple[str, ...] = (
 )
 
 
-def _get_accelerator_env_vars() -> Tuple[str, ...]:
-    """Return the relevant env vars based on the active accelerator."""
-    import torch
+def _current_accelerator_type() -> Optional[str]:
+    torch_mod = sys.modules.get("torch")
+    accelerator = getattr(torch_mod, "accelerator", None)
+    if accelerator is None:
+        return None
+    device = accelerator.current_accelerator()
+    return None if device is None else device.type
 
-    if torch.accelerator.current_accelerator() == "xpu":
+
+def _get_accelerator_env_vars() -> Tuple[str, ...]:
+    if _current_accelerator_type() == "xpu":
         return _COMMON_XPU_ENV_VARS + _COMMON_CUDA_ENV_VARS
     return _COMMON_CUDA_ENV_VARS
 
@@ -124,22 +130,11 @@ def _accel_env_snapshot() -> Dict[str, Optional[str]]:
 
 
 def _torch_accelerator_already_initialized() -> bool:
-    import torch
-
-    accel = torch.accelerator.current_accelerator()
-    if accel == "xpu":
-        torch_xpu = sys.modules.get("torch.xpu")
-        if torch_xpu is None:
-            return False
-        is_initialized = getattr(torch_xpu, "is_initialized", None)
-        if not callable(is_initialized):
-            return False
-        return bool(is_initialized())
-
-    torch_cuda = sys.modules.get("torch.cuda")
-    if torch_cuda is None:
+    submodule = "torch.xpu" if _current_accelerator_type() == "xpu" else "torch.cuda"
+    torch_device = sys.modules.get(submodule)
+    if torch_device is None:
         return False
-    is_initialized = getattr(torch_cuda, "is_initialized", None)
+    is_initialized = getattr(torch_device, "is_initialized", None)
     if not callable(is_initialized):
         return False
     return bool(is_initialized())
