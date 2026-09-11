@@ -18,9 +18,11 @@ use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
 use pyo3::buffer::PyBuffer;
+use pyo3::exceptions::PyBufferError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyBytesMethods;
+use pyo3::types::PyMemoryView;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_multipart::Part;
@@ -85,9 +87,9 @@ pub fn py_bytes_to_bytes(py_bytes: Py<PyBytes>) -> Bytes {
 /// A fragment of data in the buffer, either a copy or a reference.
 #[derive(Clone)]
 enum Fragment {
-    /// Small writes that were copied into a contiguous buffer
+    /// Data copied into Rust-owned storage
     Copy(Bytes),
-    /// Large writes stored as references to Python bytes
+    /// Large writes stored as references to immutable Python bytes
     Reference(Py<PyBytes>),
 }
 
@@ -95,7 +97,8 @@ enum Fragment {
 ///
 /// The `Buffer` struct provides a hybrid interface for accumulating byte data:
 /// - Small writes (< 256 bytes) are copied into a contiguous buffer to minimize fragment overhead
-/// - Large writes (>= 256 bytes) are stored as zero-copy references to Python bytes objects
+/// - Large `bytes` writes (>= 256 bytes) are stored as zero-copy references
+/// - Other buffer exporters are copied into Rust-owned storage
 ///
 /// This approach balances the overhead of per-fragment processing against the cost of copying data.
 ///
@@ -138,27 +141,52 @@ impl Buffer {
         }
     }
 
-    /// Writes bytes data to the buffer.
+    /// Writes buffer-protocol data to the buffer.
     ///
     /// Small writes (< 256 bytes) are copied into a contiguous buffer.
-    /// Large writes (>= 256 bytes) are stored as zero-copy references.
+    /// Large `bytes` writes (>= 256 bytes) are stored as zero-copy references.
+    /// Other buffer exporters are copied so later mutations cannot affect the buffer.
     ///
     /// # Arguments
-    /// * `buff` - The bytes object to write to the buffer
+    /// * `buff` - The buffer-protocol object to write to the buffer
     ///
     /// # Returns
     /// The number of bytes written (always equal to the length of input bytes)
-    fn write(&mut self, buff: &Bound<'_, PyBytes>) -> usize {
-        let bytes_written = buff.as_bytes().len();
+    fn write(&mut self, buff: &Bound<'_, PyAny>) -> PyResult<usize> {
+        if let Ok(buff) = buff.cast::<PyBytes>() {
+            let bytes_written = buff.as_bytes().len();
+            if bytes_written < self.threshold {
+                self.pending.extend_from_slice(buff.as_bytes());
+            } else {
+                self.flush_pending();
+                self.fragments
+                    .push(Fragment::Reference(buff.clone().unbind()));
+            }
+            return Ok(bytes_written);
+        }
 
+        let buffer = match PyBuffer::get(buff) {
+            Ok(buffer) => buffer,
+            Err(_) => {
+                let raw = buff
+                    .call_method0("raw")
+                    .or_else(|_| PyMemoryView::from(buff)?.call_method1("cast", ("B",)))?;
+                PyBuffer::get(&raw)?
+            }
+        };
+        if !buffer.is_c_contiguous() {
+            return Err(PyBufferError::new_err("buffer is not C-contiguous"));
+        }
+
+        let bytes = Bytes::from(buffer.to_vec(buff.py())?);
+        let bytes_written = bytes.len();
         if bytes_written < self.threshold {
-            self.pending.extend_from_slice(buff.as_bytes());
+            self.pending.extend_from_slice(&bytes);
         } else {
             self.flush_pending();
-            self.fragments
-                .push(Fragment::Reference(buff.clone().unbind()));
+            self.fragments.push(Fragment::Copy(bytes));
         }
-        bytes_written
+        Ok(bytes_written)
     }
 
     /// Returns the total number of bytes in the buffer.
