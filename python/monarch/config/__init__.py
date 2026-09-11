@@ -90,6 +90,7 @@ if TYPE_CHECKING:
             rdma_ibverbs_target: NotRequired[str]
             rdma_peer_device_affinity: NotRequired[str]
             rdma_max_nics_per_buffer: NotRequired[int | None]
+            rdma_min_stripe_size_kb: NotRequired[int]
             rdma_qps_per_cq: NotRequired[int]
             rdma_cq_poller_per_device: NotRequired[bool]
             rdma_runtime_worker_threads: NotRequired[int]
@@ -212,6 +213,9 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
                 validated when the RDMA manager starts.
             rdma_max_nics_per_buffer: How many NICs a buffer is registered on,
                 at most; ``None``, the default, sets no limit.
+            rdma_min_stripe_size_kb: Minimum RDMA stripe size in KiB
+                (default: 512). Transfers use as many compatible NIC pairs as
+                this minimum allows.
             rdma_qps_per_cq: How many queue pairs share one completion queue
                 (default 64).
             rdma_cq_poller_per_device: Whether each RDMA device gets a separate
