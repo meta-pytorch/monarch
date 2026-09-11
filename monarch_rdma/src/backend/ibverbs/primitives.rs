@@ -304,10 +304,6 @@ pub struct IbvConfig {
     pub hw_init_delay_ms: u64,
     /// `qp_type` - The type of queue pair to create (Auto, Standard, or Mlx5dv).
     pub qp_type: IbvQpType,
-    /// Test-only override for `register_segments`'s `max_sge`. `<= 0`
-    /// (default) uses `ibv_query_device`; small positive values force
-    /// `RDMAXCEL_MKEY_REG_LIMIT` to exercise the dmabuf fallback.
-    pub max_sge_override: i32,
 }
 wirevalue::register_type!(IbvConfig);
 
@@ -336,7 +332,6 @@ impl Default for IbvConfig {
             use_gpu_direct: false, // nv_peermem enabled for cuda
             hw_init_delay_ms: 2,
             qp_type: IbvQpType::Auto,
-            max_sge_override: 0,
         }
     }
 }
@@ -1314,18 +1309,6 @@ impl IbvQp {
     /// The device context this QP was created on, sourced from its PD.
     pub(super) fn context(&self) -> &IbvContext {
         self.pd.context()
-    }
-
-    /// A placeholder holding no queue pair: `as_ptr` returns null and `Drop` is
-    /// a no-op.
-    #[cfg(test)]
-    pub(super) fn null() -> Self {
-        Self {
-            qp: std::ptr::null_mut(),
-            _send_cq: Arc::new(IbvCq::null()),
-            _recv_cq: Arc::new(IbvCq::null()),
-            pd: Arc::new(IbvPd::null()),
-        }
     }
 }
 

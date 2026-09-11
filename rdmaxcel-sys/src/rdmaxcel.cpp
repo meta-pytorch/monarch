@@ -9,13 +9,75 @@
 #include "rdmaxcel.h"
 #include <cuda.h>
 #include <unistd.h>
+#include <algorithm>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <set>
 #include <unordered_map>
 #include <vector>
 #include "driver_api.h"
+#include "mlx5_ifc_subset.h"
+
+namespace {
+
+constexpr size_t kMaxDevxCommandBytes = std::numeric_limits<uint16_t>::max();
+
+constexpr size_t max_klms_per_create_command() {
+  const size_t unpadded =
+      (kMaxDevxCommandBytes - DEVX_ST_SZ_BYTES(create_mkey_in)) /
+      sizeof(mlx5_wqe_umr_klm_seg);
+  return unpadded & ~size_t{3};
+}
+
+static_assert(DEVX_ST_SZ_BYTES(query_hca_cap_in) == 16);
+static_assert(DEVX_ST_SZ_BYTES(query_hca_cap_out) == 16 + 4096);
+static_assert(DEVX_ST_SZ_BYTES(create_mkey_out) == 16);
+static_assert(DEVX_ST_SZ_BYTES(create_mkey_in) == 272);
+static_assert(sizeof(mlx5_wqe_umr_klm_seg) == 16);
+static_assert(max_klms_per_create_command() == 4076);
+
+int query_devx_mkey_max_entries(ibv_context* context, size_t* max_entries) {
+  if (!context || !max_entries) {
+    return RDMAXCEL_NULL_ARG;
+  }
+
+  uint32_t in[DEVX_ST_SZ_DW(query_hca_cap_in)] = {};
+  uint32_t out[DEVX_ST_SZ_DW(query_hca_cap_out)] = {};
+  DEVX_SET(query_hca_cap_in, in, opcode, MLX5_CMD_OP_QUERY_HCA_CAP);
+  DEVX_SET(query_hca_cap_in, in, op_mod, HCA_CAP_OPMOD_GET_CUR);
+  const int ret =
+      mlx5dv_devx_general_cmd(context, in, sizeof(in), out, sizeof(out));
+  if (ret != 0 || DEVX_GET(query_hca_cap_out, out, status) != 0) {
+    fprintf(
+        stderr,
+        "[RdmaXcel] DevX QUERY_HCA_CAP failed: errno %d, status %llu, syndrome 0x%llx\n",
+        ret,
+        static_cast<unsigned long long>(
+            DEVX_GET(query_hca_cap_out, out, status)),
+        static_cast<unsigned long long>(
+            DEVX_GET(query_hca_cap_out, out, syndrome)));
+    return RDMAXCEL_QUERY_DEVICE_FAILED;
+  }
+
+  const uint32_t log_max_entries = DEVX_GET(
+      query_hca_cap_out, out, capability.cmd_hca_cap.log_max_klm_list_size);
+  const size_t command_limit = max_klms_per_create_command();
+  const size_t hardware_limit =
+      log_max_entries >= std::numeric_limits<size_t>::digits
+      ? command_limit
+      : size_t{1} << log_max_entries;
+  *max_entries = std::min(hardware_limit, command_limit) & ~size_t{3};
+  return RDMAXCEL_SUCCESS;
+}
+
+} // namespace
+
+struct rdmaxcel_devx_mkey {
+  mlx5dv_devx_obj* object;
+};
 
 // Platform-specific cast for device pointers
 // In CUDA: CUdeviceptr is unsigned long long, use static_cast from size_t
@@ -341,6 +403,145 @@ int rdmaxcel_destroy_mkey(struct mlx5dv_mkey* mkey) {
   const int err = mlx5dv_destroy_mkey(mkey);
   if (err != 0) {
     fprintf(stderr, "[RdmaXcel] mlx5dv_destroy_mkey failed: errno %d\n", err);
+    return RDMAXCEL_DESTROY_MKEY_FAILED;
+  }
+  return RDMAXCEL_SUCCESS;
+}
+
+int rdmaxcel_query_devx_mkey_max_entries(
+    struct ibv_context* context,
+    size_t* max_entries) noexcept {
+  try {
+    return query_devx_mkey_max_entries(context, max_entries);
+  } catch (const std::exception& e) {
+    fprintf(
+        stderr,
+        "[RdmaXcel] rdmaxcel_query_devx_mkey_max_entries failed: %s\n",
+        e.what());
+    return RDMAXCEL_EXCEPTION;
+  } catch (...) {
+    fprintf(
+        stderr,
+        "[RdmaXcel] rdmaxcel_query_devx_mkey_max_entries failed: unknown\n");
+    return RDMAXCEL_EXCEPTION;
+  }
+}
+
+int rdmaxcel_create_devx_mr_list(
+    struct ibv_pd* pd,
+    int access_flags,
+    struct ibv_mr* const* mrs,
+    size_t mrs_cnt,
+    rdmaxcel_devx_mkey_t** mkey,
+    uint32_t* lkey,
+    uint32_t* rkey) noexcept {
+  try {
+    if (!pd || !mrs || !mkey || !lkey || !rkey) {
+      return RDMAXCEL_NULL_ARG;
+    }
+    *mkey = nullptr;
+    *lkey = 0;
+    *rkey = 0;
+    if (mrs_cnt == 0 || mrs_cnt > max_klms_per_create_command()) {
+      return RDMAXCEL_MKEY_REG_LIMIT;
+    }
+
+    const size_t padded_mrs_cnt = (mrs_cnt + 3) & ~size_t{3};
+    const size_t in_size = DEVX_ST_SZ_BYTES(create_mkey_in) +
+        padded_mrs_cnt * sizeof(mlx5_wqe_umr_klm_seg);
+    std::vector<uint32_t> in(in_size / sizeof(uint32_t));
+    uint32_t out[DEVX_ST_SZ_DW(create_mkey_out)] = {};
+
+    mlx5dv_pd dv_pd{};
+    mlx5dv_obj dv_obj{};
+    dv_obj.pd.in = pd;
+    dv_obj.pd.out = &dv_pd;
+    if (mlx5dv_init_obj(&dv_obj, MLX5DV_OBJ_PD) != 0) {
+      return RDMAXCEL_MKEY_CREATE_FAILED;
+    }
+
+    auto* klms = reinterpret_cast<mlx5_wqe_umr_klm_seg*>(
+        DEVX_ADDR_OF(create_mkey_in, in.data(), klm_pas_mtt));
+    uint64_t total_length = 0;
+    for (size_t i = 0; i < mrs_cnt; ++i) {
+      const ibv_mr* mr = mrs[i];
+      if (!mr) {
+        return RDMAXCEL_NULL_ARG;
+      }
+      if (mr->length > std::numeric_limits<uint32_t>::max() ||
+          total_length > std::numeric_limits<uint64_t>::max() - mr->length) {
+        return RDMAXCEL_MKEY_REG_LIMIT;
+      }
+
+      klms[i].byte_count = htobe32(static_cast<uint32_t>(mr->length));
+      klms[i].mkey = htobe32(mr->lkey);
+      klms[i].address = htobe64(reinterpret_cast<uintptr_t>(mr->addr));
+      total_length += mr->length;
+    }
+
+    DEVX_SET(create_mkey_in, in.data(), opcode, MLX5_CMD_OP_CREATE_MKEY);
+    void* mkc = DEVX_ADDR_OF(create_mkey_in, in.data(), memory_key_mkey_entry);
+    DEVX_SET(mkc, mkc, a, (access_flags & IBV_ACCESS_REMOTE_ATOMIC) != 0);
+    DEVX_SET(mkc, mkc, rw, (access_flags & IBV_ACCESS_REMOTE_WRITE) != 0);
+    DEVX_SET(mkc, mkc, rr, (access_flags & IBV_ACCESS_REMOTE_READ) != 0);
+    DEVX_SET(mkc, mkc, lw, (access_flags & IBV_ACCESS_LOCAL_WRITE) != 0);
+    DEVX_SET(mkc, mkc, lr, 1);
+    DEVX_SET(mkc, mkc, access_mode_1_0, MLX5_MKC_ACCESS_MODE_KLMS);
+    DEVX_SET(mkc, mkc, qpn, 0xffffff);
+    DEVX_SET(mkc, mkc, mkey_7_0, 0);
+    DEVX_SET(mkc, mkc, pd, dv_pd.pdn);
+    DEVX_SET64(mkc, mkc, start_addr, 0);
+    DEVX_SET64(mkc, mkc, len, total_length);
+    DEVX_SET(mkc, mkc, translations_octword_size, padded_mrs_cnt);
+    DEVX_SET(
+        create_mkey_in, in.data(), translations_octword_actual_size, mrs_cnt);
+
+    mlx5dv_devx_obj* object = mlx5dv_devx_obj_create(
+        pd->context, in.data(), in_size, out, sizeof(out));
+    if (!object) {
+      fprintf(
+          stderr,
+          "[RdmaXcel] DevX CREATE_MKEY failed: status %llu, syndrome 0x%llx\n",
+          static_cast<unsigned long long>(
+              DEVX_GET(create_mkey_out, out, status)),
+          static_cast<unsigned long long>(
+              DEVX_GET(create_mkey_out, out, syndrome)));
+      return RDMAXCEL_MKEY_CREATE_FAILED;
+    }
+
+    auto owner = std::unique_ptr<rdmaxcel_devx_mkey_t>(
+        new (std::nothrow) rdmaxcel_devx_mkey_t{object});
+    if (!owner) {
+      mlx5dv_devx_obj_destroy(object);
+      return RDMAXCEL_MKEY_CREATE_FAILED;
+    }
+
+    const uint32_t key = DEVX_GET(create_mkey_out, out, mkey_index) << 8;
+    *lkey = key;
+    *rkey = key;
+    *mkey = owner.release();
+    return RDMAXCEL_SUCCESS;
+  } catch (const std::exception& e) {
+    fprintf(
+        stderr,
+        "[RdmaXcel] rdmaxcel_create_devx_mr_list failed: %s\n",
+        e.what());
+    return RDMAXCEL_EXCEPTION;
+  } catch (...) {
+    fprintf(
+        stderr, "[RdmaXcel] rdmaxcel_create_devx_mr_list failed: unknown\n");
+    return RDMAXCEL_EXCEPTION;
+  }
+}
+
+int rdmaxcel_destroy_devx_mkey(rdmaxcel_devx_mkey_t* mkey) noexcept {
+  if (!mkey) {
+    return RDMAXCEL_SUCCESS;
+  }
+  const int err = mlx5dv_devx_obj_destroy(mkey->object);
+  delete mkey;
+  if (err != 0) {
+    fprintf(stderr, "[RdmaXcel] DevX mkey destroy failed: errno %d\n", err);
     return RDMAXCEL_DESTROY_MKEY_FAILED;
   }
   return RDMAXCEL_SUCCESS;
@@ -722,13 +923,13 @@ const char* rdmaxcel_error_string(int error_code) {
     case RDMAXCEL_MLX5DV_QP_EX_FAILED:
       return "[RdmaXcel] Failed to get MLX5DV extended queue pair (mlx5dv_qp_ex_from_ibv_qp_ex)";
     case RDMAXCEL_MKEY_CREATE_FAILED:
-      return "[RdmaXcel] Failed to create MLX5 memory key (mlx5dv_create_mkey)";
+      return "[RdmaXcel] Failed to create MLX5 memory key";
     case RDMAXCEL_WR_COMPLETE_FAILED:
       return "[RdmaXcel] Work request completion failed (ibv_wr_complete)";
     case RDMAXCEL_WC_STATUS_FAILED:
       return "[RdmaXcel] Work completion status failed - memory registration unsuccessful";
     case RDMAXCEL_MKEY_REG_LIMIT:
-      return "[RdmaXcel] mkey registration failed - segment size > 4 GiB or SGL max exceeded";
+      return "[RdmaXcel] mkey registration entry or length limit exceeded";
     case RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED:
       return "[RdmaXcel] Failed to get CUDA device attribute";
     case RDMAXCEL_CUDA_GET_DEVICE_FAILED:
@@ -752,7 +953,7 @@ const char* rdmaxcel_error_string(int error_code) {
     case RDMAXCEL_NULL_ARG:
       return "[RdmaXcel] A required pointer argument was NULL";
     case RDMAXCEL_DESTROY_MKEY_FAILED:
-      return "[RdmaXcel] mlx5dv_destroy_mkey failed";
+      return "[RdmaXcel] MLX5 memory key destruction failed";
     default:
       return "[RdmaXcel] Unknown error code";
   }

@@ -59,6 +59,7 @@ fn main() {
                 "rdmaxcel.cu",
                 "driver_api.h",
                 "driver_api.cpp",
+                "mlx5_ifc_subset.h",
             ],
             &hip_dir,
             &manifest_dir,
@@ -77,6 +78,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/rdmaxcel.cu");
     println!("cargo:rerun-if-changed=src/driver_api.h");
     println!("cargo:rerun-if-changed=src/driver_api.cpp");
+    println!("cargo:rerun-if-changed=src/mlx5_ifc_subset.h");
 
     // Link against dl for dynamic loading (both platforms)
     println!("cargo:rustc-link-lib=dl");
@@ -157,6 +159,9 @@ fn main() {
         .allowlist_function("rdmaxcel_set_mem_location_id")
         .allowlist_function("rdmaxcel_bind_mr_list")
         .allowlist_function("rdmaxcel_destroy_mkey")
+        .allowlist_function("rdmaxcel_query_devx_mkey_max_entries")
+        .allowlist_function("rdmaxcel_create_devx_mr_list")
+        .allowlist_function("rdmaxcel_destroy_devx_mkey")
         .allowlist_function("poll_cq_with_cache")
         .allowlist_function("completion_cache_.*")
         // EFA functions (ibverbs-based)
@@ -171,6 +176,7 @@ fn main() {
         .allowlist_type("wqe_params_t")
         .allowlist_type("rdma_segment_info_t")
         .allowlist_type("rdmaxcel_scanned_segment_t")
+        .allowlist_type("rdmaxcel_devx_mkey_t")
         .allowlist_type("rdmaxcel_qp_t")
         .allowlist_type("rdmaxcel_qp")
         .allowlist_type("completion_cache_t")
