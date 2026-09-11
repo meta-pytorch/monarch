@@ -18,11 +18,13 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
@@ -101,7 +103,7 @@ wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<EfaDevice>>);
 /// execution. The manager iterates the batch, resolves each op's
 /// local MRs via [`IbvManagerActor::resolve_local_mrs`], settles on the
 /// NIC pair to run it over with
-/// [`IbvManagerActor::pick_peer_pair`], looks up (or spawns) the
+/// [`QueuePairRouter::pick_registrations_for_transfer`], looks up (or spawns) the
 /// active-side [`QueuePairActor`] for the op's [`QpKey`], and
 /// immediately dispatches a one-item [`ProcessOps`] to that QP — so
 /// the QP can start posting op `i` while the manager resolves the MRs
@@ -110,8 +112,116 @@ wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<EfaDevice>>);
 /// Per-op completion notifications stream back on `reply` as
 /// [`OpResult`] values.
 pub(super) struct SubmitOps<I: IbvDeviceImpl> {
-    pub(super) ops: Vec<IbvOp<IbvManagerActor<I>>>,
+    pub(super) ops: Vec<(usize, IbvOp<IbvManagerActor<I>>)>,
     pub(super) reply: mpsc::UnboundedSender<OpResult>,
+}
+
+/// Shared state for selecting a compatible registration pair and dispatching
+/// operations directly to initialized queue-pair workers.
+///
+/// The manager installs a route after creating a queue pair and removes all
+/// routes before tearing its queue pairs down. Each [`IbvBackend`] shares this
+/// router with the manager so warm submissions can bypass the manager mailbox;
+/// operations without local registrations or a matching route fall back to
+/// [`SubmitOps`].
+#[derive(Debug)]
+struct QueuePairRouter {
+    peer_device_affinity: PeerDeviceAffinityPolicy,
+    queue_pairs: DashMap<QpKey, mpsc::UnboundedSender<ProcessOps>>,
+}
+
+impl QueuePairRouter {
+    fn new(peer_device_affinity: PeerDeviceAffinityPolicy) -> Self {
+        Self {
+            peer_device_affinity,
+            queue_pairs: DashMap::new(),
+        }
+    }
+
+    /// Given local and remote registrations, uses
+    /// [`Self::peer_device_affinity`] to choose one compatible pair. Errors
+    /// when the policy gives no valid pair.
+    fn pick_registrations_for_transfer<'a>(
+        &self,
+        local: &'a [IbvMemoryRegionView],
+        remote: &'a [IbvRemoteMemoryRegionView],
+    ) -> Result<(&'a IbvMemoryRegionView, &'a IbvRemoteMemoryRegionView), anyhow::Error> {
+        // `PeerDeviceAffinityPolicy::pairs` is sensitive to input order. Sort
+        // both sides so selection depends only on the unordered registration
+        // sets and is consistent across processes.
+        let mut local: Vec<&IbvMemoryRegionView> = local.iter().collect();
+        local.sort_by(|a, b| a.device_name.cmp(&b.device_name));
+        let mut remote: Vec<&IbvRemoteMemoryRegionView> = remote.iter().collect();
+        remote.sort_by(|a, b| a.device_name.cmp(&b.device_name));
+
+        let local_names: Vec<String> = local.iter().map(|mr| mr.device_name.clone()).collect();
+        let remote_names: Vec<String> = remote.iter().map(|mr| mr.device_name.clone()).collect();
+        self.peer_device_affinity
+            .pairs(&local_names, &remote_names)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, peer)| peer.map(|j| (local[i], remote[j])))
+            .choose(&mut rand::rng())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no NIC of {local_names:?} pairs with a peer NIC of {remote_names:?} under \
+                     {:?}",
+                    self.peer_device_affinity,
+                )
+            })
+    }
+
+    fn try_dispatch<I: IbvDeviceImpl>(
+        &self,
+        op_idx: usize,
+        op: IbvOp<IbvManagerActor<I>>,
+        reply: &mpsc::UnboundedSender<OpResult>,
+    ) -> Option<IbvOp<IbvManagerActor<I>>> {
+        let local_mrs = op.local_memory.registered_mrs::<I>();
+        if local_mrs.is_empty() {
+            return Some(op);
+        }
+        let (local, remote) =
+            match self.pick_registrations_for_transfer(&local_mrs, &op.remote_buffers) {
+                Ok(pair) => pair,
+                Err(error) => {
+                    let _ = reply.send(OpResult {
+                        op_idx,
+                        result: Err(error.to_string()),
+                    });
+                    return None;
+                }
+            };
+        let local = local.clone();
+        let remote = remote.clone();
+        let qp_key = QpKey {
+            self_device: local.device_name.clone(),
+            other_id: op.remote_manager.actor_addr().id().clone(),
+            other_device: remote.device_name.clone(),
+        };
+        let Some(sender) = self.queue_pairs.get(&qp_key) else {
+            return Some(op);
+        };
+        if sender
+            .send(ProcessOps {
+                items: vec![QueuePairOp {
+                    op_idx,
+                    op_type: op.op_type,
+                    local_memory: op.local_memory,
+                    local,
+                    remote,
+                }],
+                reply: reply.clone(),
+            })
+            .is_err()
+        {
+            let _ = reply.send(OpResult {
+                op_idx,
+                result: Err("queue pair worker stopped".to_owned()),
+            });
+        }
+        None
+    }
 }
 
 /// Local-only message: create a fresh, unconnected legacy
@@ -191,6 +301,10 @@ pub struct IbvManagerActor<I: IbvDeviceImpl> {
     /// Read once, when the manager starts.
     peer_device_affinity: PeerDeviceAffinityPolicy,
 
+    /// Warm QP routes shared with [`IbvBackend`] for direct steady-state
+    /// submission without a manager-mailbox round trip.
+    queue_pair_router: Arc<QueuePairRouter>,
+
     /// Completion pollers, keyed by device name when each device gets its own
     /// poller and by the empty string when all devices share one.
     cq_pollers: HashMap<String, ActorHandle<CompletionQueueActor<IbvCq>>>,
@@ -227,6 +341,8 @@ impl<I: IbvDeviceImpl> Actor for IbvManagerActor<I> {
 
 impl<I: IbvDeviceImpl> Drop for IbvManagerActor<I> {
     fn drop(&mut self) {
+        self.queue_pair_router.queue_pairs.clear();
+
         // Stop each supervising QP actor; its cleanup cancels and joins the
         // data-plane worker that owns the QP.
         for (_key, handle) in self.qp_handles.drain() {
@@ -285,17 +401,23 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             }
         }
 
+        let peer_device_affinity = configured_peer_device_affinity()?;
         let actor = Self {
             owner: OnceLock::new(),
             qp_handles: HashMap::new(),
             peer_created_qps: HashMap::new(),
             devices: HashMap::new(),
-            peer_device_affinity: configured_peer_device_affinity()?,
+            peer_device_affinity: peer_device_affinity.clone(),
+            queue_pair_router: Arc::new(QueuePairRouter::new(peer_device_affinity)),
             cq_pollers: HashMap::new(),
             config,
         };
 
         Ok(actor)
+    }
+
+    fn queue_pair_router(&self) -> Arc<QueuePairRouter> {
+        Arc::clone(&self.queue_pair_router)
     }
 
     /// Get or create the `DEFAULT_DOMAIN` for the named RDMA device, opening
@@ -439,40 +561,6 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             .choose(&names, max.map(hyperactor_config::NonZeroUsize::into_std)))
     }
 
-    /// Given a list of local registrations and remote registrations, uses
-    /// [`Self::peer_device_affinity`] to decide on one local/remote pair
-    /// to use. Errors when the policy gives no valid pair.
-    fn pick_peer_pair<'a>(
-        &self,
-        local: &'a [IbvMemoryRegionView],
-        remote: &'a [IbvRemoteMemoryRegionView],
-    ) -> Result<(&'a IbvMemoryRegionView, &'a IbvRemoteMemoryRegionView), anyhow::Error> {
-        // Sort both sides by device name because `PeerDeviceAffinityPolicy::pairs` is
-        // sensitive to input order. This ensures that `pick_peer_pair`'s behavior is
-        // dependent only on the unordered set of local and remote devices, and it is
-        // therefore consistent across processes.
-        let mut local: Vec<&IbvMemoryRegionView> = local.iter().collect();
-        local.sort_by(|a, b| a.device_name.cmp(&b.device_name));
-        let mut remote: Vec<&IbvRemoteMemoryRegionView> = remote.iter().collect();
-        remote.sort_by(|a, b| a.device_name.cmp(&b.device_name));
-
-        let local_names: Vec<String> = local.iter().map(|mr| mr.device_name.clone()).collect();
-        let remote_names: Vec<String> = remote.iter().map(|mr| mr.device_name.clone()).collect();
-        self.peer_device_affinity
-            .pairs(&local_names, &remote_names)
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, peer)| peer.map(|j| (local[i], remote[j])))
-            .choose(&mut rand::rng())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no NIC of {local_names:?} pairs with a peer NIC of {remote_names:?} under \
-                     {:?}",
-                    self.peer_device_affinity,
-                )
-            })
-    }
-
     /// Build a passive-side mirror QP for `qp_key`, connect it to
     /// `sender_info`, and store it in [`Self::peer_created_qps`].
     /// Returns the local endpoint the active side needs to finish
@@ -552,6 +640,9 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             config.max_send_wr,
         );
         let handle = QueuePairHandle::new(cx.spawn(actor), sender);
+        self.queue_pair_router
+            .queue_pairs
+            .insert(qp_key.clone(), handle.sender());
         self.qp_handles.insert(qp_key.clone(), handle.clone());
         Ok(handle)
     }
@@ -566,7 +657,7 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
         // local MRs are resolved and its QP actor is in place, ship a
         // one-item `ProcessOps` to that QP. The QP can then post and
         // retire op `i` while we run `resolve_local_mrs` for op `i+1`.
-        for (i, op) in ops.into_iter().enumerate() {
+        for (i, op) in ops {
             let local_mrs = match self.resolve_local_mrs(&op.local_memory) {
                 Ok(mrs) => mrs,
                 Err(e) => {
@@ -577,7 +668,10 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
                     continue;
                 }
             };
-            let (local, remote) = match self.pick_peer_pair(&local_mrs, &op.remote_buffers) {
+            let (local, remote) = match self
+                .queue_pair_router
+                .pick_registrations_for_transfer(&local_mrs, &op.remote_buffers)
+            {
                 Ok((local, remote)) => (local.clone(), remote.clone()),
                 Err(e) => {
                     let _ = reply.send(OpResult {
@@ -696,18 +790,24 @@ impl<I: IbvDeviceImpl> Handler<IbvManagerLocalMessage> for IbvManagerActor<I> {
 /// state-mutating operations (MR registration/deregistration, QP management)
 /// serialized through actor messages.
 #[derive(Debug)]
-pub struct IbvBackend<I: IbvDeviceImpl>(pub ActorHandle<IbvManagerActor<I>>);
+pub struct IbvBackend<I: IbvDeviceImpl> {
+    manager: ActorHandle<IbvManagerActor<I>>,
+    queue_pair_router: Arc<QueuePairRouter>,
+}
 
 impl<I: IbvDeviceImpl> Clone for IbvBackend<I> {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self {
+            manager: self.manager.clone(),
+            queue_pair_router: Arc::clone(&self.queue_pair_router),
+        }
     }
 }
 
 impl<I: IbvDeviceImpl> std::ops::Deref for IbvBackend<I> {
     type Target = ActorHandle<IbvManagerActor<I>>;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.manager
     }
 }
 
@@ -777,7 +877,11 @@ where
         config: &RdmaConfig,
     ) -> Result<Self> {
         let actor = IbvManagerActor::<I>::new(config.ibv.clone()).await?;
-        Ok(IbvBackend(cx.spawn(actor)))
+        let queue_pair_router = actor.queue_pair_router();
+        Ok(Self {
+            manager: cx.spawn(actor),
+            queue_pair_router,
+        })
     }
 
     async fn register_remote_buffer(
@@ -787,12 +891,12 @@ where
         local: KeepaliveLocalMemory,
     ) -> Result<IbvRemoteBackendContext<I>> {
         let buffers = self
-            .0
+            .manager
             .register_remote_buffer(cx, local)
             .await?
             .map_err(|e| anyhow::anyhow!(e))?;
         Ok(IbvRemoteBackendContext {
-            manager: self.0.bind(),
+            manager: self.manager.bind(),
             buffers,
         })
     }
@@ -840,16 +944,23 @@ where
             });
         }
         let n = ibv_ops.len();
-
         let (reply, mut reply_rx) = mpsc::unbounded_channel();
 
-        self.0.try_post(
-            cx,
-            SubmitOps {
-                ops: ibv_ops,
-                reply,
-            },
-        )?;
+        let mut manager_ops = Vec::new();
+        for (op_idx, op) in ibv_ops.into_iter().enumerate() {
+            if let Some(op) = self.queue_pair_router.try_dispatch::<I>(op_idx, op, &reply) {
+                manager_ops.push((op_idx, op));
+            }
+        }
+        if !manager_ops.is_empty() {
+            self.manager.try_post(
+                cx,
+                SubmitOps {
+                    ops: manager_ops,
+                    reply,
+                },
+            )?;
+        }
 
         let mut failures: Vec<(usize, String)> = Vec::with_capacity(n);
         let mut received = 0usize;
