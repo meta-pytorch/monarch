@@ -396,7 +396,16 @@ impl CppStaticLibsConfig {
     /// different flags (e.g., ENABLE_RESOLVE_NEIGH=1).
     pub fn emit_link_directives(&self) {
         for lib_path in &self.rdma_static_libraries {
-            println!("cargo::rustc-link-arg={}", lib_path);
+            let path = Path::new(lib_path);
+            let parent = path
+                .parent()
+                .expect("rdma-core static library path must have a parent");
+            let file_name = path
+                .file_name()
+                .expect("rdma-core static library path must have a file name")
+                .to_string_lossy();
+            println!("cargo::rustc-link-search=native={}", parent.display());
+            println!("cargo::rustc-link-lib=static:+verbatim={file_name}");
         }
     }
 }

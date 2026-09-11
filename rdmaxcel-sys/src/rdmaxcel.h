@@ -22,11 +22,15 @@
 #define _Atomic(T) std::atomic<T>
 // `noexcept` is C++-only; elide it for bindgen's C parse of this header (the
 // real guarantee is enforced where the definition is compiled as C++).
+#ifndef RDMAXCEL_NOEXCEPT
 #define RDMAXCEL_NOEXCEPT noexcept
+#endif
 extern "C" {
 #else
 #include <stdatomic.h>
+#ifndef RDMAXCEL_NOEXCEPT
 #define RDMAXCEL_NOEXCEPT
+#endif
 #endif
 
 typedef enum {
@@ -193,6 +197,31 @@ int rdmaxcel_bind_mr_list(
 
 // Destroy an mkey created by `rdmaxcel_bind_mr_list`. No-op when NULL.
 int rdmaxcel_destroy_mkey(struct mlx5dv_mkey* mkey);
+
+// Opaque owner for an indirect mkey created directly with DevX.
+typedef struct rdmaxcel_devx_mkey rdmaxcel_devx_mkey_t;
+
+// Query the maximum number of KLM entries that can be populated in one DevX
+// CREATE_MKEY command. This is the smaller of the device limit and the DevX
+// command-size limit.
+int rdmaxcel_query_devx_mkey_max_entries(
+    struct ibv_context* context,
+    size_t* max_entries) RDMAXCEL_NOEXCEPT;
+
+// Create a zero-based indirect mkey whose address space is the concatenation
+// of `mrs`. Each MR must be no larger than UINT32_MAX bytes, the width of a KLM
+// byte-count field.
+int rdmaxcel_create_devx_mr_list(
+    struct ibv_pd* pd,
+    int access_flags,
+    struct ibv_mr* const* mrs,
+    size_t mrs_cnt,
+    rdmaxcel_devx_mkey_t** mkey,
+    uint32_t* lkey,
+    uint32_t* rkey) RDMAXCEL_NOEXCEPT;
+
+// Destroy an mkey created by `rdmaxcel_create_devx_mr_list`. No-op when NULL.
+int rdmaxcel_destroy_devx_mkey(rdmaxcel_devx_mkey_t* mkey) RDMAXCEL_NOEXCEPT;
 
 // Scanned segment information - minimal fields needed from external scanner
 // This is what the scanner callback fills in, separate from internal
