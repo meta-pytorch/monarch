@@ -21,7 +21,7 @@ fn main() {}
 #[cfg(not(target_os = "macos"))]
 fn main() {
     // Get rdma-core config from cpp_static_libs (same for both CUDA and ROCm)
-    let cpp_static_libs_config = build_utils::CppStaticLibsConfig::from_env();
+    let cpp_static_libs_config = build_utils::setup_cpp_static_libs();
     let rdma_include = &cpp_static_libs_config.rdma_include_dir;
 
     // Detect platform: ROCm or CUDA
@@ -154,6 +154,7 @@ fn main() {
         .allowlist_function("rdmaxcel_error_string")
         .allowlist_function("rdmaxcel_qp_.*")
         .allowlist_function("rdmaxcel_register_segment_scanner")
+        .allowlist_function("rdmaxcel_set_mem_location_id")
         .allowlist_function("rdmaxcel_bind_mr_list")
         .allowlist_function("rdmaxcel_destroy_mkey")
         .allowlist_function("poll_cq_with_cache")
