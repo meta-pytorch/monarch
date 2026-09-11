@@ -1137,6 +1137,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrysalis-core"
+version = "0.0.0"
+
+[[package]]
+name = "chrysalis-transport"
+version = "0.0.0"
+dependencies = [
+ "chrysalis-core",
+ "libc",
+ "tokio",
+]
+
+[[package]]
+name = "chrysalis-transport-core"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "chrysalis-core",
+]
+
+[[package]]
+name = "chrysalis-transport-uring"
+version = "0.0.0"
+dependencies = [
+ "chrysalis-transport-core",
+ "io-uring",
+ "libc",
+]
+
+[[package]]
 name = "ciborium"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4005,6 +4035,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
 dependencies = [
  "rustversion",
+]
+
+[[package]]
+name = "io-uring"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d09b98f7eace8982db770e4408e7470b028ce513ac28fecdc6bf4c30fe92b62"
+dependencies = [
+ "bitflags 2.13.1",
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]
