@@ -839,6 +839,10 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairHandle<M, Qp> {
             .map_err(|_| anyhow::anyhow!("queue pair worker stopped"))
     }
 
+    pub(super) fn sender(&self) -> mpsc::UnboundedSender<ProcessOps> {
+        self.sender.clone()
+    }
+
     pub(super) fn drain_and_stop(&self, reason: &str) -> Result<(), ActorError> {
         self.actor.drain_and_stop(reason)
     }
