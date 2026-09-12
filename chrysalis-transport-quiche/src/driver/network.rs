@@ -8,6 +8,7 @@
 
 use super::connection::ConnectionState;
 use super::*;
+use crate::io::PacketSendSlot;
 
 pub(super) struct Network {
     driver: DriverId,
@@ -376,9 +377,9 @@ impl Network {
             .saturating_sub(established_servers);
     }
 
-    pub(super) fn queue_packets(
+    pub(super) fn queue_packets<I: PacketIo>(
         &mut self,
-        io: &mut dyn PacketIo,
+        io: &mut I,
         _completions: &mut Vec<Completion>,
     ) -> Result<(), Error> {
         let segment_size = io.segment_size();
