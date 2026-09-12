@@ -24,6 +24,7 @@ use hyperactor::ProcAddr;
 use hyperactor::RemoteMessage;
 use hyperactor::RemoteSpawn;
 use hyperactor::Uid;
+use hyperactor::accum::IdleFlushReducerOpts;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
@@ -32,6 +33,7 @@ use hyperactor::id::Label;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
+use hyperactor_config::NonZeroUsize;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_remote::ActorSpawner;
 use hyperactor_remote::ActorSpawnerEndpoint;
@@ -668,13 +670,13 @@ impl ProcMeshRef {
         // merged full mesh (right-wins). The host mesh is a routing
         // over-approximation for sliced proc meshes; HostAgents that own
         // selected ranks post an overlay, others stay silent.
-        let (port, rx) = cx.mailbox().open_accum_port_opts(
-            template,
-            StreamingReducerOpts {
-                max_update_interval: Some(Duration::from_millis(50)),
-                initial_update_interval: None,
-            },
-        );
+        let (port, rx) = cx.mailbox().open_accum_port(template);
+
+        let reply = port.bind().into_idle_flush(IdleFlushReducerOpts {
+            idle_timeout: Duration::from_millis(50),
+            abandon_timeout: Duration::from_secs(30),
+            expected_updates_per_destination: NonZeroUsize::MIN,
+        });
 
         host_mesh.agent_mesh().cast(
             cx,
@@ -682,7 +684,7 @@ impl ProcMeshRef {
                 proc_mesh_id: self.id.clone(),
                 region: region.clone(),
                 keepalive,
-                reply: port.bind(),
+                reply,
             },
         )?;
 
@@ -1066,17 +1068,17 @@ impl ProcMeshRef {
         // the first update and replaces it with the caller-supplied
         // template (the `self` passed into open_accum_port), which we
         // seed here as "full NotExist over the target region".
-        let (port, rx) = cx.mailbox().open_accum_port_opts(
+        let (port, rx) = cx.mailbox().open_accum_port(
             // Initial state for the accumulator: full mesh seeded to
             // NotExist.
             crate::StatusMesh::from_single(region.clone(), Status::NotExist),
-            StreamingReducerOpts {
-                max_update_interval: Some(Duration::from_millis(50)),
-                initial_update_interval: None,
-            },
         );
 
-        let mut reply = port.bind();
+        let mut reply = port.bind().into_idle_flush(IdleFlushReducerOpts {
+            idle_timeout: Duration::from_millis(50),
+            abandon_timeout: Duration::from_secs(30),
+            expected_updates_per_destination: NonZeroUsize::MIN,
+        });
         // If this proc dies or some other issue renders the reply undeliverable,
         // the reply does not need to be returned to the sender.
         reply.return_undeliverable(false);

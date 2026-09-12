@@ -45,6 +45,7 @@ use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
+use hyperactor::IdleFlushPortRef;
 use hyperactor::Instance;
 use hyperactor::PortHandle;
 use hyperactor::PortRef;
@@ -433,7 +434,7 @@ struct PendingDrain {
 
 struct PendingDrainReply {
     rank: usize,
-    reply: PortRef<crate::StatusOverlay>,
+    reply: IdleFlushPortRef<crate::StatusOverlay>,
 }
 
 #[derive(Default)]
@@ -1105,7 +1106,7 @@ pub struct WaitProcs {
     /// Number of procs spawned on this host.
     pub num_per_host: usize,
     /// Sparse readiness updates for the caller's status barrier.
-    pub status_reply: PortRef<crate::StatusOverlay>,
+    pub status_reply: IdleFlushPortRef<crate::StatusOverlay>,
 }
 wirevalue::register_type!(WaitProcs);
 
@@ -1127,7 +1128,7 @@ impl Handler<WaitProcs> for HostAgent {
                         id,
                         rank: resource::Rank::new(rank),
                         min_status: Status::Running,
-                        reply: wait.status_reply.clone(),
+                        reply: (*wait.status_reply).clone(),
                     },
                 )
                 .await
@@ -1784,10 +1785,10 @@ pub struct DrainHost {
     /// The recipient's ordinal within the drain cast region, stamped by
     /// the cast layer. Used to position this host's status overlay.
     pub rank: resource::Rank,
-    /// Streaming status reply. Each host reports a single-rank `Stopped`
+    /// Idle-flush status reply. Each host reports a single-rank `Stopped`
     /// overlay once it has drained; the caller reduces these into a
     /// `StatusMesh` barrier and can detect hosts that never reported.
-    pub reply: PortRef<crate::StatusOverlay>,
+    pub reply: IdleFlushPortRef<crate::StatusOverlay>,
 }
 wirevalue::register_type!(DrainHost);
 
@@ -2253,7 +2254,7 @@ pub struct GetHostProcStates {
     /// an accumulator port seeded with a full-region template, so per-host
     /// overlays reduce up the cast tree into the complete proc-state mesh (see
     /// `ProcMeshRef::states`).
-    pub reply: hyperactor::PortRef<ValueOverlay<resource::State<ProcState>>>,
+    pub reply: IdleFlushPortRef<ValueOverlay<resource::State<ProcState>>>,
 }
 wirevalue::register_type!(GetHostProcStates);
 
@@ -2451,13 +2452,13 @@ pub struct SetClientConfig {
     /// This host's ordinal within the config-push cast region, stamped by the
     /// cast layer. Used to position this host's install ack overlay.
     pub rank: resource::Rank,
-    /// Streaming install ack. Each host posts a single-rank overlay at its
+    /// Idle-flush install ack. Each host posts a single-rank overlay at its
     /// ordinal once it has installed the config; the caller reduces these into
     /// a `StatusMesh` barrier and can name exactly which hosts (if any) never
     /// acknowledged (HM-4). `StatusMesh` is used here only as a per-rank
     /// presence/ack barrier — the status value itself is not meaningful (see
     /// the handler).
-    pub reply: PortRef<crate::StatusOverlay>,
+    pub reply: IdleFlushPortRef<crate::StatusOverlay>,
 }
 wirevalue::register_type!(SetClientConfig);
 
@@ -2575,9 +2576,11 @@ mod tests {
     use hyperactor::Client;
     use hyperactor::PortReceiver;
     use hyperactor::Proc;
+    use hyperactor::accum::IdleFlushReducerOpts;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::id::Label;
     use hyperactor::id::Uid;
+    use hyperactor_config::NonZeroUsize;
     use timed_test::async_timed_test;
 
     use super::*;
@@ -2589,6 +2592,21 @@ mod tests {
     use crate::resource::GetStateClient;
     use crate::resource::Rank;
     use crate::resource::WaitRankStatusClient;
+
+    /// Wrap a direct test reply so it has the same type as a cast reply.
+    ///
+    /// For example, a bound status port becomes an idle-flush status port with
+    /// one expected update per destination. Direct sends do not split it, so
+    /// the idle-flush settings do not change delivery in these tests.
+    fn idle_flush_status_reply(
+        reply: PortRef<crate::StatusOverlay>,
+    ) -> IdleFlushPortRef<crate::StatusOverlay> {
+        reply.into_idle_flush(IdleFlushReducerOpts {
+            idle_timeout: Duration::from_millis(50),
+            expected_updates_per_destination: NonZeroUsize::MIN,
+            abandon_timeout: Duration::from_millis(500),
+        })
+    }
 
     /// Assert `overlay` holds exactly one run covering `rank..rank+1`. The
     /// reply must land at the message rank the caller requested, not at any
@@ -2734,7 +2752,7 @@ mod tests {
                     max_in_flight: 1,
                     host_mesh_id: None,
                     rank: resource::Rank::new(0),
-                    reply: drain_reply.bind(),
+                    reply: idle_flush_status_reply(drain_reply.bind()),
                 },
             )
             .expect("drain request should be delivered");
@@ -3174,7 +3192,7 @@ mod tests {
                     16,
                     Some(matching_mesh),
                     resource::Rank::new(0),
-                    drain_reply.bind(),
+                    idle_flush_status_reply(drain_reply.bind()),
                 )
                 .await
                 .expect("selective drain should be accepted");
@@ -3350,7 +3368,7 @@ mod tests {
                 16,
                 None,
                 resource::Rank::new(0),
-                drain_reply.bind(),
+                idle_flush_status_reply(drain_reply.bind()),
             )
             .await
             .expect("drain request should be accepted");
@@ -3545,7 +3563,7 @@ mod tests {
                 rank: resource::Rank::new(0),
                 proc_mesh_id: rejected_proc_mesh_id,
                 num_per_host: 1,
-                status_reply: rejected_status_reply.bind(),
+                status_reply: idle_flush_status_reply(rejected_status_reply.bind()),
             },
         );
         assert_overlay_failed_at_rank(
@@ -3895,7 +3913,7 @@ mod tests {
                     max_in_flight: 1,
                     host_mesh_id: None,
                     rank: resource::Rank::new(0),
-                    reply: drain_reply.bind(),
+                    reply: idle_flush_status_reply(drain_reply.bind()),
                 },
             )
             .expect("drain request should be delivered during shutdown");
@@ -3990,7 +4008,12 @@ mod tests {
         let get_rank = 4;
         let (port, mut rx) = client.open_port::<crate::StatusOverlay>();
         host_agent
-            .get_rank_status(&client, id, resource::Rank::new(get_rank), port.bind())
+            .get_rank_status(
+                &client,
+                id,
+                resource::Rank::new(get_rank),
+                idle_flush_status_reply(port.bind()),
+            )
             .await
             .unwrap();
         let overlay = tokio::time::timeout(Duration::from_secs(30), rx.recv())
@@ -4004,7 +4027,12 @@ mod tests {
         let unknown = ResourceId::instance(Label::new("never-created").unwrap());
         let (port, mut rx) = client.open_port::<crate::StatusOverlay>();
         host_agent
-            .get_rank_status(&client, unknown, resource::Rank::new(4), port.bind())
+            .get_rank_status(
+                &client,
+                unknown,
+                resource::Rank::new(4),
+                idle_flush_status_reply(port.bind()),
+            )
             .await
             .unwrap();
         let overlay = tokio::time::timeout(Duration::from_secs(30), rx.recv())
@@ -4213,7 +4241,12 @@ mod tests {
         let get_rank = 3;
         let (port, mut rx) = client.open_port::<crate::StatusOverlay>();
         host_agent
-            .get_rank_status(&client, id, resource::Rank::new(get_rank), port.bind())
+            .get_rank_status(
+                &client,
+                id,
+                resource::Rank::new(get_rank),
+                idle_flush_status_reply(port.bind()),
+            )
             .await
             .unwrap();
         let overlay = tokio::time::timeout(Duration::from_secs(30), rx.recv())
@@ -4275,7 +4308,7 @@ mod tests {
                 max_in_flight: 16,
                 host_mesh_id: Some(host_mesh_id.clone()),
                 rank: resource::Rank::new(3),
-                reply: first_reply.bind(),
+                reply: idle_flush_status_reply(first_reply.bind()),
             },
         );
         agent_ref.post(
@@ -4285,7 +4318,7 @@ mod tests {
                 max_in_flight: 16,
                 host_mesh_id: Some(host_mesh_id),
                 rank: resource::Rank::new(7),
-                reply: second_reply.bind(),
+                reply: idle_flush_status_reply(second_reply.bind()),
             },
         );
 
@@ -4404,7 +4437,7 @@ mod tests {
                 16,
                 Some(mesh_a.clone()),
                 resource::Rank::new(0),
-                drain_reply.bind(),
+                idle_flush_status_reply(drain_reply.bind()),
             )
             .await
             .unwrap();
@@ -4491,7 +4524,7 @@ mod tests {
                 16,
                 None,
                 resource::Rank::new(0),
-                drain_reply.bind(),
+                idle_flush_status_reply(drain_reply.bind()),
             )
             .await
             .unwrap();
@@ -4665,7 +4698,7 @@ mod tests {
                 rank: resource::Rank::new(0),
                 proc_mesh_id: proc_mesh_id.clone(),
                 num_per_host,
-                status_reply: spawn_status_reply.bind(),
+                status_reply: idle_flush_status_reply(spawn_status_reply.bind()),
             },
         );
 
