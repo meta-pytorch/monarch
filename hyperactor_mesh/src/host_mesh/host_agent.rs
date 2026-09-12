@@ -1106,7 +1106,7 @@ pub struct WaitProcs {
     /// Number of procs spawned on this host.
     pub num_per_host: usize,
     /// Sparse readiness updates for the caller's status barrier.
-    pub status_reply: PortRef<crate::StatusOverlay>,
+    pub status_reply: IdleFlushPortRef<crate::StatusOverlay>,
 }
 wirevalue::register_type!(WaitProcs);
 
@@ -1128,7 +1128,7 @@ impl Handler<WaitProcs> for HostAgent {
                         id,
                         rank: resource::Rank::new(rank),
                         min_status: Status::Running,
-                        reply: wait.status_reply.clone(),
+                        reply: (*wait.status_reply).clone(),
                     },
                 )
                 .await
@@ -3563,7 +3563,7 @@ mod tests {
                 rank: resource::Rank::new(0),
                 proc_mesh_id: rejected_proc_mesh_id,
                 num_per_host: 1,
-                status_reply: rejected_status_reply.bind(),
+                status_reply: idle_flush_status_reply(rejected_status_reply.bind()),
             },
         );
         assert_overlay_failed_at_rank(
@@ -4683,7 +4683,7 @@ mod tests {
                 rank: resource::Rank::new(0),
                 proc_mesh_id: proc_mesh_id.clone(),
                 num_per_host,
-                status_reply: spawn_status_reply.bind(),
+                status_reply: idle_flush_status_reply(spawn_status_reply.bind()),
             },
         );
 
