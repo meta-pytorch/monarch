@@ -1373,15 +1373,14 @@ impl HostMeshRef {
 
         let mut procs = Vec::new();
         let num_ranks = region.num_ranks();
+        let expected_updates_per_destination = NonZeroUsize::new(per_host.num_ranks())
+            .expect("a per-host region contains at least one rank");
         // Accumulator outputs full StatusMesh snapshots; seed with
         // NotExist.
-        let (port, rx) = cx.mailbox().open_accum_port_opts(
-            crate::StatusMesh::from_single(region.clone(), Status::NotExist),
-            StreamingReducerOpts {
-                max_update_interval: Some(Duration::from_millis(50)),
-                initial_update_interval: None,
-            },
-        );
+        let (port, rx) = cx.mailbox().open_accum_port(crate::StatusMesh::from_single(
+            region.clone(),
+            Status::NotExist,
+        ));
 
         // Build each proc's `ProcRef` up front from the same slot derivation used
         // by the HostAgent spawn and wait handlers.
@@ -1410,7 +1409,11 @@ impl HostMeshRef {
             }
         }
 
-        let mut reply_port = port.bind();
+        let mut reply_port = port.bind().into_idle_flush(IdleFlushReducerOpts {
+            idle_timeout: Duration::from_millis(50),
+            abandon_timeout: Duration::from_secs(30),
+            expected_updates_per_destination,
+        });
 
         reply_port.return_undeliverable(false);
 
