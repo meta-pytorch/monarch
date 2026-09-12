@@ -632,22 +632,18 @@ async fn create_local_node(
 ) -> Result<LocalNode> {
     let udp_address = socket.address();
     let identity = issue_scale_identity(rank).await?;
+    let quic_config = scale_quic_config()?;
     let transport = match unix_path {
         Some(path) => {
-            let primary: Arc<dyn DatagramSocket> = Arc::new(socket);
-            let alternatives: Vec<Arc<dyn DatagramSocket>> = vec![Arc::new(
+            let fallback: Arc<dyn DatagramSocket> = Arc::new(
                 UnixDatagramSocket::bind(path)
                     .with_context(|| format!("bind task-head Unix carrier {}", path.display()))?,
-            )];
-            let sockets = Arc::new(
-                DatagramSocketSet::new(primary, alternatives)
-                    .context("create task-head socket set")?,
             );
-            TransportConfig::new(sockets, identity)
+            TransportConfig::routed_udp(socket.into_std()?, Some(fallback), identity)?
         }
         None => TransportConfig::direct_udp(socket.into_std()?, identity)?,
     }
-    .with_quic_config(scale_quic_config()?);
+    .with_quic_config(quic_config);
     let mut config = NodeConfig::new(transport);
     let role = if is_root {
         NodeRole::Root
@@ -1739,6 +1735,11 @@ fn spawn_operation(
                 read_delivery_receipt(&mut recv, size).await?;
             }
         }
+        let mut trailing = [0];
+        anyhow::ensure!(
+            recv.read(&mut trailing).await? == 0,
+            "benchmark response contains trailing data"
+        );
         Ok(started.elapsed())
     });
 }
