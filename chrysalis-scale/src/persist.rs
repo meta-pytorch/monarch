@@ -185,10 +185,6 @@ pub(crate) enum ExperimentStatus {
     Done,
 }
 
-#[expect(
-    dead_code,
-    reason = "consumed by persistent administration in the next stacked diff"
-)]
 impl ExperimentStatus {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
@@ -228,10 +224,6 @@ pub(crate) struct ExperimentClaim {
     pub(crate) attempt: i64,
 }
 
-#[expect(
-    dead_code,
-    reason = "consumed by persistent administration in the next stacked diff"
-)]
 impl ExperimentStore {
     pub(crate) async fn open(path: &Path) -> Result<Self> {
         let path_str = path
