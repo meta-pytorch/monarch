@@ -1101,6 +1101,9 @@ the process exits.
 
 ## Future Work
 
+Implementation-specific optimizations that preserve these architectural
+contracts are tracked in [IMPLEMENTATION.md](IMPLEMENTATION.md).
+
 ### Replicated nameservers
 
 The deterministic command and commit-effect boundary is designed to admit a
@@ -1248,73 +1251,6 @@ would own that receive handle and remain the sole task that drains it. A
 completion-owned carrier API should likewise expose either one completion
 consumer or an explicit multi-consumer queue rather than silently retaining one
 of several wakers.
-
-### Completion-owned carrier buffers
-
-The carrier-neutral `DatagramSocket::poll_recv` interface currently borrows
-caller-owned payload buffers and metadata slots for one poll. A pending poll
-retains neither slice. The caller presents storage again after its waker fires,
-and a ready poll fills a corresponding prefix of both slices. This model is
-portable, allocation-free after setup, and natural for readiness-based sockets.
-
-Completion-driven transports can do better when the kernel or driver must own
-stable buffers while operations are outstanding. A future carrier interface may
-transfer an owned buffer lease into the driver and return that same lease in a
-receive completion:
-
-```rust
-struct DatagramRecvCompletion {
-    buffer: DatagramBuffer,
-    meta: DatagramRecvMeta,
-}
-
-trait CompletionDatagramSocket {
-    fn submit_recv(&self, buffer: DatagramBuffer) -> io::Result<()>;
-    fn poll_recv_completion(
-        &self,
-        cx: &mut Context<'_>,
-    ) -> Poll<io::Result<DatagramRecvCompletion>>;
-}
-```
-
-The exact API may use opaque buffer IDs or pooled leases rather than the types
-shown above. The important invariant is ownership: after submission, the caller
-cannot access the buffer until the driver returns it exactly once through
-completion or cancellation.
-
-```mermaid
-sequenceDiagram
-    participant Consumer
-    participant Transport
-    participant Driver
-
-    Consumer->>Transport: Submit owned receive buffer
-    Transport->>Driver: Register and arm buffer
-    Driver-->>Transport: Complete receive with buffer and metadata
-    Transport-->>Consumer: Return receive completion
-    Consumer->>Consumer: Process payload
-    Consumer->>Transport: Release or resubmit buffer
-    Transport->>Driver: Re-arm buffer
-```
-
-This model can preserve io_uring registered buffers across the entire receive
-path, remove copies into temporary caller slices, reduce allocator pressure,
-and maintain several outstanding receives without repeated setup. A completion
-may represent one datagram or one GRO aggregate whose stride identifies its
-constituent datagrams.
-
-The ownership model also introduces new obligations. Buffer-pool capacity
-becomes receive backpressure: a consumer that retains every completion can
-starve the driver. Shutdown and cancellation must return every submitted buffer
-exactly once. Routing and protocol layers must either consume borrowed views
-while holding the lease or transfer the lease onward without copying. Unix and
-in-process carriers need pooled adapters so the portable path keeps the same
-ownership contract even when the underlying operation is readiness based.
-
-The existing borrowed `poll_recv` API can remain as a compatibility adapter.
-The completion-owned interface should first serve the packet I/O and forwarding
-paths where stable buffers and copy avoidance are measurable, then replace the
-borrowed path only if benchmarks justify the additional lifecycle complexity.
 
 ### Data-plane optimization
 
