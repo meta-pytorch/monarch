@@ -50,6 +50,7 @@ use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::EndpointLocation;
 use hyperactor::Handler;
+use hyperactor::IdleFlushPortRefRepr;
 use hyperactor::Instance;
 use hyperactor::Label;
 use hyperactor::OncePortRefRepr;
@@ -75,6 +76,7 @@ use hyperactor::ordering::SeqKey;
 use hyperactor::port::Port;
 use hyperactor::value_mesh::ValueMesh;
 use hyperactor_config::Flattrs;
+use hyperactor_config::NonZeroUsize as ConfigNonZeroUsize;
 use ndslice::Point;
 use ndslice::Region;
 use ndslice::view::RankedSliceable;
@@ -363,7 +365,16 @@ impl CastDomainRef {
             .collect::<Vec<_>>();
         // Split even for one subtree: a direct route bypasses the leaf
         // CastActor that would otherwise create the one-peer reducer proxy.
-        split_ports(cx, &mut data, self.subtrees.len(), false)?;
+        split_ports(
+            cx,
+            &mut data,
+            SplitFanout {
+                peer_count: self.subtrees.len(),
+                num_destinations: self.members.region().num_ranks(),
+                #[cfg(test)]
+                deliver_here: false,
+            },
+        )?;
 
         for (subtree, seqs) in self.subtrees.iter().zip(subtree_seqs) {
             match &subtree.route {
@@ -520,6 +531,8 @@ struct CastHop {
     local_destination: CastDestination,
     /// Precomputed outgoing routes to communication-child tiles.
     next_hops: Vec<CastRoute>,
+    /// Number of logical destinations reached through this hop.
+    num_destinations: usize,
 }
 
 /// One destination actor and its position in the cast domain.
@@ -824,6 +837,7 @@ impl Handler<CreateCastDomain> for CastActor {
         let cast_hop = CastHop {
             local_destination: CastDestination::try_from_tile(&region, &tile)?,
             next_hops,
+            num_destinations: tile.rank_count(),
         };
 
         #[cfg(test)]
@@ -837,6 +851,19 @@ impl Handler<CreateCastDomain> for CastActor {
     }
 }
 
+/// Fanout counts used to configure reducers for one cast hop.
+#[derive(Debug, Clone, Copy)]
+struct SplitFanout {
+    /// Number of immediate reply sources: child hops plus local delivery, if present.
+    peer_count: usize,
+    /// Total cast destinations covered by this subtree, including the local
+    /// destination.
+    num_destinations: usize,
+    /// Whether this hop also delivers the cast to a local destination.
+    #[cfg(test)]
+    deliver_here: bool,
+}
+
 /// Rewrite reply port parts in the serialized message so that downstream
 /// actors reply through local proxy ports on the current sender or CastActor
 /// instead of directly to the original sender. Each proxy port reduces replies
@@ -845,8 +872,7 @@ impl Handler<CreateCastDomain> for CastActor {
 fn split_ports(
     cx: &impl context::Actor,
     data: &mut wirevalue::Any<wirevalue::encoding::Multipart>,
-    num_next_hops: usize,
-    deliver_here: bool,
+    fanout: SplitFanout,
 ) -> Result<()> {
     data.visit_multipart_parts_mut::<PortRefRepr, anyhow::Error>(|port| {
         if port.unsplit() {
@@ -862,7 +888,42 @@ fn split_ports(
 
         #[cfg(test)]
         {
-            tests::collect_split_port(port.port_addr(), &split, deliver_here);
+            tests::collect_split_port(port.port_addr(), &split, fanout.deliver_here);
+        }
+
+        port.update_port_addr(split);
+        Ok(())
+    })?;
+
+    data.visit_multipart_parts_mut::<IdleFlushPortRefRepr, anyhow::Error>(|port| {
+        if port.unsplit() || port.reducer_spec().is_none() {
+            return Ok(());
+        }
+
+        let opts = port.reducer_opts();
+
+        let expected = fanout
+            .num_destinations
+            .checked_mul(opts.expected_updates_per_destination.get())
+            .and_then(ConfigNonZeroUsize::new)
+            .ok_or_else(|| {
+                anyhow::anyhow!("expected reducer update count must be nonzero and cannot overflow")
+            })?;
+
+        let split = port.port_addr().split(
+            cx,
+            port.reducer_spec().cloned(),
+            ReducerMode::IdleFlush {
+                expected,
+                idle_timeout: opts.idle_timeout,
+                abandon_timeout: opts.abandon_timeout,
+            },
+            port.get_return_undeliverable(),
+        )?;
+
+        #[cfg(test)]
+        {
+            tests::collect_split_port(port.port_addr(), &split, fanout.deliver_here);
         }
 
         port.update_port_addr(split);
@@ -876,17 +937,16 @@ fn split_ports(
             return Ok(());
         }
 
-        let peer_count = num_next_hops + if deliver_here { 1 } else { 0 };
         let split = port.port_addr().split(
             cx,
             port.reducer_spec().clone(),
-            ReducerMode::Once(peer_count),
+            ReducerMode::Once(fanout.peer_count),
             true,
         )?;
 
         #[cfg(test)]
         {
-            tests::collect_split_port(port.port_addr(), &split, deliver_here);
+            tests::collect_split_port(port.port_addr(), &split, fanout.deliver_here);
         }
 
         port.update_port_addr(split);
@@ -1092,7 +1152,16 @@ impl CastActor {
         // CastActor's local proxy ports instead of directly to the original
         // sender.
         let mut data = message.data.clone();
-        split_ports(cx, &mut data, domain.next_hops.len(), true)?;
+        split_ports(
+            cx,
+            &mut data,
+            SplitFanout {
+                peer_count: domain.next_hops.len() + 1,
+                num_destinations: domain.num_destinations,
+                #[cfg(test)]
+                deliver_here: true,
+            },
+        )?;
 
         let local_lineage = lineage.through(domain.local_destination.base_rank_in_domain);
         deliver_to_destination(
@@ -1222,8 +1291,10 @@ mod tests {
     use std::time::Duration;
 
     use hyperactor::Client;
+    use hyperactor::IdleFlushPortRef;
     use hyperactor::PortAddr;
     use hyperactor::ProcAddr;
+    use hyperactor::accum::IdleFlushReducerOpts;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::proc::Proc;
     use ndslice::Shape;
@@ -2399,6 +2470,7 @@ mod tests {
                     actor: ActorAddr::root(cast_proc.proc_addr().clone(), Label::strip("receiver")),
                 },
                 next_hops: Vec::new(),
+                num_destinations: 1,
             },
         );
         let seq_region = domain_region
@@ -2849,11 +2921,20 @@ mod tests {
     }
     wirevalue::register_type!(TestRequestWithReply);
 
+    #[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
+    struct TestIdleFlushRequestWithReply {
+        delayed_proc: String,
+        delay: Duration,
+        replies_per_destination: usize,
+        reply_to: IdleFlushPortRef<TestReplyCounts>,
+    }
+    wirevalue::register_type!(TestIdleFlushRequestWithReply);
+
     /// An actor that receives a cast message and sends a reply back
     /// through the (potentially split) reply port.
     #[derive(Debug, Default)]
     #[hyperactor::export(
-        handlers = [TestRequestWithReply],
+        handlers = [TestRequestWithReply, TestIdleFlushRequestWithReply],
     )]
     struct SplitPortReceiver;
 
@@ -2875,6 +2956,28 @@ mod tests {
                 cx,
                 TestReplyCounts::single(cx.self_addr().proc_addr().log_name().to_string()),
             );
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Handler<TestIdleFlushRequestWithReply> for SplitPortReceiver {
+        async fn handle(
+            &mut self,
+            cx: &Context<Self>,
+            msg: TestIdleFlushRequestWithReply,
+        ) -> Result<(), anyhow::Error> {
+            let proc_name = cx.self_addr().proc_addr().log_name().to_string();
+
+            if proc_name == msg.delayed_proc {
+                tokio::time::sleep(msg.delay).await;
+            }
+
+            for _ in 0..msg.replies_per_destination {
+                msg.reply_to
+                    .post(cx, TestReplyCounts::single(proc_name.clone()));
+            }
+
             Ok(())
         }
     }
@@ -2933,6 +3036,92 @@ mod tests {
         assert_eq!(
             rank_paths, expected,
             "split-port tree doesn't mirror cast tree"
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_idle_flush_split_reducer_preserves_late_reply() {
+        let n = 8;
+
+        let mut test_mesh = CastTestMesh::new(n);
+
+        test_mesh.spawn_split_port_receivers();
+        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
+
+        let (reply_handle, mut reply_rx) = context::Mailbox::mailbox(&test_mesh.client)
+            .open_accum_port(TestReplyCountsAccumulator);
+
+        let reply_to = reply_handle.bind().into_idle_flush(IdleFlushReducerOpts {
+            idle_timeout: Duration::from_millis(50),
+            abandon_timeout: Duration::from_secs(30),
+            expected_updates_per_destination: NonZeroUsize::new(2).expect("2 is non-zero").into(),
+        });
+        let split_port_recording = record_split_port_tree(reply_to.port_addr().clone());
+
+        root_domain
+            .cast(
+                &test_mesh.client,
+                Flattrs::new(),
+                TestIdleFlushRequestWithReply {
+                    delayed_proc: "proc_7".to_string(),
+                    delay: Duration::from_millis(1500),
+                    replies_per_destination: 2,
+                    reply_to,
+                },
+            )
+            .unwrap();
+
+        let partial = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let reply = reply_rx.recv().await.unwrap();
+                if reply.counts_by_proc.len() == n - 1 {
+                    break reply;
+                }
+            }
+        })
+        .await
+        .expect("responsive subtrees should flush before the delayed reply");
+
+        assert_eq!(
+            partial.counts_by_proc,
+            [
+                "proc_0", "proc_1", "proc_2", "proc_3", "proc_4", "proc_5", "proc_6"
+            ]
+            .into_iter()
+            .map(|proc_name| (proc_name.to_string(), 2))
+            .collect()
+        );
+
+        let complete = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let reply = reply_rx.recv().await.unwrap();
+                if reply.counts_by_proc.len() == n {
+                    break reply;
+                }
+            }
+        })
+        .await
+        .expect("the late reply should complete the idle-flush reduction");
+
+        assert_eq!(
+            complete.counts_by_proc,
+            (0..n).map(|rank| (format!("proc_{rank}"), 2)).collect()
+        );
+
+        let edges = split_port_recording.edges();
+        let paths = build_split_paths(&edges);
+
+        let rank_lookup: HashMap<String, usize> =
+            (0..n).map(|i| (format!("proc_{i}"), i)).collect();
+        let rank_paths = split_path_ranks(&paths, &rank_lookup);
+
+        let expected: BTreeMap<usize, Vec<usize>> = [(2, vec![2]), (4, vec![4]), (6, vec![4, 6])]
+            .into_iter()
+            .collect();
+
+        assert_eq!(
+            rank_paths, expected,
+            "idle-flush split-port tree doesn't mirror cast tree"
         );
     }
 
