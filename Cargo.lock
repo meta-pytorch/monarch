@@ -1243,6 +1243,7 @@ dependencies = [
 name = "chrysalis-sqlite"
 version = "0.0.0"
 dependencies = [
+ "chrysalis",
  "chrysalis-core",
  "chrysalis-transport",
  "libsql",

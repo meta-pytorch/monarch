@@ -10,6 +10,7 @@ repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
 
 [dependencies]
+chrysalis = { version = "0.0.0", path = "../chrysalis" }
 chrysalis-core = { version = "0.0.0", path = "../chrysalis-core" }
 chrysalis-transport = { version = "0.0.0", path = "../chrysalis-transport" }
 libsql = { version = "0.9.30", features = ["core", "remote", "tls"], default-features = false }
