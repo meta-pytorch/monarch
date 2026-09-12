@@ -2452,13 +2452,13 @@ pub struct SetClientConfig {
     /// This host's ordinal within the config-push cast region, stamped by the
     /// cast layer. Used to position this host's install ack overlay.
     pub rank: resource::Rank,
-    /// Streaming install ack. Each host posts a single-rank overlay at its
+    /// Idle-flush install ack. Each host posts a single-rank overlay at its
     /// ordinal once it has installed the config; the caller reduces these into
     /// a `StatusMesh` barrier and can name exactly which hosts (if any) never
     /// acknowledged (HM-4). `StatusMesh` is used here only as a per-rank
     /// presence/ack barrier — the status value itself is not meaningful (see
     /// the handler).
-    pub reply: PortRef<crate::StatusOverlay>,
+    pub reply: IdleFlushPortRef<crate::StatusOverlay>,
 }
 wirevalue::register_type!(SetClientConfig);
 

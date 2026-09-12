@@ -1192,14 +1192,15 @@ impl HostMeshRef {
         // Each host posts a single-rank `Running` overlay at its ordinal once
         // it has installed the config; reduce them into a StatusMesh barrier so
         // a timeout names exactly which hosts (if any) never acknowledged.
-        let (reply, rx) = cx.mailbox().open_accum_port_opts(
-            crate::StatusMesh::from_single(region.clone(), Status::NotExist),
-            StreamingReducerOpts {
-                max_update_interval: Some(std::time::Duration::from_millis(50)),
-                initial_update_interval: None,
-            },
-        );
-        let mut reply = reply.bind();
+        let (reply, rx) = cx.mailbox().open_accum_port(crate::StatusMesh::from_single(
+            region.clone(),
+            Status::NotExist,
+        ));
+        let mut reply = reply.bind().into_idle_flush(IdleFlushReducerOpts {
+            idle_timeout: Duration::from_millis(50),
+            abandon_timeout: Duration::from_secs(30),
+            expected_updates_per_destination: NonZeroUsize::MIN,
+        });
         reply.return_undeliverable(false);
 
         // HM-3: an unreachable host does not bounce the outbound request into
