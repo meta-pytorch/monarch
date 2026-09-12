@@ -10,6 +10,7 @@
 
 mod protocol;
 mod replica;
+mod topology;
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -26,6 +27,7 @@ pub use replica::SitePublisher;
 use sha2::Digest as _;
 use sha2::Sha256;
 use thiserror::Error;
+pub use topology::ReplicationTopology;
 
 /// The fixed width of a `cr-sqlite` site identifier.
 pub const SITE_ID_LEN: usize = 16;
