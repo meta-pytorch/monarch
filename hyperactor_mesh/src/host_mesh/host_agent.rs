@@ -2254,7 +2254,7 @@ pub struct GetHostProcStates {
     /// an accumulator port seeded with a full-region template, so per-host
     /// overlays reduce up the cast tree into the complete proc-state mesh (see
     /// `ProcMeshRef::states`).
-    pub reply: hyperactor::PortRef<ValueOverlay<resource::State<ProcState>>>,
+    pub reply: IdleFlushPortRef<ValueOverlay<resource::State<ProcState>>>,
 }
 wirevalue::register_type!(GetHostProcStates);
 
