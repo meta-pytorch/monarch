@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use algebra::JoinSemilattice;
 use enum_as_inner::EnumAsInner;
+use hyperactor_config::NonZeroUsize;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -60,6 +61,17 @@ pub struct StreamingReducerOpts {
     pub initial_update_interval: Option<Duration>,
 }
 
+/// Options carried by an idle-flush port before a cast resolves its destination count.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+pub struct IdleFlushReducerOpts {
+    /// Time with no new replies before the current reduced batch is emitted.
+    pub idle_timeout: Duration,
+    /// Time with no new replies before an incomplete split port is removed.
+    pub abandon_timeout: Duration,
+    /// Number of logical replies expected from each cast destination.
+    pub expected_updates_per_destination: NonZeroUsize,
+}
+
 /// The mode in which a reducer operates.
 #[derive(
     Debug,
@@ -75,6 +87,16 @@ pub enum ReducerMode {
     Streaming(StreamingReducerOpts),
     /// Once mode: accumulate exactly `n` values, emit a single reduced update, then tear down.
     Once(usize),
+    /// Idle-flush mode: emit after an idle interval and continue until all logical
+    /// replies have arrived or the incomplete split port is abandoned.
+    IdleFlush {
+        /// Total number of logical replies expected by this split port.
+        expected: NonZeroUsize,
+        /// Time with no new replies before the current reduced batch is emitted.
+        idle_timeout: Duration,
+        /// Time with no new replies before an incomplete split port is removed.
+        abandon_timeout: Duration,
+    },
 }
 
 impl Default for ReducerMode {
@@ -89,7 +111,7 @@ impl ReducerMode {
             ReducerMode::Streaming(opts) => opts
                 .max_update_interval
                 .unwrap_or(hyperactor_config::global::get(config::SPLIT_MAX_BUFFER_AGE)),
-            ReducerMode::Once(_) => Duration::MAX,
+            ReducerMode::Once(_) | ReducerMode::IdleFlush { .. } => Duration::MAX,
         }
     }
 
@@ -98,7 +120,7 @@ impl ReducerMode {
             ReducerMode::Streaming(opts) => opts
                 .initial_update_interval
                 .unwrap_or(Duration::from_millis(1)),
-            ReducerMode::Once(_) => Duration::MAX,
+            ReducerMode::Once(_) | ReducerMode::IdleFlush { .. } => Duration::MAX,
         }
     }
 }
