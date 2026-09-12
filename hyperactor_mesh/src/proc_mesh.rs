@@ -1068,17 +1068,17 @@ impl ProcMeshRef {
         // the first update and replaces it with the caller-supplied
         // template (the `self` passed into open_accum_port), which we
         // seed here as "full NotExist over the target region".
-        let (port, rx) = cx.mailbox().open_accum_port_opts(
+        let (port, rx) = cx.mailbox().open_accum_port(
             // Initial state for the accumulator: full mesh seeded to
             // NotExist.
             crate::StatusMesh::from_single(region.clone(), Status::NotExist),
-            StreamingReducerOpts {
-                max_update_interval: Some(Duration::from_millis(50)),
-                initial_update_interval: None,
-            },
         );
 
-        let mut reply = port.bind();
+        let mut reply = port.bind().into_idle_flush(IdleFlushReducerOpts {
+            idle_timeout: Duration::from_millis(50),
+            abandon_timeout: Duration::from_secs(30),
+            expected_updates_per_destination: NonZeroUsize::MIN,
+        });
         // If this proc dies or some other issue renders the reply undeliverable,
         // the reply does not need to be returned to the sender.
         reply.return_undeliverable(false);

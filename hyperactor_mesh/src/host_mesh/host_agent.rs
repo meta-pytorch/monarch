@@ -4008,7 +4008,12 @@ mod tests {
         let get_rank = 4;
         let (port, mut rx) = client.open_port::<crate::StatusOverlay>();
         host_agent
-            .get_rank_status(&client, id, resource::Rank::new(get_rank), port.bind())
+            .get_rank_status(
+                &client,
+                id,
+                resource::Rank::new(get_rank),
+                idle_flush_status_reply(port.bind()),
+            )
             .await
             .unwrap();
         let overlay = tokio::time::timeout(Duration::from_secs(30), rx.recv())
@@ -4022,7 +4027,12 @@ mod tests {
         let unknown = ResourceId::instance(Label::new("never-created").unwrap());
         let (port, mut rx) = client.open_port::<crate::StatusOverlay>();
         host_agent
-            .get_rank_status(&client, unknown, resource::Rank::new(4), port.bind())
+            .get_rank_status(
+                &client,
+                unknown,
+                resource::Rank::new(4),
+                idle_flush_status_reply(port.bind()),
+            )
             .await
             .unwrap();
         let overlay = tokio::time::timeout(Duration::from_secs(30), rx.recv())
@@ -4231,7 +4241,12 @@ mod tests {
         let get_rank = 3;
         let (port, mut rx) = client.open_port::<crate::StatusOverlay>();
         host_agent
-            .get_rank_status(&client, id, resource::Rank::new(get_rank), port.bind())
+            .get_rank_status(
+                &client,
+                id,
+                resource::Rank::new(get_rank),
+                idle_flush_status_reply(port.bind()),
+            )
             .await
             .unwrap();
         let overlay = tokio::time::timeout(Duration::from_secs(30), rx.recv())
