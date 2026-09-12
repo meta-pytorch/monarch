@@ -202,6 +202,9 @@ pub use proc::Proc;
 pub use proc::StatusMessage;
 pub use proc::WeakProc;
 pub use ref_::ActorRef;
+pub use ref_::IdleFlushPortRef;
+#[doc(hidden)]
+pub use ref_::IdleFlushPortRefRepr;
 pub use ref_::OncePortRef;
 #[doc(hidden)]
 pub use ref_::OncePortRefRepr;
@@ -271,6 +274,7 @@ mod private {
     impl<M: crate::Message> Sealed for &crate::mailbox::PortHandle<M> {}
     impl<M: crate::Message> Sealed for crate::mailbox::OncePortHandle<M> {}
     impl<A: crate::actor::Referable> Sealed for &crate::ref_::ActorRef<A> {}
+    impl<M: crate::RemoteMessage> Sealed for &crate::ref_::IdleFlushPortRef<M> {}
     impl<M: crate::RemoteMessage> Sealed for &crate::ref_::PortRef<M> {}
     impl<M: crate::RemoteMessage> Sealed for crate::ref_::OncePortRef<M> {}
 }
