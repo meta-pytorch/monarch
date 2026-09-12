@@ -16,7 +16,10 @@ use chrysalis_transport::DatagramAddr;
 #[path = "labels.rs"]
 mod labels;
 
+pub use labels::KeyError;
 pub use labels::LabelError;
+pub use labels::LabelKey;
+pub use labels::LabelValue;
 pub use labels::Labels;
 
 /// The first Chrysalis nameserver protocol version.
