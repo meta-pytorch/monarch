@@ -11,6 +11,10 @@ link-local protocols can compose higher-level systems without adding them to the
 core. `chrysalis-sqlite` uses this mechanism to replicate a cr-sqlite database
 along the same parent-child topology.
 
+See [DESIGN.md](DESIGN.md) for architectural contracts and
+[IMPLEMENTATION.md](IMPLEMENTATION.md) for important implementation limitations
+and planned optimizations.
+
 ## Meta mTLS
 
 For multi-host tests inside Meta, select `--identity=meta` for every process.
