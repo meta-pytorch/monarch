@@ -105,6 +105,7 @@
 //! decoded [`Message`] as authorized or valid for the current session state.
 
 mod cache;
+mod child;
 mod codec;
 mod protocol;
 mod session;
@@ -114,6 +115,9 @@ mod stream;
 pub use cache::CacheError;
 pub use cache::CacheTime;
 pub use cache::ResolverCache;
+pub use child::ChildEvent;
+pub use child::ChildSession;
+pub use child::ChildSessionError;
 pub use codec::CodecError;
 pub use codec::MAX_FRAME_BODY_LEN;
 pub use codec::decode_frame;
