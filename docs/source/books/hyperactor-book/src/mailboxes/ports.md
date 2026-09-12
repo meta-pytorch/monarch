@@ -122,7 +122,7 @@ impl<M: RemoteMessage> OncePortHandle<M> {
 }
 ```
 
-## `PortRef` and `OncePortRef`
+## `PortRef`, `IdleFlushPortRef`, and `OncePortRef`
 
 A `PortRef<M>` is a cloneable, sendable reference to a bound typed port. These are used to send messages to an actor from outside its mailbox, typically after calling `.bind()` on a `PortHandle<M>`:
 ```rust
@@ -143,6 +143,15 @@ pub struct PortRef<M> {
 - **`phantom`**: Phantom data to retain the `M` type parameter. This enforces compile-time type safety without storing a value of type `M`.
 - **`return_undeliverable`**: Whether an undeliverable message is returned to the sender (the default) or silently dropped.
 - **`unsplit`**: When set, keeps the port out of cast/comm tree reduction so every destination replies to it directly. Set via `PortRef::unsplit()`.
+
+An `IdleFlushPortRef<M>` wraps a reusable `PortRef<M>` with `IdleFlushReducerOpts`. Its distinct serialized representation tells each cast split to install an idle-flush reducer, in the same way that `OncePortRef<M>` tells each split to install a one-shot reducer.
+
+```rust
+let reply = port.bind().into_idle_flush(IdleFlushReducerOpts {
+    idle_timeout: Duration::from_millis(50),
+    expected_updates_per_destination: NonZeroUsize::MIN,
+});
+```
 
 A `OncePortRef<M>` is a reference to a one-shot port. Unlike `PortRef`, it allows exactly one message to be sent. These are created by binding a `OncePortHandle<M>`.
 ```rust
