@@ -31,6 +31,7 @@ use crate::PortAddr;
 use crate::RemoteEndpoint;
 use crate::RemoteHandles;
 use crate::RemoteMessage;
+use crate::accum::IdleFlushReducerOpts;
 use crate::accum::ReducerSpec;
 use crate::accum::StreamingReducerOpts;
 use crate::actor::Binds;
@@ -378,6 +379,22 @@ impl<M: RemoteMessage> PortRef<M> {
         self.port_addr
     }
 
+    /// Convert this streaming reference into an idle-flush reference to the same port.
+    ///
+    /// For example, a reference to port `7` remains addressed to port `7`, while
+    /// `reducer_opts` tells each cast split when to flush its reduced replies.
+    pub fn into_idle_flush(self, reducer_opts: IdleFlushReducerOpts) -> IdleFlushPortRef<M> {
+        IdleFlushPortRef {
+            port_addr: self.port_addr,
+            reducer_spec: self.reducer_spec,
+            streaming_opts: self.streaming_opts,
+            reducer_opts,
+            return_undeliverable: self.return_undeliverable,
+            unsplit: self.unsplit,
+            phantom: PhantomData,
+        }
+    }
+
     /// coerce it into OncePortRef so we can send messages to this port from
     /// APIs requires OncePortRef.
     pub fn into_once(self) -> OncePortRef<M> {
@@ -487,6 +504,206 @@ impl<M: RemoteMessage> Clone for PortRef<M> {
 impl<M: RemoteMessage> fmt::Display for PortRef<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.port_addr, f)
+    }
+}
+
+/// A reusable remote port reference whose cast-tree proxies flush reduced updates after idling.
+#[derive(Debug, PartialEq, typeuri::Named)]
+pub struct IdleFlushPortRef<M> {
+    port_addr: PortAddr,
+    reducer_spec: Option<ReducerSpec>,
+    streaming_opts: StreamingReducerOpts,
+    reducer_opts: IdleFlushReducerOpts,
+    return_undeliverable: bool,
+    unsplit: bool,
+    phantom: PhantomData<M>,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
+pub struct IdleFlushPortRefRepr {
+    port_addr: PortAddr,
+    reducer_spec: Option<ReducerSpec>,
+    streaming_opts: StreamingReducerOpts,
+    reducer_opts: IdleFlushReducerOpts,
+    return_undeliverable: bool,
+    unsplit: bool,
+}
+
+impl IdleFlushPortRefRepr {
+    /// Return the destination address; for a reference to port `7`, this returns port `7`.
+    pub fn port_addr(&self) -> &PortAddr {
+        &self.port_addr
+    }
+
+    /// Return the reducer specification; a non-reducible port returns `None`.
+    pub fn reducer_spec(&self) -> Option<&ReducerSpec> {
+        self.reducer_spec.as_ref()
+    }
+
+    /// Return the idle-flush reducer options.
+    pub fn reducer_opts(&self) -> &IdleFlushReducerOpts {
+        &self.reducer_opts
+    }
+
+    /// Return the undeliverable policy; a port configured to drop failures returns `false`.
+    pub fn get_return_undeliverable(&self) -> bool {
+        self.return_undeliverable
+    }
+
+    /// Return whether splitting is disabled; an unsplit reference returns `true`.
+    pub fn unsplit(&self) -> bool {
+        self.unsplit
+    }
+
+    /// Replace the destination address; changing port `7` to port `8` makes later sends use `8`.
+    pub fn update_port_addr(&mut self, port_addr: PortAddr) {
+        self.port_addr = port_addr;
+    }
+}
+
+impl<M> TryFrom<&IdleFlushPortRef<M>> for IdleFlushPortRefRepr {
+    type Error = serde_multipart::Error;
+
+    fn try_from(port_ref: &IdleFlushPortRef<M>) -> serde_multipart::Result<Self> {
+        Ok(Self {
+            port_addr: port_ref.port_addr.clone(),
+            reducer_spec: port_ref.reducer_spec.clone(),
+            streaming_opts: port_ref.streaming_opts.clone(),
+            reducer_opts: port_ref.reducer_opts.clone(),
+            return_undeliverable: port_ref.return_undeliverable,
+            unsplit: port_ref.unsplit,
+        })
+    }
+}
+
+impl<M> TryFrom<IdleFlushPortRefRepr> for IdleFlushPortRef<M> {
+    type Error = serde_multipart::Error;
+
+    fn try_from(repr: IdleFlushPortRefRepr) -> serde_multipart::Result<Self> {
+        Ok(Self {
+            port_addr: repr.port_addr,
+            reducer_spec: repr.reducer_spec,
+            streaming_opts: repr.streaming_opts,
+            reducer_opts: repr.reducer_opts,
+            return_undeliverable: repr.return_undeliverable,
+            unsplit: repr.unsplit,
+            phantom: PhantomData,
+        })
+    }
+}
+
+serde_multipart::part_codec! {
+    impl<M> IdleFlushPortRef<M>
+    {
+        type Repr = IdleFlushPortRefRepr;
+    }
+}
+
+impl<M: RemoteMessage> IdleFlushPortRef<M> {
+    /// The typehash of this port's reducer, if any.
+    pub fn reducer_spec(&self) -> &Option<ReducerSpec> {
+        &self.reducer_spec
+    }
+
+    /// This port's address.
+    pub fn port_addr(&self) -> &PortAddr {
+        &self.port_addr
+    }
+
+    /// Convert this IdleFlushPortRef into its corresponding port address.
+    pub fn into_port_addr(self) -> PortAddr {
+        self.port_addr
+    }
+
+    /// Post a serialized message to this port, provided a sending capability, such as
+    /// [`crate::actor::Instance`].
+    pub fn post_serialized(
+        &self,
+        cx: &impl context::Actor,
+        mut headers: Flattrs,
+        message: wirevalue::Any,
+    ) {
+        crate::mailbox::headers::set_send_timestamp(&mut headers);
+        crate::mailbox::headers::set_rust_message_type::<M>(&mut headers);
+        cx.post(
+            self.port_addr.clone(),
+            headers,
+            message,
+            self.return_undeliverable,
+            context::SeqInfoPolicy::AssignNew,
+        );
+    }
+
+    /// Get whether or not messages sent to this port that are undeliverable should
+    /// be returned to the sender.
+    pub fn get_return_undeliverable(&self) -> bool {
+        self.return_undeliverable
+    }
+
+    /// Set whether or not messages sent to this port that are undeliverable
+    /// should be returned to the sender.
+    pub fn return_undeliverable(&mut self, return_undeliverable: bool) {
+        self.return_undeliverable = return_undeliverable;
+    }
+}
+
+impl<M> Endpoint<M> for &IdleFlushPortRef<M>
+where
+    M: RemoteMessage,
+{
+    fn endpoint_location(&self) -> EndpointLocation {
+        EndpointLocation::Port(self.port_addr.clone())
+    }
+
+    fn post<C>(self, cx: &C, message: M)
+    where
+        C: context::Actor,
+    {
+        RemoteEndpoint::post_with_headers(self, cx, Flattrs::new(), message)
+    }
+}
+
+impl<M> RemoteEndpoint<M> for &IdleFlushPortRef<M>
+where
+    M: RemoteMessage,
+{
+    fn post_with_headers<C>(self, cx: &C, headers: Flattrs, message: M)
+    where
+        C: context::Actor,
+    {
+        let serialized = match wirevalue::Any::serialize(&message).map_err(|err| {
+            MailboxSenderError::new_bound(
+                self.port_addr.clone(),
+                MailboxSenderErrorKind::Serialize(err.into()),
+            )
+        }) {
+            Ok(serialized) => serialized,
+            Err(err) => {
+                cx.instance()
+                    .report_delivery_failure(DeliveryFailureReport::from_send_error::<M>(
+                        cx.mailbox().actor_addr().clone(),
+                        self.endpoint_location(),
+                        &err,
+                    ));
+                return;
+            }
+        };
+        self.post_serialized(cx, headers, serialized);
+    }
+}
+
+impl<M: RemoteMessage> Clone for IdleFlushPortRef<M> {
+    fn clone(&self) -> Self {
+        Self {
+            port_addr: self.port_addr.clone(),
+            reducer_spec: self.reducer_spec.clone(),
+            streaming_opts: self.streaming_opts.clone(),
+            reducer_opts: self.reducer_opts.clone(),
+            return_undeliverable: self.return_undeliverable,
+            unsplit: self.unsplit,
+            phantom: PhantomData,
+        }
     }
 }
 
@@ -707,6 +924,9 @@ impl<M: RemoteMessage> Named for OncePortRef<M> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use hyperactor_config::NonZeroUsize;
     use serde::Deserialize;
     use serde::Serialize;
     use serde_multipart::PartCodec;
@@ -739,9 +959,41 @@ mod tests {
         once_port_ref
     }
 
+    fn test_idle_flush_port_ref() -> IdleFlushPortRef<String> {
+        let proc_id = ProcId::singleton(Label::new("proc").unwrap());
+        let actor_id = ActorId::singleton(Label::new("actor").unwrap(), proc_id);
+        let port_id = PortId::new(actor_id, Port::from(9));
+        let port_addr = PortAddr::new(port_id, ChannelAddr::Local(44).into());
+        let mut port_ref = PortRef::<String>::attest_reducible(
+            port_addr,
+            Some(ReducerSpec {
+                typehash: 123,
+                builder_params: None,
+            }),
+            StreamingReducerOpts {
+                max_update_interval: Some(Duration::from_millis(250)),
+                initial_update_interval: Some(Duration::from_millis(5)),
+            },
+        )
+        .unsplit()
+        .into_idle_flush(IdleFlushReducerOpts {
+            idle_timeout: Duration::from_millis(50),
+            abandon_timeout: Duration::from_secs(30),
+            expected_updates_per_destination: NonZeroUsize::new(2).expect("2 is non-zero"),
+        });
+        port_ref.return_undeliverable(false);
+        port_ref
+    }
+
     #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
     struct PortRefEnvelope {
         port: PortRef<String>,
+        seq: u64,
+    }
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct IdleFlushPortRefEnvelope {
+        port: IdleFlushPortRef<String>,
         seq: u64,
     }
 
@@ -770,6 +1022,20 @@ mod tests {
         assert_eq!(actual.unsplit, expected.unsplit);
     }
 
+    fn assert_same_idle_flush_port_ref(
+        actual: &IdleFlushPortRef<String>,
+        expected: &IdleFlushPortRef<String>,
+    ) {
+        let actual = actual.to_repr().unwrap();
+        let expected = expected.to_repr().unwrap();
+        assert_eq!(actual.port_addr, expected.port_addr);
+        assert_eq!(actual.reducer_spec, expected.reducer_spec);
+        assert_eq!(actual.streaming_opts, expected.streaming_opts);
+        assert_eq!(actual.reducer_opts, expected.reducer_opts);
+        assert_eq!(actual.return_undeliverable, expected.return_undeliverable);
+        assert_eq!(actual.unsplit, expected.unsplit);
+    }
+
     #[test]
     fn test_port_ref_serde_multipart_part_codec() {
         let value = PortRefEnvelope {
@@ -789,6 +1055,37 @@ mod tests {
         let deserialized: PortRefEnvelope = serde_multipart::deserialize_bincode(message).unwrap();
         assert_eq!(deserialized.seq, value.seq);
         assert_same_port_ref(&deserialized.port, &value.port);
+    }
+
+    #[test]
+    fn test_idle_flush_port_ref_serde_multipart_part_codec() {
+        let value = IdleFlushPortRefEnvelope {
+            port: test_idle_flush_port_ref(),
+            seq: 789,
+        };
+
+        let message = serde_multipart::serialize_bincode(&value).unwrap();
+        assert_eq!(message.num_parts(), 1);
+        assert_eq!(
+            message.parts()[0].typehash(),
+            Some(IdleFlushPortRefRepr::typehash())
+        );
+
+        let repr = message.parts()[0]
+            .deserialized::<IdleFlushPortRefRepr>()
+            .unwrap();
+        let expected = value.port.to_repr().unwrap();
+        assert_eq!(repr.port_addr, expected.port_addr);
+        assert_eq!(repr.reducer_spec, expected.reducer_spec);
+        assert_eq!(repr.streaming_opts, expected.streaming_opts);
+        assert_eq!(repr.reducer_opts, expected.reducer_opts);
+        assert_eq!(repr.return_undeliverable, expected.return_undeliverable);
+        assert_eq!(repr.unsplit, expected.unsplit);
+
+        let deserialized: IdleFlushPortRefEnvelope =
+            serde_multipart::deserialize_bincode(message).unwrap();
+        assert_eq!(deserialized.seq, value.seq);
+        assert_same_idle_flush_port_ref(&deserialized.port, &value.port);
     }
 
     #[test]
