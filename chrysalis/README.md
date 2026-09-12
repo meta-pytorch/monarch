@@ -94,9 +94,10 @@ fbcode/monarch/bin/chrysalis \
 The shell and replication run in the same process. This is necessary because
 the vendored cr-sqlite extension uses libSQL's extended loadable-extension ABI
 and cannot be loaded safely into an arbitrary system `sqlite3` binary. The shell
-supports multiline SQL, `.tables`, `.schema`, and `.quit`. When joining a
-parent, the CLI displays a progress indicator and waits for the parent's
-complete schema and current changes before opening the shell.
+supports readline editing, persistent command history, multiline SQL, `.tables`,
+`.schema`, and `.quit`. Press Ctrl-C to discard the current input and Ctrl-D to
+exit. When joining a parent, the CLI displays a progress indicator and waits for
+the parent's complete schema and current changes before opening the shell.
 
 Use an explicit file to retain the local replica after exit:
 
