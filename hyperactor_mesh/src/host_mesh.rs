@@ -49,6 +49,7 @@ use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
 use hyperactor::Gateway;
 use hyperactor::Handler;
+use hyperactor::accum::IdleFlushReducerOpts;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::id::Label;
@@ -56,6 +57,7 @@ use hyperactor::id::Uid;
 use hyperactor_cast::cast_actor::CastActor;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
+use hyperactor_config::NonZeroUsize;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::view::CollectMeshExt;
 
@@ -985,14 +987,15 @@ impl HostMeshRef {
         // Each host reports a single-rank `Stopped` overlay once it has
         // drained; reduce them into a full StatusMesh so we can tell which
         // hosts (if any) never acknowledged.
-        let (reply, rx) = cx.mailbox().open_accum_port_opts(
-            crate::StatusMesh::from_single(region.clone(), Status::NotExist),
-            StreamingReducerOpts {
-                max_update_interval: Some(std::time::Duration::from_millis(50)),
-                initial_update_interval: None,
-            },
-        );
-        let mut reply = reply.bind();
+        let (reply, rx) = cx.mailbox().open_accum_port(crate::StatusMesh::from_single(
+            region.clone(),
+            Status::NotExist,
+        ));
+        let mut reply = reply.bind().into_idle_flush(IdleFlushReducerOpts {
+            idle_timeout: Duration::from_millis(50),
+            abandon_timeout: Duration::from_secs(30),
+            expected_updates_per_destination: NonZeroUsize::MIN,
+        });
         reply.return_undeliverable(false);
 
         let terminate_timeout =
