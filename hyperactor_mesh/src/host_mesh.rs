@@ -987,15 +987,15 @@ impl HostMeshRef {
         // Each host reports a single-rank `Stopped` overlay once it has
         // drained; reduce them into a full StatusMesh so we can tell which
         // hosts (if any) never acknowledged.
-        let (reply, rx) = cx.mailbox().open_accum_port(crate::StatusMesh::from_single(
-            region.clone(),
-            Status::NotExist,
-        ));
-        let mut reply = reply.bind().into_idle_flush(IdleFlushReducerOpts {
-            idle_timeout: Duration::from_millis(50),
-            abandon_timeout: Duration::from_secs(30),
-            expected_updates_per_destination: NonZeroUsize::MIN,
-        });
+        let (reply, rx) = cx.mailbox().open_idle_flush_accum_port(
+            crate::StatusMesh::from_single(region.clone(), Status::NotExist),
+            IdleFlushReducerOpts {
+                idle_timeout: Duration::from_millis(50),
+                abandon_timeout: Duration::from_secs(30),
+                expected_updates_per_destination: NonZeroUsize::MIN,
+            },
+        );
+        let mut reply = reply.bind();
         reply.return_undeliverable(false);
 
         let terminate_timeout =
