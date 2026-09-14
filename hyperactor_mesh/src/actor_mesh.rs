@@ -132,16 +132,18 @@ enum ActorMeshLifecycle {
 /// Membership is a [`Region`] paired with exactly one actor ref per rank. It
 /// carries no identity beyond its members (two data refs over the same region
 /// and refs are interchangeable) and no remote supervision stream; a caller
-/// monitors it on demand via [`ActorMeshRef::monitor`]. Casting iterates the
-/// members and posts to each directly — the simple, unoptimized data path.
+/// monitors it on demand via [`ActorMeshRef::monitor`]. Multi-member casting
+/// uses a bounded-fanout cast domain.
 pub struct DataActorMesh<A: Referable> {
     members: ValueMesh<ActorRef<A>>,
+    cast_domain: Arc<ActorMeshCastDomain>,
 }
 
 impl<A: Referable> fmt::Debug for DataActorMesh<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DataActorMesh")
             .field("members", &self.members)
+            .field("cast_domain", &self.cast_domain)
             .finish_non_exhaustive()
     }
 }
@@ -371,7 +373,34 @@ impl<A: Referable> Drop for ActorMesh<A> {
 
 impl<A: Referable> DataActorMesh<A> {
     fn new_unchecked(members: ValueMesh<ActorRef<A>>) -> Self {
-        Self { members }
+        Self::with_cast_domain_config(members, CastDomainId::new(), default_cast_tiling_policy())
+    }
+
+    fn with_cast_domain_config(
+        members: ValueMesh<ActorRef<A>>,
+        cast_domain_id: CastDomainId,
+        tiling_policy: TilingPolicy,
+    ) -> Self {
+        let region = members.region().clone();
+        let member_addrs = Arc::new(
+            ValueMesh::new(
+                region.clone(),
+                members
+                    .values()
+                    .map(|member| member.actor_addr().clone())
+                    .collect(),
+            )
+            .expect("actor refs from a dense mesh preserve cardinality"),
+        );
+        Self {
+            members,
+            cast_domain: Arc::new(ActorMeshCastDomain::with_config(
+                cast_domain_id,
+                member_addrs,
+                region,
+                tiling_policy,
+            )),
+        }
     }
 
     /// Create a data-only actor mesh from a region and its actor refs.
@@ -387,10 +416,7 @@ impl<A: Referable> DataActorMesh<A> {
         &self.members
     }
 
-    /// Cast `message` to every member. The data path has no cast domain, so it
-    /// iterates the members and posts to each directly: correct but unoptimized.
-    /// This initiates delivery without waiting for it; use [`Self::monitor`] to
-    /// observe actors that stop or fail.
+    /// Cast `message` to every member through a bounded-fanout cast domain.
     pub fn cast<M>(&self, cx: &impl context::Actor, message: M) -> crate::Result<()>
     where
         A: RemoteHandles<M>,
@@ -411,10 +437,21 @@ impl<A: Referable> DataActorMesh<A> {
         A: RemoteHandles<M>,
         M: RemoteMessage + Clone,
     {
-        for actor in self.members.values() {
-            actor.post_with_headers(cx, caller_headers.clone(), message.clone());
+        if self.region().num_ranks() == 0 {
+            return Ok(());
         }
-        Ok(())
+
+        let mut headers = caller_headers.clone();
+        headers.set(
+            casting::CAST_ORIGINATING_SENDER,
+            cx.instance().self_addr().clone(),
+        );
+        // TODO: Fix cast-domain routing for multiple nonterminal hops on one
+        // proc before supporting co-located DataActorMesh members (D119701912).
+        self.cast_domain
+            .ensure_materialized(cx, &headers)
+            .and_then(|domain| domain.cast(cx, headers, message))
+            .map_err(Error::Other)
     }
 }
 
@@ -422,7 +459,36 @@ impl<A: Referable> Clone for DataActorMesh<A> {
     fn clone(&self) -> Self {
         Self {
             members: self.members.clone(),
+            cast_domain: self.cast_domain.clone(),
         }
+    }
+}
+
+impl<A: Referable> Serialize for DataActorMesh<A> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        (
+            &self.members,
+            &self.cast_domain.id,
+            self.cast_domain.tiling_policy,
+        )
+            .serialize(serializer)
+    }
+}
+
+impl<'de, A: Referable> Deserialize<'de> for DataActorMesh<A> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let (members, cast_domain_id, tiling_policy) = Deserialize::deserialize(deserializer)?;
+        Ok(Self::with_cast_domain_config(
+            members,
+            cast_domain_id,
+            tiling_policy,
+        ))
     }
 }
 
@@ -440,20 +506,24 @@ impl<A: Referable> view::Ranked for DataActorMesh<A> {
 
 impl<A: Referable> view::RankedSliceable for DataActorMesh<A> {
     fn sliced(&self, region: Region) -> Self {
-        Self::new_unchecked(self.members.sliced(region))
+        Self::with_cast_domain_config(
+            self.members.sliced(region),
+            CastDomainId::new(),
+            self.cast_domain.tiling_policy,
+        )
     }
 }
 
 /// A reference to a stable snapshot of an [`ActorMesh`]: the cast and address
 /// surface, cheap to clone and to serialize.
 ///
-/// `Managed` is the controller-backed ref with cast-tree delivery, and `Data`
-/// is the detached ref that casts directly. Both variants are dense and expose
-/// the same [`view::Ranked`] and [`view::RankedSliceable`] surface.
+/// `Managed` is the controller-backed ref, and `Data` is the detached ref. Both
+/// variants use cast-tree delivery and expose the same dense [`view::Ranked`]
+/// and [`view::RankedSliceable`] surface.
 #[derive(typeuri::Named)]
 pub enum ActorMeshRef<A: Referable> {
-    // Boxed so the cheap `Data` variant does not pay the (much larger) `Managed`
-    // variant's size (`clippy::large_enum_variant`).
+    // Boxed to keep the enum size bounded by the `Data` representation
+    // (`clippy::large_enum_variant`).
     Managed(Box<ManagedActorMeshRef<A>>),
     Data(DataActorMesh<A>),
 }
@@ -474,7 +544,7 @@ enum ActorMeshRefRepr<A: Referable> {
             ActorMeshCastDomain,
         )>,
     ),
-    Data(ValueMesh<ActorRef<A>>),
+    Data(DataActorMesh<A>),
 }
 
 impl<A: Referable> ActorMeshRef<A> {
@@ -648,7 +718,7 @@ impl<A: Referable> Serialize for ActorMeshRef<A> {
                 m.controller.clone(),
                 m.cast_domain.clone(),
             ))),
-            Self::Data(d) => ActorMeshRefRepr::<A>::Data(d.members.clone()),
+            Self::Data(d) => ActorMeshRefRepr::<A>::Data(d.clone()),
         };
         repr.serialize(serializer)
     }
@@ -670,7 +740,7 @@ impl<'de, A: Referable> Deserialize<'de> for ActorMeshRef<A> {
                     DEFAULT_PAGE,
                 )))
             }
-            ActorMeshRefRepr::Data(members) => Self::Data(DataActorMesh::new_unchecked(members)),
+            ActorMeshRefRepr::Data(data) => Self::Data(data),
         })
     }
 }
@@ -819,11 +889,25 @@ impl std::fmt::Debug for ActorMeshCastDomain {
 
 impl ActorMeshCastDomain {
     fn new(members: Arc<ValueMesh<ActorAddr>>, region: Region) -> Self {
-        Self {
-            id: CastDomainId::new(),
+        Self::with_config(
+            CastDomainId::new(),
             members,
             region,
-            tiling_policy: default_cast_tiling_policy(),
+            default_cast_tiling_policy(),
+        )
+    }
+
+    fn with_config(
+        id: CastDomainId,
+        members: Arc<ValueMesh<ActorAddr>>,
+        region: Region,
+        tiling_policy: TilingPolicy,
+    ) -> Self {
+        Self {
+            id,
+            members,
+            region,
+            tiling_policy,
             cast_domain: ActorLocal::new(),
         }
     }
@@ -1614,6 +1698,8 @@ mod tests {
     use hyperactor::id::Label;
     use hyperactor::mailbox;
     use hyperactor::supervision::ActorSupervisionEvent;
+    use hyperactor_cast::TilingPolicy;
+    use hyperactor_cast::cast_actor::CastDomainId;
     use ndslice::Extent;
     use ndslice::Region;
     use ndslice::Slice;
@@ -1626,8 +1712,10 @@ mod tests {
     use tokio::time::Duration;
 
     use super::ActorMesh;
+    use super::DataActorMesh;
     use crate::ActorMeshRef;
     use crate::ProcMesh;
+    use crate::ValueMesh;
     use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
     use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
     use crate::mesh_controller::ActorMeshControlPlane;
@@ -1680,12 +1768,26 @@ mod tests {
             panic!("data constructor returned a managed ref");
         };
         assert_eq!(data.members().values().count(), 2);
+        let cast_domain_id = data.cast_domain.id.clone();
+        assert!(matches!(
+            data.cast_domain.tiling_policy,
+            TilingPolicy::BoundedFanout { .. }
+        ));
+
+        let cloned = mesh.clone();
+        let ActorMeshRef::Data(cloned_data) = &cloned else {
+            panic!("cloned data ref changed variant");
+        };
+        assert_eq!(cloned_data.cast_domain.id, cast_domain_id);
 
         let slice_region = region
             .range("replicas", 1..2)
             .expect("rank 1 slice should exist");
         let slice = mesh.sliced(slice_region.clone());
-        assert!(matches!(&slice, ActorMeshRef::Data(_)));
+        let ActorMeshRef::Data(slice_data) = &slice else {
+            panic!("data slice changed variant");
+        };
+        assert_ne!(slice_data.cast_domain.id, cast_domain_id);
         assert_eq!(slice.region(), &slice_region);
         assert_eq!(slice.values().count(), 1);
         assert_eq!(slice.get(0).unwrap().actor_addr(), members[1].actor_addr());
@@ -1696,14 +1798,51 @@ mod tests {
         assert_eq!(decoded, mesh);
         assert_eq!(decoded.region(), &region);
         assert_eq!(decoded.values().count(), 2);
+        let ActorMeshRef::Data(decoded_data) = &decoded else {
+            panic!("decoded data ref changed variant");
+        };
+        assert_eq!(decoded_data.cast_domain.id, cast_domain_id);
 
         assert!(matches!(
-            ActorMeshRef::try_new_data(region, vec![members[0].clone()]),
+            ActorMeshRef::try_new_data(region.clone(), vec![members[0].clone()]),
             Err(crate::Error::InvalidRankCardinality {
                 expected: 2,
                 actual: 1,
             })
         ));
+    }
+
+    #[test]
+    fn test_data_actor_mesh_slice_preserves_tiling_policy() {
+        let region: Region = extent!(replicas = 2).into();
+        let members = ValueMesh::new(
+            region.clone(),
+            vec![
+                ActorRef::<testactor::TestActor>::attest(
+                    ProcAddr::instance(ChannelAddr::Local(9000), "data").actor_addr("rank0"),
+                ),
+                ActorRef::<testactor::TestActor>::attest(
+                    ProcAddr::instance(ChannelAddr::Local(9000), "data").actor_addr("rank1"),
+                ),
+            ],
+        )
+        .expect("member mesh should be valid");
+        let data = DataActorMesh::with_cast_domain_config(
+            members,
+            CastDomainId::new(),
+            TilingPolicy::BlockPartitioning,
+        );
+        let slice_region = region
+            .range("replicas", 1..2)
+            .expect("rank 1 slice should exist");
+
+        let slice = data.sliced(slice_region);
+
+        assert!(matches!(
+            slice.cast_domain.tiling_policy,
+            TilingPolicy::BlockPartitioning
+        ));
+        assert_ne!(slice.cast_domain.id, data.cast_domain.id);
     }
 
     #[tokio::test]
