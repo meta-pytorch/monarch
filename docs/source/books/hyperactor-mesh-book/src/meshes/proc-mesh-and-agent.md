@@ -296,13 +296,17 @@ This message is broadcast to the same `ProcAgent` mesh. Each agent replies with 
 - terminated -> `Stopped`/`Failed`,
 - supervision events present -> `Failed`.
 
-The reply port used to collect all `GetRankStatus` responses is opened via:
+The reply port used to collect all `GetRankStatus` responses is opened and then
+converted to an idle-flush port reference:
 ```rust
-let (port, rx) = cx.mailbox().open_accum_port_opts(
+let (port, rx) = cx.mailbox().open_accum_port(
     StatusMesh::from_single(region.clone(), Status::NotExist),
-    Some(ReducerOpts { max_update_interval: Some(Duration::from_millis(50)) }),
 );
+let reply = port.bind().into_idle_flush(IdleFlushReducerOpts {
+    idle_timeout: Duration::from_millis(50),
+    expected_updates_per_destination: NonZeroUsize::MIN,
+});
 ```
 Here, `cx` is the callers context. In tests this is typically `testing::instance()`, a tiny driver actor (`Instance<>()`), so the accumulation port (`port`/`rx`)-and thus all collected replies-live in that test instance's mailbox.
 
-An accumulation port is just a mailbox port that keeps a running aggregate value. Each `GetRankStatus` reply is an overlay, and the mailbox's reducer merges those overlays into a single `StatusMesh`, with one final status per proc/rank.
+An accumulation port is just a mailbox port that keeps a running aggregate value. Each `GetRankStatus` reply is an overlay, and the mailbox's reducer merges those overlays into a single `StatusMesh`, with one final status per proc/rank. The idle-flush policy combines replies within each cast subtree until replies stop briefly. It can then send a partial batch without hiding the ranks that did reply. Late replies form later batches, and the split port closes when every logical destination has replied.

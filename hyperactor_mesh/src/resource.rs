@@ -52,6 +52,7 @@ use std::time::Duration;
 use enum_as_inner::EnumAsInner;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
+use hyperactor::IdleFlushPortRef;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteMessage;
@@ -247,7 +248,7 @@ pub struct GetRankStatus {
     /// direct (non-cast) callers set it explicitly with `Rank::new(...)`.
     pub rank: Rank,
     /// Sparse status updates (overlays) from a rank.
-    pub reply: PortRef<StatusOverlay>,
+    pub reply: IdleFlushPortRef<StatusOverlay>,
 }
 
 /// Like [`GetRankStatus`], but the handler defers its reply until the
