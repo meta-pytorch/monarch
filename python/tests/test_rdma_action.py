@@ -28,6 +28,17 @@ def _make_seed_tensor(seed: int, size: int, device: str) -> torch.Tensor:
     return torch.rand(size, generator=generator, dtype=torch.float32, device=device)
 
 
+def _synchronize(device: str) -> None:
+    """Wait for queued work on ``device`` before RDMA touches its memory.
+
+    Tensor operations only enqueue work on the CUDA stream, while an RDMA
+    transfer moves the same memory without going through the stream. An
+    enqueued kernel can therefore land after a transfer and overwrite it.
+    """
+    if device == "cuda":
+        torch.cuda.synchronize()
+
+
 class BufferHost(Actor):
     def __init__(
         self, num_buffers: int, size: int, seed_base: int, device: str
@@ -37,6 +48,7 @@ class BufferHost(Actor):
         self.tensors = [
             _make_seed_tensor(seed_base + i, size, device) for i in range(num_buffers)
         ]
+        _synchronize(device)
         self.buffers: list[RDMABuffer] = []
 
     @endpoint
@@ -57,6 +69,7 @@ class ActionClient(Actor):
             torch.zeros(size, dtype=torch.float32, device=device)
             for _ in range(num_slots)
         ]
+        _synchronize(device)
 
     @endpoint
     async def get_slots(self) -> list[torch.Tensor]:
@@ -85,6 +98,7 @@ class ActionClient(Actor):
         first = [s.clone() for s in self.slots[: len(buffers)]]
         for slot in self.slots[: len(buffers)]:
             slot.zero_()
+        _synchronize(self.device)
         await action.submit(timeout=TIMEOUT)
         second = [s.clone() for s in self.slots[: len(buffers)]]
         return first, second
@@ -96,6 +110,7 @@ class ActionClient(Actor):
         size = self.slots[0].numel()
         for i, seed in enumerate(seeds):
             self.slots[i] = _make_seed_tensor(seed, size, self.device)
+        _synchronize(self.device)
         action = RDMAAction()
         for i, buffer in enumerate(buffers):
             action.write_remote(buffer, self.slots[i])
@@ -113,6 +128,7 @@ class ActionClient(Actor):
             self.slots[len(read_buffers) + i] = _make_seed_tensor(
                 seed, size, self.device
             )
+        _synchronize(self.device)
         action = RDMAAction()
         for i, buffer in enumerate(read_buffers):
             action.read_remote(self.slots[i], buffer)
@@ -140,6 +156,7 @@ class ActionClient(Actor):
         # fan-out does: one buffer's contents sent to several peers.
         size = min(buffer_a.size(), buffer_b.size())
         slot = torch.zeros(size, dtype=torch.uint8, device=self.device)
+        _synchronize(self.device)
         action = RDMAAction()
         action.write_remote(buffer_a, slot)
         action.write_remote(buffer_b, slot)
