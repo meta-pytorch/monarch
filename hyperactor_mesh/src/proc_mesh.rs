@@ -30,6 +30,8 @@ use hyperactor::actor::remote::Remote;
 use hyperactor::context;
 use hyperactor::id::Label;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_cast::cast_actor::CastActor;
+use hyperactor_cast::cast_actor::CastDestination;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -171,7 +173,7 @@ impl ProcMesh {
             );
         }
 
-        let current_ref = ProcMeshRef::new(id.clone(), region, ranks, Some(hosts)).unwrap();
+        let current_ref = ProcMeshRef::new_host_backed(id.clone(), region, ranks, hosts)?;
 
         // Notify telemetry that the ProcAgent mesh was created.
         {
@@ -344,6 +346,8 @@ pub struct ProcMeshRef {
     id: ProcMeshId,
     region: Region,
     ranks: Arc<Vec<ProcRef>>,
+    /// Host CastActor for each proc rank in this mesh view.
+    host_cast_actors: Arc<ValueMesh<ActorRef<CastActor>>>,
     /// Actor mesh for the `ProcAgent`s backing this proc mesh view.
     ///
     /// `ProcMeshRef::sliced` derives a sliced agent mesh with a lazy cast
@@ -359,13 +363,14 @@ pub struct ProcMeshRef {
 }
 wirevalue::register_type!(ProcMeshRef);
 
-// The proc-agent actor mesh is derived from `ranks`, so it is not part of
-// `ProcMeshRef` identity.
+// The proc-agent actor mesh is derived from `ranks` and `host_cast_actors`, so it
+// is not part of `ProcMeshRef` identity.
 impl PartialEq for ProcMeshRef {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
             && self.region == other.region
             && self.ranks == other.ranks
+            && self.host_cast_actors == other.host_cast_actors
             && self.host_mesh == other.host_mesh
     }
 }
@@ -377,18 +382,32 @@ impl std::hash::Hash for ProcMeshRef {
         self.id.hash(state);
         self.region.hash(state);
         self.ranks.hash(state);
+        self.host_cast_actors.hash(state);
         self.host_mesh.hash(state);
     }
 }
 
 impl ProcMeshRef {
-    /// Create a new ProcMeshRef from the given id, region, ranks, and so on.
+    /// Create a proc mesh from the exact host view used to spawn its ranks.
+    ///
+    /// Input:
+    ///
+    /// ```text
+    /// hosts: [host_0, host_1]
+    /// ranks: [host_0_proc_0, host_0_proc_1, host_1_proc_0, host_1_proc_1]
+    /// ```
+    ///
+    /// Output relay cache:
+    ///
+    /// ```text
+    /// [host_0::cast, host_0::cast, host_1::cast, host_1::cast]
+    /// ```
     #[allow(clippy::result_large_err)]
-    fn new(
+    fn new_host_backed(
         id: ProcMeshId,
         region: Region,
         ranks: Arc<Vec<ProcRef>>,
-        host_mesh: Option<HostMeshRef>,
+        host_mesh: HostMeshRef,
     ) -> crate::Result<Self> {
         if ranks.is_empty() {
             return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
@@ -401,27 +420,66 @@ impl ProcMeshRef {
                 actual: ranks.len(),
             });
         }
-        let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks)?;
+
+        let num_hosts = host_mesh.region().num_ranks();
+        if num_hosts == 0 {
+            return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
+                "cannot spawn a proc mesh on an empty host mesh"
+            )));
+        }
+        if !ranks.len().is_multiple_of(num_hosts) {
+            return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
+                "proc ranks must be evenly distributed across the spawning host mesh"
+            )));
+        }
+
+        let num_procs_per_host = ranks.len() / num_hosts;
+        let host_cast_actors = Arc::new(ValueMesh::new(
+            region.clone(),
+            host_mesh
+                .values()
+                .flat_map(|host| {
+                    std::iter::repeat_n(
+                        CastActor::ref_for_proc(host.actor_addr().proc_addr()),
+                        num_procs_per_host,
+                    )
+                })
+                .collect(),
+        )?);
+        let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &ranks, &host_cast_actors)?;
+
         Ok(Self {
             id,
             region,
             ranks,
+            host_cast_actors,
             proc_agent_mesh,
-            host_mesh,
+            host_mesh: Some(host_mesh),
         })
     }
 
-    /// Create a singleton ProcMeshRef, given the provided ProcRef and id.
-    /// This is used to support creating local singleton proc meshes to support `this_proc()`
-    /// in python client actors.
-    pub fn new_singleton(id: ProcMeshId, proc_ref: ProcRef) -> crate::Result<Self> {
+    /// Create a singleton proc mesh and associate it with its host system proc.
+    ///
+    /// Input: worker proc `host_0_proc_0` and host proc `host_0`.
+    /// Output: a one-rank mesh mapped to `host_0::cast`.
+    pub fn new_singleton(
+        id: ProcMeshId,
+        proc_ref: ProcRef,
+        host_proc_addr: ProcAddr,
+    ) -> crate::Result<Self> {
         let region: Region = Extent::unity().into();
         let ranks = Arc::new(vec![proc_ref]);
-        let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks)?;
+        let host_cast_actors = Arc::new(ValueMesh::from_single(
+            region.clone(),
+            CastActor::ref_for_proc(host_proc_addr),
+        ));
+        let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &ranks, &host_cast_actors)?;
+
         Ok(Self {
             id,
             region,
             ranks,
+            host_cast_actors,
             proc_agent_mesh,
             host_mesh: None,
         })
@@ -444,10 +502,70 @@ impl ProcMeshRef {
         &self.proc_agent_mesh
     }
 
+    /// Pair actor destinations with the host relays stored by this proc mesh.
+    ///
+    /// Input:
+    ///
+    /// ```text
+    /// host relays:  [host_0::cast, host_1::cast]
+    /// destinations: [host_0_actor_0, host_1_actor_0]
+    /// ```
+    ///
+    /// Output:
+    ///
+    /// ```text
+    /// rank 0: Destination(host_0_actor_0, cast_actor=host_0::cast)
+    /// rank 1: Destination(host_1_actor_0, cast_actor=host_1::cast)
+    /// ```
+    pub(crate) fn cast_destinations(
+        &self,
+        destinations: Vec<ActorAddr>,
+    ) -> crate::Result<ValueMesh<CastDestination>> {
+        Self::cast_destinations_for(&self.host_cast_actors, destinations)
+    }
+
+    /// Pair destinations with a rank-aligned host relay mesh.
+    ///
+    /// Input:
+    ///
+    /// ```text
+    /// region ranks: [0 1]
+    /// host relays:  [host_0::cast, host_0::cast]
+    /// destinations: [host_0_actor_0, host_0_actor_1]
+    /// ```
+    ///
+    /// Output:
+    ///
+    /// ```text
+    /// rank 0: Destination(host_0_actor_0, cast_actor=host_0::cast)
+    /// rank 1: Destination(host_0_actor_1, cast_actor=host_0::cast)
+    /// ```
+    fn cast_destinations_for(
+        host_cast_actors: &ValueMesh<ActorRef<CastActor>>,
+        destinations: Vec<ActorAddr>,
+    ) -> crate::Result<ValueMesh<CastDestination>> {
+        if destinations.len() != host_cast_actors.region().num_ranks() {
+            return Err(crate::Error::InvalidRankCardinality {
+                expected: host_cast_actors.region().num_ranks(),
+                actual: destinations.len(),
+            });
+        }
+
+        CastDestination::mesh(
+            host_cast_actors.region().clone(),
+            host_cast_actors
+                .values()
+                .zip(destinations)
+                .map(|(cast_actor, destination)| (destination, cast_actor))
+                .collect(),
+        )
+        .map_err(crate::Error::ConfigurationError)
+    }
+
     fn proc_agent_mesh_ref(
         proc_mesh_id: &ProcMeshId,
-        region: &Region,
         ranks: &[ProcRef],
+        host_cast_actors: &ValueMesh<ActorRef<CastActor>>,
     ) -> crate::Result<ActorMeshRef<ProcAgent>> {
         let agent_label = ranks
             .first()
@@ -459,20 +577,17 @@ impl ProcMeshRef {
             .unwrap_or_else(|| Label::new(proc_agent::PROC_AGENT_ACTOR_NAME).unwrap());
         let id = ActorMeshId::singleton(agent_label);
 
-        let members = Arc::new(
-            ranks
-                .iter()
-                .map(|rank| rank.agent.actor_addr().clone())
-                .collect_mesh::<ValueMesh<_>>(region.clone())
-                .map_err(|error| crate::Error::ConfigurationError(error.into()))?,
-        );
+        let destinations = ranks
+            .iter()
+            .map(|rank| rank.agent.actor_addr().clone())
+            .collect();
+        let destinations = Arc::new(Self::cast_destinations_for(host_cast_actors, destinations)?);
 
         Ok(ActorMeshRef::new_managed(
             id,
             Some(proc_mesh_id.clone()),
-            region.clone(),
             None,
-            members,
+            destinations,
         ))
     }
 
@@ -1141,20 +1256,18 @@ impl ProcMeshRef {
             }
         }?;
 
-        let actor_mesh_members = Arc::new(
-            self.ranks
-                .iter()
-                .map(|rank| rank.actor_addr(&actor_mesh_id))
-                .collect_mesh::<ValueMesh<_>>(self.region().clone())
-                .map_err(|error| crate::Error::ConfigurationError(error.into()))?,
-        );
+        let actor_mesh_members = self
+            .ranks
+            .iter()
+            .map(|rank| rank.actor_addr(&actor_mesh_id))
+            .collect();
 
         let mesh = ActorMesh::new(
             self.clone(),
             actor_mesh_id.clone(),
             None,
             actor_mesh_members,
-        );
+        )?;
         // Notify telemetry that an actor mesh was created.
         {
             let id_str = actor_mesh_id.to_string();
@@ -1358,6 +1471,7 @@ impl view::RankedSliceable for ProcMeshRef {
         Self {
             id: self.id.clone(),
             proc_agent_mesh: self.proc_agent_mesh.sliced(region.clone()),
+            host_cast_actors: Arc::new(self.host_cast_actors.sliced(region.clone())),
             region,
             ranks: Arc::new(ranks),
             host_mesh: self.host_mesh.clone(),
@@ -1958,9 +2072,17 @@ mod tests {
             ))
             .into(),
         );
+        let host_proc_addr = host_mesh
+            .agent_mesh()
+            .get(0)
+            .expect("local host mesh must contain one host")
+            .actor_addr()
+            .proc_addr()
+            .clone();
         let controller_view = ProcMeshRef::new_singleton(
             ProcMeshId::singleton(Label::strip("location_mismatch_view")),
             ProcRef::new(controller_proc_addr, 0, proc_agent),
+            host_proc_addr,
         )
         .unwrap();
 
