@@ -246,12 +246,17 @@ impl CastDomainId {
             .collect::<Result<Vec<_>>>()?;
 
         for subtree in &subtrees {
-            if let CastRoute::ViaCastActor(root_actor) = &subtree.route {
-                root_actor.port().post_with_headers(
+            if let CastRoute::ViaCastActor {
+                cast_actor,
+                tile_root_base_rank,
+            } = &subtree.route
+            {
+                cast_actor.port().post_with_headers(
                     cx,
                     headers.clone(),
                     CreateCastDomain {
                         cast_domain_id: self.clone(),
+                        tile_root_base_rank: *tile_root_base_rank,
                         region: region.clone(),
                         tiling_policy,
                         tile: root_tile.subtile(Tile::from_view(&subtree.served_region)),
@@ -378,12 +383,16 @@ impl CastDomainRef {
 
         for (subtree, seqs) in self.subtrees.iter().zip(subtree_seqs) {
             match &subtree.route {
-                CastRoute::ViaCastActor(root_actor) => {
-                    root_actor.port().post_with_headers(
+                CastRoute::ViaCastActor {
+                    cast_actor,
+                    tile_root_base_rank,
+                } => {
+                    cast_actor.port().post_with_headers(
                         cx,
                         headers.clone(),
                         CastMessage {
                             cast_domain_id: self.id.clone(),
+                            tile_root_base_rank: *tile_root_base_rank,
                             sender: sender.clone(),
                             session_id,
                             seqs,
@@ -427,11 +436,16 @@ impl CastDomainRef {
     pub fn destroy(&self, cx: &impl context::Actor) {
         let origin = cx.mailbox().actor_addr().clone();
         for subtree in &self.subtrees {
-            if let CastRoute::ViaCastActor(root_actor) = &subtree.route {
-                root_actor.post(
+            if let CastRoute::ViaCastActor {
+                cast_actor,
+                tile_root_base_rank,
+            } = &subtree.route
+            {
+                cast_actor.post(
                     cx,
                     DestroyCastDomain {
                         domain_id: self.id.clone(),
+                        tile_root_base_rank: *tile_root_base_rank,
                         origin: origin.clone(),
                     },
                 );
@@ -521,7 +535,7 @@ pub const CAST_ACTOR_NAME: &str = "cast";
 #[hyperactor::spawnable]
 pub struct CastActor {
     /// Per-hop routing state installed on this actor.
-    installed_hops: HashMap<CastDomainId, CastHop>,
+    installed_hops: HashMap<(CastDomainId, usize), CastHop>,
 }
 
 /// One tile-local hop in an installed cast tree.
@@ -568,7 +582,10 @@ impl CastDestination {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum CastRoute {
     /// Continue routing a nonterminal child tile through its representative CastActor.
-    ViaCastActor(ActorRef<CastActor>),
+    ViaCastActor {
+        cast_actor: ActorRef<CastActor>,
+        tile_root_base_rank: usize,
+    },
     /// Deliver a terminal child tile directly to its destination actor.
     Direct(CastDestination),
 }
@@ -585,7 +602,10 @@ impl CastRoute {
         Ok(if next_tiles(tiling_policy, tile).is_empty() {
             Self::Direct(destination)
         } else {
-            Self::ViaCastActor(cast_actor_ref_for_member(&destination.actor))
+            Self::ViaCastActor {
+                cast_actor: cast_actor_ref_for_member(&destination.actor),
+                tile_root_base_rank: destination.base_rank_in_domain,
+            }
         })
     }
 }
@@ -784,6 +804,7 @@ impl CastActor {
 #[derive(Debug, Serialize, Deserialize, typeuri::Named)]
 struct CreateCastDomain {
     cast_domain_id: CastDomainId,
+    tile_root_base_rank: usize,
     region: Region,
     tiling_policy: TilingPolicy,
     tile: MaterializedTile<ActorAddr>,
@@ -808,11 +829,13 @@ impl Handler<CreateCastDomain> for CastActor {
     ) -> Result<(), anyhow::Error> {
         let CreateCastDomain {
             cast_domain_id,
+            tile_root_base_rank,
             region,
             tiling_policy,
             tile,
         } = message;
-        if self.installed_hops.contains_key(&cast_domain_id) {
+        let route_key = (cast_domain_id.clone(), tile_root_base_rank);
+        if self.installed_hops.contains_key(&route_key) {
             return Ok(());
         }
 
@@ -820,11 +843,16 @@ impl Handler<CreateCastDomain> for CastActor {
 
         for next_tile in next_tiles(tiling_policy, &tile) {
             let next_hop = CastRoute::try_from_tile(&region, tiling_policy, &next_tile)?;
-            if let CastRoute::ViaCastActor(next_hop_cast_actor) = &next_hop {
-                next_hop_cast_actor.post(
+            if let CastRoute::ViaCastActor {
+                cast_actor,
+                tile_root_base_rank,
+            } = &next_hop
+            {
+                cast_actor.post(
                     cx,
                     CreateCastDomain {
                         cast_domain_id: cast_domain_id.clone(),
+                        tile_root_base_rank: *tile_root_base_rank,
                         region: region.clone(),
                         tiling_policy,
                         tile: next_tile,
@@ -845,7 +873,7 @@ impl Handler<CreateCastDomain> for CastActor {
             tests::capture_installed_domain(cx, cast_domain_id.domain_id(), &cast_hop);
         }
 
-        self.installed_hops.insert(cast_domain_id, cast_hop);
+        self.installed_hops.insert(route_key, cast_hop);
 
         Ok(())
     }
@@ -1010,6 +1038,8 @@ impl ForwardLineage {
 struct CastMessage {
     /// The domain to cast into.
     cast_domain_id: CastDomainId,
+    /// The tile root's base rank, which identifies this hop within the domain.
+    tile_root_base_rank: usize,
     /// Actor that initiated the cast.
     sender: ActorAddr,
     /// Sender-side sequencer session for this cast.
@@ -1043,7 +1073,10 @@ impl Handler<CastMessage> for CastActor {
         cx: &Context<Self>,
         message: CastMessage,
     ) -> Result<(), anyhow::Error> {
-        let Some(domain) = self.installed_hops.get(&message.cast_domain_id) else {
+        let Some(domain) = self
+            .installed_hops
+            .get(&(message.cast_domain_id.clone(), message.tile_root_base_rank))
+        else {
             Self::return_cast_error_to_origin(
                 cx,
                 &message,
@@ -1174,15 +1207,19 @@ impl CastActor {
 
         for next_hop in &domain.next_hops {
             match next_hop {
-                CastRoute::ViaCastActor(next_hop) => {
+                CastRoute::ViaCastActor {
+                    cast_actor,
+                    tile_root_base_rank,
+                } => {
                     #[cfg(not(test))]
                     let _ = &local_lineage;
                     let forward_headers = message.headers.clone();
-                    next_hop.port().post_with_headers(
+                    cast_actor.port().post_with_headers(
                         cx,
                         forward_headers,
                         CastMessage {
                             cast_domain_id: message.cast_domain_id.clone(),
+                            tile_root_base_rank: *tile_root_base_rank,
                             sender: message.sender.clone(),
                             session_id: message.session_id,
                             seqs: message.seqs.clone(),
@@ -1222,6 +1259,8 @@ impl CastActor {
 struct DestroyCastDomain {
     /// The domain to tear down.
     domain_id: CastDomainId,
+    /// The tile root's base rank, which identifies this hop within the domain.
+    tile_root_base_rank: usize,
     /// Actor that initiated teardown and should receive undeliverable returns.
     origin: ActorAddr,
 }
@@ -1239,7 +1278,10 @@ impl Handler<DestroyCastDomain> for CastActor {
         cx: &Context<Self>,
         message: DestroyCastDomain,
     ) -> Result<(), anyhow::Error> {
-        let Some(cast_hop) = self.installed_hops.remove(&message.domain_id) else {
+        let Some(cast_hop) = self
+            .installed_hops
+            .remove(&(message.domain_id.clone(), message.tile_root_base_rank))
+        else {
             return Ok(());
         };
 
@@ -1249,11 +1291,16 @@ impl Handler<DestroyCastDomain> for CastActor {
         }
 
         for next_hop in &cast_hop.next_hops {
-            if let CastRoute::ViaCastActor(next_hop) = next_hop {
-                next_hop.post(
+            if let CastRoute::ViaCastActor {
+                cast_actor,
+                tile_root_base_rank,
+            } = next_hop
+            {
+                cast_actor.post(
                     cx,
                     DestroyCastDomain {
                         domain_id: message.domain_id.clone(),
+                        tile_root_base_rank: *tile_root_base_rank,
                         origin: message.origin.clone(),
                     },
                 );
@@ -1389,8 +1436,8 @@ mod tests {
                 .next_hops
                 .iter()
                 .map(|next_hop| match next_hop {
-                    CastRoute::ViaCastActor(next_hop) => {
-                        next_hop.actor_addr().proc_addr().log_name().to_string()
+                    CastRoute::ViaCastActor { cast_actor, .. } => {
+                        cast_actor.actor_addr().proc_addr().log_name().to_string()
                     }
                     CastRoute::Direct(destination) => {
                         destination.actor.proc_addr().log_name().to_string()
@@ -1401,7 +1448,7 @@ mod tests {
                 .next_hops
                 .iter()
                 .filter_map(|next_hop| match next_hop {
-                    CastRoute::ViaCastActor(_) => None,
+                    CastRoute::ViaCastActor { .. } => None,
                     CastRoute::Direct(destination) => {
                         Some(destination.actor.proc_addr().log_name().to_string())
                     }
@@ -2027,13 +2074,17 @@ mod tests {
 
             let root_rank = Tile::from_view(&subtree.served_region).root_rank();
             match &subtree.route {
-                CastRoute::ViaCastActor(root_actor) => {
+                CastRoute::ViaCastActor {
+                    cast_actor,
+                    tile_root_base_rank,
+                } => {
                     prop_assert_eq!(
-                        root_actor.actor_addr().clone(),
+                        cast_actor.actor_addr().clone(),
                         cast_actor_ref_for_member(&members[&root_rank])
                             .actor_addr()
                             .clone(),
                     );
+                    prop_assert_eq!(*tile_root_base_rank, root_rank);
                 }
                 CastRoute::Direct(destination) => {
                     prop_assert_eq!(subtree.served_region.num_ranks(), 1);
@@ -2280,6 +2331,101 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_routes_distinct_same_proc_actors_by_base_rank() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client_proc".into()).unwrap();
+        let client = client_proc.client("client");
+        let proc = Proc::direct(ChannelTransport::Unix.any(), "shared_proc".into()).unwrap();
+        let cast_handle = proc
+            .spawn_with_uid(
+                Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
+                CastActor::default(),
+            )
+            .unwrap();
+        let _: ActorRef<CastActor> = cast_handle.bind();
+
+        let receiver_handles = (0..5)
+            .map(|rank| {
+                proc.spawn_with_uid(
+                    Uid::instance(Label::strip(&format!("receiver_{rank}"))),
+                    TestReceiver::default(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let receivers = receiver_handles
+            .iter()
+            .map(|handle| handle.bind::<TestReceiver>())
+            .collect::<Vec<_>>();
+        let region = Region::from(shape!(rank = 10))
+            .range("rank", ndslice::Range(0, Some(10), 2))
+            .unwrap();
+        let members = region
+            .slice()
+            .iter()
+            .zip(receivers.iter().rev())
+            .map(|(rank, receiver)| (rank, receiver.actor_addr().clone()))
+            .collect();
+        let domain = CastDomainId::new()
+            .materialize(
+                &client,
+                members,
+                region,
+                TilingPolicy::BoundedFanout {
+                    fanout: NonZeroUsize::new(2).unwrap(),
+                },
+                Flattrs::new(),
+            )
+            .unwrap();
+
+        domain
+            .cast(
+                &client,
+                Flattrs::new(),
+                TestDelivery {
+                    payload: "same-proc".to_string(),
+                },
+            )
+            .unwrap();
+
+        for receiver in receivers {
+            let histories = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let (reply, reply_rx) = client.open_once_port::<TestDeliveryHistories>();
+                    receiver.post(
+                        &client,
+                        GetHistory {
+                            reply_to: reply.bind(),
+                        },
+                    );
+                    let histories = reply_rx
+                        .recv()
+                        .await
+                        .expect("history reply should be delivered");
+                    if !histories.by_proc["shared_proc"].is_empty() {
+                        break histories;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("cast delivery should arrive before timeout");
+            assert_eq!(
+                histories.by_proc["shared_proc"]
+                    .iter()
+                    .map(|delivery| delivery.payload.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["same-proc"]
+            );
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
     async fn test_root_heaved_block_partitioning_delivers_once() {
         // GIVEN: four hosts with four proc ranks per host.
         let mut test_mesh = CastTestMesh::new(16);
@@ -2461,13 +2607,14 @@ mod tests {
         let mut cast_actor = CastActor::default();
         let domain_id = CastDomainId::new();
         let domain_region = Region::from(shape!(x = 2));
+        let destination = ActorAddr::root(cast_proc.proc_addr().clone(), Label::strip("receiver"));
         cast_actor.installed_hops.insert(
-            domain_id.clone(),
+            (domain_id.clone(), 1),
             CastHop {
                 local_destination: CastDestination {
                     point_in_domain: domain_region.point_of_base_rank(1).unwrap(),
                     base_rank_in_domain: 1,
-                    actor: ActorAddr::root(cast_proc.proc_addr().clone(), Label::strip("receiver")),
+                    actor: destination.clone(),
                 },
                 next_hops: Vec::new(),
                 num_destinations: 1,
@@ -2483,6 +2630,7 @@ mod tests {
             &cx,
             CastMessage {
                 cast_domain_id: domain_id,
+                tile_root_base_rank: 1,
                 sender: probe_ref.actor_addr().clone(),
                 session_id: client.sequencer().session_id(),
                 seqs: ValueMesh::new(seq_region, vec![1]).unwrap(),
