@@ -30,6 +30,7 @@ use crate::local::Collector;
 
 const DRAIN_DELAY: Duration = Duration::from_millis(500);
 const ENDPOINT_TELEMETRY_TARGET: &str = "monarch_hyperactor::telemetry::endpoint";
+const USER_TELEMETRY_TARGET: &str = "monarch_hyperactor::telemetry";
 const QUERY_TIMEOUT: Duration = Duration::from_secs(120);
 
 struct IncompleteTraceFile<'a> {
@@ -99,8 +100,23 @@ struct PreparedSpan {
     original_end_us: Option<i64>,
     start_clipped: bool,
     end_clipped: bool,
+    returns_response: bool,
     start_ns: u64,
     end_ns: u64,
+}
+
+#[derive(Default)]
+struct SpanFlowEdits {
+    send_flow_ids: Vec<u64>,
+    request_terminating_flow_ids: Vec<u64>,
+    response_flow_ids: Vec<u64>,
+    complete_terminating_flow_ids: Vec<u64>,
+}
+
+#[derive(Default)]
+struct CorrelatedSpans {
+    callers: Vec<usize>,
+    receivers: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -369,6 +385,8 @@ fn write_trace(
         actor_track_ids.insert(actor_track.clone(), track_id);
     }
 
+    let flow_plan = build_flow_plan(&spans, || ctx.next_uuid());
+
     let mut boundaries = spans
         .iter()
         .enumerate()
@@ -399,6 +417,7 @@ fn write_trace(
 
         match boundary.kind {
             BoundaryKind::Begin => {
+                let flow_edits = flow_plan.get(&boundary.span_index);
                 let mut event = ctx
                     .start_slice(track_id, boundary.timestamp_ns)
                     .name(&span.name);
@@ -430,9 +449,50 @@ fn write_trace(
                 for (name, value) in &span.fields {
                     event = event.add_annotation(name, value);
                 }
+                if let Some(flow_edits) = flow_edits {
+                    event =
+                        event.with_terminating_flow_ids(&flow_edits.request_terminating_flow_ids);
+                }
+                event.consume();
+
+                if let Some(flow_edits) = flow_edits
+                    && !flow_edits.send_flow_ids.is_empty()
+                {
+                    ctx.instant(track_id, boundary.timestamp_ns)
+                        .name("send")
+                        .add_annotation(
+                            "correlation_id",
+                            span.fields
+                                .get("correlation_id")
+                                .expect("a caller with flows should have a correlation id"),
+                        )
+                        .with_flow_ids(&flow_edits.send_flow_ids)
+                        .consume();
+                }
+            }
+            BoundaryKind::End => {
+                let flow_edits = flow_plan.get(&boundary.span_index);
+                if let Some(flow_edits) = flow_edits
+                    && !flow_edits.complete_terminating_flow_ids.is_empty()
+                {
+                    ctx.instant(track_id, boundary.timestamp_ns)
+                        .name("complete")
+                        .add_annotation(
+                            "correlation_id",
+                            span.fields
+                                .get("correlation_id")
+                                .expect("a caller with flows should have a correlation id"),
+                        )
+                        .with_terminating_flow_ids(&flow_edits.complete_terminating_flow_ids)
+                        .consume();
+                }
+
+                let mut event = ctx.end_slice(track_id, boundary.timestamp_ns);
+                if let Some(flow_edits) = flow_edits {
+                    event = event.with_flow_ids(&flow_edits.response_flow_ids);
+                }
                 event.consume();
             }
-            BoundaryKind::End => ctx.end_slice(track_id, boundary.timestamp_ns).consume(),
         }
     }
 
@@ -448,6 +508,67 @@ fn write_trace(
     collector.flush()?;
 
     Ok(summary)
+}
+
+fn build_flow_plan(
+    spans: &[PreparedSpan],
+    mut next_flow_id: impl FnMut() -> u64,
+) -> HashMap<usize, SpanFlowEdits> {
+    let mut correlated_spans: HashMap<u64, CorrelatedSpans> = HashMap::new();
+
+    for (span_index, span) in spans.iter().enumerate() {
+        let Some(correlation_id) = span.fields.get("correlation_id").and_then(Value::as_u64) else {
+            continue;
+        };
+
+        let group = correlated_spans.entry(correlation_id).or_default();
+        if span.target == ENDPOINT_TELEMETRY_TARGET {
+            group.callers.push(span_index);
+        } else if span.target == USER_TELEMETRY_TARGET {
+            group.receivers.push(span_index);
+        }
+    }
+
+    let mut flow_plan: HashMap<usize, SpanFlowEdits> = HashMap::new();
+    for group in correlated_spans.into_values() {
+        let [caller_index] = group.callers.as_slice() else {
+            continue;
+        };
+        let caller = &spans[*caller_index];
+        for receiver_index in group.receivers {
+            let receiver = &spans[receiver_index];
+
+            if !caller.start_clipped && !receiver.start_clipped {
+                let flow_id = next_flow_id();
+                flow_plan
+                    .entry(*caller_index)
+                    .or_default()
+                    .send_flow_ids
+                    .push(flow_id);
+                flow_plan
+                    .entry(receiver_index)
+                    .or_default()
+                    .request_terminating_flow_ids
+                    .push(flow_id);
+            }
+
+            if caller.returns_response && !caller.end_clipped && !receiver.end_clipped {
+                let flow_id = next_flow_id();
+                flow_plan
+                    .entry(receiver_index)
+                    .or_default()
+                    .response_flow_ids
+                    .push(flow_id);
+                flow_plan
+                    .entry(*caller_index)
+                    .or_default()
+                    .complete_terminating_flow_ids
+                    .push(flow_id);
+            }
+        }
+    }
+
+    flow_plan
 }
 
 fn prepare_span(
@@ -485,6 +606,8 @@ fn prepare_span(
 
     let start_ns = micros_to_nanos(start_us).map_err(|_| SpanSkipReason::InvalidStartTimestamp)?;
     let end_ns = micros_to_nanos(end_us).map_err(|_| SpanSkipReason::InvalidEndTimestamp)?;
+    let returns_response = row.target == ENDPOINT_TELEMETRY_TARGET
+        && matches!(row.name.as_str(), "call" | "call_one" | "choose");
     let name = display_name(&row, &fields);
 
     Ok(PreparedSpan {
@@ -498,6 +621,7 @@ fn prepare_span(
         original_end_us,
         start_clipped,
         end_clipped,
+        returns_response,
         start_ns,
         end_ns,
     })

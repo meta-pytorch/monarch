@@ -276,6 +276,16 @@ impl<'a, T: Sink> Instant<'a, T> {
         self
     }
 
+    pub fn with_flow_ids(mut self, flow_ids: &[u64]) -> Self {
+        self.event.flow_ids.extend_from_slice(flow_ids);
+        self
+    }
+
+    pub fn with_terminating_flow_ids(mut self, flow_ids: &[u64]) -> Self {
+        self.event.terminating_flow_ids.extend_from_slice(flow_ids);
+        self
+    }
+
     pub fn consume(self) {
         let mut event = self.event;
         event.r#type = Some(TrackEventType::Instant as i32);
@@ -372,6 +382,11 @@ impl<'a, T: Sink> StartSlice<'a, T> {
         self
     }
 
+    pub fn with_terminating_flow_ids(mut self, flow_ids: &[u64]) -> Self {
+        self.event.terminating_flow_ids.extend_from_slice(flow_ids);
+        self
+    }
+
     pub fn consume(self) {
         let mut event = self.event;
         event.r#type = Some(TrackEventType::SliceBegin as i32);
@@ -403,6 +418,11 @@ pub struct EndSlice<'a, T: Sink> {
 }
 
 impl<'a, T: Sink> EndSlice<'a, T> {
+    pub fn with_flow_ids(mut self, flow_ids: &[u64]) -> Self {
+        self.event.flow_ids.extend_from_slice(flow_ids);
+        self
+    }
+
     pub fn consume(self) {
         let mut event = self.event;
         event.r#type = Some(TrackEventType::SliceEnd as i32);
