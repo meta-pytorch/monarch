@@ -14,6 +14,8 @@ including its blocking pool, while still allowing an already-initialized client
 to be reused.
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.pytokio import (
@@ -25,6 +27,69 @@ from monarch._src.actor.host_mesh import this_host
 from monarch.actor import Actor, endpoint
 
 _EXPECTED = "WouldBlockRuntime uninitialized=True"
+
+
+def test_attach_tracks_process_global_address_and_is_idempotent() -> None:
+    from monarch._src.actor import actor_mesh
+
+    client_context = actor_mesh._Lazy(MagicMock())
+    context = MagicMock()
+    with (
+        patch.object(actor_mesh, "_client_context", client_context),
+        patch.object(actor_mesh, "_client_attach_to", None),
+        patch.object(actor_mesh, "_init_client_context", return_value=context) as init,
+    ):
+        actor_mesh.attach("tcp://host:1")
+        actor_mesh.attach("tcp://host:1")
+
+        assert actor_mesh._client_attached_to() == "tcp://host:1"
+        assert client_context.try_get() is context
+        init.assert_called_once_with(via="tcp://host:1")
+
+
+def test_attach_rejects_different_address() -> None:
+    from monarch._src.actor import actor_mesh
+
+    with (
+        patch.object(actor_mesh, "_client_context", actor_mesh._Lazy(MagicMock())),
+        patch.object(actor_mesh, "_client_attach_to", None),
+        patch.object(actor_mesh, "_init_client_context", return_value=MagicMock()),
+    ):
+        actor_mesh.attach("tcp://host:1")
+        with pytest.raises(RuntimeError, match="tcp://host:1, not tcp://host:2"):
+            actor_mesh.attach("tcp://host:2")
+
+
+def test_attach_rejects_locally_initialized_client() -> None:
+    from monarch._src.actor import actor_mesh
+
+    client_context = actor_mesh._Lazy(MagicMock())
+    client_context.get()
+    with (
+        patch.object(actor_mesh, "_client_context", client_context),
+        patch.object(actor_mesh, "_client_attach_to", None),
+    ):
+        with pytest.raises(RuntimeError, match="initialized without a remote"):
+            actor_mesh.attach("tcp://host:1")
+
+
+def test_attach_does_not_publish_failed_initialization() -> None:
+    from monarch._src.actor import actor_mesh
+
+    with (
+        patch.object(actor_mesh, "_client_context", actor_mesh._Lazy(MagicMock())),
+        patch.object(actor_mesh, "_client_attach_to", None),
+        patch.object(
+            actor_mesh,
+            "_init_client_context",
+            side_effect=RuntimeError("bootstrap failed"),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="bootstrap failed"):
+            actor_mesh.attach("tcp://host:1")
+
+        assert actor_mesh._client_attached_to() is None
+        assert actor_mesh._client_context.try_get() is None
 
 
 def _probe_fresh_bootstrap() -> str:

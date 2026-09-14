@@ -524,6 +524,13 @@ def _init_client_context(via: Optional[str] = None) -> Context:
 
 
 _client_context: _Lazy[Context] = _Lazy(_init_client_context)
+_client_attach_to: Optional[str] = None
+
+
+def _client_attached_to() -> Optional[str]:
+    """Return the address used to attach the process-global client."""
+    with _client_context._lock:
+        return _client_attach_to
 
 
 def attach(addr: str) -> None:
@@ -539,21 +546,32 @@ def attach(addr: str) -> None:
     Must be called before the client context is bootstrapped — i.e.
     before the first ``context()`` / ``this_host()`` / ``this_proc()``
     on the client — because actor and port refs snapshot their
-    location when they are created. We are working to remove this
-    sequencing dependency so attach can be configured independently of
-    first client-context use. Raises ``RuntimeError`` if the client
-    context has already been bootstrapped. ``this_host()`` still names
-    the current machine — attach only changes how this host's procs
-    are reached. Raises ``WouldBlockRuntime`` if called from inside a Tokio
-    runtime before the client has been initialized.
+    location when they are created. Repeating the same attachment is a
+    no-op. We are working to remove this sequencing dependency so attach
+    can be configured independently of first client-context use. Raises
+    ``RuntimeError`` if the client context was initialized locally or was
+    attached through a different address. ``this_host()`` still names the
+    current machine — attach only changes how this host's procs are reached.
+    Raises ``WouldBlockRuntime`` if called from inside a Tokio runtime before
+    the client has been initialized.
     """
+    global _client_attach_to
     with _client_context._lock:
         if _client_context._val is not None:
+            if _client_attach_to == addr:
+                return
+            if _client_attach_to is not None:
+                raise RuntimeError(
+                    "client is already attached through "
+                    f"{_client_attach_to}, not {addr}; detaching is not supported, "
+                    "so use a new process to attach through a different address"
+                )
             raise RuntimeError(
-                "client already bootstrapped; call attach(addr) before "
-                "the first context()/this_host()/this_proc()"
+                "client was initialized without a remote attachment; call "
+                "attach(addr) before the first context()/this_host()/this_proc()"
             )
         _client_context._val = _init_client_context(via=addr)
+        _client_attach_to = addr
 
 
 _shutdown_done = False
