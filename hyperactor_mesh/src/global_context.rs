@@ -449,7 +449,7 @@ async fn bootstrap_host() -> GlobalState {
         )
         .expect("failed to spawn cast actor");
 
-    cast_handle.bind::<hyperactor_cast::cast_actor::CastActor>();
+    let host_proc_addr = cast_handle.actor_addr().proc_addr();
 
     // 4. Build HostMeshRef.
     let host_mesh = HostMeshRef::from_host_agent(
@@ -486,6 +486,7 @@ async fn bootstrap_host() -> GlobalState {
             0,
             local_proc_agent.bind(),
         ),
+        host_proc_addr,
     )
     .expect("failed to create proc mesh ref");
     // Bind the client-root API on this program's one root ProcAgent and seed the

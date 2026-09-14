@@ -44,6 +44,7 @@ use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_cast::TilingPolicy;
+use hyperactor_cast::cast_actor::CastDestination;
 use hyperactor_cast::cast_actor::CastDomainId;
 use hyperactor_cast::cast_actor::CastDomainRef;
 use hyperactor_config::CONFIG;
@@ -152,21 +153,20 @@ impl<A: Referable> ActorMesh<A> {
         proc_mesh: ProcMeshRef,
         id: ActorMeshId,
         controller: Option<ActorRef<ActorMeshController<A>>>,
-        members: Arc<ValueMesh<ActorAddr>>,
-    ) -> Self {
-        let region = proc_mesh.region().clone();
+        members: Vec<ActorAddr>,
+    ) -> crate::Result<Self> {
+        let destinations = Arc::new(proc_mesh.cast_destinations(members)?);
         let current_ref = ActorMeshRef::new_managed(
             id.clone(),
             Some(proc_mesh.id().clone()),
-            region,
             controller.clone(),
-            members,
+            destinations,
         );
 
-        Self {
+        Ok(Self {
             current_ref,
             lifecycle: ActorMeshLifecycle::Managed,
-        }
+        })
     }
 
     /// Create a data actor mesh from actor refs and their lifecycle handles.
@@ -481,16 +481,14 @@ impl<A: Referable> ActorMeshRef<A> {
     pub(crate) fn new_managed(
         id: ActorMeshId,
         proc_mesh_id: Option<ProcMeshId>,
-        region: Region,
         controller: Option<ActorRef<ActorMeshController<A>>>,
-        members: Arc<ValueMesh<ActorAddr>>,
+        destinations: Arc<ValueMesh<CastDestination>>,
     ) -> Self {
         Self::Managed(Box::new(ManagedActorMeshRef::new(
             id,
             proc_mesh_id,
-            region,
             controller,
-            members,
+            destinations,
         )))
     }
 
@@ -800,8 +798,7 @@ fn default_cast_tiling_policy() -> TilingPolicy {
 #[derive(Clone)]
 struct ActorMeshCastDomain {
     id: CastDomainId,
-    members: Arc<ValueMesh<ActorAddr>>,
-    region: Region,
+    destinations: Arc<ValueMesh<CastDestination>>,
     tiling_policy: TilingPolicy,
     cast_domain: ActorLocal<CastDomainRef>,
 }
@@ -810,19 +807,17 @@ impl std::fmt::Debug for ActorMeshCastDomain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ActorMeshCastDomain")
             .field("id", &self.id)
-            .field("members", &self.members)
-            .field("region", &self.region)
+            .field("destinations", &self.destinations)
             .field("tiling_policy", &self.tiling_policy)
             .finish_non_exhaustive()
     }
 }
 
 impl ActorMeshCastDomain {
-    fn new(members: Arc<ValueMesh<ActorAddr>>, region: Region) -> Self {
+    fn new(destinations: Arc<ValueMesh<CastDestination>>) -> Self {
         Self {
             id: CastDomainId::new(),
-            members,
-            region,
+            destinations,
             tiling_policy: default_cast_tiling_policy(),
             cast_domain: ActorLocal::new(),
         }
@@ -837,22 +832,24 @@ impl ActorMeshCastDomain {
             return Ok(cast_domain.get().clone());
         }
 
-        let members =
-            self.region
-                .slice()
-                .iter()
-                .map(|rank| {
-                    let member = self.members.get_by_base_rank(rank).ok_or_else(|| {
-                        anyhow::anyhow!("missing cast-domain member for rank {rank}")
-                    })?;
-                    Ok((rank, member.clone()))
-                })
-                .collect::<anyhow::Result<HashMap<_, _>>>()?;
+        let region = self.destinations.region().clone();
+        let members = region
+            .slice()
+            .iter()
+            .map(|rank| {
+                let destination = self
+                    .destinations
+                    .get_by_base_rank(rank)
+                    .ok_or_else(|| anyhow::anyhow!("missing cast destination for rank {rank}"))?;
+
+                Ok((rank, destination.actor().clone()))
+            })
+            .collect::<anyhow::Result<HashMap<_, _>>>()?;
 
         let cast_domain = self.id.clone().materialize(
             cx,
             members,
-            self.region.clone(),
+            region,
             self.tiling_policy,
             headers.clone(),
         )?;
@@ -862,12 +859,8 @@ impl ActorMeshCastDomain {
         Ok(cast_domain)
     }
 
-    fn members(&self) -> &ValueMesh<ActorAddr> {
-        &self.members
-    }
-
     fn region(&self) -> &Region {
-        &self.region
+        self.destinations.region()
     }
 }
 
@@ -876,7 +869,7 @@ impl Serialize for ActorMeshCastDomain {
     where
         S: Serializer,
     {
-        (&self.id, &self.members, &self.region, self.tiling_policy).serialize(serializer)
+        (&self.id, &self.destinations, self.tiling_policy).serialize(serializer)
     }
 }
 
@@ -885,16 +878,13 @@ impl<'de> Deserialize<'de> for ActorMeshCastDomain {
     where
         D: Deserializer<'de>,
     {
-        let (id, members, region, tiling_policy) = <(
-            CastDomainId,
-            Arc<ValueMesh<ActorAddr>>,
-            Region,
-            TilingPolicy,
-        )>::deserialize(deserializer)?;
+        let (id, destinations, tiling_policy) =
+            <(CastDomainId, Arc<ValueMesh<CastDestination>>, TilingPolicy)>::deserialize(
+                deserializer,
+            )?;
         Ok(Self {
             id,
-            members,
-            region,
+            destinations,
             tiling_policy,
             cast_domain: ActorLocal::new(),
         })
@@ -1164,11 +1154,10 @@ impl<A: Referable> ManagedActorMeshRef<A> {
     pub(crate) fn new(
         id: ActorMeshId,
         proc_mesh_id: Option<ProcMeshId>,
-        region: Region,
         controller: Option<ActorRef<ActorMeshController<A>>>,
-        members: Arc<ValueMesh<ActorAddr>>,
+        destinations: Arc<ValueMesh<CastDestination>>,
     ) -> Self {
-        Self::with_page_size(id, proc_mesh_id, region, DEFAULT_PAGE, controller, members)
+        Self::with_page_size(id, proc_mesh_id, DEFAULT_PAGE, controller, destinations)
     }
 
     pub fn id(&self) -> &ActorMeshId {
@@ -1178,16 +1167,15 @@ impl<A: Referable> ManagedActorMeshRef<A> {
     pub(crate) fn with_page_size(
         id: ActorMeshId,
         proc_mesh_id: Option<ProcMeshId>,
-        region: Region,
         page_size: usize,
         controller: Option<ActorRef<ActorMeshController<A>>>,
-        members: Arc<ValueMesh<ActorAddr>>,
+        destinations: Arc<ValueMesh<CastDestination>>,
     ) -> Self {
         Self::with_cast_domain(
             id,
             proc_mesh_id,
             controller,
-            ActorMeshCastDomain::new(members, region),
+            ActorMeshCastDomain::new(destinations),
             page_size,
         )
     }
@@ -1254,13 +1242,12 @@ impl<A: Referable> ManagedActorMeshRef<A> {
         });
 
         Some(page.slots[local_ix].get_or_init(|| {
-            // AM-1: see module doc. The cast domain member map is in the
-            // same dense local-rank order as this mesh ref's region.
+            // AM-1: see module doc. Cast destinations have the same dense
+            // local-rank order as this mesh ref's region.
             debug_assert!(rank < self.len(), "rank must be within [0, len)");
             ActorRef::attest(
-                cast_domain
-                    .members()
-                    .get(rank)
+                Ranked::get(cast_domain.destinations.as_ref(), rank)
+                    .map(CastDestination::actor)
                     .expect("rank must be present in cast-domain member map")
                     .clone(),
             )
@@ -1583,10 +1570,10 @@ impl<A: Referable> view::RankedSliceable for ManagedActorMeshRef<A> {
             id: self.id.clone(),
             proc_mesh_id: self.proc_mesh_id.clone(),
             controller: self.controller.clone(),
-            cast_domain: ActorMeshCastDomain::new(
-                Arc::new(self.cast_domain.members().sliced(region.clone())),
-                region.clone(),
-            ),
+            cast_domain: ActorMeshCastDomain::new(Arc::new(
+                CastDestination::subset(self.cast_domain.destinations.as_ref(), region.clone())
+                    .expect("actor mesh slice must preserve its destination nodes"),
+            )),
             health_state: self.health_state.clone(),
             receiver: ActorLocal::new(),
             pages: OnceCell::new(),
@@ -1795,10 +1782,9 @@ mod tests {
             ActorMeshRef::Managed(Box::new(super::ManagedActorMeshRef::with_page_size(
                 am.id().expect("spawned actor mesh has an id").clone(),
                 managed.proc_mesh_id.clone(),
-                am.region().clone(),
                 page_size,
                 None,
-                Arc::clone(&managed.cast_domain.members),
+                Arc::clone(&managed.cast_domain.destinations),
             )));
         assert_eq!(amr.extent(), extent!(hosts = 2, gpus = 2));
         assert_eq!(amr.region().num_ranks(), 4);
@@ -2565,7 +2551,7 @@ mod tests {
                     )
                     .unwrap();
 
-                let _: hyperactor::ActorRef<hyperactor_cast::cast_actor::CastActor> =
+                let cast_actor: hyperactor::ActorRef<hyperactor_cast::cast_actor::CastActor> =
                     cast_handle.bind();
 
                 let receiver_handle = proc
@@ -2582,15 +2568,20 @@ mod tests {
 
                 procs.push(proc);
 
-                (rank, actor_addr)
+                (rank, (actor_addr, cast_actor))
             })
             .collect::<HashMap<_, _>>();
 
+        let region = Region::from(ndslice::shape!(rank = 2));
+        let actor_members = members
+            .iter()
+            .map(|(rank, (actor, _))| (*rank, actor.clone()))
+            .collect();
         let cast_domain = hyperactor_cast::cast_actor::CastDomainId::new()
             .materialize(
                 &client,
-                members,
-                Region::from(ndslice::shape!(rank = 2)),
+                actor_members,
+                region,
                 hyperactor_cast::cast_actor::TilingPolicy::BlockPartitioning,
                 hyperactor_config::Flattrs::new(),
             )

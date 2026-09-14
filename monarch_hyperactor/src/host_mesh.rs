@@ -451,6 +451,7 @@ fn bootstrap_host(
                 0,
                 local_proc_agent.bind(),
             ),
+            host_mesh_agent.actor_addr().proc_addr(),
         )
         .map_err(|e| PyException::new_err(e.to_string()))?;
 
