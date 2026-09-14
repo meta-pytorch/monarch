@@ -144,12 +144,14 @@ use crate::ActorAddr;
 use crate::Addr;
 use crate::Endpoint;
 use crate::EndpointLocation;
+use crate::IdleFlushPortRef;
 // for macros
 use crate::OncePortRef;
 use crate::PortAddr;
 use crate::PortRef;
 use crate::ProcAddr;
 use crate::accum::Accumulator;
+use crate::accum::IdleFlushReducerOpts;
 use crate::accum::ReducerSpec;
 use crate::accum::StreamingReducerOpts;
 use crate::actor::ActorStatus;
@@ -1841,6 +1843,22 @@ impl Mailbox {
         self.open_accum_port_opts(accum, StreamingReducerOpts::default())
     }
 
+    /// Open an accumulator port whose bound references use idle-flush reduction
+    /// at cast-tree split ports.
+    pub fn open_idle_flush_accum_port<A>(
+        &self,
+        accum: A,
+        reducer_opts: IdleFlushReducerOpts,
+    ) -> (IdleFlushPortHandle<A::Update>, PortReceiver<A::State>)
+    where
+        A: Accumulator + Send + Sync + 'static,
+        A::Update: Message,
+        A::State: Message + Default + Clone,
+    {
+        let (port, receiver) = self.open_accum_port(accum);
+        (IdleFlushPortHandle { port, reducer_opts }, receiver)
+    }
+
     /// Open a new port with an accumulator. This port accepts A::Update type
     /// messages, accumulate them into A::State with the given accumulator.
     /// The latest changed state can be received from the returned receiver as
@@ -2706,6 +2724,22 @@ impl<M: Message> Clone for PortHandle<M> {
 impl<M: Message> fmt::Display for PortHandle<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.location(), f)
+    }
+}
+
+/// A handle for an accumulator port whose bound references use idle-flush
+/// reduction at cast-tree split ports.
+#[derive(Debug)]
+pub struct IdleFlushPortHandle<M: Message> {
+    port: PortHandle<M>,
+    reducer_opts: IdleFlushReducerOpts,
+}
+
+impl<M: RemoteMessage> IdleFlushPortHandle<M> {
+    /// Bind this port and return an idle-flush reference that may be passed to
+    /// remote actors.
+    pub fn bind(self) -> IdleFlushPortRef<M> {
+        self.port.bind().into_idle_flush(self.reducer_opts)
     }
 }
 
@@ -4389,6 +4423,23 @@ mod tests {
             assert_eq!(port.inner.reducer_spec, Some(reducer_spec.clone()));
             let port_ref = port.bind();
             assert_eq!(port_ref.reducer_spec(), &Some(reducer_spec));
+        }
+        // idle-flush accum port should put its reducer and options on the bound ref
+        {
+            let accumulator = accum::join_semilattice::<accum::Max<u64>>();
+            let reducer_spec = accumulator.reducer_spec().unwrap();
+            let reducer_opts = IdleFlushReducerOpts {
+                idle_timeout: Duration::from_millis(50),
+                abandon_timeout: Duration::from_secs(30),
+                expected_updates_per_destination: NonZeroUsize::MIN,
+            };
+            let (port, _) = mbox.open_idle_flush_accum_port(accumulator, reducer_opts.clone());
+            let port_ref = port.bind();
+            let repr = crate::ref_::IdleFlushPortRefRepr::try_from(&port_ref)
+                .expect("idle-flush port reference should have a representation");
+
+            assert_eq!(port_ref.reducer_spec(), &Some(reducer_spec));
+            assert_eq!(repr.reducer_opts(), &reducer_opts);
         }
         // normal port should not have reducer typehash
         {
