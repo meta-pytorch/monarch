@@ -918,10 +918,11 @@ mod tests {
         let proc_addr = ProcAddr::new(proc_id, ChannelAddr::Local(1).into());
         let agent: ActorRef<ProcAgent> =
             ActorRef::attest(proc_addr.actor_addr(PROC_AGENT_ACTOR_NAME));
-        let proc_ref = ProcRef::new(proc_addr, 0, agent);
+        let proc_ref = ProcRef::new(proc_addr.clone(), 0, agent);
         ProcMeshRef::new_singleton(
             ProcMeshId::singleton(Label::new(mesh).expect("test label should be valid")),
             proc_ref,
+            proc_addr,
         )
         .expect("test proc mesh should be valid")
     }
