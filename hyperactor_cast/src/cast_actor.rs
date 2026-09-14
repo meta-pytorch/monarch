@@ -323,24 +323,6 @@ impl CastDomainRef {
         &self.members
     }
 
-    /// Materialize a new slice domain described relative to this domain.
-    ///
-    /// The returned ref is the handle for the slice. It gets a fresh domain id
-    /// whose subtrees are root-heaved within the sliced region. A terminal
-    /// subtree is stored as a direct destination; a nonterminal subtree enters
-    /// through its CastActor. The parent ref's dense members are used only to
-    /// derive the slice definition and sender-side sequence map.
-    pub fn materialize_slice(
-        &self,
-        cx: &impl context::Actor,
-        region: Region,
-        tiling_policy: TilingPolicy,
-    ) -> anyhow::Result<CastDomainRef> {
-        let slice_id = CastDomainId::new();
-        let slice_member_mesh = Arc::new(self.members.subset(region.clone())?);
-        slice_id.materialize_members(cx, slice_member_mesh, region, tiling_policy, Flattrs::new())
-    }
-
     /// Cast a message to all members of this domain with caller-supplied headers.
     ///
     /// `headers` are the destination envelope headers supplied by the caller.
@@ -1828,14 +1810,23 @@ mod tests {
         }
 
         fn root_domain_with_policy(&self, region: Region, policy: TilingPolicy) -> CastDomainRef {
+            let all_members = self.domain_members();
+            let members = region
+                .slice()
+                .iter()
+                .map(|rank| {
+                    (
+                        rank,
+                        all_members
+                            .get(&rank)
+                            .expect("test mesh must contain every selected rank")
+                            .clone(),
+                    )
+                })
+                .collect();
+
             CastDomainId::new()
-                .materialize(
-                    &self.client,
-                    self.member_ids.clone(),
-                    region,
-                    policy,
-                    Flattrs::new(),
-                )
+                .materialize(&self.client, members, region, policy, Flattrs::new())
                 .unwrap()
         }
 
@@ -2576,7 +2567,6 @@ mod tests {
         let n = 8;
         let mut test_mesh = CastTestMesh::new(n);
         test_mesh.spawn_split_port_receivers();
-        let root_cast_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
 
         for (case_name, range, expected_procs, expected_subtree_roots) in [
             (
@@ -2596,13 +2586,8 @@ mod tests {
             let slice_region = Region::from(shape!(a = 2, b = 2, c = 2))
                 .range("a", range)
                 .unwrap();
-            let slice_cast_domain = root_cast_domain
-                .materialize_slice(
-                    &test_mesh.client,
-                    slice_region,
-                    TilingPolicy::BlockPartitioning,
-                )
-                .unwrap();
+            let slice_cast_domain =
+                test_mesh.root_domain_with_policy(slice_region, TilingPolicy::BlockPartitioning);
 
             assert_eq!(
                 slice_cast_domain
@@ -2633,35 +2618,26 @@ mod tests {
         test_mesh.spawn_delivery_receivers();
         let root = test_mesh.root_domain(shape!(rank = 4).into());
 
-        let rank_0_to_2 = root
-            .materialize_slice(
-                &test_mesh.client,
-                Region::from(shape!(rank = 4))
-                    .range("rank", ndslice::Range(0, Some(2), 1))
-                    .unwrap(),
-                TilingPolicy::BlockPartitioning,
-            )
-            .unwrap();
+        let rank_0_to_2 = test_mesh.root_domain_with_policy(
+            Region::from(shape!(rank = 4))
+                .range("rank", ndslice::Range(0, Some(2), 1))
+                .unwrap(),
+            TilingPolicy::BlockPartitioning,
+        );
 
-        let rank_1_to_3 = root
-            .materialize_slice(
-                &test_mesh.client,
-                Region::from(shape!(rank = 4))
-                    .range("rank", ndslice::Range(1, Some(3), 1))
-                    .unwrap(),
-                TilingPolicy::BlockPartitioning,
-            )
-            .unwrap();
+        let rank_1_to_3 = test_mesh.root_domain_with_policy(
+            Region::from(shape!(rank = 4))
+                .range("rank", ndslice::Range(1, Some(3), 1))
+                .unwrap(),
+            TilingPolicy::BlockPartitioning,
+        );
 
-        let rank_2_to_4 = root
-            .materialize_slice(
-                &test_mesh.client,
-                Region::from(shape!(rank = 4))
-                    .range("rank", ndslice::Range(2, Some(4), 1))
-                    .unwrap(),
-                TilingPolicy::BlockPartitioning,
-            )
-            .unwrap();
+        let rank_2_to_4 = test_mesh.root_domain_with_policy(
+            Region::from(shape!(rank = 4))
+                .range("rank", ndslice::Range(2, Some(4), 1))
+                .unwrap(),
+            TilingPolicy::BlockPartitioning,
+        );
 
         let casts = [
             (
