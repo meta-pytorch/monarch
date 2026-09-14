@@ -304,10 +304,20 @@ pub struct IbvConfig {
     pub hw_init_delay_ms: u64,
     /// `qp_type` - The type of queue pair to create (Auto, Standard, or Mlx5dv).
     pub qp_type: IbvQpType,
-    /// Test-only override for `register_segments`'s `max_sge`. `<= 0`
-    /// (default) uses `ibv_query_device`; small positive values force
-    /// `RDMAXCEL_MKEY_REG_LIMIT` to exercise the dmabuf fallback.
-    pub max_sge_override: i32,
+    /// Test-only override for the maximum KLM entries in a DevX indirect mkey.
+    /// Zero uses the queried device/command limit; a positive value can only
+    /// lower that limit.
+    #[doc(hidden)]
+    pub mkey_max_entries_override: usize,
+    /// Test-only override for the maximum bytes covered by each MR contributing
+    /// a KLM entry. Zero uses the production limit. Positive values must be
+    /// 2 MiB-aligned and no larger than the production limit.
+    #[doc(hidden)]
+    pub max_mr_size_override: usize,
+    /// Require CUDA registrations to use DevX indirect mkeys instead of
+    /// falling back to per-buffer dmabuf MRs. Intended for hardware tests and
+    /// diagnostics; normal operation should retain the fallback.
+    pub require_devx_mkeys: bool,
 }
 wirevalue::register_type!(IbvConfig);
 
@@ -336,7 +346,9 @@ impl Default for IbvConfig {
             use_gpu_direct: false, // nv_peermem enabled for cuda
             hw_init_delay_ms: 2,
             qp_type: IbvQpType::Auto,
-            max_sge_override: 0,
+            mkey_max_entries_override: 0,
+            max_mr_size_override: 0,
+            require_devx_mkeys: false,
         }
     }
 }
@@ -1314,18 +1326,6 @@ impl IbvQp {
     /// The device context this QP was created on, sourced from its PD.
     pub(super) fn context(&self) -> &IbvContext {
         self.pd.context()
-    }
-
-    /// A placeholder holding no queue pair: `as_ptr` returns null and `Drop` is
-    /// a no-op.
-    #[cfg(test)]
-    pub(super) fn null() -> Self {
-        Self {
-            qp: std::ptr::null_mut(),
-            _send_cq: Arc::new(IbvCq::null()),
-            _recv_cq: Arc::new(IbvCq::null()),
-            pd: Arc::new(IbvPd::null()),
-        }
     }
 }
 

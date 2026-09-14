@@ -140,18 +140,22 @@ fn ibv_rkey_of(remote: &crate::RdmaRemoteBuffer) -> Result<u32, anyhow::Error> {
     Ok(view.rkey)
 }
 
-/// Integration test for the indirect-mkey segment-growth path.
+/// Integration test for the DevX indirect-mkey segment-growth path.
 ///
-/// Allocates two segments S1 and S2 and registers a buffer in each (distinct
-/// mkeys). Then expands S1 and registers another buffer in S1's new chunk:
-/// growth rotates S1 onto a fresh mkey (parking the prior one rather than
-/// mutating an in-flight key), so the new buffer carries a key distinct from
-/// both S1's pre-grow buffer and S2's. Round-trips every buffer — including the
-/// pre-grow one — to confirm the parked key stays valid and payloads land.
+/// Temporarily overrides the maximum MR size to 2 MiB and reserves two 256 MiB
+/// GPU memory segments, S1 and S2. S1 initially allocates 128 MiB of its address
+/// range, and an 8 MiB buffer is registered at the beginning of this range. S2
+/// allocates and registers an 8 MiB buffer as well. The test asserts that the
+/// buffers in S1 and S2 use distinct DevX keys. Then S1 expands its allocation
+/// to the full 256 MiB, and a new buffer is registered starting at 128 MiB into
+/// the range. S1 now covers 128 KLMs -- far exceeding the old limit of 32 --
+/// with the second buffer starting at the 65th KLM. S1's growth must rotate the
+/// segment onto a fresh DevX key without invalidating the old DevX key, and
+/// round-tripping all three registered buffers must succeed.
 ///
 /// Hardware-gated: needs CUDA + mlx5dv.
 #[timed_test::async_timed_test(timeout_secs = 60)]
-async fn test_indirect_mkey_rebind_grows_existing_segment() -> Result<(), anyhow::Error> {
+async fn test_devx_mkey_grows_from_64_to_128_klms() -> Result<(), anyhow::Error> {
     use crate::backend::ibverbs::primitives::mlx5dv_supported;
 
     if !crate::is_cuda_available() {
@@ -161,10 +165,11 @@ async fn test_indirect_mkey_rebind_grows_existing_segment() -> Result<(), anyhow
         panic!("SKIPPED: mlx5dv not supported (required for indirect mkey rebinding)");
     }
 
-    // Sized to leave plenty of room for granularity rounding while
-    // staying small enough to fit on a single GPU.
-    const RESERVED: usize = 1024 * 1024 * 1024; // 1 GiB VA per segment
-    const CHUNK: usize = 256 * 1024 * 1024; // 256 MiB committed per chunk
+    const TEST_MR_SIZE: usize = 2 * 1024 * 1024;
+    const INITIAL_KLMS: usize = 64;
+    const FINAL_KLMS: usize = 128;
+    const CHUNK: usize = INITIAL_KLMS * TEST_MR_SIZE;
+    const RESERVED: usize = FINAL_KLMS * TEST_MR_SIZE;
     const BUF: usize = 8 * 1024 * 1024; // 8 MiB per registered buffer
 
     let cx = context().await;
@@ -183,8 +188,14 @@ async fn test_indirect_mkey_rebind_grows_existing_segment() -> Result<(), anyhow
     let sender_proc = proc_mesh.range("procs", 0..1).unwrap();
     let receiver_proc = proc_mesh.range("procs", 1..2).unwrap();
 
+    let sender_config = IbvConfig {
+        mkey_max_entries_override: FINAL_KLMS,
+        max_mr_size_override: TEST_MR_SIZE,
+        require_devx_mkeys: true,
+        ..IbvConfig::default()
+    };
     let sender_rdma: ActorMesh<RdmaManagerActor> = sender_proc
-        .spawn_service(instance, "rdma_manager", &Some(IbvConfig::default()))
+        .spawn_service(instance, "rdma_manager", &Some(sender_config))
         .await?;
     let _receiver_rdma: ActorMesh<RdmaManagerActor> = receiver_proc
         .spawn_service(instance, "rdma_manager", &Some(IbvConfig::default()))
@@ -203,7 +214,7 @@ async fn test_indirect_mkey_rebind_grows_existing_segment() -> Result<(), anyhow
     const PATTERN_OVERWRITE: u8 = 0x5a;
 
     let s1 = sender.allocate(instance, RESERVED, CHUNK).await?;
-    let s2 = sender.allocate(instance, RESERVED, CHUNK).await?;
+    let s2 = sender.allocate(instance, RESERVED, BUF).await?;
 
     let buf_a = sender
         .register(
@@ -303,18 +314,16 @@ async fn test_indirect_mkey_rebind_grows_existing_segment() -> Result<(), anyhow
     Ok(())
 }
 
-/// Integration test for the rebind failure path. Forces the second
-/// `register_segments` call to fail with `RDMAXCEL_MKEY_REG_LIMIT`
-/// by setting `IbvConfig::max_sge_override = 1`, leaving the
-/// segment table in a `phys_size > mr_size` state. Subsequent
-/// buffer registrations whose addresses fall in the
-/// `[mr_size, phys_size)` gap must fall through to per-buffer
-/// dmabuf rather than reuse the indirect mkey at an offset past
-/// the bound.
+/// Integration test for the max KLM fallback path. The sender's DevX key is
+/// capped at one KLM: its initial CUDA segment chunk is indirect-key backed,
+/// but when that segment expands, the expanded range would introduce a second
+/// KLM and therefore cannot be bound to the same DevX key. New buffers in that
+/// expanded range must fall back to independent dmabuf MRs rather than reusing
+/// the same DevX key with an out-of-range offset.
 ///
 /// Hardware-gated: needs CUDA + mlx5dv.
 #[timed_test::async_timed_test(timeout_secs = 60)]
-async fn test_indirect_mkey_rebind_falls_back_to_dmabuf_at_max_sge() -> Result<(), anyhow::Error> {
+async fn test_indirect_mkey_rebind_falls_back_to_dmabuf_at_capacity() -> Result<(), anyhow::Error> {
     use crate::backend::ibverbs::primitives::mlx5dv_supported;
 
     if !crate::is_cuda_available() {
@@ -345,7 +354,7 @@ async fn test_indirect_mkey_rebind_falls_back_to_dmabuf_at_max_sge() -> Result<(
     let receiver_proc = proc_mesh.range("procs", 1..2).unwrap();
 
     let sender_config = IbvConfig {
-        max_sge_override: 1,
+        mkey_max_entries_override: 1,
         ..IbvConfig::default()
     };
     let sender_rdma: ActorMesh<RdmaManagerActor> = sender_proc
@@ -368,7 +377,6 @@ async fn test_indirect_mkey_rebind_falls_back_to_dmabuf_at_max_sge() -> Result<(
     const PATTERN_OVERWRITE: u8 = 0x5a;
 
     let seg = sender.allocate(instance, RESERVED, CHUNK).await?;
-
     let buf_a = sender
         .register(
             instance,
@@ -386,15 +394,16 @@ async fn test_indirect_mkey_rebind_falls_back_to_dmabuf_at_max_sge() -> Result<(
         .await?;
     assert!(
         read_a.is_ok(),
-        "RDMA read of buf A (within initial chunk) failed: {:?}",
+        "RDMA read of buf A within the initial chunk failed: {:?}",
         read_a.unwrap_err()
     );
 
     sender.expand(instance, seg, CHUNK).await?;
 
-    // Buf B's registration hits the max_sge cap, leaving the
-    // segment table with phys_size = 2*CHUNK but mr_size = CHUNK.
-    // Buf C is the registration whose lookup observes that gap.
+    // The one-entry DevX key is full. Registering buf B in the expanded range
+    // records the unregistered tail and falls back to dmabuf; registering buf C
+    // subsequently observes that known tail and also falls back without
+    // rescanning or reusing the indirect key.
     let buf_b = sender
         .register(
             instance,
@@ -420,31 +429,22 @@ async fn test_indirect_mkey_rebind_falls_back_to_dmabuf_at_max_sge() -> Result<(
         .next()
         .expect("buf C");
 
-    // Buf B took the dmabuf path (the override forced
-    // register_segments to fail), so its key differs from buf A's
-    // indirect mkey — sanity check that the override took effect.
-    // Buf C lands at an address inside the [mr_size, phys_size) gap;
-    // it must also fall through to dmabuf and get a distinct key.
     let rkey_a = ibv_rkey_of(&buf_a)?;
     let rkey_b = ibv_rkey_of(&buf_b)?;
     let rkey_c = ibv_rkey_of(&buf_c)?;
+    // The two tail buffers took the dmabuf path, so neither may carry buf A's
+    // indirect key. Reusing it would address beyond the one KLM it covers.
     assert_ne!(
         rkey_a, rkey_b,
-        "buf B should be registered via the dmabuf fallback after \
-         register_segments hit the max_sge override and therefore have \
-         a different rkey from buf A's indirect mkey"
+        "the first tail buffer must use the dmabuf fallback"
     );
     assert_ne!(
         rkey_a, rkey_c,
-        "buf C lands in the [mr_size, phys_size) gap and must fall \
-         through to dmabuf; reusing buf A's indirect mkey here would \
-         hand the NIC a bad (key, offset) past the bound"
+        "a later tail buffer must not reuse the prefix's indirect key"
     );
 
-    // Round-trip every buffer: read the registration pattern, write
-    // a fresh one, read it back. Even if the rkey check above
-    // somehow passed, a bad (key, offset) on buf C would fail at
-    // the NIC with LOC_PROT_ERR.
+    // Round-trip every buffer after expansion, including the original buffer
+    // backed by the still-live indirect key and both fallback registrations.
     for (label, buf, pattern) in [
         ("A", &buf_a, PATTERN_A),
         ("B", &buf_b, PATTERN_B),
@@ -471,7 +471,7 @@ async fn test_indirect_mkey_rebind_falls_back_to_dmabuf_at_max_sge() -> Result<(
             .await?;
         assert!(
             read_back.is_ok(),
-            "RDMA read-back of buf {label} after write failed: {:?}",
+            "RDMA read-back of buf {label} failed: {:?}",
             read_back.unwrap_err()
         );
     }
