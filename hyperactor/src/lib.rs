@@ -179,6 +179,7 @@ pub use init::initialize_with_current_runtime;
 #[doc(inline)]
 pub use init::initialize_with_log_prefix;
 pub use mailbox::Data;
+pub use mailbox::IdleFlushPortHandle;
 pub use mailbox::Mailbox;
 pub use mailbox::MailboxError;
 pub use mailbox::Message;
