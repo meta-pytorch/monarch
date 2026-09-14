@@ -25,7 +25,6 @@ use hyperactor::RemoteMessage;
 use hyperactor::RemoteSpawn;
 use hyperactor::Uid;
 use hyperactor::accum::IdleFlushReducerOpts;
-use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
 use hyperactor::context;
@@ -1261,15 +1260,16 @@ impl ProcMeshRef {
         // `Default`, which is an *empty* ValueMesh (0 ranks). Our
         // Accumulator<ValueMesh<T>> implementation detects this on
         // the first update and replaces it with the caller-supplied
-        // template (the `self` passed into open_accum_port), which we
+        // template (the `self` passed into open_idle_flush_accum_port), which we
         // seed here as "full NotExist over the target region".
-        let (port, rx) = cx.mailbox().open_accum_port_opts(
+        let (port, rx) = cx.mailbox().open_idle_flush_accum_port(
             // Initial state for the accumulator: full mesh seeded to
             // NotExist.
             crate::StatusMesh::from_single(region.clone(), Status::NotExist),
-            StreamingReducerOpts {
-                max_update_interval: Some(Duration::from_millis(50)),
-                initial_update_interval: None,
+            IdleFlushReducerOpts {
+                idle_timeout: Duration::from_millis(50),
+                abandon_timeout: Duration::from_secs(30),
+                expected_updates_per_destination: NonZeroUsize::MIN,
             },
         );
         // Use WaitRankStatus instead of GetRankStatus so agents defer
@@ -1419,7 +1419,7 @@ mod tests {
     #[cfg(fbcode_build)]
     use hyperactor::ProcAddr;
     #[cfg(fbcode_build)]
-    use hyperactor::accum::StreamingReducerOpts;
+    use hyperactor::accum::IdleFlushReducerOpts;
     #[cfg(fbcode_build)]
     use hyperactor::channel::BindSpec;
     #[cfg(fbcode_build)]
@@ -1428,6 +1428,8 @@ mod tests {
     use hyperactor::context::Mailbox;
     #[cfg(fbcode_build)]
     use hyperactor::id::Label;
+    #[cfg(fbcode_build)]
+    use hyperactor_config::NonZeroUsize;
     #[cfg(fbcode_build)]
     use ndslice::ViewExt as _;
     #[cfg(fbcode_build)]
@@ -1878,11 +1880,12 @@ mod tests {
         let id = sw.id().unwrap().resource_id().clone();
         let region = slice.region().clone();
         let num_ranks = region.num_ranks();
-        let (port, rx) = instance.mailbox().open_accum_port_opts(
+        let (port, rx) = instance.mailbox().open_idle_flush_accum_port(
             crate::StatusMesh::from_single(region.clone(), Status::NotExist),
-            StreamingReducerOpts {
-                max_update_interval: Some(Duration::from_millis(50)),
-                initial_update_interval: None,
+            IdleFlushReducerOpts {
+                idle_timeout: Duration::from_millis(50),
+                abandon_timeout: Duration::from_secs(30),
+                expected_updates_per_destination: NonZeroUsize::MIN,
             },
         );
         slice

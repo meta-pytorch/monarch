@@ -50,7 +50,6 @@ use hyperactor::Endpoint as _;
 use hyperactor::Gateway;
 use hyperactor::Handler;
 use hyperactor::accum::IdleFlushReducerOpts;
-use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::id::Label;
 use hyperactor::id::Uid;
@@ -1653,11 +1652,12 @@ impl HostMeshRef {
             .map(|proc_id| ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned()))
             .collect::<Vec<_>>();
         let num_ranks = region.num_ranks();
-        let (port, rx) = cx.mailbox().open_accum_port_opts(
+        let (port, rx) = cx.mailbox().open_idle_flush_accum_port(
             crate::StatusMesh::from_single(region.clone(), Status::NotExist),
-            StreamingReducerOpts {
-                max_update_interval: Some(Duration::from_millis(50)),
-                initial_update_interval: None,
+            IdleFlushReducerOpts {
+                idle_timeout: Duration::from_millis(50),
+                abandon_timeout: Duration::from_secs(30),
+                expected_updates_per_destination: NonZeroUsize::MIN,
             },
         );
         let mut reply = port.bind();

@@ -604,8 +604,14 @@ pub struct HostAgent {
     /// Pending `WaitRankStatus` waiters, keyed by resource name.
     /// Each entry is `(min_status, rank, reply_port)`. Only touched
     /// from `&mut self` handlers.
-    pending_proc_waiters:
-        HashMap<ResourceId, Vec<(resource::Status, usize, PortRef<crate::StatusOverlay>)>>,
+    pending_proc_waiters: HashMap<
+        ResourceId,
+        Vec<(
+            resource::Status,
+            usize,
+            IdleFlushPortRef<crate::StatusOverlay>,
+        )>,
+    >,
     /// Procs that already have an active bridge task watching their status.
     watching: HashSet<ResourceId>,
     /// Port handle for sending `ProcStatusChanged` to self. Set in `init()`.
@@ -1117,12 +1123,6 @@ impl Handler<WaitProcs> for HostAgent {
             .rank
             .0
             .expect("cast layer stamps the rank before delivery");
-        // The cast has already rewritten the idle-flush reference to this
-        // host's split port. Nested WaitRankStatus handlers post directly to
-        // that address and do not split the reference again.
-        let mut status_reply =
-            PortRef::<crate::StatusOverlay>::attest(wait.status_reply.port_addr().clone());
-        status_reply.return_undeliverable(wait.status_reply.get_return_undeliverable());
         let mut failed = Vec::new();
 
         for (_, rank, id) in proc_slots(&wait.proc_mesh_id, host_rank, wait.num_per_host) {
@@ -1134,7 +1134,7 @@ impl Handler<WaitProcs> for HostAgent {
                         id,
                         rank: resource::Rank::new(rank),
                         min_status: Status::Running,
-                        reply: status_reply.clone(),
+                        reply: wait.status_reply.clone(),
                     },
                 )
                 .await
@@ -2609,8 +2609,8 @@ mod tests {
     ) -> IdleFlushPortRef<crate::StatusOverlay> {
         reply.into_idle_flush(IdleFlushReducerOpts {
             idle_timeout: Duration::from_millis(50),
+            abandon_timeout: Duration::from_secs(30),
             expected_updates_per_destination: NonZeroUsize::MIN,
-            abandon_timeout: Duration::from_millis(500),
         })
     }
 
@@ -2723,7 +2723,7 @@ mod tests {
                 proc_id.clone(),
                 resource::Rank::new(0),
                 resource::Status::Running,
-                running_reply.bind(),
+                idle_flush_status_reply(running_reply.bind()),
             )
             .await
             .expect("running waiter should be accepted");
@@ -2804,7 +2804,7 @@ mod tests {
                 id.clone(),
                 resource::Rank::new(0),
                 resource::Status::Running,
-                status_reply.bind(),
+                idle_flush_status_reply(status_reply.bind()),
             )
             .await
             .expect("status waiter should be accepted");
@@ -2901,7 +2901,7 @@ mod tests {
                     id.clone(),
                     resource::Rank::new(rank),
                     resource::Status::Running,
-                    status_reply.bind(),
+                    idle_flush_status_reply(status_reply.bind()),
                 )
                 .await
                 .expect("status waiter should be accepted");
@@ -3003,7 +3003,7 @@ mod tests {
                 id.clone(),
                 resource::Rank::new(0),
                 resource::Status::Stopped,
-                status_reply.bind(),
+                idle_flush_status_reply(status_reply.bind()),
             )
             .await
             .expect("status waiter should be accepted");
@@ -3119,7 +3119,7 @@ mod tests {
                     matching_id.clone(),
                     resource::Rank::new(0),
                     resource::Status::Stopped,
-                    matching_status_reply.bind(),
+                    idle_flush_status_reply(matching_status_reply.bind()),
                 )
                 .await
                 .expect("matching status waiter should be accepted");
@@ -3130,7 +3130,7 @@ mod tests {
                     other_id.clone(),
                     resource::Rank::new(1),
                     resource::Status::Running,
-                    other_status_reply.bind(),
+                    idle_flush_status_reply(other_status_reply.bind()),
                 )
                 .await
                 .expect("other status waiter should be accepted");
@@ -3360,7 +3360,7 @@ mod tests {
                 id.clone(),
                 resource::Rank::new(0),
                 resource::Status::Stopped,
-                status_reply.bind(),
+                idle_flush_status_reply(status_reply.bind()),
             )
             .await
             .expect("status waiter should be accepted");
@@ -3493,7 +3493,7 @@ mod tests {
                 accepted_id.clone(),
                 resource::Rank::new(0),
                 resource::Status::Running,
-                status_reply.bind(),
+                idle_flush_status_reply(status_reply.bind()),
             )
             .await
             .expect("status waiter should be accepted");
@@ -3504,7 +3504,7 @@ mod tests {
                 accepted_id.clone(),
                 resource::Rank::new(0),
                 resource::Status::Stopped,
-                stopped_reply.bind(),
+                idle_flush_status_reply(stopped_reply.bind()),
             )
             .await
             .expect("stopped waiter should be accepted");
@@ -3657,7 +3657,7 @@ mod tests {
                 id.clone(),
                 resource::Rank::new(0),
                 resource::Status::Running,
-                status_reply.bind(),
+                idle_flush_status_reply(status_reply.bind()),
             )
             .await
             .expect("status waiter should be accepted");
@@ -3756,7 +3756,7 @@ mod tests {
                 id.clone(),
                 resource::Rank::new(0),
                 resource::Status::Running,
-                running_reply.bind(),
+                idle_flush_status_reply(running_reply.bind()),
             )
             .await
             .unwrap();
@@ -4000,7 +4000,7 @@ mod tests {
                 id.clone(),
                 resource::Rank::new(wait_rank),
                 resource::Status::Running,
-                port.bind(),
+                idle_flush_status_reply(port.bind()),
             )
             .await
             .unwrap();
@@ -4096,7 +4096,7 @@ mod tests {
                 id.clone(),
                 resource::Rank::new(message_rank),
                 resource::Status::Stopped,
-                port.bind(),
+                idle_flush_status_reply(port.bind()),
             )
             .await
             .unwrap();
@@ -4152,7 +4152,7 @@ mod tests {
                 id.clone(),
                 resource::Rank::new(message_rank),
                 resource::Status::Running,
-                port.bind(),
+                idle_flush_status_reply(port.bind()),
             )
             .await
             .unwrap();
@@ -4199,7 +4199,7 @@ mod tests {
                 id.clone(),
                 resource::Rank::new(deferred_rank),
                 resource::Status::Running,
-                port.bind(),
+                idle_flush_status_reply(port.bind()),
             )
             .await
             .unwrap();
@@ -4232,7 +4232,7 @@ mod tests {
                 id.clone(),
                 resource::Rank::new(wait_rank),
                 resource::Status::Running,
-                port.bind(),
+                idle_flush_status_reply(port.bind()),
             )
             .await
             .unwrap();
@@ -4404,7 +4404,7 @@ mod tests {
                     id.clone(),
                     resource::Rank::new(rank),
                     resource::Status::Running,
-                    running_reply.bind(),
+                    idle_flush_status_reply(running_reply.bind()),
                 )
                 .await
                 .unwrap();

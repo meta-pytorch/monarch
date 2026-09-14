@@ -28,6 +28,7 @@ use hyperactor::Context;
 use hyperactor::Data;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
+use hyperactor::IdleFlushPortRef;
 use hyperactor::Instance;
 use hyperactor::PortAddr;
 use hyperactor::PortHandle;
@@ -180,7 +181,11 @@ struct ActorInstanceState {
     /// Pending `WaitRankStatus` callers: each entry is the minimum status
     /// threshold, the delivered view rank at which to position the reply
     /// overlay, and the reply port to send once the threshold is met.
-    pending_wait_status: Vec<(resource::Status, usize, PortRef<crate::StatusOverlay>)>,
+    pending_wait_status: Vec<(
+        resource::Status,
+        usize,
+        IdleFlushPortRef<crate::StatusOverlay>,
+    )>,
 }
 
 /// Identity of a root-owned client-root service. `actor_states` (keyed by the

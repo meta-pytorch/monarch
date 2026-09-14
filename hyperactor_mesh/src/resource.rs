@@ -278,7 +278,7 @@ pub struct WaitRankStatus {
     /// is >= this threshold.
     pub min_status: Status,
     /// Sparse status updates (overlays) from a rank.
-    pub reply: PortRef<StatusOverlay>,
+    pub reply: IdleFlushPortRef<StatusOverlay>,
 }
 
 /// Collect an accumulated [`ValueMesh<T>`] from `rx` until every rank has been
