@@ -7,6 +7,7 @@
  */
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fs;
@@ -102,6 +103,51 @@ struct PreparedSpan {
     end_ns: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SpanSkipReason {
+    MissingStartTimestamp,
+    StartsOutsideProfileWindow,
+    NonPositiveDuration,
+    InvalidFieldsJson,
+    FieldsJsonNotObject,
+    MissingActorId,
+    ActorIdNotString,
+    ActorIdMissingProcessId,
+    InvalidStartTimestamp,
+    InvalidEndTimestamp,
+}
+
+impl SpanSkipReason {
+    fn description(self) -> &'static str {
+        match self {
+            Self::MissingStartTimestamp => "missing a span enter event",
+            Self::StartsOutsideProfileWindow => "starting outside the profile window",
+            Self::NonPositiveDuration => "without a positive duration",
+            Self::InvalidFieldsJson => "with invalid fields_json",
+            Self::FieldsJsonNotObject => "whose fields_json is not an object",
+            Self::MissingActorId => "missing actor_id",
+            Self::ActorIdNotString => "whose actor_id is not a string",
+            Self::ActorIdMissingProcessId => "whose actor_id has no process ID",
+            Self::InvalidStartTimestamp => "with an invalid start timestamp",
+            Self::InvalidEndTimestamp => "with an invalid end timestamp",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TraceSummary {
+    span_count: usize,
+    actor_count: usize,
+    proc_count: usize,
+    skipped_counts: BTreeMap<SpanSkipReason, usize>,
+}
+
+impl TraceSummary {
+    fn skipped_count(&self) -> usize {
+        self.skipped_counts.values().sum()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BoundaryKind {
     Begin,
@@ -166,16 +212,19 @@ fn export_profile_to_path(
     std::thread::sleep(DRAIN_DELAY);
 
     let rows = query_spans(telemetry_url, start_us, end_us)?;
-    let (span_count, actor_count, proc_count, skipped_count) =
-        write_trace_to_output(rows, start_us, end_us, &output)?;
+    let summary = write_trace_to_output(rows, start_us, end_us, &output)?;
 
     eprintln!(
         "Wrote {} spans from {} actors on {} procs.",
-        span_count, actor_count, proc_count
+        summary.span_count, summary.actor_count, summary.proc_count
     );
 
+    let skipped_count = summary.skipped_count();
     if skipped_count > 0 {
-        eprintln!("Skipped {skipped_count} rows without usable actor span data.");
+        eprintln!("Skipped {skipped_count} rows:");
+        for (reason, count) in summary.skipped_counts {
+            eprintln!("  {count} {}", reason.description());
+        }
     }
 
     Ok(output)
@@ -240,7 +289,7 @@ fn write_trace_to_output(
     window_start_us: i64,
     window_end_us: i64,
     output: &Path,
-) -> Result<(usize, usize, usize, usize)> {
+) -> Result<TraceSummary> {
     let output_file = create_output_file(output)?;
     let mut incomplete_output = IncompleteTraceFile::new(output);
     let summary = write_trace(rows, window_start_us, window_end_us, output_file)?;
@@ -253,12 +302,21 @@ fn write_trace(
     window_start_us: i64,
     window_end_us: i64,
     output: fs::File,
-) -> Result<(usize, usize, usize, usize)> {
+) -> Result<TraceSummary> {
     let row_count = rows.len();
-    let mut spans = rows
+    let (mut spans, skipped_counts) = rows
         .into_iter()
-        .filter_map(|row| prepare_span(row, window_start_us, window_end_us))
-        .collect::<Vec<_>>();
+        .map(|row| prepare_span(row, window_start_us, window_end_us))
+        .fold(
+            (Vec::with_capacity(row_count), BTreeMap::new()),
+            |(mut spans, mut skipped_counts), result| {
+                match result {
+                    Ok(span) => spans.push(span),
+                    Err(reason) => *skipped_counts.entry(reason).or_default() += 1,
+                }
+                (spans, skipped_counts)
+            },
+        );
 
     spans.sort_by(|left, right| {
         left.track
@@ -378,12 +436,12 @@ fn write_trace(
         }
     }
 
-    let summary = (
-        spans.len(),
-        actor_tracks.len(),
-        proc_ids.len(),
-        row_count - spans.len(),
-    );
+    let summary = TraceSummary {
+        span_count: spans.len(),
+        actor_count: actor_tracks.len(),
+        proc_count: proc_ids.len(),
+        skipped_counts,
+    };
 
     let mut collector = ctx.sink();
 
@@ -392,8 +450,12 @@ fn write_trace(
     Ok(summary)
 }
 
-fn prepare_span(row: SpanRow, window_start_us: i64, window_end_us: i64) -> Option<PreparedSpan> {
-    let original_start_us = row.start_us?;
+fn prepare_span(
+    row: SpanRow,
+    window_start_us: i64,
+    window_end_us: i64,
+) -> Result<PreparedSpan, SpanSkipReason> {
+    let original_start_us = row.start_us.ok_or(SpanSkipReason::MissingStartTimestamp)?;
     let original_end_us = row.end_us;
 
     let start_clipped = original_start_us < window_start_us;
@@ -401,26 +463,31 @@ fn prepare_span(row: SpanRow, window_start_us: i64, window_end_us: i64) -> Optio
 
     let start_us = original_start_us.max(window_start_us);
     if start_us >= window_end_us {
-        return None;
+        return Err(SpanSkipReason::StartsOutsideProfileWindow);
     }
 
     let end_us = original_end_us.unwrap_or(window_end_us).min(window_end_us);
     if end_us <= start_us {
-        return None;
+        return Err(SpanSkipReason::NonPositiveDuration);
     }
 
     let fields = match serde_json::from_str::<Value>(&row.fields_json) {
         Ok(Value::Object(fields)) => fields,
-        Ok(_) | Err(_) => return None,
+        Ok(_) => return Err(SpanSkipReason::FieldsJsonNotObject),
+        Err(_) => return Err(SpanSkipReason::InvalidFieldsJson),
     };
-    let actor_id = fields.get("actor_id").and_then(Value::as_str)?;
-    let track = parse_actor_track(actor_id)?;
+    let actor_id = match fields.get("actor_id") {
+        Some(Value::String(actor_id)) => actor_id,
+        Some(_) => return Err(SpanSkipReason::ActorIdNotString),
+        None => return Err(SpanSkipReason::MissingActorId),
+    };
+    let track = parse_actor_track(actor_id).ok_or(SpanSkipReason::ActorIdMissingProcessId)?;
 
-    let start_ns = micros_to_nanos(start_us).ok()?;
-    let end_ns = micros_to_nanos(end_us).ok()?;
+    let start_ns = micros_to_nanos(start_us).map_err(|_| SpanSkipReason::InvalidStartTimestamp)?;
+    let end_ns = micros_to_nanos(end_us).map_err(|_| SpanSkipReason::InvalidEndTimestamp)?;
     let name = display_name(&row, &fields);
 
-    Some(PreparedSpan {
+    Ok(PreparedSpan {
         process_id: row.process_id,
         id: row.id,
         name,
