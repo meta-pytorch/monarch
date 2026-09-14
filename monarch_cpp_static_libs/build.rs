@@ -334,8 +334,8 @@ fn emit_link_directives(rdma_build_dir: &Path) {
     let librdma_util_path = rdma_util_dir.join("librdma_util.a");
 
     println!("cargo:rustc-link-arg={}", libmlx5_path.display());
-    println!("cargo:rustc-link-arg={}", libibverbs_path.display());
     println!("cargo:rustc-link-arg={}", libefa_path.display());
+    println!("cargo:rustc-link-arg={}", libibverbs_path.display());
     println!("cargo:rustc-link-arg={}", librdma_util_path.display());
 
     // Export metadata for dependent crates
@@ -349,8 +349,8 @@ fn emit_link_directives(rdma_build_dir: &Path) {
     let lib_paths = format!(
         "{};{};{};{}",
         libmlx5_path.display(),
-        libibverbs_path.display(),
         libefa_path.display(),
+        libibverbs_path.display(),
         librdma_util_path.display()
     );
     println!("cargo::metadata=RDMA_STATIC_LIBRARIES={}", lib_paths);
