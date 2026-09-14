@@ -6,12 +6,15 @@
 
 # pyre-strict
 
+import array
 import multiprocessing
 import os
+import pickle
 import signal
 import time
 from typing import Any, Callable, cast, Coroutine, Iterable, Type, TYPE_CHECKING
 
+import numpy as np
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     MethodSpecifier,
     PythonMessageKind,
@@ -171,3 +174,81 @@ def test_pickle_to_buffer() -> None:
     args, b = flatten(x, lambda x: False)
     y = unflatten(b.freeze(), args)
     assert x == y
+
+
+def test_pickle_bytearray_to_buffer() -> None:
+    x = bytearray(65536)
+    args, b = flatten(x, lambda x: False)
+    y = unflatten(b.freeze(), args)
+    assert x == y
+
+
+def test_pickle_numpy_to_buffer() -> None:
+    for x in (
+        np.zeros(65536, dtype=np.uint8),
+        np.zeros((256, 256), dtype=np.uint8, order="F"),
+    ):
+        args, b = flatten(x, lambda x: False)
+        y = unflatten(b.freeze(), args)
+        np.testing.assert_array_equal(x, y)
+
+
+def test_buffer_write_pickle_buffer_copies_input() -> None:
+    data = np.ones(8192)
+    expected = memoryview(data).cast("B").tobytes()
+    b = Buffer()
+    assert b.write(pickle.PickleBuffer(data)) == 65536
+
+    data[0] = 2.0
+    assert b.freeze().read() == expected
+
+
+def test_buffer_write_copies_multibyte_array() -> None:
+    data = array.array("I", [0x01020304, 0x11223344, 0xAABBCCDD])
+    expected = memoryview(data).cast("B").tobytes()
+    b = Buffer()
+
+    assert len(expected) == data.itemsize * len(data)
+    assert b.write(data) == len(expected)
+
+    data[0] = 0
+    assert b.freeze().read() == expected
+
+
+def test_buffer_write_copies_multibyte_numpy_array() -> None:
+    data = np.arange(16, dtype=np.float64)
+    expected = data.tobytes()
+    b = Buffer()
+
+    assert b.write(data) == data.itemsize * data.size
+
+    data[0] = 100
+    assert b.freeze().read() == expected
+
+
+def test_buffer_write_copies_non_contiguous_multibyte_array() -> None:
+    data = array.array("I", range(16))
+    view = memoryview(data)[::2]
+    expected = view.tobytes()
+    b = Buffer()
+
+    assert not view.c_contiguous
+    assert b.write(view) == view.nbytes
+
+    data[0] = 100
+    assert b.freeze().read() == expected
+
+
+def test_buffer_write_copies_non_contiguous_buffer() -> None:
+    for data in (
+        np.arange(16, dtype=np.uint8).reshape(4, 4).T,
+        np.arange(16, dtype=np.int32).reshape(4, 4).T,
+    ):
+        assert not data.flags.c_contiguous
+        expected = data.tobytes()
+
+        b = Buffer()
+        assert b.write(data) == data.nbytes
+
+        data[0, 0] = 255
+        assert b.freeze().read() == expected

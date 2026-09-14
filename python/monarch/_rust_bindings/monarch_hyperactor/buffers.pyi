@@ -8,6 +8,8 @@
 
 from typing import final
 
+from typing_extensions import Buffer as BufferProtocol
+
 class FrozenBuffer:
     """
     An immutable buffer for reading bytes data.
@@ -130,9 +132,9 @@ class Buffer:
     """
     A mutable buffer for reading and writing bytes data.
 
-    The `Buffer` struct provides an interface for accumulating byte data from Python `bytes` objects
+    The `Buffer` struct provides an interface for accumulating byte data from Python buffer exporters
     that can be converted into a `Part` for zero-copy multipart message serialization.
-    It accumulates references to Python bytes objects without copying.
+    It retains large `bytes` objects without copying and snapshots other buffer exporters.
 
     Examples:
         ```python
@@ -156,14 +158,16 @@ class Buffer:
         """
         ...
 
-    def write(self, buff: bytes) -> int:
+    def write(self, buff: BufferProtocol) -> int:
         """
-        Write bytes data to the buffer.
+        Write buffer-protocol data to the buffer.
 
-        This keeps a reference to the Python bytes object without copying.
+        Large immutable `bytes` objects are retained without copying. Mutable buffers and other
+        buffer exporters are copied when `write` is called, so later mutations do not affect the
+        buffered data.
 
         Arguments:
-        - `buff`: The bytes object to write to the buffer
+        - `buff`: The buffer-protocol object to write to the buffer
 
         Returns:
         The number of bytes written (always equal to the length of input bytes)
@@ -174,7 +178,7 @@ class Buffer:
         """
         Return the total number of bytes in the buffer.
 
-        This iterates over all accumulated PyBytes fragments and sums their lengths.
+        This sums the lengths of all accumulated fragments.
 
         Returns:
         The total number of bytes stored in the buffer

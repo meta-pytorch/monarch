@@ -21,6 +21,7 @@ use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyBytesMethods;
+use pyo3::types::PyMemoryView;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_multipart::Part;
@@ -85,9 +86,9 @@ pub fn py_bytes_to_bytes(py_bytes: Py<PyBytes>) -> Bytes {
 /// A fragment of data in the buffer, either a copy or a reference.
 #[derive(Clone)]
 enum Fragment {
-    /// Small writes that were copied into a contiguous buffer
+    /// Data copied into Rust-owned storage
     Copy(Bytes),
-    /// Large writes stored as references to Python bytes
+    /// Large writes stored as references to immutable Python bytes
     Reference(Py<PyBytes>),
 }
 
@@ -95,7 +96,8 @@ enum Fragment {
 ///
 /// The `Buffer` struct provides a hybrid interface for accumulating byte data:
 /// - Small writes (< 256 bytes) are copied into a contiguous buffer to minimize fragment overhead
-/// - Large writes (>= 256 bytes) are stored as zero-copy references to Python bytes objects
+/// - Large `bytes` writes (>= 256 bytes) are stored as zero-copy references
+/// - Other buffer exporters are snapshotted into immutable storage
 ///
 /// This approach balances the overhead of per-fragment processing against the cost of copying data.
 ///
@@ -138,27 +140,47 @@ impl Buffer {
         }
     }
 
-    /// Writes bytes data to the buffer.
+    /// Writes buffer-protocol data to the buffer.
     ///
     /// Small writes (< 256 bytes) are copied into a contiguous buffer.
-    /// Large writes (>= 256 bytes) are stored as zero-copy references.
+    /// Large `bytes` writes (>= 256 bytes) are stored as zero-copy references.
+    /// Other buffer exporters are snapshotted so later mutations cannot affect the buffer.
     ///
     /// # Arguments
-    /// * `buff` - The bytes object to write to the buffer
+    /// * `buff` - The buffer-protocol object to write to the buffer
     ///
     /// # Returns
     /// The number of bytes written (always equal to the length of input bytes)
-    fn write(&mut self, buff: &Bound<'_, PyBytes>) -> usize {
-        let bytes_written = buff.as_bytes().len();
-
-        if bytes_written < self.threshold {
-            self.pending.extend_from_slice(buff.as_bytes());
-        } else {
-            self.flush_pending();
-            self.fragments
-                .push(Fragment::Reference(buff.clone().unbind()));
+    fn write(&mut self, buff: &Bound<'_, PyAny>) -> PyResult<usize> {
+        if let Ok(buff) = buff.cast::<PyBytes>() {
+            let fragment = Fragment::Reference(buff.clone().unbind());
+            return Ok(self.write_fragment(buff.as_bytes(), fragment));
         }
-        bytes_written
+
+        // `PyBuffer<u8>` accepts byte-formatted exporters directly. Multi-byte
+        // exporters fall back to `raw()` or `memoryview.tobytes()`.
+        let buffer = match PyBuffer::get(buff) {
+            Ok(buffer) => buffer,
+            Err(_) => {
+                let Ok(raw) = buff.call_method0("raw") else {
+                    let snapshot = PyMemoryView::from(buff)?
+                        .call_method0("tobytes")?
+                        .cast_into::<PyBytes>()?;
+                    let fragment = Fragment::Reference(snapshot.clone().unbind());
+                    return Ok(self.write_fragment(snapshot.as_bytes(), fragment));
+                };
+                if let Ok(bytes) = raw.cast::<PyBytes>() {
+                    let fragment = Fragment::Reference(bytes.clone().unbind());
+                    return Ok(self.write_fragment(bytes.as_bytes(), fragment));
+                }
+                // `PickleBuffer.raw()` borrows the exporter's storage, so the
+                // copy below is required to preserve write-time snapshot semantics.
+                PyBuffer::get(&raw)?
+            }
+        };
+        let bytes = Bytes::from(buffer.to_vec(buff.py())?);
+        let fragment = Fragment::Copy(bytes.clone());
+        Ok(self.write_fragment(&bytes, fragment))
     }
 
     /// Returns the total number of bytes in the buffer.
@@ -207,6 +229,17 @@ impl Default for Buffer {
 }
 
 impl Buffer {
+    fn write_fragment(&mut self, bytes: &[u8], fragment: Fragment) -> usize {
+        let bytes_written = bytes.len();
+        if bytes_written < self.threshold {
+            self.pending.extend_from_slice(bytes);
+        } else {
+            self.flush_pending();
+            self.fragments.push(fragment);
+        }
+        bytes_written
+    }
+
     fn flush_pending(&mut self) {
         if !self.pending.is_empty() {
             let bytes = std::mem::take(&mut self.pending).freeze();
