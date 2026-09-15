@@ -541,7 +541,7 @@ impl RoutedUdpPacketIo {
     }
 }
 
-struct RoutedUdpSendSlot<'a> {
+pub(crate) struct RoutedUdpSendSlot<'a> {
     slot: Option<SendSlot<'a>>,
     router: &'a Router,
     addresses: &'a CarrierAddressBook,
@@ -558,12 +558,7 @@ impl PacketSendSlot for RoutedUdpSendSlot<'_> {
             .buffer_mut()
     }
 
-    fn submit(
-        mut self: Box<Self>,
-        length: usize,
-        peer: SocketAddr,
-        send_at: Instant,
-    ) -> io::Result<()> {
+    fn submit(mut self, length: usize, peer: SocketAddr, send_at: Instant) -> io::Result<()> {
         let mut slot = self
             .slot
             .take()
@@ -641,6 +636,8 @@ impl PacketSendSlot for RoutedUdpSendSlot<'_> {
 }
 
 impl PacketIo for RoutedUdpPacketIo {
+    type SendSlot<'a> = RoutedUdpSendSlot<'a>;
+
     fn peer_addresses_validated(&self) -> bool {
         false
     }
@@ -661,21 +658,21 @@ impl PacketIo for RoutedUdpPacketIo {
         Arc::new(self.udp.notifier())
     }
 
-    fn try_send_slot(&mut self) -> Option<Box<dyn PacketSendSlot + '_>> {
+    fn try_send_slot(&mut self) -> Option<Self::SendSlot<'_>> {
         let router = self.router.as_ref();
         let addresses = &self.addresses;
         let has_fallback = self.fallback.is_some();
         let fallback_transmits = &mut self.fallback_transmits;
         let segment_size = self.segment_size;
         let slot = self.udp.try_send_slot()?;
-        Some(Box::new(RoutedUdpSendSlot {
+        Some(RoutedUdpSendSlot {
             slot: Some(slot),
             router,
             addresses,
             has_fallback,
             fallback_transmits,
             segment_size,
-        }))
+        })
     }
 
     fn poll(&mut self, timeout: Duration) -> io::Result<()> {
@@ -993,7 +990,7 @@ impl<T: DatagramSocket> CarrierPacketIo<T> {
     }
 }
 
-struct CarrierSendSlot<'a, T> {
+pub(crate) struct CarrierSendSlot<'a, T> {
     io: &'a mut CarrierPacketIo<T>,
     buffer: Option<Vec<u8>>,
 }
@@ -1006,7 +1003,7 @@ impl<T> PacketSendSlot for CarrierSendSlot<'_, T> {
     }
 
     fn submit(
-        mut self: Box<Self>,
+        mut self,
         length: usize,
         destination: SocketAddr,
         send_at: Instant,
@@ -1048,6 +1045,11 @@ impl<T> Drop for CarrierSendSlot<'_, T> {
 }
 
 impl<T: DatagramSocket> PacketIo for CarrierPacketIo<T> {
+    type SendSlot<'a>
+        = CarrierSendSlot<'a, T>
+    where
+        T: 'a;
+
     fn local_addr(&self) -> io::Result<SocketAddr> {
         Ok(self.local)
     }
@@ -1064,12 +1066,12 @@ impl<T: DatagramSocket> PacketIo for CarrierPacketIo<T> {
         self.wake.clone()
     }
 
-    fn try_send_slot(&mut self) -> Option<Box<dyn PacketSendSlot + '_>> {
+    fn try_send_slot(&mut self) -> Option<Self::SendSlot<'_>> {
         let buffer = self.free_transmit.pop()?;
-        Some(Box::new(CarrierSendSlot {
+        Some(CarrierSendSlot {
             io: self,
             buffer: Some(buffer),
-        }))
+        })
     }
 
     fn poll(&mut self, timeout: Duration) -> io::Result<()> {

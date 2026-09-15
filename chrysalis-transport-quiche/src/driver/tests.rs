@@ -100,8 +100,8 @@ fn drain(handle: &EndpointHandle, events: &mut Vec<Completion>) {
 }
 
 fn drive_until(
-    client: &mut Endpoint,
-    server: &mut Endpoint,
+    client: &mut Endpoint<UdpDriver>,
+    server: &mut Endpoint<UdpDriver>,
     client_handle: &EndpointHandle,
     server_handle: &EndpointHandle,
     client_events: &mut Vec<Completion>,
@@ -119,9 +119,9 @@ fn drive_until(
 }
 
 fn endpoint_pair() -> (
-    Endpoint,
+    Endpoint<UdpDriver>,
     EndpointHandle,
-    Endpoint,
+    Endpoint<UdpDriver>,
     EndpointHandle,
     std::net::SocketAddr,
     Pid,
@@ -132,9 +132,9 @@ fn endpoint_pair() -> (
 fn endpoint_pair_with_completion_capacity(
     completion_capacity: usize,
 ) -> (
-    Endpoint,
+    Endpoint<UdpDriver>,
     EndpointHandle,
-    Endpoint,
+    Endpoint<UdpDriver>,
     EndpointHandle,
     std::net::SocketAddr,
     Pid,
@@ -146,9 +146,9 @@ fn endpoint_pair_with_options(
     completion_capacity: usize,
     verify_server: bool,
 ) -> (
-    Endpoint,
+    Endpoint<UdpDriver>,
     EndpointHandle,
-    Endpoint,
+    Endpoint<UdpDriver>,
     EndpointHandle,
     std::net::SocketAddr,
     Pid,
