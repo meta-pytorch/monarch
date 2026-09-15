@@ -14,6 +14,7 @@ anyhow = "1.0.104"
 bytes = { version = "1.12.1", features = ["serde"] }
 chrysalis = { version = "0.0.0", path = "../chrysalis" }
 chrysalis-identity-meta = { version = "0.0.0", path = "../chrysalis-identity-meta" }
+chrysalis-resolver = { version = "0.0.0", path = "../chrysalis-resolver" }
 chrysalis-sqlite = { version = "0.0.0", path = "../chrysalis-sqlite" }
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
