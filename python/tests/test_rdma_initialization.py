@@ -13,6 +13,7 @@ production readiness caching and validation, public buffer operations, when
 submit and drop take effect, and backend configuration errors.
 """
 
+import asyncio
 import gc
 import re
 import sys
@@ -38,6 +39,7 @@ _PUBLIC_PATH_UPDATED = b"rdma-public-path-b"
 
 _SUBMIT_INITIAL = b"rdma-submit-before"
 _SUBMIT_UPDATED = b"rdma-submit-after!"
+_SUBMIT_RESUBMITTED = b"rdma-submit-second"
 _DROP_INITIAL = b"rdma-drop-initial!"
 
 
@@ -150,7 +152,7 @@ class _RdmaDiscardedSubmitOwner(Actor):
 
 
 class _RdmaDiscardedSubmitConsumer(Actor):
-    """Builds one action, discards its first submit, then reuses that action."""
+    """Builds one action, discards its observer, then reuses that action."""
 
     def __init__(self) -> None:
         self.source = bytearray(_SUBMIT_UPDATED)
@@ -166,13 +168,16 @@ class _RdmaDiscardedSubmitConsumer(Actor):
         assert await RDMAAction().submit() is None
         self.action = RDMAAction().write_remote(buffer, memoryview(self.source))
         discarded = self.action.submit()
-        # Future has no destructor that drives its stored task, so deleting the
-        # unobserved wrapper abandons the transfer before its first poll.
+        # The eager Handle owns the transfer independently of this observer.
         del discarded
 
     @endpoint
     async def submit_same_action(self) -> None:
         assert self.action is not None
+        # The forced-TCP write copies every source chunk before sending it to
+        # the owner. Observing the complete first payload therefore means this
+        # buffer will not be read again by the discarded submit.
+        self.source[:] = _SUBMIT_RESUBMITTED
         assert await self.action.submit() is None
 
 
@@ -534,12 +539,10 @@ async def test_public_rdma_paths() -> None:
 
 @pytest.mark.timeout(90)
 @isolate_in_subprocess
-async def test_discarded_submit_leaves_bytes_unchanged_and_same_action_runnable() -> (
+async def test_discarded_submit_commits_transfer_and_same_action_remains_runnable() -> (
     None
 ):
-    """Submitting captures readiness and the action, but the transfer itself
-    rides on the returned Future. Discarding that Future before it is driven
-    writes nothing and leaves the very same action runnable."""
+    """Discarding the observer does not cancel the submitted transfer."""
     from monarch.actor import this_host
 
     with configured(
@@ -563,22 +566,55 @@ async def test_discarded_submit_leaves_bytes_unchanged_and_same_action_runnable(
                 )
 
                 buffer = await owner.create_buffer.call_one()
+                assert await owner.owner_bytes.call_one() == _SUBMIT_INITIAL
                 assert await consumer.build_and_discard.call_one(buffer) is None
-                assert await owner.owner_bytes.call_one() == _SUBMIT_INITIAL, (
-                    "a discarded submit must not transfer bytes"
+
+                async def wait_for_first_submit() -> bytes:
+                    while (
+                        first_submit := await owner.owner_bytes.call_one()
+                    ) != _SUBMIT_UPDATED:
+                        await asyncio.sleep(0.05)
+                    return first_submit
+
+                first_submit = await asyncio.wait_for(
+                    wait_for_first_submit(), timeout=30
+                )
+                assert first_submit == _SUBMIT_UPDATED, (
+                    "the first submit must finish after its Future is discarded"
                 )
 
                 assert await consumer.submit_same_action.call_one() is None
-                assert await owner.owner_bytes.call_one() == _SUBMIT_UPDATED, (
-                    "the same action must remain runnable after its first "
-                    "Future was discarded"
+                assert await owner.owner_bytes.call_one() == _SUBMIT_RESUBMITTED, (
+                    "the same action must run again with the updated source bytes"
                 )
 
                 assert await owner.release.call_one() is None
             finally:
-                await consumer_proc.stop()
+                original_error = sys.exc_info()[1]
+                try:
+                    await asyncio.wait_for(consumer_proc.stop(), timeout=10)
+                except Exception as cleanup_error:
+                    if original_error is None:
+                        raise
+                    # BaseException.add_note() is unavailable on the Python 3.10
+                    # OSS test lane. The original failure still takes precedence.
+                    if hasattr(original_error, "add_note"):
+                        original_error.add_note(
+                            f"consumer cleanup also failed: {cleanup_error!r}"
+                        )
         finally:
-            await owner_proc.stop()
+            original_error = sys.exc_info()[1]
+            try:
+                await asyncio.wait_for(owner_proc.stop(), timeout=10)
+            except Exception as cleanup_error:
+                if original_error is None:
+                    raise
+                # BaseException.add_note() is unavailable on the Python 3.10
+                # OSS test lane. The original failure still takes precedence.
+                if hasattr(original_error, "add_note"):
+                    original_error.add_note(
+                        f"owner cleanup also failed: {cleanup_error!r}"
+                    )
 
 
 @pytest.mark.timeout(90)
