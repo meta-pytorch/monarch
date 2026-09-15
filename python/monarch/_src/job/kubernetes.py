@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+import atexit
 import dataclasses
 import logging
 import re
@@ -29,6 +30,7 @@ except ImportError:
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
+from monarch._src.actor.actor_mesh import _client_attached_to
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job.job import JobState, JobTrait
 from monarch._src.job.service_identity import (
@@ -53,6 +55,9 @@ _RFC_1123_MAX_LEN = 63
 # Seconds to wait for `kubectl port-forward` to report it is ready before giving
 # up, so a silently hung forward cannot stall job initialization indefinitely.
 _PORT_FORWARD_START_TIMEOUT_SECONDS: int = 30
+# Keep both the graceful and forced waits inside the actor runtime's roughly
+# two-second aggregate atexit budget.
+_PORT_FORWARD_TERMINATE_TIMEOUT_SECONDS: float = 0.1
 
 # MonarchMesh CRD coordinates
 _MONARCHMESH_GROUP = "monarch.pytorch.org"
@@ -266,6 +271,7 @@ class KubernetesJob(JobTrait):
         self._prepared_mesh_pods: dict[str, list[_MonarchMeshPod]] | None = None
         self._service_proc_ids: dict[str, list[ProcId]] = {}
         self._port_forward_processes: list[subprocess.Popen[str]] = []
+        self._port_forward_cleanup_registered = False
         super().__init__()
 
     def __getstate__(self) -> dict[str, Any]:
@@ -274,12 +280,14 @@ class KubernetesJob(JobTrait):
             state["_kubeconfig"] = KubeConfig._for_rebind()
         state["_prepared_mesh_pods"] = None
         state["_port_forward_processes"] = []
+        state["_port_forward_cleanup_registered"] = False
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         self.__dict__.update(state)
         self._prepared_mesh_pods = None
         self._port_forward_processes = []
+        self._port_forward_cleanup_registered = False
         configure(default_transport=ChannelTransport.TcpWithHostname)
 
     def _rebind_connection_inputs(self, spec: JobTrait) -> None:
@@ -321,10 +329,28 @@ class KubernetesJob(JobTrait):
         attach_to = self._attach_to
         try:
             if self._kubeconfig.out_of_cluster and attach_to is None:
-                for pods in all_mesh_pods.values():
-                    if pods:
-                        attach_to = self._port_forward_to_pod(pods[0])
-                        break
+                attach_to = _client_attached_to()
+                if attach_to is not None:
+                    # The actor context is process-global and has no detach
+                    # operation. The job that created an automatic forward
+                    # owns its lifetime, even when another job borrows it.
+                    owner = (
+                        "this job"
+                        if self._port_forward_cleanup_registered
+                        else "its original creator"
+                    )
+                    logger.info(
+                        "Reusing process-global client gateway %s for "
+                        "KubernetesJob in namespace %s; %s retains ownership",
+                        attach_to,
+                        self._namespace,
+                        owner,
+                    )
+                if attach_to is None:
+                    for pods in all_mesh_pods.values():
+                        if pods:
+                            attach_to = self._port_forward_to_pod(pods[0])
+                            break
                 if attach_to is None:
                     raise RuntimeError(
                         "out-of-cluster mode requires at least one ready pod "
@@ -880,6 +906,9 @@ class KubernetesJob(JobTrait):
 
         local_port = int(match.group(1))
         self._port_forward_processes.append(process)
+        if not self._port_forward_cleanup_registered:
+            atexit.register(self._terminate_port_forwards)
+            self._port_forward_cleanup_registered = True
         logger.info(
             "Port forwarding established to pod/%s on local port %d",
             pod.name,
@@ -890,10 +919,34 @@ class KubernetesJob(JobTrait):
     def _terminate_port_forwards(self) -> None:
         """Terminate any running ``kubectl port-forward`` subprocesses."""
         for process in self._port_forward_processes:
-            if process.poll() is None:
+            if process.poll() is not None:
+                continue
+            try:
                 process.terminate()
-                process.wait()
+                process.wait(timeout=_PORT_FORWARD_TERMINATE_TIMEOUT_SECONDS)
+                continue
+            except subprocess.TimeoutExpired:
+                pass
+            except OSError:
+                logger.warning(
+                    "failed to terminate or reap kubectl port-forward; attempting kill",
+                    exc_info=True,
+                )
+
+            try:
+                process.kill()
+                process.wait(timeout=_PORT_FORWARD_TERMINATE_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                logger.warning("kubectl port-forward did not exit after being killed")
+            except OSError:
+                logger.warning(
+                    "failed to kill or reap kubectl port-forward",
+                    exc_info=True,
+                )
         self._port_forward_processes.clear()
+        if self._port_forward_cleanup_registered:
+            atexit.unregister(self._terminate_port_forwards)
+            self._port_forward_cleanup_registered = False
 
     def _state(self) -> JobState:
         """
