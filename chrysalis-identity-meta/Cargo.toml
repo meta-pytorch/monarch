@@ -19,4 +19,4 @@ tokio = { version = "1.53.1", features = ["full", "test-util", "tracing"] }
 x509-parser = "0.18.1"
 
 [dev-dependencies]
-rcgen = { version = "0.14.9", features = ["x509-parser"] }
+rcgen = { version = "0.14.10", features = ["x509-parser"] }
