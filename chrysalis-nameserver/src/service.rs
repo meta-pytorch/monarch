@@ -231,6 +231,16 @@ impl NameserverService {
         self.state.lock().await.snapshot()
     }
 
+    /// Returns the number of locally visible process entries without cloning them.
+    pub async fn visible_len(&self) -> usize {
+        let includes_local = self
+            .local_entry
+            .read()
+            .expect("local entry lock poisoned")
+            .is_some();
+        self.state.lock().await.len() + usize::from(includes_local)
+    }
+
     /// Enumerates one revision-stable page of the locally visible directory.
     pub async fn enumerate(
         &self,
