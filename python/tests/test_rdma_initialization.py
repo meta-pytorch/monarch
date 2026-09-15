@@ -200,37 +200,37 @@ class _RdmaDiscardedDropOwner(Actor):
 
         data = bytearray(_DROP_INITIAL)
         first = RDMABuffer(memoryview(data))
-        barriers: list[RDMABuffer] = []
+        barrier: RDMABuffer | None = None
         try:
             discarded = first.drop()
-            # Future has no destructor that drives its stored task, so deleting
-            # the unobserved wrapper abandons the release before its first poll.
+            # The eager Handle owns the release independently of this observer.
             del discarded
 
-            barriers.append(self._barrier(first, b"rdma-drop-barrier-1"))
+            barrier = self._barrier(first, b"rdma-drop-barrier")
 
-            readback = bytearray(len(_DROP_INITIAL))
-            assert await first.read_into(memoryview(readback)) is None
-            assert bytes(readback) == _DROP_INITIAL, (
-                "a discarded drop must publish no release, so the registration "
-                f"is still readable; got {bytes(readback)!r}"
-            )
-
-            assert await first.drop() is None
-
-            barriers.append(self._barrier(first, b"rdma-drop-barrier-2"))
-
+            error_message = None
             try:
                 await first.read_into(memoryview(bytearray(len(_DROP_INITIAL))))
             except Exception as error:
                 assert type(error) is Exception, (
                     f"a released buffer must fail as base Exception, got {type(error)}"
                 )
-                return str(error)
-            raise AssertionError("reading a released registration must fail")
+                error_message = str(error)
+            if error_message is None:
+                raise AssertionError("reading a released registration must fail")
+            return error_message
         finally:
-            for barrier in barriers:
-                await barrier.drop()
+            original_error = sys.exc_info()[1]
+            if barrier is not None:
+                try:
+                    await asyncio.wait_for(barrier.drop(), timeout=10)
+                except Exception as cleanup_error:
+                    if original_error is None:
+                        raise
+                    if hasattr(original_error, "add_note"):
+                        original_error.add_note(
+                            f"barrier cleanup also failed: {cleanup_error!r}"
+                        )
 
     def _barrier(self, first: RDMABuffer, payload: bytes) -> RDMABuffer:
         """A request/reply through the same manager, used to order the release."""
@@ -619,10 +619,8 @@ async def test_discarded_submit_commits_transfer_and_same_action_remains_runnabl
 
 @pytest.mark.timeout(90)
 @isolate_in_subprocess
-async def test_discarded_drop_leaves_buffer_usable() -> None:
-    """Dropping publishes a one-way release only when the Future is driven.
-    A discarded Future publishes nothing, proven by a same-manager barrier
-    rather than by the drop result, which acknowledges publication only."""
+async def test_discarded_drop_commits_release() -> None:
+    """Discarding the observer does not cancel the published release."""
     from monarch.actor import this_host
 
     with configured(
@@ -643,7 +641,16 @@ async def test_discarded_drop_leaves_buffer_usable() -> None:
                 f"lookup failure: {message}"
             )
         finally:
-            await proc.stop()
+            original_error = sys.exc_info()[1]
+            try:
+                await asyncio.wait_for(proc.stop(), timeout=10)
+            except Exception as cleanup_error:
+                if original_error is None:
+                    raise
+                if hasattr(original_error, "add_note"):
+                    original_error.add_note(
+                        f"proc cleanup also failed: {cleanup_error!r}"
+                    )
 
 
 @pytest.mark.timeout(120)
