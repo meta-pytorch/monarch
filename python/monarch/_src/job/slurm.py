@@ -155,9 +155,6 @@ class SlurmJob(JobTrait):
         self.__dict__.update(state)
         if "_bind_to" not in state:
             self._bind_to = None
-        # Attachment belongs to this process's global client context, not the
-        # serialized job state.
-        self._client_attached_to = None
         configure(default_transport=ChannelTransport.TcpWithHostname)
 
     def _resolve_attach_to(self) -> str | None:
@@ -196,6 +193,12 @@ class SlurmJob(JobTrait):
         if self._slurm_job_id is not None:
             return self._slurm_job_id
         return os.environ.get("SLURM_JOB_ID") if in_batch_job() else None
+
+    def _cleanup_log_context(self) -> dict[str, Any]:
+        return {
+            "job_type": type(self).__name__,
+            "job_id": self._resolved_job_id(),
+        }
 
     def _create(self, client_script: Optional[str]) -> None:
         """Submit a single SLURM job for all meshes.
