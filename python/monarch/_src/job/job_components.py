@@ -76,9 +76,16 @@ class JobComponent:
         """Run at the start of ``JobTrait._connect``, before raw host meshes exist."""
 
     def connect(
-        self, job: "JobTrait", host_meshes: Dict[str, HostMesh]
+        self,
+        job: "JobTrait",
+        host_meshes: Dict[str, HostMesh],
+        via_gateway: bool = False,
     ) -> Dict[str, HostMesh]:
-        """Run during ``JobTrait._connect`` to produce final user-facing meshes."""
+        """Run during ``JobTrait._connect`` to produce final user-facing meshes.
+
+        ``via_gateway`` says the job reaches its workers only through a scheduler gateway.
+        Resolved by the caller so every component sees the same answer.
+        """
         return host_meshes
 
     def state(self, job: "JobTrait", job_state: "JobState") -> None:
@@ -104,11 +111,14 @@ class MountComponent(JobComponent):
         self._default_python_exe: Optional[str] = None
 
     def connect(
-        self, job: "JobTrait", host_meshes: Dict[str, HostMesh]
+        self,
+        job: "JobTrait",
+        host_meshes: Dict[str, HostMesh],
+        via_gateway: bool = False,
     ) -> Dict[str, HostMesh]:
         apply_id = job.apply_id
         if apply_id is not None:
-            self._mounts.ensure_open(apply_id, host_meshes)
+            self._mounts.ensure_open(apply_id, host_meshes, via_gateway)
         result: Dict[str, HostMesh] = {}
         for mesh_name, mesh in host_meshes.items():
             exe = self.python_executable_for_mesh(mesh_name)
@@ -237,7 +247,10 @@ class TelemetryComponent(JobComponent):
             )
 
     def connect(
-        self, job: "JobTrait", host_meshes: Dict[str, HostMesh]
+        self,
+        job: "JobTrait",
+        host_meshes: Dict[str, HostMesh],
+        via_gateway: bool = False,
     ) -> Dict[str, HostMesh]:
         if self._query_engine_client is None:
             return host_meshes
@@ -424,10 +437,13 @@ class JobComponents:
             component.before_connect(job)
 
     def connect(
-        self, job: "JobTrait", host_meshes: Dict[str, HostMesh]
+        self,
+        job: "JobTrait",
+        host_meshes: Dict[str, HostMesh],
+        via_gateway: bool = False,
     ) -> Dict[str, HostMesh]:
         for component in self._ordered():
-            host_meshes = component.connect(job, host_meshes)
+            host_meshes = component.connect(job, host_meshes, via_gateway)
         return host_meshes
 
     def state(self, job: "JobTrait", job_state: "JobState") -> None:
