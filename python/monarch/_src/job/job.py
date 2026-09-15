@@ -19,7 +19,7 @@ import traceback
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence
+from typing import Any, Callable, Dict, List, Literal, NamedTuple, Optional, Sequence
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.actor.bootstrap import attach_to_workers
@@ -46,6 +46,7 @@ from monarch.actor import (
     Port,
     this_host,
 )
+from monarch.distributed_telemetry import profiler
 from typing_extensions import Self
 
 
@@ -502,6 +503,27 @@ class JobTrait(ABC):
             mesh_admin_config=mesh_admin_config,
         )
         return self
+
+    def profile(
+        self,
+        *,
+        on_trace_ready: Optional[Callable[[profiler.profile], object]] = None,
+    ) -> profiler.profile:
+        """Profile a block of work using this job's distributed telemetry."""
+        telemetry = self._components.telemetry
+        if telemetry is None:
+            raise RuntimeError(
+                "job.profile() requires distributed telemetry; call "
+                "job.enable_telemetry() before job.state()"
+            )
+        telemetry_url = telemetry.telemetry_url
+        if telemetry_url is None:
+            raise RuntimeError(
+                "distributed telemetry is not active; call job.state() before "
+                "job.profile() and check telemetry startup logs"
+            )
+
+        return profiler.profile(telemetry_url, on_trace_ready=on_trace_ready)
 
     def enable_admin(
         self,
