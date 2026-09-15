@@ -210,16 +210,30 @@ declare_attrs! {
     /// majority of channels; only bandwidth-bound long-haul paths (e.g.
     /// remotemount's client->leader block ship) opt in. `cubic` underfills a
     /// link with a high bandwidth-delay product; `bbr` recovers that
-    /// bandwidth. Set via env
-    /// `HYPERACTOR_CHANNEL_TCP_CONGESTION` or
-    /// `configure(channel_tcp_congestion="bbr")`; both propagate to spawned
-    /// worker procs (env via the child's Env layer, `configure` via the
-    /// Runtime config snapshotted into the child), with env winning if both
-    /// are set.
+    /// bandwidth. Set via env `HYPERACTOR_CHANNEL_TCP_CONGESTION` or
+    /// `configure(channel_tcp_congestion="bbr")`.
+    ///
+    /// PROCESS-LOCAL, deliberately: the right controller is a property of the
+    /// LINK, not of the mesh, and the procs in one mesh do not share a link
+    /// profile. A client shipping across a DC has a high bandwidth-delay
+    /// product and wants `bbr`; the intra-cluster hops between workers do not,
+    /// and `bbr` measurably hurts them. Propagating one value to every proc
+    /// forces a single answer on links that want different ones -- measured on
+    /// MAST at 256 hosts, cold `import torch`:
+    ///
+    /// ```text
+    ///     bbr on client + relays    39.0s
+    ///     cubic everywhere          31.2s
+    ///     bbr on client only        19.0s
+    /// ```
+    ///
+    /// A proc that genuinely wants a non-default controller sets the env var,
+    /// which is per-proc and still resolves above everything else.
+
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_CHANNEL_TCP_CONGESTION".to_string()),
         Some("channel_tcp_congestion".to_string()),
-    ))
+    ).process_local())
     pub attr CHANNEL_TCP_CONGESTION: String = String::new();
 
     /// Maximum time `Link::next()` spends retrying a failed connect
@@ -309,6 +323,19 @@ declare_attrs! {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn channel_tcp_congestion_is_process_local() {
+        let meta = CHANNEL_TCP_CONGESTION
+            .attrs()
+            .get(CONFIG)
+            .expect("CHANNEL_TCP_CONGESTION should carry CONFIG meta");
+        assert!(
+            !meta.propagate,
+            "CHANNEL_TCP_CONGESTION must not propagate to child procs; \
+             see the attr docs for the measurement"
+        );
+    }
+
     use std::collections::HashSet;
 
     use hyperactor_config::Attrs;

@@ -139,7 +139,11 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
             cleanup_timeout: Timeout for cleanup operations (humantime).
             default_encoding: Default message encoding (Encoding.Bincode, Encoding.Json, or Encoding.Multipart).
             channel_net_rx_buffer_full_check_interval: Network receive buffer check interval (humantime).
-            channel_tcp_congestion: TCP congestion control: ``"cubic"``, ``"reno"``, ``"bbr"`` (OS-dependent); empty keeps the host default.
+            channel_tcp_congestion: TCP congestion control: ``"cubic"``, ``"reno"``,
+                ``"bbr"``; empty keeps the host default. Best-effort -- a host that will
+                not let this process select the algorithm keeps its own default and the
+                channel layer logs a warning, rather than failing the connection. This
+                value therefore records what was requested, not necessarily what took.
             message_latency_sampling_rate: Sampling rate for message latency tracking (0.0 to 1.0).
             enable_dest_actor_reordering_buffer: Enable reordering buffer in dest actor.
 

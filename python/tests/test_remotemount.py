@@ -1699,21 +1699,28 @@ class TestReceiveBlockPreservesCache:
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
 @pytest.mark.timeout(120)
+@pytest.mark.parametrize("via_gateway", [False, True])
 @isolate_in_subprocess
-def test_actor_chain_fanout_to_all_peers() -> None:
+def test_actor_chain_fanout_to_all_peers(via_gateway: bool) -> None:
     """The client sources one block down the pipelined broadcast chain and every worker
     receives it -- mirroring ``MountHandlerClient.open``/``_deliver``: each worker binds its
-    listener + recv ctx (``cbc_listen``); the workers are ordered by rank and each pointed
-    at its successor (``cbc_start``); the client dials the head (``connect``) and stripes the
-    block down it (``send_block``); and ``await_block`` blocks until every worker has
-    committed the block via ``receive_via_cbcast``. Reading through each worker's own mount
-    confirms delivery. The block spans several ``CBC_CHUNK`` frames so the relay's chunk
-    forwarding and offset reassembly are exercised, not just a single-frame block."""
+    receive endpoint + recv ctx (``cbc_listen``); the workers are ordered by rank and each pointed
+    at its successor (``cbc_start``); the client posts the block to the head's mailbox
+    head; and ``await_block`` blocks until every worker has committed the block via
+    ``receive_via_cbcast``. Reading through each worker's own mount confirms delivery. The
+    block spans several ``CBC_CHUNK`` frames so the relay's chunk forwarding and offset
+    reassembly are exercised, not just a single-frame block.
+
+    Run over BOTH client transports: they are the two halves of one branch and a
+    regression in either is silent. ``via_gateway=False`` dials the head's listener (in
+    cluster, and the only socket the client can tune); ``True`` posts to its mailbox port
+    (out of cluster). Everything downstream of the head is shared."""
     from monarch._rust_bindings.monarch_extension.chain_broadcast import (
         connect,
         send_block,
+        send_block_to_port,
     )
-    from monarch.actor import this_host
+    from monarch.actor import context, this_host
     from monarch.remotemount.remotemount import CBC_CHUNK, FUSEActor, RemoteMountLeader
 
     # Several CBC_CHUNK frames so multi-chunk pipelining + reassembly run (not one frame).
@@ -1757,14 +1764,20 @@ def test_actor_chain_fanout_to_all_peers() -> None:
             # Wire the chain exactly as ``open`` does: every worker binds a listener + recv
             # ctx, order the addrs by rank into head -> ... -> tail, point each worker at its
             # successor, then dial the head from here (this proc is the chain source).
-            listen = fuse_actors.cbc_listen.call().get()
+            listen = fuse_actors.cbc_listen.call(None, via_gateway).get()
             by_rank = sorted((value for _point, value in listen), key=lambda rv: rv[0])
             addrs = [addr for _rank, addr in by_rank]
             fuse_actors.cbc_start.call(addrs).get()
-            head = connect(addrs[0])
 
             # Source block 0 down the chain, then block until every worker has committed it.
-            send_block(head, content, CBC_CHUNK, 0)
+            # ``addrs[0]`` is a ``PortId`` under ``via_gateway`` and a dialable listener
+            # otherwise -- the one difference between the two paths.
+            if via_gateway:
+                send_block_to_port(
+                    context().actor_instance, addrs[0], content, CBC_CHUNK, 0
+                )
+            else:
+                send_block(connect(addrs[0]), content, CBC_CHUNK, 0)
             leader.await_block.call_one(0, [], len(content)).get()
 
             # Every worker now serves the block from its own mount.
