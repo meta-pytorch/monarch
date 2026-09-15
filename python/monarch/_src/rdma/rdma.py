@@ -556,10 +556,9 @@ class RDMAAction:
         """
         timeout = _validate_timeout(timeout)
         client = context().actor_instance
-        # RDC-6: no Tokio-driven coroutine awaits the Handle; the native submit task
-        # waits on it before taking the action lock, and we wrap that task directly.
+        # RDC-7: timeout validation stays ahead of readiness lookup and eager submit.
         ready = _ensure_init_rdma_manager()
-        return Future._from_coro(
+        return Future._from_handle(
             self._inner.submit(
                 client=client,
                 timeout=timeout,

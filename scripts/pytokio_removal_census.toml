@@ -88,9 +88,9 @@
 #   its identity and its history.
 #
 # An intentional migration is one diff that changes the source, sets the row
-# state to migrated or removed_upstream, records transition_revision, and
-# updates the affected totals. Splitting those across diffs leaves --check red
-# in between.
+# state to migrated or removed_upstream, records transition_revision = "self",
+# and updates the affected totals. Splitting those across diffs leaves --check
+# red in between.
 #
 # Reverting a migration is the same edit backwards: restore the source, return
 # the tombstone to legacy, drop its transition_revision, and restore the
@@ -137,16 +137,20 @@
 # list the row in owns, so a site cannot be migrated by a diff that does not
 # own it. allowed_states bounds which tombstone states it may set.
 #
-# transition_revision and amendment_revision are factual, not approvals.
-# transition_revision records the diff that performed the move; it is required
-# once state leaves legacy and rejected while state is legacy.
-# amendment_revision records a diff that corrected a site's current behavior --
-# a bug fix -- without migrating it, and never discharges the declared
+# transition_revision and amendment_revision are provenance, not approvals.
+# Each accepts either an existing Differential revision or the permanent value
+# "self", meaning the same source-control change that edits the row. "self"
+# keeps the manifest valid before an external D-number exists; source-control
+# history supplies that number later without a publish-amend-publish cycle.
+# transition_revision is required once state leaves legacy and rejected while
+# state is legacy. amendment_revision records a change that corrected a site's
+# current behavior without migrating it, and never discharges the declared
 # transition.
 #
 # Behavior rows. native_producer and coroutine_root rows carry the eleven
-# fields below. Each states what the code does now, not what the target should
-# do.
+# fields below. An active row states what the code does now, not what the target
+# should do. A tombstone preserves the legacy behavior that its transition
+# removed.
 #
 #   return_surface   the type the site hands to Python -- PyPythonTask, a raw
 #                    PythonTask, or Future[T] -- named so a conversion that
@@ -343,9 +347,9 @@ pytokio_import = "monarch._rust_bindings.monarch_hyperactor.pytokio"
 doc_legacy_surface = "PythonTask|PyShared|pytokio"
 
 [totals]
-py_python_task_new = 27
+py_python_task_new = 26
 raw_python_task_new = 5
-from_coro = 19
+from_coro = 18
 rust_from_coro = 2
 from_coroutine = 7
 take_inner = 7
@@ -1379,8 +1383,9 @@ path = "fbcode/monarch/python/monarch/_src/rdma/rdma.py"
 symbol = "RDMAAction.submit[Future._from_coro(self._inner.submit(client=client, timeout=timeout, rdma_manager_init=ready))]"
 operation = "from_coro"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.2"
+transition_revision = "D120175391"
 
 [[site]]
 id = "fc.rdma.RDMABuffer.drop[Future._from_coroself._buffer.dropclient=client, rdma_manager_init=ready]"
@@ -2805,8 +2810,9 @@ path = "fbcode/monarch/monarch_rdma/extension/lib.rs"
 symbol = "PyRdmaAction::submit"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.2"
+transition_revision = "D120175391"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from PyRdmaAction::submit"
 consumer = "RDMAAction.submit via Future._from_coro"
@@ -2816,10 +2822,10 @@ abandonment = "possible before first drive; async observation and timed get() ar
 eager_effect = "starts a side effect: an eager conversion would drive the retained readiness observer and then take the action lock and submit the queued operations even if the returned observer is discarded"
 drop_behavior = "discarding before first drive submits nothing and leaves the same action runnable"
 unobserved_error = "no operation error exists until driven; readiness retains exact RdmaInitError, and later operation failure is exact base Exception with RdmaAction.submit failed:"
-disposition = "require a binding-specific design"
+disposition = "intentionally become eager"
 semantic_class = "deferred_side_effect"
 oracle = [
-  "fbcode//monarch/python/tests:test_rdma_initialization::test_discarded_submit_leaves_bytes_unchanged_and_same_action_runnable",
+  "fbcode//monarch/python/tests:test_rdma_initialization::test_discarded_submit_commits_transfer_and_same_action_remains_runnable",
   "fbcode//monarch/python/tests:test_rdma_initialization::test_public_submit_and_drop_resolve_to_none_after_tcp_init",
   "fbcode//monarch/python/tests:test_rdma_initialization::test_public_paths_propagate_readiness_failure",
   "fbcode//monarch/python/tests:test_rdma_initialization::test_submit_wraps_post_readiness_operation_failure",

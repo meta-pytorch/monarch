@@ -73,8 +73,8 @@
 //!   drops the `PyRef` before `.await`/`signal_safe_block_on`; no Python borrow
 //!   crosses the wait.
 //! - **RDC-5** (public result contract): buffer creation returns the buffer;
-//!   successful submit and drop tasks return Python `None`, including the public
-//!   read and write methods that delegate to submit.
+//!   successful submit and drop operations return Python `None`, including the
+//!   public read and write methods that delegate to submit.
 //! - **RDC-6** (no Tokio-driven `Future` await): production `rdma.py` has no
 //!   Tokio-driven coroutine that awaits a `Future` (enforced in `rdma.py`).
 //! - **RDC-7** (validate before eager init): local backend, memory, zero-size, and
@@ -656,18 +656,17 @@ impl PyRdmaAction {
         Ok(())
     }
 
-    /// Submit the queued ops. Returns a [`PyPythonTask`] that resolves
-    /// when every op completes (or the first error). Concurrent submits
-    /// queue on the inner async mutex and run one at a time, so the
-    /// local-range overlap checks performed at `add_*` time remain
-    /// meaningful.
+    /// Submit the queued ops eagerly. Returns a [`PyHandle`] that resolves when
+    /// every op completes (or the first error). Concurrent submits queue on the
+    /// inner async mutex and run one at a time, so the local-range overlap checks
+    /// performed at `add_*` time remain meaningful.
     fn submit(
         &self,
         _py: Python<'_>,
         client: PyInstance,
         timeout: u64,
         rdma_manager_init: PyRef<'_, PyHandle>,
-    ) -> PyResult<PyPythonTask> {
+    ) -> PyResult<PyHandle> {
         let inner = self.inner.clone();
         // RDC-4: take the owned completion future, then release the PyRef before
         // the operation is driven on the Tokio worker.
@@ -676,14 +675,14 @@ impl PyRdmaAction {
         // RDC-3: readiness gates the whole operation; the action lock is taken
         // inside the closure, only after readiness, so `add_*` is not rejected
         // earlier than before while initialization is pending.
-        PyPythonTask::new(after_ready(ready, move || async move {
+        Ok(PyHandle::spawn(after_ready(ready, move || async move {
             let mut action = inner.lock().await;
             action
                 .submit(client.deref(), Duration::from_secs(timeout))
                 .await
                 .map_err(|e| PyException::new_err(format!("RdmaAction.submit failed: {}", e)))?;
             Ok(None::<()>)
-        }))
+        })))
     }
 }
 
