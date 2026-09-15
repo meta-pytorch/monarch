@@ -557,7 +557,7 @@ id = "6.1c"
 allowed_states = ["migrated"]
 owns = [
   "im.rdma.module_2",
-  "im.test_rdma_initialization.test_ensure_init_returns_handle_that_resolves_over_tcp"
+  "im.test_rdma_readiness_and_operations.test_ensure_init_returns_handle_that_resolves_over_tcp"
 ]
 
 [[transition]]
@@ -806,7 +806,7 @@ owns = [
   "im.test_mailbox.module",
   "im.test_proc_mesh.module",
   "im.test_python_actors.module",
-  "im.test_rdma_initialization.test_ensure_init_observes_its_supplied_shared",
+  "im.test_rdma_readiness_and_operations.test_ensure_init_observes_its_supplied_shared",
   "mr.attrs.file",
   "mr.lib.file",
   "mr.lib.file_2"
@@ -1400,7 +1400,7 @@ operation = "from_coro"
 scope = "production"
 state = "migrated"
 transition = "6.2"
-transition_revision = "self"
+transition_revision = "D120225861"
 
 [[site]]
 id = "dr.bootstrap._as_python_task[PythonTask.from_coroutinejust]"
@@ -1864,7 +1864,7 @@ operation = "helper_symbol"
 scope = "production"
 state = "migrated"
 transition = "6.2"
-transition_revision = "self"
+transition_revision = "D120225861"
 
 [[site]]
 id = "hs.lib.PyShared"
@@ -2830,10 +2830,10 @@ unobserved_error = "no operation error exists until driven; readiness retains ex
 disposition = "intentionally become eager"
 semantic_class = "deferred_side_effect"
 oracle = [
-  "fbcode//monarch/python/tests:test_rdma_initialization::test_discarded_submit_commits_transfer_and_same_action_remains_runnable",
-  "fbcode//monarch/python/tests:test_rdma_initialization::test_public_submit_and_drop_resolve_to_none_after_tcp_init",
-  "fbcode//monarch/python/tests:test_rdma_initialization::test_public_paths_propagate_readiness_failure",
-  "fbcode//monarch/python/tests:test_rdma_initialization::test_submit_wraps_post_readiness_operation_failure",
+  "fbcode//monarch/python/tests:test_rdma_readiness_and_operations::test_discarded_submit_commits_transfer_and_same_action_remains_runnable",
+  "fbcode//monarch/python/tests:test_rdma_readiness_and_operations::test_public_submit_and_drop_resolve_to_none_after_tcp_init",
+  "fbcode//monarch/python/tests:test_rdma_readiness_and_operations::test_public_paths_propagate_readiness_failure",
+  "fbcode//monarch/python/tests:test_rdma_readiness_and_operations::test_submit_wraps_post_readiness_operation_failure",
 ]
 
 [[site]]
@@ -2846,7 +2846,7 @@ operation = "py_python_task_new"
 scope = "production"
 state = "migrated"
 transition = "6.2"
-transition_revision = "self"
+transition_revision = "D120225861"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from PyRdmaBuffer::drop"
 consumer = "RDMABuffer.drop via Future._from_coro"
@@ -2859,9 +2859,9 @@ unobserved_error = "no release error exists until driven; readiness retains exac
 disposition = "intentionally become eager"
 semantic_class = "deferred_side_effect"
 oracle = [
-  "fbcode//monarch/python/tests:test_rdma_initialization::test_discarded_drop_commits_release",
-  "fbcode//monarch/python/tests:test_rdma_initialization::test_public_submit_and_drop_resolve_to_none_after_tcp_init",
-  "fbcode//monarch/python/tests:test_rdma_initialization::test_drop_propagates_readiness_failure_without_releasing_buffer",
+  "fbcode//monarch/python/tests:test_rdma_readiness_and_operations::test_discarded_drop_commits_release",
+  "fbcode//monarch/python/tests:test_rdma_readiness_and_operations::test_public_submit_and_drop_resolve_to_none_after_tcp_init",
+  "fbcode//monarch/python/tests:test_rdma_readiness_and_operations::test_drop_propagates_readiness_failure_without_releasing_buffer",
 ]
 
 [[site]]
@@ -3007,7 +3007,7 @@ operation = "pytokio_import"
 scope = "stub"
 state = "migrated"
 transition = "6.2"
-transition_revision = "self"
+transition_revision = "D120225861"
 members = ["PythonTask"]
 
 [[site]]
@@ -3277,10 +3277,10 @@ transition = "6.8"
 members = ["PythonTask", "Shared"]
 
 [[site]]
-id = "im.test_rdma_initialization.test_ensure_init_observes_its_supplied_shared"
+id = "im.test_rdma_readiness_and_operations.test_ensure_init_observes_its_supplied_shared"
 category = "module_import"
 language = "python"
-path = "fbcode/monarch/python/tests/test_rdma_initialization.py"
+path = "fbcode/monarch/python/tests/test_rdma_readiness_and_operations.py"
 symbol = "test_ensure_init_observes_its_supplied_shared"
 operation = "pytokio_import"
 scope = "test"
@@ -3289,10 +3289,10 @@ transition = "6.8"
 members = ["Shared"]
 
 [[site]]
-id = "im.test_rdma_initialization.test_ensure_init_returns_handle_that_resolves_over_tcp"
+id = "im.test_rdma_readiness_and_operations.test_ensure_init_returns_handle_that_resolves_over_tcp"
 category = "module_import"
 language = "python"
-path = "fbcode/monarch/python/tests/test_rdma_initialization.py"
+path = "fbcode/monarch/python/tests/test_rdma_readiness_and_operations.py"
 symbol = "test_ensure_init_returns_handle_that_resolves_over_tcp"
 operation = "pytokio_import"
 scope = "test"
