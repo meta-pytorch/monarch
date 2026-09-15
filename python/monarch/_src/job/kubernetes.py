@@ -114,6 +114,13 @@ class KubeConfig:
 
     local: Path | None = None
     remote: client.Configuration | None = None
+    _requires_rebind: bool = dataclasses.field(default=False, init=False, repr=False)
+
+    @classmethod
+    def _for_rebind(cls) -> "KubeConfig":
+        result = cls()
+        object.__setattr__(result, "_requires_rebind", True)
+        return result
 
     @classmethod
     def from_path(cls, path: str) -> "KubeConfig":
@@ -128,7 +135,9 @@ class KubeConfig:
     @property
     def out_of_cluster(self) -> bool:
         """Whether this kubeconfig is for out-of-cluster usage."""
-        return self.remote is not None or self.local is not None
+        return (
+            self.remote is not None or self.local is not None or self._requires_rebind
+        )
 
     def load(self) -> None:
         if self.local is not None:
@@ -145,6 +154,13 @@ class KubeConfig:
                 client.Configuration.set_default(configuration)
         elif self.remote is not None:
             client.Configuration.set_default(self.remote)
+        elif self._requires_rebind:
+            raise RuntimeError(
+                "cached in-memory Kubernetes configuration requires the current "
+                "job specification; call state() on a KubernetesJob configured "
+                "with KubeConfig.from_config() instead of using the cached job "
+                "directly"
+            )
         else:
             try:
                 config.load_incluster_config()
@@ -251,6 +267,38 @@ class KubernetesJob(JobTrait):
         self._service_proc_ids: dict[str, list[ProcId]] = {}
         self._port_forward_processes: list[subprocess.Popen[str]] = []
         super().__init__()
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = self.__dict__.copy()
+        if self._kubeconfig.remote is not None:
+            state["_kubeconfig"] = KubeConfig._for_rebind()
+        state["_prepared_mesh_pods"] = None
+        state["_port_forward_processes"] = []
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._prepared_mesh_pods = None
+        self._port_forward_processes = []
+        configure(default_transport=ChannelTransport.TcpWithHostname)
+
+    def _rebind_connection_inputs(self, spec: JobTrait) -> None:
+        if not isinstance(spec, KubernetesJob):
+            return
+        self._kubeconfig = spec._kubeconfig
+        self._attach_to = spec._attach_to
+        self._timeout = spec._timeout
+
+    def _cleanup_log_context(self) -> dict[str, Any]:
+        return {
+            "job_type": type(self).__name__,
+            "namespace": self._namespace,
+            "monarch_meshes": sorted(
+                name
+                for name, mesh_config in self._meshes.items()
+                if mesh_config.get("provisioned")
+            ),
+        }
 
     def _requires_sidecar_gateway(self) -> bool:
         # Out-of-cluster mode resolves an automatic port-forward when no
