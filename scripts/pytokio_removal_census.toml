@@ -138,10 +138,11 @@
 # own it. allowed_states bounds which tombstone states it may set.
 #
 # transition_revision and amendment_revision are provenance, not approvals.
-# Each accepts either an existing Differential revision or the permanent value
-# "self", meaning the same source-control change that edits the row. "self"
-# keeps the manifest valid before an external D-number exists; source-control
-# history supplies that number later without a publish-amend-publish cycle.
+# Each accepts either an existing Differential revision or "self", meaning the
+# same source-control change that edits the row. Use "self" before an external
+# D-number exists, then replace it during the next otherwise-required commit or
+# amend once that number is known. Never create an amend or resubmit solely to
+# replace a valid "self" value.
 # transition_revision is required once state leaves legacy and rejected while
 # state is legacy. amendment_revision records a change that corrected a site's
 # current behavior without migrating it, and never discharges the declared
@@ -188,9 +189,11 @@
 #
 #                    Active behavior rows require a non-empty list of canonical
 #                    references. Prose inside that list is rejected: every entry
-#                    must be a reference. Only a historical tombstone may keep a
-#                    bare prose label, because the path it described is gone and
-#                    there is no live test left to name.
+#                    must be a reference. A tombstone's behavior fields describe
+#                    the removed behavior, but canonical oracle entries remain
+#                    live references and must name tests that still exist. Only a
+#                    historical tombstone with no surviving test may keep a bare
+#                    prose label.
 #
 #                    A bare string starting with "fbcode//" is rejected whether
 #                    or not it parses, because that is a half-finished
@@ -347,9 +350,9 @@ pytokio_import = "monarch._rust_bindings.monarch_hyperactor.pytokio"
 doc_legacy_surface = "PythonTask|PyShared|pytokio"
 
 [totals]
-py_python_task_new = 26
+py_python_task_new = 25
 raw_python_task_new = 5
-from_coro = 18
+from_coro = 17
 rust_from_coro = 2
 from_coroutine = 7
 take_inner = 7
@@ -366,9 +369,9 @@ shared_reconstruction = 2
 reserve_binding = 1
 py_mesh_reserve = 2
 py_is_tokio_thread = 0
-pytokio_import = 32
+pytokio_import = 31
 pytokio_module_ref = 16
-helper_symbol = 22
+helper_symbol = 21
 helper_definition = 1
 would_block_surface = 0
 binding_stub_symbol = 3
@@ -568,6 +571,7 @@ owns = [
   "hs.actor.PyPythonTask",
   "hs.lib.PyPythonTask",
   "hs.pickle.PyPythonTask",
+  "im.rdma.module",
   "mr.actor.file",
   "np.actor.DroppingPort.resolve_and_send",
   "np.actor.LocalPort.resolve_and_send",
@@ -787,7 +791,6 @@ owns = [
   "im.mailbox.module",
   "im.pickle.module",
   "im.proc_mesh.module",
-  "im.rdma.module",
   "im.supervision.module",
   "im.test_actor_driver_characterization.module",
   "im.test_admin_spawn_characterization.module",
@@ -1395,8 +1398,9 @@ path = "fbcode/monarch/python/monarch/_src/rdma/rdma.py"
 symbol = "RDMABuffer.drop[Future._from_coro(self._buffer.drop(client=client, rdma_manager_init=ready))]"
 operation = "from_coro"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.2"
+transition_revision = "self"
 
 [[site]]
 id = "dr.bootstrap._as_python_task[PythonTask.from_coroutinejust]"
@@ -1858,8 +1862,9 @@ path = "fbcode/monarch/monarch_rdma/extension/lib.rs"
 symbol = "PyPythonTask"
 operation = "helper_symbol"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.2"
+transition_revision = "self"
 
 [[site]]
 id = "hs.lib.PyShared"
@@ -2839,8 +2844,9 @@ path = "fbcode/monarch/monarch_rdma/extension/lib.rs"
 symbol = "PyRdmaBuffer::drop"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.2"
+transition_revision = "self"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from PyRdmaBuffer::drop"
 consumer = "RDMABuffer.drop via Future._from_coro"
@@ -2850,10 +2856,10 @@ abandonment = "possible before first drive; async observation and timed get() ar
 eager_effect = "starts a side effect: an eager conversion would drive the retained readiness observer and then publish ReleaseBuffer even if the returned observer is discarded"
 drop_behavior = "discarding before first drive publishes no release and leaves the registration usable"
 unobserved_error = "no release error exists until driven; readiness retains exact RdmaInitError, while handler execution and delivery failures after the one-way post are outside this Future's result"
-disposition = "require a binding-specific design"
+disposition = "intentionally become eager"
 semantic_class = "deferred_side_effect"
 oracle = [
-  "fbcode//monarch/python/tests:test_rdma_initialization::test_discarded_drop_leaves_buffer_usable",
+  "fbcode//monarch/python/tests:test_rdma_initialization::test_discarded_drop_commits_release",
   "fbcode//monarch/python/tests:test_rdma_initialization::test_public_submit_and_drop_resolve_to_none_after_tcp_init",
   "fbcode//monarch/python/tests:test_rdma_initialization::test_drop_propagates_readiness_failure_without_releasing_buffer",
 ]
@@ -2999,8 +3005,9 @@ path = "fbcode/monarch/python/monarch/_rust_bindings/rdma.pyi"
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "stub"
-state = "legacy"
-transition = "6.8"
+state = "migrated"
+transition = "6.2"
+transition_revision = "self"
 members = ["PythonTask"]
 
 [[site]]

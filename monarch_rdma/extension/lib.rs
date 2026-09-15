@@ -94,7 +94,6 @@ use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::handle::PyHandle;
 use monarch_hyperactor::handle::after_ready;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
-use monarch_hyperactor::pytokio::PyPythonTask;
 use monarch_hyperactor::pytokio::PyShared;
 use monarch_hyperactor::runtime::GilSite;
 use monarch_hyperactor::runtime::monarch_with_gil;
@@ -754,19 +753,19 @@ impl PyRdmaBuffer {
         _py: Python<'_>,
         client: PyInstance,
         rdma_manager_init: PyRef<'_, PyHandle>,
-    ) -> PyResult<PyPythonTask> {
+    ) -> PyResult<PyHandle> {
         let buffer = self.buffer.clone();
         // RDC-4: take the owned completion future, then release the PyRef.
         let ready = rdma_manager_init.wait_completion();
         drop(rdma_manager_init);
         // RDC-3: the buffer is dropped only after readiness resolves Ok.
-        PyPythonTask::new(after_ready(ready, move || async move {
+        Ok(PyHandle::spawn(after_ready(ready, move || async move {
             buffer
                 .drop_buffer(client.deref())
                 .await
                 .map_err(|e| PyException::new_err(format!("Failed to drop buffer: {}", e)))?;
             Ok(None::<()>)
-        }))
+        })))
     }
 
     fn owner_actor_id(&self) -> String {
