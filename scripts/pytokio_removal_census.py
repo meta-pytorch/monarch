@@ -17,7 +17,7 @@ Two modes:
 ``--check``
     Fail on an unknown hit, a stale row, a duplicate or missing identifier, a
     total mismatch, a missing required field, an import member-set change, an
-    undeclared or unowned transition, or a malformed migration revision. This
+    undeclared or unowned transition, or malformed migration provenance. This
     is the only landing gate.
 
 ``--summary``
@@ -399,10 +399,19 @@ def oracle_problem(value: object, *, allow_legacy: bool) -> str | None:
 REQUIRED_MATRIX_FIELDS = ("id", "disposition", "execution_state")
 
 REVISION = re.compile(r"^D\d{6,}$")
+SELF_REVISION = "self"
 
 LEGACY = "legacy"
 TOMBSTONES = frozenset({"migrated", "removed_upstream"})
 VALID_STATES = frozenset({LEGACY}) | TOMBSTONES
+
+
+def valid_revision_reference(value: object) -> bool:
+    """Whether provenance names an existing diff or the change being authored."""
+    return value == SELF_REVISION or (
+        isinstance(value, str) and REVISION.match(value) is not None
+    )
+
 
 IMPL_START = re.compile(r"^\s*(?:unsafe\s+|default\s+)*impl\b")
 TRAIT_START = re.compile(
@@ -1348,13 +1357,13 @@ def validate_transitions(rows: list[dict], transitions: list[dict]) -> list[str]
                     f"{row['id']}: transition {name!r} does not permit state {state!r}"
                 )
             revision = row.get("transition_revision", "")
-            if not REVISION.match(revision):
+            if not valid_revision_reference(revision):
                 errors.append(
-                    f"{row['id']}: state {state!r} requires a Differential "
-                    f"transition revision, got {revision!r}"
+                    f"{row['id']}: state {state!r} requires transition provenance "
+                    f"('self' or a Differential revision), got {revision!r}"
                 )
         if row.get("amendment_revision"):
-            if not REVISION.match(row["amendment_revision"]):
+            if not valid_revision_reference(row["amendment_revision"]):
                 errors.append(f"{row['id']}: malformed amendment revision")
             if state != LEGACY:
                 errors.append(

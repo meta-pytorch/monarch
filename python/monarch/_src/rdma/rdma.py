@@ -489,10 +489,9 @@ class RDMABuffer:
         Release the handle on the memory that the src holds to this memory.
         """
         client = context().actor_instance
-        # RDC-6: no Tokio-driven coroutine awaits the Handle; the native drop task
-        # waits on it and we wrap that task directly (RDC-3).
+        # RDC-3: the native Handle waits for readiness before publishing release.
         ready = _ensure_init_rdma_manager()
-        return Future._from_coro(
+        return Future._from_handle(
             self._buffer.drop(client=client, rdma_manager_init=ready)
         )
 
@@ -556,10 +555,9 @@ class RDMAAction:
         """
         timeout = _validate_timeout(timeout)
         client = context().actor_instance
-        # RDC-6: no Tokio-driven coroutine awaits the Handle; the native submit task
-        # waits on it before taking the action lock, and we wrap that task directly.
+        # RDC-7: timeout validation stays ahead of readiness lookup and eager submit.
         ready = _ensure_init_rdma_manager()
-        return Future._from_coro(
+        return Future._from_handle(
             self._inner.submit(
                 client=client,
                 timeout=timeout,

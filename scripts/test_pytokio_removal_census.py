@@ -1008,11 +1008,13 @@ class CensusCheckerTest(unittest.TestCase):
 
     def test_transition_revision_on_legacy_row_fails(self) -> None:
         """Provenance belongs to a completed move, not a pending one."""
-        manifest = self.fixture.manifest()
-        manifest["site"][0]["transition_revision"] = "D123456"
-        self.assert_reports(
-            self.fixture.check(manifest), "a legacy row must not carry one"
-        )
+        for revision in ("D123456", "self"):
+            with self.subTest(revision=revision):
+                manifest = self.fixture.manifest()
+                manifest["site"][0]["transition_revision"] = revision
+                self.assert_reports(
+                    self.fixture.check(manifest), "a legacy row must not carry one"
+                )
 
     def test_duplicate_id_fails(self) -> None:
         manifest = self.fixture.manifest(PRODUCER_ROW)
@@ -1195,15 +1197,39 @@ class CensusCheckerTest(unittest.TestCase):
         manifest["transition"][0]["owns"].append("np.ghost")
         self.assert_reports(self.fixture.check(manifest), "owns unknown site np.ghost")
 
-    def test_state_change_requires_differential_revision(self) -> None:
+    def test_state_change_requires_revision_reference(self) -> None:
+        manifest = self.fixture.manifest()
+        manifest["site"][0]["state"] = "migrated"
+        self.fixture.write("src/a.rs", "fn make() {}\n")
+        manifest["totals"]["py_python_task_new"] = 0
+        self.assert_reports(
+            self.fixture.check(manifest), "requires transition provenance"
+        )
+
+    def test_state_change_rejects_malformed_revision_reference(self) -> None:
         manifest = self.fixture.manifest()
         manifest["site"][0]["state"] = "migrated"
         manifest["site"][0]["transition_revision"] = "nope"
         self.fixture.write("src/a.rs", "fn make() {}\n")
         manifest["totals"]["py_python_task_new"] = 0
         self.assert_reports(
-            self.fixture.check(manifest), "requires a Differential transition revision"
+            self.fixture.check(manifest), "requires transition provenance"
         )
+
+    def test_state_change_accepts_self_revision(self) -> None:
+        """A migration can pass before an external D-number has been assigned."""
+        manifest = self.fixture.manifest()
+        manifest["site"][0]["state"] = "migrated"
+        manifest["site"][0]["transition_revision"] = "self"
+        self.fixture.write("src/a.rs", "fn make() {}\n")
+        manifest["totals"]["py_python_task_new"] = 0
+        self.assertEqual(self.fixture.check(manifest), [])
+
+    def test_amendment_accepts_self_revision(self) -> None:
+        """A behavior correction can record its own change before submission."""
+        manifest = self.fixture.manifest()
+        manifest["site"][0]["amendment_revision"] = "self"
+        self.assertEqual(self.fixture.check(manifest), [])
 
     def test_disallowed_state_fails(self) -> None:
         manifest = self.fixture.manifest()
