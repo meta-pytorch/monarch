@@ -512,6 +512,13 @@ class SPMDJob(JobTrait):
         """Job is already created in serve(), this is a no-op."""
         pass
 
+    def _cleanup_log_context(self) -> dict[str, Any]:
+        return {
+            "job_type": type(self).__name__,
+            "scheduler": self._scheduler,
+            "app_handle": self._app_handle,
+        }
+
     def can_run(self, spec: "JobTrait") -> bool:
         if not isinstance(spec, SPMDJob):
             return False

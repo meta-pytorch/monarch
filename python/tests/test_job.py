@@ -43,6 +43,7 @@ from monarch._src.job.job import (
     TelemetryConfig,
 )
 from monarch._src.job.job_components import JobComponent, JobComponents, MountComponent
+from monarch._src.job.meta.mast import MASTJob
 from monarch._src.job.mount_config import Mounts
 from monarch._src.job.process import ProcessJob
 from monarch._src.job.process_guard import _Shutdown, _wait_for_socket
@@ -184,6 +185,22 @@ class MockJobTrait(JobTrait):
     def _kill(self):
         """Mock implementation that tracks the kill call."""
         self.kill_called = True
+
+
+class FailingKillJobTrait(MockJobTrait):
+    def _kill(self) -> None:
+        raise RuntimeError("cached credentials are unavailable")
+
+    def _cleanup_log_context(self) -> dict[str, object]:
+        return {
+            "job_type": type(self).__name__,
+            "allocation_id": "test-allocation",
+        }
+
+
+class FailingCleanupContextJobTrait(FailingKillJobTrait):
+    def _cleanup_log_context(self) -> dict[str, object]:
+        raise RuntimeError("cleanup context is unavailable")
 
 
 def test_spawn_module_uses_module_command_outside_par():
@@ -526,6 +543,62 @@ def test_incompatible_cache():
 
     finally:
         # Clean up the temp file
+        if os.path.exists(cache_path):
+            os.unlink(cache_path)
+
+
+def test_incompatible_cache_is_replaced_when_teardown_fails():
+    cached_job = FailingKillJobTrait(compatible_specs=[])
+    cached_job.apply()
+
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        cache_path = tmp.name
+
+    try:
+        cached_job.dump(cache_path)
+        new_job = MockJobTrait(host_names=["workers"])
+
+        with patch("monarch._src.job.job.logger.warning") as warning:
+            state = new_job.state(cached_path=cache_path)
+
+        assert new_job.create_called
+        assert hasattr(state, "workers")
+        warning.assert_called_once()
+        assert warning.call_args.args[1] == {
+            "job_type": "FailingKillJobTrait",
+            "allocation_id": "test-allocation",
+        }
+        assert warning.call_args.kwargs == {"exc_info": True}
+        assert isinstance(job_load(cache_path), MockJobTrait)
+        assert not isinstance(job_load(cache_path), FailingKillJobTrait)
+    finally:
+        if os.path.exists(cache_path):
+            os.unlink(cache_path)
+
+
+def test_incompatible_cache_is_replaced_when_cleanup_context_fails():
+    cached_job = FailingCleanupContextJobTrait(compatible_specs=[])
+    cached_job.apply()
+
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        cache_path = tmp.name
+
+    try:
+        cached_job.dump(cache_path)
+        new_job = MockJobTrait(host_names=["workers"])
+
+        with patch("monarch._src.job.job.logger.warning") as warning:
+            state = new_job.state(cached_path=cache_path)
+
+        assert new_job.create_called
+        assert hasattr(state, "workers")
+        assert warning.call_count == 2
+        assert warning.call_args_list[1].args[1] == {
+            "job_type": "FailingCleanupContextJobTrait",
+        }
+        assert isinstance(job_load(cache_path), MockJobTrait)
+        assert not isinstance(job_load(cache_path), FailingCleanupContextJobTrait)
+    finally:
         if os.path.exists(cache_path):
             os.unlink(cache_path)
 
@@ -1172,6 +1245,41 @@ def test_batch_job_shares_component_runtime_with_wrapped_job():
     assert job_state.telemetry_url == "http://sidecar"
     assert job_state.admin_url == "http://localhost:1729"
     m.spawn_admin.assert_called_once()
+
+
+def test_batch_job_forwards_connection_input_rebind() -> None:
+    job = MockJobTrait(host_names=["hosts"])
+    job._rebind_connection_inputs = MagicMock()
+    batch = BatchJob(job)
+    spec = MockJobTrait(host_names=["hosts"])
+
+    batch._rebind_connection_inputs(spec)
+
+    job._rebind_connection_inputs.assert_called_once_with(spec)
+
+
+def test_batch_job_forwards_cleanup_log_context() -> None:
+    job = MockJobTrait(host_names=["hosts"])
+    job._cleanup_log_context = MagicMock(
+        return_value={"job_type": "MockJobTrait", "allocation_id": "test"}
+    )
+    batch = BatchJob(job)
+
+    assert batch._cleanup_log_context() == {
+        "job_type": "MockJobTrait",
+        "allocation_id": "test",
+    }
+    job._cleanup_log_context.assert_called_once_with()
+
+
+def test_mast_job_cleanup_log_context_includes_app_handle() -> None:
+    job = MASTJob.__new__(MASTJob)
+    job._app_handle = "mast_conda:///test-job"
+
+    assert job._cleanup_log_context() == {
+        "job_type": "MASTJob",
+        "app_handle": "mast_conda:///test-job",
+    }
 
 
 @contextlib.contextmanager
