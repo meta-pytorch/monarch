@@ -70,7 +70,9 @@ The bare `sqlite` command opens an ordinary in-memory SQLite shell:
 fbcode/monarch/bin/chrysalis sqlite
 ```
 
-Use an explicit file to retain the database after exit:
+The shell supports readline editing, persistent command history, multiline SQL,
+`.tables`, `.schema`, and `.quit`. Press Ctrl-C to discard the current input and
+Ctrl-D to exit. Use an explicit file to retain the database after exit:
 
 ```bash
 fbcode/monarch/bin/chrysalis sqlite repl /tmp/chrysalis.db
@@ -80,6 +82,8 @@ The shell supports multiline SQL, `.tables`, `.schema`, and `.quit`. It accesses
 an ordinary local SQLite database and does not join the process mesh; mesh
 options such as `--cluster`, `--carrier`, and `--identity` are rejected for
 SQLite commands.
+
+For example:
 
 ```sql
 CREATE TABLE items (
