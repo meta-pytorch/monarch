@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+mod admin;
 mod benchmark;
 mod mast;
 mod network_baseline;
@@ -25,6 +26,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Lists, adds, and inspects persistent scale experiments.
+    Experiments(admin::ExperimentsArgs),
+    /// Lists and inspects persistent scale nodes.
+    Nodes(admin::NodeArgs),
     /// Runs one rank inside a MAST task.
     Run(benchmark::RunArgs),
     /// Runs persistent, SQLite-driven experiment nodes inside a MAST task.
@@ -41,6 +46,8 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Experiments(args) => admin::experiments(args).await,
+        Command::Nodes(args) => admin::nodes(args).await,
         Command::Run(args) => benchmark::run(args).await,
         Command::Persist(args) => benchmark::persist(args).await,
         Command::Mast(args) => tokio::task::spawn_blocking(move || mast::run(args))
@@ -54,6 +61,66 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_experiment_commands() {
+        Cli::try_parse_from([
+            "chrysalis-scale",
+            "experiments",
+            "udp://127.0.0.1:26600",
+            "list",
+        ])
+        .expect("parse experiment list");
+        Cli::try_parse_from([
+            "chrysalis-scale",
+            "experiments",
+            "udp://127.0.0.1:26600",
+            "add",
+            "one-kib",
+            "42424242424242424242424242424242",
+            "10",
+            "1024",
+        ])
+        .expect("parse experiment add");
+        Cli::try_parse_from([
+            "chrysalis-scale",
+            "experiments",
+            "udp://127.0.0.1:26600",
+            "add-targeted",
+            "leaf-bandwidth",
+            "42424242424242424242424242424242",
+            "67108864",
+            "43434343434343434343434343434343",
+            "44444444444444444444444444444444",
+            "--kind",
+            "delivery",
+        ])
+        .expect("parse targeted delivery experiment add");
+        Cli::try_parse_from([
+            "chrysalis-scale",
+            "experiments",
+            "udp://127.0.0.1:26600",
+            "show",
+            "one-kib",
+        ])
+        .expect("parse experiment show");
+    }
+
+    #[test]
+    fn parses_node_commands() {
+        Cli::try_parse_from(["chrysalis-scale", "nodes", "udp://127.0.0.1:26600", "list"])
+            .expect("parse node list");
+        Cli::try_parse_from([
+            "chrysalis-scale",
+            "nodes",
+            "udp://127.0.0.1:26600",
+            "show",
+            "42424242424242424242424242424242",
+        ])
+        .expect("parse node show");
+        Cli::try_parse_from(["chrysalis-scale", "nodes", "mast://scale_job", "list"])
+            .expect("parse resolved node list");
+    }
 
     #[test]
     fn parses_scale_topologies() {
