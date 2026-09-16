@@ -409,6 +409,92 @@ The runtime-neutral quiche driver uses UDP-shaped addresses internally.
 process-local mapping between stable `DatagramAddr` values and synthetic IPv6
 addresses. The synthetic addresses never enter the namespace.
 
+### Life of a stream: direct peer path
+
+The lowest-overhead path applies when two nodes are directly UDP-reachable and
+use the io_uring backend. Assume that A already has an authenticated pooled QUIC
+connection to B. Opening another stream allocates a stream ID through the
+bounded command and completion queues; it sends no packet and performs no new
+TLS handshake. The first `send` makes the stream visible to B.
+
+This path bypasses `DatagramSwitch`, `Router`, carrier adaptation, and Tokio
+packet I/O. Tokio coordinates futures and completions, while one dedicated
+driver thread owns quiche and the UDP socket.
+
+```mermaid
+sequenceDiagram
+    participant AppA as Application A
+    participant TokioA as Tokio adapter A
+    participant DriverA as quiche driver A
+    participant UringA as io_uring UDP A
+    participant Network as Kernel and network
+    participant UringB as io_uring UDP B
+    participant DriverB as quiche driver B
+    participant TokioB as Tokio adapter B
+    participant AppB as Application B
+
+    Note over AppA,AppB: An authenticated pooled QUIC connection already exists
+    AppA->>TokioA: open stream
+    TokioA->>DriverA: command queue
+    DriverA-->>TokioA: stream ID completion
+    TokioA-->>AppA: Stream
+
+    AppA->>TokioA: send(Bytes)
+    TokioA->>DriverA: move Bytes through submission queue (no payload copy)
+    Note over DriverA: quiche retains and cheaply splits the same Bytes allocation
+    DriverA->>UringA: encrypt and assemble packets directly in a stable TX slot
+    UringA->>Network: sendmsg, optionally one GSO aggregate
+    Network->>UringB: recvmsg, optionally one GRO aggregate, into a stable RX slot
+    UringB->>DriverB: borrow each datagram slice (no packet-buffer copy)
+    Note over DriverB: decrypt and retain STREAM data for ordering and reassembly
+    DriverB-->>TokioB: incoming-stream completion
+    TokioB-->>AppB: accept Stream
+
+    AppB->>TokioB: receive(BytesMut)
+    TokioB->>DriverB: move caller allocation through submission queue (no copy)
+    DriverB->>DriverB: stream_recv copies ordered bytes into posted BytesMut
+    DriverB-->>TokioB: return the same BytesMut in a completion
+    TokioB-->>AppB: received bytes
+
+    DriverB->>UringB: assemble ACK directly in a TX slot
+    UringB->>Network: UDP ACK
+    Network->>UringA: receive ACK into RX slot
+    UringA->>DriverA: borrow ACK datagram
+    Note over DriverA: quiche releases retained Bytes after acknowledgement
+    DriverA-->>TokioA: acknowledged-send completion
+    TokioA-->>AppA: send future completes
+```
+
+The diagram distinguishes ownership transfer from copying. For one direction of
+steady-state application data, excluding NIC DMA and protocol metadata:
+
+1. The application gives `Bytes` ownership to the submission queue. The driver
+   wraps it in quiche's splittable send buffer, so queueing, segmentation,
+   retransmission, and acknowledgement tracking do not copy the plaintext.
+2. Quiche reads that plaintext while encrypting and packetizing directly into a
+   stable io_uring transmit slot. There is no intermediate packet buffer. UDP
+   GSO can place several equal-sized QUIC datagrams in that allocation and issue
+   one `sendmsg`.
+3. The ordinary UDP send path copies the transmit slot into the kernel. The
+   production path does not use `MSG_ZEROCOPY`; GSO reduces operations, not this
+   kernel-boundary copy.
+4. At B, the kernel writes directly into a stable receive slot. UDP GRO may put
+   several datagrams in one slot and one completion. The driver lends slices of
+   that allocation to quiche without first copying each packet.
+5. Quiche decrypts the packet and copies STREAM payload into its ordered
+   reassembly storage. This copy is required because QUIC packets may arrive
+   out of order, overlap, or outlive the reusable receive slot.
+6. The application posts a `BytesMut`; quiche copies ordered stream bytes into
+   its spare capacity. The completion returns that same allocation, so the
+   completion queue and Tokio adapter add no payload copy.
+
+Thus, the optimized send side has no plaintext queue or retransmission copy and
+one encryption/packet-assembly write. The receive side has no intermediate
+packet copy, followed by one copy into QUIC reassembly storage and one copy into
+the caller's buffer. Stable slots, ownership-moving queues, GSO/GRO, pooled
+connections, and a dedicated driver thread remove the other copies, syscalls,
+handshakes, and scheduler crossings from the steady-state path.
+
 ### Authentication
 
 Connections are expected to use mutual TLS. After quiche applies the embedder's
