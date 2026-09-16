@@ -168,6 +168,15 @@ name = "chrysalis-core"
 version = "0.0.0"
 
 [[package]]
+name = "chrysalis-nameserver"
+version = "0.0.0"
+dependencies = [
+ "chrysalis-core",
+ "chrysalis-transport",
+ "thiserror",
+]
+
+[[package]]
 name = "chrysalis-transport"
 version = "0.0.0"
 dependencies = [
