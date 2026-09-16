@@ -6,9 +6,11 @@
 
 # pyre-strict
 
+import copy
+import os
 import pickle
 import unittest
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 from kubernetes import config as k8s_config
@@ -23,6 +25,7 @@ from kubernetes.client import (
     V1PodTemplateSpec,
 )
 from kubernetes.client.rest import ApiException
+from monarch._src.job.job import LocalJob
 from monarch._src.job.kubernetes import (
     _DEFAULT_MONARCH_PORT,
     _MONARCHMESH_GROUP,
@@ -660,6 +663,133 @@ users: []
             with self.assertRaises(RuntimeError, msg="kubeconfig"):
                 KubeConfig.from_path(kubeconfig.name).load()
 
+    def test_copy_preserves_in_memory_config(self) -> None:
+        kubeconfig = KubeConfig.from_config(MagicMock())
+
+        copied = copy.deepcopy(kubeconfig)
+
+        self.assertIsNotNone(copied.remote)
+        self.assertFalse(copied._requires_rebind)
+
+
+class TestSerialization(unittest.TestCase):
+    @patch("monarch._src.job.kubernetes.configure")
+    def test_runtime_state_is_not_pickled(self, mock_configure: MagicMock) -> None:
+        job = KubernetesJob(
+            namespace="test-ns",
+            kubeconfig=KubeConfig.from_path("/tmp/kubeconfig"),
+        )
+        job.add_mesh("workers", 1, image_spec=ImageSpec("image"))
+        job._status = "running"
+        job._service_proc_ids["workers"] = KubernetesJob._allocate_service_proc_ids(1)
+        job._prepared_mesh_pods = {
+            "workers": [_MonarchMeshPod(name="workers-0", ip="10.0.0.1", port=26600)]
+        }
+        forward = MagicMock()
+        job._port_forward_processes = [forward]
+
+        restored = pickle.loads(pickle.dumps(job))
+
+        self.assertIs(job._port_forward_processes[0], forward)
+        self.assertIsNone(restored._prepared_mesh_pods)
+        self.assertEqual(restored._port_forward_processes, [])
+        self.assertEqual(restored._service_proc_ids, job._service_proc_ids)
+        mock_configure.assert_called()
+
+    @patch("monarch._src.job.kubernetes.configure")
+    def test_in_memory_config_cache_requires_current_spec(
+        self, mock_configure: MagicMock
+    ) -> None:
+        live_config = MagicMock()
+        job = KubernetesJob(
+            namespace="test-ns",
+            kubeconfig=KubeConfig.from_config(live_config),
+        )
+
+        with self.assertLogs(
+            "monarch._src.job.kubernetes", level="WARNING"
+        ) as captured:
+            restored = pickle.loads(pickle.dumps(job))
+
+        self.assertIs(job._kubeconfig.remote, live_config)
+        self.assertIsNone(restored._kubeconfig.remote)
+        self.assertTrue(restored._kubeconfig.out_of_cluster)
+        self.assertNotEqual(restored._kubeconfig, KubeConfig())
+        self.assertEqual(len(captured.output), 1)
+        self.assertIn(
+            "omitting process-local Kubernetes configuration", captured.output[0]
+        )
+        self.assertIn("KubeConfig.from_path()", captured.output[0])
+        with self.assertRaisesRegex(RuntimeError, "requires the current job spec"):
+            restored._kubeconfig.load()
+
+    @patch("monarch._src.job.kubernetes.configure")
+    def test_incompatible_local_spec_evicts_unusable_remote_cache(
+        self, mock_configure: MagicMock
+    ) -> None:
+        cached = KubernetesJob(
+            namespace="test-ns",
+            kubeconfig=KubeConfig.from_config(MagicMock()),
+        )
+        cached.add_mesh("workers", 1, image_spec=ImageSpec("image"))
+        cached._status = "running"
+
+        with TemporaryDirectory() as directory:
+            cache_path = f"{directory}/job.pkl"
+            cached.dump(cache_path)
+
+            with self.assertLogs("monarch._src.job.job", level="WARNING") as captured:
+                result = LocalJob()._load_cached(cache_path)
+
+            self.assertIsNone(result)
+            self.assertFalse(os.path.exists(cache_path))
+            self.assertIn("'namespace': 'test-ns'", captured.output[0])
+            self.assertIn("'monarch_meshes': ['workers']", captured.output[0])
+
+    @patch("monarch._src.job.kubernetes.configure")
+    def test_cache_hit_rebinds_current_connection_inputs_before_can_run(
+        self, mock_configure: MagicMock
+    ) -> None:
+        cached_config = MagicMock()
+        cached = KubernetesJob(
+            namespace="test-ns",
+            timeout=1,
+            kubeconfig=KubeConfig.from_config(cached_config),
+            attach_to="tcp://old:1234",
+        )
+        cached.add_mesh("workers", 1, image_spec=ImageSpec("image"))
+        cached._status = "running"
+        service_proc_ids = KubernetesJob._allocate_service_proc_ids(1)
+        cached._service_proc_ids["workers"] = service_proc_ids
+
+        current_config = MagicMock()
+        spec = KubernetesJob(
+            namespace="test-ns",
+            timeout=99,
+            kubeconfig=KubeConfig.from_config(current_config),
+            attach_to="tcp://new:5678",
+        )
+        spec.add_mesh("workers", 1, image_spec=ImageSpec("image"))
+
+        def can_run(running: KubernetesJob, current: KubernetesJob) -> bool:
+            self.assertIs(current, spec)
+            self.assertIs(running._kubeconfig, spec._kubeconfig)
+            self.assertEqual(running._attach_to, "tcp://new:5678")
+            self.assertEqual(running._timeout, 99)
+            return True
+
+        with TemporaryDirectory() as directory:
+            cache_path = f"{directory}/job.pkl"
+            cached.dump(cache_path)
+            with patch.object(KubernetesJob, "can_run", autospec=True) as mock_can_run:
+                mock_can_run.side_effect = can_run
+                restored = spec._load_cached(cache_path)
+
+        self.assertIsNotNone(restored)
+        assert isinstance(restored, KubernetesJob)
+        self.assertIs(restored._kubeconfig, spec._kubeconfig)
+        self.assertEqual(restored._service_proc_ids["workers"], service_proc_ids)
+
 
 class TestIsPodWorkerReady(unittest.TestCase):
     """Tests for KubernetesJob._is_pod_worker_ready."""
@@ -1009,13 +1139,8 @@ class TestKill(unittest.TestCase):
     def test_kill_attach_only_raises_not_implemented(self) -> None:
         job = self._make_job()
         job.add_mesh("workers", num_replicas=1)
-        job._client_attached_to = "tcp://127.0.0.1:45678"
         with self.assertRaises(NotImplementedError):
             job._kill()
-        self.assertEqual(
-            job._client_attached_to,
-            "tcp://127.0.0.1:45678",
-        )
 
     @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
     @patch("monarch._src.job.kubernetes.config.load_incluster_config")
@@ -1442,7 +1567,6 @@ class TestStateOutOfCluster(unittest.TestCase):
 
         def prepare_client_gateway() -> None:
             events.append("prepare")
-            job._client_attached_to = "tcp://127.0.0.1:45678"
 
         def materialize_state() -> MagicMock:
             events.append("state")
@@ -1467,6 +1591,10 @@ class TestStateOutOfCluster(unittest.TestCase):
             patch(
                 "monarch._src.job.job.create_job_sidecar",
                 side_effect=lambda *_args, **_kwargs: events.append("sidecar"),
+            ) as create_sidecar,
+            patch(
+                "monarch._src.job.job._client_attached_to",
+                return_value="tcp://127.0.0.1:45678",
             ),
         ):
             host_meshes = job._connect_host_meshes(job)
@@ -1476,7 +1604,10 @@ class TestStateOutOfCluster(unittest.TestCase):
             ["prepare", "sidecar", "before_connect", "state", "connect"],
         )
         self.assertEqual(host_meshes, {"mesh1": raw_host})
-        self.assertEqual(job._sidecar_attach_to(), "tcp://127.0.0.1:45678")
+        self.assertEqual(
+            create_sidecar.call_args.kwargs["attach_to"],
+            "tcp://127.0.0.1:45678",
+        )
 
 
 if __name__ == "__main__":
