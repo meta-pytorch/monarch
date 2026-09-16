@@ -171,8 +171,15 @@ version = "0.0.0"
 name = "chrysalis-transport"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "chrysalis-core",
+ "chrysalis-transport-core",
+ "chrysalis-transport-quiche",
+ "chrysalis-transport-tokio",
+ "chrysalis-transport-uring",
  "libc",
+ "quiche",
+ "thiserror",
  "tokio",
 ]
 
