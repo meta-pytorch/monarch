@@ -16,7 +16,10 @@ use chrysalis_transport::DatagramAddr;
 #[path = "labels.rs"]
 mod labels;
 
+pub use labels::KeyError;
 pub use labels::LabelError;
+pub use labels::LabelKey;
+pub use labels::LabelValue;
 pub use labels::Labels;
 
 /// The first Chrysalis nameserver protocol version.
@@ -26,7 +29,6 @@ pub const VERSION_1: ProtocolVersion = ProtocolVersion::new(1);
 pub const VERSION_2: ProtocolVersion = ProtocolVersion::new(2);
 
 /// Adds Kubernetes-style process labels to namespace entries.
-#[expect(dead_code, reason = "reserved until version 3 negotiation is enabled")]
 pub const VERSION_3: ProtocolVersion = ProtocolVersion::new(3);
 
 /// A negotiated nameserver protocol version.
