@@ -3001,6 +3001,10 @@ impl<A: Actor> Instance<A> {
         let actor_id = self.inner.cell.actor_addr().clone();
         let actor_handle = ActorHandle::new(self.inner.cell.clone(), self.inner.ports.clone());
 
+        // This early bind is a performance optimization: posting through an unbound
+        // mailbox captures a diagnostic stack while creating its return handle.
+        self.inner.ports.bind::<Undeliverable<MessageEnvelope>>();
+
         // Spawn the introspect task — a separate tokio task that
         // reads InstanceCell directly and replies through the owning Proc. The
         // actor loop never sees IntrospectMessage.
@@ -5036,6 +5040,32 @@ mod tests {
 
     impl Actor for TestActor {}
 
+    #[derive(Debug)]
+    struct InitUndeliverableActor {
+        dest: PortRef<()>,
+        observed: Option<OncePortRef<()>>,
+    }
+
+    #[async_trait]
+    impl Actor for InitUndeliverableActor {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            self.dest.post(this, ());
+            Ok(())
+        }
+
+        async fn handle_delivery_failure_event(
+            &mut self,
+            this: &Instance<Self>,
+            _undeliverable: Undeliverable<MessageEnvelope>,
+        ) -> anyhow::Result<()> {
+            self.observed
+                .take()
+                .expect("delivery failure should only be reported once")
+                .post(this, ());
+            Ok(())
+        }
+    }
+
     struct ActorStatusSink {
         actor_id: u64,
         sender: std_mpsc::Sender<ActorStatusEvent>,
@@ -5192,6 +5222,28 @@ mod tests {
 
         let status = get_status(&client, handle.actor_addr()).await;
         assert_eq!(status, Some(ActorStatus::Idle));
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawn_binds_undeliverable_port_before_init() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (dest, dest_rx) = client.open_port::<()>();
+        let (observed, observed_rx) = client.open_once_port::<()>();
+        drop(dest_rx);
+
+        let handle = proc.spawn(InitUndeliverableActor {
+            dest: dest.bind(),
+            observed: Some(observed.bind()),
+        });
+
+        observed_rx
+            .recv()
+            .await
+            .expect("actor should receive the delivery failure from its init post");
 
         handle.drain_and_stop("test").unwrap();
         handle.await;
