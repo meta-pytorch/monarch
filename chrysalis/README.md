@@ -39,7 +39,7 @@ need the stable installed host identity. It also supports delegated `certreq`
 issuance with MAST CATs. The scale benchmark uses the delegated path to host many
 independent nodes in one task.
 
-The pure-Rust [`chrysalis-scale`](../chrysalis-scale/README.md) benchmark builds
+The pure-Rust [`chrysalis-scale`](crates/chrysalis-scale/README.md) benchmark builds
 and optionally launches MAST ablations at 1K, 10K, and 100K nodes. It measures
 full namespace join followed by a one-byte framed echo on a new stream to every
 child.
@@ -70,7 +70,7 @@ The bare `sqlite` command opens an ordinary in-memory SQLite shell:
 fbcode/monarch/chrysalis/bin/chrysalis sqlite
 ```
 
-Use an explicit file to retain the local replica after exit:
+Use an explicit file to retain the database after exit:
 
 ```bash
 fbcode/monarch/chrysalis/bin/chrysalis sqlite repl /tmp/chrysalis.db
@@ -86,6 +86,8 @@ CREATE TABLE items (
   id INTEGER PRIMARY KEY NOT NULL,
   value TEXT NOT NULL
 );
+INSERT INTO items VALUES (1, 'hello');
+SELECT * FROM items;
 ```
 
 Replicated applications use `chrysalis-sqlite` directly. They register trusted
