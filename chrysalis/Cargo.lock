@@ -174,6 +174,7 @@ dependencies = [
  "chrysalis-core",
  "chrysalis-transport",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
