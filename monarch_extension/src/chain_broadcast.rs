@@ -36,12 +36,17 @@ use std::time::Duration;
 use std::time::Instant;
 
 use bytes::Bytes;
+use hyperactor::Endpoint as _;
+use hyperactor::PortAddr;
+use hyperactor::PortRef;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelRx;
 use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
+use hyperactor::mailbox::PortReceiver;
+use monarch_hyperactor::context::PyInstance;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -218,16 +223,56 @@ struct PyCtx {
     ctx: Arc<Ctx>,
 }
 
-/// A bound listener for the predecessor to dial. Holds the receive end until
-/// [`forward`] consumes it to run the relay.
+/// Where a node's chunks arrive from.
+///
+/// Interior nodes are dialed by their predecessor -- one multi-stream `channel::serve`
+/// listener, the fast in-cluster path. The head cannot be: its predecessor is the client,
+/// which may reach the mesh only through a scheduler gateway, and a raw `channel::dial` is
+/// not gateway-routed. A mailbox port is.
+///
+/// Both yield the same `Chunk`, so [`forward`] and everything downstream of it -- the
+/// relay, the ctx, block assembly -- are identical either way.
+enum ChunkSource {
+    Channel(ChannelRx<Chunk>),
+    Port(PortReceiver<Chunk>),
+}
+
+impl ChunkSource {
+    /// Next chunk, or `None` at end-of-stream.
+    ///
+    /// The variants differ in a way that matters for the head. A `ChannelRx` ends as soon
+    /// as the predecessor's connection drops, so the relay exits and `mark_closed()` wakes
+    /// a parked `ctx_wait_into`. A bound `PortReceiver` ends only when every sender is
+    /// gone, and the binding keeps one alive for the actor's lifetime -- so a client that
+    /// disconnects, or simply stops sending, produces no end-of-stream at all.
+    ///
+    /// Accepted consequence: the head's relay runs until proc exit and holds its successor
+    /// session open, and a head-side `ctx_wait_into` falls back to its timeout instead of
+    /// being woken by predecessor loss. A port has no connection to lose, so "the
+    /// predecessor is gone" is not observable. Interior nodes keep the prompt behaviour.
+    async fn recv(&mut self) -> Option<Chunk> {
+        match self {
+            ChunkSource::Channel(rx) => rx.recv().await.ok(),
+            ChunkSource::Port(rx) => rx.recv().await.ok(),
+        }
+    }
+}
+
+/// A node's bound receive endpoint -- a dialable listener, or a mailbox port for the
+/// head (see [`serve_port`]). Holds the receive end until [`forward`] consumes it to
+/// run the relay.
 #[pyclass(
     name = "ChainServer",
     module = "monarch._rust_bindings.monarch_extension.chain_broadcast"
 )]
 struct PyChainServer {
+    /// Where the predecessor sends. A channel address for a listener-backed server, a
+    /// port address for a port-backed one -- both rendered as strings, so a caller
+    /// distributes this without caring which kind it got, exactly as the module already
+    /// exchanges channel addresses.
     #[pyo3(get)]
     addr: String,
-    rx: Option<ChannelRx<Chunk>>,
+    rx: Option<ChunkSource>,
 }
 
 /// A persistent connection to a successor (or the chain head), reused for every
@@ -280,7 +325,7 @@ fn serve(bind_addr: Option<String>) -> PyResult<PyChainServer> {
         .map_err(|e| PyRuntimeError::new_err(format!("serve failed: {e}")))?;
     Ok(PyChainServer {
         addr: addr.to_string(),
-        rx: Some(rx),
+        rx: Some(ChunkSource::Channel(rx)),
     })
 }
 
@@ -374,7 +419,7 @@ fn forward(
         }
     };
     runtime.spawn(async move {
-        while let Ok(chunk) = rx.recv().await {
+        while let Some(chunk) = rx.recv().await {
             // Forward first so the successor starts receiving while we write
             // locally -- the temporal pipeline that makes the chain fast.
             if let Some(tx) = &succ_tx {
@@ -443,14 +488,103 @@ macro_rules! add_fn {
     }};
 }
 
+/// Bind the chain HEAD's receive endpoint as a mailbox port, for a predecessor that
+/// cannot dial this worker directly.
+///
+/// A `channel::dial` is point-to-point, so a client reaching the mesh only through a
+/// scheduler gateway can never reach a `serve`d listener. A mailbox post is handed to the
+/// proc's forwarder, which is exactly the layer `channel::dial` bypasses.
+///
+/// Only the head needs this; interior hops stay on [`serve`]'s multi-stream listener,
+/// which is faster and routable in cluster. The returned `port_id` is picklable, and
+/// `Chunk` rides the mailbox unchanged -- multipart keeps the payload out of band, so
+/// forwarding is still a refcount bump.
+#[pyfunction]
+fn serve_port(instance: &PyInstance) -> PyResult<PyChainServer> {
+    let (handle, rx) = instance.open_port::<Chunk>();
+    let port_ref = handle.bind();
+    Ok(PyChainServer {
+        addr: port_ref.port_addr().to_string(),
+        rx: Some(ChunkSource::Port(rx)),
+    })
+}
+
+/// Check that `addr` names a well-formed port, and raise if not.
+///
+/// `send_block_to_port` posts fire-and-forget, so a malformed head address would otherwise
+/// go unnoticed until the receiver's completion timeout, one block later and far from the
+/// cause. Callers validate once at wiring time instead -- restoring the failure point the
+/// old `connect()` gave them.
+#[pyfunction]
+fn validate_port_addr(addr: &str) -> PyResult<()> {
+    let _: PortAddr = addr
+        .parse()
+        .map_err(|e| PyRuntimeError::new_err(format!("bad port addr {addr}: {e}")))?;
+    Ok(())
+}
+
+/// Stripe `buf` into `chunk_size`-byte frames and post them to the head's mailbox port.
+/// The [`send_block`] counterpart for a source that cannot dial the head.
+///
+/// Same zero-copy discipline as [`send_block`]: the block is wrapped once as a shared
+/// `Bytes` and each chunk is a slice of it, so the source never copies the payload.
+#[pyfunction]
+fn send_block_to_port(
+    py: Python<'_>,
+    instance: &PyInstance,
+    port: &str,
+    data: &Bound<'_, PyBytes>,
+    chunk_size: usize,
+    tag: u64,
+) -> PyResult<usize> {
+    // `attest` is unchecked: the receiving port must be one minted by `serve_port`, i.e.
+    // typed `Chunk`. Pointing this at any other port is a decode error on delivery.
+    //
+    // Posting is fire-and-forget, like `send_block` -- `Endpoint::post` returns `()`, so a
+    // bad address cannot be reported here and this always returns `total`. It is not
+    // swallowed, though: `attest` leaves `return_undeliverable` set, so an unroutable
+    // chunk comes back to this actor as a delivery failure. What the CALLER sees first is
+    // still the downstream `ctx_wait_into` timeout, so check the sender's delivery-failure
+    // log before suspecting the chain. There is likewise no flow control: a whole block's
+    // chunks are queued into the forwarder as fast as they are sliced.
+    let port_addr: PortAddr = port
+        .parse()
+        .map_err(|e| PyRuntimeError::new_err(format!("bad port addr {port}: {e}")))?;
+    let port_ref = PortRef::<Chunk>::attest(port_addr);
+    let owned = monarch_hyperactor::buffers::py_bytes_to_bytes(data.clone().unbind());
+    let total = owned.len();
+    let chunk_size = chunk_size.max(1);
+    let instance = instance.clone();
+    py.detach(|| {
+        let mut offset = 0usize;
+        while offset < total {
+            let end = (offset + chunk_size).min(total);
+            (&port_ref).post(
+                &*instance,
+                Chunk {
+                    tag,
+                    offset: offset as u64,
+                    total: total as u64,
+                    data: Part::from(owned.slice(offset..end)),
+                },
+            );
+            offset = end;
+        }
+    });
+    Ok(total)
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyCtx>()?;
     module.add_class::<PyChainServer>()?;
     module.add_class::<PyChainSession>()?;
     add_fn!(module, new_ctx);
     add_fn!(module, serve);
+    add_fn!(module, serve_port);
     add_fn!(module, connect);
     add_fn!(module, send_block);
+    add_fn!(module, send_block_to_port);
+    add_fn!(module, validate_port_addr);
     add_fn!(module, forward);
     add_fn!(module, ctx_wait_into);
     add_fn!(module, ctx_close);

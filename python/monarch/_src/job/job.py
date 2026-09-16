@@ -463,7 +463,13 @@ class JobTrait(ABC):
         the raw host meshes (``self``, a cached job, or the wrapped
         CachedRunning job).
         """
-        if running_job._requires_sidecar_gateway() and self._components.needs_sidecar():
+        # Resolved once, from the job that materializes the host meshes, and used for both
+        # decisions below -- starting the sidecar through the gateway, and telling the
+        # mounts they cannot dial the workers. Asking twice risks the two disagreeing on a
+        # cached job, where `running_job` is a deserialized copy rather than `self`, and
+        # the broken combination is a sidecar behind a gateway whose mounts still dial.
+        via_gateway = running_job._requires_sidecar_gateway()
+        if via_gateway and self._components.needs_sidecar():
             # The sidecar runs in a separate process, so attaching the client
             # does not make cluster-only worker addresses routable from the
             # sidecar. Start it through the same scheduler gateway before any
@@ -477,7 +483,7 @@ class JobTrait(ABC):
                 )
         self._components.before_connect(self)
         host_meshes = dict(running_job._state()._hosts)
-        return self._components.connect(self, host_meshes)
+        return self._components.connect(self, host_meshes, via_gateway)
 
     def enable_telemetry(
         self,

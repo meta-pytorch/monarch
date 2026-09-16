@@ -32,6 +32,12 @@ class RemoteMountEntry:
     mntpoint: Optional[str] = None
     meshes: Optional[List[str]] = None
     kwargs: dict = field(default_factory=dict)
+    # Whether the process opening this mount reaches the workers only through a
+    # scheduler gateway, and so cannot dial the broadcast chain's head. Set by
+    # `Mounts.ensure_open` from the job's answer; it lives on the entry because the entry
+    # is already what is pickled to the sidecar and what constructs the mount. False means
+    # the client can dial directly.
+    via_gateway: bool = False
 
     def apply(self, host_meshes: Mapping[str, HostMesh]) -> "list[Any]":
         """Open the remote mount for each targeted mesh. Returns handles.
@@ -48,7 +54,7 @@ class RemoteMountEntry:
             handler = _remotemount(
                 raw_mesh, self.source, mntpoint=self.mntpoint, **self.kwargs
             )
-            handler.open()
+            handler.open(self.via_gateway)
             handles.append(handler)
         return handles
 
@@ -132,7 +138,12 @@ class Mounts:
         """Open all mounts against *host_meshes* and return the live handle."""
         return MountsHandle(self, host_meshes)
 
-    def ensure_open(self, apply_id: str, host_meshes: Mapping[str, HostMesh]) -> None:
+    def ensure_open(
+        self,
+        apply_id: str,
+        host_meshes: Mapping[str, HostMesh],
+        via_gateway: bool = False,
+    ) -> None:
         """Ensure a background job sidecar is running for this configuration.
 
         Keyed on ``apply_id``: reuses an existing process, then sends a refresh
@@ -146,6 +157,10 @@ class Mounts:
             return
 
         guard = create_job_sidecar(apply_id)
+        # Stamped here, not at `remote_mount()` time: the answer depends on the running
+        # job's scheduler, which is not known when the mount is declared.
+        for entry in self._remote_entries:
+            entry.via_gateway = via_gateway
         guard.send(MountsRequest(self, dict(host_meshes))).get()
 
 

@@ -24,6 +24,7 @@ from typing import cast, Dict, Optional, Sequence
 from unittest.mock import MagicMock, patch
 
 import monarch._src.job._job_sidecar_worker as js_worker
+import monarch._src.job.job_components as jc
 import monarch._src.job.job_sidecar as js
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId, Uid
@@ -372,6 +373,64 @@ def test_run_job_sidecar_attaches_gateway_once_before_serving():
 
     attach.assert_called_once_with("tcp://127.0.0.1:45678")
     server.bind.assert_called_once_with("/tmp/socket")
+
+
+def test_mount_entries_carry_whether_the_sidecar_can_dial_the_workers():
+    """The job answers "can the sidecar reach the workers directly?", because it is the
+    only thing that knows its scheduler -- the sidecar does not re-derive it.
+
+    It is stamped onto the entries, which is what already crosses to the sidecar inside
+    the request and what already constructs the mount, so nothing in between needs to
+    carry it. It has to survive that trip: a value that did not travel would silently
+    leave the broadcast chain dialing a head it cannot reach.
+    """
+    for via_gateway in (False, True):
+        mounts = Mounts()
+        mounts.remote_mount("/tmp/source")
+        guard = MagicMock()
+
+        with patch(
+            "monarch._src.job.mount_config.create_job_sidecar", return_value=guard
+        ):
+            mounts.ensure_open("apply_id", {}, via_gateway)
+
+        request = guard.send.call_args.args[0]
+        # @lint-ignore PYTHONPICKLEISBAD
+        delivered = pickle.loads(pickle.dumps(request))
+        assert [e.via_gateway for e in delivered.mounts._remote_entries] == [
+            via_gateway
+        ]
+
+
+def test_gateway_answer_comes_from_the_job_that_materializes_the_meshes():
+    """One source for the answer, because two can disagree.
+
+    The sidecar is started through the gateway based on the job that materializes the host
+    meshes, and for a cached job that is a deserialized copy rather than the object the
+    caller holds. Resolving the answer separately for the mounts risked a sidecar behind a
+    gateway whose mounts still try to dial -- so it is resolved once and passed down.
+    """
+    seen = []
+
+    class Probe(jc.JobComponent):
+        def connect(self, job, host_meshes, via_gateway=False):
+            seen.append(via_gateway)
+            return host_meshes
+
+    for answer in (False, True):
+        seen.clear()
+        components = jc.JobComponents()
+        components.admin = Probe()
+        components.connect(MagicMock(), {}, answer)
+        assert seen == [answer]
+
+
+def test_mount_entries_default_to_dialable():
+    """Absent means "can dial directly" -- the in-cluster case, and the right answer for
+    anyone driving ``Mounts`` without a scheduler gateway."""
+    mounts = Mounts()
+    mounts.remote_mount("/tmp/source")
+    assert mounts._remote_entries[0].via_gateway is False
 
 
 def test_run_job_sidecar_manages_mount_lifecycle():
@@ -924,7 +983,10 @@ def test_lifecycle_component_hooks_use_job_context():
             )
 
         def connect(
-            self, job: JobTrait, host_meshes: Dict[str, HostMesh]
+            self,
+            job: JobTrait,
+            host_meshes: Dict[str, HostMesh],
+            via_gateway: bool = False,
         ) -> Dict[str, HostMesh]:
             self.jobs.append(job)
             self.events.append(
@@ -994,7 +1056,10 @@ def test_batch_job_runs_component_lifecycle_on_wrapped_job():
             self.events.append("before_connect")
 
         def connect(
-            self, job: JobTrait, host_meshes: Dict[str, HostMesh]
+            self,
+            job: JobTrait,
+            host_meshes: Dict[str, HostMesh],
+            via_gateway: bool = False,
         ) -> Dict[str, HostMesh]:
             self.jobs.append(job)
             self.events.append("connect")

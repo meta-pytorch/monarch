@@ -1769,9 +1769,14 @@ class TestStateOutOfCluster(unittest.TestCase):
         job._components.before_connect.side_effect = lambda _job: events.append(
             "before_connect"
         )
-        job._components.connect.side_effect = (
-            lambda _job, host_meshes: events.append("connect") or host_meshes
-        )
+        connect_via_gateway = []
+
+        def connect(_job, host_meshes, via_gateway):
+            events.append("connect")
+            connect_via_gateway.append(via_gateway)
+            return host_meshes
+
+        job._components.connect.side_effect = connect
 
         with (
             patch.object(
@@ -1800,6 +1805,12 @@ class TestStateOutOfCluster(unittest.TestCase):
             create_sidecar.call_args.kwargs["attach_to"],
             "tcp://127.0.0.1:45678",
         )
+        # Components are told the same thing the sidecar bootstrap above is gated on --
+        # out of cluster, the workers advertise addresses this client cannot reach
+        # directly. The event order already implies it, since "prepare" and "sidecar" run
+        # only when it holds; this pins the value the components actually receive, so the
+        # two cannot drift apart.
+        self.assertEqual(connect_via_gateway, [True])
 
 
 if __name__ == "__main__":

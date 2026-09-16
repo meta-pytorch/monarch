@@ -233,9 +233,15 @@ def test_store_job_defers_attach_until_state() -> None:
     )
     assert state.monarch_worker is host_mesh
     assert job.apply_id is not None
+    # The third argument is the job's answer to "must this reach the workers through a
+    # scheduler gateway?". `StoreJob` does not override it, so it takes the base answer of
+    # False -- correct here, since its workers are locally spawned and `ipc://`-addressed,
+    # i.e. reachable without one. Pinned so that acquiring gateway semantics by accident
+    # would fail rather than pass silently.
     ensure_mounts_open.assert_called_once_with(
         job.apply_id,
         {"monarch_worker": host_mesh},
+        False,
     )
 
 

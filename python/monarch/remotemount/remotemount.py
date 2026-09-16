@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-ignore-all-errors
+# pyre-unsafe
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch.actor import Actor, endpoint
+from pyre_extensions import none_throws
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -37,9 +38,9 @@ BLOCK_SIZE: int = 64 * 1024 * 1024
 # 32 KiB) overtakes the gain. Validated as the default across 1..1024 hosts.
 CBC_CHUNK: int = 64 * 1024
 
-# Number of parallel streams per chain hop. The client passes this to BOTH its head
-# dial and every worker's ``forward`` (chosen once at ``open``), so one value tunes
-# the whole chain; the Rust ``NUM_CBC_STREAMS`` pyo3 default is only the fallback for
+# Number of parallel streams per chain hop. Chosen once at ``open`` and passed to every
+# worker's ``forward``, and to the client's head dial when it has one (the mailbox-port
+# transport has no dial, so it takes no stream count), so one value tunes the chain; the Rust ``NUM_CBC_STREAMS`` pyo3 default is only the fallback for
 # callers that omit the argument (this path always passes it explicitly). More
 # streams fill a fatter cross-DC pipe (N congestion windows summing toward the
 # bandwidth-delay product), fewer cut per-stream ramp overhead. 128 is the measured
@@ -417,42 +418,78 @@ class FUSEActor(Actor):
         self._fuse_handle.refresh(meta, meta["/"]["total_size"])
 
     @endpoint
-    def cbc_listen(self, bind_addr: str | None = None):
-        """Bind this worker's chain listener (ephemeral port) and create its recv ctx.
-        Returns ``(rank, addr)`` so ``open`` can order the workers into a chain. The
-        rank is the actor's LINEAR rank, not a coordinate: it is dense over the mesh
-        (so it indexes ``addrs`` directly) and it is defined even for a mesh with no
-        named dimensions, which is what ``spawn_procs()`` yields without ``per_host``.
-        ``bind_addr`` chooses the transport: ``None`` defers to monarch's process-wide
-        default transport (the ``default_transport`` / ``HYPERACTOR_MESH_DEFAULT_TRANSPORT``
-        knob), which in cluster is metatls -- reusing monarch's own x509 identity, no cert
-        paths to read; an OSS / test caller flips that knob to e.g. tcp, or passes an
-        explicit hyperactor channel address here (e.g. ``tcp![::]:0``)."""
+    def cbc_listen(self, bind_addr: str | None = None, via_gateway: bool = False):
+        """Bind this worker's chain receive endpoint and create its recv ctx. Returns
+        ``(rank, addr)`` so ``open`` can order the workers into a chain. The rank is the
+        actor's LINEAR rank, not a coordinate: it is dense over the mesh (so it indexes
+        ``addrs`` directly) and it is defined even for a mesh with no named dimensions,
+        which is what ``spawn_procs()`` yields without ``per_host``.
+
+        ``via_gateway`` says the chain SOURCE (the client) cannot dial into the cluster,
+        so the head must receive over a mailbox port instead of a listener. Only the head
+        is affected; see below.
+
+        ``bind_addr`` chooses the transport of the LISTENER. ``None`` defers
+        to monarch's process-wide default transport (the ``default_transport`` /
+        ``HYPERACTOR_MESH_DEFAULT_TRANSPORT`` knob), which in cluster is metatls -- reusing
+        monarch's own x509 identity, no cert paths to read; an OSS / test caller flips that
+        knob to e.g. tcp, or passes an explicit hyperactor channel address here (e.g.
+        ``tcp![::]:0``)."""
         from monarch._rust_bindings.monarch_extension.chain_broadcast import (
             new_ctx,
             serve,
+            serve_port,
         )
         from monarch.actor import context
 
-        rank = context().actor_instance.rank.rank
-        self._cbc_server = serve(bind_addr)
+        instance = context().actor_instance
+        rank = instance.rank.rank
+        # The head binds a mailbox port only when its predecessor -- the client -- cannot
+        # dial it: a raw dial is point-to-point and is not routed through a scheduler
+        # gateway, while a mailbox post is.
+        #
+        # Not the default, because the transports are not equivalent. A listener is a
+        # socket the client dials itself, so it can tune congestion control immediately
+        # beforehand; a mailbox port rides a connection opened long before, which no later
+        # `configure()` can retune. Using the port unconditionally would push that onto
+        # in-cluster jobs that never needed a gateway.
+        #
+        # Every other rank keeps its listener: its predecessor is a worker, so a direct
+        # dial is routable and cheaper than store-and-forward. Both publish ``addr``, so
+        # callers distribute it without caring which they got.
+        head_needs_port = rank == 0 and via_gateway
+        self._cbc_server = (
+            serve_port(instance._as_rust()) if head_needs_port else serve(bind_addr)
+        )
         self._cbc_ctx = new_ctx(BLOCK_SIZE)
         return rank, self._cbc_server.addr
 
     @endpoint
     def cbc_start(self, addrs, num_streams: int = CBC_STREAMS) -> None:
         """Start this worker's chain relay. ``addrs`` is the full rank-ordered list of
-        worker listener addresses; this worker forwards each chunk to its successor
-        (the next rank, or ``None`` if it is the tail) the instant it lands, and
-        delivers it into the recv ctx. ``num_streams`` is how many parallel streams
-        this node opens to its successor (the client picks it at open, so the whole
-        chain uses one tuned value). Runs on the tokio runtime; returns at once."""
+        receive addresses from ``cbc_listen``; this worker forwards each chunk to its
+        successor (the next rank, or ``None`` if it is the tail) the instant it lands, and
+        delivers it into the recv ctx.
+
+        ``addrs[0]`` is the HEAD's mailbox port address, not a dialable listener -- only
+        ranks >= 1 hold channel addresses. Nothing here ever dials element 0: rank 0's
+        predecessor is the client, and every other rank's successor is at ``rank + 1``.
+
+        ``num_streams`` is how many parallel streams this node opens to its successor (the
+        client picks it at open, so the whole chain uses one tuned value); it is unused on
+        rank 0, which has a port rather than a dial. Runs on the tokio runtime; returns at
+        once."""
         from monarch._rust_bindings.monarch_extension.chain_broadcast import forward
         from monarch.actor import context
 
         rank = context().actor_instance.rank.rank
         successor = addrs[rank + 1] if rank + 1 < len(addrs) else None
-        forward(self._cbc_server, successor, self._cbc_ctx, num_streams)
+        forward(
+            none_throws(self._cbc_server),
+            successor,
+            none_throws(self._cbc_ctx),
+            num_streams,
+        )
 
     @endpoint
     def receive_via_cbcast(self, block_id, stale, nbytes) -> None:
@@ -470,7 +507,7 @@ class FUSEActor(Actor):
         bid = int(block_id)
         want = int(nbytes)
         addr = self._fuse_handle.block_ptr(bid)
-        ctx_wait_into(self._cbc_ctx, addr, BLOCK_SIZE, want, 120000)
+        ctx_wait_into(none_throws(self._cbc_ctx), addr, BLOCK_SIZE, want, 120000)
         self._fuse_handle.receive_block(bid, [str(p) for p in stale])
 
     @endpoint
@@ -552,7 +589,7 @@ class RemoteMountLeader(Actor):
         if bid in self._requested:
             return
         self._requested.add(bid)
-        self._handler.enqueue.broadcast(bid)
+        none_throws(self._handler).enqueue.broadcast(bid)
 
     @endpoint
     def clear_request(self, block) -> None:
@@ -575,7 +612,7 @@ class RemoteMountLeader(Actor):
         block in flight) and the client may reuse its buffer. This gather runs
         intra-cluster (leader -> workers), so the N-worker barrier never crosses the DC.
         ``stale`` (the vpaths that diverged under the fence) rides along to the workers."""
-        self._fuse_actors.receive_via_cbcast.call(
+        none_throws(self._fuse_actors).receive_via_cbcast.call(
             int(block_id), stale, int(nbytes)
         ).get()
 
@@ -608,10 +645,11 @@ class MountHandlerClient(Actor):
         # the workers' fault sink (dedups + forwards to this client's ``enqueue``) and the
         # per-block delivery barrier (``await_block``). ``None`` until open() spawns it.
         self._leader = None
-        # The persistent chain head (this client -> worker[0]), dialed once at open. The
-        # client is the chain SOURCE: ``_deliver`` ``send_block``s each block straight down
-        # the multi-stream chain (client -> w[0] -> ... -> w[N-1]), so the cross-DC ship
-        # rides the tuned chain rather than a single actor-bus ``send(data)`` hop.
+        # The chain head, and the record of which transport reached it: a dialed
+        # ``ChainSession`` when this client can dial the head, a ``PortId`` string when it
+        # can only post. ``_deliver`` discriminates on that rather than on a second flag.
+        # Either way the client is the chain SOURCE -- worker[0] relays each block down
+        # the dialed chain, so the cross-DC ship crosses once.
         self._cbc_head = None
         # Chunk size for striping each block across the chain's streams (the tuned
         # ``CBC_CHUNK``). Purely client-send-side: it sets how ``send_block`` fragments
@@ -665,9 +703,30 @@ class MountHandlerClient(Actor):
         # the leader until every worker has received AND committed the block (an
         # intra-cluster gather, so the N-worker barrier never crosses the DC). We record it
         # only AFTER await returns, so a failed delivery is not remembered.
-        from monarch._rust_bindings.monarch_extension.chain_broadcast import send_block
+        # Which transport is already recorded in the head itself: ``open`` leaves a
+        # ``PortId`` string when the client cannot dial into the cluster, and a dialed
+        # ``ChainSession`` when it can. Reading that rather than a parallel flag keeps one
+        # piece of state instead of two that have to agree.
+        head = none_throws(self._cbc_head)
+        if isinstance(head, str):
+            from monarch._rust_bindings.monarch_extension.chain_broadcast import (
+                send_block_to_port,
+            )
+            from monarch.actor import context
 
-        send_block(self._cbc_head, data, self._cbc_chunk, int(block))
+            send_block_to_port(
+                context().actor_instance._as_rust(),
+                head,
+                data,
+                self._cbc_chunk,
+                int(block),
+            )
+        else:
+            from monarch._rust_bindings.monarch_extension.chain_broadcast import (
+                send_block,
+            )
+
+            send_block(head, data, self._cbc_chunk, int(block))
         self._leader.await_block.call_one(int(block), stale, len(data)).get()
         self._delivered.add(block)
 
@@ -702,7 +761,7 @@ class MountHandlerClient(Actor):
                 self._leader.clear_request.broadcast(int(block))
 
     @endpoint
-    def open(self, self_handle):
+    def open(self, self_handle, via_gateway: bool = False):
         """Spawn the workers, build the index, mount, and deliver the code prefix,
         then RETURN. The index (the whole tree) ships first
         as a 0-block ``find``; the small code blocks are delivered here; the big
@@ -719,29 +778,6 @@ class MountHandlerClient(Actor):
         # reset the delivered set: a re-open must re-deliver every block (the previous
         # mesh's in-memory blocks are gone).
         self._delivered.clear()
-
-        # The default cubic underfills a high-BDP WAN link, so tune the chain to bbr.
-        # This runs BEFORE spawn_procs() on purpose: a configure() reaches procs spawned
-        # after it (the Runtime layer is snapshotted into each child as ClientOverride) but
-        # never retroactively, so setting it here is what gets bbr onto the workers' relay
-        # hops as well as this proc's client -> w[0] ship. Setting it after the spawn would
-        # tune only this proc, and would tune the workers on a RE-open (they would inherit
-        # the previous open's setting), making the transport depend on open count.
-        #
-        # Congestion control is sender-side, applied by whichever proc dials, so it has to be
-        # in the config of every proc that dials -- not the caller's proc, which cannot be
-        # relied on to have configured anything before this one was spawned. Writing the
-        # Runtime layer leaves an explicit HYPERACTOR_CHANNEL_TCP_CONGESTION env override
-        # winning, since Env resolves above Runtime.
-        #
-        # Keep this an unscoped configure(), NOT a `with configured(...)`: connect() below
-        # dials lazily -- it returns right after spawning the writer task, and the real
-        # TcpStream connect + set_tcp_congestion run later on that background task, reading
-        # this setting then. A scoped restore would clear it the instant connect() returns,
-        # before the background dial reads it -- silently dropping bbr.
-        from monarch.config import configure
-
-        configure(channel_tcp_congestion="bbr")
 
         self.procs = self.host_mesh.spawn_procs()
 
@@ -766,22 +802,50 @@ class MountHandlerClient(Actor):
         # the pipelined broadcast chain.
         self._leader.set_fuse_actors.call_one(self.fuse_actors).get()
 
-        # Wire the broadcast chain: every worker binds a metatls listener + recv ctx
-        # (``cbc_listen``); order them by rank into client -> w[0] -> ... -> w[N-1]; start
-        # each worker's relay pointed at its successor (``cbc_start``); and dial the head
-        # (w[0]) FROM THIS CLIENT, so the client is the chain source and the cross-DC ship
-        # rides the multi-stream chain. Set up once and reused for every block -- metatls
-        # reuses monarch's own identity, so there are no certs to distribute.
-        from monarch._rust_bindings.monarch_extension.chain_broadcast import connect
-
-        # One stream count for the whole chain (the tuned ``CBC_STREAMS``), so the
-        # client's head dial and every worker's forward agree.
+        # Wire the broadcast chain: every worker binds a recv endpoint + ctx
+        # (``cbc_listen``) -- a metatls listener, except the head, which binds a mailbox
+        # port; order them by rank into client -> w[0] -> ... -> w[N-1]; start each
+        # worker's relay pointed at its successor (``cbc_start``); and keep the head's
+        # address HERE, so the client is the chain source. Set up once and reused for
+        # every block -- metatls reuses monarch's own identity, so there are no certs to
+        # distribute.
+        # One stream count for the relay hops (the tuned ``CBC_STREAMS``), so every
+        # worker's forward agrees. The client's own hop is a mailbox port, not a dial, so
+        # it takes no stream count.
         num_streams = CBC_STREAMS
-        listen = self.fuse_actors.cbc_listen.call().get()
+        listen = self.fuse_actors.cbc_listen.call(None, via_gateway).get()
         by_rank = sorted((value for _point, value in listen), key=lambda rv: rv[0])
         addrs = [addr for _rank, addr in by_rank]
         self.fuse_actors.cbc_start.call(addrs, num_streams).get()
-        self._cbc_head = connect(addrs[0], num_streams)
+        if via_gateway:
+            # ``addrs[0]`` is the head's ``PortId``, not a channel address. Parse it once
+            # here so a malformed or unroutable head fails at open, where the cause is
+            # obvious. ``send_block_to_port`` posts fire-and-forget, so without this a bad
+            # address would surface only as a ``ctx_wait_into`` timeout one block later.
+            from monarch._rust_bindings.monarch_extension.chain_broadcast import (
+                validate_port_addr,
+            )
+
+            validate_port_addr(addrs[0])
+            self._cbc_head = addrs[0]
+        else:
+            # The client dials this hop itself, so it is the only socket this proc
+            # creates and the only one it can tune. Immediately before the dial, because
+            # congestion control is applied at connect and governs only sockets opened
+            # after it.
+            #
+            # Unscoped rather than `with configured(...)`: `connect()` dials lazily, so a
+            # scoped restore would clear the setting before the real connect reads it.
+            #
+            # Not propagated to the workers -- the attribute is process-local, and bbr on
+            # the intra-cluster relay hops measurably hurts. Best-effort: a host that
+            # refuses bbr keeps its own default and the channel layer warns, so this can
+            # cost the tuning but never the mount.
+            from monarch._rust_bindings.monarch_extension.chain_broadcast import connect
+            from monarch.config import configure
+
+            configure(channel_tcp_congestion="bbr")
+            self._cbc_head = connect(addrs[0], num_streams)
 
         # Mount with the full tree: a 0-block ``find`` works immediately; data faults in
         # afterwards (the fault callback -> broker ``enqueue`` -> client ``enqueue``).
@@ -807,7 +871,7 @@ class MountHandlerClient(Actor):
                     logger.warning(f"unmount failed ({status}): {detail}")
             # Stop the proc mesh -- this also stops the FUSEActors on it -- so the
             # workers are freed and the next open() spawns a clean, fresh mesh.
-            self.procs.stop().get()
+            none_throws(self.procs).stop().get()
             self.fuse_actors = None
             self.procs = None
         self._leader = None
@@ -886,11 +950,17 @@ class MountHandler:
             mntpoint,
         )
 
-    def open(self) -> None:
-        """Spawn the workers, mount, wire the broadcast chain, and deliver the prefill."""
+    def open(self, via_gateway: bool = False) -> None:
+        """Spawn the workers, mount, wire the broadcast chain, and deliver the prefill.
+
+        ``via_gateway`` says this caller reaches the workers only through a scheduler
+        gateway and so cannot dial the broadcast chain's head; only the caller's job knows
+        that. It rides the endpoint call, which already crosses into the client actor's
+        own proc, so it needs no constructor argument of its own.
+        """
         # ``open`` takes the client's own handle (to spawn the FUSEActors with),
         # which an actor cannot obtain for itself -- so pass ``self._client`` in.
-        self._client.open.call_one(self._client).get()
+        self._client.open.call_one(self._client, via_gateway).get()
 
     def close(self) -> None:
         """Unmount the workers' FUSE mounts and tear the workers down."""
