@@ -52,20 +52,32 @@ use std::task::Waker;
 use std::time::Duration;
 use std::time::Instant;
 
+use chrysalis_core::Pid;
+use chrysalis_core::target_pid;
 use chrysalis_transport_core::Notifier;
 use chrysalis_transport_quiche::Error;
 use chrysalis_transport_quiche::PacketIo;
 use chrysalis_transport_quiche::PacketSendSlot;
+use chrysalis_transport_uring::DriverStatsHandle;
+use chrysalis_transport_uring::IoEvent;
+use chrysalis_transport_uring::SendSlot;
+use chrysalis_transport_uring::UdpDriver;
 
 use crate::DatagramAddr;
 use crate::DatagramRecvMeta;
 use crate::DatagramSocket;
 use crate::DatagramTransmit;
+use crate::Route;
+use crate::Router;
+use crate::udp::decode_udp_addr;
 
 const SYNTHETIC_PORT: u16 = 1;
 const LOCAL_ADDRESS_ID: u128 = 1;
 const FIRST_PEER_ADDRESS_ID: u128 = 2;
 const TRANSMIT_DEPTH: usize = 8;
+const FALLBACK_RECEIVE_CAPACITY: usize = u16::MAX as usize;
+const TRANSIT_QUEUE_CAPACITY: usize = 256;
+const MAX_ROUTED_GSO_SEGMENTS: usize = 8;
 
 #[derive(Debug, Default)]
 pub(crate) struct CarrierIoStats {
@@ -198,6 +210,610 @@ impl Wake for WakeState {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct RoutedUdpIoStats {
+    udp: DriverStatsHandle,
+    fallback: Arc<CarrierIoStats>,
+}
+
+impl RoutedUdpIoStats {
+    pub(crate) fn snapshot(&self) -> CarrierIoStatsSnapshot {
+        let udp = self.udp.snapshot();
+        let fallback = self.fallback.snapshot();
+        CarrierIoStatsSnapshot {
+            transmit_calls: udp.sends_completed + fallback.transmit_calls,
+            transmit_datagrams: udp.datagrams_sent + fallback.transmit_datagrams,
+            transmit_bytes: udp.bytes_sent + fallback.transmit_bytes,
+            transmit_blocked: fallback.transmit_blocked,
+            receive_calls: udp.receives_completed + fallback.receive_calls,
+            receive_datagrams: udp.datagrams_received + fallback.receive_datagrams,
+            receive_bytes: udp.bytes_received + fallback.receive_bytes,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum RoutedDestination {
+    LinkLocal(DatagramAddr),
+    Route(Route),
+}
+
+impl RoutedDestination {
+    fn address(&self) -> &DatagramAddr {
+        match self {
+            Self::LinkLocal(address) => address,
+            Self::Route(route) => route.destination(),
+        }
+    }
+
+    fn try_with_address<T>(
+        &self,
+        use_address: impl FnOnce(&DatagramAddr) -> io::Result<T>,
+    ) -> io::Result<Option<T>> {
+        match self {
+            Self::LinkLocal(address) => use_address(address).map(Some),
+            Self::Route(route) => route.try_with_destination(use_address),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FallbackTransmit {
+    bytes: Vec<u8>,
+    offset: usize,
+    segment_size: usize,
+    destination: RoutedDestination,
+    send_at: Instant,
+}
+
+#[derive(Debug)]
+struct TransitTransmit {
+    bytes: Vec<u8>,
+    offset: usize,
+    segment_size: usize,
+    destination: Route,
+}
+
+#[derive(Debug)]
+struct FallbackAggregate {
+    bytes: Vec<u8>,
+    source: SocketAddr,
+    stride: usize,
+}
+
+pub(crate) struct RoutedUdpPacketIo {
+    udp: UdpDriver,
+    local_pid: Pid,
+    router: Arc<Router>,
+    fallback: Option<Arc<dyn DatagramSocket>>,
+    addresses: CarrierAddressBook,
+    local: SocketAddr,
+    segment_size: usize,
+    max_segments: usize,
+    transit_transmits: VecDeque<TransitTransmit>,
+    fallback_transmits: VecDeque<FallbackTransmit>,
+    fallback_receive_buffer: Vec<u8>,
+    fallback_receive_meta: DatagramRecvMeta,
+    fallback_received: VecDeque<FallbackAggregate>,
+    fallback_stats: Arc<CarrierIoStats>,
+    waker: Waker,
+}
+
+impl RoutedUdpPacketIo {
+    pub(crate) fn new(
+        udp: UdpDriver,
+        local_pid: Pid,
+        router: Arc<Router>,
+        fallback: Option<Arc<dyn DatagramSocket>>,
+    ) -> (Self, CarrierAddressBook, RoutedUdpIoStats) {
+        let segment_size = udp.segment_size();
+        let max_segments = udp.max_gso_segments().min(MAX_ROUTED_GSO_SEGMENTS);
+        let udp_stats = udp.stats_handle();
+        let addresses = CarrierAddressBook {
+            inner: Arc::new(Mutex::new(AddressTable::default())),
+        };
+        let fallback_stats = Arc::new(CarrierIoStats::default());
+        let waker = Waker::from(Arc::new(NotifierWake(udp.notifier())));
+        let stats = RoutedUdpIoStats {
+            udp: udp_stats,
+            fallback: fallback_stats.clone(),
+        };
+        (
+            Self {
+                udp,
+                local_pid,
+                router,
+                fallback,
+                addresses: addresses.clone(),
+                local: synthetic_addr(LOCAL_ADDRESS_ID),
+                segment_size,
+                max_segments,
+                transit_transmits: VecDeque::new(),
+                fallback_transmits: VecDeque::new(),
+                fallback_receive_buffer: vec![0; FALLBACK_RECEIVE_CAPACITY],
+                fallback_receive_meta: DatagramRecvMeta::default(),
+                fallback_received: VecDeque::new(),
+                fallback_stats,
+                waker,
+            },
+            addresses,
+            stats,
+        )
+    }
+
+    fn enqueue_transit(&mut self, bytes: Vec<u8>, segment_size: usize, target: Pid) {
+        let Some(route) = self
+            .router
+            .get(target)
+            .or_else(|| self.router.default_route())
+        else {
+            return;
+        };
+        if route.destination().scheme() == "udp" {
+            if self.transit_transmits.len() < TRANSIT_QUEUE_CAPACITY {
+                self.transit_transmits.push_back(TransitTransmit {
+                    bytes,
+                    offset: 0,
+                    segment_size,
+                    destination: route,
+                });
+            }
+        } else if self.fallback.is_some() && self.fallback_transmits.len() < TRANSIT_QUEUE_CAPACITY
+        {
+            let send_at = Instant::now();
+            let position = self
+                .fallback_transmits
+                .iter()
+                .position(|pending| pending.send_at > send_at)
+                .unwrap_or(self.fallback_transmits.len());
+            self.fallback_transmits.insert(
+                position,
+                FallbackTransmit {
+                    bytes,
+                    offset: 0,
+                    segment_size,
+                    destination: RoutedDestination::Route(route),
+                    send_at,
+                },
+            );
+        }
+    }
+
+    fn flush_transit_transmits(&mut self) -> io::Result<()> {
+        loop {
+            let Some(pending) = self.transit_transmits.front() else {
+                return Ok(());
+            };
+            let Some(mut slot) = self.udp.try_send_slot() else {
+                return Ok(());
+            };
+            let remaining = &pending.bytes[pending.offset..];
+            let capacity = slot.buffer_mut().len();
+            let length = if pending.segment_size == self.segment_size {
+                remaining.len().min(capacity)
+            } else {
+                remaining.len().min(pending.segment_size)
+            };
+            if length > capacity
+                || (pending.segment_size != self.segment_size && length > self.segment_size)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "transit datagram exceeds the UDP transmit segment size",
+                ));
+            }
+            slot.buffer_mut()[..length].copy_from_slice(&remaining[..length]);
+            let result = pending.destination.try_with_destination(|destination| {
+                slot.submit(length, decode_udp_addr(destination)?, Instant::now())
+            });
+            match result {
+                Ok(Some(())) | Ok(None) => {
+                    if length == remaining.len() {
+                        self.transit_transmits.pop_front();
+                    } else {
+                        self.transit_transmits
+                            .front_mut()
+                            .expect("partially transmitted datagram remains queued")
+                            .offset += length;
+                    }
+                }
+                Err(error) if is_peer_delivery_error(&error) => {
+                    self.transit_transmits.pop_front();
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn flush_fallback_transmits(&mut self, context: &mut Context<'_>) -> io::Result<()> {
+        let Some(socket) = self.fallback.as_deref() else {
+            self.fallback_transmits.clear();
+            return Ok(());
+        };
+        loop {
+            let Some(pending) = self.fallback_transmits.front() else {
+                return Ok(());
+            };
+            if pending.send_at > Instant::now() {
+                return Ok(());
+            }
+            let remaining = pending.bytes.len() - pending.offset;
+            let segment_size = (remaining > pending.segment_size).then_some(pending.segment_size);
+            let result = pending.destination.try_with_address(|destination| {
+                let transmit = DatagramTransmit {
+                    destination,
+                    contents: &pending.bytes[pending.offset..],
+                    segment_size,
+                    ecn: None,
+                    source_ip: None,
+                };
+                let accepted = socket.try_send_transmit(&transmit)?;
+                if accepted == 0 {
+                    let _ = socket.poll_send_ready(context, &transmit);
+                }
+                Ok(accepted)
+            });
+            match result {
+                Ok(Some(0)) => {
+                    self.fallback_stats
+                        .transmit_calls
+                        .fetch_add(1, Ordering::Relaxed);
+                    self.fallback_stats
+                        .transmit_blocked
+                        .fetch_add(1, Ordering::Relaxed);
+                    return Ok(());
+                }
+                Ok(Some(accepted)) => {
+                    let segment_count = remaining.div_ceil(pending.segment_size);
+                    assert!(
+                        accepted <= segment_count,
+                        "datagram socket accepted more segments than were offered"
+                    );
+                    let accepted_bytes = remaining.min(accepted * pending.segment_size);
+                    self.fallback_stats
+                        .transmit_calls
+                        .fetch_add(1, Ordering::Relaxed);
+                    self.fallback_stats
+                        .transmit_datagrams
+                        .fetch_add(accepted as u64, Ordering::Relaxed);
+                    self.fallback_stats
+                        .transmit_bytes
+                        .fetch_add(accepted_bytes as u64, Ordering::Relaxed);
+                    if accepted == segment_count {
+                        self.fallback_transmits.pop_front();
+                    } else {
+                        self.fallback_transmits
+                            .front_mut()
+                            .expect("fallback transmit remains queued")
+                            .offset += accepted_bytes;
+                    }
+                }
+                Ok(None) => {
+                    self.fallback_transmits.pop_front();
+                }
+                Err(error) if is_peer_delivery_error(&error) => {
+                    self.fallback_transmits.pop_front();
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn poll_fallback(&mut self, context: &mut Context<'_>) -> io::Result<bool> {
+        let Some(socket) = self.fallback.as_deref() else {
+            return Ok(false);
+        };
+        let mut buffers = [IoSliceMut::new(&mut self.fallback_receive_buffer)];
+        let meta = std::slice::from_mut(&mut self.fallback_receive_meta);
+        match socket.poll_recv(context, &mut buffers, meta) {
+            Poll::Ready(Ok(0)) | Poll::Pending => Ok(false),
+            Poll::Ready(Ok(1)) => {
+                let length = self.fallback_receive_meta.len;
+                let stride = self.fallback_receive_meta.stride.max(1);
+                self.fallback_stats
+                    .receive_calls
+                    .fetch_add(1, Ordering::Relaxed);
+                self.fallback_stats
+                    .receive_datagrams
+                    .fetch_add(length.div_ceil(stride) as u64, Ordering::Relaxed);
+                self.fallback_stats
+                    .receive_bytes
+                    .fetch_add(length as u64, Ordering::Relaxed);
+                let source = self
+                    .addresses
+                    .register(self.fallback_receive_meta.source.clone());
+                self.fallback_received.push_back(FallbackAggregate {
+                    bytes: self.fallback_receive_buffer[..length].to_vec(),
+                    source,
+                    stride,
+                });
+                Ok(true)
+            }
+            Poll::Ready(Ok(count)) => panic!("single-buffer fallback returned {count} datagrams"),
+            Poll::Ready(Err(error)) => Err(error),
+        }
+    }
+
+    fn next_fallback_wait(&self, timeout: Duration) -> Duration {
+        self.fallback_transmits.front().map_or(timeout, |pending| {
+            timeout.min(pending.send_at.saturating_duration_since(Instant::now()))
+        })
+    }
+}
+
+struct RoutedUdpSendSlot<'a> {
+    slot: Option<SendSlot<'a>>,
+    router: &'a Router,
+    addresses: &'a CarrierAddressBook,
+    has_fallback: bool,
+    fallback_transmits: &'a mut VecDeque<FallbackTransmit>,
+    segment_size: usize,
+}
+
+impl PacketSendSlot for RoutedUdpSendSlot<'_> {
+    fn buffer_mut(&mut self) -> &mut [u8] {
+        self.slot
+            .as_mut()
+            .expect("routed UDP send slot was submitted")
+            .buffer_mut()
+    }
+
+    fn submit(
+        mut self: Box<Self>,
+        length: usize,
+        peer: SocketAddr,
+        send_at: Instant,
+    ) -> io::Result<()> {
+        let mut slot = self
+            .slot
+            .take()
+            .expect("routed UDP send slot was submitted");
+        if length == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "routed UDP transmit must not be empty",
+            ));
+        }
+        let segment_size = self.segment_size.min(length);
+        let mut packets = slot.buffer_mut()[..length].chunks(segment_size);
+        let target = packets
+            .next()
+            .and_then(target_pid)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing routed CID"))?;
+        if packets.any(|packet| target_pid(packet) != Some(target)) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "routed GSO batch contains missing or inconsistent target PIDs",
+            ));
+        }
+        let destination = if target.is_link_local() {
+            self.addresses
+                .inner
+                .lock()
+                .expect("carrier address table lock poisoned")
+                .resolve(peer)
+                .map(RoutedDestination::LinkLocal)?
+        } else {
+            let Some(route) = self
+                .router
+                .get(target)
+                .or_else(|| self.router.default_route())
+            else {
+                return Ok(());
+            };
+            RoutedDestination::Route(route)
+        };
+        if destination.address().scheme() == "udp" {
+            let _ = destination.try_with_address(|address| {
+                let address = decode_udp_addr(address)?;
+                slot.submit(length, address, send_at)
+            })?;
+            return Ok(());
+        }
+        if !self.has_fallback {
+            return Ok(());
+        }
+        if self.fallback_transmits.len() >= TRANSIT_QUEUE_CAPACITY {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "routed fallback transmit queue is full",
+            ));
+        }
+        let bytes = slot.buffer_mut()[..length].to_vec();
+        drop(slot);
+        let position = self
+            .fallback_transmits
+            .iter()
+            .position(|pending| pending.send_at > send_at)
+            .unwrap_or(self.fallback_transmits.len());
+        self.fallback_transmits.insert(
+            position,
+            FallbackTransmit {
+                bytes,
+                offset: 0,
+                segment_size: self.segment_size,
+                destination,
+                send_at,
+            },
+        );
+        Ok(())
+    }
+}
+
+impl PacketIo for RoutedUdpPacketIo {
+    fn peer_addresses_validated(&self) -> bool {
+        false
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        Ok(self.local)
+    }
+
+    fn segment_size(&self) -> usize {
+        self.segment_size
+    }
+
+    fn max_gso_segments(&self) -> usize {
+        self.max_segments
+    }
+
+    fn notifier(&self) -> Arc<dyn Notifier> {
+        Arc::new(self.udp.notifier())
+    }
+
+    fn try_send_slot(&mut self) -> Option<Box<dyn PacketSendSlot + '_>> {
+        let router = self.router.as_ref();
+        let addresses = &self.addresses;
+        let has_fallback = self.fallback.is_some();
+        let fallback_transmits = &mut self.fallback_transmits;
+        let segment_size = self.segment_size;
+        let slot = self.udp.try_send_slot()?;
+        Some(Box::new(RoutedUdpSendSlot {
+            slot: Some(slot),
+            router,
+            addresses,
+            has_fallback,
+            fallback_transmits,
+            segment_size,
+        }))
+    }
+
+    fn poll(&mut self, timeout: Duration) -> io::Result<()> {
+        let waker = self.waker.clone();
+        let mut context = Context::from_waker(&waker);
+        self.flush_transit_transmits()?;
+        self.flush_fallback_transmits(&mut context)?;
+        let fallback_ready = self.poll_fallback(&mut context)?;
+        let wait = if fallback_ready {
+            Duration::ZERO
+        } else {
+            self.next_fallback_wait(timeout)
+        };
+        self.udp.poll(wait)?;
+        self.flush_transit_transmits()?;
+        self.flush_fallback_transmits(&mut context)?;
+        self.poll_fallback(&mut context)?;
+        Ok(())
+    }
+
+    fn drain_received(
+        &mut self,
+        receive: &mut dyn FnMut(&mut [u8], SocketAddr, SocketAddr) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        while let Some(event) = self.udp.try_next_event() {
+            let IoEvent::Received(datagram) = event else {
+                continue;
+            };
+            let source = self
+                .addresses
+                .register(crate::UdpSocket::datagram_addr(datagram.source()));
+            let segment_size = datagram.segment_size().max(1);
+            let length = datagram.len();
+            let mut transit = Vec::new();
+            let result = if length == 0 {
+                Ok(())
+            } else {
+                let aggregate = self.udp.received(datagram);
+                let mut result = Ok(());
+                let first_target = target_pid(&aggregate[..length.min(segment_size)]);
+                let uniform_target = first_target.filter(|target| {
+                    aggregate[..length]
+                        .chunks(segment_size)
+                        .all(|packet| target_pid(packet) == Some(*target))
+                });
+                match uniform_target {
+                    Some(target) if target == self.local_pid || target.is_link_local() => {
+                        for packet in aggregate[..length].chunks_mut(segment_size) {
+                            if let Err(error) = receive(packet, source, self.local) {
+                                result = Err(error);
+                                break;
+                            }
+                        }
+                    }
+                    Some(target) => {
+                        transit.push((aggregate[..length].to_vec(), segment_size, target));
+                    }
+                    None => {
+                        for packet in aggregate[..length].chunks_mut(segment_size) {
+                            let Some(target) = target_pid(packet) else {
+                                continue;
+                            };
+                            if target == self.local_pid || target.is_link_local() {
+                                if let Err(error) = receive(packet, source, self.local) {
+                                    result = Err(error);
+                                    break;
+                                }
+                            } else {
+                                transit.push((packet.to_vec(), packet.len(), target));
+                            }
+                        }
+                    }
+                }
+                result
+            };
+            self.udp.release_receive(datagram.slot());
+            result?;
+            for (bytes, segment_size, target) in transit {
+                self.enqueue_transit(bytes, segment_size, target);
+            }
+        }
+        while let Some(mut aggregate) = self.fallback_received.pop_front() {
+            let first_target =
+                target_pid(&aggregate.bytes[..aggregate.bytes.len().min(aggregate.stride)]);
+            let uniform_target = first_target.filter(|target| {
+                aggregate
+                    .bytes
+                    .chunks(aggregate.stride)
+                    .all(|packet| target_pid(packet) == Some(*target))
+            });
+            match uniform_target {
+                Some(target) if target == self.local_pid || target.is_link_local() => {
+                    for packet in aggregate.bytes.chunks_mut(aggregate.stride) {
+                        receive(packet, aggregate.source, self.local)?;
+                    }
+                }
+                Some(target) => {
+                    self.enqueue_transit(aggregate.bytes, aggregate.stride, target);
+                }
+                None => {
+                    let mut transit = Vec::new();
+                    let mut result = Ok(());
+                    for packet in aggregate.bytes.chunks_mut(aggregate.stride) {
+                        let Some(target) = target_pid(packet) else {
+                            continue;
+                        };
+                        if target == self.local_pid || target.is_link_local() {
+                            if let Err(error) = receive(packet, aggregate.source, self.local) {
+                                result = Err(error);
+                                break;
+                            }
+                        } else {
+                            transit.push((packet.to_vec(), packet.len(), target));
+                        }
+                    }
+                    for (bytes, segment_size, target) in transit {
+                        self.enqueue_transit(bytes, segment_size, target);
+                    }
+                    result?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+struct NotifierWake(chrysalis_transport_uring::WakeHandle);
+
+impl Wake for NotifierWake {
+    fn wake(self: Arc<Self>) {
+        self.0.notify();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.notify();
+    }
+}
+
 #[derive(Debug)]
 struct PendingTransmit {
     buffer: Vec<u8>,
@@ -260,7 +876,7 @@ impl<T: DatagramSocket> CarrierPacketIo<T> {
                 max_segments,
                 free_transmit,
                 pending_transmit: VecDeque::new(),
-                receive_buffer: vec![0; capacity],
+                receive_buffer: vec![0; u16::MAX as usize],
                 receive_meta: DatagramRecvMeta::default(),
                 free_receive: Vec::new(),
                 received: VecDeque::new(),
@@ -497,4 +1113,214 @@ fn is_peer_delivery_error(error: &io::Error) -> bool {
 
 fn synthetic_addr(id: u128) -> SocketAddr {
     SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::from(id), SYNTHETIC_PORT, 0, 0))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv6Addr;
+    use std::num::NonZeroUsize;
+
+    use chrysalis_core::ConnectionKey;
+    use chrysalis_core::Pid;
+    use chrysalis_core::RoutedCid;
+
+    use super::*;
+    use crate::QuicConfig;
+    use crate::UdpSocket;
+
+    const TARGET: Pid = Pid::from_bytes([0x42; chrysalis_core::PID_LEN]);
+    const SOURCE: Pid = Pid::from_bytes([0x24; chrysalis_core::PID_LEN]);
+    const SEGMENT_SIZE: usize = 1_200;
+
+    fn config() -> QuicConfig {
+        QuicConfig::default()
+            .try_with_max_udp_payload_size(SEGMENT_SIZE as u16)
+            .expect("configure test UDP payload")
+            .with_max_transmit_batch_segments(NonZeroUsize::new(4).expect("nonzero GSO count"))
+    }
+
+    fn socket() -> std::net::UdpSocket {
+        std::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)).expect("bind loopback UDP socket")
+    }
+
+    fn payload(target: Pid) -> Vec<u8> {
+        payload_with_segments(target, 3)
+    }
+
+    fn payload_with_segments(target: Pid, segments: usize) -> Vec<u8> {
+        let cid = RoutedCid::issued(target, ConnectionKey::from_u32(7));
+        let mut payload = vec![0; SEGMENT_SIZE * segments];
+        for (index, segment) in payload.chunks_mut(SEGMENT_SIZE).enumerate() {
+            segment[0] = 0x40;
+            segment[1..1 + chrysalis_core::CID_LEN].copy_from_slice(cid.as_bytes());
+            segment[1 + chrysalis_core::CID_LEN..].fill(index as u8 + 1);
+        }
+        payload
+    }
+
+    #[test]
+    fn routed_udp_splits_transit_aggregates_larger_than_a_send_slot() {
+        let destination_socket = socket();
+        let destination_address = destination_socket
+            .local_addr()
+            .expect("read destination address");
+        let router = Arc::new(Router::new());
+        router.insert(
+            TARGET,
+            Route::permanent(UdpSocket::datagram_addr(destination_address)),
+        );
+        let driver =
+            UdpDriver::new(socket(), config().udp_driver_config()).expect("create forwarder");
+        let (mut forwarder, _, _) = RoutedUdpPacketIo::new(driver, SOURCE, router, None);
+
+        forwarder.enqueue_transit(payload_with_segments(TARGET, 9), SEGMENT_SIZE, TARGET);
+        forwarder
+            .flush_transit_transmits()
+            .expect("split oversized transit aggregate");
+
+        assert!(
+            forwarder.transit_transmits.is_empty(),
+            "all split batches should be submitted"
+        );
+    }
+
+    #[test]
+    fn routed_udp_preserves_completion_owned_gso_and_gro() {
+        let config = config();
+        let receiver_socket = socket();
+        let receiver_address = receiver_socket.local_addr().expect("read receiver address");
+        let receiver_driver =
+            UdpDriver::new(receiver_socket, config.udp_driver_config()).expect("create receiver");
+        let (mut receiver, _, receiver_stats) =
+            RoutedUdpPacketIo::new(receiver_driver, TARGET, Arc::new(Router::new()), None);
+
+        let sender_router = Arc::new(Router::new());
+        sender_router.insert(
+            TARGET,
+            Route::permanent(UdpSocket::datagram_addr(receiver_address)),
+        );
+        let sender_driver =
+            UdpDriver::new(socket(), config.udp_driver_config()).expect("create sender");
+        let (mut sender, _, sender_stats) =
+            RoutedUdpPacketIo::new(sender_driver, SOURCE, sender_router, None);
+
+        let expected = payload(TARGET);
+        let mut slot = sender.try_send_slot().expect("borrow routed UDP slot");
+        slot.buffer_mut()[..expected.len()].copy_from_slice(&expected);
+        slot.submit(expected.len(), synthetic_addr(99), Instant::now())
+            .expect("submit routed GSO batch");
+
+        let mut received = Vec::new();
+        for _ in 0..20 {
+            sender.poll(Duration::from_millis(10)).expect("poll sender");
+            receiver
+                .poll(Duration::from_millis(10))
+                .expect("poll receiver");
+            receiver
+                .drain_received(&mut |packet, _, _| {
+                    received.extend_from_slice(packet);
+                    Ok(())
+                })
+                .expect("drain routed receive completions");
+            if received.len() == expected.len() {
+                break;
+            }
+        }
+
+        assert_eq!(
+            received, expected,
+            "routed completion path changed packet bytes"
+        );
+        let sent = sender_stats.snapshot();
+        assert_eq!(
+            sent.transmit_calls, 1,
+            "GSO batch should use one send completion"
+        );
+        assert_eq!(
+            sent.transmit_datagrams, 3,
+            "GSO batch should contain three datagrams"
+        );
+        let received = receiver_stats.snapshot();
+        assert_eq!(
+            received.receive_datagrams, 3,
+            "GRO accounting should expand all received datagrams"
+        );
+    }
+
+    #[test]
+    fn routed_udp_forwards_nonlocal_cids_inside_the_completion_owner() {
+        let config = config();
+        let destination_socket = socket();
+        let destination_address = destination_socket
+            .local_addr()
+            .expect("read destination address");
+        let destination_driver = UdpDriver::new(destination_socket, config.udp_driver_config())
+            .expect("create destination");
+        let (mut destination, _, _) =
+            RoutedUdpPacketIo::new(destination_driver, TARGET, Arc::new(Router::new()), None);
+
+        let forwarder_socket = socket();
+        let forwarder_address = forwarder_socket
+            .local_addr()
+            .expect("read forwarder address");
+        let forwarder_router = Arc::new(Router::new());
+        forwarder_router.insert(
+            TARGET,
+            Route::permanent(UdpSocket::datagram_addr(destination_address)),
+        );
+        let forwarder_driver =
+            UdpDriver::new(forwarder_socket, config.udp_driver_config()).expect("create forwarder");
+        let (mut forwarder, _, forwarder_stats) =
+            RoutedUdpPacketIo::new(forwarder_driver, SOURCE, forwarder_router, None);
+
+        let source_router = Arc::new(Router::new());
+        source_router.insert(
+            TARGET,
+            Route::permanent(UdpSocket::datagram_addr(forwarder_address)),
+        );
+        let source_driver =
+            UdpDriver::new(socket(), config.udp_driver_config()).expect("create source");
+        let (mut source, _, _) = RoutedUdpPacketIo::new(
+            source_driver,
+            Pid::from_bytes([0x18; chrysalis_core::PID_LEN]),
+            source_router,
+            None,
+        );
+
+        let expected = payload(TARGET);
+        let mut slot = source.try_send_slot().expect("borrow source slot");
+        slot.buffer_mut()[..expected.len()].copy_from_slice(&expected);
+        slot.submit(expected.len(), synthetic_addr(99), Instant::now())
+            .expect("submit source batch");
+
+        let mut received = Vec::new();
+        for _ in 0..30 {
+            source.poll(Duration::from_millis(10)).expect("poll source");
+            forwarder
+                .poll(Duration::from_millis(10))
+                .expect("poll forwarder");
+            forwarder
+                .drain_received(&mut |_, _, _| panic!("transit packet terminated locally"))
+                .expect("route forwarder completions");
+            destination
+                .poll(Duration::from_millis(10))
+                .expect("poll destination");
+            destination
+                .drain_received(&mut |packet, _, _| {
+                    received.extend_from_slice(packet);
+                    Ok(())
+                })
+                .expect("drain destination completions");
+            if received.len() == expected.len() {
+                break;
+            }
+        }
+
+        assert_eq!(received, expected, "forwarding changed packet bytes");
+        let forwarded = forwarder_stats.snapshot();
+        assert_eq!(
+            forwarded.transmit_datagrams, 3,
+            "forwarder should retain the segmented batch"
+        );
+    }
 }
