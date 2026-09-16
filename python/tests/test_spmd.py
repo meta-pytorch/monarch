@@ -21,6 +21,16 @@ from monarch.spmd import (
 )
 
 
+def test_spmd_job_cleanup_log_context_includes_scheduler_handle() -> None:
+    job = SPMDJob(handle="scheduler://app", scheduler="scheduler")
+
+    assert job._cleanup_log_context() == {
+        "job_type": "SPMDJob",
+        "scheduler": "scheduler",
+        "app_handle": "scheduler://app",
+    }
+
+
 class EnvCapture(Actor):
     """Actor to capture environment variables after setup."""
 

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, NamedTuple, Optional, Sequence
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
+from monarch._src.actor.actor_mesh import _client_attached_to
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._batch_env import in_batch_job, MONARCH_BATCH_JOB_ENV
 from monarch._src.job._telemetry_query_client import QueryEngineClient
@@ -33,8 +34,8 @@ from monarch._src.job.service_identity import (
 )
 from monarch._src.job.telemetry_config import TelemetryConfig
 
-# note: the jobs api is intended as a library so it should
-# only be importing _public_ monarch API functions.
+# The jobs API otherwise imports only public actor APIs. Attachment state is a
+# deliberately private cross-layer query and is not exposed as public API.
 from monarch.actor import (
     Actor,
     attach,
@@ -400,7 +401,6 @@ class JobTrait(ABC):
         self._status: Literal["running", "not_running"] | CachedRunning = "not_running"
         self._components: JobComponents = JobComponents()
         self._apply_id: Optional[str] = None
-        self._client_attached_to: str | None = None
 
     def _should_spawn_telemetry_worker_collector_actors(self) -> bool:
         """Whether sidecar telemetry should spawn per-host worker collectors.
@@ -413,7 +413,15 @@ class JobTrait(ABC):
 
     def _sidecar_attach_to(self) -> str | None:
         """Duplex gateway address the job sidecar should attach through."""
-        return self._client_attached_to
+        return _client_attached_to()
+
+    def _rebind_connection_inputs(self, spec: "JobTrait") -> None:
+        """Refresh process-local connection inputs from the current spec."""
+        return None
+
+    def _cleanup_log_context(self) -> dict[str, Any]:
+        """Return non-secret scheduler identifiers for manual cleanup."""
+        return {"job_type": type(self).__name__}
 
     def _requires_sidecar_gateway(self) -> bool:
         """Whether a sidecar must join the client's scheduler gateway.
@@ -433,14 +441,7 @@ class JobTrait(ABC):
         """Attach the process-global client context; detaching requires exit."""
         if attach_to is None:
             return
-        if self._client_attached_to is not None:
-            if self._client_attached_to != attach_to:
-                raise RuntimeError(
-                    "client is already attached through "
-                    f"{self._client_attached_to}, not {attach_to}; detaching is "
-                    "not supported, so use a new process to attach through a "
-                    "different address"
-                )
+        if _client_attached_to() == attach_to:
             logger.debug(
                 "Client gateway is already attached via duplex address: %s",
                 attach_to,
@@ -449,7 +450,6 @@ class JobTrait(ABC):
 
         logger.info("Attaching client gateway via duplex address: %s", attach_to)
         attach(attach_to)
-        self._client_attached_to = attach_to
 
     def _connect_host_meshes(self, running_job: "JobTrait") -> Dict[str, HostMesh]:
         """Run the connect phases and return the final host meshes.
@@ -656,12 +656,28 @@ class JobTrait(ABC):
         if running is None:
             logger.info("Cached job is not running")
             return None
+        running._rebind_connection_inputs(self)
         if not running.can_run(self):
             logger.info("Cached job cannot run this spec, removing cache")
+            cleanup_context = {"job_type": type(running).__name__}
+            try:
+                cleanup_context = running._cleanup_log_context()
+            except Exception:
+                logger.warning(
+                    "Failed to collect stale cached job cleanup context",
+                    exc_info=True,
+                )
             try:
                 running._kill()
-            except NotImplementedError as e:
-                logger.info("Failed to kill cached job: %s", e)
+            except Exception:
+                # Teardown is best-effort here. A stale cache must not make
+                # every future state() call fail before the current spec can
+                # be applied, even when its old credentials are unavailable.
+                logger.warning(
+                    "Failed to kill stale cached job; removing cache anyway: %s",
+                    cleanup_context,
+                    exc_info=True,
+                )
             # Remove the actual state file, not the symlink, so the context
             # (symlink) remains intact for future applies.
             state_file = (
@@ -1135,6 +1151,12 @@ class BatchJob(JobTrait):
 
     def _requires_sidecar_gateway(self) -> bool:
         return self._job._requires_sidecar_gateway()
+
+    def _rebind_connection_inputs(self, spec: JobTrait) -> None:
+        self._job._rebind_connection_inputs(spec)
+
+    def _cleanup_log_context(self) -> dict[str, Any]:
+        return self._job._cleanup_log_context()
 
     def state(
         self, cached_path: Optional[str] = ".monarch/job_state.pkl"
