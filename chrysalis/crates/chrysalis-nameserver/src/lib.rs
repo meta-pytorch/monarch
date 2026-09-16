@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Delegated process namespace wire protocol for Chrysalis.
+//! Deterministic delegated process namespace for Chrysalis.
 //!
 //! A Chrysalis nameserver forms a tree of authenticated transport endpoints. A
 //! child opens one ordered bidirectional QUIC stream to its parent using
@@ -104,9 +104,14 @@
 //! link-lifetime invariants described above. Code must not treat a successfully
 //! decoded [`Message`] as authorized or valid for the current session state.
 
+mod cache;
 mod codec;
 mod protocol;
+mod state;
 
+pub use cache::CacheError;
+pub use cache::CacheTime;
+pub use cache::ResolverCache;
 pub use codec::CodecError;
 pub use codec::MAX_FRAME_BODY_LEN;
 pub use codec::decode_frame;
@@ -132,6 +137,12 @@ pub use protocol::SnapshotId;
 pub use protocol::VERSION_1;
 pub use protocol::VERSION_2;
 pub use protocol::VersionRange;
+pub use state::ApplyEffects;
+pub use state::ApplyError;
+pub use state::Command;
+pub use state::DirectoryChange;
+pub use state::LinkResponse;
+pub use state::Nameserver;
 
 /// The reserved link-local stream protocol used by the nameserver.
 pub const NAMESERVER_LINK_PROTOCOL: chrysalis_transport::LinkLocalProtocolId =
