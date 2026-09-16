@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+invocation_dir="$PWD"
+cd "$script_dir"
+
+exec buck run --console none -v0 --chdir "$invocation_dir" fbcode//monarch/chrysalis/crates/chrysalis-cli:chrysalis-cli -- "$@"
