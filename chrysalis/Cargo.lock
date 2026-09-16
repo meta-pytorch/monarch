@@ -389,6 +389,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrysalis-scale"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "chrysalis",
+ "chrysalis-identity-meta",
+ "chrysalis-sqlite",
+ "clap",
+ "futures 0.3.34",
+ "hostname",
+ "libc",
+ "libsql",
+ "rcgen",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "chrysalis-sqlite"
 version = "0.0.0"
 dependencies = [
@@ -763,6 +783,12 @@ dependencies = [
 
 [[package]]
 name = "futures"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a471a38ef8ed83cd6e40aa59c1ffe17db6855c18e3604d9c4ed8c08ebc28678"
+
+[[package]]
+name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3"
@@ -838,12 +864,14 @@ version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
+ "futures 0.1.31",
  "futures-channel",
  "futures-core",
  "futures-io",
  "futures-macro",
  "futures-sink",
  "futures-task",
+ "libc",
  "memchr",
  "pin-project-lite",
  "slab",
@@ -915,6 +943,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hostname"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link",
 ]
 
 [[package]]
@@ -1143,7 +1182,7 @@ dependencies = [
  "bitflags",
  "bytes",
  "fallible-iterator",
- "futures",
+ "futures 0.3.34",
  "http",
  "hyper",
  "hyper-rustls",

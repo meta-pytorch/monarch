@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$script_dir"
+
+exec buck run --console none -v0 fbcode//monarch/chrysalis/crates/chrysalis-scale:chrysalis-scale -- "$@"
