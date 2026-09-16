@@ -150,6 +150,7 @@ use crate::command::EndpointCommands;
 use crate::identity::EndpointIdentity;
 use crate::identity::certificate_pid;
 use crate::io::PacketIo;
+use crate::io::PacketSendSlot;
 
 mod connection;
 mod network;
@@ -461,9 +462,9 @@ fn complete_unknown(submission: Submission, completions: &mut Vec<Completion>) {
 }
 
 /// Single-owner quiche endpoint state machine.
-pub struct Endpoint {
+pub struct Endpoint<I> {
     driver: DriverId,
-    io: Box<dyn PacketIo>,
+    io: I,
     network: Network,
     submission_queue: EndpointSubmissionReceiver<EndpointCommand>,
     completion_sender: CompletionSender,
@@ -481,9 +482,9 @@ pub struct Endpoint {
     next_statistics_update: Instant,
 }
 
-impl Endpoint {
+impl<I: PacketIo> Endpoint<I> {
     /// Constructs a client endpoint and its thread-safe application handles.
-    pub fn client<I: PacketIo + 'static>(
+    pub fn client(
         driver: DriverId,
         io: I,
         identity: EndpointIdentity,
@@ -507,7 +508,7 @@ impl Endpoint {
     }
 
     /// Constructs a client endpoint with explicit admission limits.
-    pub fn client_with_limits<I: PacketIo + 'static>(
+    pub fn client_with_limits(
         driver: DriverId,
         io: I,
         identity: EndpointIdentity,
@@ -532,7 +533,7 @@ impl Endpoint {
     }
 
     /// Constructs a server endpoint and its thread-safe application handles.
-    pub fn server<I: PacketIo + 'static>(
+    pub fn server(
         driver: DriverId,
         io: I,
         identity: EndpointIdentity,
@@ -556,7 +557,7 @@ impl Endpoint {
     }
 
     /// Constructs a server endpoint with explicit admission limits.
-    pub fn server_with_limits<I: PacketIo + 'static>(
+    pub fn server_with_limits(
         driver: DriverId,
         io: I,
         identity: EndpointIdentity,
@@ -581,7 +582,7 @@ impl Endpoint {
     }
 
     /// Constructs a duplex endpoint that can initiate and accept connections.
-    pub fn duplex<I: PacketIo + 'static>(
+    pub fn duplex(
         driver: DriverId,
         io: I,
         identity: EndpointIdentity,
@@ -606,7 +607,7 @@ impl Endpoint {
     }
 
     /// Constructs a duplex endpoint with explicit admission limits.
-    pub fn duplex_with_limits<I: PacketIo + 'static>(
+    pub fn duplex_with_limits(
         driver: DriverId,
         io: I,
         identity: EndpointIdentity,
@@ -633,7 +634,7 @@ impl Endpoint {
     }
 
     /// Constructs a duplex endpoint whose CIDs use `routing_pid` independently of its identity.
-    pub fn duplex_routed<I: PacketIo + 'static>(
+    pub fn duplex_routed(
         driver: DriverId,
         io: I,
         identity: EndpointIdentity,
@@ -659,7 +660,7 @@ impl Endpoint {
     }
 
     /// Constructs a routed duplex endpoint with explicit admission limits.
-    pub fn duplex_routed_with_limits<I: PacketIo + 'static>(
+    pub fn duplex_routed_with_limits(
         driver: DriverId,
         io: I,
         identity: EndpointIdentity,
@@ -684,7 +685,7 @@ impl Endpoint {
         )
     }
 
-    fn new<I: PacketIo + 'static>(
+    fn new(
         driver: DriverId,
         io: I,
         _identity: EndpointIdentity,
@@ -717,7 +718,7 @@ impl Endpoint {
         (
             Self {
                 driver,
-                io: Box::new(io),
+                io,
                 network: Network::new(
                     driver,
                     routing_pid,
@@ -836,7 +837,7 @@ impl Endpoint {
         }
         self.flush_completions();
         self.network
-            .queue_packets(self.io.as_mut(), &mut self.new_completions)?;
+            .queue_packets(&mut self.io, &mut self.new_completions)?;
 
         let mut wait = self.network.next_timeout(maximum_wait);
         if let Some(deadline) = self.shutdown_deadline {
@@ -850,7 +851,7 @@ impl Endpoint {
         self.update_statistics();
         self.expire_shutdown();
         self.network
-            .queue_packets(self.io.as_mut(), &mut self.new_completions)?;
+            .queue_packets(&mut self.io, &mut self.new_completions)?;
         self.stage_completions();
         self.flush_completions();
         self.finish_shutdown_if_ready();
