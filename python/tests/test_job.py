@@ -43,7 +43,6 @@ from monarch._src.job.job import (
     TelemetryConfig,
 )
 from monarch._src.job.job_components import JobComponent, JobComponents, MountComponent
-from monarch._src.job.meta.mast import MASTJob
 from monarch._src.job.mount_config import Mounts
 from monarch._src.job.process import ProcessJob
 from monarch._src.job.process_guard import _Shutdown, _wait_for_socket
@@ -1273,6 +1272,11 @@ def test_batch_job_forwards_cleanup_log_context() -> None:
 
 
 def test_mast_job_cleanup_log_context_includes_app_handle() -> None:
+    try:
+        from monarch._src.job.meta.mast import MASTJob
+    except ModuleNotFoundError:
+        pytest.skip("monarch._src.job.meta not available (OSS build)")
+
     job = MASTJob.__new__(MASTJob)
     job._app_handle = "mast_conda:///test-job"
 
