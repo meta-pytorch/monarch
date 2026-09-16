@@ -350,6 +350,7 @@ pub async fn wait_for_completion(
 }
 
 /// Posts a work request to the send queue of the given RDMA queue pair.
+#[cfg(feature = "cuda")]
 pub async fn send_wqe_gpu(
     qp: &mut IbvQueuePair,
     lhandle: &IbvMemoryRegionView,
@@ -385,6 +386,7 @@ pub async fn send_wqe_gpu(
 }
 
 /// Posts a work request to the receive queue of the given RDMA queue pair.
+#[cfg(feature = "cuda")]
 pub async fn recv_wqe_gpu(
     qp: &mut IbvQueuePair,
     lhandle: &IbvMemoryRegionView,
@@ -420,6 +422,7 @@ pub async fn recv_wqe_gpu(
 
 /// Rings the device doorbell for every posted-but-undoorbelled WQE on
 /// `qp`'s send queue.
+#[cfg(feature = "cuda")]
 pub async fn ring_db_gpu(qp: &IbvQueuePair) -> Result<(), anyhow::Error> {
     tokio::time::sleep(Duration::from_millis(2)).await;
     // SAFETY: `qp` is borrowed for the duration of this call; the
@@ -449,6 +452,7 @@ pub async fn ring_db_gpu(qp: &IbvQueuePair) -> Result<(), anyhow::Error> {
 
 /// Polls a single completion on `qp`'s send or recv CQ using the
 /// GPU-driven `launch_cqe_poll` kernel.
+#[cfg(feature = "cuda")]
 pub async fn wait_for_completion_gpu(
     qp: &mut IbvQueuePair,
     poll_target: PollTarget,

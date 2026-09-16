@@ -24,5 +24,10 @@ tokio = { version = "1.53.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../../typeuri" }
 
+[features]
+# Passthrough for kernel-launched RDMA; enables monarch_rdma's `cuda` feature
+# (which in turn enables rdmaxcel-sys/cuda). OFF by default.
+cuda = ["monarch_rdma/cuda"]
+
 [build-dependencies]
 build_utils = { version = "0.0.0", path = "../../build_utils" }
