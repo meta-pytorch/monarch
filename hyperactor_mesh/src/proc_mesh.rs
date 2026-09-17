@@ -172,7 +172,7 @@ impl ProcMesh {
             );
         }
 
-        let current_ref = ProcMeshRef::new(id.clone(), region, ranks, Some(hosts)).unwrap();
+        let current_ref = ProcMeshRef::new_host_backed(id.clone(), region, ranks, hosts)?;
 
         // Notify telemetry that the ProcAgent mesh was created.
         {
@@ -345,6 +345,8 @@ pub struct ProcMeshRef {
     id: ProcMeshId,
     region: Region,
     ranks: Arc<Vec<ProcRef>>,
+    /// Host proc for each proc rank in this mesh view.
+    host_procs: Arc<ValueMesh<ProcAddr>>,
     /// Actor mesh for the `ProcAgent`s backing this proc mesh view.
     ///
     /// `ProcMeshRef::sliced` derives a sliced agent mesh with a lazy cast
@@ -367,6 +369,7 @@ impl PartialEq for ProcMeshRef {
         self.id == other.id
             && self.region == other.region
             && self.ranks == other.ranks
+            && self.host_procs == other.host_procs
             && self.host_mesh == other.host_mesh
     }
 }
@@ -378,6 +381,7 @@ impl std::hash::Hash for ProcMeshRef {
         self.id.hash(state);
         self.region.hash(state);
         self.ranks.hash(state);
+        self.host_procs.hash(state);
         self.host_mesh.hash(state);
     }
 }
@@ -385,11 +389,11 @@ impl std::hash::Hash for ProcMeshRef {
 impl ProcMeshRef {
     /// Create a new ProcMeshRef from the given id, region, ranks, and so on.
     #[allow(clippy::result_large_err)]
-    fn new(
+    fn new_host_backed(
         id: ProcMeshId,
         region: Region,
         ranks: Arc<Vec<ProcRef>>,
-        host_mesh: Option<HostMeshRef>,
+        host_mesh: HostMeshRef,
     ) -> crate::Result<Self> {
         if ranks.is_empty() {
             return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
@@ -402,27 +406,63 @@ impl ProcMeshRef {
                 actual: ranks.len(),
             });
         }
+
+        let num_hosts = host_mesh.region().num_ranks();
+
+        if num_hosts == 0 {
+            return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
+                "cannot spawn a proc mesh on an empty host mesh"
+            )));
+        }
+
+        if !ranks.len().is_multiple_of(num_hosts) {
+            return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
+                "proc ranks must be evenly distributed across the spawning host mesh"
+            )));
+        }
+
+        let num_procs_per_host = ranks.len() / num_hosts;
+
+        let host_procs = Arc::new(ValueMesh::from_dense(
+            region.clone(),
+            host_mesh
+                .values()
+                .flat_map(|host| {
+                    std::iter::repeat_n(host.actor_addr().proc_addr().clone(), num_procs_per_host)
+                })
+                .collect(),
+        )?);
+
         let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks)?;
         Ok(Self {
             id,
             region,
             ranks,
+            host_procs,
             proc_agent_mesh,
-            host_mesh,
+            host_mesh: Some(host_mesh),
         })
     }
 
-    /// Create a singleton ProcMeshRef, given the provided ProcRef and id.
+    /// Create a singleton ProcMeshRef from the provided ProcRef, id, and host
+    /// proc address.
     /// This is used to support creating local singleton proc meshes to support `this_proc()`
     /// in python client actors.
-    pub fn new_singleton(id: ProcMeshId, proc_ref: ProcRef) -> crate::Result<Self> {
+    pub fn new_singleton(
+        id: ProcMeshId,
+        proc_ref: ProcRef,
+        host_proc_addr: ProcAddr,
+    ) -> crate::Result<Self> {
         let region: Region = Extent::unity().into();
         let ranks = Arc::new(vec![proc_ref]);
         let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks)?;
+        let host_procs = Arc::new(ValueMesh::from_single(region.clone(), host_proc_addr));
+
         Ok(Self {
             id,
             region,
             ranks,
+            host_procs,
             proc_agent_mesh,
             host_mesh: None,
         })
@@ -1364,6 +1404,7 @@ impl view::RankedSliceable for ProcMeshRef {
         Self {
             id: self.id.clone(),
             proc_agent_mesh: self.proc_agent_mesh.sliced(region.clone()),
+            host_procs: Arc::new(self.host_procs.sliced(region.clone())),
             region,
             ranks: Arc::new(ranks),
             host_mesh: self.host_mesh.clone(),
@@ -1967,9 +2008,17 @@ mod tests {
             ))
             .into(),
         );
+        let host_proc_addr = host_mesh
+            .agent_mesh()
+            .get(0)
+            .expect("local host mesh must contain one host")
+            .actor_addr()
+            .proc_addr()
+            .clone();
         let controller_view = ProcMeshRef::new_singleton(
             ProcMeshId::singleton(Label::strip("location_mismatch_view")),
             ProcRef::new(controller_proc_addr, 0, proc_agent),
+            host_proc_addr,
         )
         .unwrap();
 
