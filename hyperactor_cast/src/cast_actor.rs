@@ -120,7 +120,7 @@ hyperactor_config::declare_attrs! {
 hyperactor_config::declare_attrs! {
     /// Header stamped in tests with the cast tree path used to reach this
     /// recipient.
-    pub attr CAST_LINEAGE: Vec<usize>;
+    pub attr CAST_LINEAGE: Vec<ActorAddr>;
 }
 
 /// Wire-compatible mirror of `hyperactor_mesh::resource::RankRepr`.
@@ -389,7 +389,7 @@ impl CastDomainRef {
                         },
                         destination,
                         data.clone(),
-                        &ForwardLineage::default().through(destination.base_rank_in_domain),
+                        &ForwardLineage::default().through(&destination.actor),
                     )?;
                 }
             }
@@ -941,19 +941,19 @@ fn split_ports(
 /// Test-only forwarding path metadata.
 ///
 /// In production this is zero-sized and optimized away. In tests, each
-/// forwarded message carries the semantic tile-root ranks already traversed,
-/// and local delivery appends the current tile root.
+/// forwarded message carries the actor addresses already traversed, and local
+/// delivery appends the destination actor.
 #[derive(Debug, Clone, Default)]
 struct ForwardLineage {
     #[cfg(test)]
-    ranks: Vec<usize>,
+    actors: Vec<ActorAddr>,
 }
 
 impl ForwardLineage {
     #[cfg(test)]
     fn from_message(message: &CastMessage) -> Self {
         Self {
-            ranks: message.lineage.clone(),
+            actors: message.lineage.clone(),
         }
     }
 
@@ -962,23 +962,23 @@ impl ForwardLineage {
         Self {}
     }
 
-    fn through(&self, rank: usize) -> Self {
+    fn through(&self, actor: &ActorAddr) -> Self {
         #[cfg(test)]
         {
-            let mut ranks = self.ranks.clone();
-            ranks.push(rank);
-            Self { ranks }
+            let mut actors = self.actors.clone();
+            actors.push(actor.clone());
+            Self { actors }
         }
         #[cfg(not(test))]
         {
-            let _ = rank;
+            let _ = actor;
             Self {}
         }
     }
 
     #[cfg(test)]
-    fn ranks(&self) -> Vec<usize> {
-        self.ranks.clone()
+    fn actors(&self) -> Vec<ActorAddr> {
+        self.actors.clone()
     }
 }
 
@@ -998,9 +998,9 @@ struct CastMessage {
     session_id: Uuid,
     /// Per-domain-rank sequence numbers allocated by the sender before routing.
     seqs: ValueMesh<u64>,
-    /// Test-only semantic path of tile root ranks traversed so far.
+    /// Test-only path of actor addresses traversed so far.
     #[cfg(test)]
-    lineage: Vec<usize>,
+    lineage: Vec<ActorAddr>,
     /// Message headers.
     headers: Flattrs,
     /// The target port index on each destination actor.
@@ -1105,7 +1105,7 @@ fn deliver_to_destination(
     let _ = lineage;
 
     #[cfg(test)]
-    headers.set(CAST_LINEAGE, lineage.ranks());
+    headers.set(CAST_LINEAGE, lineage.actors());
 
     let dest = destination
         .actor
@@ -1128,7 +1128,7 @@ impl CastActor {
         message: &CastMessage,
         domain: &CastHop,
     ) -> Result<(), anyhow::Error> {
-        let lineage = ForwardLineage::from_message(message);
+        let lineage = ForwardLineage::from_message(message).through(cx.self_addr());
 
         // Split reply ports so that downstream next hops reply through this
         // CastActor's local proxy ports instead of directly to the original
@@ -1145,7 +1145,7 @@ impl CastActor {
             },
         )?;
 
-        let local_lineage = lineage.through(domain.local_destination.base_rank_in_domain);
+        let local_lineage = lineage.through(&domain.local_destination.actor);
         deliver_to_destination(
             cx,
             &CastDelivery::try_from_message(message, &domain.local_destination)?,
@@ -1169,7 +1169,7 @@ impl CastActor {
                             session_id: message.session_id,
                             seqs: message.seqs.clone(),
                             #[cfg(test)]
-                            lineage: local_lineage.ranks(),
+                            lineage: lineage.actors(),
                             headers: message.headers.clone(),
                             dest_port: message.dest_port,
                             data: data.clone(),
@@ -1177,7 +1177,7 @@ impl CastActor {
                     );
                 }
                 CastRoute::Direct(destination) => {
-                    let direct_lineage = local_lineage.through(destination.base_rank_in_domain);
+                    let direct_lineage = lineage.through(&destination.actor);
                     deliver_to_destination(
                         cx,
                         &CastDelivery::try_from_message(message, destination)?,
@@ -1554,7 +1554,7 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, typeuri::Named)]
     struct TestDeliveryRecord {
         payload: String,
-        lineage: Vec<usize>,
+        lineage: Vec<ActorAddr>,
         operation_endpoint: Option<String>,
     }
     wirevalue::register_type!(TestDeliveryRecord);
@@ -2279,15 +2279,75 @@ mod tests {
             lineage_by_proc.insert(proc_name, first_lineage);
         }
 
-        let expected_lineage: BTreeMap<String, Vec<usize>> = [
-            ("proc_0".to_string(), vec![0]),
-            ("proc_1".to_string(), vec![1]),
-            ("proc_2".to_string(), vec![2]),
-            ("proc_3".to_string(), vec![2, 3]),
-            ("proc_4".to_string(), vec![4]),
-            ("proc_5".to_string(), vec![4, 5]),
-            ("proc_6".to_string(), vec![4, 6]),
-            ("proc_7".to_string(), vec![4, 6, 7]),
+        let expected_lineage: BTreeMap<String, Vec<ActorAddr>> = [
+            (
+                "proc_0".to_string(),
+                vec![test_mesh.receiver_ids[0].clone()],
+            ),
+            (
+                "proc_1".to_string(),
+                vec![test_mesh.receiver_ids[1].clone()],
+            ),
+            (
+                "proc_2".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[2])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[2].clone(),
+                ],
+            ),
+            (
+                "proc_3".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[2])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[3].clone(),
+                ],
+            ),
+            (
+                "proc_4".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[4])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[4].clone(),
+                ],
+            ),
+            (
+                "proc_5".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[4])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[5].clone(),
+                ],
+            ),
+            (
+                "proc_6".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[4])
+                        .actor_addr()
+                        .clone(),
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[6])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[6].clone(),
+                ],
+            ),
+            (
+                "proc_7".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[4])
+                        .actor_addr()
+                        .clone(),
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[6])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[7].clone(),
+                ],
+            ),
         ]
         .into_iter()
         .collect();
@@ -2664,11 +2724,33 @@ mod tests {
             lineage_by_proc.insert(proc_name, first_lineage);
         }
 
-        let expected_lineage: BTreeMap<String, Vec<usize>> = [
-            ("proc_4".to_string(), vec![4]),
-            ("proc_5".to_string(), vec![5]),
-            ("proc_6".to_string(), vec![6]),
-            ("proc_7".to_string(), vec![6, 7]),
+        let expected_lineage: BTreeMap<String, Vec<ActorAddr>> = [
+            (
+                "proc_4".to_string(),
+                vec![test_mesh.receiver_ids[4].clone()],
+            ),
+            (
+                "proc_5".to_string(),
+                vec![test_mesh.receiver_ids[5].clone()],
+            ),
+            (
+                "proc_6".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[6])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[6].clone(),
+                ],
+            ),
+            (
+                "proc_7".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[6])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[7].clone(),
+                ],
+            ),
         ]
         .into_iter()
         .collect();
