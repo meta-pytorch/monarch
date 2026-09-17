@@ -43,7 +43,6 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::proc::Proc;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
 use hyperactor_cast::cast_actor::CAST_POINT;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -363,12 +362,6 @@ impl ProcAgent {
         proc: Proc,
         shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
-        let cast_handle = proc.spawn_with_uid(
-            Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
-            hyperactor_cast::cast_actor::CastActor::default(),
-        )?;
-        cast_handle.bind::<hyperactor_cast::cast_actor::CastActor>();
-
         // `spawn_data` discovers the per-proc ActorSpawner at its well-known UID,
         // so legacy ProcAgent bootstrapping must install it. This compatibility
         // step goes away when proc bootstrapping moves off ProcAgent entirely.
