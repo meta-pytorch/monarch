@@ -56,6 +56,7 @@ use hyperactor::Label;
 use hyperactor::OncePortRefRepr;
 use hyperactor::PortRef;
 use hyperactor::PortRefRepr;
+use hyperactor::ProcAddr;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::Uid;
 use hyperactor::accum::ReducerMode;
@@ -506,6 +507,15 @@ pub struct CastActor {
     installed_hops: HashMap<CastDomainId, CastHop>,
 }
 
+impl CastActor {
+    /// Return the typed CastActor reference for a system proc.
+    ///
+    /// Input: host proc `host_0`. Output: `host_0::cast`.
+    pub fn ref_for_proc(proc: ProcAddr) -> ActorRef<Self> {
+        ActorRef::attest(ActorAddr::root(proc, Label::strip(CAST_ACTOR_NAME)))
+    }
+}
+
 /// One tile-local hop in an installed cast tree.
 #[derive(Debug, Clone)]
 struct CastHop {
@@ -573,10 +583,7 @@ impl CastRoute {
 }
 
 fn cast_actor_ref_for_member(member: &ActorAddr) -> ActorRef<CastActor> {
-    ActorRef::attest(ActorAddr::root(
-        member.proc_addr(),
-        Label::strip(CAST_ACTOR_NAME),
-    ))
+    CastActor::ref_for_proc(member.proc_addr().clone())
 }
 
 fn annotate_cast_failure(
