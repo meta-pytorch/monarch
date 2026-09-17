@@ -411,6 +411,7 @@ impl ActorMonitor {
                 pending_poll: false,
                 supervised: false,
                 delivery,
+                terminal_status_subscriber: None,
             },
         );
         Self {
@@ -516,6 +517,7 @@ struct MonitorActor {
     pending_poll: bool,
     supervised: bool,
     delivery: Option<DeliveryMonitor>,
+    terminal_status_subscriber: Option<PortRef<Option<ActorStatus>>>,
 }
 
 #[derive(Debug)]
@@ -590,6 +592,9 @@ struct MonitorPollTimeout;
 struct MonitorStatusReply(Option<ActorStatus>);
 
 #[derive(Debug)]
+struct MonitorTerminalStatus(Option<ActorStatus>);
+
+#[derive(Debug)]
 struct MonitorDeliveryReply(DeliveryProgressResponse);
 
 #[derive(Debug)]
@@ -602,7 +607,34 @@ struct DeliveryPollResult {
 #[async_trait]
 impl Actor for MonitorActor {
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        let subscriber = this
+            .port::<MonitorTerminalStatus>()
+            .contramap(MonitorTerminalStatus)
+            .bind();
+        let mut status_port = self.target.status_port();
+        status_port.return_undeliverable(false);
+        status_port.post(
+            this,
+            StatusMessage::SubscribeTerminal {
+                subscriber: subscriber.clone(),
+            },
+        );
+        self.terminal_status_subscriber = Some(subscriber);
         this.post_after(this, MonitorTick, self.initial_delay);
+        Ok(())
+    }
+
+    async fn cleanup(
+        &mut self,
+        this: &Instance<Self>,
+        _err: Option<&crate::actor::ActorError>,
+    ) -> anyhow::Result<()> {
+        let Some(subscriber) = self.terminal_status_subscriber.take() else {
+            return Ok(());
+        };
+        let mut status_port = self.target.status_port();
+        status_port.return_undeliverable(false);
+        status_port.post(this, StatusMessage::UnsubscribeTerminal { subscriber });
         Ok(())
     }
 }
@@ -754,6 +786,30 @@ impl MonitorPollActor {
 }
 
 #[async_trait]
+impl Handler<MonitorTerminalStatus> for MonitorActor {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        MonitorTerminalStatus(status): MonitorTerminalStatus,
+    ) -> anyhow::Result<()> {
+        if self.failure.is_some() {
+            return Ok(());
+        }
+        self.pending_poll = false;
+        let failure = status.map_or_else(
+            || MonitorFailure::ActorGone {
+                actor_id: self.target.clone(),
+            },
+            |status| {
+                self.classify_failure(status)
+                    .expect("terminal status notification must contain a terminal status")
+            },
+        );
+        self.record_failure(failure)
+    }
+}
+
+#[async_trait]
 impl Handler<MonitorTick> for MonitorActor {
     async fn handle(&mut self, cx: &Context<Self>, _message: MonitorTick) -> anyhow::Result<()> {
         if self.failure.is_some() || self.pending_poll {
@@ -772,7 +828,7 @@ impl Handler<MonitorPollResult> for MonitorActor {
         cx: &Context<Self>,
         message: MonitorPollResult,
     ) -> anyhow::Result<()> {
-        if !self.pending_poll {
+        if self.failure.is_some() || !self.pending_poll {
             return Ok(());
         }
         self.pending_poll = false;
@@ -1239,6 +1295,7 @@ mod tests {
             pending_poll: false,
             supervised: false,
             delivery: Some(delivery),
+            terminal_status_subscriber: None,
         }
     }
 
@@ -1283,13 +1340,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_monitor_respects_initial_delay() {
+    async fn test_monitor_fallback_poll_respects_initial_delay() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let missing = proc.proc_addr().actor_addr("missing");
+        let unreachable =
+            crate::ProcAddr::instance(crate::channel::ChannelAddr::Local(1234), "gone")
+                .actor_addr("actor");
         let monitor = ActorMonitor::spawn_with_timings(
             &client,
-            missing.clone(),
+            unreachable.clone(),
             Duration::from_millis(100),
             Duration::from_millis(10),
             Duration::from_millis(50),
@@ -1303,7 +1362,10 @@ mod tests {
         );
         assert_eq!(
             monitor.wait_for_failure().await,
-            MonitorFailure::ActorGone { actor_id: missing }
+            MonitorFailure::StatusRequestTimedOut {
+                actor_id: unreachable,
+                timeout_millis: 50,
+            }
         );
     }
 
@@ -1357,6 +1419,42 @@ mod tests {
 
         assert_eq!(
             monitor.wait_for_failure().await,
+            MonitorFailure::ActorStopped {
+                actor_id,
+                status: ActorStatus::Stopped("done".to_string()),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_default_monitor_uses_terminal_status_notification() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn(TestActor);
+        let actor_id = handle.actor_addr().clone();
+        let monitor = ActorMonitor::spawn(&client, actor_id.clone());
+        let mut monitor_actor_status = monitor
+            .inner
+            .as_ref()
+            .expect("monitor inner should be present")
+            .handle
+            .status();
+        monitor_actor_status
+            .wait_for(|status| matches!(status, ActorStatus::Idle))
+            .await
+            .expect("monitor actor should finish initialization");
+        assert_eq!(
+            proc.terminal_status_subscriber_count(handle.actor_addr().id()),
+            1,
+            "monitor initialization should register its status subscriber"
+        );
+
+        handle.drain_and_stop("done").unwrap();
+
+        assert_eq!(
+            time::timeout(Duration::from_millis(200), monitor.wait_for_failure())
+                .await
+                .expect("terminal status notification should beat the initial poll delay"),
             MonitorFailure::ActorStopped {
                 actor_id,
                 status: ActorStatus::Stopped("done".to_string()),

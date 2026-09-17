@@ -101,6 +101,7 @@ use std::any::Any;
 use std::any::TypeId;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
 use std::ops::Deref;
@@ -514,6 +515,10 @@ struct TerminatedSnapshot {
 
 /// Actor status control-plane message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "keep the existing GetStatus wire representation stable while adding smaller subscription requests"
+)]
 pub enum StatusMessage {
     /// Return the destination actor's current or tombstoned status.
     GetStatus {
@@ -527,8 +532,24 @@ pub enum StatusMessage {
             crate::OncePortRef<DeliveryProgressResponse>,
         )>,
     },
+    /// Best-effort notification to `subscriber` when the destination actor
+    /// reaches a terminal status. An actor that is already terminal or unknown
+    /// replies immediately.
+    SubscribeTerminal {
+        /// Port receiving `None` for an unknown actor and `Some(status)` for a
+        /// known actor. The subscription is removed before notification.
+        subscriber: PortRef<Option<ActorStatus>>,
+    },
+    /// Remove a terminal-status subscription previously registered for this
+    /// destination actor.
+    UnsubscribeTerminal {
+        /// The same port used to subscribe.
+        subscriber: PortRef<Option<ActorStatus>>,
+    },
 }
 wirevalue::register_type!(StatusMessage);
+
+const MAX_TERMINAL_STATUS_SUBSCRIBERS: usize = 100;
 
 /// Response to a delivery progress query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
@@ -606,6 +627,12 @@ impl MailboxSender for StatusSender {
                         tracing::error!("delivery progress reply failed: {err}");
                     }
                 }
+            }
+            StatusMessage::SubscribeTerminal { subscriber } => {
+                proc.subscribe_terminal_status(&envelope.dest().actor_addr(), subscriber);
+            }
+            StatusMessage::UnsubscribeTerminal { subscriber } => {
+                proc.unsubscribe_terminal_status(&actor_id, &subscriber);
             }
         }
     }
@@ -870,6 +897,64 @@ impl Proc {
             Some(progress) => DeliveryProgressResponse::Progress(progress),
             None => DeliveryProgressResponse::Incomplete,
         }
+    }
+
+    fn send_terminal_status(
+        &self,
+        actor_addr: &ActorAddr,
+        subscriber: PortRef<Option<ActorStatus>>,
+        status: Option<ActorStatus>,
+    ) {
+        let envelope = MessageEnvelope::serialize(
+            actor_addr.clone(),
+            subscriber.into_port_addr(),
+            &status,
+            Flattrs::new(),
+        );
+        let Ok(mut envelope) = envelope else {
+            tracing::error!(actor_id = %actor_addr, "failed to serialize terminal status notification");
+            return;
+        };
+        envelope.set_header(SEQ_INFO, SeqInfo::Direct);
+        // A terminal subscription is one-shot and has already been removed.
+        // Dropping an undeliverable notification avoids a stale subscriber
+        // causing another supervision failure in the target runtime.
+        envelope.set_return_undeliverable(false);
+        self.post(envelope, crate::mailbox::monitored_return_handle());
+    }
+
+    fn subscribe_terminal_status(
+        &self,
+        actor_addr: &ActorAddr,
+        subscriber: PortRef<Option<ActorStatus>>,
+    ) {
+        if let Some(cell) = self.get_instance_by_id(actor_addr.id()) {
+            cell.subscribe_terminal_status(subscriber);
+            return;
+        }
+
+        let status = self
+            .inner
+            .actor_tombstones
+            .get(actor_addr.id())
+            .map(|entry| entry.value().clone());
+        self.send_terminal_status(actor_addr, subscriber, status);
+    }
+
+    fn unsubscribe_terminal_status(
+        &self,
+        actor_id: &ActorId,
+        subscriber: &PortRef<Option<ActorStatus>>,
+    ) {
+        if let Some(cell) = self.get_instance_by_id(actor_id) {
+            cell.unsubscribe_terminal_status(subscriber);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn terminal_status_subscriber_count(&self, actor_id: &ActorId) -> usize {
+        self.get_instance_by_id(actor_id)
+            .map_or(0, |cell| cell.terminal_status_subscriber_count())
     }
 
     fn from_parts(proc_id: ProcId, gateway: Gateway) -> Self {
@@ -3956,6 +4041,9 @@ struct InstanceCellState {
     /// An observer that stores the current status of the actor.
     status: watch::Receiver<ActorStatus>,
 
+    /// Best-effort one-shot subscribers for this actor's terminal status.
+    terminal_status_subscribers: Mutex<VecDeque<PortRef<Option<ActorStatus>>>>,
+
     /// A weak reference to this instance's parent.
     parent: WeakInstanceCell,
 
@@ -4188,6 +4276,7 @@ impl InstanceCell {
                 actor_loop,
                 status_tx,
                 status,
+                terminal_status_subscribers: Mutex::new(VecDeque::new()),
                 parent: parent.map_or_else(WeakInstanceCell::new, |cell| cell.downgrade()),
                 children: DashMap::new(),
                 actor_task_handle: OnceLock::new(),
@@ -4256,6 +4345,49 @@ impl InstanceCell {
         &self.inner.status
     }
 
+    fn subscribe_terminal_status(&self, subscriber: PortRef<Option<ActorStatus>>) {
+        let mut subscribers = self.inner.terminal_status_subscribers.lock().unwrap();
+        let status = self.status().borrow().clone();
+        if !status.is_terminal() {
+            if subscribers.contains(&subscriber) {
+                return;
+            }
+            if subscribers.len() == MAX_TERMINAL_STATUS_SUBSCRIBERS {
+                subscribers.pop_front();
+            }
+            subscribers.push_back(subscriber);
+            return;
+        }
+
+        drop(subscribers);
+        self.proc()
+            .send_terminal_status(self.actor_addr(), subscriber, Some(status));
+    }
+
+    fn unsubscribe_terminal_status(&self, subscriber: &PortRef<Option<ActorStatus>>) {
+        let mut subscribers = self.inner.terminal_status_subscribers.lock().unwrap();
+        if let Some(index) = subscribers
+            .iter()
+            .position(|candidate| candidate == subscriber)
+        {
+            subscribers.remove(index);
+        }
+    }
+
+    fn notify_terminal_status(&self, status: ActorStatus) {
+        let subscribers =
+            std::mem::take(&mut *self.inner.terminal_status_subscribers.lock().unwrap());
+        for subscriber in subscribers {
+            self.proc()
+                .send_terminal_status(self.actor_addr(), subscriber, Some(status.clone()));
+        }
+    }
+
+    #[cfg(test)]
+    fn terminal_status_subscriber_count(&self) -> usize {
+        self.inner.terminal_status_subscribers.lock().unwrap().len()
+    }
+
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
     /// the last status was active for.
     #[track_caller]
@@ -4318,6 +4450,9 @@ impl InstanceCell {
         if !changed {
             return;
         }
+        if new.is_terminal() {
+            self.notify_terminal_status(new.clone());
+        }
         let old = old_status.expect("status change should capture previous status");
         // Idle/Processing transitions are omitted because they occur for every
         // message. Duplicate status updates are omitted as well.
@@ -4358,7 +4493,7 @@ impl InstanceCell {
     fn publish_dropped_status(&self, terminal_status: ActorStatus) {
         let actor_id = self.actor_addr().id().clone();
         let actor_addr = self.actor_addr().clone();
-        self.inner.status_tx.send_if_modified(|status| {
+        let changed = self.inner.status_tx.send_if_modified(|status| {
             if status.is_terminal() {
                 false
             } else {
@@ -4379,6 +4514,9 @@ impl InstanceCell {
                 true
             }
         });
+        if changed {
+            self.notify_terminal_status(terminal_status);
+        }
     }
 
     /// The terminal supervision event recorded by the serving loop: a
@@ -5069,6 +5207,119 @@ mod tests {
             .await
             .expect("status reply should arrive")
             .expect("status reply port should remain open")
+    }
+
+    #[tokio::test]
+    async fn terminal_status_subscription_notifies_after_actor_stops() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let actor = proc.spawn_with_label("target", TestActor);
+        let (subscriber, mut status_rx) = client.open_port::<Option<ActorStatus>>();
+        actor.actor_addr().status_port().post(
+            &client,
+            StatusMessage::SubscribeTerminal {
+                subscriber: subscriber.bind(),
+            },
+        );
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), status_rx.recv())
+                .await
+                .is_err(),
+            "terminal status subscription should remain quiet while the actor is alive"
+        );
+
+        actor.drain_and_stop("test").unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(1), status_rx.recv())
+            .await
+            .expect("terminal status notification should arrive")
+            .expect("terminal status subscriber should remain open");
+        assert_matches!(status, Some(ActorStatus::Stopped(reason)) if reason == "test");
+    }
+
+    #[tokio::test]
+    async fn terminal_status_subscription_can_be_removed() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let actor = proc.spawn_with_label("target", TestActor);
+        let (subscriber, mut status_rx) = client.open_port::<Option<ActorStatus>>();
+        let subscriber = subscriber.bind();
+        actor.actor_addr().status_port().post(
+            &client,
+            StatusMessage::SubscribeTerminal {
+                subscriber: subscriber.clone(),
+            },
+        );
+        actor
+            .actor_addr()
+            .status_port()
+            .post(&client, StatusMessage::UnsubscribeTerminal { subscriber });
+
+        actor.drain_and_stop("test").unwrap();
+        actor.await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), status_rx.recv())
+                .await
+                .is_err(),
+            "removed terminal status subscriber should not be notified"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_status_subscription_drops_stale_subscriber_after_notification() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let actor = proc.spawn_with_label("target", TestActor);
+        let actor_id = actor.actor_addr().id().clone();
+        let (subscriber, status_rx) = client.open_port::<Option<ActorStatus>>();
+        actor.actor_addr().status_port().post(
+            &client,
+            StatusMessage::SubscribeTerminal {
+                subscriber: subscriber.bind(),
+            },
+        );
+        assert_eq!(
+            proc.terminal_status_subscriber_count(&actor_id),
+            1,
+            "live actor should retain its terminal status subscriber"
+        );
+
+        drop(status_rx);
+        actor.drain_and_stop("test").unwrap();
+        assert_matches!(actor.await, ActorStatus::Stopped(reason) if reason == "test");
+        assert_eq!(
+            proc.terminal_status_subscriber_count(&actor_id),
+            0,
+            "terminal transition should clear a stale subscriber before sending"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_status_subscription_notifies_for_terminal_and_missing_actors() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let actor = proc.spawn_with_label("target", TestActor);
+        let actor_addr = actor.actor_addr().clone();
+        actor.drain_and_stop("test").unwrap();
+        assert_matches!(actor.await, ActorStatus::Stopped(reason) if reason == "test");
+
+        for (actor_addr, expected) in [
+            (actor_addr, Some(ActorStatus::Stopped("test".to_string()))),
+            (proc.proc_addr().actor_addr("missing"), None),
+        ] {
+            let (subscriber, mut status_rx) = client.open_port::<Option<ActorStatus>>();
+            actor_addr.status_port().post(
+                &client,
+                StatusMessage::SubscribeTerminal {
+                    subscriber: subscriber.bind(),
+                },
+            );
+            let status = tokio::time::timeout(Duration::from_secs(1), status_rx.recv())
+                .await
+                .expect("terminal status notification should arrive")
+                .expect("terminal status subscriber should remain open");
+            assert_eq!(status, expected);
+        }
     }
 
     #[test]
