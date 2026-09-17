@@ -2256,11 +2256,12 @@ mod tests {
                 hyperactor::ActorRef::attest(
                     proc_addr.actor_addr(hyperactor_mesh::proc_agent::PROC_AGENT_ACTOR_NAME),
                 );
-            let proc_ref = hyperactor_mesh::proc_mesh::ProcRef::new(proc_addr, 0, agent);
+            let proc_ref = hyperactor_mesh::proc_mesh::ProcRef::new(proc_addr.clone(), 0, agent);
             MeshRef::Proc(Box::new(
                 hyperactor_mesh::proc_mesh::ProcMeshRef::new_singleton(
                     hyperactor_mesh::mesh_id::ProcMeshId::singleton(Label::new(label).unwrap()),
                     proc_ref,
+                    proc_addr,
                 )
                 .unwrap(),
             ))
