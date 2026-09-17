@@ -191,14 +191,18 @@ impl CastDomainId {
             Slice::new_row_major(vec![destinations.region().num_ranks()]),
         );
 
-        let root_region = nodes
-            .region()
-            .range(CAST_ACTOR_DIM, ndslice::Range(0, Some(1), 1))?;
+        let deliveries = root_tile
+            .root_item()
+            .ok_or_else(|| anyhow::anyhow!("cast routing mesh must contain a root node"))?
+            .destinations
+            .clone();
 
-        let root_only_tile = root_tile.subtile(Tile::from_view(&root_region));
-        let child_tiles = std::iter::once(root_only_tile)
-            .chain(next_tiles(tiling_policy, &root_tile))
-            .collect::<Vec<_>>();
+        let delivery_region = destination_region.range(
+            CAST_DESTINATION_DIM,
+            ndslice::Range(0, Some(deliveries.len()), 1),
+        )?;
+
+        let child_tiles = next_tiles(tiling_policy, &root_tile);
 
         let subtrees = child_tiles
             .iter()
@@ -220,7 +224,11 @@ impl CastDomainId {
 
         Ok(CastDomainRef {
             id: self,
-            subtrees,
+            sender_hop: CastHop {
+                deliveries,
+                delivery_region,
+                next_hops: subtrees,
+            },
             sequencing: CastSequencing {
                 nodes,
                 region: destination_region,
@@ -238,14 +246,14 @@ impl std::fmt::Display for CastDomainId {
 
 /// Opaque local handle for initiating work against a materialized cast domain.
 ///
-/// Unlike [`CastDomainId`], this includes the root-heaved relay branches used
-/// to address the domain. Callers obtain this only by materializing a
-/// [`CastDomainId`].
+/// Unlike [`CastDomainId`], this includes the root deliveries and relay branches
+/// used to address the domain. Callers obtain this only by
+/// materializing a [`CastDomainId`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CastDomainRef {
     id: CastDomainId,
-    /// Independently seeded routes for initiating casts into subtrees.
-    subtrees: Vec<CastSubtree>,
+    /// The first hop, executed directly by the sender after root absorption.
+    sender_hop: CastHop,
     /// State used to assign one sequence number to each destination.
     sequencing: CastSequencing,
 }
@@ -347,54 +355,30 @@ impl CastDomainRef {
     /// Cast a message to all members of this domain with caller-supplied headers.
     ///
     /// `headers` are the destination envelope headers supplied by the caller.
-    /// The cast layer stamps cast-owned fields on top before sending the
-    /// [`CastMessage`] through each subtree route.
+    /// The cast layer stamps cast-owned fields on top before delivering through
+    /// the sender hop.
     pub fn cast<M: Serialize + Named>(
         &self,
         cx: &impl context::Actor,
         headers: Flattrs,
         message: M,
     ) -> anyhow::Result<()> {
-        let mut data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
-        let sender = cx.mailbox().actor_addr().clone();
-        let dest_port = M::port();
+        let data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
         let (session_id, seqs) = self.sequencing.seqs_for_cast(cx)?;
+        let cast_message = CastMessage {
+            cast_domain_id: self.id.clone(),
+            sender: cx.mailbox().actor_addr().clone(),
+            session_id,
+            seqs,
+            #[cfg(test)]
+            lineage: Vec::new(),
+            headers,
+            dest_port: M::port(),
+            data,
+        };
 
-        let cast_headers = headers.clone();
-        let subtree_seqs = self
-            .subtrees
-            .iter()
-            .map(|subtree| seqs.sliced(subtree.served_region.clone()))
-            .collect::<Vec<_>>();
-
-        split_ports(
-            cx,
-            &mut data,
-            SplitFanout {
-                peer_count: self.subtrees.len(),
-                num_destinations: seqs.region().num_ranks(),
-            },
-        )?;
-
-        for (subtree, seqs) in self.subtrees.iter().zip(subtree_seqs) {
-            subtree.cast_actor.port().post_with_headers(
-                cx,
-                headers.clone(),
-                CastMessage {
-                    cast_domain_id: self.id.clone(),
-                    sender: sender.clone(),
-                    session_id,
-                    seqs,
-                    #[cfg(test)]
-                    lineage: Vec::new(),
-                    headers: cast_headers.clone(),
-                    dest_port,
-                    data: data.clone(),
-                },
-            );
-        }
-
-        Ok(())
+        self.sender_hop
+            .route(cx, &cast_message, &ForwardLineage::default())
     }
 
     /// Release this cast domain after all destination actors have shut down.
@@ -408,7 +392,7 @@ impl CastDomainRef {
     /// This operation is best-effort and does not acknowledge completion.
     pub fn destroy(&self, cx: &impl context::Actor) {
         let origin = cx.mailbox().actor_addr().clone();
-        for subtree in &self.subtrees {
+        for subtree in &self.sender_hop.next_hops {
             subtree.cast_actor.post(
                 cx,
                 DestroyCastDomain {
@@ -2144,12 +2128,10 @@ mod tests {
             Tile::from_view(Ranked::region(nodes.as_ref())),
             nodes.clone(),
         );
-        let root_region = Ranked::region(nodes.as_ref())
-            .range(CAST_ACTOR_DIM, ndslice::Range(0, Some(1), 1))
-            .map_err(|error| TestCaseError::fail(error.to_string()))?;
-        let entry_tiles = std::iter::once(root.subtile(Tile::from_view(&root_region)))
-            .chain(next_tiles(policy, &root))
-            .collect::<Vec<_>>();
+        let root_node = root
+            .root_item()
+            .ok_or_else(|| TestCaseError::fail("routing mesh must contain a root node"))?;
+        let entry_tiles = next_tiles(policy, &root);
         let served_region = Region::new(
             vec![CAST_DESTINATION_DIM.to_string()],
             Slice::new_row_major(vec![Ranked::region(destinations.as_ref()).num_ranks()]),
@@ -2157,7 +2139,10 @@ mod tests {
 
         let expected_relays = host_cast_actors
             .values()
-            .map(|cast_actor| cast_actor.actor_addr().clone())
+            .filter_map(|cast_actor| {
+                (cast_actor.actor_addr() != root_node.cast_actor.actor_addr())
+                    .then(|| cast_actor.actor_addr().clone())
+            })
             .collect::<BTreeSet<_>>();
         let observed_relays = entry_tiles
             .iter()
@@ -2165,10 +2150,15 @@ mod tests {
             .map(|node| node.cast_actor.actor_addr().clone())
             .collect::<BTreeSet<_>>();
         let expected_ranks = region.slice().iter().collect::<BTreeSet<_>>();
-        let observed_ranks = entry_tiles
+        let observed_ranks = root_node
+            .destinations
             .iter()
-            .flat_map(MaterializedTile::items)
-            .flat_map(|node| node.destinations.iter())
+            .chain(
+                entry_tiles
+                    .iter()
+                    .flat_map(MaterializedTile::items)
+                    .flat_map(|node| node.destinations.iter()),
+            )
             .map(|destination| destination.base_rank_in_domain)
             .collect::<BTreeSet<_>>();
 
@@ -2190,11 +2180,11 @@ mod tests {
 
         // CA-2 (domain coverage).
         #[test]
-        fn prop_root_heaved_routing_tiles_cover_the_domain(
+        fn prop_root_absorbed_routing_tiles_cover_the_domain(
             region in materialization_regions(),
             policy in tiling_policies(),
         ) {
-            validate_root_heaved_routing_tiles(region, policy)?;
+            validate_root_absorbed_routing_tiles(region, policy)?;
         }
     }
 
@@ -2230,15 +2220,15 @@ mod tests {
         let test_mesh = CastTestMesh::new(8);
         let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
         let snapshots = test_mesh
-            .wait_for_domain_snapshots(root_domain.domain_id(), 8)
+            .wait_for_domain_snapshots(root_domain.domain_id(), 7)
             .await;
 
         assert_eq!(
             snapshots.keys().cloned().collect::<BTreeSet<_>>(),
-            (0..8).map(|rank| format!("proc_{rank}")).collect()
+            (1..8).map(|rank| format!("proc_{rank}")).collect()
         );
 
-        for rank in 0..8 {
+        for rank in 1..8 {
             let proc_name = format!("proc_{rank}");
             let snapshot = snapshots
                 .get(&proc_name)
@@ -2476,9 +2466,8 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
 
         // client
-        // |-- host_0::cast
-        // |   |-- host_0_actor_0::receiver
-        // |   `-- host_0_actor_1::receiver
+        // |-- host_0_actor_0::receiver
+        // |-- host_0_actor_1::receiver
         // |-- host_1::cast
         // |   |-- host_1_actor_0::receiver
         // |   |-- host_1_actor_1::receiver
@@ -2503,17 +2492,11 @@ mod tests {
         let expected_lineage: BTreeMap<String, Vec<ActorAddr>> = [
             (
                 "host_0_actor_0".to_string(),
-                vec![
-                    hosts[0].1.actor_addr().clone(),
-                    destination_addrs[0][0].clone(),
-                ],
+                vec![destination_addrs[0][0].clone()],
             ),
             (
                 "host_0_actor_1".to_string(),
-                vec![
-                    hosts[0].1.actor_addr().clone(),
-                    destination_addrs[0][1].clone(),
-                ],
+                vec![destination_addrs[0][1].clone()],
             ),
             (
                 "host_1_actor_0".to_string(),
@@ -2679,7 +2662,7 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_root_heaving_block_partitioning_delivers_once() {
+    async fn test_root_absorption_block_partitioning_delivers_once() {
         // GIVEN: four hosts with four proc ranks per host.
         let mut test_mesh = CastTestMesh::new(16);
         test_mesh.spawn_split_port_receivers();
@@ -2690,7 +2673,7 @@ mod tests {
         // THEN: every proc receives exactly one reply-producing delivery.
         let proc_names = test_mesh.proc_names();
         assert_eq!(
-            cast_and_collect_reply_counts(&test_mesh, &root_domain, "root-heaved").await,
+            cast_and_collect_reply_counts(&test_mesh, &root_domain, "root-absorbed").await,
             expected_reply_counts(&proc_names.iter().map(String::as_str).collect::<Vec<_>>())
         );
     }
@@ -2968,16 +2951,16 @@ mod tests {
         let test_mesh = CastTestMesh::new(8);
         let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
         let domain_id = root_domain.domain_id().clone();
-        test_mesh.wait_for_domain_snapshots(&domain_id, 8).await;
+        test_mesh.wait_for_domain_snapshots(&domain_id, 7).await;
 
         root_domain.destroy(&test_mesh.client);
 
         let destroyed = test_mesh
-            .wait_for_destroyed_domain_snapshots(&domain_id, 8)
+            .wait_for_destroyed_domain_snapshots(&domain_id, 7)
             .await;
         assert_eq!(
             destroyed,
-            (0..8).map(|rank| format!("proc_{rank}")).collect()
+            (1..8).map(|rank| format!("proc_{rank}")).collect()
         );
     }
 
@@ -3479,7 +3462,7 @@ mod tests {
             &build_split_paths(&split_port_recording.edges()),
             &rank_lookup,
         );
-        let expected_paths = (0..n)
+        let expected_paths = (1..n)
             .map(|rank| (rank, vec![rank]))
             .collect::<BTreeMap<_, _>>();
 
@@ -3559,17 +3542,17 @@ mod tests {
             &build_split_paths(&split_port_recording.edges()),
             &rank_lookup,
         );
-        let expected_paths = (0..n)
+        let expected_paths = (1..n)
             .map(|rank| (rank, vec![rank]))
             .collect::<BTreeMap<_, _>>();
 
         assert_eq!(rank_paths, expected_paths);
     }
 
-    // Tests that a serialized BoundedFanout policy drives root-heaved
+    // Tests that a serialized BoundedFanout policy drives root-absorbed
     // cast-domain setup end to end.
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_root_heaved_bounded_fanout_installs_expected_hops() {
+    async fn test_root_absorbed_bounded_fanout_installs_expected_hops() {
         clear_captured_domains();
 
         // GIVEN: an 8-rank domain with fanout 2.
@@ -3583,13 +3566,24 @@ mod tests {
             },
         );
         let snapshots = test_mesh
-            .wait_for_domain_snapshots(root_domain.domain_id(), 8)
+            .wait_for_domain_snapshots(root_domain.domain_id(), 7)
             .await;
 
-        // THEN: the caller seeds the root relay and two heaved relay subtrees.
+        // THEN: the caller owns the root destination and seeds two relay
+        // subtrees.
         assert_eq!(
             root_domain
-                .subtrees
+                .sender_hop
+                .deliveries
+                .iter()
+                .map(|destination| { destination.actor.proc_addr().log_name().to_string() })
+                .collect::<BTreeSet<_>>(),
+            ["proc_0"].into_iter().map(str::to_string).collect()
+        );
+        assert_eq!(
+            root_domain
+                .sender_hop
+                .next_hops
                 .iter()
                 .map(|subtree| {
                     subtree
@@ -3600,7 +3594,7 @@ mod tests {
                         .to_string()
                 })
                 .collect::<BTreeSet<_>>(),
-            ["proc_0", "proc_1", "proc_5"]
+            ["proc_1", "proc_5"]
                 .into_iter()
                 .map(str::to_string)
                 .collect()
@@ -3608,10 +3602,10 @@ mod tests {
 
         assert_eq!(
             snapshots.keys().cloned().collect::<BTreeSet<_>>(),
-            (0..8).map(|rank| format!("proc_{rank}")).collect()
+            (1..8).map(|rank| format!("proc_{rank}")).collect()
         );
 
-        for rank in 0..8 {
+        for rank in 1..8 {
             let proc_name = format!("proc_{rank}");
             let snapshot = snapshots
                 .get(&proc_name)
@@ -3625,10 +3619,10 @@ mod tests {
         }
     }
 
-    // Tests that a serialized Bisection policy drives root-heaved cast-domain
+    // Tests that a serialized Bisection policy drives root-absorbed cast-domain
     // setup end to end.
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_root_heaved_bisection_installs_expected_hops() {
+    async fn test_root_absorbed_bisection_installs_expected_hops() {
         clear_captured_domains();
 
         // GIVEN: an 8-rank domain with bisection tiling.
@@ -3638,13 +3632,24 @@ mod tests {
         let root_domain =
             test_mesh.root_domain_with_policy(shape!(a = 8).into(), TilingPolicy::Bisection);
         let snapshots = test_mesh
-            .wait_for_domain_snapshots(root_domain.domain_id(), 8)
+            .wait_for_domain_snapshots(root_domain.domain_id(), 7)
             .await;
 
-        // THEN: the caller seeds the root relay and three heaved relay subtrees.
+        // THEN: the caller owns the root destination and seeds three relay
+        // subtrees.
         assert_eq!(
             root_domain
-                .subtrees
+                .sender_hop
+                .deliveries
+                .iter()
+                .map(|destination| { destination.actor.proc_addr().log_name().to_string() })
+                .collect::<BTreeSet<_>>(),
+            ["proc_0"].into_iter().map(str::to_string).collect()
+        );
+        assert_eq!(
+            root_domain
+                .sender_hop
+                .next_hops
                 .iter()
                 .map(|subtree| {
                     subtree
@@ -3655,7 +3660,7 @@ mod tests {
                         .to_string()
                 })
                 .collect::<BTreeSet<_>>(),
-            ["proc_0", "proc_1", "proc_2", "proc_4"]
+            ["proc_1", "proc_2", "proc_4"]
                 .into_iter()
                 .map(str::to_string)
                 .collect()
@@ -3663,10 +3668,10 @@ mod tests {
 
         assert_eq!(
             snapshots.keys().cloned().collect::<BTreeSet<_>>(),
-            (0..8).map(|rank| format!("proc_{rank}")).collect()
+            (1..8).map(|rank| format!("proc_{rank}")).collect()
         );
 
-        for rank in 0..8 {
+        for rank in 1..8 {
             let proc_name = format!("proc_{rank}");
             let snapshot = snapshots
                 .get(&proc_name)
