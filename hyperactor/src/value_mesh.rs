@@ -577,7 +577,7 @@ impl<T: Clone + 'static> view::RankedSliceable for ValueMesh<T> {
                 let source_ordinal_slice = region
                     .slice()
                     .relative_ordinal_slice(self.region.slice())
-                    .expect("sliced region should preserve the parent dimensions");
+                    .expect("sliced region should be a valid subregion of its parent");
                 self.slice_compressed(region, table, runs, source_ordinal_slice)
             }
         }
@@ -1353,6 +1353,24 @@ mod tests {
                 "the supported rectangular selection should stay compressed",
             );
         }
+    }
+
+    #[test]
+    fn compressed_slicing_supports_reshape() {
+        let matrix: Region = extent!(host = 2, gpu = 2).into();
+        let mesh = ValueMesh::from_dense(matrix.clone(), vec![0, 0, 1, 1])
+            .expect("values should match the source region");
+        let flat = Region::new(vec!["rank".to_string()], Slice::new_row_major(vec![4]));
+
+        let flattened = mesh.sliced(flat);
+
+        assert_eq!(flattened.values().collect::<Vec<_>>(), vec![0, 0, 1, 1]);
+        assert!(matches!(flattened.rep, Rep::Compressed { .. }));
+
+        let reshaped = flattened.sliced(matrix);
+
+        assert_eq!(reshaped.values().collect::<Vec<_>>(), vec![0, 0, 1, 1]);
+        assert!(matches!(reshaped.rep, Rep::Compressed { .. }));
     }
 
     #[test]
