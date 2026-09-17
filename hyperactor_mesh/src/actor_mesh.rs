@@ -941,24 +941,9 @@ impl ActorMeshCastDomain {
             return Ok(cast_domain.get().clone());
         }
 
-        let region = self.destinations.region().clone();
-        let members = region
-            .slice()
-            .iter()
-            .map(|rank| {
-                let destination = self
-                    .destinations
-                    .get_by_base_rank(rank)
-                    .ok_or_else(|| anyhow::anyhow!("missing cast destination for rank {rank}"))?;
-
-                Ok((rank, destination.actor().clone()))
-            })
-            .collect::<anyhow::Result<HashMap<_, _>>>()?;
-
         let cast_domain = self.id.clone().materialize(
             cx,
-            members,
-            region,
+            Arc::clone(&self.destinations),
             self.tiling_policy,
             headers.clone(),
         )?;
@@ -1735,6 +1720,7 @@ mod tests {
     use hyperactor::mailbox;
     use hyperactor::supervision::ActorSupervisionEvent;
     use hyperactor_cast::TilingPolicy;
+    use hyperactor_cast::cast_actor::CastDestination;
     use hyperactor_cast::cast_actor::CastDomainId;
     use ndslice::Extent;
     use ndslice::Region;
@@ -2762,15 +2748,15 @@ mod tests {
             .collect::<HashMap<_, _>>();
 
         let region = Region::from(ndslice::shape!(rank = 2));
-        let actor_members = members
-            .iter()
-            .map(|(rank, (actor, _))| (*rank, actor.clone()))
-            .collect();
+        let destinations = CastDestination::mesh(
+            region,
+            (0..2).map(|rank| members[&rank].0.clone()).collect(),
+        )
+        .unwrap();
         let cast_domain = hyperactor_cast::cast_actor::CastDomainId::new()
             .materialize(
                 &client,
-                actor_members,
-                region,
+                Arc::new(destinations),
                 hyperactor_cast::cast_actor::TilingPolicy::BlockPartitioning,
                 hyperactor_config::Flattrs::new(),
             )
