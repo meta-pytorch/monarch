@@ -198,10 +198,49 @@ impl Slice {
         &self.strides
     }
 
+    /// Return whether two slices visit the same locations in the same order
+    /// after adjacent contiguous dimensions are joined.
+    ///
+    /// For example, `[2, 3]` with strides `[3, 1]` and `[6]` with stride
+    /// `[1]` both normalize to `[6]` with stride `[1]`, so this returns true.
+    /// A transposed `[3, 2]` slice with strides `[1, 3]` does not normalize to
+    /// the same layout, so this returns false.
+    fn is_order_preserving_reshape_of(&self, other: &Self) -> bool {
+        if self.offset != other.offset || self.len() != other.len() {
+            return false;
+        }
+
+        let normalized_dimensions = |slice: &Self| -> Option<Vec<(usize, usize)>> {
+            let mut dimensions: Vec<(usize, usize)> = Vec::new();
+
+            for (&size, &stride) in slice.sizes.iter().zip(&slice.strides).rev() {
+                if size == 1 {
+                    continue;
+                }
+
+                if let Some((inner_size, inner_stride)) = dimensions.last_mut()
+                    && (*inner_stride).checked_mul(*inner_size) == Some(stride)
+                {
+                    *inner_size = size.checked_mul(*inner_size)?;
+                } else {
+                    dimensions.push((size, stride));
+                }
+            }
+
+            dimensions.reverse();
+
+            Some(dimensions)
+        };
+
+        normalized_dimensions(self)
+            .zip(normalized_dimensions(other))
+            .is_some_and(|(self_dimensions, other_dimensions)| self_dimensions == other_dimensions)
+    }
+
     /// Express this slice in the ordinal space of `parent`.
     ///
-    /// Returns an error if this slice does not select a valid, dimension-
-    /// preserving subregion of `parent`.
+    /// Returns an error if this slice does not select a valid subregion of
+    /// `parent`. Dimensions fixed to one index can be absent from this slice.
     ///
     /// ```text
     /// parent ranks (offset=100, sizes=[4, 4], strides=[8, 2]):
@@ -216,7 +255,11 @@ impl Slice {
     /// result: offset=5, sizes=[2, 2], strides=[8, 1]
     /// ```
     pub fn relative_ordinal_slice(&self, parent: &Self) -> Result<Self, SliceError> {
-        if parent.num_dim() != self.num_dim() {
+        if self.is_order_preserving_reshape_of(parent) {
+            return Ok(Self::new_row_major(self.sizes.clone()));
+        }
+
+        if self.num_dim() > parent.num_dim() {
             return Err(SliceError::InvalidDims {
                 expected: parent.num_dim(),
                 got: self.num_dim(),
@@ -225,32 +268,31 @@ impl Slice {
 
         // parent_coordinates: [1, 1]
         let parent_coordinates = parent.coordinates(self.offset())?;
+        // parent_ordinals: offset=0, sizes=[4, 4], strides=[4, 1]
+        let parent_ordinals = Slice::new_row_major(parent.sizes().to_vec());
         // offset: 5
-        let offset = parent.index(self.offset())?;
-        // parent_ordinal_strides: [4, 1]
-        let parent_ordinal_strides = Slice::new_row_major(parent.sizes().to_vec());
-        let strides = self
-            .sizes()
-            .iter()
-            .enumerate()
-            .map(|(dimension, &extent)| -> Result<usize, SliceError> {
-                if extent == 1 {
-                    return Ok(parent_ordinal_strides.strides()[dimension]);
-                }
+        let offset = parent_ordinals.location(&parent_coordinates)?;
 
-                let parent_stride = parent.strides()[dimension];
-                let selected_stride = self.strides()[dimension];
-                if !selected_stride.is_multiple_of(parent_stride) {
-                    return Err(SliceError::IncompatibleView {
-                        reason: format!(
-                            "stride {selected_stride} in dimension {dimension} is not a multiple of parent stride {parent_stride}"
-                        ),
-                    });
-                }
+        let mut parent_dimension_cursor = 0;
+        let mut parent_dimension_skip_budget = parent.num_dim() - self.num_dim();
+        let mut strides = Vec::with_capacity(self.num_dim());
 
-                let step = selected_stride / parent_stride;
-                {
-                    let last_coordinate = parent_coordinates[dimension]
+        for (dimension, (&extent, &selected_stride)) in
+            self.sizes().iter().zip(self.strides()).enumerate()
+        {
+            let ordinal_stride = loop {
+                let parent_stride = parent.strides()[parent_dimension_cursor];
+
+                let step = if extent == 1 {
+                    Some(1)
+                } else if selected_stride.is_multiple_of(parent_stride) {
+                    // In the example above, selected_stride=16 and
+                    // parent_stride=8, so step=16 / 8 = 2.
+                    let step = selected_stride / parent_stride;
+                    // With start=1, extent=2, and step=2, the selected indices
+                    // are [1, 3], so the last index is 3.
+                    let last_index_in_parent_dimension = parent_coordinates
+                        [parent_dimension_cursor]
                         .checked_add(
                             extent
                                 .checked_sub(1)
@@ -259,21 +301,40 @@ impl Slice {
                         )
                         .ok_or(SliceError::ArithmeticOverflow)?;
 
-                    if last_coordinate >= parent.sizes()[dimension] {
+                    (last_index_in_parent_dimension < parent.sizes()[parent_dimension_cursor])
+                        .then_some(step)
+                } else {
+                    // For parent strides [12, 4, 1] and selected strides [12, 1],
+                    // selected stride 1 cannot map to parent stride 4, so skip it.
+                    None
+                };
+
+                let Some(step) = step else {
+                    if parent_dimension_skip_budget == 0 {
                         return Err(SliceError::IncompatibleView {
                             reason: format!(
-                                "dimension {dimension} ends at coordinate {last_coordinate}, outside parent extent {}",
-                                parent.sizes()[dimension]
+                                "dimension {dimension} does not map into the parent slice"
                             ),
                         });
                     }
-                }
 
-                parent_ordinal_strides.strides()[dimension]
+                    parent_dimension_cursor += 1;
+                    parent_dimension_skip_budget -= 1;
+
+                    continue;
+                };
+
+                let ordinal_stride = parent_ordinals.strides()[parent_dimension_cursor]
                     .checked_mul(step)
-                    .ok_or(SliceError::ArithmeticOverflow)
-            })
-            .collect::<Result<_, _>>()?;
+                    .ok_or(SliceError::ArithmeticOverflow)?;
+
+                parent_dimension_cursor += 1;
+
+                break ordinal_stride;
+            };
+
+            strides.push(ordinal_stride);
+        }
 
         Self::new(offset, self.sizes().to_vec(), strides)
     }
@@ -911,9 +972,13 @@ where
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
+    use std::collections::HashMap;
     use std::vec;
 
+    use proptest::prelude::*;
+
     use super::*;
+    use crate::strategy::gen_slice_and_subview;
 
     #[test]
     fn test_cartesian_iterator() {
@@ -1045,6 +1110,180 @@ mod tests {
             selected.relative_ordinal_slice(&parent),
             Err(SliceError::IncompatibleView { .. })
         ));
+    }
+
+    #[test]
+    fn relative_ordinal_slice_maps_dimension_reducing_selections() {
+        let parent = Slice::new_row_major(vec![2, 3, 4]);
+        let selected = parent.at(1, 1).expect("selection should be valid");
+
+        assert_eq!(
+            selected
+                .relative_ordinal_slice(&parent)
+                .expect("selection should map into parent ordinals"),
+            Slice::new(4, vec![2, 4], vec![12, 1]).expect("result should be valid")
+        );
+
+        let vector = Slice::new_row_major(vec![4]);
+        let scalar = vector.at(0, 2).expect("scalar selection should be valid");
+
+        assert_eq!(
+            scalar
+                .relative_ordinal_slice(&vector)
+                .expect("scalar should map into parent ordinals"),
+            Slice::new(2, vec![], vec![]).expect("result should be valid")
+        );
+    }
+
+    #[test]
+    fn relative_ordinal_slice_maps_order_preserving_reshapes() {
+        let matrix = Slice::new_row_major(vec![2, 3]);
+        let flat = Slice::new_row_major(vec![6]);
+
+        assert_eq!(
+            flat.relative_ordinal_slice(&matrix)
+                .expect("flattened slice should map into parent ordinals"),
+            Slice::new_row_major(vec![6])
+        );
+
+        assert_eq!(
+            matrix
+                .relative_ordinal_slice(&flat)
+                .expect("split slice should map into parent ordinals"),
+            Slice::new_row_major(vec![2, 3])
+        );
+
+        let sparse = Slice::new(4, vec![2, 4], vec![8, 1]).expect("sparse parent should be valid");
+        let split =
+            Slice::new(4, vec![2, 2, 2], vec![8, 2, 1]).expect("split slice should be valid");
+
+        assert_eq!(
+            split
+                .relative_ordinal_slice(&sparse)
+                .expect("sparse split should map into parent ordinals"),
+            Slice::new_row_major(vec![2, 2, 2])
+        );
+    }
+
+    #[test]
+    fn relative_ordinal_slice_rejects_reordered_dimensions() {
+        let parent = Slice::new_row_major(vec![2, 3]);
+        let transposed = Slice::new(0, vec![3, 2], vec![1, 3]).expect("transpose should be valid");
+
+        assert!(matches!(
+            transposed.relative_ordinal_slice(&parent),
+            Err(SliceError::IncompatibleView { .. })
+        ));
+    }
+
+    proptest! {
+        #[test]
+        fn relative_ordinal_slice_matches_dense_parent_ordinals(
+            case in gen_slice_and_subview(4, 4).prop_flat_map(|(parent, selected)| {
+                let num_dimensions = parent.num_dim();
+
+                (
+                    Just(parent),
+                    Just(selected),
+                    any::<usize>(),
+                    prop::collection::vec(any::<bool>(), num_dimensions),
+                    prop::collection::vec(any::<usize>(), num_dimensions),
+                )
+            })
+        ) {
+            // Example input:
+            let (
+                // parent: offset=0, sizes=[4, 3, 2], strides=[6, 2, 1]
+                parent,
+                // selected subview: offset=0, sizes=[4, 2, 2], strides=[6, 2, 1]
+                mut selected,
+                step_seed,
+                // remove_dimensions=[false, true, false]
+                remove_dimensions,
+                // selected_indices=[0, 1, 0]
+                selected_indices,
+            ) = case;
+
+            // Example: outer_extent=4 and step=2.
+            let outer_extent = selected.sizes()[0];
+            let step = step_seed % outer_extent + 1;
+            // Example result: offset=0, sizes=[2, 2, 2], strides=[12, 2, 1].
+            selected = selected
+                .select(0, 0, outer_extent, step)
+                .expect("striding the outer dimension should preserve rectangularity");
+
+            // Example: selected starts with sizes=[2, 2, 2], strides=[12, 2, 1].
+            // Removing dimension 1 at index 1 produces offset=2, sizes=[2, 2],
+            // strides=[12, 1].
+            let mut selected_dimension_cursor = 0;
+            for (remove_dimension, index_seed) in
+                remove_dimensions.into_iter().zip(selected_indices)
+            {
+                if remove_dimension {
+                    let extent = selected.sizes()[selected_dimension_cursor];
+                    selected = selected
+                        .at(selected_dimension_cursor, index_seed % extent)
+                        .expect("selected index should be in range");
+                } else {
+                    selected_dimension_cursor += 1;
+                }
+            }
+
+            // Example: selected ranks are [2, 3, 14, 15].
+            // parent_ordinals maps ranks 0..23 to ordinals 0..23.
+            let parent_ordinals = parent
+                .iter()
+                .enumerate()
+                .map(|(ordinal, rank)| (rank, ordinal))
+                .collect::<HashMap<_, _>>();
+
+            // Example: expected_ordinals=[2, 3, 14, 15].
+            // This computes the exact sequence of parent_ordinals that the slice returned
+            // by `relative_ordinal_slice` is expected to yield when iterated
+            let expected_ordinals = selected
+                .iter()
+                .map(|rank| parent_ordinals.get(&rank).copied())
+                .collect::<Option<Vec<_>>>()
+                .expect("selected ranks should belong to the parent");
+
+            // Example: relative has offset=2, sizes=[2, 2], and strides=[12, 1].
+            let relative = selected
+                .relative_ordinal_slice(&parent)
+                .expect("generated selection should map into parent ordinals");
+
+            prop_assert_eq!(relative.sizes(), selected.sizes());
+            prop_assert_eq!(relative.iter().collect::<Vec<_>>(), expected_ordinals);
+        }
+
+        #[test]
+        fn relative_ordinal_slice_matches_dense_ordinals_for_reshapes(
+            split_sizes in prop::collection::vec(1usize..=4, 2..=4)
+        ) {
+            // Example: split has sizes=[2, 3, 4], and flat has sizes=[24].
+            let split = Slice::new_row_major(split_sizes);
+            let flat = Slice::new_row_major(vec![split.len()]);
+
+            // Example: both relative slices must iterate ordinals 0..24.
+            let expected_ordinals = (0..split.len()).collect::<Vec<_>>();
+
+            // Example: split_relative has sizes=[2, 3, 4].
+            let split_relative = split
+                .relative_ordinal_slice(&flat)
+                .expect("split should preserve flat traversal order");
+
+            // Example: flat_relative has sizes=[24].
+            let flat_relative = flat
+                .relative_ordinal_slice(&split)
+                .expect("flattening should preserve split traversal order");
+
+            let split_ordinals = split_relative.iter().collect::<Vec<_>>();
+            let flat_ordinals = flat_relative.iter().collect::<Vec<_>>();
+
+            prop_assert_eq!(split_relative.sizes(), split.sizes());
+            prop_assert_eq!(flat_relative.sizes(), flat.sizes());
+            prop_assert_eq!(split_ordinals.as_slice(), expected_ordinals.as_slice());
+            prop_assert_eq!(flat_ordinals.as_slice(), expected_ordinals.as_slice());
+        }
     }
 
     #[test]
