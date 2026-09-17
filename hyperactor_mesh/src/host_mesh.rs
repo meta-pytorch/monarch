@@ -951,7 +951,7 @@ impl HostMeshRef {
         Self::host_agent_mesh_ref_from_agents(region, agents)
     }
 
-    fn host_agent_mesh_ref_from_agents(
+    pub(crate) fn host_agent_mesh_ref_from_agents(
         region: &Region,
         agents: Vec<ActorRef<HostAgent>>,
     ) -> crate::Result<ActorMeshRef<HostAgent>> {
@@ -1596,6 +1596,7 @@ impl HostMeshRef {
     /// through the host mesh's cast tree (root = its cast actor 0), so replies
     /// to a bound port reduce up the tree instead of every host dialing the
     /// caller directly.
+    #[cfg(test)]
     pub(crate) fn agent_mesh(&self) -> &ActorMeshRef<HostAgent> {
         &self.host_agent_mesh
     }

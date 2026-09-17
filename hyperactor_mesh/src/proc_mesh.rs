@@ -60,7 +60,9 @@ use crate::ValueMesh;
 use crate::actor_mesh::ActorMeshStopHandle;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::host_mesh::host_agent::GetHostProcStates;
+use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::ProcState;
+use crate::host_mesh::host_agent_ref;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::mesh_controller::ActorMeshControlPlane;
 use crate::mesh_controller::ActorMeshController;
@@ -353,6 +355,9 @@ pub struct ProcMeshRef {
     /// Lazily derived host CastActor for each proc rank in this mesh view.
     #[serde(skip)]
     host_cast_actors: OnceLock<Arc<ValueMesh<ActorRef<CastActor>>>>,
+    /// Lazily derived mesh of the distinct HostAgents serving this mesh view.
+    #[serde(skip)]
+    host_agent_mesh: OnceLock<ActorMeshRef<HostAgent>>,
     /// Actor mesh for the `ProcAgent`s backing this proc mesh view.
     ///
     /// `ProcMeshRef::sliced` derives a sliced agent mesh with a lazy cast
@@ -450,6 +455,7 @@ impl ProcMeshRef {
             ranks,
             host_procs,
             host_cast_actors: OnceLock::from(host_cast_actors),
+            host_agent_mesh: OnceLock::new(),
             proc_agent_mesh,
             host_mesh: Some(host_mesh),
         };
@@ -481,6 +487,7 @@ impl ProcMeshRef {
             ranks,
             host_procs,
             host_cast_actors: OnceLock::from(host_cast_actors),
+            host_agent_mesh: OnceLock::new(),
             proc_agent_mesh,
             host_mesh: None,
         };
@@ -522,6 +529,32 @@ impl ProcMeshRef {
                 .expect("host proc mesh must match the proc mesh region"),
             )
         }))
+    }
+
+    /// Return one HostAgent for each distinct host in this proc mesh view.
+    ///
+    /// Input host procs: `[host_0, host_0, host_1]`.
+    /// Output HostAgents: `[host_0::agent, host_1::agent]`.
+    fn host_agent_mesh(&self) -> &ActorMeshRef<HostAgent> {
+        self.host_agent_mesh.get_or_init(|| {
+            let mut seen = HashSet::new();
+
+            let agents = self
+                .host_procs
+                .values()
+                .filter_map(|host_proc| {
+                    seen.insert(host_proc.clone())
+                        .then(|| host_agent_ref(host_proc.clone()))
+                })
+                .collect::<Vec<_>>();
+
+            let region: Region = Extent::new(vec!["host".to_string()], vec![agents.len()])
+                .expect("host agent count must define a valid extent")
+                .into();
+
+            HostMeshRef::host_agent_mesh_ref_from_agents(&region, agents)
+                .expect("host agent mesh must match its generated region")
+        })
     }
 
     fn proc_agent_mesh_ref(
@@ -702,16 +735,13 @@ impl ProcMeshRef {
 
     /// Get the state of every proc in this proc mesh.
     ///
-    /// Casts a single `GetHostProcStates` to the routing host-agent mesh
-    /// carrying this mesh's selected global ranks (the mesh may be sliced, so
-    /// they need not be a dense `0..n`). The cast may reach hosts that own no
-    /// selected procs, but each HostAgent filters locally and only hosts with
-    /// matching ranks reply. Replies reduce up the cast tree (fanning in at cast
-    /// actor 0) instead of every host dialing this caller. When `keepalive` is
-    /// `Some`, each proc's expiry is extended (orphan protection, as with
-    /// `KeepaliveGetState`). Returns `None` when this proc mesh is not backed by
-    /// a host mesh (local/in-process meshes). On timeout, ranks whose host did
-    /// not reply are padded with a `Timeout` state.
+    /// Casts a single `GetHostProcStates` to the distinct HostAgents serving
+    /// this mesh's selected ranks. Replies reduce up the cast tree instead of
+    /// every host dialing this caller. When `keepalive` is `Some`, each proc's
+    /// expiry is extended (orphan protection, as with `KeepaliveGetState`).
+    /// Returns `None` when this proc mesh is not backed by a host mesh
+    /// (local/in-process meshes). On timeout, ranks whose host did not reply are
+    /// padded with a `Timeout` state.
     #[allow(clippy::result_large_err)]
     pub async fn states(
         &self,
@@ -719,9 +749,9 @@ impl ProcMeshRef {
         keepalive: Option<std::time::SystemTime>,
     ) -> crate::Result<Option<ValueMesh<resource::State<ProcState>>>> {
         // Only meaningful when this proc mesh is backed by a host mesh.
-        let Some(host_mesh) = self.host_mesh.as_ref() else {
+        if self.host_mesh.is_none() {
             return Ok(None);
-        };
+        }
         let region = self.region.clone();
         let timeout = hyperactor_config::global::get(GET_PROC_STATE_MAX_IDLE);
 
@@ -746,9 +776,7 @@ impl ProcMeshRef {
         let fallback = template.clone();
 
         // Accumulator port: receives sparse per-host overlays and emits the
-        // merged full mesh (right-wins). The host mesh is a routing
-        // over-approximation for sliced proc meshes; HostAgents that own
-        // selected ranks post an overlay, others stay silent.
+        // merged full mesh (right-wins).
         let (port, rx) = cx.mailbox().open_idle_flush_accum_port(
             template,
             IdleFlushReducerOpts {
@@ -760,7 +788,7 @@ impl ProcMeshRef {
 
         let reply = port.bind();
 
-        host_mesh.agent_mesh().cast(
+        self.host_agent_mesh().cast(
             cx,
             GetHostProcStates {
                 proc_mesh_id: self.id.clone(),
@@ -1444,6 +1472,7 @@ impl view::RankedSliceable for ProcMeshRef {
             proc_agent_mesh: self.proc_agent_mesh.sliced(region.clone()),
             host_procs: Arc::new(self.host_procs.sliced(region.clone())),
             host_cast_actors: OnceLock::new(),
+            host_agent_mesh: OnceLock::new(),
             region,
             ranks: Arc::new(ranks),
             host_mesh: self.host_mesh.clone(),
