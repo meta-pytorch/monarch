@@ -1447,21 +1447,13 @@ impl Controlled for ProcMeshRef {
         cx: &impl context::Actor,
         subscriber: hyperactor::PortRef<resource::RankedState<Self::StateInner>>,
     ) -> anyhow::Result<()> {
-        // A `ProcMeshController` is only ever created for host-backed proc
-        // meshes (host_mesh.rs spawn path), so a host mesh should always be
-        // present. Surface a violation as an error rather than panicking — this
-        // runs from `init`, so a panic would abort the actor. Cast a single
-        // StreamState to the host-agent mesh so each host streams its procs'
-        // state back through the cast tree (fanning in at cast actor 0) instead
-        // of every host dialing the subscriber directly.
-        let host_mesh = self.hosts().ok_or_else(|| {
-            anyhow::anyhow!(
+        if self.host_mesh_id().is_none() {
+            return Err(anyhow::anyhow!(
                 "ProcMeshController has no host mesh; it must run on a host-backed proc mesh"
-            )
-        })?;
+            ));
+        }
 
-        host_mesh.cast_stream_state(cx, ProcMeshRef::id(self).resource_id().clone(), subscriber)?;
-        Ok(())
+        self.cast_stream_state(cx, ProcMeshRef::id(self).resource_id().clone(), subscriber)
     }
 
     fn forward_wait_rank_status(
@@ -1469,10 +1461,13 @@ impl Controlled for ProcMeshRef {
         cx: &impl context::Actor,
         msg: resource::WaitRankStatus,
     ) -> anyhow::Result<()> {
-        let hosts = self.hosts().ok_or_else(|| {
-            anyhow::anyhow!("ProcMeshController cannot wait without a backing host mesh")
-        })?;
-        hosts.forward_wait_rank_status(cx, self.proc_ids(), Ranked::region(self).clone(), msg)
+        if self.host_mesh_id().is_none() {
+            return Err(anyhow::anyhow!(
+                "ProcMeshController cannot wait without a backing host mesh"
+            ));
+        }
+
+        ProcMeshRef::forward_wait_rank_status(self, cx, msg)
     }
 
     async fn poll_states(
@@ -1569,11 +1564,9 @@ impl Controlled for ProcMeshRef {
             send_subscriber_message(cx, subscriber, failure_message.clone());
         }
 
-        let names = self.proc_ids().collect::<Vec<hyperactor::ProcAddr>>();
-        let region = Ranked::region(self).clone();
-        let Some(hosts) = self.hosts() else {
+        if self.host_mesh_id().is_none() {
             return Ok(());
-        };
+        }
         // stop_proc_mesh waits for every rank to reach a terminating state
         // before returning Ok, so we can apply its returned StatusMesh
         // verbatim. On error we still got per-rank statuses for whatever
@@ -1585,10 +1578,7 @@ impl Controlled for ProcMeshRef {
             .keys()
             .next()
             .map(|p| p.extent().clone());
-        match hosts
-            .stop_proc_mesh(cx, self.id(), names, region, reason)
-            .await
-        {
+        match self.stop_proc_mesh(cx, reason).await {
             Ok(statuses) => {
                 for (rank, status) in statuses.iter() {
                     health_state
@@ -1616,12 +1606,8 @@ impl Controlled for ProcMeshRef {
     }
 
     async fn cleanup_stop(&self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
-        let names = self.proc_ids().collect::<Vec<hyperactor::ProcAddr>>();
-        let region = Ranked::region(self).clone();
-        if let Some(hosts) = self.hosts() {
-            hosts
-                .stop_proc_mesh(cx, self.id(), names, region, reason)
-                .await?;
+        if self.host_mesh_id().is_some() {
+            self.stop_proc_mesh(cx, reason).await?;
         }
         Ok(())
     }

@@ -59,6 +59,7 @@ use crate::HostMeshRef;
 use crate::ValueMesh;
 use crate::actor_mesh::ActorMeshStopHandle;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
+use crate::host_mesh::PROC_STOP_MAX_IDLE;
 use crate::host_mesh::host_agent::GetHostProcStates;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::ProcState;
@@ -67,6 +68,7 @@ use crate::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::mesh_controller::ActorMeshControlPlane;
 use crate::mesh_controller::ActorMeshController;
 use crate::mesh_id::ActorMeshId;
+use crate::mesh_id::HostMeshId;
 use crate::mesh_id::ProcMeshId;
 use crate::mesh_id::ResourceId;
 use crate::proc_agent;
@@ -75,6 +77,7 @@ use crate::proc_agent::ProcAgent;
 use crate::resource;
 use crate::resource::GetRankStatus;
 use crate::resource::Status;
+use crate::resource::WaitRankStatusClient;
 use crate::supervision::MeshFailure;
 
 declare_attrs! {
@@ -177,20 +180,15 @@ impl ProcMesh {
             );
         }
 
+        let parent_mesh_id = hash_to_u64(hosts.id());
+        let parent_view_json = serde_json::to_string(hosts.region())
+            .unwrap_or_else(|e| format!("encountered error when serializing region: {}", e));
         let current_ref = ProcMeshRef::new_host_backed(id.clone(), region, ranks, hosts)?;
 
         // Notify telemetry that the ProcAgent mesh was created.
         {
             let name_str = id.to_string();
             let mesh_id_hash = hash_to_u64(&id);
-
-            let hm = current_ref
-                .host_mesh
-                .as_ref()
-                .expect("ProcMesh always has a host mesh");
-            let parent_mesh_id = hash_to_u64(hm.id());
-            let parent_view_json = serde_json::to_string(hm.region())
-                .unwrap_or_else(|e| format!("encountered error when serializing region: {}", e));
 
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: mesh_id_hash,
@@ -243,7 +241,7 @@ impl ProcMesh {
     ///
     /// If a `ProcMeshController` is present (owned meshes spawned from a host
     /// mesh), the stop is delegated to the controller via `resource::Stop`;
-    /// the controller's handler awaits `HostMeshRef::stop_proc_mesh`, which
+    /// the controller's handler awaits `ProcMeshRef::stop_proc_mesh`, which
     /// casts `Stop` + `WaitRankStatus{min_status: Stopped}` to the
     /// HostAgents and waits up to `PROC_STOP_MAX_IDLE` for every proc to
     /// reach `Stopped`. We then serialize behind that handler with a
@@ -296,15 +294,8 @@ impl ProcMesh {
             return Ok(());
         }
 
-        let region = self.region.clone();
-        let procs = self.current_ref.proc_ids().collect::<Vec<ProcAddr>>();
-        // We use the proc mesh region rather than the host mesh region
-        // because the host agent stores one entry per proc, not per host.
         self.current_ref
-            .host_mesh
-            .as_ref()
-            .expect("ProcMesh always has a host mesh")
-            .stop_proc_mesh(cx, &self.id, procs, region, reason)
+            .stop_proc_mesh(cx, reason)
             .await
             .map(|_| ())
             .map_err(anyhow::Error::from)
@@ -369,7 +360,7 @@ pub struct ProcMeshRef {
     /// parent mesh or using a temporary proc.
     proc_agent_mesh: ActorMeshRef<ProcAgent>,
     // Some if this was spawned from a host mesh, else none.
-    host_mesh: Option<HostMeshRef>,
+    host_mesh_id: Option<HostMeshId>,
 }
 wirevalue::register_type!(ProcMeshRef);
 
@@ -381,7 +372,7 @@ impl PartialEq for ProcMeshRef {
             && self.region == other.region
             && self.ranks == other.ranks
             && self.host_procs == other.host_procs
-            && self.host_mesh == other.host_mesh
+            && self.host_mesh_id == other.host_mesh_id
     }
 }
 
@@ -393,7 +384,7 @@ impl std::hash::Hash for ProcMeshRef {
         self.region.hash(state);
         self.ranks.hash(state);
         self.host_procs.hash(state);
-        self.host_mesh.hash(state);
+        self.host_mesh_id.hash(state);
     }
 }
 
@@ -433,6 +424,7 @@ impl ProcMeshRef {
         }
 
         let num_procs_per_host = ranks.len() / num_hosts;
+        let host_mesh_id = host_mesh.id().clone();
 
         let host_procs = Arc::new(ValueMesh::from_dense(
             region.clone(),
@@ -457,7 +449,7 @@ impl ProcMeshRef {
             host_cast_actors: OnceLock::from(host_cast_actors),
             host_agent_mesh: OnceLock::new(),
             proc_agent_mesh,
-            host_mesh: Some(host_mesh),
+            host_mesh_id: Some(host_mesh_id),
         };
 
         Ok(proc_mesh_ref)
@@ -489,7 +481,7 @@ impl ProcMeshRef {
             host_cast_actors: OnceLock::from(host_cast_actors),
             host_agent_mesh: OnceLock::new(),
             proc_agent_mesh,
-            host_mesh: None,
+            host_mesh_id: None,
         };
 
         Ok(proc_mesh_ref)
@@ -499,13 +491,8 @@ impl ProcMeshRef {
         &self.id
     }
 
-    pub fn host_mesh_id(&self) -> Option<&crate::mesh_id::HostMeshId> {
-        self.host_mesh.as_ref().map(|h| h.id())
-    }
-
-    /// Returns the HostMeshRef that owns this ProcMeshRef, if any.
-    pub fn hosts(&self) -> Option<&HostMeshRef> {
-        self.host_mesh.as_ref()
+    pub fn host_mesh_id(&self) -> Option<&HostMeshId> {
+        self.host_mesh_id.as_ref()
     }
 
     pub(crate) fn agent_mesh(&self) -> &ActorMeshRef<ProcAgent> {
@@ -555,6 +542,42 @@ impl ProcMeshRef {
             HostMeshRef::host_agent_mesh_ref_from_agents(&region, agents)
                 .expect("host agent mesh must match its generated region")
         })
+    }
+
+    /// Cast `StreamState<ProcState>` to every host agent so each host streams
+    /// its procs' state back through the cast tree (fanning in at cast actor 0)
+    /// instead of every host dialing the subscriber directly.
+    pub(crate) fn cast_stream_state(
+        &self,
+        cx: &impl context::Actor,
+        id: ResourceId,
+        subscriber: hyperactor::PortRef<resource::RankedState<ProcState>>,
+    ) -> anyhow::Result<()> {
+        Ok(self.host_agent_mesh().cast(
+            cx,
+            resource::StreamState::<ProcState> {
+                id,
+                subscriber_rank: resource::Rank::default(),
+                subscriber,
+            },
+        )?)
+    }
+
+    pub(crate) fn forward_wait_rank_status(
+        &self,
+        cx: &impl context::Actor,
+        msg: resource::WaitRankStatus,
+    ) -> anyhow::Result<()> {
+        for (view_rank, (proc_id, host_proc)) in
+            self.proc_ids().zip(self.host_procs.values()).enumerate()
+        {
+            let mut message = msg.clone();
+            message.id = ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned());
+            message.rank = resource::Rank::new(view_rank);
+            host_agent_ref(host_proc.clone()).post(cx, message);
+        }
+
+        Ok(())
     }
 
     fn proc_agent_mesh_ref(
@@ -749,7 +772,7 @@ impl ProcMeshRef {
         keepalive: Option<std::time::SystemTime>,
     ) -> crate::Result<Option<ValueMesh<resource::State<ProcState>>>> {
         // Only meaningful when this proc mesh is backed by a host mesh.
-        if self.host_mesh.is_none() {
+        if self.host_mesh_id.is_none() {
             return Ok(None);
         }
         let region = self.region.clone();
@@ -812,6 +835,131 @@ impl ProcMeshRef {
             };
 
         Ok(Some(mesh))
+    }
+
+    /// Stop every proc in this proc mesh.
+    ///
+    /// On success returns the final per-rank `StatusMesh`, in which every
+    /// rank is guaranteed to be `is_terminated()` (`Stopped`, `Failed`, or
+    /// `Timeout`). Callers can apply these statuses to controller health
+    /// state so that subsequent `GetState` queries reflect reality.
+    ///
+    /// Returns `crate::Error::ProcMeshStopError` if any rank did not reach
+    /// a terminal state within `PROC_STOP_MAX_IDLE`; the error carries the
+    /// best-known per-rank statuses for the same purpose.
+    #[hyperactor::instrument(fields(
+        host_mesh=self.host_mesh_id().map(|id| id.to_string()),
+        proc_mesh=self.id.to_string()
+    ))]
+    pub(crate) async fn stop_proc_mesh(
+        &self,
+        cx: &impl context::Actor,
+        reason: String,
+    ) -> crate::Result<crate::StatusMesh> {
+        let region = self.region.clone();
+        let procs = self.proc_ids().collect::<Vec<_>>();
+        let proc_names = procs
+            .iter()
+            .map(|proc_id| ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned()))
+            .collect::<Vec<_>>();
+        let num_ranks = region.num_ranks();
+        let (port, rx) = cx.mailbox().open_idle_flush_accum_port(
+            crate::StatusMesh::from_single(region.clone(), Status::NotExist),
+            IdleFlushReducerOpts {
+                idle_timeout: Duration::from_millis(50),
+                abandon_timeout: Duration::from_secs(30),
+                expected_updates_per_destination: NonZeroUsize::MIN,
+            },
+        );
+        let mut reply = port.bind();
+        reply.return_undeliverable(false);
+
+        for (view_rank, proc_id) in procs.into_iter().enumerate() {
+            let proc_resource_id = ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned());
+            let host_proc = self
+                .host_procs
+                .get(view_rank)
+                .expect("each proc rank must have a host proc");
+            let host_agent = host_agent_ref(host_proc.clone());
+
+            host_agent.post(
+                cx,
+                resource::Stop {
+                    id: proc_resource_id.clone(),
+                    reason: reason.clone(),
+                },
+            );
+            host_agent
+                .wait_rank_status(
+                    cx,
+                    proc_resource_id,
+                    resource::Rank::new(view_rank),
+                    Status::Stopped,
+                    reply.clone(),
+                )
+                .await
+                .map_err(|error| crate::Error::CallError(host_agent.actor_addr().clone(), error))?;
+        }
+
+        tracing::info!(
+            name = "HostMeshStatus",
+            status = "ProcMesh::Stop::Sent",
+            "sending Stop to proc mesh for {} procs: {}",
+            proc_names.len(),
+            proc_names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        let start_time = tokio::time::Instant::now();
+
+        match GetRankStatus::wait(
+            rx,
+            num_ranks,
+            hyperactor_config::global::get(PROC_STOP_MAX_IDLE),
+            region.clone(), // fallback mesh if nothing arrives
+        )
+        .await
+        {
+            Ok(statuses) => {
+                let all_stopped = statuses.values().all(|status| status.is_terminated());
+                if !all_stopped {
+                    let legacy = mesh_to_rankedvalues_with_default(
+                        &statuses,
+                        Status::NotExist,
+                        Status::is_not_exist,
+                        num_ranks,
+                    );
+                    tracing::error!(
+                        name = "ProcMeshStatus",
+                        status = "FailedToStop",
+                        "failed to terminate proc mesh: {:?}",
+                        statuses,
+                    );
+                    return Err(crate::Error::ProcMeshStopError { statuses: legacy });
+                }
+                tracing::info!(name = "ProcMeshStatus", status = "Stopped");
+                Ok(statuses)
+            }
+            Err(complete) => {
+                let legacy = mesh_to_rankedvalues_with_default(
+                    &complete,
+                    Status::Timeout(start_time.elapsed()),
+                    Status::is_not_exist,
+                    num_ranks,
+                );
+                tracing::error!(
+                    name = "ProcMeshStatus",
+                    status = "StoppingTimeout",
+                    "failed to terminate proc mesh {} before timeout: {:?}",
+                    self.id,
+                    legacy,
+                );
+                Err(crate::Error::ProcMeshStopError { statuses: legacy })
+            }
+        }
     }
 
     /// Returns an iterator over the proc ids in this mesh.
@@ -1475,7 +1623,7 @@ impl view::RankedSliceable for ProcMeshRef {
             host_agent_mesh: OnceLock::new(),
             region,
             ranks: Arc::new(ranks),
-            host_mesh: self.host_mesh.clone(),
+            host_mesh_id: self.host_mesh_id.clone(),
         }
     }
 }
