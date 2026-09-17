@@ -944,6 +944,7 @@ impl ActorMeshCastDomain {
         let cast_domain = self.id.clone().materialize(
             cx,
             Arc::clone(&self.destinations),
+            Arc::clone(&self.host_cast_actors),
             self.tiling_policy,
             headers.clone(),
         )?;
@@ -2749,14 +2750,21 @@ mod tests {
 
         let region = Region::from(ndslice::shape!(rank = 2));
         let destinations = CastDestination::mesh(
-            region,
+            region.clone(),
             (0..2).map(|rank| members[&rank].0.clone()).collect(),
         )
         .unwrap();
+        let host_cast_actors = ValueMesh::new(
+            region,
+            (0..2).map(|rank| members[&rank].1.clone()).collect(),
+        )
+        .unwrap();
+
         let cast_domain = hyperactor_cast::cast_actor::CastDomainId::new()
             .materialize(
                 &client,
                 Arc::new(destinations),
+                Arc::new(host_cast_actors),
                 hyperactor_cast::cast_actor::TilingPolicy::BlockPartitioning,
                 hyperactor_config::Flattrs::new(),
             )
