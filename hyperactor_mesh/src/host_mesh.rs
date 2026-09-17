@@ -79,6 +79,7 @@ use hyperactor::ProcId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
 use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
+use hyperactor_cast::cast_actor::CastDestination;
 use ndslice::Extent;
 use ndslice::Region;
 use ndslice::ViewExt;
@@ -954,11 +955,22 @@ impl HostMeshRef {
         region: &Region,
         agents: Vec<ActorRef<HostAgent>>,
     ) -> crate::Result<ActorMeshRef<HostAgent>> {
-        let members = Arc::new(
-            agents
-                .into_iter()
-                .map(|agent| agent.actor_addr().clone())
-                .collect_mesh::<ValueMesh<_>>(region.clone())
+        let (actors, host_cast_actors) = agents
+            .into_iter()
+            .map(|agent| {
+                let actor = agent.actor_addr().clone();
+                let cast_actor = CastActor::ref_for_proc(actor.proc_addr());
+
+                (actor, cast_actor)
+            })
+            .unzip();
+
+        let destinations = Arc::new(
+            CastDestination::mesh(region.clone(), actors)
+                .map_err(crate::Error::ConfigurationError)?,
+        );
+        let host_cast_actors = Arc::new(
+            ValueMesh::new(region.clone(), host_cast_actors)
                 .map_err(|error| crate::Error::ConfigurationError(error.into()))?,
         );
 
@@ -966,9 +978,9 @@ impl HostMeshRef {
             ActorMeshId::singleton(Label::strip(host_agent::HOST_MESH_AGENT_ACTOR_NAME)),
             // The host-agent mesh is not backed by a user proc mesh.
             None,
-            region.clone(),
             None,
-            members,
+            destinations,
+            host_cast_actors,
         ))
     }
 

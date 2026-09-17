@@ -56,6 +56,7 @@ use hyperactor::Label;
 use hyperactor::OncePortRefRepr;
 use hyperactor::PortRef;
 use hyperactor::PortRefRepr;
+use hyperactor::ProcAddr;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::Uid;
 use hyperactor::accum::ReducerMode;
@@ -120,7 +121,7 @@ hyperactor_config::declare_attrs! {
 hyperactor_config::declare_attrs! {
     /// Header stamped in tests with the cast tree path used to reach this
     /// recipient.
-    pub attr CAST_LINEAGE: Vec<usize>;
+    pub attr CAST_LINEAGE: Vec<ActorAddr>;
 }
 
 /// Wire-compatible mirror of `hyperactor_mesh::resource::RankRepr`.
@@ -161,58 +162,60 @@ impl CastDomainId {
         &self.domain_id
     }
 
-    /// Materialize this domain id over concrete members and return an
+    /// Materialize this domain id over concrete destinations and return an
     /// addressable domain handle.
     ///
-    /// `members` maps domain rank to member actor address. `region` describes
-    /// the logical root region of the domain; tiling and communication are
-    /// derived internally.
+    /// `destinations` maps domain ranks to destination actors. Tiling and
+    /// communication are derived internally.
     pub fn materialize(
         self,
         cx: &impl context::Actor,
-        members: HashMap<usize, ActorAddr>,
-        region: Region,
+        destinations: Arc<ValueMesh<CastDestination>>,
         tiling_policy: TilingPolicy,
         headers: Flattrs,
     ) -> anyhow::Result<CastDomainRef> {
-        anyhow::ensure!(
-            members.len() == region.num_ranks()
-                && region
-                    .slice()
-                    .iter()
-                    .all(|rank| members.contains_key(&rank)),
-            "members must contain exactly one actor address for every domain rank"
-        );
+        let destination_region = destinations.region().clone();
 
         let member_mesh = Arc::new(ValueMesh::new(
-            region.clone(),
-            region
-                .slice()
-                .iter()
-                .map(|rank| {
-                    members
-                        .get(&rank)
-                        .expect("members coverage was checked above")
-                        .clone()
+            destination_region.clone(),
+            destinations
+                .values()
+                .map(|destination| destination.actor().clone())
+                .collect(),
+        )?);
+
+        let node_mesh = Arc::new(ValueMesh::new(
+            destination_region.clone(),
+            destinations
+                .values()
+                .map(|destination| CastNode {
+                    cast_actor: CastActor::ref_for_proc(destination.actor().proc_addr().clone()),
+                    destinations: vec![destination.clone()],
                 })
                 .collect(),
         )?);
 
-        self.materialize_members(cx, member_mesh, region, tiling_policy, headers)
+        self.materialize_members(
+            cx,
+            member_mesh,
+            node_mesh,
+            destination_region,
+            tiling_policy,
+            headers,
+        )
     }
 
     fn materialize_members(
         self,
         cx: &impl context::Actor,
         member_mesh: Arc<ValueMesh<ActorAddr>>,
+        node_mesh: Arc<ValueMesh<CastNode>>,
         region: Region,
         tiling_policy: TilingPolicy,
         headers: Flattrs,
     ) -> anyhow::Result<CastDomainRef> {
-        let root_tile = MaterializedTile::from_value_mesh_with_tile(
-            Tile::from_view(&region),
-            Arc::clone(&member_mesh),
-        );
+        let root_tile =
+            MaterializedTile::from_value_mesh_with_tile(Tile::from_view(&region), node_mesh);
         anyhow::ensure!(
             !root_tile.tile().space().is_empty(),
             "cannot construct root-heaved subtree tiles for an empty tile"
@@ -236,7 +239,6 @@ impl CastDomainId {
 
                 Ok(CastSubtree {
                     route: CastRoute::try_from_tile(
-                        &region,
                         tiling_policy,
                         &root_tile.subtile(subtree_tile),
                     )?,
@@ -252,7 +254,7 @@ impl CastDomainId {
                     headers.clone(),
                     CreateCastDomain {
                         cast_domain_id: self.clone(),
-                        region: region.clone(),
+                        served_region: region.clone(),
                         tiling_policy,
                         tile: root_tile.subtile(Tile::from_view(&subtree.served_region)),
                     },
@@ -323,24 +325,6 @@ impl CastDomainRef {
         &self.members
     }
 
-    /// Materialize a new slice domain described relative to this domain.
-    ///
-    /// The returned ref is the handle for the slice. It gets a fresh domain id
-    /// whose subtrees are root-heaved within the sliced region. A terminal
-    /// subtree is stored as a direct destination; a nonterminal subtree enters
-    /// through its CastActor. The parent ref's dense members are used only to
-    /// derive the slice definition and sender-side sequence map.
-    pub fn materialize_slice(
-        &self,
-        cx: &impl context::Actor,
-        region: Region,
-        tiling_policy: TilingPolicy,
-    ) -> anyhow::Result<CastDomainRef> {
-        let slice_id = CastDomainId::new();
-        let slice_member_mesh = Arc::new(self.members.subset(region.clone())?);
-        slice_id.materialize_members(cx, slice_member_mesh, region, tiling_policy, Flattrs::new())
-    }
-
     /// Cast a message to all members of this domain with caller-supplied headers.
     ///
     /// `headers` are the destination envelope headers supplied by the caller.
@@ -407,7 +391,7 @@ impl CastDomainRef {
                         },
                         destination,
                         data.clone(),
-                        &ForwardLineage::default().through(destination.base_rank_in_domain),
+                        &ForwardLineage::default().through(&destination.actor),
                     )?;
                 }
             }
@@ -472,8 +456,7 @@ impl CastDomainRef {
 ///
 /// This asks only for the current tile's outgoing edges without materializing
 /// the full domain tree. The returned [`MaterializedTile`]s are still tiles of
-/// destination actors. Setup/forwarding derives the target [`CastActor`] from
-/// each child tile's root destination actor.
+/// the input value type.
 ///
 /// ```text
 /// current MaterializedTile:
@@ -482,15 +465,15 @@ impl CastDomainRef {
 ///
 /// next_tiles(current), rendered by destination actor rank:
 /// A0
-/// |-- T1 [ A1 ]          -> CastActor on A1's proc
-/// |-- T2 [ A2 ]          -> CastActor on A2's proc
-/// |-- T3 [ A3 ]          -> CastActor on A3's proc
-/// `-- T4 [ A4 A5 A6 A7 ] -> CastActor on A4's proc
+/// |-- T1 [ A1 ]
+/// |-- T2 [ A2 ]
+/// |-- T3 [ A3 ]
+/// `-- T4 [ A4 A5 A6 A7 ]
 /// ```
-fn next_tiles(
+fn next_tiles<T: 'static>(
     tiling_policy: TilingPolicy,
-    tile: &MaterializedTile<ActorAddr>,
-) -> Vec<MaterializedTile<ActorAddr>> {
+    tile: &MaterializedTile<T>,
+) -> Vec<MaterializedTile<T>> {
     tiling_policy
         .children(tile.tile())
         .into_iter()
@@ -524,6 +507,15 @@ pub struct CastActor {
     installed_hops: HashMap<CastDomainId, CastHop>,
 }
 
+impl CastActor {
+    /// Return the typed CastActor reference for a system proc.
+    ///
+    /// Input: host proc `host_0`. Output: `host_0::cast`.
+    pub fn ref_for_proc(proc: ProcAddr) -> ActorRef<Self> {
+        ActorRef::attest(ActorAddr::root(proc, Label::strip(CAST_ACTOR_NAME)))
+    }
+}
+
 /// One tile-local hop in an installed cast tree.
 #[derive(Debug, Clone)]
 struct CastHop {
@@ -537,22 +529,98 @@ struct CastHop {
 
 /// One destination actor and its position in the cast domain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct CastDestination {
+pub struct CastDestination {
     point_in_domain: Point,
     base_rank_in_domain: usize,
     actor: ActorAddr,
 }
 
 impl CastDestination {
-    fn try_from_tile(region: &Region, tile: &MaterializedTile<ActorAddr>) -> anyhow::Result<Self> {
-        Ok(Self {
-            point_in_domain: region.point_of_base_rank(tile.root_rank())?,
-            base_rank_in_domain: tile.root_rank(),
-            actor: tile
-                .root_item()
-                .ok_or_else(|| anyhow::anyhow!("tile must have at least one member"))?
-                .clone(),
-        })
+    /// Build one logical destination for each actor.
+    ///
+    /// Input:
+    ///
+    /// ```text
+    /// region ranks: [0 1]
+    /// actors: [actor_0, actor_1]
+    /// ```
+    ///
+    /// Output:
+    ///
+    /// ```text
+    /// [
+    ///   Destination(point=0, base_rank=0, actor=actor_0),
+    ///   Destination(point=1, base_rank=1, actor=actor_1),
+    /// ]
+    /// ```
+    pub fn mesh(region: Region, actors: Vec<ActorAddr>) -> anyhow::Result<ValueMesh<Self>> {
+        anyhow::ensure!(
+            actors.len() == region.num_ranks(),
+            "cast domain member count must match the logical region"
+        );
+
+        let destinations = region
+            .slice()
+            .iter()
+            .zip(actors)
+            .map(|(base_rank_in_domain, actor)| {
+                Ok(Self {
+                    point_in_domain: region.point_of_base_rank(base_rank_in_domain)?,
+                    base_rank_in_domain,
+                    actor,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        ValueMesh::new(region, destinations).map_err(Into::into)
+    }
+
+    /// Select destinations and rebuild their points for the sliced region.
+    ///
+    /// Input:
+    ///
+    /// ```text
+    /// destinations: [actor_0, actor_1, actor_2, actor_3]
+    /// region: select base ranks [1 3]
+    /// ```
+    ///
+    /// Output:
+    ///
+    /// ```text
+    /// [actor_1, actor_3]
+    /// ```
+    ///
+    /// Each output node keeps its base rank and gets a point in the selected
+    /// region.
+    pub fn subset(
+        destinations: &ValueMesh<Self>,
+        region: Region,
+    ) -> anyhow::Result<ValueMesh<Self>> {
+        anyhow::ensure!(
+            region.is_subset(&destinations.region()),
+            "cast domain slice must be a subset of the logical region"
+        );
+
+        let actors = region
+            .slice()
+            .iter()
+            .map(|base_rank| {
+                destinations
+                    .get_by_base_rank(base_rank)
+                    .map(|destination| destination.actor.clone())
+                    .ok_or_else(|| anyhow::anyhow!("missing cast destination for rank {base_rank}"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        Self::mesh(region, actors)
+    }
+
+    /// Return this destination's actor address.
+    ///
+    /// Input: `Destination(actor=host_0_actor_0)`.
+    /// Output: `host_0_actor_0`.
+    pub fn actor(&self) -> &ActorAddr {
+        &self.actor
     }
 
     fn seq(&self, seqs: &ValueMesh<u64>) -> anyhow::Result<u64> {
@@ -562,6 +630,15 @@ impl CastDestination {
                 anyhow::anyhow!("missing seq for base rank {}", self.base_rank_in_domain)
             })
     }
+}
+
+/// A node in the `CastActor` tree that is conceptually made up of **only** `CastActor`s as opposed
+/// to both `CastActor`s and destination `Actor`s. This node contains a list of destination `Actor`s
+/// that the `CastActor` delivers to
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CastNode {
+    cast_actor: ActorRef<CastActor>,
+    destinations: Vec<CastDestination>,
 }
 
 /// One route from a cast sender or an installed cast hop.
@@ -577,24 +654,30 @@ impl CastRoute {
     /// Route a terminal tile directly to its root actor; otherwise, route it
     /// through the root actor's CastActor for further fanout.
     fn try_from_tile(
-        region: &Region,
         tiling_policy: TilingPolicy,
-        tile: &MaterializedTile<ActorAddr>,
+        tile: &MaterializedTile<CastNode>,
     ) -> anyhow::Result<Self> {
-        let destination = CastDestination::try_from_tile(region, tile)?;
+        let root_node = tile
+            .root_item()
+            .ok_or_else(|| anyhow::anyhow!("tile must have at least one cast node"))?;
+
+        let destination = root_node
+            .destinations
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("cast node must have at least one destination"))?
+            .clone();
+
         Ok(if next_tiles(tiling_policy, tile).is_empty() {
             Self::Direct(destination)
         } else {
-            Self::ViaCastActor(cast_actor_ref_for_member(&destination.actor))
+            Self::ViaCastActor(root_node.cast_actor.clone())
         })
     }
 }
 
+#[cfg(test)]
 fn cast_actor_ref_for_member(member: &ActorAddr) -> ActorRef<CastActor> {
-    ActorRef::attest(ActorAddr::root(
-        member.proc_addr(),
-        Label::strip(CAST_ACTOR_NAME),
-    ))
+    CastActor::ref_for_proc(member.proc_addr().clone())
 }
 
 fn annotate_cast_failure(
@@ -784,9 +867,9 @@ impl CastActor {
 #[derive(Debug, Serialize, Deserialize, typeuri::Named)]
 struct CreateCastDomain {
     cast_domain_id: CastDomainId,
-    region: Region,
+    served_region: Region,
     tiling_policy: TilingPolicy,
-    tile: MaterializedTile<ActorAddr>,
+    tile: MaterializedTile<CastNode>,
 }
 wirevalue::register_type!(CreateCastDomain);
 
@@ -808,7 +891,7 @@ impl Handler<CreateCastDomain> for CastActor {
     ) -> Result<(), anyhow::Error> {
         let CreateCastDomain {
             cast_domain_id,
-            region,
+            served_region,
             tiling_policy,
             tile,
         } = message;
@@ -819,13 +902,13 @@ impl Handler<CreateCastDomain> for CastActor {
         let mut next_hops = Vec::new();
 
         for next_tile in next_tiles(tiling_policy, &tile) {
-            let next_hop = CastRoute::try_from_tile(&region, tiling_policy, &next_tile)?;
+            let next_hop = CastRoute::try_from_tile(tiling_policy, &next_tile)?;
             if let CastRoute::ViaCastActor(next_hop_cast_actor) = &next_hop {
                 next_hop_cast_actor.post(
                     cx,
                     CreateCastDomain {
                         cast_domain_id: cast_domain_id.clone(),
-                        region: region.clone(),
+                        served_region: served_region.clone(),
                         tiling_policy,
                         tile: next_tile,
                     },
@@ -834,8 +917,14 @@ impl Handler<CreateCastDomain> for CastActor {
             next_hops.push(next_hop);
         }
 
+        let local_destination = tile
+            .root_item()
+            .and_then(|node| node.destinations.first())
+            .ok_or_else(|| anyhow::anyhow!("cast tile root must have a destination"))?
+            .clone();
+
         let cast_hop = CastHop {
-            local_destination: CastDestination::try_from_tile(&region, &tile)?,
+            local_destination,
             next_hops,
             num_destinations: tile.rank_count(),
         };
@@ -959,19 +1048,19 @@ fn split_ports(
 /// Test-only forwarding path metadata.
 ///
 /// In production this is zero-sized and optimized away. In tests, each
-/// forwarded message carries the semantic tile-root ranks already traversed,
-/// and local delivery appends the current tile root.
+/// forwarded message carries the actor addresses already traversed, and local
+/// delivery appends the destination actor.
 #[derive(Debug, Clone, Default)]
 struct ForwardLineage {
     #[cfg(test)]
-    ranks: Vec<usize>,
+    actors: Vec<ActorAddr>,
 }
 
 impl ForwardLineage {
     #[cfg(test)]
     fn from_message(message: &CastMessage) -> Self {
         Self {
-            ranks: message.lineage.clone(),
+            actors: message.lineage.clone(),
         }
     }
 
@@ -980,23 +1069,23 @@ impl ForwardLineage {
         Self {}
     }
 
-    fn through(&self, rank: usize) -> Self {
+    fn through(&self, actor: &ActorAddr) -> Self {
         #[cfg(test)]
         {
-            let mut ranks = self.ranks.clone();
-            ranks.push(rank);
-            Self { ranks }
+            let mut actors = self.actors.clone();
+            actors.push(actor.clone());
+            Self { actors }
         }
         #[cfg(not(test))]
         {
-            let _ = rank;
+            let _ = actor;
             Self {}
         }
     }
 
     #[cfg(test)]
-    fn ranks(&self) -> Vec<usize> {
-        self.ranks.clone()
+    fn actors(&self) -> Vec<ActorAddr> {
+        self.actors.clone()
     }
 }
 
@@ -1016,9 +1105,9 @@ struct CastMessage {
     session_id: Uuid,
     /// Per-domain-rank sequence numbers allocated by the sender before routing.
     seqs: ValueMesh<u64>,
-    /// Test-only semantic path of tile root ranks traversed so far.
+    /// Test-only path of actor addresses traversed so far.
     #[cfg(test)]
-    lineage: Vec<usize>,
+    lineage: Vec<ActorAddr>,
     /// Message headers.
     headers: Flattrs,
     /// The target port index on each destination actor.
@@ -1123,7 +1212,7 @@ fn deliver_to_destination(
     let _ = lineage;
 
     #[cfg(test)]
-    headers.set(CAST_LINEAGE, lineage.ranks());
+    headers.set(CAST_LINEAGE, lineage.actors());
 
     let dest = destination
         .actor
@@ -1146,7 +1235,7 @@ impl CastActor {
         message: &CastMessage,
         domain: &CastHop,
     ) -> Result<(), anyhow::Error> {
-        let lineage = ForwardLineage::from_message(message);
+        let lineage = ForwardLineage::from_message(message).through(cx.self_addr());
 
         // Split reply ports so that downstream next hops reply through this
         // CastActor's local proxy ports instead of directly to the original
@@ -1163,7 +1252,7 @@ impl CastActor {
             },
         )?;
 
-        let local_lineage = lineage.through(domain.local_destination.base_rank_in_domain);
+        let local_lineage = lineage.through(&domain.local_destination.actor);
         deliver_to_destination(
             cx,
             &CastDelivery::try_from_message(message, &domain.local_destination)?,
@@ -1187,7 +1276,7 @@ impl CastActor {
                             session_id: message.session_id,
                             seqs: message.seqs.clone(),
                             #[cfg(test)]
-                            lineage: local_lineage.ranks(),
+                            lineage: lineage.actors(),
                             headers: message.headers.clone(),
                             dest_port: message.dest_port,
                             data: data.clone(),
@@ -1195,7 +1284,7 @@ impl CastActor {
                     );
                 }
                 CastRoute::Direct(destination) => {
-                    let direct_lineage = local_lineage.through(destination.base_rank_in_domain);
+                    let direct_lineage = lineage.through(&destination.actor);
                     deliver_to_destination(
                         cx,
                         &CastDelivery::try_from_message(message, destination)?,
@@ -1466,6 +1555,39 @@ mod tests {
             .collect()
     }
 
+    /// Build a test destination mesh from a rank-to-member map.
+    ///
+    /// Input:
+    ///
+    /// ```text
+    /// region ranks: [0 1]
+    /// members: {0: proc0::member, 1: proc1::member}
+    /// ```
+    ///
+    /// Output:
+    ///
+    /// ```text
+    /// rank 0: Destination(proc0::member)
+    /// rank 1: Destination(proc1::member)
+    /// ```
+    fn destination_mesh(
+        region: Region,
+        members: &HashMap<usize, ActorAddr>,
+    ) -> anyhow::Result<Arc<ValueMesh<CastDestination>>> {
+        let destinations = region
+            .slice()
+            .iter()
+            .map(|rank| {
+                members
+                    .get(&rank)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("missing test member for rank {rank}"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        Ok(Arc::new(CastDestination::mesh(region, destinations)?))
+    }
+
     #[test]
     fn test_subset_members_preserves_selected_member_order() {
         // parent local ranks / members:
@@ -1540,8 +1662,7 @@ mod tests {
             if self.domain.is_none() {
                 self.domain = Some(CastDomainId::new().materialize(
                     cx,
-                    self.members.clone(),
-                    self.region.clone(),
+                    destination_mesh(self.region.clone(), &self.members)?,
                     TilingPolicy::BlockPartitioning,
                     Flattrs::new(),
                 )?);
@@ -1572,7 +1693,7 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, typeuri::Named)]
     struct TestDeliveryRecord {
         payload: String,
-        lineage: Vec<usize>,
+        lineage: Vec<ActorAddr>,
         operation_endpoint: Option<String>,
     }
     wirevalue::register_type!(TestDeliveryRecord);
@@ -1719,9 +1840,9 @@ mod tests {
     }
 
     struct CastTestMesh {
-        _client_proc: Proc,
+        _client_proc: Arc<Proc>,
         client: Client,
-        _procs: Vec<Proc>,
+        _procs: Arc<Vec<Proc>>,
         member_ids: HashMap<usize, ActorAddr>,
         receiver_ids: Vec<ActorAddr>,
     }
@@ -1758,9 +1879,9 @@ mod tests {
                 .collect();
 
             Self {
-                _client_proc: client_proc,
+                _client_proc: Arc::new(client_proc),
                 client,
-                _procs: procs,
+                _procs: Arc::new(procs),
                 member_ids,
                 receiver_ids: Vec::new(),
             }
@@ -1801,20 +1922,50 @@ mod tests {
             if self.receiver_ids.is_empty() {
                 self.member_ids.clone()
             } else {
-                self.receiver_ids
-                    .iter()
-                    .cloned()
-                    .enumerate()
+                self.member_ids
+                    .keys()
+                    .map(|rank| (*rank, self.receiver_ids[*rank].clone()))
                     .collect::<HashMap<_, _>>()
             }
         }
 
+        /// Returns a test mesh containing only the members selected by `region`.
+        ///
+        /// For a mesh with ranks `0..8`, a region containing ranks `4..8`
+        /// produces a mesh with member ranks `4`, `5`, `6`, and `7` that shares
+        /// the original live procs.
+        fn sliced(&self, region: Region) -> Self {
+            let all_members = self.domain_members();
+            let member_ids = region
+                .slice()
+                .iter()
+                .map(|rank| {
+                    (
+                        rank,
+                        all_members
+                            .get(&rank)
+                            .expect("test mesh must contain every selected rank")
+                            .clone(),
+                    )
+                })
+                .collect();
+
+            Self {
+                _client_proc: Arc::clone(&self._client_proc),
+                client: self.client.clone(),
+                _procs: Arc::clone(&self._procs),
+                member_ids,
+                receiver_ids: self.receiver_ids.clone(),
+            }
+        }
+
         fn root_domain(&self, region: Region) -> CastDomainRef {
+            let members = self.domain_members();
+
             CastDomainId::new()
                 .materialize(
                     &self.client,
-                    self.domain_members(),
-                    region,
+                    destination_mesh(region, &members).unwrap(),
                     TilingPolicy::BlockPartitioning,
                     Flattrs::new(),
                 )
@@ -1822,8 +1973,12 @@ mod tests {
         }
 
         fn proc_names(&self) -> Vec<String> {
-            (0..self.domain_members().len())
-                .map(|i| format!("proc_{i}"))
+            let mut ranks = self.domain_members().into_keys().collect::<Vec<_>>();
+            ranks.sort_unstable();
+
+            ranks
+                .into_iter()
+                .map(|rank| format!("proc_{rank}"))
                 .collect()
         }
 
@@ -1831,8 +1986,7 @@ mod tests {
             CastDomainId::new()
                 .materialize(
                     &self.client,
-                    self.member_ids.clone(),
-                    region,
+                    destination_mesh(region, &self.member_ids).unwrap(),
                     policy,
                     Flattrs::new(),
                 )
@@ -2000,8 +2154,8 @@ mod tests {
         let domain = CastDomainId::new()
             .materialize(
                 materialization_client(),
-                members.clone(),
-                region.clone(),
+                destination_mesh(region.clone(), &members)
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?,
                 policy,
                 Flattrs::new(),
             )
@@ -2264,15 +2418,75 @@ mod tests {
             lineage_by_proc.insert(proc_name, first_lineage);
         }
 
-        let expected_lineage: BTreeMap<String, Vec<usize>> = [
-            ("proc_0".to_string(), vec![0]),
-            ("proc_1".to_string(), vec![1]),
-            ("proc_2".to_string(), vec![2]),
-            ("proc_3".to_string(), vec![2, 3]),
-            ("proc_4".to_string(), vec![4]),
-            ("proc_5".to_string(), vec![4, 5]),
-            ("proc_6".to_string(), vec![4, 6]),
-            ("proc_7".to_string(), vec![4, 6, 7]),
+        let expected_lineage: BTreeMap<String, Vec<ActorAddr>> = [
+            (
+                "proc_0".to_string(),
+                vec![test_mesh.receiver_ids[0].clone()],
+            ),
+            (
+                "proc_1".to_string(),
+                vec![test_mesh.receiver_ids[1].clone()],
+            ),
+            (
+                "proc_2".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[2])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[2].clone(),
+                ],
+            ),
+            (
+                "proc_3".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[2])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[3].clone(),
+                ],
+            ),
+            (
+                "proc_4".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[4])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[4].clone(),
+                ],
+            ),
+            (
+                "proc_5".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[4])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[5].clone(),
+                ],
+            ),
+            (
+                "proc_6".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[4])
+                        .actor_addr()
+                        .clone(),
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[6])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[6].clone(),
+                ],
+            ),
+            (
+                "proc_7".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[4])
+                        .actor_addr()
+                        .clone(),
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[6])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[7].clone(),
+                ],
+            ),
         ]
         .into_iter()
         .collect();
@@ -2572,51 +2786,114 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_slice_cast_reaches_exactly_selected_members() {
+    async fn test_cast_message_delivery_slice() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+
         let n = 8;
         let mut test_mesh = CastTestMesh::new(n);
-        test_mesh.spawn_split_port_receivers();
-        let root_cast_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
+        test_mesh.spawn_delivery_receivers();
 
-        for (case_name, range, expected_procs, expected_subtree_roots) in [
-            (
-                "a_0_to_1",
-                ndslice::Range(0, Some(1), 1),
-                ["proc_0", "proc_1", "proc_2", "proc_3"],
-                [0, 1, 2],
-            ),
-            (
-                "a_1_to_2",
-                ndslice::Range(1, Some(2), 1),
-                ["proc_4", "proc_5", "proc_6", "proc_7"],
-                [4, 5, 6],
-            ),
-        ] {
-            let payload = format!("slice-{case_name}");
-            let slice_region = Region::from(shape!(a = 2, b = 2, c = 2))
-                .range("a", range)
-                .unwrap();
-            let slice_cast_domain = root_cast_domain
-                .materialize_slice(
+        let slice_region = Region::from(shape!(a = 2, b = 2, c = 2))
+            .range("a", ndslice::Range(1, Some(2), 1))
+            .unwrap();
+        let slice_mesh = test_mesh.sliced(slice_region.clone());
+        let slice_domain =
+            slice_mesh.root_domain_with_policy(slice_region, TilingPolicy::BlockPartitioning);
+
+        let expected_payloads = vec![
+            "hello-0".to_string(),
+            "hello-1".to_string(),
+            "hello-2".to_string(),
+        ];
+        for payload in &expected_payloads {
+            slice_domain
+                .cast(
                     &test_mesh.client,
-                    slice_region,
-                    TilingPolicy::BlockPartitioning,
+                    Flattrs::new(),
+                    TestDelivery {
+                        payload: payload.clone(),
+                    },
                 )
                 .unwrap();
-
-            assert_eq!(
-                slice_cast_domain
-                    .subtrees
-                    .iter()
-                    .map(|subtree| subtree.served_region.slice().offset())
-                    .collect::<BTreeSet<_>>(),
-                expected_subtree_roots.into_iter().collect()
-            );
-            assert_eq!(
-                cast_and_collect_reply_counts(&test_mesh, &slice_cast_domain, &payload,).await,
-                expected_reply_counts(&expected_procs)
-            );
         }
+
+        let expected_histories: BTreeMap<String, Vec<String>> = [
+            "proc_4".to_string(),
+            "proc_5".to_string(),
+            "proc_6".to_string(),
+            "proc_7".to_string(),
+        ]
+        .into_iter()
+        .map(|proc_name| (proc_name, expected_payloads.clone()))
+        .collect();
+        let histories = cast_and_collect_histories(&slice_mesh, &slice_domain).await;
+
+        let observed_payloads: BTreeMap<String, Vec<String>> = histories
+            .iter()
+            .map(|(proc_name, history)| {
+                (
+                    proc_name.clone(),
+                    history
+                        .iter()
+                        .map(|delivery| delivery.payload.clone())
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(observed_payloads, expected_histories);
+
+        let mut lineage_by_proc = BTreeMap::new();
+        for (proc_name, history) in histories {
+            assert_eq!(
+                history.len(),
+                expected_payloads.len(),
+                "proc {proc_name} received the wrong number of deliveries"
+            );
+            let first_lineage = history[0].lineage.clone();
+            for delivery in &history {
+                assert_eq!(
+                    delivery.lineage, first_lineage,
+                    "proc {proc_name} changed lineage across slice casts"
+                );
+            }
+            lineage_by_proc.insert(proc_name, first_lineage);
+        }
+
+        let expected_lineage: BTreeMap<String, Vec<ActorAddr>> = [
+            (
+                "proc_4".to_string(),
+                vec![test_mesh.receiver_ids[4].clone()],
+            ),
+            (
+                "proc_5".to_string(),
+                vec![test_mesh.receiver_ids[5].clone()],
+            ),
+            (
+                "proc_6".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[6])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[6].clone(),
+                ],
+            ),
+            (
+                "proc_7".to_string(),
+                vec![
+                    cast_actor_ref_for_member(&test_mesh.receiver_ids[6])
+                        .actor_addr()
+                        .clone(),
+                    test_mesh.receiver_ids[7].clone(),
+                ],
+            ),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(lineage_by_proc, expected_lineage);
     }
 
     // CA-4 (destination ordering) and CA-6 (domain isolation).
@@ -2633,35 +2910,26 @@ mod tests {
         test_mesh.spawn_delivery_receivers();
         let root = test_mesh.root_domain(shape!(rank = 4).into());
 
-        let rank_0_to_2 = root
-            .materialize_slice(
-                &test_mesh.client,
-                Region::from(shape!(rank = 4))
-                    .range("rank", ndslice::Range(0, Some(2), 1))
-                    .unwrap(),
-                TilingPolicy::BlockPartitioning,
-            )
+        let rank_0_to_2_region = Region::from(shape!(rank = 4))
+            .range("rank", ndslice::Range(0, Some(2), 1))
             .unwrap();
+        let rank_0_to_2 = test_mesh
+            .sliced(rank_0_to_2_region.clone())
+            .root_domain_with_policy(rank_0_to_2_region, TilingPolicy::BlockPartitioning);
 
-        let rank_1_to_3 = root
-            .materialize_slice(
-                &test_mesh.client,
-                Region::from(shape!(rank = 4))
-                    .range("rank", ndslice::Range(1, Some(3), 1))
-                    .unwrap(),
-                TilingPolicy::BlockPartitioning,
-            )
+        let rank_1_to_3_region = Region::from(shape!(rank = 4))
+            .range("rank", ndslice::Range(1, Some(3), 1))
             .unwrap();
+        let rank_1_to_3 = test_mesh
+            .sliced(rank_1_to_3_region.clone())
+            .root_domain_with_policy(rank_1_to_3_region, TilingPolicy::BlockPartitioning);
 
-        let rank_2_to_4 = root
-            .materialize_slice(
-                &test_mesh.client,
-                Region::from(shape!(rank = 4))
-                    .range("rank", ndslice::Range(2, Some(4), 1))
-                    .unwrap(),
-                TilingPolicy::BlockPartitioning,
-            )
+        let rank_2_to_4_region = Region::from(shape!(rank = 4))
+            .range("rank", ndslice::Range(2, Some(4), 1))
             .unwrap();
+        let rank_2_to_4 = test_mesh
+            .sliced(rank_2_to_4_region.clone())
+            .root_domain_with_policy(rank_2_to_4_region, TilingPolicy::BlockPartitioning);
 
         let casts = [
             (
