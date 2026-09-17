@@ -184,21 +184,38 @@ impl CastDomainId {
                 .collect(),
         )?);
 
-        self.materialize_members(cx, member_mesh, destination_region, tiling_policy, headers)
+        let node_mesh = Arc::new(ValueMesh::new(
+            destination_region.clone(),
+            destinations
+                .values()
+                .map(|destination| CastNode {
+                    cast_actor: CastActor::ref_for_proc(destination.actor().proc_addr().clone()),
+                    destinations: vec![destination.clone()],
+                })
+                .collect(),
+        )?);
+
+        self.materialize_members(
+            cx,
+            member_mesh,
+            node_mesh,
+            destination_region,
+            tiling_policy,
+            headers,
+        )
     }
 
     fn materialize_members(
         self,
         cx: &impl context::Actor,
         member_mesh: Arc<ValueMesh<ActorAddr>>,
+        node_mesh: Arc<ValueMesh<CastNode>>,
         region: Region,
         tiling_policy: TilingPolicy,
         headers: Flattrs,
     ) -> anyhow::Result<CastDomainRef> {
-        let root_tile = MaterializedTile::from_value_mesh_with_tile(
-            Tile::from_view(&region),
-            Arc::clone(&member_mesh),
-        );
+        let root_tile =
+            MaterializedTile::from_value_mesh_with_tile(Tile::from_view(&region), node_mesh);
         anyhow::ensure!(
             !root_tile.tile().space().is_empty(),
             "cannot construct root-heaved subtree tiles for an empty tile"
@@ -222,7 +239,6 @@ impl CastDomainId {
 
                 Ok(CastSubtree {
                     route: CastRoute::try_from_tile(
-                        &region,
                         tiling_policy,
                         &root_tile.subtile(subtree_tile),
                     )?,
@@ -607,17 +623,6 @@ impl CastDestination {
         &self.actor
     }
 
-    fn try_from_tile(region: &Region, tile: &MaterializedTile<ActorAddr>) -> anyhow::Result<Self> {
-        Ok(Self {
-            point_in_domain: region.point_of_base_rank(tile.root_rank())?,
-            base_rank_in_domain: tile.root_rank(),
-            actor: tile
-                .root_item()
-                .ok_or_else(|| anyhow::anyhow!("tile must have at least one member"))?
-                .clone(),
-        })
-    }
-
     fn seq(&self, seqs: &ValueMesh<u64>) -> anyhow::Result<u64> {
         seqs.get_by_base_rank(self.base_rank_in_domain)
             .copied()
@@ -625,6 +630,15 @@ impl CastDestination {
                 anyhow::anyhow!("missing seq for base rank {}", self.base_rank_in_domain)
             })
     }
+}
+
+/// A node in the `CastActor` tree that is conceptually made up of **only** `CastActor`s as opposed
+/// to both `CastActor`s and destination `Actor`s. This node contains a list of destination `Actor`s
+/// that the `CastActor` delivers to
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CastNode {
+    cast_actor: ActorRef<CastActor>,
+    destinations: Vec<CastDestination>,
 }
 
 /// One route from a cast sender or an installed cast hop.
@@ -640,19 +654,28 @@ impl CastRoute {
     /// Route a terminal tile directly to its root actor; otherwise, route it
     /// through the root actor's CastActor for further fanout.
     fn try_from_tile(
-        region: &Region,
         tiling_policy: TilingPolicy,
-        tile: &MaterializedTile<ActorAddr>,
+        tile: &MaterializedTile<CastNode>,
     ) -> anyhow::Result<Self> {
-        let destination = CastDestination::try_from_tile(region, tile)?;
+        let root_node = tile
+            .root_item()
+            .ok_or_else(|| anyhow::anyhow!("tile must have at least one cast node"))?;
+
+        let destination = root_node
+            .destinations
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("cast node must have at least one destination"))?
+            .clone();
+
         Ok(if next_tiles(tiling_policy, tile).is_empty() {
             Self::Direct(destination)
         } else {
-            Self::ViaCastActor(cast_actor_ref_for_member(&destination.actor))
+            Self::ViaCastActor(root_node.cast_actor.clone())
         })
     }
 }
 
+#[cfg(test)]
 fn cast_actor_ref_for_member(member: &ActorAddr) -> ActorRef<CastActor> {
     CastActor::ref_for_proc(member.proc_addr().clone())
 }
@@ -846,7 +869,7 @@ struct CreateCastDomain {
     cast_domain_id: CastDomainId,
     served_region: Region,
     tiling_policy: TilingPolicy,
-    tile: MaterializedTile<ActorAddr>,
+    tile: MaterializedTile<CastNode>,
 }
 wirevalue::register_type!(CreateCastDomain);
 
@@ -879,7 +902,7 @@ impl Handler<CreateCastDomain> for CastActor {
         let mut next_hops = Vec::new();
 
         for next_tile in next_tiles(tiling_policy, &tile) {
-            let next_hop = CastRoute::try_from_tile(&served_region, tiling_policy, &next_tile)?;
+            let next_hop = CastRoute::try_from_tile(tiling_policy, &next_tile)?;
             if let CastRoute::ViaCastActor(next_hop_cast_actor) = &next_hop {
                 next_hop_cast_actor.post(
                     cx,
@@ -894,8 +917,14 @@ impl Handler<CreateCastDomain> for CastActor {
             next_hops.push(next_hop);
         }
 
+        let local_destination = tile
+            .root_item()
+            .and_then(|node| node.destinations.first())
+            .ok_or_else(|| anyhow::anyhow!("cast tile root must have a destination"))?
+            .clone();
+
         let cast_hop = CastHop {
-            local_destination: CastDestination::try_from_tile(&served_region, &tile)?,
+            local_destination,
             next_hops,
             num_destinations: tile.rank_count(),
         };
