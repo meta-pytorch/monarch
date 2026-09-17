@@ -32,6 +32,7 @@ use hyperactor::context;
 use hyperactor::id::Label;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_cast::cast_actor::CastActor;
+use hyperactor_cast::cast_actor::CastDestination;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::NonZeroUsize;
@@ -367,8 +368,8 @@ pub struct ProcMeshRef {
 }
 wirevalue::register_type!(ProcMeshRef);
 
-// The proc-agent actor mesh is derived from `ranks`, so it is not part of
-// `ProcMeshRef` identity.
+// The proc-agent actor mesh is derived from `ranks` and `host_cast_actors`, so it
+// is not part of `ProcMeshRef` identity.
 impl PartialEq for ProcMeshRef {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
@@ -438,17 +439,20 @@ impl ProcMeshRef {
                 .collect(),
         )?);
 
-        let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks)?;
+        let host_cast_actors = Arc::new(ValueMesh::from_dense(
+            region.clone(),
+            host_procs.values().map(CastActor::ref_for_proc).collect(),
+        )?);
+        let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &ranks, &host_cast_actors)?;
         let proc_mesh_ref = Self {
             id,
             region,
             ranks,
             host_procs,
-            host_cast_actors: OnceLock::new(),
+            host_cast_actors: OnceLock::from(host_cast_actors),
             proc_agent_mesh,
             host_mesh: Some(host_mesh),
         };
-        proc_mesh_ref.host_cast_actors();
 
         Ok(proc_mesh_ref)
     }
@@ -464,19 +468,22 @@ impl ProcMeshRef {
     ) -> crate::Result<Self> {
         let region: Region = Extent::unity().into();
         let ranks = Arc::new(vec![proc_ref]);
-        let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks)?;
+        let host_cast_actors = Arc::new(ValueMesh::from_single(
+            region.clone(),
+            CastActor::ref_for_proc(host_proc_addr.clone()),
+        ));
         let host_procs = Arc::new(ValueMesh::from_single(region.clone(), host_proc_addr));
+        let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &ranks, &host_cast_actors)?;
 
         let proc_mesh_ref = Self {
             id,
             region,
             ranks,
             host_procs,
-            host_cast_actors: OnceLock::new(),
+            host_cast_actors: OnceLock::from(host_cast_actors),
             proc_agent_mesh,
             host_mesh: None,
         };
-        proc_mesh_ref.host_cast_actors();
 
         Ok(proc_mesh_ref)
     }
@@ -519,8 +526,8 @@ impl ProcMeshRef {
 
     fn proc_agent_mesh_ref(
         proc_mesh_id: &ProcMeshId,
-        region: &Region,
         ranks: &[ProcRef],
+        host_cast_actors: &Arc<ValueMesh<ActorRef<CastActor>>>,
     ) -> crate::Result<ActorMeshRef<ProcAgent>> {
         let agent_label = ranks
             .first()
@@ -532,20 +539,21 @@ impl ProcMeshRef {
             .unwrap_or_else(|| Label::new(proc_agent::PROC_AGENT_ACTOR_NAME).unwrap());
         let id = ActorMeshId::singleton(agent_label);
 
-        let members = Arc::new(
-            ranks
-                .iter()
-                .map(|rank| rank.agent.actor_addr().clone())
-                .collect_mesh::<ValueMesh<_>>(region.clone())
-                .map_err(|error| crate::Error::ConfigurationError(error.into()))?,
+        let destinations = ranks
+            .iter()
+            .map(|rank| rank.agent.actor_addr().clone())
+            .collect();
+        let destinations = Arc::new(
+            CastDestination::mesh(host_cast_actors.region().clone(), destinations)
+                .map_err(crate::Error::ConfigurationError)?,
         );
 
         Ok(ActorMeshRef::new_managed(
             id,
             Some(proc_mesh_id.clone()),
-            region.clone(),
             None,
-            members,
+            destinations,
+            Arc::clone(host_cast_actors),
         ))
     }
 
@@ -1218,20 +1226,18 @@ impl ProcMeshRef {
             }
         }?;
 
-        let actor_mesh_members = Arc::new(
-            self.ranks
-                .iter()
-                .map(|rank| rank.actor_addr(&actor_mesh_id))
-                .collect_mesh::<ValueMesh<_>>(self.region().clone())
-                .map_err(|error| crate::Error::ConfigurationError(error.into()))?,
-        );
+        let actor_mesh_members = self
+            .ranks
+            .iter()
+            .map(|rank| rank.actor_addr(&actor_mesh_id))
+            .collect();
 
         let mesh = ActorMesh::new(
             self.clone(),
             actor_mesh_id.clone(),
             None,
             actor_mesh_members,
-        );
+        )?;
         // Notify telemetry that an actor mesh was created.
         {
             let id_str = actor_mesh_id.to_string();
