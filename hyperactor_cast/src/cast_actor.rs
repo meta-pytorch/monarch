@@ -323,24 +323,6 @@ impl CastDomainRef {
         &self.members
     }
 
-    /// Materialize a new slice domain described relative to this domain.
-    ///
-    /// The returned ref is the handle for the slice. It gets a fresh domain id
-    /// whose subtrees are root-heaved within the sliced region. A terminal
-    /// subtree is stored as a direct destination; a nonterminal subtree enters
-    /// through its CastActor. The parent ref's dense members are used only to
-    /// derive the slice definition and sender-side sequence map.
-    pub fn materialize_slice(
-        &self,
-        cx: &impl context::Actor,
-        region: Region,
-        tiling_policy: TilingPolicy,
-    ) -> anyhow::Result<CastDomainRef> {
-        let slice_id = CastDomainId::new();
-        let slice_member_mesh = Arc::new(self.members.subset(region.clone())?);
-        slice_id.materialize_members(cx, slice_member_mesh, region, tiling_policy, Flattrs::new())
-    }
-
     /// Cast a message to all members of this domain with caller-supplied headers.
     ///
     /// `headers` are the destination envelope headers supplied by the caller.
@@ -1719,9 +1701,9 @@ mod tests {
     }
 
     struct CastTestMesh {
-        _client_proc: Proc,
+        _client_proc: Arc<Proc>,
         client: Client,
-        _procs: Vec<Proc>,
+        _procs: Arc<Vec<Proc>>,
         member_ids: HashMap<usize, ActorAddr>,
         receiver_ids: Vec<ActorAddr>,
     }
@@ -1758,9 +1740,9 @@ mod tests {
                 .collect();
 
             Self {
-                _client_proc: client_proc,
+                _client_proc: Arc::new(client_proc),
                 client,
-                _procs: procs,
+                _procs: Arc::new(procs),
                 member_ids,
                 receiver_ids: Vec::new(),
             }
@@ -1801,11 +1783,40 @@ mod tests {
             if self.receiver_ids.is_empty() {
                 self.member_ids.clone()
             } else {
-                self.receiver_ids
-                    .iter()
-                    .cloned()
-                    .enumerate()
+                self.member_ids
+                    .keys()
+                    .map(|rank| (*rank, self.receiver_ids[*rank].clone()))
                     .collect::<HashMap<_, _>>()
+            }
+        }
+
+        /// Returns a test mesh containing only the members selected by `region`.
+        ///
+        /// For a mesh with ranks `0..8`, a region containing ranks `4..8`
+        /// produces a mesh with member ranks `4`, `5`, `6`, and `7` that shares
+        /// the original live procs.
+        fn sliced(&self, region: Region) -> Self {
+            let all_members = self.domain_members();
+            let member_ids = region
+                .slice()
+                .iter()
+                .map(|rank| {
+                    (
+                        rank,
+                        all_members
+                            .get(&rank)
+                            .expect("test mesh must contain every selected rank")
+                            .clone(),
+                    )
+                })
+                .collect();
+
+            Self {
+                _client_proc: Arc::clone(&self._client_proc),
+                client: self.client.clone(),
+                _procs: Arc::clone(&self._procs),
+                member_ids,
+                receiver_ids: self.receiver_ids.clone(),
             }
         }
 
@@ -1822,8 +1833,12 @@ mod tests {
         }
 
         fn proc_names(&self) -> Vec<String> {
-            (0..self.domain_members().len())
-                .map(|i| format!("proc_{i}"))
+            let mut ranks = self.domain_members().into_keys().collect::<Vec<_>>();
+            ranks.sort_unstable();
+
+            ranks
+                .into_iter()
+                .map(|rank| format!("proc_{rank}"))
                 .collect()
         }
 
@@ -2572,51 +2587,92 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_slice_cast_reaches_exactly_selected_members() {
+    async fn test_cast_message_delivery_slice() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+
         let n = 8;
         let mut test_mesh = CastTestMesh::new(n);
-        test_mesh.spawn_split_port_receivers();
-        let root_cast_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
+        test_mesh.spawn_delivery_receivers();
 
-        for (case_name, range, expected_procs, expected_subtree_roots) in [
-            (
-                "a_0_to_1",
-                ndslice::Range(0, Some(1), 1),
-                ["proc_0", "proc_1", "proc_2", "proc_3"],
-                [0, 1, 2],
-            ),
-            (
-                "a_1_to_2",
-                ndslice::Range(1, Some(2), 1),
-                ["proc_4", "proc_5", "proc_6", "proc_7"],
-                [4, 5, 6],
-            ),
-        ] {
-            let payload = format!("slice-{case_name}");
-            let slice_region = Region::from(shape!(a = 2, b = 2, c = 2))
-                .range("a", range)
-                .unwrap();
-            let slice_cast_domain = root_cast_domain
-                .materialize_slice(
+        let slice_region = Region::from(shape!(a = 2, b = 2, c = 2))
+            .range("a", ndslice::Range(1, Some(2), 1))
+            .unwrap();
+        let slice_mesh = test_mesh.sliced(slice_region.clone());
+        let slice_domain =
+            slice_mesh.root_domain_with_policy(slice_region, TilingPolicy::BlockPartitioning);
+
+        let expected_payloads = vec![
+            "hello-0".to_string(),
+            "hello-1".to_string(),
+            "hello-2".to_string(),
+        ];
+        for payload in &expected_payloads {
+            slice_domain
+                .cast(
                     &test_mesh.client,
-                    slice_region,
-                    TilingPolicy::BlockPartitioning,
+                    Flattrs::new(),
+                    TestDelivery {
+                        payload: payload.clone(),
+                    },
                 )
                 .unwrap();
-
-            assert_eq!(
-                slice_cast_domain
-                    .subtrees
-                    .iter()
-                    .map(|subtree| subtree.served_region.slice().offset())
-                    .collect::<BTreeSet<_>>(),
-                expected_subtree_roots.into_iter().collect()
-            );
-            assert_eq!(
-                cast_and_collect_reply_counts(&test_mesh, &slice_cast_domain, &payload,).await,
-                expected_reply_counts(&expected_procs)
-            );
         }
+
+        let expected_histories: BTreeMap<String, Vec<String>> = [
+            "proc_4".to_string(),
+            "proc_5".to_string(),
+            "proc_6".to_string(),
+            "proc_7".to_string(),
+        ]
+        .into_iter()
+        .map(|proc_name| (proc_name, expected_payloads.clone()))
+        .collect();
+        let histories = cast_and_collect_histories(&slice_mesh, &slice_domain).await;
+
+        let observed_payloads: BTreeMap<String, Vec<String>> = histories
+            .iter()
+            .map(|(proc_name, history)| {
+                (
+                    proc_name.clone(),
+                    history
+                        .iter()
+                        .map(|delivery| delivery.payload.clone())
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(observed_payloads, expected_histories);
+
+        let mut lineage_by_proc = BTreeMap::new();
+        for (proc_name, history) in histories {
+            assert_eq!(
+                history.len(),
+                expected_payloads.len(),
+                "proc {proc_name} received the wrong number of deliveries"
+            );
+            let first_lineage = history[0].lineage.clone();
+            for delivery in &history {
+                assert_eq!(
+                    delivery.lineage, first_lineage,
+                    "proc {proc_name} changed lineage across slice casts"
+                );
+            }
+            lineage_by_proc.insert(proc_name, first_lineage);
+        }
+
+        let expected_lineage: BTreeMap<String, Vec<usize>> = [
+            ("proc_4".to_string(), vec![4]),
+            ("proc_5".to_string(), vec![5]),
+            ("proc_6".to_string(), vec![6]),
+            ("proc_7".to_string(), vec![6, 7]),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(lineage_by_proc, expected_lineage);
     }
 
     // CA-4 (destination ordering) and CA-6 (domain isolation).
@@ -2633,35 +2689,26 @@ mod tests {
         test_mesh.spawn_delivery_receivers();
         let root = test_mesh.root_domain(shape!(rank = 4).into());
 
-        let rank_0_to_2 = root
-            .materialize_slice(
-                &test_mesh.client,
-                Region::from(shape!(rank = 4))
-                    .range("rank", ndslice::Range(0, Some(2), 1))
-                    .unwrap(),
-                TilingPolicy::BlockPartitioning,
-            )
+        let rank_0_to_2_region = Region::from(shape!(rank = 4))
+            .range("rank", ndslice::Range(0, Some(2), 1))
             .unwrap();
+        let rank_0_to_2 = test_mesh
+            .sliced(rank_0_to_2_region.clone())
+            .root_domain_with_policy(rank_0_to_2_region, TilingPolicy::BlockPartitioning);
 
-        let rank_1_to_3 = root
-            .materialize_slice(
-                &test_mesh.client,
-                Region::from(shape!(rank = 4))
-                    .range("rank", ndslice::Range(1, Some(3), 1))
-                    .unwrap(),
-                TilingPolicy::BlockPartitioning,
-            )
+        let rank_1_to_3_region = Region::from(shape!(rank = 4))
+            .range("rank", ndslice::Range(1, Some(3), 1))
             .unwrap();
+        let rank_1_to_3 = test_mesh
+            .sliced(rank_1_to_3_region.clone())
+            .root_domain_with_policy(rank_1_to_3_region, TilingPolicy::BlockPartitioning);
 
-        let rank_2_to_4 = root
-            .materialize_slice(
-                &test_mesh.client,
-                Region::from(shape!(rank = 4))
-                    .range("rank", ndslice::Range(2, Some(4), 1))
-                    .unwrap(),
-                TilingPolicy::BlockPartitioning,
-            )
+        let rank_2_to_4_region = Region::from(shape!(rank = 4))
+            .range("rank", ndslice::Range(2, Some(4), 1))
             .unwrap();
+        let rank_2_to_4 = test_mesh
+            .sliced(rank_2_to_4_region.clone())
+            .root_domain_with_policy(rank_2_to_4_region, TilingPolicy::BlockPartitioning);
 
         let casts = [
             (
