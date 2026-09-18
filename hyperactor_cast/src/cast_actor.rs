@@ -529,13 +529,100 @@ struct CastHop {
 
 /// One destination actor and its position in the cast domain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct CastDestination {
+pub struct CastDestination {
     point_in_domain: Point,
     base_rank_in_domain: usize,
     actor: ActorAddr,
 }
 
 impl CastDestination {
+    /// Build one logical destination for each actor.
+    ///
+    /// Input:
+    ///
+    /// ```text
+    /// region ranks: [0 1]
+    /// actors: [actor_0, actor_1]
+    /// ```
+    ///
+    /// Output:
+    ///
+    /// ```text
+    /// [
+    ///   Destination(point=0, base_rank=0, actor=actor_0),
+    ///   Destination(point=1, base_rank=1, actor=actor_1),
+    /// ]
+    /// ```
+    pub fn mesh(region: Region, actors: Vec<ActorAddr>) -> anyhow::Result<ValueMesh<Self>> {
+        anyhow::ensure!(
+            actors.len() == region.num_ranks(),
+            "cast domain member count must match the logical region"
+        );
+
+        let destinations = region
+            .slice()
+            .iter()
+            .zip(actors)
+            .map(|(base_rank_in_domain, actor)| {
+                Ok(Self {
+                    point_in_domain: region.point_of_base_rank(base_rank_in_domain)?,
+                    base_rank_in_domain,
+                    actor,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        ValueMesh::new(region, destinations).map_err(Into::into)
+    }
+
+    /// Select destinations and rebuild their points for the sliced region.
+    ///
+    /// Input:
+    ///
+    /// ```text
+    /// destinations: [actor_0, actor_1, actor_2, actor_3]
+    /// region: select base ranks [1 3]
+    /// ```
+    ///
+    /// Output:
+    ///
+    /// ```text
+    /// [actor_1, actor_3]
+    /// ```
+    ///
+    /// Each output node keeps its base rank and gets a point in the selected
+    /// region.
+    pub fn subset(
+        destinations: &ValueMesh<Self>,
+        region: Region,
+    ) -> anyhow::Result<ValueMesh<Self>> {
+        anyhow::ensure!(
+            region.is_subset(&destinations.region()),
+            "cast domain slice must be a subset of the logical region"
+        );
+
+        let actors = region
+            .slice()
+            .iter()
+            .map(|base_rank| {
+                destinations
+                    .get_by_base_rank(base_rank)
+                    .map(|destination| destination.actor.clone())
+                    .ok_or_else(|| anyhow::anyhow!("missing cast destination for rank {base_rank}"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        Self::mesh(region, actors)
+    }
+
+    /// Return this destination's actor address.
+    ///
+    /// Input: `Destination(actor=host_0_actor_0)`.
+    /// Output: `host_0_actor_0`.
+    pub fn actor(&self) -> &ActorAddr {
+        &self.actor
+    }
+
     fn try_from_tile(region: &Region, tile: &MaterializedTile<ActorAddr>) -> anyhow::Result<Self> {
         Ok(Self {
             point_in_domain: region.point_of_base_rank(tile.root_rank())?,
@@ -1453,6 +1540,94 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn test_cast_destination_mesh_and_subset_preserve_strided_base_ranks() {
+        // Full region base ranks:
+        //
+        // row=0:  0  1  2  3
+        // row=1:  4  5  6  7
+        // row=2:  8  9 10 11
+        // row=3: 12 13 14 15
+        let full_region = Region::from(shape!(row = 4, col = 4));
+
+        let mesh_region = full_region
+            .range("row", ndslice::Range(1, Some(4), 2))
+            .unwrap();
+
+        let all_members = members(16);
+
+        let mesh_members = vec![
+            all_members[4].clone(),
+            all_members[5].clone(),
+            all_members[6].clone(),
+            all_members[7].clone(),
+            all_members[12].clone(),
+            all_members[13].clone(),
+            all_members[14].clone(),
+            all_members[15].clone(),
+        ];
+
+        let destinations = CastDestination::mesh(mesh_region.clone(), mesh_members).unwrap();
+
+        let mesh_values = destinations
+            .values()
+            .map(|destination| {
+                (
+                    destination.actor.clone(),
+                    destination.base_rank_in_domain,
+                    destination.point_in_domain.coords(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            mesh_values,
+            vec![
+                (all_members[4].clone(), 4, vec![0, 0]),
+                (all_members[5].clone(), 5, vec![0, 1]),
+                (all_members[6].clone(), 6, vec![0, 2]),
+                (all_members[7].clone(), 7, vec![0, 3]),
+                (all_members[12].clone(), 12, vec![1, 0]),
+                (all_members[13].clone(), 13, vec![1, 1]),
+                (all_members[14].clone(), 14, vec![1, 2]),
+                (all_members[15].clone(), 15, vec![1, 3]),
+            ]
+        );
+
+        // Select columns 1 and 3 from the already strided mesh:
+        //
+        // selected base ranks:  5  7
+        //                     13 15
+        // selected points:    0,0 0,1
+        //                     1,0 1,1
+        let subset_region = mesh_region
+            .range("col", ndslice::Range(1, Some(4), 2))
+            .unwrap();
+
+        let subset = CastDestination::subset(&destinations, subset_region).unwrap();
+
+        let subset_values = subset
+            .values()
+            .map(|destination| {
+                (
+                    destination.actor.clone(),
+                    destination.base_rank_in_domain,
+                    destination.point_in_domain.coords(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            subset_values,
+            vec![
+                (all_members[5].clone(), 5, vec![0, 0]),
+                (all_members[7].clone(), 7, vec![0, 1]),
+                (all_members[13].clone(), 13, vec![1, 0]),
+                (all_members[15].clone(), 15, vec![1, 1]),
+            ]
+        );
     }
 
     #[test]
