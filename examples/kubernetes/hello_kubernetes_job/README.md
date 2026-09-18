@@ -48,6 +48,25 @@ kubectl exec -it hello-controller -n monarch-tests -- python /tmp/hello_kubernet
 The `--provision` flag tells `KubernetesJob` to create the MonarchMesh CRDs via the K8s API.
 When the script finishes, it cleans up by deleting the CRDs.
 
+### RemoteMount and FUSE
+
+RemoteMount requires worker access to the host's `/dev/fuse` device. For
+workers provisioned with `ImageSpec`, enable that configuration explicitly:
+
+```python
+ImageSpec("ghcr.io/meta-pytorch/monarch:latest", enable_fuse=True)
+```
+
+This mounts `/dev/fuse` and runs the worker container in privileged mode. It
+does not affect jobs that leave `enable_fuse` at its default value of `False`.
+
+Kubernetes evaluates the privileged worker pod when the Monarch operator
+creates it. The operator and CRD do not grant this permission: the cluster's
+[admission policy](https://kubernetes.io/docs/concepts/security/pod-security-admission/),
+including any namespace Pod Security labels or admission webhooks, must allow
+[privileged containers](https://kubernetes.io/docs/concepts/security/linux-kernel-security-constraints/#privileged-containers).
+The cluster's worker nodes must also provide `/dev/fuse`.
+
 ### Expected Output
 
 ```

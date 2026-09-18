@@ -101,9 +101,13 @@ class ImageSpec:
 
     Pass the resulting object to ``KubernetesJob.add_mesh(image_spec=...)``.
 
-    ``enable_fuse`` runs the worker container in privileged mode and mounts the
-    host's ``/dev/fuse`` device. The cluster must allow privileged containers,
-    and its worker nodes must provide ``/dev/fuse``.
+    ``enable_fuse`` runs the worker container in `privileged mode
+    <https://kubernetes.io/docs/concepts/security/linux-kernel-security-constraints/#privileged-containers>`_
+    and mounts the host's ``/dev/fuse`` device. The cluster's `admission policy
+    <https://kubernetes.io/docs/concepts/security/pod-security-admission/>`_
+    must allow privileged containers in the worker namespace, and its worker
+    nodes must provide ``/dev/fuse``. The option defaults to ``False`` and does
+    not affect jobs that do not need FUSE.
     """
 
     image: str

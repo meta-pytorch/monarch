@@ -127,6 +127,10 @@ KubernetesJob
    :show-inheritance:
    :exclude-members: __init__
 
+.. autoclass:: monarch.job.kubernetes.ImageSpec
+   :members:
+   :undoc-members:
+
 
 Serialization
 =============
