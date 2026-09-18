@@ -643,6 +643,35 @@ class TestBuildWorkerPodTemplate(unittest.TestCase):
         self.assertEqual(container.resources.requests, expected)
         self.assertEqual(container.resources.limits, expected)
 
+    def test_fuse_enabled(self) -> None:
+        template = KubernetesJob._build_worker_pod_template(
+            ImageSpec("img", enable_fuse=True),
+            port=26600,
+            service_proc_ids=KubernetesJob._allocate_service_proc_ids(1),
+        )
+
+        container = template.spec.containers[0]
+        self.assertTrue(container.security_context.privileged)
+        self.assertEqual(len(container.volume_mounts), 1)
+        self.assertEqual(container.volume_mounts[0].name, "dev-fuse")
+        self.assertEqual(container.volume_mounts[0].mount_path, "/dev/fuse")
+        self.assertEqual(len(template.spec.volumes), 1)
+        self.assertEqual(template.spec.volumes[0].name, "dev-fuse")
+        self.assertEqual(template.spec.volumes[0].host_path.path, "/dev/fuse")
+        self.assertEqual(template.spec.volumes[0].host_path.type, "CharDevice")
+
+    def test_fuse_disabled_by_default(self) -> None:
+        template = KubernetesJob._build_worker_pod_template(
+            ImageSpec("img"),
+            port=26600,
+            service_proc_ids=KubernetesJob._allocate_service_proc_ids(1),
+        )
+
+        container = template.spec.containers[0]
+        self.assertIsNone(container.security_context)
+        self.assertIsNone(container.volume_mounts)
+        self.assertIsNone(template.spec.volumes)
+
 
 class KubeConfigTest(unittest.TestCase):
     """Tests for KubeConfig loading."""

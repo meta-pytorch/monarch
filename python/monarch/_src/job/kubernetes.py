@@ -96,7 +96,14 @@ class ImageSpec:
         ImageSpec("ghcr.io/meta-pytorch/monarch:latest",
                   resources={"nvidia.com/gpu": 4})
 
+        # With the FUSE device required by RemoteMount
+        ImageSpec("ghcr.io/meta-pytorch/monarch:latest", enable_fuse=True)
+
     Pass the resulting object to ``KubernetesJob.add_mesh(image_spec=...)``.
+
+    ``enable_fuse`` runs the worker container in privileged mode and mounts the
+    host's ``/dev/fuse`` device. The cluster must allow privileged containers,
+    and its worker nodes must provide ``/dev/fuse``.
     """
 
     image: str
@@ -104,6 +111,9 @@ class ImageSpec:
 
     resources: dict[str, str | int] | None = None
     """Optional K8s resource requests/limits (e.g. ``{"nvidia.com/gpu": 4}``)."""
+
+    enable_fuse: bool = False
+    """Whether to configure the worker pod for FUSE-backed mounts."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -655,8 +665,22 @@ class KubernetesJob(JobTrait):
             env=env,
             resources=resources,
         )
+        volumes = None
+        if image_spec.enable_fuse:
+            container.security_context = client.V1SecurityContext(privileged=True)
+            container.volume_mounts = [
+                client.V1VolumeMount(name="dev-fuse", mount_path="/dev/fuse")
+            ]
+            volumes = [
+                client.V1Volume(
+                    name="dev-fuse",
+                    host_path=client.V1HostPathVolumeSource(
+                        path="/dev/fuse", type="CharDevice"
+                    ),
+                )
+            ]
         return client.V1PodTemplateSpec(
-            spec=client.V1PodSpec(containers=[container]),
+            spec=client.V1PodSpec(containers=[container], volumes=volumes),
         )
 
     def _is_pod_worker_ready(self, pod: client.V1Pod) -> bool:
