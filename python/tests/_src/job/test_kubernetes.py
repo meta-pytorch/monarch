@@ -7,10 +7,13 @@
 # pyre-strict
 
 import copy
+import json
 import os
 import pickle
 import subprocess
+import sys
 import unittest
+from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from unittest.mock import call, MagicMock, patch
 
@@ -81,6 +84,48 @@ def _make_pod(
             pod_ip=ip,
             conditions=conditions,
         ),
+    )
+
+
+def _write_exec_kubeconfig(
+    path: Path, plugin: str, *, provide_cluster_info: bool = False
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "apiVersion": "v1",
+                "kind": "Config",
+                "current-context": "test-context",
+                "clusters": [
+                    {
+                        "name": "test-cluster",
+                        "cluster": {"server": "https://example.invalid"},
+                    }
+                ],
+                "contexts": [
+                    {
+                        "name": "test-context",
+                        "context": {
+                            "cluster": "test-cluster",
+                            "user": "test-user",
+                        },
+                    }
+                ],
+                "users": [
+                    {
+                        "name": "test-user",
+                        "user": {
+                            "exec": {
+                                "apiVersion": "client.authentication.k8s.io/v1",
+                                "command": sys.executable,
+                                "args": ["-c", plugin],
+                                "provideClusterInfo": provide_cluster_info,
+                            }
+                        },
+                    }
+                ],
+            }
+        )
     )
 
 
@@ -603,12 +648,10 @@ class KubeConfigTest(unittest.TestCase):
     """Tests for KubeConfig loading."""
 
     @patch("monarch._src.job.kubernetes.client.Configuration.set_default")
-    @patch("monarch._src.job.kubernetes.client.Configuration.get_default_copy")
-    @patch("monarch._src.job.kubernetes.config.load_kube_config")
+    @patch("monarch._src.job.kubernetes.load_kube_config")
     def test_local_load_preserves_proxy_url(
         self,
         mock_load_kube_config: MagicMock,
-        mock_get_default_copy: MagicMock,
         mock_set_default: MagicMock,
     ) -> None:
         with NamedTemporaryFile("w") as kubeconfig:
@@ -635,18 +678,15 @@ users:
             )
             kubeconfig.flush()
             configuration = MagicMock()
-            mock_get_default_copy.return_value = configuration
+            mock_load_kube_config.return_value = configuration
 
             KubeConfig.from_path(kubeconfig.name).load()
 
-        mock_load_kube_config.assert_called_once_with(config_file=kubeconfig.name)
+        mock_load_kube_config.assert_called_once_with(Path(kubeconfig.name))
         self.assertEqual(configuration.proxy, "http://fwdproxy:8080")
         mock_set_default.assert_called_once_with(configuration)
 
-    @patch("monarch._src.job.kubernetes.config.load_kube_config")
-    def test_local_load_malformed_kubeconfig_raises(
-        self, mock_load_kube_config: MagicMock
-    ) -> None:
+    def test_local_load_malformed_kubeconfig_raises(self) -> None:
         # current-context references a context that does not exist, so proxy-url
         # resolution fails. The error must surface as a RuntimeError, not a raw
         # traceback from the underlying kubeconfig parsing.
@@ -664,6 +704,209 @@ users: []
             kubeconfig.flush()
             with self.assertRaises(RuntimeError, msg="kubeconfig"):
                 KubeConfig.from_path(kubeconfig.name).load()
+
+    @patch("monarch._src.job.kubernetes.client.Configuration.set_default")
+    def test_cached_path_loads_yaml_exec_credentials_and_refreshes(
+        self, mock_set_default: MagicMock
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            counter = Path(directory) / "count"
+            plugin = (
+                "import json, os; from pathlib import Path; "
+                "assert json.loads(os.environ['KUBERNETES_EXEC_INFO'])"
+                "['kind'] == 'ExecCredential'; "
+                f"path = Path({str(counter)!r}); "
+                "count = int(path.read_text()) + 1 if path.exists() else 1; "
+                "path.write_text(str(count)); "
+                "print('apiVersion: client.authentication.k8s.io/v1\\n' "
+                "      'kind: ExecCredential\\n' "
+                "      'status:\\n' "
+                "      '  expirationTimestamp: 2000-01-01T00:00:00Z\\n' "
+                "      f'  token: yaml-token-{count}')"
+            )
+            config_path = Path(directory) / "config"
+            _write_exec_kubeconfig(config_path, plugin)
+
+            restored = pickle.loads(
+                pickle.dumps(KubeConfig.from_path(str(config_path)))
+            )
+            restored.load()
+
+            configuration = mock_set_default.call_args.args[0]
+            self.assertIn("Bearer yaml-token-1", configuration.api_key.values())
+            self.assertIsNotNone(configuration.refresh_api_key_hook)
+            configuration.refresh_api_key_hook(configuration)
+            self.assertIn("Bearer yaml-token-2", configuration.api_key.values())
+
+    @patch("monarch._src.job.kubernetes.client.Configuration.set_default")
+    def test_local_load_preserves_json_exec_credentials(
+        self, mock_set_default: MagicMock
+    ) -> None:
+        credential = json.dumps(
+            {
+                "apiVersion": "client.authentication.k8s.io/v1",
+                "kind": "ExecCredential",
+                "status": {"token": "json-token"},
+            }
+        )
+        with NamedTemporaryFile("w") as kubeconfig:
+            _write_exec_kubeconfig(Path(kubeconfig.name), f"print({credential!r})")
+            kubeconfig.flush()
+
+            KubeConfig.from_path(kubeconfig.name).load()
+
+        configuration = mock_set_default.call_args.args[0]
+        self.assertIn("Bearer json-token", configuration.api_key.values())
+
+    @patch("monarch._src.job.kubernetes.client.Configuration.set_default")
+    def test_exec_plugin_runs_from_kubeconfig_directory(
+        self, mock_set_default: MagicMock
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config"
+            (Path(directory) / "token").write_text("relative-token")
+            plugin = (
+                "from pathlib import Path; "
+                "token = Path('token').read_text(); "
+                "print('apiVersion: client.authentication.k8s.io/v1\\n' "
+                "      'kind: ExecCredential\\n' "
+                "      'status:\\n' "
+                "      f'  token: {token}')"
+            )
+            _write_exec_kubeconfig(config_path, plugin)
+
+            KubeConfig.from_path(str(config_path)).load()
+
+        configuration = mock_set_default.call_args.args[0]
+        self.assertIn("Bearer relative-token", configuration.api_key.values())
+
+    @patch("monarch._src.job.kubernetes.client.Configuration.set_default")
+    def test_exec_plugin_receives_requested_cluster_info(
+        self, mock_set_default: MagicMock
+    ) -> None:
+        plugin = (
+            "import json, os; "
+            "info = json.loads(os.environ['KUBERNETES_EXEC_INFO']); "
+            "assert info['spec']['cluster']['server'] == "
+            "'https://example.invalid'; "
+            "print('apiVersion: client.authentication.k8s.io/v1\\n' "
+            "      'kind: ExecCredential\\n' "
+            "      'status:\\n' "
+            "      '  token: cluster-info-token')"
+        )
+        with NamedTemporaryFile("w") as kubeconfig:
+            _write_exec_kubeconfig(
+                Path(kubeconfig.name), plugin, provide_cluster_info=True
+            )
+            kubeconfig.flush()
+
+            KubeConfig.from_path(kubeconfig.name).load()
+
+        configuration = mock_set_default.call_args.args[0]
+        self.assertIn("Bearer cluster-info-token", configuration.api_key.values())
+
+    def test_exec_credential_output_must_be_an_object(self) -> None:
+        with NamedTemporaryFile("w") as kubeconfig:
+            _write_exec_kubeconfig(Path(kubeconfig.name), "print('scalar')")
+            kubeconfig.flush()
+
+            with self.assertRaisesRegex(
+                RuntimeError, "Failed to load kubeconfig"
+            ) as context:
+                KubeConfig.from_path(kubeconfig.name).load()
+        self.assertIn("must be an object", str(context.exception.__cause__))
+
+    def test_malformed_exec_credential_output_is_rejected(self) -> None:
+        with NamedTemporaryFile("w") as kubeconfig:
+            _write_exec_kubeconfig(Path(kubeconfig.name), "print('{[')")
+            kubeconfig.flush()
+
+            with self.assertRaisesRegex(
+                RuntimeError, "Failed to load kubeconfig"
+            ) as context:
+                KubeConfig.from_path(kubeconfig.name).load()
+        self.assertIn(
+            "failed to decode process output as JSON or YAML",
+            str(context.exception.__cause__),
+        )
+
+    @patch("monarch._src.job.kubernetes.client.Configuration.set_default")
+    def test_exec_credential_accepts_client_certificate(
+        self, mock_set_default: MagicMock
+    ) -> None:
+        certificate = "test-client-certificate-data"
+        private_key = "test-client-key-data"
+        credential = json.dumps(
+            {
+                "apiVersion": "client.authentication.k8s.io/v1",
+                "kind": "ExecCredential",
+                "status": {
+                    "clientCertificateData": certificate,
+                    "clientKeyData": private_key,
+                },
+            }
+        )
+        with NamedTemporaryFile("w") as kubeconfig:
+            _write_exec_kubeconfig(Path(kubeconfig.name), f"print({credential!r})")
+            kubeconfig.flush()
+
+            KubeConfig.from_path(kubeconfig.name).load()
+
+        configuration = mock_set_default.call_args.args[0]
+        self.assertEqual(Path(configuration.cert_file).read_text(), certificate)
+        self.assertEqual(Path(configuration.key_file).read_text(), private_key)
+
+    def test_exec_credential_certificate_requires_private_key(self) -> None:
+        credential = json.dumps(
+            {
+                "apiVersion": "client.authentication.k8s.io/v1",
+                "kind": "ExecCredential",
+                "status": {"clientCertificateData": "certificate"},
+            }
+        )
+        with NamedTemporaryFile("w") as kubeconfig:
+            _write_exec_kubeconfig(Path(kubeconfig.name), f"print({credential!r})")
+            kubeconfig.flush()
+
+            with self.assertRaisesRegex(
+                RuntimeError, "Failed to load kubeconfig"
+            ) as context:
+                KubeConfig.from_path(kubeconfig.name).load()
+        self.assertIn("missing clientKeyData", str(context.exception.__cause__))
+
+    def test_exec_credential_requires_authentication_data(self) -> None:
+        credential = json.dumps(
+            {
+                "apiVersion": "client.authentication.k8s.io/v1",
+                "kind": "ExecCredential",
+                "status": {},
+            }
+        )
+        with NamedTemporaryFile("w") as kubeconfig:
+            _write_exec_kubeconfig(Path(kubeconfig.name), f"print({credential!r})")
+            kubeconfig.flush()
+
+            with self.assertRaisesRegex(
+                RuntimeError, "Failed to load kubeconfig"
+            ) as context:
+                KubeConfig.from_path(kubeconfig.name).load()
+        self.assertIn(
+            "missing token or clientCertificateData",
+            str(context.exception.__cause__),
+        )
+
+    def test_exec_credential_failure_is_reported_during_load(self) -> None:
+        with NamedTemporaryFile("w") as kubeconfig:
+            _write_exec_kubeconfig(
+                Path(kubeconfig.name), "raise SystemExit('credential failure')"
+            )
+            kubeconfig.flush()
+
+            with self.assertRaisesRegex(
+                RuntimeError, "Failed to load kubeconfig"
+            ) as context:
+                KubeConfig.from_path(kubeconfig.name).load()
+        self.assertIn("process returned", str(context.exception.__cause__))
 
     def test_copy_preserves_in_memory_config(self) -> None:
         kubeconfig = KubeConfig.from_config(MagicMock())
@@ -1550,7 +1793,7 @@ class TestStateOutOfCluster(unittest.TestCase):
     @patch("monarch._src.job.kubernetes.KubernetesJob._port_forward_to_pod")
     @patch("monarch._src.job.kubernetes.watch.Watch")
     @patch("monarch._src.job.kubernetes.client.CoreV1Api")
-    @patch("monarch._src.job.kubernetes.config.load_kube_config")
+    @patch("monarch._src.job.kubernetes.load_kube_config")
     def test_hello_mesh_out_of_cluster_auto_forwards(
         self,
         mock_load_config: MagicMock,
@@ -1590,7 +1833,7 @@ class TestStateOutOfCluster(unittest.TestCase):
     @patch("monarch._src.job.kubernetes.KubernetesJob._port_forward_to_pod")
     @patch("monarch._src.job.kubernetes.watch.Watch")
     @patch("monarch._src.job.kubernetes.client.CoreV1Api")
-    @patch("monarch._src.job.kubernetes.config.load_kube_config")
+    @patch("monarch._src.job.kubernetes.load_kube_config")
     def test_hello_provision_out_of_cluster_auto_forwards(
         self,
         mock_load_config: MagicMock,
@@ -1640,7 +1883,7 @@ class TestStateOutOfCluster(unittest.TestCase):
     @patch("monarch._src.job.kubernetes.KubernetesJob._port_forward_to_pod")
     @patch("monarch._src.job.kubernetes.watch.Watch")
     @patch("monarch._src.job.kubernetes.client.CoreV1Api")
-    @patch("monarch._src.job.kubernetes.config.load_kube_config")
+    @patch("monarch._src.job.kubernetes.load_kube_config")
     def test_explicit_attach_to_skips_port_forward(
         self,
         mock_load_config: MagicMock,

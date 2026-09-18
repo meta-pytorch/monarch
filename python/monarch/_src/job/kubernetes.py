@@ -32,6 +32,7 @@ from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.actor.actor_mesh import _client_attached_to
 from monarch._src.actor.bootstrap import attach_to_workers
+from monarch._src.job._kubernetes_exec import load_kube_config
 from monarch._src.job.job import JobState, JobTrait
 from monarch._src.job.service_identity import (
     allocate_service_proc_ids,
@@ -129,7 +130,10 @@ class KubeConfig:
 
     @classmethod
     def from_path(cls, path: str) -> "KubeConfig":
-        """Create a KubeConfig from a local file path."""
+        """Create a KubeConfig from a local file path.
+
+        Exec credential plugins referenced by the file may emit JSON or YAML.
+        """
         return cls(local=Path(path).expanduser())
 
     @classmethod
@@ -153,16 +157,15 @@ class KubeConfig:
     def load(self) -> None:
         if self.local is not None:
             try:
-                config.load_kube_config(config_file=str(self.local))
+                configuration = load_kube_config(self.local)
                 proxy_url = _get_kubeconfig_proxy_url(self.local)
             except config.ConfigException as e:
                 raise RuntimeError(
                     f"Failed to load kubeconfig file '{self.local}'"
                 ) from e
             if proxy_url is not None:
-                configuration = client.Configuration.get_default_copy()
                 configuration.proxy = proxy_url
-                client.Configuration.set_default(configuration)
+            client.Configuration.set_default(configuration)
         elif self.remote is not None:
             client.Configuration.set_default(self.remote)
         elif self._requires_rebind:
