@@ -162,44 +162,29 @@ impl CastDomainId {
         &self.domain_id
     }
 
-    /// Materialize this domain id over concrete members and return an
+    /// Materialize this domain id over concrete destinations and return an
     /// addressable domain handle.
     ///
-    /// `members` maps domain rank to member actor address. `region` describes
-    /// the logical root region of the domain; tiling and communication are
-    /// derived internally.
+    /// `destinations` maps domain ranks to destination actors. Tiling and
+    /// communication are derived internally.
     pub fn materialize(
         self,
         cx: &impl context::Actor,
-        members: HashMap<usize, ActorAddr>,
-        region: Region,
+        destinations: Arc<ValueMesh<CastDestination>>,
         tiling_policy: TilingPolicy,
         headers: Flattrs,
     ) -> anyhow::Result<CastDomainRef> {
-        anyhow::ensure!(
-            members.len() == region.num_ranks()
-                && region
-                    .slice()
-                    .iter()
-                    .all(|rank| members.contains_key(&rank)),
-            "members must contain exactly one actor address for every domain rank"
-        );
+        let destination_region = destinations.region().clone();
 
         let member_mesh = Arc::new(ValueMesh::new(
-            region.clone(),
-            region
-                .slice()
-                .iter()
-                .map(|rank| {
-                    members
-                        .get(&rank)
-                        .expect("members coverage was checked above")
-                        .clone()
-                })
+            destination_region.clone(),
+            destinations
+                .values()
+                .map(|destination| destination.actor().clone())
                 .collect(),
         )?);
 
-        self.materialize_members(cx, member_mesh, region, tiling_policy, headers)
+        self.materialize_members(cx, member_mesh, destination_region, tiling_policy, headers)
     }
 
     fn materialize_members(
@@ -253,7 +238,7 @@ impl CastDomainId {
                     headers.clone(),
                     CreateCastDomain {
                         cast_domain_id: self.clone(),
-                        region: region.clone(),
+                        served_region: region.clone(),
                         tiling_policy,
                         tile: root_tile.subtile(Tile::from_view(&subtree.served_region)),
                     },
@@ -455,8 +440,7 @@ impl CastDomainRef {
 ///
 /// This asks only for the current tile's outgoing edges without materializing
 /// the full domain tree. The returned [`MaterializedTile`]s are still tiles of
-/// destination actors. Setup/forwarding derives the target [`CastActor`] from
-/// each child tile's root destination actor.
+/// the input value type.
 ///
 /// ```text
 /// current MaterializedTile:
@@ -465,15 +449,15 @@ impl CastDomainRef {
 ///
 /// next_tiles(current), rendered by destination actor rank:
 /// A0
-/// |-- T1 [ A1 ]          -> CastActor on A1's proc
-/// |-- T2 [ A2 ]          -> CastActor on A2's proc
-/// |-- T3 [ A3 ]          -> CastActor on A3's proc
-/// `-- T4 [ A4 A5 A6 A7 ] -> CastActor on A4's proc
+/// |-- T1 [ A1 ]
+/// |-- T2 [ A2 ]
+/// |-- T3 [ A3 ]
+/// `-- T4 [ A4 A5 A6 A7 ]
 /// ```
-fn next_tiles(
+fn next_tiles<T: 'static>(
     tiling_policy: TilingPolicy,
-    tile: &MaterializedTile<ActorAddr>,
-) -> Vec<MaterializedTile<ActorAddr>> {
+    tile: &MaterializedTile<T>,
+) -> Vec<MaterializedTile<T>> {
     tiling_policy
         .children(tile.tile())
         .into_iter()
@@ -860,7 +844,7 @@ impl CastActor {
 #[derive(Debug, Serialize, Deserialize, typeuri::Named)]
 struct CreateCastDomain {
     cast_domain_id: CastDomainId,
-    region: Region,
+    served_region: Region,
     tiling_policy: TilingPolicy,
     tile: MaterializedTile<ActorAddr>,
 }
@@ -884,7 +868,7 @@ impl Handler<CreateCastDomain> for CastActor {
     ) -> Result<(), anyhow::Error> {
         let CreateCastDomain {
             cast_domain_id,
-            region,
+            served_region,
             tiling_policy,
             tile,
         } = message;
@@ -895,13 +879,13 @@ impl Handler<CreateCastDomain> for CastActor {
         let mut next_hops = Vec::new();
 
         for next_tile in next_tiles(tiling_policy, &tile) {
-            let next_hop = CastRoute::try_from_tile(&region, tiling_policy, &next_tile)?;
+            let next_hop = CastRoute::try_from_tile(&served_region, tiling_policy, &next_tile)?;
             if let CastRoute::ViaCastActor(next_hop_cast_actor) = &next_hop {
                 next_hop_cast_actor.post(
                     cx,
                     CreateCastDomain {
                         cast_domain_id: cast_domain_id.clone(),
-                        region: region.clone(),
+                        served_region: served_region.clone(),
                         tiling_policy,
                         tile: next_tile,
                     },
@@ -911,7 +895,7 @@ impl Handler<CreateCastDomain> for CastActor {
         }
 
         let cast_hop = CastHop {
-            local_destination: CastDestination::try_from_tile(&region, &tile)?,
+            local_destination: CastDestination::try_from_tile(&served_region, &tile)?,
             next_hops,
             num_destinations: tile.rank_count(),
         };
@@ -1542,6 +1526,39 @@ mod tests {
             .collect()
     }
 
+    /// Build a test destination mesh from a rank-to-member map.
+    ///
+    /// Input:
+    ///
+    /// ```text
+    /// region ranks: [0 1]
+    /// members: {0: proc0::member, 1: proc1::member}
+    /// ```
+    ///
+    /// Output:
+    ///
+    /// ```text
+    /// rank 0: Destination(proc0::member)
+    /// rank 1: Destination(proc1::member)
+    /// ```
+    fn destination_mesh(
+        region: Region,
+        members: &HashMap<usize, ActorAddr>,
+    ) -> anyhow::Result<Arc<ValueMesh<CastDestination>>> {
+        let destinations = region
+            .slice()
+            .iter()
+            .map(|rank| {
+                members
+                    .get(&rank)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("missing test member for rank {rank}"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        Ok(Arc::new(CastDestination::mesh(region, destinations)?))
+    }
+
     #[test]
     fn test_cast_destination_mesh_and_subset_preserve_strided_base_ranks() {
         // Full region base ranks:
@@ -1704,8 +1721,7 @@ mod tests {
             if self.domain.is_none() {
                 self.domain = Some(CastDomainId::new().materialize(
                     cx,
-                    self.members.clone(),
-                    self.region.clone(),
+                    destination_mesh(self.region.clone(), &self.members)?,
                     TilingPolicy::BlockPartitioning,
                     Flattrs::new(),
                 )?);
@@ -2003,11 +2019,12 @@ mod tests {
         }
 
         fn root_domain(&self, region: Region) -> CastDomainRef {
+            let members = self.domain_members();
+
             CastDomainId::new()
                 .materialize(
                     &self.client,
-                    self.domain_members(),
-                    region,
+                    destination_mesh(region, &members).unwrap(),
                     TilingPolicy::BlockPartitioning,
                     Flattrs::new(),
                 )
@@ -2028,8 +2045,7 @@ mod tests {
             CastDomainId::new()
                 .materialize(
                     &self.client,
-                    self.member_ids.clone(),
-                    region,
+                    destination_mesh(region, &self.member_ids).unwrap(),
                     policy,
                     Flattrs::new(),
                 )
@@ -2197,8 +2213,8 @@ mod tests {
         let domain = CastDomainId::new()
             .materialize(
                 materialization_client(),
-                members.clone(),
-                region.clone(),
+                destination_mesh(region.clone(), &members)
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?,
                 policy,
                 Flattrs::new(),
             )
