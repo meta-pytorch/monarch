@@ -593,12 +593,22 @@ mod tests {
             KeepaliveLink::new(Duration::from_secs(60), Duration::from_secs(60))
                 .spawn_supervisor(&parent)
                 .unwrap();
+        let mut supervisor_status = supervisor.status();
+        supervisor_status
+            .wait_for(|status| matches!(status, ActorStatus::Idle))
+            .await
+            .unwrap();
         let worker_uid = worker_link.uid().clone();
         let remote_worker = worker_link.spawn_worker(&parent).await.unwrap();
 
         assert_eq!(remote_worker.actor_id().uid(), &worker_uid);
 
-        remote_worker.stop("test").unwrap();
+        supervisor_status.changed().await.unwrap();
+        supervisor_status
+            .wait_for(|status| matches!(status, ActorStatus::Idle))
+            .await
+            .unwrap();
+        remote_worker.drain_and_stop("test").unwrap();
         remote_worker.await;
         supervisor.stop("test").unwrap();
         supervisor.await;
