@@ -28,6 +28,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -109,6 +110,8 @@ pub(super) struct CreatePeerQueuePair<M: Referable> {
     pub(super) sender_device: String,
     /// Device the peer should create its mirror QP on.
     pub(super) receiver_device: String,
+    /// Distinguishes parallel QPs for the same device route.
+    pub(super) qp_index: usize,
     /// Active side's endpoint, captured right after QP creation.
     pub(super) sender_info: IbvQpInfo,
     /// One-shot reply carrying the peer's endpoint, or an error.
@@ -127,8 +130,26 @@ wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<EfaDevice>>);
 /// Per-stripe completion notifications stream back on `reply` as
 /// [`StripeResult`] values.
 pub(super) struct SubmitOps<I: IbvDeviceImpl> {
-    pub(super) ops: Vec<(usize, IbvOp<IbvManagerActor<I>>)>,
-    pub(super) reply: mpsc::UnboundedSender<StripeResult>,
+    ops: Vec<ManagerOp<I>>,
+    reply: mpsc::UnboundedSender<StripeResult>,
+}
+
+enum ManagerOp<I: IbvDeviceImpl> {
+    NeedsMemReg {
+        op_idx: usize,
+        op: IbvOp<IbvManagerActor<I>>,
+    },
+    NeedsQueuePair {
+        peer_manager: ActorRef<IbvManagerActor<I>>,
+        ops: Vec<QueuePairOp>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct QpRoute {
+    self_device: String,
+    other_id: ActorId,
+    other_device: String,
 }
 
 /// Shared state for selecting a compatible registration pair and dispatching
@@ -142,15 +163,26 @@ pub(super) struct SubmitOps<I: IbvDeviceImpl> {
 #[derive(Debug)]
 struct QueuePairRouter {
     peer_device_affinity: PeerDeviceAffinityPolicy,
+    qps_per_peer: NonZeroUsize,
+    next_qp_indices: DashMap<QpRoute, usize>,
     queue_pairs: DashMap<QpKey, mpsc::UnboundedSender<ProcessOps>>,
 }
 
 impl QueuePairRouter {
-    fn new(peer_device_affinity: PeerDeviceAffinityPolicy) -> Self {
+    fn new(peer_device_affinity: PeerDeviceAffinityPolicy, qps_per_peer: NonZeroUsize) -> Self {
         Self {
             peer_device_affinity,
+            qps_per_peer,
+            next_qp_indices: DashMap::new(),
             queue_pairs: DashMap::new(),
         }
+    }
+
+    fn next_qp_index(&self, route: QpRoute) -> usize {
+        let mut next = self.next_qp_indices.entry(route).or_insert(0);
+        let current = *next;
+        *next = (current + 1) % self.qps_per_peer.get();
+        current
     }
 
     /// Returns a disjoint list of registration pairings allowed by the affinity policy.
@@ -192,6 +224,7 @@ impl QueuePairRouter {
     ) -> Result<Vec<QueuePairOp>, anyhow::Error> {
         let local_mrs = op.local_memory.registered_mrs::<I>();
         let mut pairs = self.pair_registrations(&local_mrs, &op.remote_buffers)?;
+        let other_id = op.remote_manager.actor_addr().id().clone();
 
         let size = match op.op_type {
             RdmaOpType::WriteFromLocal => op.local_memory.size(),
@@ -220,12 +253,18 @@ impl QueuePairRouter {
                 } else {
                     stripe_size
                 };
+                let route = QpRoute {
+                    self_device: local.device_name.clone(),
+                    other_id: other_id.clone(),
+                    other_device: remote.device_name.clone(),
+                };
                 let op = QueuePairOp {
                     stripe_id: StripeId {
                         op_idx,
                         stripe_idx,
                         stripe_count,
                     },
+                    qp_index: self.next_qp_index(route),
                     op_type: op.op_type,
                     local_memory: op.local_memory.clone(),
                     local: local.try_slice(offset, size)?,
@@ -242,9 +281,9 @@ impl QueuePairRouter {
         op_idx: usize,
         op: IbvOp<IbvManagerActor<I>>,
         reply: &mpsc::UnboundedSender<StripeResult>,
-    ) -> Option<IbvOp<IbvManagerActor<I>>> {
+    ) -> Option<ManagerOp<I>> {
         if op.local_memory.registered_mrs::<I>().is_empty() {
-            return Some(op);
+            return Some(ManagerOp::NeedsMemReg { op_idx, op });
         }
         let planned = match self.plan_ops(op_idx, &op) {
             Ok(planned) => planned,
@@ -267,6 +306,7 @@ impl QueuePairRouter {
                     self_device: planned.local.device_name.clone(),
                     other_id: op.remote_manager.actor_addr().id().clone(),
                     other_device: planned.remote.device_name.clone(),
+                    qp_index: planned.qp_index,
                 };
                 self.queue_pairs
                     .get(&key)
@@ -274,7 +314,10 @@ impl QueuePairRouter {
             })
             .collect::<Option<Vec<_>>>();
         let Some(senders) = senders else {
-            return Some(op);
+            return Some(ManagerOp::NeedsQueuePair {
+                peer_manager: op.remote_manager,
+                ops: planned,
+            });
         };
 
         for (sender, planned) in senders.into_iter().zip(planned) {
@@ -350,7 +393,7 @@ pub struct IbvManagerActor<I: IbvDeviceImpl> {
     /// Active-side queue-pair workers and their supervising actor, keyed
     /// from this manager's perspective. Lazily populated on the first
     /// [`SubmitOps`] that targets a new `(self_device, peer,
-    /// other_device)` triple.
+    /// other_device, qp_index)` tuple.
     qp_handles: HashMap<
         QpKey,
         QueuePairHandle<IbvManagerActor<I>, <I::Domain as IbvDomainImpl>::QueuePair>,
@@ -480,7 +523,10 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             peer_created_qps: HashMap::new(),
             devices: HashMap::new(),
             peer_device_affinity: peer_device_affinity.clone(),
-            queue_pair_router: Arc::new(QueuePairRouter::new(peer_device_affinity)),
+            queue_pair_router: Arc::new(QueuePairRouter::new(
+                peer_device_affinity,
+                hyperactor_config::global::get(crate::config::RDMA_QPS_PER_PEER).into_std(),
+            )),
             cq_pollers: HashMap::new(),
             config,
         };
@@ -718,6 +764,43 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         self.qp_handles.insert(qp_key.clone(), handle.clone());
         Ok(handle)
     }
+
+    fn dispatch_ops(
+        &mut self,
+        cx: &Context<'_, Self>,
+        peer_manager: ActorRef<Self>,
+        ops: Vec<QueuePairOp>,
+        reply: &mpsc::UnboundedSender<StripeResult>,
+    ) {
+        for op in ops {
+            let stripe_id = op.stripe_id;
+            let qp_key = QpKey {
+                self_device: op.local.device_name.clone(),
+                other_id: peer_manager.actor_addr().id().clone(),
+                other_device: op.remote.device_name.clone(),
+                qp_index: op.qp_index,
+            };
+            let handle = match self.ensure_qp_actor(cx, &qp_key, peer_manager.clone()) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    let _ = reply.send(StripeResult {
+                        stripe_id,
+                        result: Err(error.to_string()),
+                    });
+                    continue;
+                }
+            };
+            if let Err(error) = handle.send(ProcessOps {
+                items: vec![op],
+                reply: reply.clone(),
+            }) {
+                let _ = reply.send(StripeResult {
+                    stripe_id,
+                    result: Err(error.to_string()),
+                });
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -728,57 +811,36 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
         // Interleave MR resolution with QP dispatch: as soon as an op is
         // planned, send its stripes to their queue-pair workers. They can post
         // the stripes while the manager resolves the next op's registrations.
-        for (i, op) in ops {
-            let whole_op = StripeId {
-                op_idx: i,
-                stripe_idx: 0,
-                stripe_count: 1,
-            };
-            if let Err(error) = self.resolve_local_mrs(&op.local_memory) {
-                let _ = reply.send(StripeResult {
-                    stripe_id: whole_op,
-                    result: Err(error.to_string()),
-                });
-                continue;
-            }
-            let planned = match self.queue_pair_router.plan_ops(i, &op) {
-                Ok(planned) => planned,
-                Err(error) => {
-                    let _ = reply.send(StripeResult {
-                        stripe_id: whole_op,
-                        result: Err(error.to_string()),
-                    });
-                    continue;
-                }
-            };
-
-            for planned in planned {
-                let stripe_id = planned.stripe_id;
-                let qp_key = QpKey {
-                    self_device: planned.local.device_name.clone(),
-                    other_id: op.remote_manager.actor_addr().id().clone(),
-                    other_device: planned.remote.device_name.clone(),
-                };
-                let handle = match self.ensure_qp_actor(cx, &qp_key, op.remote_manager.clone()) {
-                    Ok(handle) => handle,
-                    Err(error) => {
+        for op in ops {
+            let (peer_manager, planned) = match op {
+                ManagerOp::NeedsQueuePair { peer_manager, ops } => (peer_manager, ops),
+                ManagerOp::NeedsMemReg { op_idx, op } => {
+                    let whole_op = StripeId {
+                        op_idx,
+                        stripe_idx: 0,
+                        stripe_count: 1,
+                    };
+                    if let Err(error) = self.resolve_local_mrs(&op.local_memory) {
                         let _ = reply.send(StripeResult {
-                            stripe_id,
+                            stripe_id: whole_op,
                             result: Err(error.to_string()),
                         });
                         continue;
                     }
-                };
-                if let Err(error) = handle.send(ProcessOps {
-                    items: vec![planned],
-                    reply: reply.clone(),
-                }) {
-                    let _ = reply.send(StripeResult {
-                        stripe_id,
-                        result: Err(error.to_string()),
-                    });
+                    let planned = match self.queue_pair_router.plan_ops(op_idx, &op) {
+                        Ok(planned) => planned,
+                        Err(error) => {
+                            let _ = reply.send(StripeResult {
+                                stripe_id: whole_op,
+                                result: Err(error.to_string()),
+                            });
+                            continue;
+                        }
+                    };
+                    (op.remote_manager, planned)
                 }
-            }
+            };
+            self.dispatch_ops(cx, peer_manager, planned, &reply);
         }
         Ok(())
     }
@@ -811,6 +873,7 @@ impl<I: IbvDeviceImpl> Handler<CreatePeerQueuePair<IbvManagerActor<I>>> for IbvM
             sender,
             sender_device,
             receiver_device,
+            qp_index,
             sender_info,
             reply,
         } = msg;
@@ -818,6 +881,7 @@ impl<I: IbvDeviceImpl> Handler<CreatePeerQueuePair<IbvManagerActor<I>>> for IbvM
             self_device: receiver_device,
             other_id: sender.actor_addr().id().clone(),
             other_device: sender_device,
+            qp_index,
         };
         match self.create_peer_qp(&qp_key, &sender_info) {
             Ok(local_info) => reply.post(cx, Ok(local_info)),
@@ -1020,7 +1084,7 @@ where
         let mut manager_ops = Vec::new();
         for (op_idx, op) in ibv_ops.into_iter().enumerate() {
             if let Some(op) = self.queue_pair_router.try_dispatch::<I>(op_idx, op, &reply) {
-                manager_ops.push((op_idx, op));
+                manager_ops.push(op);
             }
         }
         if !manager_ops.is_empty() {
@@ -1123,6 +1187,7 @@ mod tests {
     //! explicitly drains both procs.
 
     use std::collections::BTreeSet;
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -1149,8 +1214,10 @@ mod tests {
     use serde::Serialize;
     use typeuri::Named;
 
+    use super::IbvManagerActor;
     use super::IbvOp;
     use super::KIB;
+    use super::QpRoute;
     use super::QueuePairRouter;
     use crate::IbvConfig;
     use crate::RdmaManagerActor;
@@ -1652,7 +1719,7 @@ mod tests {
         }
     }
 
-    fn plan_ranges(size: usize, pair_count: usize, min_stripe_kb: usize) -> Vec<(usize, usize)> {
+    fn make_plan_op(size: usize, pair_count: usize) -> IbvOp<IbvManagerActor<MlxDevice>> {
         let allocation: Box<[u8]> = vec![0; size.max(1)].into_boxed_slice();
         let local_memory =
             KeepaliveLocalMemory::try_new(Arc::new(allocation)).expect("valid CPU allocation");
@@ -1678,24 +1745,32 @@ mod tests {
                 .parse::<ActorAddr>()
                 .expect("valid test actor address"),
         );
-        let op = IbvOp {
+        IbvOp {
             op_type: RdmaOpType::ReadIntoLocal,
-            local_memory: local_memory.clone(),
+            local_memory,
             remote_buffers,
             remote_manager,
-        };
+        }
+    }
+
+    fn plan_ranges(size: usize, pair_count: usize, min_stripe_kb: usize) -> Vec<(usize, usize)> {
+        let op = make_plan_op(size, pair_count);
+        let local_addr = op.local_memory.addr();
         let lock = hyperactor_config::global::lock();
         let _stripe_guard = lock.override_key(
             crate::config::RDMA_MIN_STRIPE_SIZE_KB,
             hyperactor_config::NonZeroUsize::new(min_stripe_kb)
                 .expect("minimum stripe size is non-zero"),
         );
-        let router = QueuePairRouter::new(PeerDeviceAffinityPolicy::Any);
+        let router = QueuePairRouter::new(
+            PeerDeviceAffinityPolicy::Any,
+            NonZeroUsize::new(1).expect("1 is non-zero"),
+        );
         let mut ranges: Vec<_> = router
             .plan_ops::<MlxDevice>(0, &op)
             .expect("plan test operation")
             .into_iter()
-            .map(|op| (op.local.virtual_addr - local_memory.addr(), op.local.size))
+            .map(|op| (op.local.virtual_addr - local_addr, op.local.size))
             .collect();
         ranges.sort_unstable();
         ranges
@@ -1726,6 +1801,61 @@ mod tests {
             ]
         );
         assert_eq!(plan_ranges(0, 4, 1), vec![(0, 0)]);
+    }
+
+    #[test]
+    fn queue_pair_indices_advance_independently_per_route() {
+        let router = QueuePairRouter::new(
+            PeerDeviceAffinityPolicy::Any,
+            NonZeroUsize::new(3).expect("3 is non-zero"),
+        );
+        let other_id = "manager.proc@inproc://0"
+            .parse::<ActorAddr>()
+            .expect("valid test actor address")
+            .id()
+            .clone();
+        let route_a = QpRoute {
+            self_device: "mlx5_0".into(),
+            other_id: other_id.clone(),
+            other_device: "mlx5_1".into(),
+        };
+        let route_b = QpRoute {
+            self_device: "mlx5_2".into(),
+            other_id,
+            other_device: "mlx5_3".into(),
+        };
+
+        assert_eq!(
+            (0..4)
+                .map(|_| router.next_qp_index(route_a.clone()))
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 0],
+        );
+        assert_eq!(router.next_qp_index(route_b), 0);
+        assert_eq!(router.next_qp_index(route_a), 1);
+    }
+
+    #[test]
+    fn plan_ops_round_robins_queue_pair_indices() {
+        let router = QueuePairRouter::new(
+            PeerDeviceAffinityPolicy::Any,
+            NonZeroUsize::new(3).expect("3 is non-zero"),
+        );
+        let op = make_plan_op(1, 1);
+
+        let qp_indices = (0..4)
+            .map(|op_idx| {
+                let planned = router
+                    .plan_ops::<MlxDevice>(op_idx, &op)
+                    .expect("plan test operation");
+                let [planned] = planned.as_slice() else {
+                    panic!("one NIC pair should produce one stripe");
+                };
+                planned.qp_index
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(qp_indices, vec![0, 1, 2, 0]);
     }
 
     // ====================================================================
