@@ -455,8 +455,7 @@ impl CastDomainRef {
 ///
 /// This asks only for the current tile's outgoing edges without materializing
 /// the full domain tree. The returned [`MaterializedTile`]s are still tiles of
-/// destination actors. Setup/forwarding derives the target [`CastActor`] from
-/// each child tile's root destination actor.
+/// the input value type.
 ///
 /// ```text
 /// current MaterializedTile:
@@ -465,15 +464,15 @@ impl CastDomainRef {
 ///
 /// next_tiles(current), rendered by destination actor rank:
 /// A0
-/// |-- T1 [ A1 ]          -> CastActor on A1's proc
-/// |-- T2 [ A2 ]          -> CastActor on A2's proc
-/// |-- T3 [ A3 ]          -> CastActor on A3's proc
-/// `-- T4 [ A4 A5 A6 A7 ] -> CastActor on A4's proc
+/// |-- T1 [ A1 ]
+/// |-- T2 [ A2 ]
+/// |-- T3 [ A3 ]
+/// `-- T4 [ A4 A5 A6 A7 ]
 /// ```
-fn next_tiles(
+fn next_tiles<T: 'static>(
     tiling_policy: TilingPolicy,
-    tile: &MaterializedTile<ActorAddr>,
-) -> Vec<MaterializedTile<ActorAddr>> {
+    tile: &MaterializedTile<T>,
+) -> Vec<MaterializedTile<T>> {
     tiling_policy
         .children(tile.tile())
         .into_iter()
