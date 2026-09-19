@@ -150,6 +150,16 @@ declare_attrs! {
     pub attr RDMA_QPS_PER_CQ: NonZeroUsize =
         NonZeroUsize::new(64).expect("64 is non-zero");
 
+    /// How many queue pairs to create for each local-NIC/peer/remote-NIC route.
+    ///
+    /// Operations are distributed round robin across the queue pairs.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_QPS_PER_PEER".to_string()),
+        Some("rdma_qps_per_peer".to_string()),
+    ))
+    pub attr RDMA_QPS_PER_PEER: NonZeroUsize =
+        NonZeroUsize::new(1).expect("1 is non-zero");
+
     /// Whether each device gets its own completion-queue poller.
     ///
     /// When true (the default), the manager spawns one poller per RDMA device.
