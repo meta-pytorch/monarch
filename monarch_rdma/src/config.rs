@@ -158,7 +158,7 @@ declare_attrs! {
         Some("rdma_qps_per_peer".to_string()),
     ))
     pub attr RDMA_QPS_PER_PEER: NonZeroUsize =
-        NonZeroUsize::new(1).expect("1 is non-zero");
+        NonZeroUsize::new(3).expect("3 is non-zero");
 
     /// Whether each device gets its own completion-queue poller.
     ///
