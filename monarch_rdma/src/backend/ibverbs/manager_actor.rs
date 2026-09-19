@@ -109,6 +109,8 @@ pub(super) struct CreatePeerQueuePair<M: Referable> {
     pub(super) sender_device: String,
     /// Device the peer should create its mirror QP on.
     pub(super) receiver_device: String,
+    /// Distinguishes parallel QPs for the same device route.
+    pub(super) qp_index: usize,
     /// Active side's endpoint, captured right after QP creation.
     pub(super) sender_info: IbvQpInfo,
     /// One-shot reply carrying the peer's endpoint, or an error.
@@ -267,6 +269,7 @@ impl QueuePairRouter {
                     self_device: planned.local.device_name.clone(),
                     other_id: op.remote_manager.actor_addr().id().clone(),
                     other_device: planned.remote.device_name.clone(),
+                    qp_index: 0,
                 };
                 self.queue_pairs
                     .get(&key)
@@ -350,7 +353,7 @@ pub struct IbvManagerActor<I: IbvDeviceImpl> {
     /// Active-side queue-pair workers and their supervising actor, keyed
     /// from this manager's perspective. Lazily populated on the first
     /// [`SubmitOps`] that targets a new `(self_device, peer,
-    /// other_device)` triple.
+    /// other_device, qp_index)` tuple.
     qp_handles: HashMap<
         QpKey,
         QueuePairHandle<IbvManagerActor<I>, <I::Domain as IbvDomainImpl>::QueuePair>,
@@ -758,6 +761,7 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
                     self_device: planned.local.device_name.clone(),
                     other_id: op.remote_manager.actor_addr().id().clone(),
                     other_device: planned.remote.device_name.clone(),
+                    qp_index: 0,
                 };
                 let handle = match self.ensure_qp_actor(cx, &qp_key, op.remote_manager.clone()) {
                     Ok(handle) => handle,
@@ -811,6 +815,7 @@ impl<I: IbvDeviceImpl> Handler<CreatePeerQueuePair<IbvManagerActor<I>>> for IbvM
             sender,
             sender_device,
             receiver_device,
+            qp_index,
             sender_info,
             reply,
         } = msg;
@@ -818,6 +823,7 @@ impl<I: IbvDeviceImpl> Handler<CreatePeerQueuePair<IbvManagerActor<I>>> for IbvM
             self_device: receiver_device,
             other_id: sender.actor_addr().id().clone(),
             other_device: sender_device,
+            qp_index,
         };
         match self.create_peer_qp(&qp_key, &sender_info) {
             Ok(local_info) => reply.post(cx, Ok(local_info)),
