@@ -2467,6 +2467,11 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_partial_failure_batch() -> Result<(), anyhow::Error> {
         require_rdma();
+        let lock = hyperactor_config::global::lock();
+        let _guard = lock.override_key(
+            crate::config::RDMA_QPS_PER_PEER,
+            hyperactor_config::NonZeroUsize::new(1).expect("1 is non-zero"),
+        );
         const SIZE: usize = 32;
         let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
 
