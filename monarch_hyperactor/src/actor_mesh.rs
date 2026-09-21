@@ -122,6 +122,9 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
         self.cast(message, selection, instance)
     }
 
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     /// Async counterpart of `cast_with_headers`. The default
     /// resolves the pending message synchronously and delegates;
     /// `AsyncActorMesh` overrides this to resolve asynchronously
@@ -372,6 +375,9 @@ impl ActorMeshProtocol for AsyncActorMesh {
         )
     }
 
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     fn cast_unresolved_with_headers(
         &self,
         message: PendingMessage,

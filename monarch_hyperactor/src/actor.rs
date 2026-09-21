@@ -1714,6 +1714,9 @@ impl Handler<PythonMessage> for PythonActor {
         MessageStatusReporting::Deferred
     }
 
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     #[tracing::instrument(level = "debug", skip_all)]
     async fn handle(
         &mut self,
@@ -1726,6 +1729,9 @@ impl Handler<PythonMessage> for PythonActor {
 }
 
 impl PythonActor {
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     /// Handle a message using queue dispatch.
     /// Resolves the message on the Rust side and enqueues it for Python to process.
     async fn handle_queue(
@@ -2053,6 +2059,9 @@ impl Port {
         self.port_ref.set_return_undeliverable(value);
     }
 
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     #[tracing::instrument(level = "debug", skip_all)]
     fn send(&mut self, py: Python<'_>, obj: Py<PyAny>) -> PyResult<()> {
         let message = PythonMessage::new_from_buf(

@@ -311,6 +311,9 @@ impl ProcQueueStats {
     }
 }
 
+// HOT PATH: Be mindful of performance when making changes here.
+// To test how performance is affected by a change, run the RPC benchmarks in
+// `monarch/python/benches/`.
 /// Single accounting path for actor work-queue enqueue.
 ///
 /// Updates three consumers together: per-actor `queue_depth`,
@@ -334,6 +337,9 @@ fn account_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, actor_i
     );
 }
 
+// HOT PATH: Be mindful of performance when making changes here.
+// To test how performance is affected by a change, run the RPC benchmarks in
+// `monarch/python/benches/`.
 /// Single accounting path for actor work-queue dequeue.
 ///
 /// Updates per-actor `queue_depth`, proc-level running total,
@@ -3377,6 +3383,9 @@ impl<A: Actor> Instance<A> {
         result.and_then(|stopped| cleanup_result.map(|_| stopped.reason))
     }
 
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     /// Initialize and run the actor until it fails or is stopped. On success,
     /// returns why the actor stopped and the mode that child actors inherit.
     /// On failure, returns the error that caused the failure.
@@ -3531,6 +3540,9 @@ impl<A: Actor> Instance<A> {
         }
     }
 
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     async unsafe fn handle_message<M: Message>(
         &self,
         actor: &mut A,
@@ -3564,6 +3576,9 @@ impl<A: Actor> Instance<A> {
             .await
     }
 
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     #[tracing::instrument(level = "debug", name = "handle_message", skip_all, fields(message_type = %handler_info))]
     async fn handle_message_with_handler_info<M: Message>(
         &self,

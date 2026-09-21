@@ -85,6 +85,9 @@ declare_attrs! {
     pub attr OPERATION_ADVERB: String;
 }
 
+// HOT PATH: Be mindful of performance when making changes here.
+// To test how performance is affected by a change, run the RPC benchmarks in
+// `monarch/python/benches/`.
 /// Set the send timestamp for latency tracking if timestamp not already set.
 pub fn set_send_timestamp(headers: &mut Flattrs) {
     if !headers.contains_key(SEND_TIMESTAMP) {
@@ -146,6 +149,9 @@ pub(crate) fn stamp_sender_actor_id_fresh(
     }
 }
 
+// HOT PATH: Be mindful of performance when making changes here.
+// To test how performance is affected by a change, run the RPC benchmarks in
+// `monarch/python/benches/`.
 /// This function checks the configured sampling rate and, if the random sample passes,
 /// calculates the latency between the send timestamp and the current time, then records
 /// the latency metric with the associated actor ID.

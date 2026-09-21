@@ -1107,6 +1107,9 @@ wirevalue::register_type!(CastMessage);
 
 #[async_trait]
 impl Handler<CastMessage> for CastActor {
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     #[tracing::instrument(
         level = "debug",
         skip_all,
@@ -1170,6 +1173,9 @@ impl<'a> CastDelivery<'a> {
     }
 }
 
+// HOT PATH: Be mindful of performance when making changes here.
+// To test how performance is affected by a change, run the RPC benchmarks in
+// `monarch/python/benches/`.
 fn deliver_to_destination(
     cx: &impl context::Actor,
     delivery: &CastDelivery<'_>,
@@ -1217,6 +1223,9 @@ fn deliver_to_destination(
 }
 
 impl CastActor {
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     fn route_cast_message(
         cx: &Context<Self>,
         message: &CastMessage,

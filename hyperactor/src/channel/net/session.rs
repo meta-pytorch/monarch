@@ -502,6 +502,9 @@ impl<M: RemoteMessage> Outbox<M> {
         self.deque.pop_front()
     }
 
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     pub(super) fn push_back(
         &mut self,
         (message, completion, received_at): (M, CompletionSink<M>, Instant),
@@ -624,6 +627,9 @@ impl<M: RemoteMessage> Unacked<M> {
         self.deque.push_back(message);
     }
 
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     /// Remove acked messages from the deque.
     pub(super) fn prune(
         &mut self,

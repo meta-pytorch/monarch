@@ -1343,6 +1343,9 @@ impl<M: RemoteMessage> fmt::Debug for ChannelTx<M> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     fn do_post(&self, message: M, completion: CompletionSink<M>) {
         tracing::trace!(
             name = "post",

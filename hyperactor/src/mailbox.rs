@@ -1651,6 +1651,9 @@ impl MailboxClient {
 
 #[async_trait]
 impl MailboxSender for MailboxClient {
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     fn post_unchecked(
         &self,
         envelope: MessageEnvelope,
@@ -2176,6 +2179,9 @@ pub fn open_once_port<M: Message>(
 
 #[async_trait]
 impl MailboxSender for Mailbox {
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     /// Deliver a serialized message to the provided port ID. This method fails
     /// if the message does not deserialize into the expected type.
     fn post_unchecked(
@@ -2526,6 +2532,9 @@ impl<M: Message> PortHandle<M> {
         }
     }
 
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     /// Post `message` to this port, returning an error if delivery fails (the
     /// port is closed, its owner has terminated, or its underlying channel is
     /// disconnected). Unlike [`Endpoint::post`], the caller observes the

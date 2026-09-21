@@ -1306,6 +1306,9 @@ class _QueuePanicFlag:
         self.panic_exception = ex
 
 
+# HOT PATH: Be mindful of performance when making changes here.
+# To test how performance is affected by a change, run the RPC benchmarks in
+# `monarch/python/benches/`.
 async def _dispatch_loop(
     actor: Any,
     receiver: "Receiver[QueuedMessage]",
@@ -1332,6 +1335,9 @@ async def _dispatch_loop(
             raise
 
 
+# HOT PATH: Be mindful of performance when making changes here.
+# To test how performance is affected by a change, run the RPC benchmarks in
+# `monarch/python/benches/`.
 async def _handle_queued_message(actor: Any, msg: "QueuedMessage") -> None:
     """Handle a single queued message."""
 
@@ -1378,6 +1384,9 @@ class _Actor:
         self._saved_error: ActorError | None = None
         self._method_cache: Dict[str, Tuple[Callable[..., Any], bool, bool]] = {}
 
+    # HOT PATH: Be mindful of performance when making changes here.
+    # To test how performance is affected by a change, run the RPC benchmarks in
+    # `monarch/python/benches/`.
     async def handle(
         self,
         ctx: Context,

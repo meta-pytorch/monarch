@@ -366,6 +366,9 @@ async fn collect_value(
     }
 }
 
+// HOT PATH: Be mindful of performance when making changes here.
+// To test how performance is affected by a change, run the RPC benchmarks in
+// `monarch/python/benches/`.
 #[tracing::instrument(level = "debug", skip_all)]
 async fn collect_valuemesh(
     extent: Extent,
@@ -731,6 +734,9 @@ pub(crate) trait Endpoint {
         (PythonOncePortRef::from(p.bind()), receiver)
     }
 
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     /// Call the endpoint on all actors and collect all responses into a ValueMesh.
     #[tracing::instrument(level = "debug", skip_all)]
     fn call<'py>(
@@ -979,6 +985,9 @@ pub struct ActorEndpoint {
 }
 
 impl ActorEndpoint {
+    // HOT PATH: Be mindful of performance when making changes here.
+    // To test how performance is affected by a change, run the RPC benchmarks in
+    // `monarch/python/benches/`.
     fn create_message<'py>(
         &self,
         py: Python<'py>,
