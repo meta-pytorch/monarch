@@ -188,6 +188,7 @@ pub(super) struct QpKey {
     pub(super) self_device: String,
     pub(super) other_id: ActorId,
     pub(super) other_device: String,
+    pub(super) qp_index: usize,
 }
 
 // =====================================================================
@@ -1304,6 +1305,7 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
                     sender: self.local_manager.clone(),
                     sender_device: qp_key.self_device.clone(),
                     receiver_device: qp_key.other_device.clone(),
+                    qp_index: qp_key.qp_index,
                     sender_info: local_info,
                     reply: reply.bind(),
                 },
@@ -1513,6 +1515,7 @@ mod tests {
         sender_id: hyperactor::ActorId,
         sender_device: String,
         receiver_device: String,
+        qp_index: usize,
         sender_qp_num: u32,
     }
 
@@ -1569,6 +1572,7 @@ mod tests {
                     sender_id: msg.sender.actor_addr().id().clone(),
                     sender_device: msg.sender_device.clone(),
                     receiver_device: msg.receiver_device.clone(),
+                    qp_index: msg.qp_index,
                     sender_qp_num: msg.sender_info.qp_num,
                 });
                 state.response.take()
@@ -1926,6 +1930,7 @@ mod tests {
             self_device: "mlx5_0".into(),
             other_id: harness.peer_id(),
             other_device: "mlx5_1".into(),
+            qp_index: 3,
         };
         let handle = harness
             .spawn_actor(
@@ -1945,6 +1950,7 @@ mod tests {
         assert_eq!(creates.len(), 1);
         assert_eq!(creates[0].sender_device, "mlx5_0");
         assert_eq!(creates[0].receiver_device, "mlx5_1");
+        assert_eq!(creates[0].qp_index, 3);
         assert_eq!(creates[0].sender_qp_num, 0x1234);
         // The sender ref carries the local manager's identity so the
         // receiver can build its own `QpKey`.
@@ -1967,6 +1973,7 @@ mod tests {
             self_device: "mlx5_0".into(),
             other_id: harness.parent_id(),
             other_device: "mlx5_0".into(),
+            qp_index: 0,
         };
         let handle = harness
             .spawn_actor(
@@ -2001,6 +2008,7 @@ mod tests {
             self_device: "mlx5_0".into(),
             other_id: harness.peer_id(),
             other_device: "mlx5_99".into(),
+            qp_index: 0,
         };
         let (qp, _posted_rx) = MockQp::new(1, 2);
         let handle = harness
@@ -2036,6 +2044,7 @@ mod tests {
             self_device: "mlx5_0".into(),
             other_id: harness.peer_id(),
             other_device: "mlx5_1".into(),
+            qp_index: 0,
         };
         let (qp, _posted_rx) = MockQp::new(1, 2);
         let handle = harness
@@ -2249,6 +2258,7 @@ mod tests {
                 self_device: SELF_DEVICE.into(),
                 other_id: self.parent_id(),
                 other_device: PEER_DEVICE.into(),
+                qp_index: 0,
             };
             let handle = self
                 .spawn_actor_with_caps(
