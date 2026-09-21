@@ -737,6 +737,8 @@ pub(super) struct StripeResult {
 #[derive(Debug)]
 pub(super) struct QueuePairOp {
     pub(super) stripe_id: StripeId,
+    /// Selects one of the queue pairs for this NIC route.
+    pub(super) qp_index: usize,
     pub(super) op_type: RdmaOpType,
     pub(super) local_memory: KeepaliveLocalMemory,
     /// The local and remote views are already sliced to this stripe's range.
@@ -2165,6 +2167,7 @@ mod tests {
                 stripe_idx,
                 stripe_count,
             },
+            qp_index: 0,
             op_type,
             local_memory: fake_local_memory(addr, region_size),
             local,
