@@ -55,6 +55,7 @@ use crate::Error;
 use crate::HostMeshRef;
 use crate::ValueMesh;
 use crate::actor_mesh::ActorMeshStopHandle;
+use crate::casting::CAST_POINT;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::host_mesh::host_agent::GetHostProcStates;
 use crate::host_mesh::host_agent::ProcState;
@@ -853,7 +854,7 @@ impl ProcMeshRef {
 
         // Each call only schedules a local supervisor that sends a one-way spawn
         // request. No rank waits for another rank's remote actor initialization.
-        for proc_ref in self.ranks.iter() {
+        for (rank, proc_ref) in self.ranks.iter().enumerate() {
             let params = match bincode::serde::decode_from_slice(
                 &serialized_params,
                 bincode::config::legacy(),
@@ -864,6 +865,17 @@ impl ProcMeshRef {
                     return Err(error.into());
                 }
             };
+            let mut environment = cx.instance().actor_environment().clone();
+            if let Err(error) = environment.set(
+                CAST_POINT,
+                region
+                    .extent()
+                    .point_of_rank(rank)
+                    .expect("proc mesh rank must have a point"),
+            ) {
+                stop_spawned(&stop_handles, "data mesh spawn failed");
+                return Err(Error::Other(error.into()));
+            }
             let actor_spawner = proc_ref.spawner();
             let (actor_ref, stop_handle) = match actor_spawner.spawn_uid_with_link_and_ready(
                 cx,
@@ -871,6 +883,7 @@ impl ProcMeshRef {
                 params,
                 KeepaliveLink::default(),
                 None,
+                environment,
             ) {
                 Ok(spawned) => spawned,
                 Err(error) => {
@@ -1753,6 +1766,116 @@ mod tests {
         }
         assert_eq!(seen.len(), expected.len(), "both hops must report");
 
+        hm.shutdown(&root.instance)
+            .await
+            .expect("host mesh shutdown should complete");
+    }
+
+    #[async_timed_test(timeout_secs = 300)]
+    #[cfg(fbcode_build)]
+    async fn direct_spawn_shapes_cast_point() {
+        const SENTINEL: u64 = 0xD1EC;
+        let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, true);
+
+        let base = testing::instance();
+        let persistent_point = extent!(persistent = 3).point_of_rank(2).unwrap();
+        let mut environment = ActorEnvironment::default();
+        environment
+            .set(testactor::ACTOR_ENVIRONMENT_TEST_TAG, SENTINEL)
+            .expect("seed persistent tag");
+        environment
+            .set(CAST_POINT, persistent_point.clone())
+            .expect("seed persistent cast-point collision");
+        let root = base
+            .proc()
+            .actor_instance_in_environment::<testing::TestRootClient>(
+                &format!("direct_spawn_root_{}", Uuid::now_v7()),
+                environment,
+            )
+            .expect("create seeded root instance");
+
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(
+                &root.instance,
+                "direct_spawn_env",
+                extent!(gpus = 2),
+                None,
+                None,
+            )
+            .await
+            .expect("spawn proc mesh");
+        let expected: HashMap<_, _> = (0..proc_mesh.region().num_ranks())
+            .map(|rank| {
+                (
+                    proc_mesh.get(rank).expect("proc").proc_addr().to_string(),
+                    proc_mesh.region().extent().point_of_rank(rank).unwrap(),
+                )
+            })
+            .collect();
+        assert!(
+            !expected.values().any(|point| *point == persistent_point),
+            "seeded and assigned cast points must be distinct",
+        );
+
+        let (reply, mut replies) = root
+            .instance
+            .open_port::<testactor::ActorEnvironmentObservation>();
+        let mut actor_mesh: ActorMesh<testactor::ActorEnvironmentProbe> = proc_mesh
+            .spawn_with_name(
+                &root.instance,
+                ActorMeshId::instance(Label::strip("direct_spawn_probe")),
+                &testactor::ActorEnvironmentProbeParams {
+                    label: "direct".to_string(),
+                    reply: reply.bind(),
+                    nested: None,
+                },
+                None,
+                false,
+            )
+            .await
+            .expect("spawn direct environment probes");
+        assert!(
+            actor_mesh.as_managed().is_none(),
+            "configured instance spawn should return a data mesh"
+        );
+
+        let mut seen = HashSet::new();
+        for _ in 0..expected.len() {
+            let observed = tokio::time::timeout(Duration::from_secs(120), replies.recv())
+                .await
+                .expect("environment probe reply timed out")
+                .expect("environment probe reply port closed");
+            let expected_point = expected
+                .get(&observed.proc_addr)
+                .unwrap_or_else(|| panic!("unexpected probe proc {}", observed.proc_addr));
+            assert!(
+                seen.insert(observed.proc_addr.clone()),
+                "received duplicate observation from {}",
+                observed.proc_addr,
+            );
+            assert_eq!(
+                observed.constructor_tag,
+                Some(SENTINEL),
+                "constructor must see the persistent tag"
+            );
+            assert_eq!(
+                observed.constructor_point.as_ref(),
+                Some(expected_point),
+                "constructor must see its rank-local point, not the caller's"
+            );
+            assert_eq!(
+                observed.stored_point.as_ref(),
+                Some(expected_point),
+                "instance must store its rank-local point"
+            );
+        }
+
+        actor_mesh
+            .stop(&root.instance, "test complete".to_string())
+            .await
+            .expect("stop direct environment probes");
         hm.shutdown(&root.instance)
             .await
             .expect("host mesh shutdown should complete");

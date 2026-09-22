@@ -66,11 +66,28 @@ impl Gspawn {
     where
         A: RemoteSpawn + Named,
     {
+        Self::for_actor_uid_in_environment::<A>(
+            uid,
+            params,
+            cx.instance().actor_environment().clone(),
+        )
+    }
+
+    /// Create a spawn specification for the registered actor type with an
+    /// explicit uid and a caller-shaped persistent environment (AENV-4).
+    pub(crate) fn for_actor_uid_in_environment<A>(
+        uid: Uid,
+        params: A::Params,
+        environment: ActorEnvironment,
+    ) -> anyhow::Result<Self>
+    where
+        A: RemoteSpawn + Named,
+    {
         Ok(Self::with_uid(
             A::typename(),
             uid,
             bincode::serde::encode_to_vec(params, bincode::config::legacy())?,
-            cx.instance().actor_environment().clone(),
+            environment,
         ))
     }
 

@@ -112,6 +112,7 @@
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Context;
@@ -197,6 +198,7 @@ pub trait ActorSpawnerEndpoint {
             params,
             KeepaliveLink::default(),
             None,
+            cx.instance().actor_environment().clone(),
         )
     }
 
@@ -241,6 +243,7 @@ pub trait ActorSpawnerEndpoint {
             params,
             KeepaliveLink::default(),
             Some(ready),
+            cx.instance().actor_environment().clone(),
         )
         .map(|(actor_ref, _supervisor)| actor_ref)
     }
@@ -258,13 +261,21 @@ pub trait ActorSpawnerEndpoint {
         Self: Clone + Send + 'static,
         for<'a> &'a Self: Endpoint<SpawnActorMessage>,
     {
-        self.spawn_uid_with_link_and_ready::<A>(cx, uid, params, liveness, None)
-            .map(|(actor_ref, _supervisor)| actor_ref)
+        self.spawn_uid_with_link_and_ready::<A>(
+            cx,
+            uid,
+            params,
+            liveness,
+            None,
+            cx.instance().actor_environment().clone(),
+        )
+        .map(|(actor_ref, _supervisor)| actor_ref)
     }
 
-    /// Spawn a registered actor with an explicit actor uid, liveness link, and
-    /// optional readiness port. This is the general form behind the other
-    /// `spawn*` methods; see [`spawn_uid_with_ready`](Self::spawn_uid_with_ready)
+    /// Spawn a registered actor with an explicit actor uid, liveness link,
+    /// optional readiness port, and persistent environment. This is the general
+    /// form behind the other `spawn*` methods, which pass the caller's own
+    /// environment; see [`spawn_uid_with_ready`](Self::spawn_uid_with_ready)
     /// for the readiness semantics.
     fn spawn_uid_with_link_and_ready<A>(
         &self,
@@ -273,6 +284,7 @@ pub trait ActorSpawnerEndpoint {
         params: A::Params,
         liveness: KeepaliveLink,
         ready: Option<OncePortHandle<()>>,
+        environment: ActorEnvironment,
     ) -> anyhow::Result<(ActorRef<A>, ActorHandle<Supervisor>)>
     where
         A: RemoteSpawn,
@@ -293,7 +305,7 @@ pub trait ActorSpawnerEndpoint {
                 .actor_addr_uid(uid.clone()),
         );
         let actor_spawner = self.clone();
-        let gspawn = Gspawn::for_actor_uid::<A>(cx, uid, params)?;
+        let gspawn = Gspawn::for_actor_uid_in_environment::<A>(uid, params, environment)?;
         let supervisor = cx.instance().spawn(Supervisor::bootstrap_uid(
             liveness,
             SupervisionOptions::default(),
