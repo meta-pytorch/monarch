@@ -1027,7 +1027,7 @@ mod tests {
             // Send each shuffled frame once. Some frames are cloned for a
             // later replay.
             let mut duplicates: Vec<(SeqInfo, Flattrs, Frame)> = Vec::new();
-            let entries: Vec<(SeqInfo, Flattrs, Frame)> = self.window.drain(..).collect();
+            let entries: Vec<(SeqInfo, Flattrs, Frame)> = std::mem::take(&mut self.window);
             for (seq_info, headers, frame) in entries {
                 let (session_id, seq) = match &seq_info {
                     SeqInfo::Session { session_id, seq } => (*session_id, *seq),
