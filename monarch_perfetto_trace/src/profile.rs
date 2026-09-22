@@ -102,7 +102,7 @@ struct PreparedSpan {
     end_clipped: bool,
     returns_response: bool,
     start_ns: u64,
-    end_ns: u64,
+    end_ns: Option<u64>,
 }
 
 #[derive(Default)]
@@ -403,28 +403,7 @@ fn write_trace(
 
     let flow_plan = build_flow_plan(&spans, || ctx.next_uuid());
 
-    let mut boundaries = spans
-        .iter()
-        .enumerate()
-        .flat_map(|(span_index, span)| {
-            [
-                Boundary {
-                    timestamp_ns: span.start_ns,
-                    span_index,
-                    kind: BoundaryKind::Begin,
-                },
-                Boundary {
-                    timestamp_ns: span.end_ns,
-                    span_index,
-                    kind: BoundaryKind::End,
-                },
-            ]
-        })
-        .collect::<Vec<_>>();
-
-    boundaries.sort_unstable();
-
-    for boundary in boundaries {
+    for boundary in span_boundaries(&spans) {
         let span = &spans[boundary.span_index];
         let track_id = actor_track_ids
             .get(&span.track)
@@ -526,6 +505,28 @@ fn write_trace(
     Ok(summary)
 }
 
+fn span_boundaries(spans: &[PreparedSpan]) -> Vec<Boundary> {
+    let mut boundaries = spans
+        .iter()
+        .enumerate()
+        .flat_map(|(span_index, span)| {
+            std::iter::once(Boundary {
+                timestamp_ns: span.start_ns,
+                span_index,
+                kind: BoundaryKind::Begin,
+            })
+            .chain(span.end_ns.map(|timestamp_ns| Boundary {
+                timestamp_ns,
+                span_index,
+                kind: BoundaryKind::End,
+            }))
+        })
+        .collect::<Vec<_>>();
+
+    boundaries.sort_unstable();
+    boundaries
+}
+
 fn build_flow_plan(
     spans: &[PreparedSpan],
     mut next_flow_id: impl FnMut() -> u64,
@@ -603,8 +604,8 @@ fn prepare_span(
         return Err(SpanSkipReason::StartsOutsideProfileWindow);
     }
 
-    let end_us = original_end_us.unwrap_or(window_end_us).min(window_end_us);
-    if end_us <= start_us {
+    let end_us = original_end_us.map(|end_us| end_us.min(window_end_us));
+    if end_us.is_some_and(|end_us| end_us <= start_us) {
         return Err(SpanSkipReason::NonPositiveDuration);
     }
 
@@ -621,7 +622,10 @@ fn prepare_span(
     let track = parse_actor_track(actor_id).ok_or(SpanSkipReason::ActorIdMissingProcessId)?;
 
     let start_ns = micros_to_nanos(start_us).map_err(|_| SpanSkipReason::InvalidStartTimestamp)?;
-    let end_ns = micros_to_nanos(end_us).map_err(|_| SpanSkipReason::InvalidEndTimestamp)?;
+    let end_ns = end_us
+        .map(micros_to_nanos)
+        .transpose()
+        .map_err(|_| SpanSkipReason::InvalidEndTimestamp)?;
     let returns_response = row.target == ENDPOINT_TELEMETRY_TARGET
         && matches!(row.name.as_str(), "call" | "call_one" | "choose");
     let name = display_name(&row, &fields);
@@ -743,4 +747,47 @@ fn create_output_parent(output: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span_row(end_us: Option<i64>) -> SpanRow {
+        SpanRow {
+            process_id: "proc".to_owned(),
+            id: 1,
+            name: "span".to_owned(),
+            target: "target".to_owned(),
+            fields_json: r#"{"actor_id":"actor.proc"}"#.to_owned(),
+            start_us: Some(12),
+            end_us,
+        }
+    }
+
+    #[test]
+    fn missing_span_end_remains_open() {
+        let span = prepare_span(span_row(None), 10, 20)
+            .expect("span without an end should remain renderable");
+
+        assert_eq!(span.start_ns, 12_000);
+        assert_eq!(span.end_ns, None);
+        assert!(!span.start_clipped);
+        assert!(span.end_clipped);
+    }
+
+    #[test]
+    fn span_without_end_emits_only_begin_boundary() {
+        let span = prepare_span(span_row(None), 10, 20)
+            .expect("span without an end should remain renderable");
+
+        assert_eq!(
+            span_boundaries(&[span]),
+            vec![Boundary {
+                timestamp_ns: 12_000,
+                span_index: 0,
+                kind: BoundaryKind::Begin,
+            }]
+        );
+    }
 }
