@@ -437,6 +437,21 @@ impl<A: Referable> DataActorMesh<A> {
         A: RemoteHandles<M>,
         M: RemoteMessage + Clone,
     {
+        self.cast_with_return_undeliverable(cx, caller_headers, message, true)
+    }
+
+    /// Cast `message` with explicit undeliverable-return behavior.
+    pub fn cast_with_return_undeliverable<M>(
+        &self,
+        cx: &impl context::Actor,
+        caller_headers: &Flattrs,
+        message: M,
+        return_undeliverable: bool,
+    ) -> crate::Result<()>
+    where
+        A: RemoteHandles<M>,
+        M: RemoteMessage + Clone,
+    {
         if self.region().num_ranks() == 0 {
             return Ok(());
         }
@@ -450,7 +465,9 @@ impl<A: Referable> DataActorMesh<A> {
         // proc before supporting co-located DataActorMesh members (D119701912).
         self.cast_domain
             .ensure_materialized(cx, &headers)
-            .and_then(|domain| domain.cast(cx, headers, message))
+            .and_then(|domain| {
+                domain.cast_with_return_undeliverable(cx, headers, message, return_undeliverable)
+            })
             .map_err(Error::Other)
     }
 }
@@ -609,9 +626,28 @@ impl<A: Referable> ActorMeshRef<A> {
         A: RemoteHandles<M>,
         M: RemoteMessage + Clone,
     {
+        self.cast_with_return_undeliverable(cx, caller_headers, message, true)
+    }
+
+    /// Cast `message` with explicit undeliverable-return behavior.
+    pub fn cast_with_return_undeliverable<M>(
+        &self,
+        cx: &impl context::Actor,
+        caller_headers: &Flattrs,
+        message: M,
+        return_undeliverable: bool,
+    ) -> crate::Result<()>
+    where
+        A: RemoteHandles<M>,
+        M: RemoteMessage + Clone,
+    {
         match self {
-            Self::Managed(m) => m.cast_with_headers(cx, caller_headers, message),
-            Self::Data(d) => d.cast_with_headers(cx, caller_headers, message),
+            Self::Managed(m) => {
+                m.cast_with_return_undeliverable(cx, caller_headers, message, return_undeliverable)
+            }
+            Self::Data(d) => {
+                d.cast_with_return_undeliverable(cx, caller_headers, message, return_undeliverable)
+            }
         }
     }
 
@@ -1125,6 +1161,25 @@ impl<A: Referable> ManagedActorMeshRef<A> {
         A: RemoteHandles<M>,
         M: RemoteMessage + Clone,
     {
+        self.cast_with_return_undeliverable(cx, caller_headers, message, true)
+    }
+
+    /// Cast `message` with explicit undeliverable-return behavior.
+    #[expect(
+        clippy::result_large_err,
+        reason = "actor mesh errors preserve casting and mesh failure context"
+    )]
+    pub fn cast_with_return_undeliverable<M>(
+        &self,
+        cx: &impl context::Actor,
+        caller_headers: &Flattrs,
+        message: M,
+        return_undeliverable: bool,
+    ) -> crate::Result<()>
+    where
+        A: RemoteHandles<M>,
+        M: RemoteMessage + Clone,
+    {
         self.emit_sent_message_telemetry(cx, self.region());
 
         let mut headers = caller_headers.clone();
@@ -1140,7 +1195,7 @@ impl<A: Referable> ManagedActorMeshRef<A> {
             self.cast_domain
                 .ensure_materialized(cx, &headers)
                 .map_err(|e| Error::CastingError(self.id.clone(), e))?
-                .cast(cx, headers, message)
+                .cast_with_return_undeliverable(cx, headers, message, return_undeliverable)
                 .map_err(|e| Error::CastingError(self.id.clone(), e))
         }
     }
@@ -1848,14 +1903,17 @@ mod tests {
     #[tokio::test]
     async fn test_actor_mesh_ref_monitor_owns_status_and_guards_operations() {
         let proc = Proc::isolated();
-        let client = proc.client("client");
-        let target = client.spawn_with_label("rank0", testactor::TestActor);
+        let sender = proc.actor_instance::<()>("sender").unwrap();
+        sender.instance.bind::<()>();
+        let target = sender
+            .instance
+            .spawn_with_label("rank0", testactor::TestActor);
         let region: Region = extent!(replicas = 1).into();
         let actor_ref: ActorRef<testactor::TestActor> = target.bind();
         let mesh = ActorMeshRef::try_new_data(region, vec![actor_ref.clone()])
             .expect("data ref should be valid");
-        let monitor = mesh.monitor(&client);
-        let independent_monitor = mesh.monitor(&client);
+        let monitor = mesh.monitor(&sender.instance);
+        let independent_monitor = mesh.monitor(&sender.instance);
 
         assert_eq!(monitor.status(0), Some(ActorStatus::Unknown));
         assert_eq!(independent_monitor.status(0), Some(ActorStatus::Unknown));
@@ -1896,15 +1954,15 @@ mod tests {
             ActorStatus::Stopped(ref reason) if reason == "rank complete"
         ));
 
-        let (port, _rx) = mailbox::open_port(&client);
-        mesh.cast(&client, testactor::GetActorId(port.bind()))
+        let (port, _rx) = mailbox::open_port(&sender.instance);
+        mesh.cast(&sender.instance, testactor::GetActorId(port.bind()))
             .expect("casting does not implicitly check monitor status");
 
         tokio::time::timeout(Duration::from_secs(5), target)
             .await
             .expect("timed out waiting for target to stop");
 
-        mesh.cast(&client, ())
+        mesh.cast(&sender.instance, ())
             .expect("casting to a stopped actor should still initiate delivery");
     }
 

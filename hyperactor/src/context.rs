@@ -163,6 +163,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
         return_undeliverable: bool,
         seq_info_policy: SeqInfoPolicy,
     ) {
+        self.mailbox().ensure_return_handler();
         let return_handle = self.mailbox().bound_return_handle().unwrap_or_else(|| {
             let actor_id = self.mailbox().actor_addr();
             if CAN_SEND_WARNED_MAILBOXES

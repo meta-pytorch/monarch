@@ -1663,11 +1663,13 @@ mod tests {
         let query_task = tokio::spawn(async move {
             loop {
                 let (reply_port, reply_rx) = query_client.open_once_port::<IntrospectResult>();
+                let mut reply = reply_port.bind();
+                reply.return_undeliverable(false);
                 query_port.post(
                     &query_client,
                     IntrospectMessage::QueryChild {
                         child_ref: Addr::Proc(query_proc_id.clone()),
-                        reply: reply_port.bind(),
+                        reply,
                     },
                 );
                 match tokio::time::timeout(std::time::Duration::from_secs(2), reply_rx.recv()).await

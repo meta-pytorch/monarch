@@ -112,6 +112,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
+use std::sync::Once;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::Weak;
@@ -1118,6 +1119,7 @@ pub trait PortSender: MailboxSender {
         })?;
         let mut envelope = MessageEnvelope::new_unknown(port.port_addr().clone(), serialized);
         envelope.set_header(SEQ_INFO, SeqInfo::Direct);
+        envelope.set_return_undeliverable(port.get_return_undeliverable());
         self.post(envelope, return_handle);
         Ok(())
     }
@@ -1138,6 +1140,7 @@ pub trait PortSender: MailboxSender {
         })?;
         let mut envelope = MessageEnvelope::new_unknown(once_port.port_addr().clone(), serialized);
         envelope.set_header(SEQ_INFO, SeqInfo::Direct);
+        envelope.set_return_undeliverable(once_port.get_return_undeliverable());
         self.post(envelope, return_handle);
         Ok(())
     }
@@ -2032,6 +2035,21 @@ impl Mailbox {
     pub fn bound_return_handle(&self) -> Option<PortHandle<Undeliverable<MessageEnvelope>>> {
         self.lookup_sender::<Undeliverable<MessageEnvelope>>()
             .map(|sender| PortHandle::new(self.clone(), self.inner.allocate_port(), sender))
+    }
+
+    /// Install the owning actor's lazy delivery-failure handler initializer.
+    pub(crate) fn set_return_handler_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+        assert!(
+            self.inner.return_handler_hook.set(Box::new(hook)).is_ok(),
+            "return handler hook should be installed once"
+        );
+    }
+
+    /// Bind the owning actor's delivery-failure handler, if one was installed.
+    pub(crate) fn ensure_return_handler(&self) {
+        if let Some(hook) = self.inner.return_handler_hook.get() {
+            self.inner.return_handler_init.call_once(hook);
+        }
     }
 
     pub(crate) fn allocate_port(&self) -> u64 {
@@ -3428,6 +3446,12 @@ struct State {
 
     /// Gate that closes and drains runtime-dispatched handler ingress.
     handler_ingress: Arc<HandlerIngressGate>,
+
+    /// One-shot initialization of the owning actor's delivery-failure handler.
+    return_handler_init: Once,
+
+    /// Actor-specific action that binds the delivery-failure handler.
+    return_handler_hook: OnceLock<Box<dyn Fn() + Send + Sync + 'static>>,
 }
 
 impl State {
@@ -3440,6 +3464,8 @@ impl State {
             next_ephemeral_port: AtomicU64::new(0),
             closed: RwLock::new(None),
             handler_ingress: Arc::new(HandlerIngressGate::new()),
+            return_handler_init: Once::new(),
+            return_handler_hook: OnceLock::new(),
         }
     }
 
@@ -5675,8 +5701,6 @@ mod tests {
             actor1,
             port_id: _,
             port_id1,
-            port_id2: _,
-            port_id2_1: _,
             ..
         } = setup_split_port_ids(
             Some(accum::sum::<u64>().reducer_spec().unwrap()),
@@ -5719,8 +5743,6 @@ mod tests {
             actor1,
             port_id: _,
             port_id1,
-            port_id2: _,
-            port_id2_1: _,
             ..
         } = setup_split_port_ids(
             Some(accum::sum::<u64>().reducer_spec().unwrap()),

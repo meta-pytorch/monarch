@@ -378,6 +378,7 @@ mod tests {
     use hyperactor::Context;
     use hyperactor::PortHandle;
     use hyperactor::Proc;
+    use hyperactor::testing::process_assertion::assert_termination;
 
     use super::*;
 
@@ -682,36 +683,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_join_fails_after_creator_stops() {
-        let proc = Proc::isolated();
-        let inst = proc.client("inst");
-        let (creator_joined, _creator_joined_rx) = inst.open_port::<Joined<JoinerRef>>();
-        let (token_out, mut token_out_rx) = inst.open_port::<Token<CreatorRef, JoinerRef>>();
+    async fn test_join_after_creator_stops_exits() {
+        assert_termination(
+            || async {
+                let proc = Proc::isolated();
+                let inst = proc.client("inst");
+                let (creator_joined, _creator_joined_rx) = inst.open_port::<Joined<JoinerRef>>();
+                let (token_out, mut token_out_rx) =
+                    inst.open_port::<Token<CreatorRef, JoinerRef>>();
 
-        let creator_handle = proc.spawn(CreatorActor {
-            creator_joined,
-            token_out,
-        });
+                let creator_handle = proc.spawn(CreatorActor {
+                    creator_joined,
+                    token_out,
+                });
 
-        let token = token_out_rx.recv().await.unwrap();
+                let token = token_out_rx.recv().await.unwrap();
 
-        // Stop the creator; its supervised rendezvous actor dies with
-        // it.
-        creator_handle.stop("test").unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(5), creator_handle)
-            .await
-            .unwrap();
+                // Stop the creator; its supervised rendezvous actor dies with
+                // it.
+                creator_handle.stop("test").unwrap();
+                tokio::time::timeout(std::time::Duration::from_secs(5), creator_handle)
+                    .await
+                    .unwrap();
 
-        let joiner = proc.client("joiner");
-        let (result, mut result_rx) = joiner.open_port::<JoinResult<CreatorRef>>();
-        token.join(&joiner, JoinerRef, result.bind()).unwrap();
+                let joiner = proc.client("joiner");
+                let (result, _result_rx) = joiner.open_port::<JoinResult<CreatorRef>>();
+                token.join(&joiner, JoinerRef, result.bind()).unwrap();
 
-        // No rendezvous actor remains to send a result.
-        let timed_out =
-            tokio::time::timeout(std::time::Duration::from_millis(500), result_rx.recv()).await;
-        assert!(
-            timed_out.is_err(),
-            "join should produce no result after creator stops"
-        );
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            },
+            1,
+        )
+        .await
+        .unwrap();
     }
 }

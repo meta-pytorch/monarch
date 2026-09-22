@@ -418,7 +418,12 @@ impl LoggingMeshClient {
 
         // Always update the per-proc Python logging level.
         self.logger_mesh
-            .cast(instance.deref(), LoggerRuntimeMessage::SetLogging { level })
+            .cast_with_return_undeliverable(
+                instance.deref(),
+                &Default::default(),
+                LoggerRuntimeMessage::SetLogging { level },
+                false,
+            )
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
         // Always update the client actor's aggregation window.

@@ -2596,13 +2596,14 @@ mod tests {
             .proc_addr()
             .actor_addr("noop")
             .port_addr(Port::from(0u64));
-        let envelope = MessageEnvelope::serialize(
+        let mut envelope = MessageEnvelope::serialize(
             client_inst.self_addr().clone(),
             dummy_dest,
             &"warmup".to_string(),
             Default::default(),
         )
         .unwrap();
+        envelope.set_return_undeliverable(false);
         host_tx.post(envelope);
         // Wait briefly for connection to establish.
         tokio::time::sleep(Duration::from_millis(200)).await;

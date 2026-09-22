@@ -335,6 +335,17 @@ impl CastDomainRef {
         headers: Flattrs,
         message: M,
     ) -> anyhow::Result<()> {
+        self.cast_with_return_undeliverable(cx, headers, message, true)
+    }
+
+    /// Cast a message with explicit undeliverable-return behavior.
+    pub fn cast_with_return_undeliverable<M: Serialize + Named>(
+        &self,
+        cx: &impl context::Actor,
+        headers: Flattrs,
+        message: M,
+        return_undeliverable: bool,
+    ) -> anyhow::Result<()> {
         let mut data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
         let sender = cx.mailbox().actor_addr().clone();
         let dest_port = M::port();
@@ -362,7 +373,9 @@ impl CastDomainRef {
         for (subtree, seqs) in self.subtrees.iter().zip(subtree_seqs) {
             match &subtree.route {
                 CastRoute::ViaCastActor(root_actor) => {
-                    root_actor.port().post_with_headers(
+                    let mut port = root_actor.port();
+                    port.return_undeliverable(return_undeliverable);
+                    port.post_with_headers(
                         cx,
                         headers.clone(),
                         CastMessage {
@@ -375,6 +388,7 @@ impl CastDomainRef {
                             headers: cast_headers.clone(),
                             dest_port,
                             data: data.clone(),
+                            return_undeliverable,
                         },
                     );
                 }
@@ -387,6 +401,7 @@ impl CastDomainRef {
                             seq: destination.seq(&seqs)?,
                             headers: &cast_headers,
                             dest_port,
+                            return_undeliverable,
                         },
                         destination,
                         data.clone(),
@@ -1101,6 +1116,8 @@ struct CastMessage {
     dest_port: u64,
     /// The serialized message data.
     data: wirevalue::Any<wirevalue::encoding::Multipart>,
+    /// Whether failed delivery should be returned to the originating sender.
+    return_undeliverable: bool,
 }
 
 wirevalue::register_type!(CastMessage);
@@ -1156,6 +1173,7 @@ struct CastDelivery<'a> {
     seq: u64,
     headers: &'a Flattrs,
     dest_port: u64,
+    return_undeliverable: bool,
 }
 
 impl<'a> CastDelivery<'a> {
@@ -1169,6 +1187,7 @@ impl<'a> CastDelivery<'a> {
             seq: destination.seq(&message.seqs)?,
             headers: &message.headers,
             dest_port: message.dest_port,
+            return_undeliverable: message.return_undeliverable,
         })
     }
 }
@@ -1217,8 +1236,12 @@ fn deliver_to_destination(
         &dest,
         delivery.sender,
     );
-    cx.instance()
-        .post_with_external_seq_info(dest, headers, data.erase_encoding());
+    cx.instance().post_with_external_seq_info_and_return(
+        dest,
+        headers,
+        data.erase_encoding(),
+        delivery.return_undeliverable,
+    );
     Ok(())
 }
 
@@ -1263,7 +1286,9 @@ impl CastActor {
                     #[cfg(not(test))]
                     let _ = &local_lineage;
                     let forward_headers = message.headers.clone();
-                    next_hop.port().post_with_headers(
+                    let mut port = next_hop.port();
+                    port.return_undeliverable(message.return_undeliverable);
+                    port.post_with_headers(
                         cx,
                         forward_headers,
                         CastMessage {
@@ -1276,6 +1301,7 @@ impl CastActor {
                             headers: message.headers.clone(),
                             dest_port: message.dest_port,
                             data: data.clone(),
+                            return_undeliverable: message.return_undeliverable,
                         },
                     );
                 }
@@ -1679,6 +1705,7 @@ mod tests {
     #[derive(Debug, Serialize, Deserialize, typeuri::Named)]
     enum CastStoppedDomain {
         Cast,
+        CastWithoutReturn,
         DestroyAndCast,
     }
     wirevalue::register_type!(CastStoppedDomain);
@@ -1723,20 +1750,22 @@ mod tests {
                 .domain
                 .as_ref()
                 .expect("cast domain was initialized above");
-            let payload = match message {
-                CastStoppedDomain::Cast => "before-destroy",
+            let (payload, return_undeliverable) = match message {
+                CastStoppedDomain::Cast => ("before-destroy", true),
+                CastStoppedDomain::CastWithoutReturn => ("without-return", false),
                 CastStoppedDomain::DestroyAndCast => {
                     domain.destroy(cx);
                     domain.destroy(cx);
-                    "after-destroy"
+                    ("after-destroy", true)
                 }
             };
-            domain.cast(
+            domain.cast_with_return_undeliverable(
                 cx,
                 Flattrs::new(),
                 TestDelivery {
                     payload: payload.to_string(),
                 },
+                return_undeliverable,
             )
         }
     }
@@ -2167,22 +2196,6 @@ mod tests {
         ]
     }
 
-    fn materialization_client() -> &'static Client {
-        static PROC: OnceLock<Proc> = OnceLock::new();
-        static CLIENT: OnceLock<Client> = OnceLock::new();
-
-        CLIENT.get_or_init(|| {
-            PROC.get_or_init(|| {
-                Proc::direct(
-                    ChannelTransport::Unix.any(),
-                    "materialization_client_proc".into(),
-                )
-                .expect("materialization property test should create its client proc")
-            })
-            .client("materialization_client")
-        })
-    }
-
     fn materialization_runtime() -> &'static Runtime {
         static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
@@ -2195,6 +2208,10 @@ mod tests {
         region: Region,
         policy: TilingPolicy,
     ) -> Result<(), TestCaseError> {
+        let proc = Proc::isolated();
+        let sender = proc.actor_instance::<()>("materialization_sender").unwrap();
+        sender.instance.bind::<()>();
+
         // GIVEN: member actors covering a generated dense or affine region.
         let members = region
             .slice()
@@ -2205,7 +2222,7 @@ mod tests {
         // WHEN: the region is materialized under the generated tiling policy.
         let domain = CastDomainId::new()
             .materialize(
-                materialization_client(),
+                &sender.instance,
                 members.clone(),
                 region.clone(),
                 policy,
@@ -2702,6 +2719,49 @@ mod tests {
             .await;
     }
 
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_stopped_actors_drop_casts_when_returns_are_disabled() {
+        let mut test_mesh = CastTestMesh::new(8);
+        test_mesh.spawn_delivery_receivers();
+        for (proc, receiver) in test_mesh._procs.iter().zip(&test_mesh.receiver_ids) {
+            let mut status = proc
+                .stop_actor(receiver.id(), "cast domain test shutdown".to_string())
+                .expect("delivery receiver should be running");
+            status
+                .wait_for(|status| status.is_terminal())
+                .await
+                .expect("delivery receiver status should remain observable");
+        }
+
+        let region = Region::from(shape!(a = 2, b = 2, c = 2));
+        let (failure_handle, mut failure_receiver) =
+            context::Mailbox::mailbox(&test_mesh.client).open_port();
+        let probe_handle = test_mesh
+            ._client_proc
+            .spawn_with_uid(
+                Uid::singleton(Label::strip("cast_failure_probe")),
+                CastFailureProbe {
+                    members: test_mesh.domain_members(),
+                    region,
+                    failures: failure_handle.bind(),
+                    domain: None,
+                },
+            )
+            .unwrap();
+        let probe_ref: ActorRef<CastFailureProbe> = probe_handle.bind::<CastFailureProbe>();
+
+        probe_ref
+            .port::<CastStoppedDomain>()
+            .post(&test_mesh.client, CastStoppedDomain::CastWithoutReturn);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), failure_receiver.recv())
+                .await
+                .is_err(),
+            "stopped actors should not return casts when returns are disabled"
+        );
+    }
+
     // CA-8 (failure containment).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_routing_error_returns_undeliverable() {
@@ -2759,6 +2819,7 @@ mod tests {
                     payload: "malformed".to_string(),
                 })
                 .unwrap(),
+                return_undeliverable: true,
             },
         )
         .await

@@ -3204,7 +3204,11 @@ mod tests {
         let mailbox_id: crate::ActorAddr = mailbox.self_addr().clone();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        mailbox_id.introspect_port().post(
+        let mut introspect_port = mailbox_id.introspect_port();
+        // This test expects the intentionally undeliverable query to be
+        // ignored instead of invoking the client's fatal return policy.
+        introspect_port.return_undeliverable(false);
+        introspect_port.post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,

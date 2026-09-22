@@ -26,10 +26,12 @@ use crate::context;
 use crate::context::Mailbox as MailboxContext;
 use crate::id::Uid;
 use crate::mailbox::Mailbox;
+use crate::mailbox::MessageEnvelope;
 use crate::mailbox::OncePortHandle;
 use crate::mailbox::OncePortReceiver;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
+use crate::mailbox::Undeliverable;
 use crate::ordering::Sequencer;
 use crate::proc::HandlerPorts;
 use crate::proc::Instance;
@@ -76,6 +78,16 @@ impl fmt::Debug for Client {
 
 impl Client {
     pub(crate) fn new(instance: Instance<ClientActor>) -> Self {
+        let actor_id = instance.self_addr().clone();
+        instance.bind_handler_enqueue_port::<Undeliverable<MessageEnvelope>>(move |_, message| {
+            tracing::error!(
+                actor_id = %actor_id,
+                undeliverable = ?message,
+                "client received undeliverable message: crashing"
+            );
+            std::process::exit(1);
+        });
+
         Self {
             lifecycle: Arc::new(ClientLifecycle {
                 instance: instance.clone_for_py(),
@@ -200,6 +212,7 @@ impl context::Actor for &Client {
 #[cfg(test)]
 mod tests {
     use crate::Proc;
+    use crate::context;
 
     #[test]
     fn client_ids_are_fresh_instances() {
@@ -218,6 +231,19 @@ mod tests {
         );
         assert_eq!(anonymous.self_addr().id().label(), None);
         assert_ne!(first.self_addr().id(), second.self_addr().id());
+    }
+
+    #[test]
+    fn client_binds_return_handler_without_actor_loop() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+
+        assert!(
+            context::Mailbox::mailbox(&client)
+                .bound_return_handle()
+                .is_some(),
+            "taskless clients should install a return handler"
+        );
     }
 
     #[tokio::test]

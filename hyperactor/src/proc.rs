@@ -2706,6 +2706,7 @@ impl<A: Actor> Instance<A> {
         static REPORT_WARNED_MAILBOXES: OnceLock<DashSet<ActorAddr>> = OnceLock::new();
 
         let mailbox = &self.inner.mailbox;
+        mailbox.ensure_return_handler();
         let return_handle = mailbox.bound_return_handle().unwrap_or_else(|| {
             let actor_id = mailbox.actor_addr();
             if REPORT_WARNED_MAILBOXES
@@ -2950,6 +2951,16 @@ impl<A: Actor> Instance<A> {
         self.inner.mailbox.open_port()
     }
 
+    /// Bind a handler port that dispatches through `enqueue`.
+    pub(crate) fn bind_handler_enqueue_port<M: RemoteMessage>(
+        &self,
+        enqueue: impl Fn(Flattrs, M) -> Result<(), anyhow::Error> + Send + Sync + 'static,
+    ) where
+        A: Handler<M>,
+    {
+        self.inner.ports.bind_enqueue(enqueue);
+    }
+
     /// Open a new one-shot port that accepts M-typed messages. The
     /// returned port may be used to send a single message; ditto the
     /// receiver may receive a single message.
@@ -2993,12 +3004,29 @@ impl<A: Actor> Instance<A> {
         headers: Flattrs,
         message: wirevalue::Any,
     ) {
+        self.post_with_external_seq_info_and_return(port_id, headers, message, true)
+    }
+
+    /// Post a message with pre-set SEQ_INFO and explicit undeliverable-return behavior.
+    /// Only for internal cast routing.
+    ///
+    /// # Warning
+    /// This method bypasses the SEQ_INFO assertion. Do not use unless you are
+    /// implementing mesh-level message routing.
+    #[doc(hidden)]
+    pub fn post_with_external_seq_info_and_return(
+        &self,
+        port_id: impl Into<PortAddr>,
+        headers: Flattrs,
+        message: wirevalue::Any,
+        return_undeliverable: bool,
+    ) {
         <Self as context::MailboxExt>::post(
             self,
             port_id.into(),
             headers,
             message,
-            true,
+            return_undeliverable,
             context::SeqInfoPolicy::AllowExternal,
         )
     }
@@ -3091,6 +3119,13 @@ impl<A: Actor> Instance<A> {
         let instance_cell = self.inner.cell.clone();
         let actor_id = self.inner.cell.actor_addr().clone();
         let actor_handle = ActorHandle::new(self.inner.cell.clone(), self.inner.ports.clone());
+
+        let ports = Arc::downgrade(&self.inner.ports);
+        self.inner.mailbox.set_return_handler_hook(move || {
+            if let Some(ports) = ports.upgrade() {
+                ports.bind::<Undeliverable<MessageEnvelope>>();
+            }
+        });
 
         // Spawn the introspect task — a separate tokio task that
         // reads InstanceCell directly and replies through the owning Proc. The
@@ -5148,6 +5183,23 @@ impl<A: Actor> HandlerPorts<A> {
             }
         }
     }
+
+    fn bind_enqueue<M: RemoteMessage>(
+        &self,
+        enqueue: impl Fn(Flattrs, M) -> Result<(), anyhow::Error> + Send + Sync + 'static,
+    ) where
+        A: Handler<M>,
+    {
+        let key = TypeId::of::<M>();
+        match self.ports.entry(key) {
+            Entry::Vacant(entry) => {
+                let port = self.mailbox.open_handler_enqueue_port(enqueue);
+                entry.insert(Box::new(port));
+            }
+            Entry::Occupied(_) => panic!("handler port {} already provisioned", M::typename()),
+        }
+        self.bind::<M>();
+    }
 }
 
 #[cfg(test)]
@@ -5188,6 +5240,104 @@ mod tests {
     struct TestActor;
 
     impl Actor for TestActor {}
+
+    hyperactor::behavior!(UnitBehavior, ());
+
+    #[derive(Debug)]
+    struct UnitActor;
+
+    impl Actor for UnitActor {}
+
+    #[async_trait]
+    impl Handler<()> for UnitActor {
+        async fn handle(&mut self, _cx: &Context<Self>, _message: ()) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct LocalOnlyActor {
+        observed: Option<oneshot::Sender<bool>>,
+    }
+
+    #[async_trait]
+    impl Actor for LocalOnlyActor {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            let (dest, _dest_rx) = this.open_port::<()>();
+            (&dest).post(this, ());
+            self.observed
+                .take()
+                .expect("local binding observation should only be sent once")
+                .send(this.inner.mailbox.bound_return_handle().is_some())
+                .expect("local binding observation receiver should remain open");
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct InitSendActor {
+        dest: PortRef<()>,
+    }
+
+    #[async_trait]
+    impl Actor for InitSendActor {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            self.dest.post(this, ());
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct InitUndeliverableActor {
+        dest: PortRef<()>,
+        observed: Option<OncePortRef<()>>,
+    }
+
+    #[async_trait]
+    impl Actor for InitUndeliverableActor {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            self.dest.post(this, ());
+            Ok(())
+        }
+
+        async fn handle_delivery_failure_event(
+            &mut self,
+            this: &Instance<Self>,
+            _undeliverable: Undeliverable<MessageEnvelope>,
+        ) -> anyhow::Result<()> {
+            self.observed
+                .take()
+                .expect("delivery failure should only be reported once")
+                .post(this, ());
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct InitLocalUndeliverableActor {
+        dest: PortHandle<()>,
+        observed: Option<OncePortRef<()>>,
+    }
+
+    #[async_trait]
+    impl Actor for InitLocalUndeliverableActor {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            (&self.dest).post(this, ());
+            Ok(())
+        }
+
+        async fn handle_delivery_failure_event(
+            &mut self,
+            this: &Instance<Self>,
+            _undeliverable: Undeliverable<MessageEnvelope>,
+        ) -> anyhow::Result<()> {
+            self.observed
+                .take()
+                .expect("delivery failure should only be reported once")
+                .post(this, ());
+            Ok(())
+        }
+    }
 
     struct ActorStatusSink {
         actor_id: u64,
@@ -5458,6 +5608,147 @@ mod tests {
 
         let status = get_status(&client, handle.actor_addr()).await;
         assert_eq!(status, Some(ActorStatus::Idle));
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_local_only_actor_leaves_return_handler_unbound() {
+        let proc = Proc::isolated();
+        let (observed, observed_rx) = oneshot::channel();
+        let handle = proc.spawn(LocalOnlyActor {
+            observed: Some(observed),
+        });
+
+        assert!(
+            !observed_rx
+                .await
+                .expect("actor should report its return-handler state"),
+            "successful local unbound sends should not bind the return handler"
+        );
+        assert!(
+            handle.cell().inner.mailbox.bound_return_handle().is_none(),
+            "local-only actor should remain unbound"
+        );
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_empty_behavior_binding_binds_return_handler() {
+        let proc = Proc::isolated();
+        let handle = proc.spawn(TestActor);
+
+        let _actor_ref: ActorRef<TestActor> = handle.bind();
+        assert!(
+            handle.cell().inner.mailbox.bound_return_handle().is_some(),
+            "producing an actor ref should bind the return handler"
+        );
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "tracing_test::traced_test macro expansion holds tracing::span::Entered across awaits; can't be fixed in our code"
+    )]
+    #[tracing_test::traced_test]
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_remote_send_lazily_binds_return_handler() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (dest, mut dest_rx) = client.open_port::<()>();
+        let handle = proc.spawn(InitSendActor { dest: dest.bind() });
+
+        dest_rx
+            .recv()
+            .await
+            .expect("destination should receive the initialization message");
+        assert!(
+            handle.cell().inner.mailbox.bound_return_handle().is_some(),
+            "an outbound remote send should bind the actor's return handler"
+        );
+        assert!(
+            !logs_with_scope_contain(
+                "hyperactor::context",
+                "mailbox attempted to post a message without binding Undeliverable<MessageEnvelope>"
+            ),
+            "an outbound remote send should not reach the stack-capturing fallback"
+        );
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_remote_delivery_failure_lazily_binds_return_handler() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (dest, dest_rx) = client.open_port::<()>();
+        let (observed, observed_rx) = client.open_once_port::<()>();
+        drop(dest_rx);
+
+        let handle = proc.spawn(InitUndeliverableActor {
+            dest: dest.bind(),
+            observed: Some(observed.bind()),
+        });
+
+        observed_rx
+            .recv()
+            .await
+            .expect("actor should receive the delivery failure from its init post");
+        assert!(
+            handle.cell().inner.mailbox.bound_return_handle().is_some(),
+            "a remote delivery failure should use the actor's return handler"
+        );
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_local_delivery_failure_lazily_binds_return_handler() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (dest, dest_rx) = client.open_port::<()>();
+        let (observed, observed_rx) = client.open_once_port::<()>();
+        drop(dest_rx);
+
+        let handle = proc.spawn(InitLocalUndeliverableActor {
+            dest,
+            observed: Some(observed.bind()),
+        });
+
+        observed_rx
+            .recv()
+            .await
+            .expect("actor should receive its local delivery failure");
+        assert!(
+            handle.cell().inner.mailbox.bound_return_handle().is_some(),
+            "a local delivery failure should use the actor's return handler"
+        );
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_behavior_binding_binds_return_handler() {
+        let proc = Proc::isolated();
+        let handle = proc.spawn(UnitActor);
+
+        assert!(
+            handle.cell().inner.mailbox.bound_return_handle().is_none(),
+            "the return handler should remain lazy before behavior binding"
+        );
+        let _actor_ref: ActorRef<UnitBehavior> = handle.bind();
+        assert!(
+            handle.cell().inner.mailbox.bound_return_handle().is_some(),
+            "producing an actor ref should bind the return handler"
+        );
 
         handle.drain_and_stop("test").unwrap();
         handle.await;
