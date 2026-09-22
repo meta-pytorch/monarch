@@ -191,8 +191,33 @@ struct HandleGuard {
 // already loaded into the process (RTLD_NOLOAD); rdmaxcel never loads CUDA or
 // HIP itself. Each failure logs once at the failure site -- throttled per site,
 // so distinct causes are each reported -- and throws DriverLoadError.
+// Resolve a handle to the GPU driver library for dlsym. On ROCm the pip
+// `rocm-sdk` / TheRock layout ships only a versioned libamdhip64.so.N with no
+// unversioned dev symlink, so the configured RDMAXCEL_DRIVER_LIB
+// ("libamdhip64.so") misses the copy torch has already loaded with RTLD_GLOBAL
+// (via the MONARCH_PRELOAD_TORCH import-race preload). Fall back to the global
+// symbol scope -- dlopen(nullptr) -- which resolves torch's already-resident HIP
+// driver regardless of its soname version. Probes SYM_MEM_CREATE to confirm the
+// driver symbols are actually present before adopting the global handle.
+void* dlopen_driver_lib(int flags) {
+  void* handle = dlopen(RDMAXCEL_DRIVER_LIB, flags);
+#ifdef USE_ROCM
+  if (handle == nullptr) {
+    void* global = dlopen(nullptr, RTLD_LAZY | RTLD_GLOBAL);
+    if (global != nullptr &&
+        dlsym(global, STRINGIFY(SYM_MEM_CREATE)) != nullptr) {
+      return global;
+    }
+    if (global != nullptr) {
+      dlclose(global);
+    }
+  }
+#endif
+  return handle;
+}
+
 DriverAPI create_driver_api() {
-  void* handle = dlopen(RDMAXCEL_DRIVER_LIB, RTLD_LAZY | RTLD_NOLOAD);
+  void* handle = dlopen_driver_lib(RTLD_LAZY | RTLD_NOLOAD);
   if (!handle) {
     static std::atomic<bool> logged{false};
     if (!logged.exchange(true, std::memory_order_relaxed)) {
@@ -495,7 +520,7 @@ int ensure_cuda_driver_loaded(void) noexcept {
   // anything (e.g. from std::cerr) and report failure instead.
   try {
     static void* handle = []() -> void* {
-      void* h = dlopen(RDMAXCEL_DRIVER_LIB, RTLD_LAZY);
+      void* h = rdmaxcel::dlopen_driver_lib(RTLD_LAZY);
       if (h == nullptr) {
         std::cerr << "[RdmaXcel] Failed to load " RDMAXCEL_DRIVER_LIB ": "
                   << rdmaxcel::dlerror_or("unknown error") << std::endl;
