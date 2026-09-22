@@ -286,17 +286,33 @@ fn query_spans(telemetry_url: &str, start_us: i64, end_us: i64) -> Result<Vec<Sp
 
 fn profile_sql(start_us: i64, end_us: i64) -> String {
     format!(
-        "WITH profile_spans AS ( \
-         SELECT s.process_id, s.id, s.name, s.target, s.fields_json, \
-         MIN(CASE WHEN e.event_type = 'enter' THEN e.timestamp_us END) AS start_us, \
-         MAX(CASE WHEN e.event_type = 'exit' THEN e.timestamp_us END) AS end_us \
-         FROM spans s LEFT JOIN span_events e \
-         ON s.process_id = e.process_id AND s.id = e.id \
-         WHERE s.timestamp_us < {end_us} \
-         GROUP BY s.process_id, s.id, s.name, s.target, s.fields_json \
-         ) SELECT process_id, id, name, target, fields_json, start_us, end_us \
-         FROM profile_spans WHERE start_us < {end_us} \
-         AND COALESCE(end_us, {end_us}) > {start_us}"
+        r#"
+WITH window_events AS (
+    SELECT process_id, id, timestamp_us, event_type
+    FROM span_events
+    WHERE timestamp_us >= {start_us}
+      AND timestamp_us < {end_us}
+      AND event_type IN ('enter', 'exit')
+),
+profile_events AS (
+    SELECT
+        process_id,
+        id,
+        MIN(CASE WHEN event_type = 'enter' THEN timestamp_us END) AS start_us,
+        MAX(CASE WHEN event_type = 'exit' THEN timestamp_us END) AS end_us
+    FROM window_events
+    GROUP BY process_id, id
+)
+SELECT
+    s.process_id,
+    s.id,
+    s.name,
+    s.target,
+    s.fields_json,
+    e.start_us,
+    e.end_us
+FROM profile_events e
+JOIN spans s ON s.process_id = e.process_id AND s.id = e.id"#
     )
 }
 
