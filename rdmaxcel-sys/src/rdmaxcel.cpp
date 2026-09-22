@@ -90,6 +90,10 @@ int query_devx_mkey_max_entries(ibv_context* context, size_t* max_entries) {
 
 struct rdmaxcel_devx_mkey {
   mlx5dv_devx_obj* object;
+  mlx5dv_devx_umem* umem;
+  uint32_t key;
+  size_t length;
+  uint64_t iova;
 };
 
 // Platform-specific cast for device pointers
@@ -394,10 +398,134 @@ int rdmaxcel_query_devx_mkey_max_entries(
   }
 }
 
+int rdmaxcel_create_devx_dmabuf_mr(
+    struct ibv_pd* pd,
+    int access_flags,
+    size_t addr,
+    size_t length,
+    uint8_t page_shift,
+    rdmaxcel_devx_mkey_t** mkey) noexcept {
+  try {
+    if (!pd || !mkey) {
+      return RDMAXCEL_NULL_ARG;
+    }
+    *mkey = nullptr;
+    if (length == 0 || length > std::numeric_limits<uint32_t>::max() ||
+        page_shift >= std::numeric_limits<uint64_t>::digits ||
+        addr % (uint64_t{1} << page_shift) != 0 ||
+        length % (uint64_t{1} << page_shift) != 0) {
+      return RDMAXCEL_INVALID_PARAMS;
+    }
+
+    int dmabuf_fd = -1;
+    const CUresult cu_result = rdmaxcel_cuMemGetHandleForAddressRange(
+        &dmabuf_fd,
+        deviceptr_cast(addr),
+        length,
+        CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+        0);
+    if (cu_result != CUDA_SUCCESS || dmabuf_fd < 0) {
+      if (dmabuf_fd >= 0) {
+        close(dmabuf_fd);
+      }
+      return RDMAXCEL_DMABUF_HANDLE_FAILED;
+    }
+
+    mlx5dv_devx_umem_in umem_input{};
+    umem_input.addr = nullptr;
+    umem_input.size = length;
+    umem_input.access = IBV_ACCESS_LOCAL_WRITE;
+    umem_input.pgsz_bitmap = uint64_t{1} << page_shift;
+    umem_input.comp_mask = MLX5DV_UMEM_MASK_DMABUF;
+    umem_input.dmabuf_fd = dmabuf_fd;
+    mlx5dv_devx_umem* umem = mlx5dv_devx_umem_reg_ex(pd->context, &umem_input);
+    const int umem_errno = errno;
+    close(dmabuf_fd);
+    if (!umem) {
+      fprintf(
+          stderr,
+          "[RdmaXcel] DevX dma-buf UMEM registration failed: errno %d, page shift %u, address 0x%zx, length %zu\n",
+          umem_errno,
+          page_shift,
+          addr,
+          length);
+      return RDMAXCEL_UMEM_REGISTRATION_FAILED;
+    }
+
+    mlx5dv_pd dv_pd{};
+    mlx5dv_obj dv_obj{};
+    dv_obj.pd.in = pd;
+    dv_obj.pd.out = &dv_pd;
+    const int init_ret = mlx5dv_init_obj(&dv_obj, MLX5DV_OBJ_PD);
+    if (init_ret != 0) {
+      mlx5dv_devx_umem_dereg(umem);
+      return RDMAXCEL_MKEY_CREATE_FAILED;
+    }
+
+    uint32_t in[DEVX_ST_SZ_DW(create_mkey_in)]{};
+    uint32_t out[DEVX_ST_SZ_DW(create_mkey_out)]{};
+    DEVX_SET(create_mkey_in, in, opcode, MLX5_CMD_OP_CREATE_MKEY);
+    DEVX_SET(create_mkey_in, in, mkey_umem_valid, 1);
+    DEVX_SET(create_mkey_in, in, mkey_umem_id, umem->umem_id);
+    DEVX_SET64(create_mkey_in, in, mkey_umem_offset, 0);
+
+    void* mkc = DEVX_ADDR_OF(create_mkey_in, in, memory_key_mkey_entry);
+    DEVX_SET(mkc, mkc, a, (access_flags & IBV_ACCESS_REMOTE_ATOMIC) != 0);
+    DEVX_SET(mkc, mkc, rw, (access_flags & IBV_ACCESS_REMOTE_WRITE) != 0);
+    DEVX_SET(mkc, mkc, rr, (access_flags & IBV_ACCESS_REMOTE_READ) != 0);
+    DEVX_SET(mkc, mkc, lw, (access_flags & IBV_ACCESS_LOCAL_WRITE) != 0);
+    DEVX_SET(mkc, mkc, lr, 1);
+    DEVX_SET(mkc, mkc, access_mode_1_0, MLX5_MKC_ACCESS_MODE_MTT);
+    DEVX_SET(mkc, mkc, qpn, 0xffffff);
+    DEVX_SET(mkc, mkc, mkey_7_0, 0);
+    DEVX_SET(mkc, mkc, pd, dv_pd.pdn);
+    DEVX_SET64(mkc, mkc, start_addr, 0);
+    DEVX_SET64(mkc, mkc, len, length);
+
+    mlx5dv_devx_obj* object =
+        mlx5dv_devx_obj_create(pd->context, in, sizeof(in), out, sizeof(out));
+    if (!object) {
+      const int create_errno = errno;
+      mlx5dv_devx_umem_dereg(umem);
+      fprintf(
+          stderr,
+          "[RdmaXcel] DevX direct CREATE_MKEY failed: errno %d, status %llu, syndrome 0x%llx\n",
+          create_errno,
+          static_cast<unsigned long long>(
+              DEVX_GET(create_mkey_out, out, status)),
+          static_cast<unsigned long long>(
+              DEVX_GET(create_mkey_out, out, syndrome)));
+      return RDMAXCEL_MKEY_CREATE_FAILED;
+    }
+
+    const uint32_t key = DEVX_GET(create_mkey_out, out, mkey_index) << 8;
+    auto owner = std::unique_ptr<rdmaxcel_devx_mkey_t>(
+        new (std::nothrow) rdmaxcel_devx_mkey_t{object, umem, key, length, 0});
+    if (!owner) {
+      mlx5dv_devx_obj_destroy(object);
+      mlx5dv_devx_umem_dereg(umem);
+      return RDMAXCEL_MKEY_CREATE_FAILED;
+    }
+
+    *mkey = owner.release();
+    return RDMAXCEL_SUCCESS;
+  } catch (const std::exception& e) {
+    fprintf(
+        stderr,
+        "[RdmaXcel] rdmaxcel_create_devx_dmabuf_mr failed: %s\n",
+        e.what());
+    return RDMAXCEL_EXCEPTION;
+  } catch (...) {
+    fprintf(
+        stderr, "[RdmaXcel] rdmaxcel_create_devx_dmabuf_mr failed: unknown\n");
+    return RDMAXCEL_EXCEPTION;
+  }
+}
+
 int rdmaxcel_create_devx_mr_list(
     struct ibv_pd* pd,
     int access_flags,
-    struct ibv_mr* const* mrs,
+    rdmaxcel_devx_mkey_t* const* mrs,
     size_t mrs_cnt,
     rdmaxcel_devx_mkey_t** mkey,
     uint32_t* lkey,
@@ -453,13 +581,13 @@ int rdmaxcel_create_devx_mr_list(
         DEVX_ADDR_OF(create_mkey_in, in.data(), klm_pas_mtt));
     uint64_t total_length = 0;
     for (size_t i = 0; i < mrs_cnt; ++i) {
-      const ibv_mr* mr = mrs[i];
-      if (!mr) {
+      const rdmaxcel_devx_mkey_t* mr = mrs[i];
+      if (!mr || !mr->umem) {
         fprintf(
             stderr,
-            "[RdmaXcel] DevX CREATE_MKEY rejected null MR at index %zu\n",
+            "[RdmaXcel] DevX CREATE_MKEY rejected invalid direct MKey at index %zu\n",
             i);
-        return RDMAXCEL_NULL_ARG;
+        return RDMAXCEL_INVALID_PARAMS;
       }
       if (mr->length > std::numeric_limits<uint32_t>::max() ||
           total_length > std::numeric_limits<uint64_t>::max() - mr->length) {
@@ -473,8 +601,8 @@ int rdmaxcel_create_devx_mr_list(
       }
 
       klms[i].byte_count = htobe32(static_cast<uint32_t>(mr->length));
-      klms[i].mkey = htobe32(mr->lkey);
-      klms[i].address = htobe64(reinterpret_cast<uintptr_t>(mr->addr));
+      klms[i].mkey = htobe32(mr->key);
+      klms[i].address = htobe64(mr->iova);
       total_length += mr->length;
     }
 
@@ -509,15 +637,16 @@ int rdmaxcel_create_devx_mr_list(
       return RDMAXCEL_MKEY_CREATE_FAILED;
     }
 
+    const uint32_t key = DEVX_GET(create_mkey_out, out, mkey_index) << 8;
     auto owner = std::unique_ptr<rdmaxcel_devx_mkey_t>(
-        new (std::nothrow) rdmaxcel_devx_mkey_t{object});
+        new (std::nothrow)
+            rdmaxcel_devx_mkey_t{object, nullptr, key, total_length, 0});
     if (!owner) {
       mlx5dv_devx_obj_destroy(object);
       fprintf(stderr, "[RdmaXcel] DevX CREATE_MKEY owner allocation failed\n");
       return RDMAXCEL_MKEY_CREATE_FAILED;
     }
 
-    const uint32_t key = DEVX_GET(create_mkey_out, out, mkey_index) << 8;
     *lkey = key;
     *rkey = key;
     *mkey = owner.release();
@@ -539,10 +668,15 @@ int rdmaxcel_destroy_devx_mkey(rdmaxcel_devx_mkey_t* mkey) noexcept {
   if (!mkey) {
     return RDMAXCEL_SUCCESS;
   }
-  const int err = mlx5dv_devx_obj_destroy(mkey->object);
+  const int object_err = mlx5dv_devx_obj_destroy(mkey->object);
+  const int umem_err = mkey->umem ? mlx5dv_devx_umem_dereg(mkey->umem) : 0;
   delete mkey;
-  if (err != 0) {
-    fprintf(stderr, "[RdmaXcel] DevX mkey destroy failed: errno %d\n", err);
+  if (object_err != 0 || umem_err != 0) {
+    fprintf(
+        stderr,
+        "[RdmaXcel] DevX mkey destroy failed: object %d, UMEM %d\n",
+        object_err,
+        umem_err);
     return RDMAXCEL_DESTROY_MKEY_FAILED;
   }
   return RDMAXCEL_SUCCESS;
@@ -955,6 +1089,8 @@ const char* rdmaxcel_error_string(int error_code) {
       return "[RdmaXcel] A required pointer argument was NULL";
     case RDMAXCEL_DESTROY_MKEY_FAILED:
       return "[RdmaXcel] MLX5 memory key destruction failed";
+    case RDMAXCEL_UMEM_REGISTRATION_FAILED:
+      return "[RdmaXcel] DevX UMEM registration failed";
     default:
       return "[RdmaXcel] Unknown error code";
   }

@@ -159,7 +159,8 @@ typedef enum {
   RDMAXCEL_UNSUPPORTED_OP = -20, // Unsupported EFA operation type
   RDMAXCEL_EXCEPTION = -21, // C++ exception caught at the C-ABI boundary
   RDMAXCEL_NULL_ARG = -22, // A required pointer argument was NULL
-  RDMAXCEL_DESTROY_MKEY_FAILED = -23 // mlx5dv_destroy_mkey failed
+  RDMAXCEL_DESTROY_MKEY_FAILED = -23, // mlx5dv_destroy_mkey failed
+  RDMAXCEL_UMEM_REGISTRATION_FAILED = -24 // mlx5dv_devx_umem_reg_ex failed
 } rdmaxcel_error_code_t;
 
 // Error/Debugging functions
@@ -176,7 +177,7 @@ int rdma_get_all_registered_segment_info(
     int max_count);
 int deregister_segments();
 
-// Opaque owner for an indirect mkey created directly with DevX.
+// Opaque owner for a direct or indirect mkey created with DevX.
 typedef struct rdmaxcel_devx_mkey rdmaxcel_devx_mkey_t;
 
 // Query the maximum number of KLM entries that can be populated in one DevX
@@ -186,19 +187,30 @@ int rdmaxcel_query_devx_mkey_max_entries(
     struct ibv_context* context,
     size_t* max_entries) RDMAXCEL_NOEXCEPT;
 
+// Pin a CUDA dma-buf and create a zero-based direct MKey over it. The returned
+// owner keeps both the MKey and its DevX UMEM alive.
+int rdmaxcel_create_devx_dmabuf_mr(
+    struct ibv_pd* pd,
+    int access_flags,
+    size_t addr,
+    size_t length,
+    uint8_t page_shift,
+    rdmaxcel_devx_mkey_t** mkey) RDMAXCEL_NOEXCEPT;
+
 // Create a zero-based indirect mkey whose address space is the concatenation
-// of `mrs`. Each MR must be no larger than UINT32_MAX bytes, the width of a KLM
-// byte-count field.
+// of the direct `mrs`. Each direct MKey must be no larger than UINT32_MAX
+// bytes, the width of a KLM byte-count field.
 int rdmaxcel_create_devx_mr_list(
     struct ibv_pd* pd,
     int access_flags,
-    struct ibv_mr* const* mrs,
+    rdmaxcel_devx_mkey_t* const* mrs,
     size_t mrs_cnt,
     rdmaxcel_devx_mkey_t** mkey,
     uint32_t* lkey,
     uint32_t* rkey) RDMAXCEL_NOEXCEPT;
 
-// Destroy an mkey created by `rdmaxcel_create_devx_mr_list`. No-op when NULL.
+// Destroy an MKey created by either function above. A direct MKey's UMEM is
+// deregistered after the MKey is destroyed. No-op when NULL.
 int rdmaxcel_destroy_devx_mkey(rdmaxcel_devx_mkey_t* mkey) RDMAXCEL_NOEXCEPT;
 
 // Scanned segment information - minimal fields needed from external scanner

@@ -18,7 +18,7 @@
 //! can be unit-tested against a mock; the production implementation
 //! ([`ProdMlxDomainOps`]) delegates to the real functions and the
 //! [`rdmaxcel_sys::rdmaxcel_create_devx_mr_list`] shim. Teardown is the `Drop`
-//! of the owning RAII wrappers ([`IbvMr`], [`Mlx5DevxMkey`]), correct by
+//! of the owning RAII wrappers ([`Mlx5DevxMr`], [`Mlx5DevxMkey`]), correct by
 //! construction.
 
 use std::collections::HashMap;
@@ -29,7 +29,6 @@ use std::sync::Mutex;
 use super::device_selection::get_cuda_device_to_ibv_devices;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
-use super::domain::register_dmabuf_range;
 use super::domain::register_host_or_dmabuf_mr;
 use super::memory_region::IbvMemoryRegionKeepalive;
 use super::memory_region::IbvMemoryRegionView;
@@ -37,7 +36,6 @@ use super::mlx_queue_pair::MlxQueuePair;
 use super::primitives::IbvConfig;
 use super::primitives::IbvContext;
 use super::primitives::IbvDeviceInfo;
-use super::primitives::IbvMr;
 use super::primitives::IbvPd;
 use crate::backend::ibverbs::mlx_device::MlxDevice;
 use crate::device_selection::MemoryLocation;
@@ -47,6 +45,7 @@ use crate::local_memory::KeepaliveLocalMemory;
 /// under). Larger segments are split across multiple MRs bound to one key.
 const MR_ALIGNMENT: usize = 2 * 1024 * 1024;
 const MAX_MR_SIZE: usize = 4 * 1024 * 1024 * 1024 - MR_ALIGNMENT;
+const CUDA_MKEY_PAGE_SHIFT: u8 = 16;
 
 // ===========================================================================
 // CUDA segment scanner
@@ -101,9 +100,9 @@ fn scan_cuda_segments() -> Vec<ScannedSegment> {
 /// Device/FFI operations the mlx5dv binding logic depends on. Production
 /// uses [`ProdMlxDomainOps`]; tests substitute a mock so the scan/bind
 /// algorithm can be exercised without hardware. Creation returns the owning
-/// RAII wrappers ([`IbvMr`], [`Mlx5DevxMkey`]), which free their resources in the
-/// right order on `Drop`; the mock fabricates null-handle wrappers whose `Drop`
-/// is a no-op.
+/// RAII wrappers ([`Mlx5DevxMr`], [`Mlx5DevxMkey`]), which free their resources
+/// in the right order on `Drop`; the mock fabricates null-handle wrappers whose
+/// `Drop` is a no-op.
 pub(super) trait MlxDomainOps: Send + Sync + 'static {
     /// Name of the RDMA device this domain drives.
     fn device_name(&self) -> String;
@@ -118,8 +117,8 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
     /// Enumerate the currently-live CUDA segments.
     fn scan_segments(&self) -> Vec<ScannedSegment>;
 
-    /// Register `[addr, addr + size)` of device memory as a dmabuf MR, returned
-    /// as an [`IbvMr`] (owning `pd`) that deregisters it on drop.
+    /// Pin `[addr, addr + size)` as a dma-buf DevX UMEM and create a direct MKey
+    /// over it.
     ///
     /// # Safety
     ///
@@ -130,11 +129,11 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
         addr: usize,
         size: usize,
         access: i32,
-    ) -> anyhow::Result<IbvMr>;
+    ) -> anyhow::Result<Mlx5DevxMr>;
 
     /// Bind `mrs` to a freshly created, populated DevX indirect key, returning
-    /// it as a [`Mlx5DevxMkey`] owning those MR references. On failure the `mrs`
-    /// are dropped.
+    /// it as a [`Mlx5DevxMkey`] owning those direct MKey references. On failure
+    /// the direct MKeys are dropped.
     ///
     /// # Safety
     ///
@@ -144,7 +143,7 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
         &self,
         pd: &IbvPd,
         access: i32,
-        mrs: Vec<Arc<IbvMr>>,
+        mrs: Vec<Arc<Mlx5DevxMr>>,
     ) -> anyhow::Result<Mlx5DevxMkey>;
 }
 
@@ -231,33 +230,51 @@ impl MlxDomainOps for ProdMlxDomainOps {
         addr: usize,
         size: usize,
         access: i32,
-    ) -> anyhow::Result<IbvMr> {
-        // SAFETY: forwards this method's contract (non-null `pd` is a live PD).
-        unsafe { register_dmabuf_range(pd, addr, size, access) }
+    ) -> anyhow::Result<Mlx5DevxMr> {
+        if pd.as_ptr().is_null() {
+            anyhow::bail!("register_dmabuf_range called with a null protection domain");
+        }
+        let mut mkey: *mut rdmaxcel_sys::rdmaxcel_devx_mkey_t = std::ptr::null_mut();
+        // SAFETY: `pd` is non-null (checked above), `[addr, addr + size)` is a
+        // live CUDA range per this method's contract, and all out-pointers
+        // refer to local variables.
+        let ret = unsafe {
+            rdmaxcel_sys::rdmaxcel_create_devx_dmabuf_mr(
+                pd.as_ptr(),
+                access,
+                addr,
+                size,
+                CUDA_MKEY_PAGE_SHIFT,
+                &mut mkey,
+            )
+        };
+        if ret != 0 {
+            anyhow::bail!("rdmaxcel_create_devx_dmabuf_mr failed: error code {ret}");
+        }
+        tracing::debug!(
+            addr,
+            size,
+            page_shift = CUDA_MKEY_PAGE_SHIFT,
+            "created direct DevX CUDA mkey"
+        );
+        // SAFETY: `mkey` is a live direct key freshly created for this range.
+        Ok(unsafe { Mlx5DevxMr::from_raw(mkey, pd.clone()) })
     }
 
     unsafe fn bind_mr_list(
         &self,
         pd: &IbvPd,
         access: i32,
-        mrs: Vec<Arc<IbvMr>>,
+        mrs: Vec<Arc<Mlx5DevxMr>>,
     ) -> anyhow::Result<Mlx5DevxMkey> {
         if pd.as_ptr().is_null() {
             anyhow::bail!("bind_mr_list called with a null protection domain");
         }
-        let ptrs: Vec<*mut rdmaxcel_sys::ibv_mr> = mrs
-            .iter()
-            .map(|m| {
-                let p = m.as_ptr();
-                if p.is_null() {
-                    Err(anyhow::anyhow!(
-                        "bind_mr_list called with a null memory region"
-                    ))
-                } else {
-                    Ok(p)
-                }
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        let ptrs: Vec<*mut rdmaxcel_sys::rdmaxcel_devx_mkey_t> =
+            mrs.iter().map(|m| m.as_ptr()).collect();
+        if ptrs.iter().any(|p| p.is_null()) {
+            anyhow::bail!("bind_mr_list called with a null direct mkey");
+        }
         let mut mkey: *mut rdmaxcel_sys::rdmaxcel_devx_mkey_t = std::ptr::null_mut();
         let mut lkey = 0;
         let mut rkey = 0;
@@ -288,19 +305,67 @@ impl MlxDomainOps for ProdMlxDomainOps {
     }
 }
 
-/// Owns a DevX mkey together with the [`Arc<IbvMr>`]s it binds, destroying
-/// the key on drop (a no-op if null). Caches the `(lkey, rkey)` read at bind
-/// time so a view can address through the key without further FFI.
+/// Owns a direct DevX MKey and its pinned dma-buf UMEM.
+#[derive(Debug)]
+pub(super) struct Mlx5DevxMr {
+    mkey: *mut rdmaxcel_sys::rdmaxcel_devx_mkey_t,
+    _pd: Arc<IbvPd>,
+}
+
+// SAFETY: the opaque DevX owner is immutable through this wrapper, and mlx5dv
+// permits its resources to be used and destroyed from any thread.
+unsafe impl Send for Mlx5DevxMr {}
+// SAFETY: as for `Send` above.
+unsafe impl Sync for Mlx5DevxMr {}
+
+impl Mlx5DevxMr {
+    /// Takes ownership of a direct DevX MKey and its UMEM.
+    ///
+    /// # Safety
+    ///
+    /// `mkey` must be a live owner returned by
+    /// `rdmaxcel_create_devx_dmabuf_mr`, owned solely by the returned value.
+    unsafe fn from_raw(mkey: *mut rdmaxcel_sys::rdmaxcel_devx_mkey_t, pd: Arc<IbvPd>) -> Self {
+        Self { mkey, _pd: pd }
+    }
+
+    fn as_ptr(&self) -> *mut rdmaxcel_sys::rdmaxcel_devx_mkey_t {
+        self.mkey
+    }
+
+    #[cfg(test)]
+    fn null(pd: Arc<IbvPd>) -> Self {
+        Self {
+            mkey: std::ptr::null_mut(),
+            _pd: pd,
+        }
+    }
+}
+
+impl Drop for Mlx5DevxMr {
+    fn drop(&mut self) {
+        if !self.mkey.is_null() {
+            // SAFETY: a non-null pointer came from the direct-MKey constructor
+            // and this non-Clone owner destroys it exactly once.
+            unsafe { rdmaxcel_sys::rdmaxcel_destroy_devx_mkey(self.mkey) };
+        }
+    }
+}
+
+/// Owns an indirect DevX MKey together with the direct MKeys it binds,
+/// destroying the aggregate key on drop (a no-op if null). Caches the
+/// `(lkey, rkey)` read at bind time so a view can address through the key
+/// without further FFI.
 ///
-/// The MRs are `Arc` because successive keys over a growing segment bind
-/// overlapping sets; an MR is deregistered only once the last key referencing it
-/// drops.
+/// The direct MKeys are `Arc` because successive aggregate keys over a growing
+/// segment bind overlapping sets. A leaf is destroyed only after the last
+/// aggregate key referencing it drops.
 #[derive(Debug)]
 pub(super) struct Mlx5DevxMkey {
     mkey: *mut rdmaxcel_sys::rdmaxcel_devx_mkey_t,
     lkey: u32,
     rkey: u32,
-    mrs: Vec<Arc<IbvMr>>,
+    mrs: Vec<Arc<Mlx5DevxMr>>,
 }
 
 // SAFETY: the only raw member is the opaque DevX mkey pointer (the MRs are already
@@ -318,14 +383,14 @@ impl Mlx5DevxMkey {
     ///
     /// # Safety
     ///
-    /// `mkey` must be a live key returned by
+    /// `mkey` must be a live aggregate key returned by
     /// `rdmaxcel_create_devx_mr_list` over `mrs`, owned solely by the returned
     /// value. `lkey` and `rkey` must be the keys returned by that same call.
     pub(super) unsafe fn from_raw(
         mkey: *mut rdmaxcel_sys::rdmaxcel_devx_mkey_t,
         lkey: u32,
         rkey: u32,
-        mrs: Vec<Arc<IbvMr>>,
+        mrs: Vec<Arc<Mlx5DevxMr>>,
     ) -> Self {
         Self {
             mkey,
@@ -340,8 +405,8 @@ impl Mlx5DevxMkey {
         (self.lkey, self.rkey)
     }
 
-    /// The MRs this key binds.
-    fn mrs(&self) -> &Vec<Arc<IbvMr>> {
+    /// The direct MKeys this aggregate binds.
+    fn mrs(&self) -> &Vec<Arc<Mlx5DevxMr>> {
         &self.mrs
     }
 
@@ -349,7 +414,7 @@ impl Mlx5DevxMkey {
     /// `Drop` is a no-op), binding `mrs`. Lets the mock hand back a usable key
     /// without touching the FFI.
     #[cfg(test)]
-    pub(super) fn with_test_keys(lkey: u32, rkey: u32, mrs: Vec<Arc<IbvMr>>) -> Self {
+    pub(super) fn with_test_keys(lkey: u32, rkey: u32, mrs: Vec<Arc<Mlx5DevxMr>>) -> Self {
         Self {
             mkey: std::ptr::null_mut(),
             lkey,
@@ -648,9 +713,9 @@ impl RegisteredSegment {
 // owns the bound MRs, which own the PD — all freed in order on its `Drop`.
 impl IbvMemoryRegionKeepalive for RegisteredSegment {}
 
-/// Register `[start, start + len)` of device memory as dmabuf MRs in
-/// `<= MAX_MR_SIZE` chunks. All-or-nothing: on any failure the MRs registered
-/// so far drop (deregistering) as the returned `Vec` unwinds.
+/// Register `[start, start + len)` as pinned dma-buf DevX MKeys in
+/// `<= MAX_MR_SIZE` chunks. All-or-nothing: on failure, the direct MKeys
+/// created so far drop as the returned `Vec` unwinds.
 ///
 /// # Safety
 ///
@@ -663,8 +728,8 @@ unsafe fn register_range(
     start: usize,
     len: usize,
     max_mr_size: usize,
-) -> anyhow::Result<Vec<Arc<IbvMr>>> {
-    let mut mrs: Vec<Arc<IbvMr>> = Vec::new();
+) -> anyhow::Result<Vec<Arc<Mlx5DevxMr>>> {
+    let mut mrs: Vec<Arc<Mlx5DevxMr>> = Vec::new();
     let mut chunk_start = start;
     let mut remaining = len;
     while remaining > 0 {
@@ -679,8 +744,7 @@ unsafe fn register_range(
                 MR_ALIGNMENT
             ))
         };
-        // On error, return early; the MRs collected so far drop here,
-        // deregistering them.
+        // On error, return early; the direct MKeys collected so far drop here.
         mrs.push(Arc::new(result?));
         chunk_start += chunk;
         remaining -= chunk;
@@ -967,19 +1031,19 @@ mod tests {
         access: i32,
     }
 
-    /// A recorded (successful) `bind_mr_list` call: the MRs it bound (compared
-    /// by `Arc::ptr_eq`, since the mock's MRs wrap null pointers).
+    /// A recorded (successful) `bind_mr_list` call: the direct MKeys it bound,
+    /// compared by `Arc::ptr_eq`.
     #[derive(Debug, Clone)]
     struct BindCall {
-        mrs: Vec<Arc<IbvMr>>,
+        mrs: Vec<Arc<Mlx5DevxMr>>,
     }
 
     /// Recorded state + scripted behavior for [`MockOps`]. Creation calls
     /// (`dmabuf_calls`, `bind_calls`, `scan_calls`) are recorded so tests can
     /// assert on the scan/bind algorithm. The returned
-    /// [`IbvMr`]/[`Mlx5DevxMkey`] wrap null handles, so their `Drop` is a no-op
-    /// and FFI teardown is not observed here — that ordering is structurally
-    /// guaranteed by ownership and exercised by the hardware tests.
+    /// [`Mlx5DevxMr`]/[`Mlx5DevxMkey`] wrap null handles, so their `Drop` is a
+    /// no-op and FFI teardown is not observed here. Ownership structurally
+    /// guarantees that ordering, which the hardware tests exercise.
     #[derive(Default)]
     struct MockState {
         device_name: String,
@@ -1046,11 +1110,11 @@ mod tests {
 
         unsafe fn register_dmabuf_range(
             &self,
-            _pd: &Arc<IbvPd>,
+            pd: &Arc<IbvPd>,
             addr: usize,
             size: usize,
             access: i32,
-        ) -> anyhow::Result<IbvMr> {
+        ) -> anyhow::Result<Mlx5DevxMr> {
             let mut s = self.lock();
             s.dmabuf_calls.push(DmabufCall { addr, size, access });
             if let Some(n) = s.fail_dmabuf_after
@@ -1058,15 +1122,16 @@ mod tests {
             {
                 anyhow::bail!("mock dmabuf registration failure");
             }
-            // A null MR: its `Drop` is a no-op, so the mock need not track it.
-            Ok(IbvMr::null())
+            // A null direct-MKey owner: its `Drop` is a no-op, so the mock need
+            // not track FFI teardown.
+            Ok(Mlx5DevxMr::null(pd.clone()))
         }
 
         unsafe fn bind_mr_list(
             &self,
             _pd: &IbvPd,
             _access: i32,
-            mrs: Vec<Arc<IbvMr>>,
+            mrs: Vec<Arc<Mlx5DevxMr>>,
         ) -> anyhow::Result<Mlx5DevxMkey> {
             let mut s = self.lock();
             if s.fail_bind {

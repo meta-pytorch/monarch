@@ -1,9 +1,33 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- * All rights reserved.
+ * Copyright (c) 2019 Mellanox Technologies, Inc.  All rights reserved.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree.
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * OpenIB.org BSD license below:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      - Redistributions of source code must retain the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer.
+ *
+ *      - Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials
+ *        provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #ifndef RDMAXCEL_MLX5_IFC_SUBSET_H
@@ -31,6 +55,7 @@ enum mlx5_cap_mode {
 };
 
 enum {
+  MLX5_MKC_ACCESS_MODE_MTT = 0x1,
   MLX5_MKC_ACCESS_MODE_KLMS = 0x2,
 };
 
@@ -90,11 +115,21 @@ struct mlx5_ifc_create_mkey_out_bits {
 
 struct mlx5_ifc_create_mkey_in_bits {
   uint8_t opcode[0x10];
-  uint8_t reserved_at_10[0x70];
+  uint8_t uid[0x10];
+  uint8_t reserved_at_20[0x10];
+  uint8_t op_mod[0x10];
+  uint8_t reserved_at_40[0x20];
+  uint8_t pg_access[0x1];
+  uint8_t mkey_umem_valid[0x1];
+  uint8_t reserved_at_62[0x1e];
   struct mlx5_ifc_mkc_bits memory_key_mkey_entry;
-  uint8_t reserved_at_280[0x80];
+  uint8_t e_mtt_pointer[0x40];
+  uint8_t e_bsf_pointer[0x40];
   uint8_t translations_octword_actual_size[0x20];
-  uint8_t reserved_at_320[0x560];
+  uint8_t mkey_umem_id[0x20];
+  uint8_t mkey_umem_offset[0x40];
+  uint8_t bsf_octword_actual_size[0x20];
+  uint8_t reserved_at_3a0[0x4e0];
   uint8_t klm_pas_mtt[0][0x20];
 };
 
