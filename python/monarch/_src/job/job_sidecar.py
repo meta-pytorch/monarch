@@ -36,6 +36,27 @@ except ImportError:
     _IN_PAR = False
 
 
+def raise_for_sidecar_error(response: object) -> object:
+    """Re-raise a sidecar-side failure locally; otherwise return the response.
+
+    The sidecar answers either a request-specific payload or an
+    ``{"error": traceback_str}`` envelope built by its top-level exception
+    handler, so the remote traceback surfaces in the calling process.
+    """
+    if isinstance(response, dict):
+        error = response.get("error")
+        if isinstance(error, str):
+            raise RuntimeError(error)
+    return response
+
+
+def check_sidecar_ok(response: object) -> None:
+    """Check that a sidecar operation with no payload succeeded."""
+    response = raise_for_sidecar_error(response)
+    if response != "ok":
+        raise RuntimeError(f"unexpected job sidecar response: {response!r}")
+
+
 def job_sidecar_lock_path(apply_id: str) -> str:
     """Return the lock path for the per-job sidecar process."""
     return f"/tmp/monarch_job_sidecar_{apply_id}.lock"
@@ -173,23 +194,30 @@ class _JobSidecarState:
 
         if mounts_key != self._mounts_key:
             _dbg("replacing mounts")
-            self._mounts_handle.close()
+            self.clear_mounts()
             self._mounts_handle = request.mounts.open(request.host_meshes)
             self._mounts_key = mounts_key
             _dbg(f"mounts replaced in {time.time() - t0:.2f}s")
             return "ok"
 
         _dbg("refreshing mounts")
-        self._mounts_handle.refresh()
+        try:
+            self._mounts_handle.refresh()
+        except Exception:
+            self.clear_mounts()
+            raise
         _dbg(f"refresh complete in {time.time() - t0:.2f}s")
         return "ok"
 
     def clear_mounts(self) -> str:
         """Close any live mounts and reset mount state."""
-        if self._mounts_handle is not None:
-            self._mounts_handle.close()
-            self._mounts_handle = None
-            self._mounts_key = None
+        # Reset before closing so a failed close still leaves a clean state for
+        # the next request to open from.
+        handle = self._mounts_handle
+        self._mounts_handle = None
+        self._mounts_key = None
+        if handle is not None:
+            handle.close()
         return "ok"
 
     def handle_telemetry(self, request: TelemetryRequest) -> object:
@@ -278,24 +306,15 @@ def _run_job_sidecar(
                     elif isinstance(msg, ClearMountsRequest):
                         response = state.clear_mounts()
                     elif isinstance(msg, TelemetryRequest):
-                        try:
-                            response = state.handle_telemetry(msg)
-                        except Exception:
-                            # TODO: Centralize sidecar error.
-                            response = {"error": traceback.format_exc()}
+                        response = state.handle_telemetry(msg)
                     elif isinstance(msg, AdminUrlRequest):
-                        try:
-                            response = state.handle_admin_url(msg)
-                        except Exception:
-                            # TODO: Centralize sidecar error.
-                            response = {"error": traceback.format_exc()}
+                        response = state.handle_admin_url(msg)
                     else:
                         raise RuntimeError(f"unexpected job sidecar request: {msg!r}")
                 except Exception:
-                    _dbg(
-                        "ERROR during job sidecar operation:\n" + traceback.format_exc()
-                    )
-                    response = "ok"
+                    error = traceback.format_exc()
+                    _dbg("ERROR during job sidecar operation:\n" + error)
+                    response = {"error": error}
                 # @lint-ignore PYTHONPICKLEISBAD
                 conn.sendall(pickle.dumps(response))
         except Exception:
