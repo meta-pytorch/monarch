@@ -159,6 +159,7 @@ fn main() {
         .allowlist_function("rdmaxcel_set_mem_location_id")
         .allowlist_function("rdmaxcel_query_devx_mkey_max_entries")
         .allowlist_function("rdmaxcel_create_devx_dmabuf_mr")
+        .allowlist_function("rdmaxcel_advise_mr_write_async")
         .allowlist_function("rdmaxcel_create_devx_mr_list")
         .allowlist_function("rdmaxcel_destroy_devx_mkey")
         .allowlist_function("poll_cq_with_cache")

@@ -1867,8 +1867,10 @@ mod tests {
     /// registered on — so that later `resolve_local_mrs` calls for that device
     /// reuse it instead of registering the same region again.
     #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn test_register_remote_buffer_records_its_registration() -> Result<(), anyhow::Error> {
+    async fn test_host_buffers_use_per_allocation_mrs_by_default() -> Result<(), anyhow::Error> {
         require_rdma();
+        let lock = hyperactor_config::global::lock();
+        let _guard = lock.override_key(crate::config::RDMA_HOST_ODP, false);
         let target = IbvDeviceTarget::cpu(0);
         let device = resolve_target::<MlxDevice>(&target)?
             .expect("cpu:0 should resolve to a NIC")
@@ -1884,10 +1886,79 @@ mod tests {
         RdmaManagerActor::local_handle(&env.client)
             .request_buffer(&env.client, local.clone())
             .await?;
-        assert!(
-            local.registered_mr::<MlxDevice>(&device)?.is_some(),
-            "registration should be recorded under the pinned device {device}",
+        let first = local
+            .registered_mr::<MlxDevice>(&device)?
+            .expect("registration should be recorded under the pinned device");
+
+        let second_buf: Box<[u8]> = vec![0u8; 1024].into_boxed_slice();
+        let second_local = KeepaliveLocalMemory::try_new(Arc::new(second_buf))?;
+        RdmaManagerActor::local_handle(&env.client)
+            .request_buffer(&env.client, second_local.clone())
+            .await?;
+        let second = second_local
+            .registered_mr::<MlxDevice>(&device)?
+            .expect("second registration should be recorded under the pinned device");
+        assert_ne!(
+            (first.lkey, first.rkey),
+            (second.lkey, second.rkey),
+            "the default path should retain per-allocation registrations"
         );
+        env.shutdown().await
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_host_odp_shares_a_key_and_advises_destinations() -> Result<(), anyhow::Error> {
+        require_rdma();
+        let lock = hyperactor_config::global::lock();
+        let _guard = lock.override_key(crate::config::RDMA_HOST_ODP, true);
+        let target = IbvDeviceTarget::cpu(0);
+        let device = resolve_target::<MlxDevice>(&target)?
+            .expect("cpu:0 should resolve to a NIC")
+            .name()
+            .clone();
+        let env = TestEnv::same_config(IbvConfig::targeting(target)).await?;
+
+        let first_buf: Box<[u8]> = vec![0u8; 1024].into_boxed_slice();
+        let first_local = KeepaliveLocalMemory::try_new(Arc::new(first_buf))?;
+        RdmaManagerActor::local_handle(&env.client)
+            .request_buffer(&env.client, first_local.clone())
+            .await?;
+        let first = first_local
+            .registered_mr::<MlxDevice>(&device)?
+            .expect("first ODP registration should be recorded");
+
+        let second_buf: Box<[u8]> = vec![0u8; 1024].into_boxed_slice();
+        let second_local = KeepaliveLocalMemory::try_new(Arc::new(second_buf))?;
+        RdmaManagerActor::local_handle(&env.client)
+            .request_buffer(&env.client, second_local.clone())
+            .await?;
+        let second = second_local
+            .registered_mr::<MlxDevice>(&device)?
+            .expect("second ODP registration should be recorded");
+
+        assert_eq!(
+            (first.lkey, first.rkey),
+            (second.lkey, second.rkey),
+            "host buffers on one device should share its implicit ODP MR"
+        );
+        run_cross_actor_write(
+            &env,
+            BufferDevice::Cpu,
+            BufferDevice::Cpu,
+            1024 * 1024,
+            0xa5,
+            10,
+        )
+        .await?;
+        run_cross_actor_read(
+            &env,
+            BufferDevice::Cpu,
+            BufferDevice::Cpu,
+            1024 * 1024,
+            0x5a,
+            10,
+        )
+        .await?;
         env.shutdown().await
     }
 

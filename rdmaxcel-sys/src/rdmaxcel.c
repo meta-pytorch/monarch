@@ -15,6 +15,17 @@
 #include <time.h>
 #include <unistd.h>
 
+int rdmaxcel_advise_mr_write_async(
+    struct ibv_pd* pd,
+    struct ibv_sge* sg_list,
+    uint32_t num_sge) {
+  if (!pd || (!sg_list && num_sge != 0)) {
+    return EINVAL;
+  }
+  return ibv_advise_mr(
+      pd, IBV_ADVISE_MR_ADVICE_PREFETCH_WRITE, 0, sg_list, num_sge);
+}
+
 // ============================================================================
 // RDMAXCEL QP Wrapper Implementation
 // ============================================================================

@@ -45,6 +45,15 @@ declare_attrs! {
     ))
     pub attr RDMA_DISABLE_IBVERBS: bool = false;
 
+    /// Use one implicit-ODP registration per mlx5 device for newly registered
+    /// host buffers. Destination ranges receive asynchronous write advice;
+    /// per-allocation host-memory registration remains the default.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_HOST_ODP".to_string()),
+        Some("rdma_host_odp".to_string()),
+    ))
+    pub attr RDMA_HOST_ODP: bool = false;
+
     /// Number of parallel channels for TCP fallback transfers.
     ///
     /// When greater than 1, each [`TcpManagerActor`] serves this many

@@ -78,9 +78,9 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
     /// [`IbvDomainImpl::new`] never leaks a PD.
     ///
     /// Note:
-    /// Our memory region (MR) registration uses implicit ODP for RDMA access, which maps large virtual
-    /// address ranges without explicit pinning. This is convenient, but it broadens the memory footprint
-    /// exposed to the NIC and introduces a security liability.
+    /// Host memory registration may use implicit ODP when configured, which
+    /// exposes a large virtual address range to the NIC instead of pinning only
+    /// the allocation.
     ///
     /// We currently assume a trusted, single-environment and are not enforcing finer-grained memory isolation
     /// at this layer. We plan to investigate mitigations - such as memory windows or tighter registration
@@ -287,8 +287,10 @@ pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
 /// # Safety
 ///
 /// If `pd` is non-null it must be a live protection domain whose context
-/// outlives this call. `[addr, addr + size)` must name a host mapping that
-/// stays valid for the lifetime of the returned MR.
+/// outlives this call. For an ordinary registration, `[addr, addr + size)` must
+/// name a host mapping that stays valid for the lifetime of the returned MR.
+/// For implicit ODP, pass address zero, `usize::MAX`, and
+/// `IBV_ACCESS_ON_DEMAND`.
 pub(super) unsafe fn register_host_mr(
     pd: &Arc<IbvPd>,
     addr: usize,
@@ -305,7 +307,7 @@ pub(super) unsafe fn register_host_mr(
     let mr =
         unsafe { rdmaxcel_sys::ibv_reg_mr(pd.as_ptr(), addr as *mut c_void, size, access_flags) };
     if mr.is_null() {
-        anyhow::bail!("failed to register standard MR");
+        anyhow::bail!("failed to register host MR");
     }
     // SAFETY: `mr` is non-null (checked above) and freshly registered against
     // `pd`.

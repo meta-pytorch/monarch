@@ -8,10 +8,11 @@
 
 //! Mellanox (mlx5) domain strategy for [`IbvDomainImpl`].
 //!
-//! Host and non-mlx5dv device memory use the default host/dmabuf
-//! registration. On an mlx5dv-capable device, CUDA device memory is bound
-//! to an indirect mlx5dv memory key so a whole allocator segment is
-//! addressable through a single key.
+//! Host memory uses per-allocation registration by default and may use one
+//! implicit-ODP MR per domain when configured. On an mlx5dv-capable device,
+//! CUDA device memory is bound to an indirect mlx5dv memory key so a whole
+//! allocator segment is addressable through a single key. Other device memory
+//! uses dmabuf registration.
 //!
 //! The segment scanning + binding bookkeeping lives here in Rust. Resource
 //! creation goes through [`MlxDomainOps`] so the (intricate) scan/bind logic
@@ -29,6 +30,7 @@ use std::sync::Mutex;
 use super::device_selection::get_cuda_device_to_ibv_devices;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
+use super::domain::register_host_mr;
 use super::domain::register_host_or_dmabuf_mr;
 use super::memory_region::IbvMemoryRegionKeepalive;
 use super::memory_region::IbvMemoryRegionView;
@@ -36,6 +38,7 @@ use super::mlx_queue_pair::MlxQueuePair;
 use super::primitives::IbvConfig;
 use super::primitives::IbvContext;
 use super::primitives::IbvDeviceInfo;
+use super::primitives::IbvMr;
 use super::primitives::IbvPd;
 use crate::backend::ibverbs::mlx_device::MlxDevice;
 use crate::device_selection::MemoryLocation;
@@ -46,6 +49,71 @@ use crate::local_memory::KeepaliveLocalMemory;
 const MR_ALIGNMENT: usize = 2 * 1024 * 1024;
 const MAX_MR_SIZE: usize = 4 * 1024 * 1024 * 1024 - MR_ALIGNMENT;
 const CUDA_MKEY_PAGE_SHIFT: u8 = 16;
+
+/// Submit asynchronous write-prefetch advice for an ODP-backed view.
+///
+/// # Safety
+///
+/// `pd.as_ptr()` must be null or a live protection domain that owns `view`'s
+/// ODP key and outlives this call.
+unsafe fn advise_odp_mr_write(pd: &IbvPd, device_name: &str, view: &IbvMemoryRegionView) {
+    if view.size == 0 {
+        return;
+    }
+
+    let max_sge_len = u32::MAX as usize;
+    let Some(mut sges) = (0..view.size.div_ceil(max_sge_len))
+        .map(|chunk| {
+            let offset = chunk.checked_mul(max_sge_len)?;
+            Some(rdmaxcel_sys::ibv_sge {
+                addr: view.virtual_addr.checked_add(offset)? as u64,
+                length: (view.size - offset).min(max_sge_len) as u32,
+                lkey: view.lkey,
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        tracing::warn!(
+            device = device_name,
+            addr = format_args!("{:#x}", view.virtual_addr),
+            size = view.size,
+            "could not submit asynchronous host ODP write advice: address range overflow"
+        );
+        return;
+    };
+    let Ok(num_sge) = u32::try_from(sges.len()) else {
+        tracing::warn!(
+            device = device_name,
+            size = view.size,
+            "could not submit asynchronous host ODP write advice: too many ranges"
+        );
+        return;
+    };
+    // SAFETY: this function's contract permits a null PD, which the C shim
+    // rejects before dereferencing, or a live PD that owns `view`'s ODP key;
+    // `sges` describes in-bounds sub-ranges and outlives the call.
+    let ret = unsafe {
+        rdmaxcel_sys::rdmaxcel_advise_mr_write_async(pd.as_ptr(), sges.as_mut_ptr(), num_sge)
+    };
+    if ret != 0 {
+        tracing::warn!(
+            device = device_name,
+            addr = format_args!("{:#x}", view.virtual_addr),
+            size = view.size,
+            lkey = view.lkey,
+            error_code = ret,
+            "could not submit asynchronous host ODP write advice"
+        );
+        return;
+    }
+    tracing::debug!(
+        device = device_name,
+        addr = format_args!("{:#x}", view.virtual_addr),
+        size = view.size,
+        lkey = view.lkey,
+        "submitted asynchronous host ODP write advice"
+    );
+}
 
 // ===========================================================================
 // CUDA segment scanner
@@ -766,6 +834,7 @@ pub struct MlxDomain {
     max_mr_size: usize,
     /// Return DevX registration failures instead of using the dmabuf fallback.
     require_devx_mkeys: bool,
+    host_odp_mr: Mutex<Option<Arc<IbvMr>>>,
     /// Currently-bound segments, keyed by `(base address, CUDA ordinal)`. Each
     /// grows in place (reusing its MRs, retiring superseded keys internally);
     /// a key whose base vanishes from the scan is dropped (a live view keeps
@@ -802,8 +871,73 @@ impl MlxDomain {
             mkey_max_entries,
             max_mr_size,
             require_devx_mkeys,
+            host_odp_mr: Mutex::new(None),
             segments: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn register_host_odp_mr(
+        &self,
+        domain: &IbvDomain<MlxDomain>,
+        mem: &KeepaliveLocalMemory,
+    ) -> anyhow::Result<IbvMemoryRegionView> {
+        let mr = {
+            let mut host_odp_mr = self.host_odp_mr.lock().expect("host ODP MR lock poisoned");
+            match host_odp_mr.as_ref() {
+                Some(mr) => Arc::clone(mr),
+                None => {
+                    // SAFETY: the domain owns a live PD in production, while
+                    // `register_host_mr` rejects a null test PD. The literal
+                    // address zero and `usize::MAX` size describe implicit
+                    // ODP, and the access flags include `IBV_ACCESS_ON_DEMAND`.
+                    let mr = Arc::new(unsafe {
+                        register_host_mr(
+                            domain.pd(),
+                            0,
+                            usize::MAX,
+                            self.access_flags()
+                                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_ON_DEMAND.0 as i32,
+                        )
+                    }?);
+                    // SAFETY: registration returned a live MR owned by `mr`.
+                    let (lkey, rkey) = unsafe { ((*mr.as_ptr()).lkey, (*mr.as_ptr()).rkey) };
+                    tracing::info!(
+                        device = domain.device_info().name(),
+                        lkey,
+                        rkey,
+                        "enabled implicit host ODP memory region"
+                    );
+                    *host_odp_mr = Some(Arc::clone(&mr));
+                    mr
+                }
+            }
+        };
+        // SAFETY: `mr` is non-null and stays live through the view's guard.
+        let (lkey, rkey) = unsafe { ((*mr.as_ptr()).lkey, (*mr.as_ptr()).rkey) };
+        let view = IbvMemoryRegionView::new(
+            mem.addr(),
+            mem.addr(),
+            mem.size(),
+            lkey,
+            rkey,
+            domain.device_info().name().to_string(),
+            mr,
+        );
+        // OOO_RW placement presents each sprayed ~4 KiB packet as an
+        // independent operation, so an unadvised cold range can trigger one
+        // ODP fault and translation update per packet. On H100/CX7, median
+        // cold latency for 64 KiB/1 MiB/4 MiB/16 MiB was
+        // 35.7 ms/791 ms/3.21 s/12.87 s without advice, versus
+        // 3.88 ms/4.86 ms/5.09 ms/9.30 ms with this asynchronous hint. Submit
+        // it when the view is created so it races ahead of any export, RDMA
+        // WRITE, or RDMA READ that consumes the registration. With flags=0, a
+        // hot advice call costs about 2 us and demand ODP still handles any
+        // pages that the operation reaches first.
+        // SAFETY: the domain PD is null only in tests, which the C shim rejects
+        // before dereferencing; otherwise it is live, owns `view`'s ODP key,
+        // and outlives this call.
+        unsafe { advise_odp_mr_write(domain.pd(), domain.device_info().name(), &view) };
+        Ok(view)
     }
 
     /// Bind CUDA `[addr, addr + size)` via an indirect mlx5dv key. Scans for
@@ -975,6 +1109,11 @@ impl IbvDomainImpl for MlxDomain {
         mem: &KeepaliveLocalMemory,
     ) -> anyhow::Result<IbvMemoryRegionView> {
         let this = domain.domain_impl();
+        if matches!(mem.location(), MemoryLocation::Cpu(_))
+            && hyperactor_config::global::get(crate::config::RDMA_HOST_ODP)
+        {
+            return this.register_host_odp_mr(domain, mem);
+        }
         if matches!(mem.location(), MemoryLocation::Gpu(_)) {
             if this.mlx5dv_enabled {
                 // SAFETY: `domain.as_ptr()` is null or a live PD, per this

@@ -197,6 +197,12 @@ int rdmaxcel_create_devx_dmabuf_mr(
     uint8_t page_shift,
     rdmaxcel_devx_mkey_t** mkey) RDMAXCEL_NOEXCEPT;
 
+// Submit best-effort write-prefetch advice with flags=0.
+int rdmaxcel_advise_mr_write_async(
+    struct ibv_pd* pd,
+    struct ibv_sge* sg_list,
+    uint32_t num_sge) RDMAXCEL_NOEXCEPT;
+
 // Create a zero-based indirect mkey whose address space is the concatenation
 // of the direct `mrs`. Each direct MKey must be no larger than UINT32_MAX
 // bytes, the width of a KLM byte-count field.
