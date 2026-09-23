@@ -146,6 +146,6 @@ jobs:
             ghcr.io/${{ github.repository }}-nightly:latest
           # TODO: find docker tag that gets updated automatically.
           build-args: |
-            PYTORCH_TAG=2.14.0.dev20260713-cuda13.2-cudnn9-runtime
+            PYTORCH_TAG=2.15.0.dev20260923-cuda13.2-cudnn9-runtime
           build-contexts: |
             monarch-wheels=${{ runner.temp }}/monarch_wheels
