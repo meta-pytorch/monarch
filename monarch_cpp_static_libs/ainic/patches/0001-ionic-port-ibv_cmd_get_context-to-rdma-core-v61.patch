@@ -1,0 +1,17 @@
+ionic: port ibv_cmd_get_context() call to rdma-core >= v55 signature
+
+AMD's AINIC ionic provider (rdma-core-54.0.149.g3304be71) was written against
+rdma-core v54. Later rdma-core added a `struct ibv_fd_arr *fd_arr` argument to
+ibv_cmd_get_context(). Pass NULL, as the upstream ionic provider does.
+
+--- a/providers/ionic/ionic.c
++++ b/providers/ionic/ionic.c
+@@ -230,7 +230,7 @@
+ 		goto err_ctx;
+ 	}
+ 
+-	rc = ibv_cmd_get_context(&ctx->vctx, &req.ibv_cmd, sizeof(req),
++	rc = ibv_cmd_get_context(&ctx->vctx, &req.ibv_cmd, sizeof(req), NULL,
+ 				 &resp.ibv_resp, sizeof(resp));
+ 	if (rc)
+ 		goto err_cmd;
