@@ -560,6 +560,117 @@ impl<T: 'static> ValueMesh<T> {
     }
 }
 
+/// Maps result ordinals to ordinals in the source mesh.
+///
+/// The affine form uses one relative [`Slice`]. The base-space form resolves
+/// ordinals through the selected and source slices when no such affine slice
+/// can be derived.
+enum SourceOrdinalMapping {
+    Affine(Slice),
+    BaseSpace { selected: Slice, source: Slice },
+}
+
+impl SourceOrdinalMapping {
+    /// Build the fastest available mapping from selected ordinals to source
+    /// ordinals.
+    ///
+    /// Input: source ranks `[0, 1, 2, 3]` and selected ranks `[1, 2]`.
+    /// Output: a mapping from selected ordinals `[0, 1]` to source ordinals
+    /// `[1, 2]`.
+    fn new(selected: &Slice, source: &Slice) -> Self {
+        // S is the selected dimension count. P is the source dimension count.
+        // Construction is O(S + P log P), from deriving the relative slice and
+        // decoding its starting source coordinate. The fallback only clones
+        // O(S + P) dimension metadata.
+        if let Ok(relative) = selected.relative_ordinal_slice(source) {
+            Self::Affine(relative)
+        } else {
+            Self::BaseSpace {
+                selected: selected.clone(),
+                source: source.clone(),
+            }
+        }
+    }
+
+    /// Return the source ordinal for one selected ordinal.
+    ///
+    /// Input: selected base ranks `[2, 3, 6, 7]`, source ordinals
+    /// `[0, 1, 2, 3, 4, 5]`, and selected ordinal `2`.
+    /// Output: source ordinal `4`, which contains base rank `6`.
+    fn source_ordinal_at(&self, selected_ordinal: usize) -> usize {
+        // S is the selected dimension count. P is the source dimension count.
+        match self {
+            // O(S): `Slice::get` walks the selected dimensions once.
+            Self::Affine(source_ordinals) => source_ordinals
+                .get(selected_ordinal)
+                .expect("selected ordinal should belong to the relative slice"),
+            Self::BaseSpace { selected, source } => {
+                // O(S + P log P): `selected.get` walks S dimensions, while
+                // `source.index` sorts and walks P dimensions.
+                let base_rank = selected
+                    .get(selected_ordinal)
+                    .expect("selected ordinal should belong to the selected slice");
+
+                source
+                    .index(base_rank)
+                    .expect("selected base rank should belong to the source slice")
+            }
+        }
+    }
+
+    /// Return the first selected ordinal mapped after `source_ordinal`.
+    ///
+    /// Input: mapping `[1, 2, 4, 5]` and source ordinal `2`.
+    /// Output: selected ordinal `2`, whose mapped source ordinal is `4`.
+    fn first_selected_ordinal_after(&self, source_ordinal: usize) -> usize {
+        // N is the selected ordinal count. S is the selected dimension count.
+        // P is the source dimension count.
+        match self {
+            Self::Affine(source_ordinals) => {
+                // O(S): resolve the boundary with one selected-dimension pass.
+                if source_ordinal < source_ordinals.offset() {
+                    return 0;
+                }
+
+                let mut distance = source_ordinal - source_ordinals.offset();
+                let mut selected_stride = source_ordinals.len();
+                let mut selected_ordinal = 0;
+
+                for (&dim_size, &source_stride) in source_ordinals
+                    .sizes()
+                    .iter()
+                    .zip(source_ordinals.strides())
+                {
+                    selected_stride /= dim_size;
+                    let coordinate = (distance / source_stride).min(dim_size - 1);
+                    selected_ordinal += coordinate * selected_stride;
+                    distance -= coordinate * source_stride;
+                }
+
+                selected_ordinal + 1
+            }
+            Self::BaseSpace { selected, .. } => {
+                // O(log N * (S + P log P)): binary-search N selected ordinals,
+                // using one base-space source lookup for each probe.
+                let mut lower_cursor = 0;
+                let mut upper_cursor = selected.len();
+
+                while lower_cursor < upper_cursor {
+                    let middle = lower_cursor + (upper_cursor - lower_cursor) / 2;
+
+                    if self.source_ordinal_at(middle) <= source_ordinal {
+                        lower_cursor = middle + 1;
+                    } else {
+                        upper_cursor = middle;
+                    }
+                }
+
+                lower_cursor
+            }
+        }
+    }
+}
+
 impl<T: Clone + 'static> view::RankedSliceable for ValueMesh<T> {
     fn sliced(&self, region: Region) -> Self {
         debug_assert!(region.is_subset(self.region()), "sliced: not a subset");
@@ -574,11 +685,10 @@ impl<T: Clone + 'static> view::RankedSliceable for ValueMesh<T> {
                 },
             },
             Rep::Compressed { table, runs } => {
-                let source_ordinal_slice = region
-                    .slice()
-                    .relative_ordinal_slice(self.region.slice())
-                    .expect("sliced region should preserve the parent dimensions");
-                self.slice_compressed(region, table, runs, source_ordinal_slice)
+                let source_ordinals =
+                    SourceOrdinalMapping::new(region.slice(), self.region.slice());
+
+                self.slice_compressed(region, table, runs, source_ordinals)
             }
         }
     }
@@ -606,9 +716,9 @@ impl<T: Clone + 'static> ValueMesh<T> {
     /// rank inside the run and the first selected rank after the run. These
     /// slice-relative ranks become the start and end of an output run.
     ///
-    /// `slice_ordinals` maps each ordinal in the result to an ordinal in the
-    /// source mesh. For each source run, walking the dimensions finds the last
-    /// selected rank inside the run without visiting each selected rank.
+    /// `source_ordinals` maps each ordinal in the result to an ordinal in the
+    /// source mesh. For each source run, it finds the first selected rank after
+    /// the run without visiting each selected rank.
     ///
     /// ```text
     /// slice_ordinals: sizes=[3, 3], strides=[8, 2], offset=9
@@ -629,72 +739,11 @@ impl<T: Clone + 'static> ValueMesh<T> {
         slice_region: Region,
         value_table: &[T],
         source_runs: &[Run],
-        slice_ordinals: Slice,
+        source_ordinals: SourceOrdinalMapping,
     ) -> Self {
-        // Find the last slice ordinal at or before a source ordinal by jumping
-        // as far as possible in each dimension.
-        //
-        // For example, use a dense 2 x 3 x 4 slice:
-        //
-        //   sizes:   [2, 3, 4]
-        //   strides: [12, 4, 1]
-        //   offset:  0
-        //
-        // The source contains these runs:
-        //
-        //   A=[0,3)  B=[3,19)  C=[19,24)
-        //
-        //   page 0                  page 1
-        //    0A  1A  2A  3B        12B 13B 14B 15B
-        //    4B  5B  6B  7B        16B 17B 18B 19C
-        //    8B  9B 10B 11B        20C 21C 22C 23C
-        //
-        // B ends at 19, so its last source ordinal is 18. Decompose 18 across
-        // the dimensions:
-        //
-        //   page:   18 / 12 = 1  -> slice ordinal 12, remainder 6
-        //   row:     6 /  4 = 1  -> slice ordinal 16, remainder 2
-        //   column:  2 /  1 = 2  -> slice ordinal 18, remainder 0
-        //
-        // The last slice ordinal in B is 18. The exclusive end of the output
-        // run is therefore 19. This takes one step per dimension and does not
-        // visit source ordinals 3 through 18 individually.
-        let last_slice_ordinal_at_or_before = |source_ordinal: usize| {
-            let mut distance = source_ordinal - slice_ordinals.offset();
-            let mut slice_stride = slice_region.num_ranks();
-            let mut slice_ordinal = 0;
-
-            for (&dim_size, &source_stride) in
-                slice_ordinals.sizes().iter().zip(slice_ordinals.strides())
-            {
-                slice_stride /= dim_size;
-                let coordinate = (distance / source_stride).min(dim_size - 1);
-                slice_ordinal += coordinate * slice_stride;
-                distance -= coordinate * source_stride;
-            }
-
-            slice_ordinal
-        };
-
-        let source_ordinal_at = |mut slice_ordinal: usize| {
-            let mut source_ordinal = slice_ordinals.offset();
-
-            for (&dim_size, &stride) in slice_ordinals
-                .sizes()
-                .iter()
-                .zip(slice_ordinals.strides())
-                .rev()
-            {
-                source_ordinal += slice_ordinal % dim_size * stride;
-                slice_ordinal /= dim_size;
-            }
-
-            source_ordinal
-        };
-
         let mut slice_runs: Vec<Run> = Vec::new();
         let mut slice_ordinal_cursor = 0usize;
-        let mut source_ordinal_cursor = slice_ordinals.offset();
+        let mut source_ordinal_cursor = source_ordinals.source_ordinal_at(0);
         let mut source_run_index = 0usize;
 
         while slice_ordinal_cursor < slice_region.num_ranks() {
@@ -711,7 +760,7 @@ impl<T: Clone + 'static> ValueMesh<T> {
             debug_assert!(source_run.start as usize <= source_ordinal_cursor);
 
             let next_slice_ordinal =
-                last_slice_ordinal_at_or_before(source_run.end as usize - 1) + 1;
+                source_ordinals.first_selected_ordinal_after(source_run.end as usize - 1);
 
             if let Some(previous_run) = slice_runs.last_mut()
                 && previous_run.id == source_run.id
@@ -733,7 +782,7 @@ impl<T: Clone + 'static> ValueMesh<T> {
             slice_ordinal_cursor = next_slice_ordinal;
 
             if slice_ordinal_cursor < slice_region.num_ranks() {
-                source_ordinal_cursor = source_ordinal_at(slice_ordinal_cursor);
+                source_ordinal_cursor = source_ordinals.source_ordinal_at(slice_ordinal_cursor);
             }
         }
 
@@ -1353,6 +1402,94 @@ mod tests {
                 "the supported rectangular selection should stay compressed",
             );
         }
+    }
+
+    #[test]
+    fn compressed_slicing_supports_reshape() {
+        let matrix: Region = extent!(host = 2, gpu = 2).into();
+        let mesh = ValueMesh::from_dense(matrix.clone(), vec![0, 0, 1, 1])
+            .expect("values should match the source region");
+        let flat = Region::new(vec!["rank".to_string()], Slice::new_row_major(vec![4]));
+
+        let flattened = mesh.sliced(flat);
+
+        assert_eq!(flattened.values().collect::<Vec<_>>(), vec![0, 0, 1, 1]);
+        assert!(matches!(flattened.rep, Rep::Compressed { .. }));
+
+        let reshaped = flattened.sliced(matrix);
+
+        assert_eq!(reshaped.values().collect::<Vec<_>>(), vec![0, 0, 1, 1]);
+        assert!(matches!(reshaped.rep, Rep::Compressed { .. }));
+    }
+
+    #[test]
+    fn compressed_slicing_matches_dense_for_dimension_changing_subset() {
+        // parent:    [0 0 1 1 2 2 3 3]
+        // selected:      1 1
+        //                2 2
+        let parent = Region::new(vec!["rank".to_string()], Slice::new_row_major(vec![8]));
+
+        let dense = ValueMesh::new(parent, vec![0, 0, 1, 1, 2, 2, 3, 3])
+            .expect("values should match the parent region");
+
+        let mut compressed = dense.clone();
+
+        compressed.compress_adjacent_in_place();
+
+        let selected = Region::new(
+            vec!["row".to_string(), "column".to_string()],
+            Slice::new(2, vec![2, 2], vec![2, 1]).expect("selection should be valid"),
+        );
+
+        assert!(selected.is_subset(dense.region()));
+
+        let expected = dense.sliced(selected.clone());
+        let actual = compressed.sliced(selected);
+
+        assert_eq!(expected.values().collect::<Vec<_>>(), vec![1, 1, 2, 2]);
+
+        assert_eq!(actual.region(), expected.region());
+
+        assert_eq!(
+            actual.values().collect::<Vec<_>>(),
+            expected.values().collect::<Vec<_>>()
+        );
+
+        assert!(matches!(actual.rep, Rep::Compressed { .. }));
+    }
+
+    #[test]
+    fn compressed_slicing_matches_dense_for_reshaped_proper_subset() {
+        // parent base ranks:    0  1  2  3  4  5
+        //                       8  9 10 11 12 13
+        // selected base ranks:     1  2  3  4
+        //                          9 10 11 12
+        let parent = Region::new(
+            vec!["row".to_string(), "column".to_string()],
+            Slice::new(0, vec![2, 6], vec![8, 1]).expect("parent should be valid"),
+        );
+        let dense = ValueMesh::new(parent, vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5])
+            .expect("values should match the parent region");
+        let mut compressed = dense.clone();
+        compressed.compress_adjacent_in_place();
+        let selected = Region::new(
+            vec!["outer".to_string(), "row".to_string(), "column".to_string()],
+            Slice::new(1, vec![2, 2, 2], vec![8, 2, 1]).expect("selection should be valid"),
+        );
+
+        let expected = dense.sliced(selected.clone());
+        let actual = compressed.sliced(selected);
+
+        assert_eq!(
+            expected.values().collect::<Vec<_>>(),
+            vec![0, 1, 1, 2, 3, 4, 4, 5]
+        );
+        assert_eq!(actual.region(), expected.region());
+        assert_eq!(
+            actual.values().collect::<Vec<_>>(),
+            expected.values().collect::<Vec<_>>()
+        );
+        assert!(matches!(actual.rep, Rep::Compressed { .. }));
     }
 
     #[test]
