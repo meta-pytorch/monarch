@@ -240,7 +240,6 @@ find $HOME/dev/titan_workspace/.venv -type f -printf '%s\n' \
 
 ```bash
 cd <fbsource>/fbcode/monarch/examples/torchtitan_mast
-rm -rf .monarch              # discard any prior job state
 monarch apply job.job
 ```
 

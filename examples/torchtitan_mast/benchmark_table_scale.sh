@@ -239,7 +239,6 @@ run_one() {  # hosts
     echo "### hosts=$n   ($(date '+%Y-%m-%d %H:%M:%S'))"
     echo "############################################################"
     export TITAN_NUM_HOSTS="$n"
-    rm -rf .monarch
     alog="$(mktemp)"; elog="$(mktemp)"; clog="$(mktemp)"; wlog="$(mktemp)"
 
     # --- apply (fresh): MAST queue/alloc + mount open ---
@@ -318,8 +317,24 @@ run_one() {  # hosts
     emit "$n" reapply_mount_open "${rmo:-NA}" s
 
     # --- teardown ---
-    timed "$elog" timeout "$EXEC_TIMEOUT" "$MON" kill
+    # A failed kill leaves the job running with its handle still on disk: it
+    # leaks an allocation, and a later cycle at this host count could reconnect
+    # to that job and time a warm re-apply. Stop rather than keep allocating
+    # alongside a leak nothing here can reach. Nothing measured is lost -- emit
+    # appends to $OUT as it goes.
+    timed "$elog" timeout "$EXEC_TIMEOUT" "$MON" kill; rc=$?
     emit "$n" kill_wall "$REPLY_WALL" s
+    if [ "$rc" -ne 0 ]; then
+        emit "$n" status KILL_FAIL -
+        echo "!!! hosts=$n: teardown failed (rc=$rc). The job is probably still" >&2
+        echo "!!! running; clean it up before re-running the sweep." >&2
+        echo "!!! kill log $elog, last 25 lines:" >&2
+        tail -25 "$elog" >&2
+        echo "!!! aborting; rows measured so far are in $OUT." >&2
+        # This cycle's logs are deliberately left in place: they are the only
+        # record of why the kill failed, and the sweep is ending here anyway.
+        exit 1
+    fi
     emit "$n" status OK -
     rm -f "$alog" "$elog" "$clog" "$wlog"
 }

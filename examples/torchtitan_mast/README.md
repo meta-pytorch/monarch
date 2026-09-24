@@ -104,7 +104,10 @@ monarch apply job.job
 HOST0=$(monarch exec --one -- hostname | tail -1)
 monarch exec --all --per-host gpu=8 -e MASTER_ADDR="$HOST0" -- python "$(realpath train.py)"
 
-# 3. Tear down (or just `rm -rf .monarch` to forget the cached job).
+# 3. Tear down. Ends the MAST job and discards the cached handle, so nothing is
+#    left running and the next apply is cold. Use this only when you are done
+#    running experiments and want to clean up the resources. Otherwise just run
+#    new commands with the same job.
 monarch kill
 ```
 

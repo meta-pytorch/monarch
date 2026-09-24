@@ -28,7 +28,7 @@ find "$VENV" -type f -size -100M -printf '%s\n' | awk '{s+=$1} END{printf "%.1f\
 find "$VENV" -type f -size +100M -printf '%s\n' | awk '{s+=$1} END{printf "%.1f\n",s/2^30}'
 
 echo "### apply (mount_open in output, wall from time)"
-rm -rf .monarch && time "$MON" apply job.job
+time "$MON" apply job.job
 
 echo "### echo --all / hostname --one (wall)"
 time "$MON" exec --all -- echo hello
