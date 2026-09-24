@@ -48,6 +48,7 @@ use hyperactor::channel::Tx;
 use hyperactor::mailbox::PortReceiver;
 use monarch_hyperactor::context::PyInstance;
 use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use serde::Deserialize;
@@ -344,16 +345,31 @@ fn connect(addr: &str, num_streams: usize) -> PyResult<PyChainSession> {
     Ok(PyChainSession { tx: Arc::new(tx) })
 }
 
+/// How many bytes of a `len`-byte block to send: the leading `size` if given,
+/// otherwise all of it.
+fn payload_len(len: usize, size: Option<usize>) -> PyResult<usize> {
+    match size {
+        None => Ok(len),
+        Some(n) if n <= len => Ok(n),
+        Some(n) => Err(PyValueError::new_err(format!(
+            "size {n} exceeds the {len}-byte block"
+        ))),
+    }
+}
+
 /// Stripe `buf` into `chunk_size`-byte frames and post them to the peer. The chain
 /// source calls this to prime the pipeline; interior nodes forward via the relay
-/// in [`forward`]. Returns the number of bytes sent.
+/// in [`forward`]. If `size` is given, only the block's leading `size` bytes are sent.
+/// Returns the number of bytes sent.
 #[pyfunction]
+#[pyo3(signature = (session, data, chunk_size, tag, size = None))]
 fn send_block(
     py: Python<'_>,
     session: &PyChainSession,
     data: &Bound<'_, PyBytes>,
     chunk_size: usize,
     tag: u64,
+    size: Option<usize>,
 ) -> PyResult<usize> {
     // Wrap the Python bytes as a shared Bytes with no payload copy: the wrapper
     // pins the PyBytes alive for the lifetime of every chunk sliced from it, so
@@ -362,7 +378,7 @@ fn send_block(
     // `Buffer::take_part` uses); each chunk is then a zero-copy slice of it
     // wrapped as a Part.
     let owned = monarch_hyperactor::buffers::py_bytes_to_bytes(data.clone().unbind());
-    let total = owned.len();
+    let total = payload_len(owned.len(), size)?;
     let chunk_size = chunk_size.max(1);
     let tx = session.tx.clone();
     py.detach(|| {
@@ -528,7 +544,9 @@ fn validate_port_addr(addr: &str) -> PyResult<()> {
 ///
 /// Same zero-copy discipline as [`send_block`]: the block is wrapped once as a shared
 /// `Bytes` and each chunk is a slice of it, so the source never copies the payload.
+/// `size` limits the send to the block's leading bytes, as in [`send_block`].
 #[pyfunction]
+#[pyo3(signature = (instance, port, data, chunk_size, tag, size = None))]
 fn send_block_to_port(
     py: Python<'_>,
     instance: &PyInstance,
@@ -536,6 +554,7 @@ fn send_block_to_port(
     data: &Bound<'_, PyBytes>,
     chunk_size: usize,
     tag: u64,
+    size: Option<usize>,
 ) -> PyResult<usize> {
     // `attest` is unchecked: the receiving port must be one minted by `serve_port`, i.e.
     // typed `Chunk`. Pointing this at any other port is a decode error on delivery.
@@ -552,7 +571,7 @@ fn send_block_to_port(
         .map_err(|e| PyRuntimeError::new_err(format!("bad port addr {port}: {e}")))?;
     let port_ref = PortRef::<Chunk>::attest(port_addr);
     let owned = monarch_hyperactor::buffers::py_bytes_to_bytes(data.clone().unbind());
-    let total = owned.len();
+    let total = payload_len(owned.len(), size)?;
     let chunk_size = chunk_size.max(1);
     let instance = instance.clone();
     py.detach(|| {
@@ -597,6 +616,15 @@ mod tests {
     use hyperactor::channel::TcpMode;
 
     use super::*;
+
+    #[test]
+    fn payload_len_sends_whole_block_or_leading_bytes() {
+        assert_eq!(payload_len(64, None).unwrap(), 64);
+        assert_eq!(payload_len(64, Some(10)).unwrap(), 10);
+        assert_eq!(payload_len(64, Some(0)).unwrap(), 0);
+        assert_eq!(payload_len(64, Some(64)).unwrap(), 64);
+        assert!(payload_len(64, Some(65)).is_err());
+    }
 
     /// A two-hop chain over TCP (metatls needs Meta TLS infra not present in a
     /// unit test): source -> relay -> tail. The relay forwards each chunk to the
