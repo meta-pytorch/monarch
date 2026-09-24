@@ -21,11 +21,20 @@ def serve(bind_addr: str | None = None) -> ChainServer: ...
 def serve_port(instance: Instance) -> ChainServer: ...
 def connect(addr: str, num_streams: int = ...) -> ChainSession: ...
 def send_block(
-    session: ChainSession, data: bytes, chunk_size: int, tag: int
+    session: ChainSession,
+    data: bytes,
+    chunk_size: int,
+    tag: int,
+    size: int | None = None,
 ) -> int: ...
 def validate_port_addr(addr: str) -> None: ...
 def send_block_to_port(
-    instance: Instance, port: str, data: bytes, chunk_size: int, tag: int
+    instance: Instance,
+    port: str,
+    data: bytes,
+    chunk_size: int,
+    tag: int,
+    size: int | None = None,
 ) -> int: ...
 def forward(
     server: ChainServer,

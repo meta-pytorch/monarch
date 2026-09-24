@@ -234,7 +234,7 @@ def build_index(source_path: str, previous: dict) -> dict:
 
 def materialise_block(
     index: dict, block: int, buf: bytearray
-) -> tuple[bytes, list[str]]:
+) -> tuple[bytes, int, list[str]]:
     """Re-read block ``block`` from the source into ``buf``, a caller-owned
     ``BLOCK_SIZE`` ``bytearray`` reused across calls (the client keeps one per mount
     instead of allocating + zeroing a fresh 64 MiB ``bytearray`` per delivery). Every
@@ -245,10 +245,12 @@ def materialise_block(
     size lets a downstream transport move uniform chunks (e.g. a fixed-size receive
     buffer).
 
-    Returns ``(bytes, diverged)``: the block buffer (``bytes``, not the working
+    Returns ``(bytes, used, diverged)``: the block buffer (``bytes``, not the working
     ``bytearray`` -- the actor message bus rejects ``bytearray`` with "cannot be
-    converted to PyBytes", so that copy is load-bearing), and the list of vpaths
-    whose source diverged under the fence. The freshness fence is PER FILE, not per
+    converted to PyBytes", so that copy is load-bearing); ``used``, the length of the
+    prefix through the last byte any file in this block references (0 for a block no
+    file references), which a transport may send instead of the whole block; and the
+    list of vpaths whose source diverged under the fence. The freshness fence is PER FILE, not per
     block: a diverged file's bytes in the block are overwritten with random garbage
     (never its changed content) and its vpath returned, so the caller marks just that
     file stale (its reads then EIO) while co-located unchanged files keep their real
@@ -264,6 +266,7 @@ def materialise_block(
         )
     block_end = block_start + BLOCK_SIZE
     mv = memoryview(buf)
+    used_end = 0
     diverged: list[str] = []
     for vpath, node in index.items():
         off = node.get("global_offset")
@@ -273,6 +276,7 @@ def materialise_block(
         hi = min(off + node["file_len"], block_end)
         if lo >= hi:
             continue  # this file does not touch the block
+        used_end = max(used_end, hi - block_start)
         dst = mv[lo - block_start : hi - block_start]
         full_path = node["full_path"]
         # Reproduce the file's fenced bytes, guarded by the size+mtime fence (anything
@@ -294,7 +298,7 @@ def materialise_block(
             # stale file EIOs -- it just hardens against an EIO-check bypass.
             diverged.append(vpath)
             dst[:] = os.urandom(hi - lo)
-    return bytes(buf), diverged
+    return bytes(buf), used_end, diverged
 
 
 def _point_to_key(point: dict) -> str:
@@ -689,7 +693,7 @@ class MountHandlerClient(Actor):
         if block in self._delivered:
             return
         assert self.index is not None and self._leader is not None
-        data, stale = materialise_block(self.index, block, self._mat_buf)
+        data, used, stale = materialise_block(self.index, block, self._mat_buf)
         if stale:
             logger.warning(
                 "block %s: %d file(s) diverged under the fence, delivered stale: %s",
@@ -720,14 +724,15 @@ class MountHandlerClient(Actor):
                 data,
                 self._cbc_chunk,
                 int(block),
+                used,
             )
         else:
             from monarch._rust_bindings.monarch_extension.chain_broadcast import (
                 send_block,
             )
 
-            send_block(head, data, self._cbc_chunk, int(block))
-        self._leader.await_block.call_one(int(block), stale, len(data)).get()
+            send_block(head, data, self._cbc_chunk, int(block), used)
+        self._leader.await_block.call_one(int(block), stale, used).get()
         self._delivered.add(block)
 
     @endpoint
