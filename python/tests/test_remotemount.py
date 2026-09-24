@@ -19,6 +19,8 @@ import tempfile
 import threading
 import time
 from collections.abc import Generator
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
@@ -26,7 +28,12 @@ from monarch._rust_bindings.monarch_extension.chunked_fuse import (
     FuseMountHandle,
     mount_chunked_fuse,
 )
-from monarch.remotemount.remotemount import BLOCK_SIZE, build_index, materialise_block
+from monarch.remotemount.remotemount import (
+    BLOCK_SIZE,
+    build_index,
+    materialise_block,
+    MountHandlerClient,
+)
 
 # Freshness is driven by per-file (size, mtime_ns) recorded in the layout
 # rather than xxhash block hashing. The FUSE tests pack a source dir into
@@ -168,7 +175,7 @@ class TestBlockBoundary:
 
     def test_file_spanning_two_blocks(self) -> None:
         """A file larger than one block occupies two blocks; each holds the
-        correct slice (the tail block zero-padded to BLOCK_SIZE)."""
+        correct slice, and the tail block reports only its file bytes as used."""
         size = BLOCK_SIZE + 1024
         with tempfile.TemporaryDirectory() as d:
             data = os.urandom(size)
@@ -178,12 +185,65 @@ class TestBlockBoundary:
             assert meta["/big.bin"]["global_offset"] == 0
             assert meta["/"]["total_size"] == size
             assert (size + BLOCK_SIZE - 1) // BLOCK_SIZE == 2
-            block0, _ = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
-            block1, _ = materialise_block(meta, 1, bytearray(BLOCK_SIZE))
+            block0, used0, _ = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
+            block1, used1, _ = materialise_block(meta, 1, bytearray(BLOCK_SIZE))
             assert len(block0) == BLOCK_SIZE and len(block1) == BLOCK_SIZE
+            assert (used0, used1) == (BLOCK_SIZE, 1024)
             assert block0 == data[:BLOCK_SIZE]
             assert block1[:1024] == data[BLOCK_SIZE:]
             assert block1[1024:] == bytes(BLOCK_SIZE - 1024)  # zero-padded tail
+
+    def test_old_generation_tail_stays_short_after_appends(
+        self, tmp_path: Path
+    ) -> None:
+        """Each generation's tail reports a short used prefix, even after it is no
+        longer last; the returned block stays full size."""
+        (tmp_path / "old.py").write_bytes(b"old")
+        first = build_index(str(tmp_path), {})
+        (tmp_path / "new.py").write_bytes(b"newer")
+        second = build_index(str(tmp_path), first)
+        (tmp_path / "last.py").write_bytes(b"last")
+        third = build_index(str(tmp_path), second)
+        buf = bytearray(b"x") * BLOCK_SIZE
+        for block, expected in enumerate((b"old", b"newer", b"last")):
+            data, used, stale = materialise_block(third, block, buf)
+            assert len(data) == BLOCK_SIZE
+            assert used == len(expected)
+            assert data[:used] == expected
+            assert stale == []
+
+    def test_internal_gaps_preserve_offsets_and_retired_blocks_are_empty(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "a").write_bytes(b"aaa")
+        (tmp_path / "b").write_bytes(b"bbbb")
+        (tmp_path / "c").write_bytes(b"ccccc")
+        before = build_index(str(tmp_path), {})
+        (tmp_path / "b").unlink()
+        (tmp_path / "later").write_bytes(b"later")
+        after = build_index(str(tmp_path), before)
+        buf = bytearray(b"x") * BLOCK_SIZE
+        data, used, stale = materialise_block(after, 0, buf)
+        assert data[:used] == b"aaa" + b"xxxx" + b"ccccc"
+        assert after["/c"]["global_offset"] == before["/c"]["global_offset"] == 7
+        assert stale == []
+        (tmp_path / "a").unlink()
+        (tmp_path / "c").unlink()
+        final = build_index(str(tmp_path), after)
+        _data, used, stale = materialise_block(final, 0, buf)
+        assert (used, stale) == (0, [])
+        data, used, stale = materialise_block(final, 1, buf)
+        assert (data[:used], stale) == (b"later", [])
+
+    def test_short_payload_preserves_stale_file_ranges(self, tmp_path: Path) -> None:
+        (tmp_path / "a").write_bytes(b"good")
+        (tmp_path / "b").write_bytes(b"stale")
+        index = build_index(str(tmp_path), {})
+        (tmp_path / "b").unlink()
+        data, used, stale = materialise_block(index, 0, bytearray(BLOCK_SIZE))
+        assert used == 9  # Keep the original fenced extent, even if missing.
+        assert data[:4] == b"good"
+        assert stale == ["/b"]
 
     def test_file_exactly_one_block(self) -> None:
         """A file exactly one block long occupies a single block; the next block
@@ -194,7 +254,8 @@ class TestBlockBoundary:
                 f.write(data)
             meta = build_index(d, {})
             assert meta["/"]["total_size"] == BLOCK_SIZE
-            assert materialise_block(meta, 0, bytearray(BLOCK_SIZE))[0] == data
+            block, used, _ = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
+            assert (block, used) == (data, BLOCK_SIZE)
             with pytest.raises(ValueError):
                 materialise_block(meta, 1, bytearray(BLOCK_SIZE))
 
@@ -219,6 +280,48 @@ class TestBlockBoundary:
             assert packed[len(small) : len(small) + len(big)] == big
 
 
+class TestDeliveryPayloadSizing:
+    @pytest.mark.parametrize("gateway", [False, True])
+    def test_tiny_file_limits_send_to_used_bytes(self, gateway: bool) -> None:
+        content = b"tiny prefill"
+        with tempfile.TemporaryDirectory() as source:
+            with open(os.path.join(source, "small.py"), "wb") as output:
+                output.write(content)
+
+            client = MountHandlerClient.__new__(MountHandlerClient)
+            client.index = build_index(source, {})
+            client._leader = MagicMock()
+            client._cbc_head = "port-id" if gateway else MagicMock()
+            client._cbc_chunk = 64 * 1024
+            client._mat_buf = bytearray(BLOCK_SIZE)
+            client._delivered = set()
+
+            with (
+                patch("monarch.actor.context"),
+                patch(
+                    "monarch._rust_bindings.monarch_extension.chain_broadcast.send_block_to_port"
+                ) as send_block_to_port,
+                patch(
+                    "monarch._rust_bindings.monarch_extension.chain_broadcast.send_block"
+                ) as send_block,
+            ):
+                client._deliver(0)
+
+            if gateway:
+                send_block.assert_not_called()
+                _instance, port, sent_data, _chunk, tag, size = (
+                    send_block_to_port.call_args.args
+                )
+                assert port == "port-id"
+            else:
+                send_block_to_port.assert_not_called()
+                _session, sent_data, _chunk, tag, size = send_block.call_args.args
+            assert (len(sent_data), tag, size) == (BLOCK_SIZE, 0, len(content))
+            client._leader.await_block.call_one.assert_called_once_with(
+                0, [], len(content)
+            )
+
+
 class TestBuildIndex:
     """build_index meta structure: offsets, contiguity, symlinks, directories."""
 
@@ -238,6 +341,8 @@ class TestBuildIndex:
             assert meta["/a.txt"]["file_len"] == len(content)
             assert meta["/"]["total_size"] == len(content)
             assert b"".join(bytes(c) for c in chunks)[: len(content)] == content
+            block, used, _ = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
+            assert block[:used] == content
 
     def test_multiple_files_contiguous_offsets(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -412,8 +517,9 @@ class TestMaterialiseSourceDiverged:
                 f.write(b"x" * 1000)
             meta = build_index(d, {})
             os.truncate(path, 500)
-            data, diverged = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
+            data, used, diverged = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
             assert diverged == ["/f.bin"]
+            assert used == 1000  # The fenced extent, not the truncated length.
             # The diverged file's bytes are garbage, NOT the (now-shorter) source.
             assert data[:1000] != b"x" * 1000
 
@@ -424,8 +530,9 @@ class TestMaterialiseSourceDiverged:
                 f.write(b"x" * 1000)
             meta = build_index(d, {})
             os.remove(path)
-            _data, diverged = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
+            _data, used, diverged = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
             assert diverged == ["/f.bin"]
+            assert used == 1000
 
     def test_mtime_change_same_size_diverges(self) -> None:
         """A same-size in-place edit bumps mtime, tripping the fence via the
@@ -437,8 +544,9 @@ class TestMaterialiseSourceDiverged:
             meta = build_index(d, {})
             st = os.stat(path)
             os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
-            _data, diverged = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
+            _data, used, diverged = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
             assert diverged == ["/f.bin"]
+            assert used == 1000
 
     def test_unchanged_files_not_diverged(self) -> None:
         """The happy path: every file matches the fence, so none is reported."""
@@ -448,8 +556,10 @@ class TestMaterialiseSourceDiverged:
             with open(os.path.join(d, "b.txt"), "wb") as f:
                 f.write(b"b" * 100)
             meta = build_index(d, {})
-            _data, diverged = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
+            data, used, diverged = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
             assert diverged == []
+            assert used == 200
+            assert data[:used] == b"a" * 100 + b"b" * 100
 
 
 def _check_fuse_available() -> bool:
@@ -556,7 +666,7 @@ def _pack_for_test(
     for b in range(n_blocks):
         # materialise_block returns a fixed BLOCK_SIZE buffer; clip the tail
         # block's zero pad so ``staging`` stays exactly total_size.
-        block_bytes, _ = materialise_block(meta, b, mat_buf)
+        block_bytes, _, _ = materialise_block(meta, b, mat_buf)
         start = b * BLOCK_SIZE
         valid = min(BLOCK_SIZE, total_size - start)
         staging[start : start + valid] = block_bytes[:valid]

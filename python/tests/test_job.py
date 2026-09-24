@@ -276,7 +276,11 @@ def test_create_job_sidecar_spawns_job_sidecar_worker_module():
 
     lock_path, config_key, command = create.call_args.args
     assert lock_path == js.job_sidecar_lock_path("apply_id")
-    assert config_key == "apply_id"
+    assert config_key == (
+        "apply_id",
+        "metatls",
+        "tcp://127.0.0.1:45678",
+    )
     assert command == [
         sys.executable,
         "-m",
@@ -311,12 +315,12 @@ def test_mounts_ensure_open_does_not_create_sidecar_when_empty():
         patch(
             "monarch._src.job.mount_config.find_job_sidecar", return_value=None
         ) as find_sidecar,
-        patch("monarch._src.job.mount_config.create_job_sidecar") as create_sidecar,
+        patch("monarch._src.job.mount_config.get_job_sidecar") as get_sidecar,
     ):
         Mounts().ensure_open("apply_id", {})
 
     find_sidecar.assert_called_once_with("apply_id")
-    create_sidecar.assert_not_called()
+    get_sidecar.assert_not_called()
 
 
 def test_mounts_ensure_open_sends_mounts_request():
@@ -325,12 +329,12 @@ def test_mounts_ensure_open_sends_mounts_request():
     guard = MagicMock()
 
     with patch(
-        "monarch._src.job.mount_config.create_job_sidecar",
+        "monarch._src.job.mount_config.get_job_sidecar",
         return_value=guard,
-    ) as create_sidecar:
+    ) as get_sidecar:
         mounts.ensure_open("apply_id", {})
 
-    create_sidecar.assert_called_once_with("apply_id")
+    get_sidecar.assert_called_once_with("apply_id")
     request = guard.send.call_args.args[0]
     assert isinstance(request, js.MountsRequest)
     guard.send.return_value.get.assert_called_once_with()
@@ -393,9 +397,7 @@ def test_mount_entries_carry_whether_the_sidecar_can_dial_the_workers():
         mounts.remote_mount("/tmp/source")
         guard = MagicMock()
 
-        with patch(
-            "monarch._src.job.mount_config.create_job_sidecar", return_value=guard
-        ):
+        with patch("monarch._src.job.mount_config.get_job_sidecar", return_value=guard):
             mounts.ensure_open("apply_id", {}, via_gateway)
 
         request = guard.send.call_args.args[0]
@@ -1324,6 +1326,16 @@ def test_batch_job_forwards_connection_input_rebind() -> None:
     batch._rebind_connection_inputs(spec)
 
     job._rebind_connection_inputs.assert_called_once_with(spec)
+
+
+def test_batch_job_forwards_sidecar_gateway_preparation() -> None:
+    job = MockJobTrait(host_names=["hosts"])
+    job._prepare_sidecar_gateway = MagicMock()
+    batch = BatchJob(job)
+
+    batch._prepare_sidecar_gateway("apply_id")
+
+    job._prepare_sidecar_gateway.assert_called_once_with("apply_id")
 
 
 def test_batch_job_forwards_cleanup_log_context() -> None:
