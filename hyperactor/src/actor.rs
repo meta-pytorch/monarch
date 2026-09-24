@@ -522,7 +522,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
                 bincode::serde::decode_from_slice(&serialized_params, bincode::config::legacy())
                     .map(|(v, _)| v)?;
             let actor = Self::new(params, &environment).await?;
-            let handle = proc.spawn_with_uid_in_environment(uid, actor, environment)?;
+            let handle = proc.spawn_bound_with_uid_in_environment(uid, actor, environment)?;
             // We return only the ActorAddr, not a typed ActorRef.
             // Callers that hold this ID can interact with the actor
             // only via the serialized/opaque messaging path, which
@@ -556,8 +556,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
                     .map(|(v, _)| v)?;
             let actor = Self::new(params, &environment).await?;
             let handle =
-                proc.spawn_child_with_uid_in_environment(parent, uid, actor, environment)?;
-            handle.bind::<Self>();
+                proc.spawn_child_bound_with_uid_in_environment(parent, uid, actor, environment)?;
             Ok(handle.into_any())
         })
     }

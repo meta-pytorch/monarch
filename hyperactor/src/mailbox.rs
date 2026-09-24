@@ -3495,10 +3495,25 @@ impl fmt::Debug for State {
 // TODO: mux based on some parameterized type. (mux key).
 /// An in-memory mailbox muxer. This is used to route messages to
 /// different underlying senders.
+///
+/// Messages for an actor that has not yet bound are buffered and
+/// delivered, in order, when it binds. If the actor does not bind
+/// within [`crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT`], they are
+/// returned as undeliverable with [`InvalidReferenceReason::ActorNotExist`].
 #[derive(Clone)]
 pub struct MailboxMuxer {
-    mailboxes: Arc<DashMap<ActorId, Box<dyn MailboxSender + Send + Sync>>>,
+    mailboxes: Arc<DashMap<ActorId, ActorMailbox>>,
     status_sender: Arc<OnceLock<Box<dyn MailboxSender + Send + Sync>>>,
+}
+
+type PendingMessage = (MessageEnvelope, PortHandle<Undeliverable<MessageEnvelope>>);
+
+enum ActorMailbox {
+    /// The actor has bound; messages go straight to its sender.
+    Bound(Arc<dyn MailboxSender + Send + Sync>),
+    /// The actor has not bound yet. Its messages expire after
+    /// [`crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT`].
+    Buffering(Vec<PendingMessage>),
 }
 
 impl Default for MailboxMuxer {
@@ -3517,14 +3532,27 @@ impl MailboxMuxer {
     }
 
     /// Route messages destined for the provided actor id to the provided
-    /// sender. Returns false if there is already a sender associated
-    /// with the actor. In this case, the sender is not replaced, and
-    /// the caller must [`MailboxMuxer::unbind`] it first.
+    /// sender, first delivering any messages buffered for the actor.
+    /// Returns false if the actor is already bound. In this case, the
+    /// sender is not replaced, and the caller must
+    /// [`MailboxMuxer::unbind`] it first.
     pub fn bind(&self, actor_id: ActorId, sender: impl MailboxSender + 'static) -> bool {
+        let sender: Arc<dyn MailboxSender + Send + Sync> = Arc::new(sender);
         match self.mailboxes.entry(actor_id) {
-            Entry::Occupied(_) => false,
             Entry::Vacant(entry) => {
-                entry.insert(Box::new(sender));
+                entry.insert(ActorMailbox::Bound(sender));
+                true
+            }
+            Entry::Occupied(mut entry) => {
+                let ActorMailbox::Buffering(pending) = entry.get_mut() else {
+                    return false;
+                };
+                // Holding the entry lock keeps later messages behind the
+                // buffered ones. `post` must not re-enter the muxer.
+                for (envelope, return_handle) in std::mem::take(pending) {
+                    sender.post(envelope, return_handle);
+                }
+                entry.insert(ActorMailbox::Bound(sender));
                 true
             }
         }
@@ -3546,8 +3574,65 @@ impl MailboxMuxer {
     /// that actor.
     #[allow(dead_code)]
     pub(crate) fn unbind(&self, actor_id: &ActorId) {
-        self.mailboxes.remove(actor_id);
+        self.mailboxes.remove_if(actor_id, |_, mailbox| {
+            matches!(mailbox, ActorMailbox::Bound(_))
+        });
     }
+
+    /// Deliver a message for an actor that was not bound when
+    /// [`MailboxSender::post_unchecked`] looked it up.
+    fn post_unbound(
+        &self,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        let timeout = hyperactor_config::global::get(crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT);
+        match self.mailboxes.entry(envelope.dest().actor_id().clone()) {
+            Entry::Occupied(mut entry) => match entry.get_mut() {
+                ActorMailbox::Bound(sender) => sender.post(envelope, return_handle),
+                ActorMailbox::Buffering(pending) => pending.push((envelope, return_handle)),
+            },
+            Entry::Vacant(_) if timeout.is_zero() => {
+                let failure = actor_not_exist(&envelope);
+                envelope.undeliverable(failure, return_handle);
+            }
+            Entry::Vacant(entry) => {
+                let actor_id = entry.key().clone();
+                entry.insert(ActorMailbox::Buffering(vec![(envelope, return_handle)]));
+                let mailboxes = Arc::downgrade(&self.mailboxes);
+                crate::init::get_runtime().spawn(async move {
+                    tokio::time::sleep(timeout).await;
+                    let Some(mailboxes) = mailboxes.upgrade() else {
+                        return;
+                    };
+                    let Some((actor_id, ActorMailbox::Buffering(expired))) = mailboxes
+                        .remove_if(&actor_id, |_, mailbox| {
+                            matches!(mailbox, ActorMailbox::Buffering(_))
+                        })
+                    else {
+                        return;
+                    };
+                    tracing::warn!(
+                        %actor_id,
+                        count = expired.len(),
+                        ?timeout,
+                        "actor did not bind in time; returning buffered messages",
+                    );
+                    for (envelope, return_handle) in expired {
+                        let failure = actor_not_exist(&envelope);
+                        envelope.undeliverable(failure, return_handle);
+                    }
+                });
+            }
+        }
+    }
+}
+
+fn actor_not_exist(envelope: &MessageEnvelope) -> DeliveryFailure {
+    DeliveryFailure::new(InvalidReference::new(
+        envelope.dest().actor_addr(),
+        InvalidReferenceReason::ActorNotExist,
+    ))
 }
 
 #[async_trait]
@@ -3564,29 +3649,25 @@ impl MailboxSender for MailboxMuxer {
             return;
         }
 
-        let dest_actor_ref = envelope.dest().actor_addr();
-        match self.mailboxes.get(dest_actor_ref.id()) {
-            None => {
-                let failure = DeliveryFailure::new(InvalidReference::new(
-                    dest_actor_ref,
-                    InvalidReferenceReason::ActorNotExist,
-                ));
-                envelope.undeliverable(failure, return_handle)
-            }
-            Some(sender) => sender.post(envelope, return_handle),
+        if let Some(mailbox) = self.mailboxes.get(envelope.dest().actor_id())
+            && let ActorMailbox::Bound(sender) = mailbox.value()
+        {
+            return sender.post(envelope, return_handle);
         }
+        self.post_unbound(envelope, return_handle);
     }
 
     async fn flush(&self) -> Result<(), anyhow::Error> {
-        let keys: Vec<_> = self
+        let senders: Vec<_> = self
             .mailboxes
             .iter()
-            .map(|entry| entry.key().clone())
+            .filter_map(|mailbox| match mailbox.value() {
+                ActorMailbox::Bound(sender) => Some(Arc::clone(sender)),
+                ActorMailbox::Buffering(_) => None,
+            })
             .collect();
-        for key in keys {
-            if let Some(sender) = self.mailboxes.get(&key) {
-                sender.value().flush().await?;
-            }
+        for sender in senders {
+            sender.flush().await?;
         }
         Ok(())
     }
@@ -4707,6 +4788,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_muxer() {
+        let config = hyperactor_config::global::lock();
+        let _config_guard = config.override_key(
+            crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT,
+            Duration::from_millis(100),
+        );
         let muxer = MailboxMuxer::new();
 
         let mbox0 = Mailbox::new(test_actor_id("0", "actor1"));
@@ -4764,6 +4850,76 @@ mod tests {
         let Ok(Err(err)) = handle.await else { panic!() };
         assert_eq!(err.actor_addr(), &actor_id(0));
         */
+    }
+
+    fn muxer_envelope(dest: PortAddr, value: u64) -> MessageEnvelope {
+        MessageEnvelope::serialize(test_actor_id("0", "sender"), dest, &value, Flattrs::new())
+            .expect("serialize")
+    }
+
+    #[tokio::test]
+    async fn muxer_buffers_until_bind() {
+        let muxer = MailboxMuxer::new();
+        let mbox = Mailbox::new(test_actor_id("0", "late"));
+        let (port, mut receiver) = mbox.open_port::<u64>();
+        let dest = port.bind().port_addr().clone();
+        let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
+
+        muxer.post(muxer_envelope(dest.clone(), 1), return_handle.clone());
+        muxer.post(muxer_envelope(dest.clone(), 2), return_handle.clone());
+        assert!(
+            receiver.try_recv().unwrap().is_none(),
+            "messages must wait for the mailbox to bind"
+        );
+
+        assert!(muxer.bind_mailbox(mbox.clone()));
+        muxer.post(muxer_envelope(dest, 3), return_handle.clone());
+
+        for expected in 1..=3u64 {
+            assert_eq!(receiver.recv().await.unwrap(), expected);
+        }
+        assert!(
+            return_rx.try_recv().unwrap().is_none(),
+            "no message should bounce"
+        );
+        assert!(
+            !muxer.bind_mailbox(mbox),
+            "a second bind must not replace the first"
+        );
+    }
+
+    #[tokio::test]
+    async fn muxer_zero_timeout_bounces_immediately() {
+        let config = hyperactor_config::global::lock();
+        let _config_guard = config.override_key(
+            crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT,
+            Duration::ZERO,
+        );
+        let muxer = MailboxMuxer::new();
+        let missing_actor = test_actor_id("0", "missing_actor");
+        let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
+
+        muxer.post(
+            muxer_envelope(missing_actor.port_addr(Port::from(1234)), 1),
+            return_handle,
+        );
+
+        let undelivered = return_rx
+            .try_recv()
+            .unwrap()
+            .expect("zero timeout must bounce without buffering")
+            .into_message()
+            .expect("expected returned envelope");
+        let root_failure = undelivered
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        let DeliveryFailureKind::InvalidReference(invalid_reference) = &root_failure.kind else {
+            panic!("expected invalid reference, got {root_failure}");
+        };
+        assert_eq!(
+            invalid_reference.reason,
+            InvalidReferenceReason::ActorNotExist
+        );
     }
 
     #[tokio::test]

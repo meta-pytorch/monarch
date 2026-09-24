@@ -60,9 +60,10 @@
 //! actor.
 //!
 //! A typical caller only needs the extension trait. The returned [`ActorRef`]
-//! names where the actor will run, but the remote proc has to spawn and link it
-//! before it can route — messages sent earlier are dropped. Spawn with a
-//! readiness port and wait for the signal before messaging the actor:
+//! names where the actor will run and is usable immediately: the remote proc
+//! queues messages for the actor until it starts. They are returned as
+//! undeliverable only if the actor does not start within
+//! [`hyperactor::config::PENDING_ACTOR_DELIVERY_TIMEOUT`]:
 //!
 //! ```rust,ignore
 //! use hyperactor::ActorRef;
@@ -80,17 +81,11 @@
 //!
 //! impl Handler<Start> for Driver {
 //!     async fn handle(&mut self, cx: &Context<Self>, _start: Start) -> anyhow::Result<()> {
-//!         let (ready, ready_rx) = cx.open_once_port::<()>();
-//!         let calculator = self.actor_spawner.spawn_uid_with_ready::<Calculator>(
+//!         let calculator = self.actor_spawner.spawn_uid::<Calculator>(
 //!             cx,
 //!             Uid::instance(Label::new("calculator").unwrap()),
 //!             CalculatorParams { initial_value: 0 },
-//!             ready,
 //!         )?;
-//!         // The returned ref names the calculator, but it cannot route until
-//!         // the remote proc spawns and links it. Wait for the readiness signal
-//!         // first, then message the actor we already hold a ref to.
-//!         ready_rx.recv().await?;
 //!         calculator.post(cx, Add { lhs: 40, rhs: 2 });
 //!         Ok(())
 //!     }
@@ -217,13 +212,11 @@ pub trait ActorSpawnerEndpoint {
         self.spawn_uid_with_link::<A>(cx, uid, params, KeepaliveLink::default())
     }
 
-    /// Spawn a registered actor and report when it becomes reachable.
+    /// Spawn a registered actor and report when it has linked.
     ///
-    /// The returned [`ActorRef`] names where the actor will run, but the remote
-    /// proc has to spawn and link it before it can route — messages sent earlier
-    /// are dropped. A bare readiness signal is posted to `ready` once the actor
-    /// has linked, so callers that need to message it can wait for that signal
-    /// instead of guessing with a delay. The address is already known from the
+    /// The returned [`ActorRef`] is usable immediately; see the
+    /// [module docs](self). A bare readiness signal is posted to `ready` once
+    /// the actor has linked. The address is already known from the
     /// synchronously returned [`ActorRef`], so `ready` carries no payload.
     fn spawn_uid_with_ready<A>(
         &self,
@@ -333,7 +326,6 @@ mod tests {
     use hyperactor::ActorEnvironment;
     use hyperactor::ActorHandle;
     use hyperactor::Context;
-    use hyperactor::Endpoint as _;
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::Label;
@@ -552,6 +544,63 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    #[hyperactor::export(Ping)]
+    struct SlowChild;
+
+    #[async_trait]
+    impl Actor for SlowChild {}
+
+    #[async_trait]
+    impl RemoteSpawn for SlowChild {
+        type Params = ();
+
+        async fn new(_params: (), _environment: &ActorEnvironment) -> anyhow::Result<Self> {
+            // Keeps the child unbound on its proc while its spawner messages it.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            Ok(Self)
+        }
+    }
+
+    #[async_trait]
+    impl Handler<Ping> for SlowChild {
+        async fn handle(&mut self, cx: &Context<Self>, message: Ping) -> anyhow::Result<()> {
+            message.0.post(cx, ());
+            Ok(())
+        }
+    }
+
+    hyperactor::register_spawnable!(SlowChild);
+
+    #[derive(Debug)]
+    struct EagerSpawner {
+        actor_spawner: ActorHandle<ActorSpawner>,
+        pong: Option<OncePortRef<()>>,
+    }
+
+    #[async_trait]
+    impl Actor for EagerSpawner {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            let child = self.actor_spawner.spawn_uid::<SlowChild>(
+                this,
+                Uid::instance(Label::new("slow_child").unwrap()),
+                (),
+            )?;
+            let pong = self.pong.take().expect("eager spawner initialized once");
+            child.post(this, Ping(pong));
+            Ok(())
+        }
+
+        async fn handle_supervision_event(
+            &mut self,
+            _this: &Instance<Self>,
+            event: &ActorSupervisionEvent,
+        ) -> anyhow::Result<bool> {
+            // Absorb teardown events so cleanup doesn't surface as a root failure.
+            Ok(!event.is_error())
+        }
+    }
+
     fn encoded_unit() -> Vec<u8> {
         bincode::serde::encode_to_vec((), bincode::config::legacy()).unwrap()
     }
@@ -640,6 +689,32 @@ mod tests {
         // It carries no payload — the caller already holds the address from the
         // synchronously returned ref — so receiving it is the reachability signal.
         tokio::time::timeout(Duration::from_secs(5), ready_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        spawner.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), spawner)
+            .await
+            .unwrap();
+        actor_spawner.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), actor_spawner)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_spawn_uid_delivers_messages_sent_before_child_starts() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let actor_spawner = proc.spawn(ActorSpawner);
+        let (pong, pong_rx) = client.open_once_port::<()>();
+        let spawner = proc.spawn(EagerSpawner {
+            actor_spawner: actor_spawner.clone(),
+            pong: Some(pong.bind()),
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), pong_rx.recv())
             .await
             .unwrap()
             .unwrap();

@@ -116,6 +116,15 @@ declare_attrs! {
     ))
     pub attr MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
+    /// How long a proc buffers messages for an actor that has not yet
+    /// bound its mailbox before returning them as undeliverable. Zero
+    /// returns them immediately.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_PENDING_ACTOR_DELIVERY_TIMEOUT".to_string()),
+        Some("pending_actor_delivery_timeout".to_string()),
+    ))
+    pub attr PENDING_ACTOR_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
+
     /// Maximum number of terminated actor snapshots retained per
     /// proc for post-mortem introspection. When the limit is
     /// exceeded, the oldest entries are evicted.

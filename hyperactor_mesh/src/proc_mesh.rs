@@ -812,9 +812,10 @@ impl ProcMeshRef {
     ///
     /// This initiates an actor spawn on each proc and constructs a stoppable
     /// data mesh from the actor refs and local supervisor handles without
-    /// waiting for the remote supervision sessions to link. If a request cannot
-    /// be initiated, all previously created local supervisors receive a
-    /// best-effort stop request.
+    /// waiting for the remote supervision sessions to link. The mesh is usable
+    /// immediately: each proc queues messages for its actor until the actor
+    /// starts. If a request cannot be initiated, all previously created local
+    /// supervisors receive a best-effort stop request.
     ///
     /// Bounds:
     /// - `A: Actor` - the actor actually runs inside each proc.
@@ -1428,6 +1429,8 @@ mod tests {
     #[cfg(fbcode_build)]
     use hyperactor::ActorRef;
     #[cfg(fbcode_build)]
+    use hyperactor::Endpoint as _;
+    #[cfg(fbcode_build)]
     use hyperactor::Instance;
     #[cfg(fbcode_build)]
     use hyperactor::ProcAddr;
@@ -1532,6 +1535,29 @@ mod tests {
             1,
             "all data mesh actors should share one uid"
         );
+
+        // Message every rank before any of them can have started.
+        let (port, mut rx) = instance.mailbox().open_port();
+        for actor in actor_mesh.values() {
+            actor.post(instance, testactor::GetActorId(port.bind()));
+        }
+        let mut replied = HashSet::new();
+        for _ in 0..actor_mesh.region().num_ranks() {
+            let (actor_addr, _seq) = tokio::time::timeout(Duration::from_secs(60), rx.recv())
+                .await
+                .expect("timed out waiting for a rank to reply")
+                .expect("reply port closed");
+            replied.insert(actor_addr);
+        }
+        assert_eq!(
+            replied,
+            actor_mesh
+                .values()
+                .map(|actor| actor.actor_addr().clone())
+                .collect::<HashSet<_>>(),
+            "every rank should receive the message sent before it started"
+        );
+
         let mut actor_mesh_clone = actor_mesh.clone();
         actor_mesh
             .stop(instance, "test complete".to_string())

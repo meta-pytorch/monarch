@@ -1278,6 +1278,18 @@ impl Proc {
         Ok(self.spawn_inner(actor_id, actor, None, environment))
     }
 
+    /// Like [`spawn_with_uid_in_environment`](Self::spawn_with_uid_in_environment),
+    /// but exports `A`'s handler ports before the actor becomes reachable.
+    pub(crate) fn spawn_bound_with_uid_in_environment<A: Actor + Binds<A>>(
+        &self,
+        uid: Uid,
+        actor: A,
+        environment: ActorEnvironment,
+    ) -> Result<ActorHandle<A>, anyhow::Error> {
+        let actor_id: ActorAddr = self.allocate_root_uid(uid)?;
+        Ok(self.spawn_bound_inner(actor_id, actor, None, environment))
+    }
+
     /// Common spawn logic for both root and child actors. `environment` is
     /// required so no private path can silently default it (AENV-1).
     fn spawn_inner<A: Actor>(
@@ -1289,6 +1301,23 @@ impl Proc {
     ) -> ActorHandle<A> {
         let (instance, receivers) =
             Instance::new(self.clone(), actor_id, false, parent, environment);
+        instance.start(actor, receivers)
+    }
+
+    /// Like [`spawn_inner`](Self::spawn_inner), but binds `A`'s handler
+    /// ports before publishing the mailbox, so that messages the proc
+    /// muxer buffered for the actor are not returned as unbound.
+    fn spawn_bound_inner<A: Actor + Binds<A>>(
+        &self,
+        actor_id: ActorAddr,
+        actor: A,
+        parent: Option<InstanceCell>,
+        environment: ActorEnvironment,
+    ) -> ActorHandle<A> {
+        let (instance, receivers) =
+            Instance::new_unpublished(self.clone(), actor_id, false, parent, environment);
+        instance.inner.cell.bind::<A, A>(&instance.inner.ports);
+        instance.publish();
         instance.start(actor, receivers)
     }
 
@@ -1536,6 +1565,19 @@ impl Proc {
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id = self.ensure_child_uid(parent.actor_addr(), uid)?;
         Ok(self.spawn_inner(actor_id, actor, Some(parent), environment))
+    }
+
+    /// Like [`spawn_child_with_uid_in_environment`](Self::spawn_child_with_uid_in_environment),
+    /// but exports `A`'s handler ports before the actor becomes reachable.
+    pub(crate) fn spawn_child_bound_with_uid_in_environment<A: Actor + Binds<A>>(
+        &self,
+        parent: InstanceCell,
+        uid: Uid,
+        actor: A,
+        environment: ActorEnvironment,
+    ) -> Result<ActorHandle<A>, anyhow::Error> {
+        let actor_id = self.ensure_child_uid(parent.actor_addr(), uid)?;
+        Ok(self.spawn_bound_inner(actor_id, actor, Some(parent), environment))
     }
 
     /// Spawn a named child actor. Same as `spawn_child` but the child
@@ -2518,6 +2560,21 @@ impl<A: Actor> Instance<A> {
         parent: Option<InstanceCell>,
         actor_environment: ActorEnvironment,
     ) -> (Self, InstanceReceivers<A>) {
+        let (instance, receivers) =
+            Self::new_unpublished(proc, actor_id, detached, parent, actor_environment);
+        instance.publish();
+        (instance, receivers)
+    }
+
+    /// Like [`new`](Self::new), but the proc does not route messages to
+    /// the instance until [`publish`](Self::publish) is called.
+    fn new_unpublished(
+        proc: Proc,
+        actor_id: ActorAddr,
+        detached: bool,
+        parent: Option<InstanceCell>,
+        actor_environment: ActorEnvironment,
+    ) -> (Self, InstanceReceivers<A>) {
         // Set up messaging
         let mailbox = Mailbox::new(actor_id.clone());
         let enable_buffering =
@@ -2533,7 +2590,6 @@ impl<A: Actor> Instance<A> {
             Arc::clone(&queue_depth),
             proc_stats,
         ));
-        proc.state().proc_muxer.bind_mailbox(mailbox.clone());
         let (status_tx, status_rx) = watch::channel(ActorStatus::Created);
 
         let actor_type = match TypeInfo::of::<A>() {
@@ -2616,6 +2672,16 @@ impl<A: Actor> Instance<A> {
                 introspect: introspect_receiver,
             },
         )
+    }
+
+    /// Route this instance's messages from the proc, delivering any
+    /// that the proc buffered before the instance existed.
+    fn publish(&self) {
+        self.inner
+            .proc
+            .state()
+            .proc_muxer
+            .bind_mailbox(self.inner.mailbox.clone());
     }
 
     fn spawn_introspect(&self, receiver: PortReceiver<IntrospectMessage>) {
