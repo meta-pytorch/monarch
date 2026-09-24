@@ -451,6 +451,10 @@ class JobTrait(ABC):
         """Resolve and attach through a scheduler-provided client gateway."""
         return None
 
+    def _prepare_sidecar_gateway(self, apply_id: str | None) -> None:
+        """Resolve a gateway the job sidecar can keep using after this client exits."""
+        self._prepare_client_gateway()
+
     def _attach_client(self, attach_to: str | None) -> None:
         """Attach the process-global client context; detaching requires exit."""
         if attach_to is None:
@@ -486,9 +490,9 @@ class JobTrait(ABC):
         if via_gateway and self._components.needs_sidecar():
             # The sidecar runs in a separate process, so attaching the client
             # does not make cluster-only worker addresses routable from the
-            # sidecar. Start it through the same scheduler gateway before any
-            # component initializes the sidecar's actor context.
-            running_job._prepare_client_gateway()
+            # sidecar. Resolve a gateway that remains valid for the sidecar's
+            # lifetime before either process initializes its actor context.
+            running_job._prepare_sidecar_gateway(self.apply_id)
             attach_to = running_job._sidecar_attach_to()
             if self.apply_id is not None and attach_to is not None:
                 create_job_sidecar(
@@ -1205,6 +1209,9 @@ class BatchJob(JobTrait):
 
     def _prepare_client_gateway(self) -> None:
         self._job._prepare_client_gateway()
+
+    def _prepare_sidecar_gateway(self, apply_id: str | None) -> None:
+        self._job._prepare_sidecar_gateway(apply_id)
 
     def _sidecar_attach_to(self) -> str | None:
         return self._job._sidecar_attach_to()
