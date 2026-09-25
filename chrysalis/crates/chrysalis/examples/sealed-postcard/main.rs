@@ -635,10 +635,7 @@ async fn run() {
     let bob_received_every_stream = received_stream_numbers == expected_stream_numbers;
     // Record whether peer-specific pool entries are visible after all
     // the configured streams. These snapshots are not stable connection IDs.
-    let pooled_connection_after = (
-        alice.transport().connection_stats(bob.pid()).is_some(),
-        bob.transport().connection_stats(alice.pid()).is_some(),
-    );
+    let pooled_connection_after = wait_until_pooled(&alice, &bob).await;
 
     // Report the end-to-end stream checks and the peer-specific pool
     // snapshot after the additional streams.
@@ -702,6 +699,25 @@ async fn wait_until_visible(node: &Node, pid: Pid) {
     })
     .await
     .expect("process should become visible within five seconds");
+}
+
+// Wait until both peers' connection statistics name each other,
+// returning the last observation. The transport publishes these
+// snapshots periodically, so they can lag behind completed streams.
+async fn wait_until_pooled(alice: &Node, bob: &Node) -> (bool, bool) {
+    let observe = || {
+        (
+            alice.transport().connection_stats(bob.pid()).is_some(),
+            bob.transport().connection_stats(alice.pid()).is_some(),
+        )
+    };
+    let wait = async {
+        while observe() != (true, true) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(5), wait).await;
+    observe()
 }
 
 #[cfg(test)]

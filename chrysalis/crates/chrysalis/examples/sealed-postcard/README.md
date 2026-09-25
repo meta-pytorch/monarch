@@ -101,7 +101,9 @@ This is a teaching example, not a network benchmark or a security test.
   combine, retransmit, or otherwise packetize stream bytes.
 - `connection_stats(peer)` returns a snapshot when that peer has a pooled
   connection. It is not a stable physical-connection ID and does not enumerate
-  Relay's link-local control connections or routing state.
+  Relay's link-local control connections or routing state. The transport
+  refreshes these snapshots periodically, so a connection can carry streams
+  before its snapshot appears; the example waits for both.
 - The example does not add RPC, messages, mailboxes, actors, persistence, or an
   authorization policy. Those remain application or higher-layer concerns.
 
