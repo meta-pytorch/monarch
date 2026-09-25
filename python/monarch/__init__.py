@@ -11,6 +11,31 @@ from importlib import import_module as _import_module
 from typing import TYPE_CHECKING
 
 
+# On ROCm, triton's bundled LLVM collides with ROCm's libLLVM / libamd_comgr and
+# segfaults libtriton's static initializer the first time triton is imported --
+# which torch does lazily via has_triton() during ordinary tensor ops, taking the
+# spawned actor proc down with SIGSEGV. monarch never uses triton, so mask it out
+# on ROCm before torch loads: torch's has_triton()/find_spec("triton") probes then
+# report triton unavailable and fall back to eager. Opt out with
+# MONARCH_ALLOW_TRITON=1 (e.g. to run torch.compile+triton in your own actors on a
+# ROCm build where triton is not broken). Must run before `import torch` below.
+if os.environ.get("MONARCH_ALLOW_TRITON", "0") != "1":
+    try:
+        import importlib.metadata as _importlib_metadata
+
+        _torch_dist_version = _importlib_metadata.version("torch")
+    except Exception:
+        _torch_dist_version = ""
+    if "rocm" in _torch_dist_version.lower():
+        import sys as _sys
+
+        if "triton" not in _sys.modules:
+            # None makes `import triton` raise ImportError and
+            # importlib.util.find_spec("triton") return None -- both of which
+            # torch's has_triton* / find_spec probes handle gracefully.
+            _sys.modules["triton"] = None
+
+
 # Pre-emptively pre-load torch if environment requires it
 if os.environ.get("MONARCH_PRELOAD_TORCH", "0") == "1":
     try:
