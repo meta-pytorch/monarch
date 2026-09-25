@@ -1000,4 +1000,18 @@ def _get_bootstrap_args() -> tuple[str, Optional[list[str]], dict[str, str]]:
         cmd = sys.executable
         args = ["-m", _BOOTSTRAP_MAIN]
 
+    # Spawned procs inherit our env (this dict starts as a copy of os.environ), so
+    # on ROCm they would re-run the full `import torch` preload (~10s each) and a
+    # multi-proc RDMA spawn overruns the Host::spawn readiness window. Instead hand
+    # spawned procs the "lite" preload: turn the full import OFF and have
+    # monarch/__init__.py dlopen torch's bundled libamdhip64 (~ms). That still wins
+    # the rocprofiler-register race (torch loads the same lib with RTLD_GLOBAL) but
+    # without the import cost. The launching process keeps the full `import torch`.
+    if (
+        os.environ.get("MONARCH_PRELOAD_TORCH") == "1"
+        or os.environ.get("MONARCH_PRELOAD_TORCH_HIP") == "1"
+    ):
+        env["MONARCH_PRELOAD_TORCH"] = "0"
+        env["MONARCH_PRELOAD_TORCH_HIP"] = "1"
+
     return cmd, args, env
