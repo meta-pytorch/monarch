@@ -27,6 +27,7 @@ use typeuri::Named;
 use crate::RdmaOp;
 use crate::RdmaTransportLevel;
 use crate::backend::ibverbs::efa_device::EfaDevice;
+use crate::backend::ibverbs::ionic_device::IonicDevice;
 use crate::backend::ibverbs::manager_actor::IbvBackend;
 use crate::backend::ibverbs::mlx_device::MlxDevice;
 use crate::backend::ibverbs::primitives::IbvConfig;
@@ -342,5 +343,6 @@ macro_rules! register_rdma_backends {
 register_rdma_backends! {
     Mlx: IbvBackend<MlxDevice>,
     Efa: IbvBackend<EfaDevice>,
+    Ionic: IbvBackend<IonicDevice>,
     Tcp: TcpBackend,
 }

@@ -55,6 +55,7 @@ use super::device_selection::select_optimal_ibv_devices;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::efa_device::EfaDevice;
+use super::ionic_device::IonicDevice;
 use super::memory_region::IbvMemoryRegionView;
 use super::memory_region::IbvRemoteMemoryRegionView;
 use super::mlx_device::MlxDevice;
@@ -119,6 +120,7 @@ pub(super) struct CreatePeerQueuePair<M: Referable> {
 }
 wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<MlxDevice>>);
 wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<EfaDevice>>);
+wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<IonicDevice>>);
 
 /// Local-only message: submit a batch of RDMA ops for end-to-end
 /// execution. The manager iterates the batch, resolves each op's
