@@ -20,6 +20,8 @@ pub(crate) mod domain;
 pub mod efa_device;
 pub mod efa_domain;
 pub mod efa_queue_pair;
+pub mod ionic_device;
+pub mod ionic_domain;
 pub mod manager_actor;
 pub mod memory_region;
 pub mod mlx_device;
