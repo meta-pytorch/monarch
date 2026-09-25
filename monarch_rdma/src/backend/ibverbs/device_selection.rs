@@ -25,6 +25,7 @@ use super::device::IbvDeviceImpl;
 use super::primitives::IbvDeviceInfo;
 use crate::device_selection::MemoryLocation;
 use crate::device_selection::PCIAddress;
+use crate::device_selection::PathType;
 use crate::device_selection::PciPath;
 use crate::device_selection::cpu_path;
 use crate::device_selection::cuda_device_count;
@@ -521,6 +522,40 @@ pub fn resolve_target<I: IbvDeviceImpl>(target: &IbvDeviceTarget) -> Result<Opti
                 .next())
         }
     }
+}
+
+/// The path from `location` to the NIC backend `I` would serve memory there
+/// from: the NIC `target` names when one is set, else the NICs
+/// [`select_optimal_ibv_devices`] returns, which all tie. Paths compare across
+/// backends, which is how a host with more than one ibverbs backend picks the
+/// one with the best NIC for a buffer.
+///
+/// A backend with no NIC for `location` (or none matching `target`) gets a
+/// [`PathType::Dis`] path, worse than any real one. Errors when `location` or
+/// `target` cannot be evaluated, which for GPU memory includes CUDA not being
+/// initialized in this process.
+pub fn best_ibv_path<I: IbvDeviceImpl>(
+    location: MemoryLocation,
+    target: Option<&IbvDeviceTarget>,
+) -> Result<PciPath> {
+    let nic = match target {
+        Some(target) => resolve_target::<I>(target)?,
+        None => select_optimal_ibv_devices::<I>(location)?
+            .into_iter()
+            .next(),
+    };
+    let unreachable = PciPath {
+        path_type: PathType::Dis,
+        bottleneck_mbytes_per_sec: 0,
+    };
+    let Some(nic) = nic else {
+        return Ok(unreachable);
+    };
+    let gpus = match location {
+        MemoryLocation::Cpu(_) => Vec::new(),
+        MemoryLocation::Gpu(ordinal) => gpu_pci_addresses(ordinal)?,
+    };
+    Ok(nic_path(&nic, location, &gpus).unwrap_or(unreachable))
 }
 
 /// The NICs of backend `I` for each CUDA runtime ordinal, indexed by ordinal.

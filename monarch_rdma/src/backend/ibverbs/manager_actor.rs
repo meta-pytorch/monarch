@@ -48,7 +48,9 @@ use super::IbvOp;
 use super::cq_actor::CompletionQueueActor;
 use super::device::IbvDevice;
 use super::device::IbvDeviceImpl;
+use super::device_selection::IbvDeviceTarget;
 use super::device_selection::PeerDeviceAffinityPolicy;
+use super::device_selection::best_ibv_path;
 use super::device_selection::configured_peer_device_affinity;
 use super::device_selection::resolve_target;
 use super::device_selection::select_optimal_ibv_devices;
@@ -78,6 +80,8 @@ use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
 use crate::backend::RdmaConfig;
 use crate::backend::ResolveRemoteBackendContext;
+use crate::device_selection::MemoryLocation;
+use crate::device_selection::PciPath;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::rdma_components::RdmaRemoteBuffer;
 use crate::rdma_manager_actor::RdmaManagerActor;
@@ -932,6 +936,9 @@ impl<I: IbvDeviceImpl> Handler<IbvManagerLocalMessage> for IbvManagerActor<I> {
 pub struct IbvBackend<I: IbvDeviceImpl> {
     manager: ActorHandle<IbvManagerActor<I>>,
     queue_pair_router: Arc<QueuePairRouter>,
+    /// The manager's explicit device target, if any, so
+    /// [`RdmaBackend::path_to`] ranks the NIC the manager will actually use.
+    target: Option<IbvDeviceTarget>,
 }
 
 impl<I: IbvDeviceImpl> Clone for IbvBackend<I> {
@@ -939,6 +946,7 @@ impl<I: IbvDeviceImpl> Clone for IbvBackend<I> {
         Self {
             manager: self.manager.clone(),
             queue_pair_router: Arc::clone(&self.queue_pair_router),
+            target: self.target.clone(),
         }
     }
 }
@@ -1011,15 +1019,32 @@ where
         None
     }
 
+    /// The path to the NIC [`IbvManagerActor::resolve_local_mrs`] would pick:
+    /// the configured target, else the best NIC for `location`. A location that
+    /// cannot be ranked (e.g. CUDA not initialized) leaves this backend unranked,
+    /// so it registers as it would on its own and reports its own error.
+    fn path_to(&self, location: MemoryLocation) -> Option<PciPath> {
+        best_ibv_path::<I>(location, self.target.as_ref())
+            .inspect_err(|error| {
+                tracing::debug!(
+                    "cannot rank {} NICs for {location:?}: {error:#}",
+                    I::backend_name()
+                )
+            })
+            .ok()
+    }
+
     async fn spawn(
         cx: &(impl hyperactor::context::Actor + Send + Sync),
         config: &RdmaConfig,
     ) -> Result<Self> {
         let actor = IbvManagerActor::<I>::new(config.ibv.clone()).await?;
         let queue_pair_router = actor.queue_pair_router();
+        let target = actor.config.target.clone();
         Ok(Self {
             manager: cx.spawn(actor),
             queue_pair_router,
+            target,
         })
     }
 

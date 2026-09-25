@@ -32,6 +32,8 @@ use crate::backend::ibverbs::manager_actor::IbvBackend;
 use crate::backend::ibverbs::mlx_device::MlxDevice;
 use crate::backend::ibverbs::primitives::IbvConfig;
 use crate::backend::tcp::manager_actor::TcpBackend;
+use crate::device_selection::MemoryLocation;
+use crate::device_selection::PciPath;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::rdma_components::RdmaRemoteBuffer;
 
@@ -68,6 +70,14 @@ pub trait RdmaBackend: Clone + Debug + Send + Sync + 'static {
     /// operations (e.g. from a GPU kernel).
     fn transport_info(&self) -> Option<Self::TransportInfo>;
 
+    /// The PCIe path from memory at `location` to the NIC this backend would
+    /// serve it from. [`RdmaBackends::register_all`] compares these to pick
+    /// between backends when a host has more than one. `None`, the default,
+    /// means the backend is not ranked by locality and always serves.
+    fn path_to(&self, _location: MemoryLocation) -> Option<PciPath> {
+        None
+    }
+
     /// Spawn the backend's actor(s) as children of `cx` and return its handle.
     async fn spawn(cx: &(impl context::Actor + Send + Sync), config: &RdmaConfig) -> Result<Self>
     where
@@ -103,6 +113,29 @@ pub(crate) trait ResolveRemoteBackendContext<B: RdmaBackend> {
     fn resolve(&self) -> Option<B::RemoteBackendContext>;
 }
 
+/// Which backends should serve a buffer, given each one's
+/// [`RdmaBackend::path_to`] the buffer (in registration order).
+///
+/// An unranked backend (`None`) always serves. A ranked backend serves unless
+/// another ranked backend has a strictly better path, so a host with several
+/// NIC backends serves each buffer from the NICs closest to it rather than
+/// from whichever backend is listed first, and tied backends all serve. With
+/// at most one ranked backend, every backend serves.
+fn serving_backends(paths: &[Option<PciPath>]) -> Vec<bool> {
+    let best = paths
+        .iter()
+        .flatten()
+        .copied()
+        .reduce(|a, b| if b.is_better_than(&a) { b } else { a });
+    paths
+        .iter()
+        .map(|path| match (path, &best) {
+            (Some(path), Some(best)) => !best.is_better_than(path),
+            _ => true,
+        })
+        .collect()
+}
+
 /// Derives the per-process RDMA backend registry from a list of
 /// `Variant: Handle` pairs, where each `Handle` implements
 /// [`RdmaBackend`].
@@ -111,7 +144,9 @@ pub(crate) trait ResolveRemoteBackendContext<B: RdmaBackend> {
 /// wire contexts) with its [`ResolveRemoteBackendContext`] impls and
 /// `RdmaRemoteBuffer::resolve_<name>` accessors, [`RdmaBackendHandle`]
 /// and its `submit` dispatch, and [`RdmaBackends`] (the proc's spawned
-/// backends). The list order is the routing priority.
+/// backends). The list order is the routing priority among the backends a
+/// buffer advertises; which NIC backends advertise it is decided by locality
+/// (see [`serving_backends`]).
 macro_rules! register_rdma_backends {
     ($($variant:ident: $handle:ty),+ $(,)?) => {
         paste::paste! {
@@ -205,18 +240,36 @@ macro_rules! register_rdma_backends {
                     handles
                 }
 
-                /// Register `local` with every spawned backend. On the first
-                /// failure, release the backends that already registered and
-                /// return that error.
+                /// Register `local` with every spawned backend that should
+                /// serve it: those [`serving_backends`] keeps, so on a host
+                /// with several NIC backends only the ones with the best path
+                /// to `local` advertise it. On the first failure, release the
+                /// backends that already registered and return that error.
                 pub(crate) async fn register_all(
                     &self,
                     cx: &(impl context::Actor + Send + Sync),
                     remote_buf_id: usize,
                     local: KeepaliveLocalMemory,
                 ) -> Result<RdmaRemoteBackends> {
+                    let location = local.location();
+                    let paths = [$(
+                        self.[<$variant:lower>]
+                            .as_ref()
+                            .and_then(|handle| <$handle as RdmaBackend>::path_to(handle, location)),
+                    )+];
+                    let mut serving = serving_backends(&paths).into_iter();
                     let mut remotes = RdmaRemoteBackends::default();
                     $(
-                        if let Some(handle) = &self.[<$variant:lower>] {
+                        let serves = serving.next().expect("one entry per backend");
+                        if self.[<$variant:lower>].is_some() && !serves {
+                            tracing::debug!(
+                                "not registering {location:?} memory on {}: another backend has a closer NIC",
+                                stringify!($variant),
+                            );
+                        }
+                        if let Some(handle) = &self.[<$variant:lower>]
+                            && serves
+                        {
                             match <$handle as RdmaBackend>::register_remote_buffer(
                                 handle,
                                 cx,
