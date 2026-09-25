@@ -228,6 +228,7 @@ fn build_rdma_core(rdma_core_dir: &Path) -> PathBuf {
             || line.contains("provider")
             || line.contains("mlx5")
             || line.contains("efa")
+            || line.contains("ionic")
         {
             println!("cargo:warning=cmake: {}", line);
         }
@@ -250,6 +251,7 @@ fn build_rdma_core(rdma_core_dir: &Path) -> PathBuf {
         "lib/statics/libibverbs.a",
         "lib/statics/libmlx5.a",
         "lib/statics/libefa.a",
+        "lib/statics/libionic.a",
         "util/librdma_util.a",
     ];
 
@@ -311,7 +313,7 @@ fn build_rdma_core(rdma_core_dir: &Path) -> PathBuf {
                 "rdma-core build completed but expected output not found: {}\n\
                  lib/statics/ contains: [{}]\n\
                  Ensure libnl3-devel is installed (needed by rdma-core cmake to \
-                 enable mlx5/efa providers).",
+                 enable mlx5/efa/ionic providers).",
                 output, contents
             );
         }
@@ -331,10 +333,12 @@ fn emit_link_directives(rdma_build_dir: &Path) {
     let libmlx5_path = rdma_static_dir.join("libmlx5.a");
     let libibverbs_path = rdma_static_dir.join("libibverbs.a");
     let libefa_path = rdma_static_dir.join("libefa.a");
+    let libionic_path = rdma_static_dir.join("libionic.a");
     let librdma_util_path = rdma_util_dir.join("librdma_util.a");
 
     println!("cargo:rustc-link-arg={}", libmlx5_path.display());
     println!("cargo:rustc-link-arg={}", libefa_path.display());
+    println!("cargo:rustc-link-arg={}", libionic_path.display());
     println!("cargo:rustc-link-arg={}", libibverbs_path.display());
     println!("cargo:rustc-link-arg={}", librdma_util_path.display());
 
@@ -347,9 +351,10 @@ fn emit_link_directives(rdma_build_dir: &Path) {
 
     // Export library paths as a semicolon-separated list
     let lib_paths = format!(
-        "{};{};{};{}",
+        "{};{};{};{};{}",
         libmlx5_path.display(),
         libefa_path.display(),
+        libionic_path.display(),
         libibverbs_path.display(),
         librdma_util_path.display()
     );
