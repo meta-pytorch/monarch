@@ -292,10 +292,20 @@ impl HandleCore {
         // producer's write-lock send. Re-borrowing under the GIL is safe by HDL-1
         // (one-shot: once `Some`, never reset or replaced).
         if self.rx.borrow().is_none() {
+            #[cfg(test)]
+            if let Some(between) = POLL_BETWEEN_CHECKS.with(|hook| hook.borrow_mut().take()) {
+                between();
+            }
             // HDL-10: a closed channel with no value is terminal producer loss,
-            // not a still-pending Handle.
-            self.rx.has_changed().map_err(handle_producer_ended_error)?;
-            return Ok(None);
+            // not a still-pending Handle. `has_changed` also reports a channel
+            // closed just after a send, so read the value again after it.
+            let closed = self.rx.has_changed().err();
+            if self.rx.borrow().is_none() {
+                return match closed {
+                    Some(err) => Err(handle_producer_ended_error(err)),
+                    None => Ok(None),
+                };
+            }
         }
         monarch_with_gil_blocking(GilSite::Convert, |py| {
             match self
@@ -851,6 +861,14 @@ fn schedule_completion(
     };
     event_loop.call_method1("call_soon_threadsafe", (completer, fut, is_exc, value))?;
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Runs once inside `HandleCore::poll`, after it finds no value and before
+    /// it checks whether the channel is closed.
+    static POLL_BETWEEN_CHECKS: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Complete an `asyncio.Future` on its loop thread (HDL-7).
@@ -1568,6 +1586,49 @@ def run_two(h):
             assert_producer_ended_error(py, &poll_err);
             let err = PyHandle::get(r.borrow(py), py, None).unwrap_err();
             assert_producer_ended_error(py, &err);
+        });
+    }
+
+    // A producer that publishes and drops its sender between poll()'s empty
+    // read and its closed check: poll() and get(), whose ready fast path is
+    // poll(), return what was published, not producer loss.
+    // Attests HDL-2, HDL-10.
+    #[test]
+    fn poll_and_get_read_an_outcome_sent_just_before_close() {
+        ensure_python();
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let publish_then_close = |outcome: PyResult<Py<PyAny>>| {
+                let (tx, handle) = pending_handle();
+                POLL_BETWEEN_CHECKS.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move || {
+                        tx.send(Some(outcome)).unwrap();
+                        drop(tx);
+                    }));
+                });
+                Py::new(py, handle).unwrap()
+            };
+
+            let h = publish_then_close(Ok(42i64.into_py_any(py).unwrap()));
+            let polled = h.borrow(py).poll().unwrap().expect("the published value");
+            assert_eq!(polled.extract::<i64>(py).unwrap(), 42);
+
+            let h = publish_then_close(Err(PyValueError::new_err("boom")));
+            let err = h.borrow(py).poll().unwrap_err();
+            assert!(
+                err.is_instance_of::<PyValueError>(py),
+                "poll() should surface the stored exception, not producer loss: {err}"
+            );
+
+            let h = publish_then_close(Ok(7i64.into_py_any(py).unwrap()));
+            let got = PyHandle::get(h.borrow(py), py, None).unwrap();
+            assert_eq!(got.extract::<i64>(py).unwrap(), 7);
+
+            let h = publish_then_close(Err(PyValueError::new_err("boom")));
+            let err = PyHandle::get(h.borrow(py), py, None).unwrap_err();
+            assert!(
+                err.is_instance_of::<PyValueError>(py),
+                "get() should raise the stored exception, not producer loss: {err}"
+            );
         });
     }
 
