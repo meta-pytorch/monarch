@@ -1269,6 +1269,8 @@ mod tests {
     use crate::backend::ibverbs::memory_region::IbvMemoryRegionView;
     use crate::backend::ibverbs::memory_region::IbvRemoteMemoryRegionView;
     use crate::backend::ibverbs::mlx_device::MlxDevice;
+    use crate::backend::ibverbs::primitives::GidScope;
+    use crate::backend::ibverbs::primitives::IbvDeviceInfo;
     use crate::backend::ibverbs::primitives::IbvQpType;
     use crate::device_selection::MemoryLocation;
     use crate::device_selection::PciPath;
@@ -1804,6 +1806,29 @@ mod tests {
         };
     }
 
+    /// The subnet of `nic`'s port 1: its first global GID's prefix, else its
+    /// first GID's. Two NICs can reach each other only within one subnet;
+    /// fabrics with one subnet per NIC ("rails", e.g. AMD AINIC) have none.
+    fn subnet_of(nic: &IbvDeviceInfo) -> Option<u64> {
+        nic.select_gid(1, Some(GidScope::Global), None)
+            .or_else(|_| nic.select_gid(1, None, None))
+            .ok()
+            .map(|gid| gid.subnet_prefix())
+    }
+
+    /// Two distinct NICs of backend `I` in one subnet, so traffic between
+    /// them can flow, if this host has any.
+    fn two_nics_in_one_subnet<I: IbvDeviceImpl>() -> Option<(String, String)> {
+        let nics = IbvDevice::<I>::list();
+        nics.iter().enumerate().find_map(|(i, a)| {
+            let subnet = subnet_of(a)?;
+            nics[i + 1..]
+                .iter()
+                .find(|b| subnet_of(b) == Some(subnet))
+                .map(|b| (a.name().clone(), b.name().clone()))
+        })
+    }
+
     /// The NICs backend `I` registered `buffer` on.
     fn served_by<I: IbvDeviceImpl>(buffer: &RdmaRemoteBuffer) -> Vec<String>
     where
@@ -2069,8 +2094,12 @@ mod tests {
             crate::config::RDMA_MIN_STRIPE_SIZE_KB,
             hyperactor_config::NonZeroUsize::new(MIN_STRIPE_KB).expect("MIN_STRIPE_KB is non-zero"),
         );
-        let _policy_guard =
-            lock.override_key(crate::config::RDMA_PEER_DEVICE_AFFINITY, "any".to_string());
+        // `match_name` pairs each stripe's NICs by name, which every fabric can
+        // route; `any` could pair NICs in different subnets.
+        let _policy_guard = lock.override_key(
+            crate::config::RDMA_PEER_DEVICE_AFFINITY,
+            "match_name".to_string(),
+        );
 
         let env = TestEnv::same_config(IbvConfig::default()).await?;
         run_cross_actor_write(&env, BufferDevice::Cpu, BufferDevice::Cpu, SIZE, 0x6d, 20).await?;
@@ -2160,11 +2189,11 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_cross_device_write() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::new(
-            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
-            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
-        )
-        .await?;
+        on_host_memory_backend!(None, cross_device_write())
+    }
+
+    async fn cross_device_write<I: IbvDeviceImpl>() -> Result<(), anyhow::Error> {
+        let env = cross_device_env::<I>().await?;
         run_cross_actor_write(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0x77, 5).await?;
         env.shutdown().await
     }
@@ -2173,13 +2202,26 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_cross_device_read() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::new(
-            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
-            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
-        )
-        .await?;
+        on_host_memory_backend!(None, cross_device_read())
+    }
+
+    async fn cross_device_read<I: IbvDeviceImpl>() -> Result<(), anyhow::Error> {
+        let env = cross_device_env::<I>().await?;
         run_cross_actor_read(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0x88, 5).await?;
         env.shutdown().await
+    }
+
+    /// A [`TestEnv`] whose two sides use two different NICs that can reach
+    /// each other. Skips the test on a host with no such pair.
+    async fn cross_device_env<I: IbvDeviceImpl>() -> Result<TestEnv, anyhow::Error> {
+        let Some((nic_a, nic_b)) = two_nics_in_one_subnet::<I>() else {
+            panic!("SKIPPED: no two {} NICs share a subnet", I::backend_name());
+        };
+        TestEnv::new(
+            IbvConfig::targeting(IbvDeviceTarget::nic(nic_a)),
+            IbvConfig::targeting(IbvDeviceTarget::nic(nic_b)),
+        )
+        .await
     }
 
     /// One write + one read in a single `IbvBackend::submit` batch.
@@ -2218,7 +2260,9 @@ mod tests {
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
             IbvConfig::targeting(IbvDeviceTarget::gpu(0)),
-            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
+            // The GPU's NUMA node, so both sides land on NICs that can reach
+            // each other on fabrics with one subnet per NIC.
+            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
         )
         .await?;
         run_cross_actor_write(
@@ -2287,7 +2331,9 @@ mod tests {
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
             IbvConfig::targeting(IbvDeviceTarget::gpu(0)),
-            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
+            // The GPU's NUMA node, so both sides land on NICs that can reach
+            // each other on fabrics with one subnet per NIC.
+            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
         )
         .await?;
         run_cross_actor_read(

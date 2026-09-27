@@ -103,8 +103,8 @@ impl Gid {
         self.gid_type
     }
 
-    #[allow(dead_code)]
-    fn subnet_prefix(&self) -> u64 {
+    /// The GID's upper 64 bits: the subnet (IB) or IPv6 /64 prefix (RoCE).
+    pub(crate) fn subnet_prefix(&self) -> u64 {
         u64::from_be_bytes(self.raw[..8].try_into().unwrap())
     }
 
