@@ -425,6 +425,28 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
     }
 }
 
+/// Open the first RDMA device on this host, through whichever backend
+/// claims it, for tests that need a live `ibv_context` but no particular
+/// vendor. The returned context stays open for as long as it is held.
+#[cfg(test)]
+pub(crate) fn open_any_device_for_test() -> (Arc<IbvContext>, IbvDeviceInfo) {
+    use super::efa_device::EfaDevice;
+    use super::ionic_device::IonicDevice;
+    use super::mlx_device::MlxDevice;
+
+    fn open_first<I: IbvDeviceImpl>() -> Option<(Arc<IbvContext>, IbvDeviceInfo)> {
+        let info = IbvDevice::<I>::list().into_iter().next()?;
+        let device = IbvDevice::<I>::try_open(info.name(), IbvConfig::default())
+            .expect("a listed device should open");
+        Some((device.context(), device.device_info().clone()))
+    }
+
+    open_first::<MlxDevice>()
+        .or_else(open_first::<IonicDevice>)
+        .or_else(open_first::<EfaDevice>)
+        .expect("test runs on machines with RDMA devices")
+}
+
 /// All RDMA devices on this host, across every registered backend
 /// impl. Reads the [`DEVICE_NAMES_BY_IMPL`] registry, built on first
 /// access by a single walk of the ibverbs device list.
