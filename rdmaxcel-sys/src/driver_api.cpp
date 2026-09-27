@@ -12,6 +12,9 @@
 #include <exception>
 #include <iostream>
 #include <utility>
+#ifdef USE_ROCM
+#include <hip/hip_version.h>
+#endif
 
 // Two-level stringify macro to ensure macro arguments are expanded before
 // stringification
@@ -46,7 +49,15 @@
 #define SYM_CTX_SET_CURRENT hipCtxSetCurrent
 #define SYM_CTX_SYNCHRONIZE hipCtxSynchronize
 #define SYM_GET_ERROR_STRING hipDrvGetErrorString
-#define RDMAXCEL_DRIVER_LIB "libamdhip64.so"
+// Open HIP by its soname, libamdhip64.so.<major>. The pip rocm-sdk / TheRock
+// wheels ship libamdhip64.so as a separate copy of libamdhip64.so.N rather than
+// a symlink, and glibc dedups a dlopen only by soname or by file identity. So
+// the unversioned name misses a HIP already loaded by torch or by our own
+// DT_NEEDED (RTLD_NOLOAD fails), and a plain dlopen of it maps a second HIP
+// runtime into the process. The unversioned name stays as a fallback for
+// installs whose headers and runtime disagree on the major version.
+#define RDMAXCEL_DRIVER_LIB "libamdhip64.so." STRINGIFY(HIP_VERSION_MAJOR)
+#define RDMAXCEL_DRIVER_LIB_FALLBACK "libamdhip64.so"
 #else
 #define SYM_MEM_GET_HANDLE_FOR_ADDRESS_RANGE cuMemGetHandleForAddressRange
 #define SYM_MEM_GET_ADDRESS_RANGE cuMemGetAddressRange_v2
@@ -166,6 +177,22 @@ const char* dlerror_or(const char* fallback) {
 // logging again; any other exception is unexpected and logged there.
 struct DriverLoadError : std::exception {};
 
+} // namespace
+
+// dlopen the GPU driver library with the given flags, trying the soname first
+// and then, on ROCm, the unversioned name. See RDMAXCEL_DRIVER_LIB.
+void* dlopen_driver_lib(int flags) {
+  void* handle = dlopen(RDMAXCEL_DRIVER_LIB, flags);
+#ifdef RDMAXCEL_DRIVER_LIB_FALLBACK
+  if (handle == nullptr) {
+    handle = dlopen(RDMAXCEL_DRIVER_LIB_FALLBACK, flags);
+  }
+#endif
+  return handle;
+}
+
+namespace {
+
 // dlcloses a handle on scope exit unless dismissed. Used to drop the handle on
 // the error paths while retaining it on success (held for process lifetime).
 struct HandleGuard {
@@ -192,7 +219,7 @@ struct HandleGuard {
 // HIP itself. Each failure logs once at the failure site -- throttled per site,
 // so distinct causes are each reported -- and throws DriverLoadError.
 DriverAPI create_driver_api() {
-  void* handle = dlopen(RDMAXCEL_DRIVER_LIB, RTLD_LAZY | RTLD_NOLOAD);
+  void* handle = dlopen_driver_lib(RTLD_LAZY | RTLD_NOLOAD);
   if (!handle) {
     static std::atomic<bool> logged{false};
     if (!logged.exchange(true, std::memory_order_relaxed)) {
@@ -495,7 +522,7 @@ int ensure_cuda_driver_loaded(void) noexcept {
   // anything (e.g. from std::cerr) and report failure instead.
   try {
     static void* handle = []() -> void* {
-      void* h = dlopen(RDMAXCEL_DRIVER_LIB, RTLD_LAZY);
+      void* h = rdmaxcel::dlopen_driver_lib(RTLD_LAZY);
       if (h == nullptr) {
         std::cerr << "[RdmaXcel] Failed to load " RDMAXCEL_DRIVER_LIB ": "
                   << rdmaxcel::dlerror_or("unknown error") << std::endl;
