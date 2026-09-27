@@ -39,6 +39,8 @@ use crate::register_cuda_segment_scanner;
 struct MappedChunk {
     offset: usize,
     size: usize,
+    /// The `CUmemGenericAllocationHandle`, stored as an integer because it
+    /// is a pointer on ROCm, which would make this type `!Send`.
     handle: u64,
 }
 
@@ -145,7 +147,10 @@ impl CudaAllocation {
             prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
             rdmaxcel_sys::rdmaxcel_set_mem_location_id(&mut prop.location, self.inner.device);
             prop.allocFlags.gpuDirectRDMACapable = 1;
-            prop.requestedHandleTypes = rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+            rdmaxcel_sys::set_requested_handle_types(
+                &mut prop,
+                rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
+            );
 
             let mut handle: rdmaxcel_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
             let r = rdmaxcel_sys::rdmaxcel_cuMemCreate(&mut handle, padded, &prop, 0);
@@ -184,7 +189,7 @@ impl CudaAllocation {
             state.chunks.push(MappedChunk {
                 offset,
                 size: padded,
-                handle,
+                handle: handle as u64,
             });
             state.mapped_size = new_total;
         }
@@ -321,7 +326,10 @@ impl CudaAllocator {
             prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
             rdmaxcel_sys::rdmaxcel_set_mem_location_id(&mut prop.location, device);
             prop.allocFlags.gpuDirectRDMACapable = 1;
-            prop.requestedHandleTypes = rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+            rdmaxcel_sys::set_requested_handle_types(
+                &mut prop,
+                rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
+            );
 
             cu_check!(rdmaxcel_sys::rdmaxcel_cuMemGetAllocationGranularity(
                 &mut granularity,
@@ -345,7 +353,13 @@ impl CudaAllocator {
             // Reserve the full VA range up front so `expand` can
             // contiguously fill in.
             let mut dptr: rdmaxcel_sys::CUdeviceptr = std::mem::zeroed();
-            let r = rdmaxcel_sys::rdmaxcel_cuMemAddressReserve(&mut dptr, padded_reserved, 0, 0, 0);
+            let r = rdmaxcel_sys::rdmaxcel_cuMemAddressReserve(
+                &mut dptr,
+                padded_reserved,
+                0,
+                std::mem::zeroed(),
+                0,
+            );
             if r != rdmaxcel_sys::CUDA_SUCCESS {
                 panic!("cuMemAddressReserve: {}", cuda_err(r));
             }
@@ -387,7 +401,7 @@ impl CudaAllocator {
                     chunks: vec![MappedChunk {
                         offset: 0,
                         size: padded_initial,
-                        handle,
+                        handle: handle as u64,
                     }],
                     mapped_size: padded_initial,
                 }),
@@ -428,7 +442,7 @@ impl CudaAllocator {
                     (inner.ptr + chunk.offset) as rdmaxcel_sys::CUdeviceptr,
                     chunk.size,
                 ));
-                cu_check!(rdmaxcel_sys::rdmaxcel_cuMemRelease(chunk.handle));
+                cu_check!(rdmaxcel_sys::rdmaxcel_cuMemRelease(chunk.handle as _));
             }
             cu_check!(rdmaxcel_sys::rdmaxcel_cuMemAddressFree(
                 inner.ptr as rdmaxcel_sys::CUdeviceptr,
