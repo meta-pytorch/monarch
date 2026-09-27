@@ -2623,6 +2623,11 @@ mod tests {
                 .efa
                 .as_mut()
                 .map(|ctx| &mut ctx.buffers),
+            bogus_remote
+                .backends
+                .ionic
+                .as_mut()
+                .map(|ctx| &mut ctx.buffers),
         ];
         for buf in bufs.into_iter().flatten().flatten() {
             buf.rkey = 0xdead_beef;
