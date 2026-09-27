@@ -255,9 +255,7 @@ impl CqPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::ibverbs::device::IbvDevice;
-    use crate::backend::ibverbs::mlx_device::MlxDevice;
-    use crate::backend::ibverbs::primitives::IbvConfig;
+    use crate::backend::ibverbs::device::open_any_device_for_test;
 
     #[test]
     fn entries_cover_every_sharer_at_full_send_depth() {
@@ -334,11 +332,8 @@ mod tests {
     /// reuse.
     #[test]
     fn pool_fills_a_completion_queue_before_creating_another() {
-        let info =
-            IbvDeviceInfo::first_available().expect("test runs on machines with RDMA devices");
-        let device = IbvDevice::<MlxDevice>::try_open(info.name(), IbvConfig::default())
-            .expect("the first available device should open");
-        let mut pool = CqPool::for_test(device.context(), 2, 512, device.device_info().max_cqe())
+        let (context, info) = open_any_device_for_test();
+        let mut pool = CqPool::for_test(context, 2, 512, info.max_cqe())
             .expect("this device holds two queue pairs' worth of entries");
 
         let first = pool.acquire_one().expect("first lease");

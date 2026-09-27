@@ -742,10 +742,7 @@ mod tests {
     use hyperactor::proc::Proc;
 
     use super::*;
-    use crate::backend::ibverbs::device::IbvDevice;
-    use crate::backend::ibverbs::mlx_device::MlxDevice;
-    use crate::backend::ibverbs::primitives::IbvConfig;
-    use crate::backend::ibverbs::primitives::IbvDeviceInfo;
+    use crate::backend::ibverbs::device::open_any_device_for_test;
 
     #[derive(Debug)]
     struct MockCq {
@@ -1036,14 +1033,11 @@ mod tests {
     /// Polling a real, empty CQ consumes nothing, and distinct CQs have distinct ids.
     #[test]
     fn polling_an_empty_cq_consumes_nothing() {
-        let info = IbvDeviceInfo::first_available().expect("a device is available");
-        let device = IbvDevice::<MlxDevice>::try_open(info.name(), IbvConfig::default())
-            .expect("the first available device should open");
-        // SAFETY: the device holds its `ibv_context` open for its own lifetime.
-        let cq = unsafe { IbvCq::create(device.context(), 16) }.expect("creating a CQ should work");
+        let (context, _) = open_any_device_for_test();
+        // SAFETY: `context` holds its `ibv_context` open for its own lifetime.
+        let cq = unsafe { IbvCq::create(context.clone(), 16) }.expect("creating a CQ should work");
         // SAFETY: as above.
-        let other =
-            unsafe { IbvCq::create(device.context(), 16) }.expect("creating a CQ should work");
+        let other = unsafe { IbvCq::create(context, 16) }.expect("creating a CQ should work");
         assert_ne!(cq.cq_id(), other.cq_id());
 
         let mut consumed = Vec::new();
