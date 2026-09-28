@@ -54,7 +54,7 @@ from monarch._rust_bindings.monarch_distributed_telemetry import (
 )
 from monarch._src.job.job_sidecar import (
     AdminUrlRequest,
-    create_job_sidecar,
+    get_job_sidecar,
     TelemetryRequest,
 )
 from monarch._src.job.telemetry_actor import (
@@ -157,10 +157,9 @@ def _ensure_setup_actor_telemetry_provider() -> None:
 class Telemetry:
     """Parent-process client for telemetry hosted by the job sidecar.
 
-    Uses `create_job_sidecar` so the job sidecar gets launched on first call
-    and reused on subsequent calls (keyed on `apply_id`, not on config —
-    config edits do not restart the sidecar). `ensure_open` opens or refreshes
-    the telemetry handle and forwards the host meshes for worker fan-out.
+    Uses the sidecar prepared by the job connection, or launches an unattached
+    one for directly reachable workers. `ensure_open` opens or refreshes the
+    telemetry handle and forwards the host meshes for worker fan-out.
     """
 
     def __init__(self, config: TelemetryConfig) -> None:
@@ -179,11 +178,9 @@ class Telemetry:
         socket_dir = telemetry_socket_dir(apply_id)
         os.makedirs(socket_dir, mode=0o700, exist_ok=True)
         os.chmod(socket_dir, 0o700)
-        # `create_job_sidecar` is idempotent and keyed on `apply_id`: the
-        # second call for the same job reuses the existing job sidecar rather
-        # than relaunching. That is what makes the two-phase bootstrap to
-        # fan-out flow safe to invoke from any of JobTrait's `_connect` branches.
-        guard = create_job_sidecar(apply_id)
+        # The job connection prepares any scheduler gateway before components
+        # run. Both phases below reuse that attached sidecar.
+        guard = get_job_sidecar(apply_id)
         response = guard.send(
             TelemetryRequest(
                 apply_id=apply_id,
@@ -212,7 +209,7 @@ class Telemetry:
             raise RuntimeError("telemetry requires an active apply_id")
 
         response = (
-            create_job_sidecar(apply_id)
+            get_job_sidecar(apply_id)
             .send(AdminUrlRequest(apply_id=apply_id, admin_url=admin_url))
             .get()
         )

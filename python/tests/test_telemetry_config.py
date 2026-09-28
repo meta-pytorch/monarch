@@ -445,8 +445,8 @@ def test_ensure_open_reraises_sidecar_error() -> None:
     apply_id = _new_apply_id()
     tel = tc.Telemetry(TelemetryConfig())
     try:
-        with patch.object(tc, "create_job_sidecar") as create_sidecar:
-            create_sidecar.return_value.send.return_value.get.return_value = {
+        with patch.object(tc, "get_job_sidecar") as get_sidecar:
+            get_sidecar.return_value.send.return_value.get.return_value = {
                 "error": "boom"
             }
             with pytest.raises(RuntimeError, match="boom"):
@@ -459,8 +459,8 @@ def test_set_admin_url_sends_admin_url_request() -> None:
     apply_id = _new_apply_id()
     tel = tc.Telemetry(TelemetryConfig())
     try:
-        with patch.object(tc, "create_job_sidecar") as create_sidecar:
-            send = create_sidecar.return_value.send
+        with patch.object(tc, "get_job_sidecar") as get_sidecar:
+            send = get_sidecar.return_value.send
             send.return_value.get.return_value = "ok"
             tel.set_admin_url(apply_id, "https://host.example:1731")
         sent_request = send.call_args[0][0]
@@ -475,8 +475,8 @@ def test_set_admin_url_reraises_sidecar_error() -> None:
     apply_id = _new_apply_id()
     tel = tc.Telemetry(TelemetryConfig())
     try:
-        with patch.object(tc, "create_job_sidecar") as create_sidecar:
-            create_sidecar.return_value.send.return_value.get.return_value = {
+        with patch.object(tc, "get_job_sidecar") as get_sidecar:
+            get_sidecar.return_value.send.return_value.get.return_value = {
                 "error": "boom"
             }
             with pytest.raises(RuntimeError, match="boom"):

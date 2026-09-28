@@ -48,6 +48,7 @@ def spawn_module(
     runtime_transport: str | None = None,
     attach_to: str | None = None,
     process_name: str | None = None,
+    module_args: list[str] | None = None,
 ) -> ProcessGuard:
     """Launch a Python module as a ``ProcessGuard``-managed background process."""
     env = (
@@ -64,6 +65,8 @@ def spawn_module(
         command.extend(["--runtime-transport", runtime_transport])
     if attach_to is not None:
         command.extend(["--attach-to", attach_to])
+    if module_args is not None:
+        command.extend(module_args)
     return ProcessGuard.create(lock_path, config_key, command, env=env)
 
 
@@ -75,12 +78,17 @@ def create_job_sidecar(
     runtime_transport = sidecar_transport_from_runtime()
     return spawn_module(
         job_sidecar_lock_path(apply_id),
-        apply_id,
+        (apply_id, runtime_transport, attach_to),
         _JOB_SIDECAR_WORKER_MODULE,
         runtime_transport=runtime_transport,
         attach_to=attach_to,
         process_name="job_sidecar",
     )
+
+
+def get_job_sidecar(apply_id: str) -> ProcessGuard:
+    """Return an existing job sidecar, creating an unattached one if absent."""
+    return find_job_sidecar(apply_id) or create_job_sidecar(apply_id)
 
 
 def find_job_sidecar(apply_id: str) -> ProcessGuard | None:

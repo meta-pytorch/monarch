@@ -15,8 +15,8 @@ from typing import Any, List, Mapping, Optional
 
 from monarch._src.job.job_sidecar import (
     ClearMountsRequest,
-    create_job_sidecar,
     find_job_sidecar,
+    get_job_sidecar,
     MountsRequest,
 )
 from monarch.actor import HostMesh
@@ -156,7 +156,7 @@ class Mounts:
                 guard.send(ClearMountsRequest()).get()
             return
 
-        guard = create_job_sidecar(apply_id)
+        guard = get_job_sidecar(apply_id)
         # Stamped here, not at `remote_mount()` time: the answer depends on the running
         # job's scheduler, which is not known when the mount is declared.
         for entry in self._remote_entries:
