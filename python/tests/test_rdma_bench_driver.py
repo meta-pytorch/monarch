@@ -26,6 +26,9 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch.actor import ValueMesh
 from monarch.job import JobTrait
 
+# RDMA config keys are only registered where the native RDMA bindings are built.
+linux_only = pytest.mark.skipif(sys.platform != "linux", reason="linux-only")
+
 
 def _value_mesh(values, *, hosts: int | None = None, lanes: int = 1) -> ValueMesh:
     """A real ``ValueMesh`` over ``hosts`` x ``lanes``, in rank order."""
@@ -376,6 +379,7 @@ def test_the_shape_columns_describe_the_graph() -> None:
     assert shape.max_buffers_per_proc == 4, "one outgoing plus three incoming"
 
 
+@linux_only
 def test_the_config_columns_record_what_was_asked_for() -> None:
     cfg = _config("--cpu", "--pattern", "ring", "--verify", "off")
 
@@ -397,6 +401,7 @@ def test_a_check_that_never_ran_is_neither_pass_nor_fail() -> None:
     assert bd._flag(False) == "False"
 
 
+@linux_only
 def test_reporting_writes_a_row_per_direction_and_phase(tmp_path, capsys) -> None:
     output_csv = str(tmp_path / "results.csv")
     cfg = _config("--pattern", "ring", "--num-hosts", "4", "--output-csv", output_csv)
@@ -876,6 +881,7 @@ def _drivable(tmp_path, monkeypatch, *flags, transferred: bool = True):
     return cfg, procs, peers
 
 
+@linux_only
 async def test_a_whole_run_measures_both_directions_and_writes_them(
     tmp_path, monkeypatch, capsys
 ) -> None:

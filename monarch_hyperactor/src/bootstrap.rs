@@ -303,9 +303,7 @@ mod tests {
     use nix::sys::socket::SockaddrIn;
     use nix::sys::socket::bind;
     use nix::sys::socket::getsockname;
-    use nix::sys::socket::getsockopt;
     use nix::sys::socket::socket;
-    use nix::sys::socket::sockopt;
     use nix::unistd::dup;
     use pyo3::PyErr;
     use pyo3::PyTypeInfo;
@@ -387,6 +385,21 @@ mod tests {
         assert!(listener.is_none());
     }
 
+    /// Require `SO_ACCEPTCONN` on `sock` to match `listening`. macOS rejects
+    /// reads of that option with ENOPROTOOPT, so the listen transition is only
+    /// observable on Linux; the ownership checks around it run everywhere.
+    fn assert_listening(sock: &OwnedFd, listening: bool, message: &str) {
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            nix::sys::socket::getsockopt(sock, nix::sys::socket::sockopt::AcceptConn)
+                .expect("SO_ACCEPTCONN is readable"),
+            listening,
+            "{message}"
+        );
+        #[cfg(not(target_os = "linux"))]
+        let _ = (sock, listening, message);
+    }
+
     /// A bound but deliberately not-yet-listening IPv4 socket, plus the address
     /// it holds. Starting from a listening socket would make the
     /// `SO_ACCEPTCONN` transition below vacuous.
@@ -446,9 +459,10 @@ mod tests {
         ] {
             let (sock, bound) = bound_not_listening();
             let observer = dup(sock.as_fd()).expect("duplicating for observation should succeed");
-            assert!(
-                !getsockopt(&observer, sockopt::AcceptConn).expect("SO_ACCEPTCONN is readable"),
-                "the fixture must hand over a bound socket that is not yet listening"
+            assert_listening(
+                &observer,
+                false,
+                "the fixture must hand over a bound socket that is not yet listening",
             );
 
             // Ownership leaves `OwnedFd` tracking here: the number is all that
@@ -487,9 +501,10 @@ mod tests {
                 bound,
                 "the retained descriptor must still be the socket that was handed over"
             );
-            assert!(
-                getsockopt(&observer, sockopt::AcceptConn).expect("SO_ACCEPTCONN is readable"),
-                "preparation must call listen before it returns"
+            assert_listening(
+                &observer,
+                true,
+                "preparation must call listen before it returns",
             );
 
             // The future must be the only owner left before the address can say
@@ -525,9 +540,10 @@ mod tests {
 
         let (sock, bound) = bound_not_listening();
         let observer = dup(sock.as_fd()).expect("duplicating for observation should succeed");
-        assert!(
-            !getsockopt(&observer, sockopt::AcceptConn).expect("SO_ACCEPTCONN is readable"),
-            "the fixture must hand over a bound socket that is not yet listening"
+        assert_listening(
+            &observer,
+            false,
+            "the fixture must hand over a bound socket that is not yet listening",
         );
 
         let transferred = sock.into_raw_fd();
@@ -535,9 +551,10 @@ mod tests {
         let future = prepare_worker_loop(&address, true)
             .expect("a valid alias descriptor address should prepare a worker loop");
 
-        assert!(
-            getsockopt(&observer, sockopt::AcceptConn).expect("SO_ACCEPTCONN is readable"),
-            "alias parsing must call listen before discarding the adopted listener"
+        assert_listening(
+            &observer,
+            true,
+            "alias parsing must call listen before discarding the adopted listener",
         );
         drop(observer);
         assert_eq!(

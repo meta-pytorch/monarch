@@ -13,6 +13,7 @@ import os
 import pickle
 import shutil
 import socket
+import tempfile
 import threading
 import urllib.error
 import urllib.request
@@ -116,10 +117,15 @@ class _FakeTelemetryHandle:
 
 
 @pytest.mark.timeout(30)
-def test_run_job_sidecar_survives_broken_connection(tmp_path) -> None:
+def test_run_job_sidecar_survives_broken_connection() -> None:
     """A connection that sends garbage (or breaks mid-request) must drop only
     that connection, not tear down the job sidecar."""
-    socket_path = str(tmp_path / "cmd.sock")
+    # Not pytest's tmp_path: on macOS it exceeds the 104-byte AF_UNIX path limit.
+    with tempfile.TemporaryDirectory(prefix="monarch_sidecar_", dir="/tmp") as tempdir:
+        _check_job_sidecar_survives_broken_connection(os.path.join(tempdir, "cmd.sock"))
+
+
+def _check_job_sidecar_survives_broken_connection(socket_path: str) -> None:
     fake = _FakeTelemetryHandle()
 
     with patch.object(tc, "_TelemetryHandle", return_value=fake):
