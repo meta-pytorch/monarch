@@ -27,11 +27,16 @@ wrong is a number somebody would go on to quote.
 """
 
 import csv
+import sys
+
+import pytest
+
+if sys.platform != "linux":
+    pytest.skip("linux-only", allow_module_level=True)
 
 import bench_stats as bs
 import bench_topology as bt
 import benchmark_driver as bd
-import pytest
 from rdma_test_utils import skip_if_ibverbs_unavailable
 
 

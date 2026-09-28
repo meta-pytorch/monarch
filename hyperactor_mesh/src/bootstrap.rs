@@ -160,9 +160,10 @@ declare_attrs! {
     pub attr MESH_TAIL_LOG_LINES: usize = 0;
 
     /// If enabled (default), bootstrap child processes install
-    /// `PR_SET_PDEATHSIG(SIGKILL)` so the kernel reaps them if the
-    /// parent dies unexpectedly. This is a **production safety net**
-    /// against leaked children; tests usually disable it via
+    /// `PR_SET_PDEATHSIG(SIGKILL)` (a kqueue parent-exit watch on macOS)
+    /// so they are killed if the parent dies unexpectedly. This is a
+    /// **production safety net** against leaked children; tests usually
+    /// disable it via
     /// `std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG",
     /// "false")`.
     @meta(CONFIG = ConfigAttr::new(
@@ -586,7 +587,7 @@ impl Bootstrap {
                     // `host_mesh.shutdown(&instance)`; PR_SET_PDEATHSIG
                     // is a last-resort guard against leaks if that
                     // protocol is bypassed.
-                    let _ = install_pdeathsig_kill();
+                    let _ = install_parent_death_kill();
                 } else {
                     eprintln!("(bootstrap) PDEATHSIG disabled via config");
                 }
@@ -703,6 +704,97 @@ pub fn install_pdeathsig_kill() -> io::Result<()> {
             std::process::exit(0);
         }
     }
+    Ok(())
+}
+
+/// Like [`install_pdeathsig_kill`], but also covers macOS, which has no
+/// `PR_SET_PDEATHSIG`. There a thread watches the parent's exit and SIGKILLs
+/// this process. Because that spawns a thread, call this in-process, never
+/// from `pre_exec`.
+pub fn install_parent_death_kill() -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    return watch_parent_exit();
+    #[cfg(not(target_os = "macos"))]
+    install_pdeathsig_kill()
+}
+
+#[cfg(target_os = "macos")]
+fn watch_parent_exit() -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    use std::os::fd::FromRawFd;
+    use std::os::fd::OwnedFd;
+
+    // SAFETY: `getppid()` only reads the parent PID.
+    let ppid = unsafe { libc::getppid() };
+    // SAFETY: `kqueue()` takes no arguments and returns a new descriptor or -1.
+    let kq = unsafe { libc::kqueue() };
+    if kq < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `kq` was just returned by `kqueue()` and nothing else owns it.
+    let kq = unsafe { OwnedFd::from_raw_fd(kq) };
+    let change = libc::kevent {
+        ident: ppid as libc::uintptr_t,
+        filter: libc::EVFILT_PROC,
+        flags: libc::EV_ADD | libc::EV_ONESHOT,
+        fflags: libc::NOTE_EXIT,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    // SAFETY: registers one fully initialized change and reads no events.
+    let rc = unsafe {
+        libc::kevent(
+            kq.as_raw_fd(),
+            &change,
+            1,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    if rc < 0 {
+        let err = io::Error::last_os_error();
+        // The parent exited before it could be watched.
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            std::process::exit(0);
+        }
+        return Err(err);
+    }
+    // Race-close, as on Linux: an exited parent may linger unreaped (so the
+    // registration succeeds but never fires), yet we are already reparented.
+    // SAFETY: as above.
+    if unsafe { libc::getppid() } != ppid {
+        std::process::exit(0);
+    }
+
+    std::thread::Builder::new()
+        .name("parent-death-watch".to_string())
+        .spawn(move || {
+            // SAFETY: all-zero is a valid `kevent`, a plain C struct.
+            let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+            loop {
+                // SAFETY: waits for at most one event into `event`, which
+                // outlives the call.
+                let n = unsafe {
+                    libc::kevent(
+                        kq.as_raw_fd(),
+                        std::ptr::null(),
+                        0,
+                        &mut event,
+                        1,
+                        std::ptr::null(),
+                    )
+                };
+                if n > 0 {
+                    break;
+                }
+                if n < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                    return;
+                }
+            }
+            // SAFETY: `kill` on our own PID reads only scalar arguments.
+            unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
+        })?;
     Ok(())
 }
 

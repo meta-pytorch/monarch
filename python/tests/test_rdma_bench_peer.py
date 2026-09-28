@@ -20,6 +20,7 @@ peers, which is where per-peer routing can go wrong.
 """
 
 import os
+import sys
 
 # More efficient RDMA support for CUDA tensors.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -27,6 +28,10 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import bench_peer  # noqa: E402
 import bench_topology as bt  # noqa: E402
 import pytest  # noqa: E402
+
+if sys.platform != "linux":
+    pytest.skip("linux-only", allow_module_level=True)
+
 import torch  # noqa: E402
 from monarch.actor import this_host  # noqa: E402
 from monarch.config import get_global_config  # noqa: E402

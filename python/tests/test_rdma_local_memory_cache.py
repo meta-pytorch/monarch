@@ -23,9 +23,14 @@ Neither layer requires an RDMA backend, an ``RdmaManager``, or an actor
 mesh."""
 
 import gc
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+if sys.platform != "linux":
+    pytest.skip("linux-only", allow_module_level=True)
+
 import torch
 from monarch._src.rdma import rdma as rdma_mod
 

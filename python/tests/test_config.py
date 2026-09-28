@@ -6,6 +6,8 @@
 
 # pyre-unsafe
 
+import sys
+
 import monarch
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
@@ -13,6 +15,9 @@ from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelT
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch.actor import Actor, endpoint, this_host
 from monarch.config import configured, get_global_config
+
+# RDMA config keys are only registered where the native RDMA bindings are built.
+linux_only = pytest.mark.skipif(sys.platform != "linux", reason="linux-only")
 
 
 class Chunker(Actor):
@@ -95,6 +100,7 @@ def test_get_set_multiple() -> None:
     assert config["default_transport"] == BindSpec(ChannelTransport.Unix)
 
 
+@linux_only
 @isolate_in_subprocess
 def test_rdma_ibverbs_target_round_trip_and_propagation() -> None:
     assert get_global_config()["rdma_ibverbs_target"] == ""
@@ -110,6 +116,7 @@ def test_rdma_ibverbs_target_round_trip_and_propagation() -> None:
     assert get_global_config()["rdma_ibverbs_target"] == ""
 
 
+@linux_only
 def test_rdma_peer_device_affinity_round_trip() -> None:
     assert get_global_config()["rdma_peer_device_affinity"] == ""
 
@@ -120,6 +127,7 @@ def test_rdma_peer_device_affinity_round_trip() -> None:
     assert get_global_config()["rdma_peer_device_affinity"] == ""
 
 
+@linux_only
 def test_rdma_max_nics_per_buffer_round_trip() -> None:
     assert get_global_config()["rdma_max_nics_per_buffer"] == None
 
@@ -135,6 +143,7 @@ def test_rdma_max_nics_per_buffer_round_trip() -> None:
             pass
 
 
+@linux_only
 def test_rdma_runtime_worker_threads_round_trip() -> None:
     assert get_global_config()["rdma_runtime_worker_threads"] == 4
 
