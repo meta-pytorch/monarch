@@ -425,6 +425,19 @@ impl std::fmt::Debug for Flattrs {
     }
 }
 
+/// Equality over the `(key hash, serialized bytes)` entries, independent of
+/// their order in the buffer.
+impl PartialEq for Flattrs {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len()
+            && self
+                .iter()
+                .all(|(key_hash, value)| other.find_value(key_hash) == Some(value))
+    }
+}
+
+impl Eq for Flattrs {}
+
 impl std::fmt::Display for Flattrs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::attrs::lookup_key_info;
@@ -504,6 +517,23 @@ mod tests {
     fn test_missing_key() {
         let attrs = Flattrs::new();
         assert_eq!(attrs.get::<u64>(TEST_U64), None);
+    }
+
+    #[test]
+    fn equality_ignores_entry_order() {
+        let mut first = Flattrs::new();
+        first.set(TEST_U64, 42u64);
+        first.set(TEST_BOOL, true);
+        let mut second = Flattrs::new();
+        second.set(TEST_BOOL, true);
+        second.set(TEST_U64, 42u64);
+        assert_eq!(first, second, "the same entries in a different order");
+
+        second.set(TEST_U64, 43u64);
+        assert_ne!(first, second, "a differing value");
+        let mut subset = Flattrs::new();
+        subset.set(TEST_U64, 42u64);
+        assert_ne!(first, subset, "a missing entry");
     }
 
     #[test]

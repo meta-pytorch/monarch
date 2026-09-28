@@ -30,6 +30,7 @@ use hyperactor::actor::StopMode;
 use hyperactor::context;
 use hyperactor::id::Uid;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -209,6 +210,9 @@ pub struct Supervise {
     pub liveness: LinkSpec,
     /// Session policy requested by the supervisor.
     pub options: SupervisionOptions,
+    /// Labels the worker sets on every supervision event it reports in this
+    /// session. They are opaque to remote supervision.
+    pub labels: Flattrs,
 }
 wirevalue::register_type!(Supervise);
 

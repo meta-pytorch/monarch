@@ -118,6 +118,7 @@ use hyperactor::OncePortHandle;
 use hyperactor::RemoteSpawn;
 use hyperactor::Uid;
 use hyperactor::context;
+use hyperactor_config::Flattrs;
 
 use crate::Gspawn;
 use crate::KeepaliveLink;
@@ -194,6 +195,7 @@ pub trait ActorSpawnerEndpoint {
             KeepaliveLink::default(),
             None,
             cx.instance().actor_environment().clone(),
+            Flattrs::new(),
         )
     }
 
@@ -237,6 +239,7 @@ pub trait ActorSpawnerEndpoint {
             KeepaliveLink::default(),
             Some(ready),
             cx.instance().actor_environment().clone(),
+            Flattrs::new(),
         )
         .map(|(actor_ref, _supervisor)| actor_ref)
     }
@@ -261,15 +264,17 @@ pub trait ActorSpawnerEndpoint {
             liveness,
             None,
             cx.instance().actor_environment().clone(),
+            Flattrs::new(),
         )
         .map(|(actor_ref, _supervisor)| actor_ref)
     }
 
     /// Spawn a registered actor with an explicit actor uid, liveness link,
-    /// optional readiness port, and persistent environment. This is the general
-    /// form behind the other `spawn*` methods, which pass the caller's own
-    /// environment; see [`spawn_uid_with_ready`](Self::spawn_uid_with_ready)
-    /// for the readiness semantics.
+    /// optional readiness port, persistent environment, and supervision event
+    /// labels. This is the general form behind the other `spawn*` methods,
+    /// which pass the caller's own environment and no labels; see
+    /// [`spawn_uid_with_ready`](Self::spawn_uid_with_ready) for the readiness
+    /// semantics and [`Supervisor::with_labels`] for the labels.
     fn spawn_uid_with_link_and_ready<A>(
         &self,
         cx: &impl context::Actor,
@@ -278,6 +283,7 @@ pub trait ActorSpawnerEndpoint {
         liveness: KeepaliveLink,
         ready: Option<OncePortHandle<()>>,
         environment: ActorEnvironment,
+        labels: Flattrs,
     ) -> anyhow::Result<(ActorRef<A>, ActorHandle<Supervisor>)>
     where
         A: RemoteSpawn,
@@ -299,17 +305,20 @@ pub trait ActorSpawnerEndpoint {
         );
         let actor_spawner = self.clone();
         let gspawn = Gspawn::for_actor_uid_in_environment::<A>(uid, params, environment)?;
-        let supervisor = cx.instance().spawn(Supervisor::bootstrap_uid(
-            liveness,
-            SupervisionOptions::default(),
-            Uid::anonymous(),
-            actor_ref.actor_addr().clone(),
-            ready,
-            move |cx, supervise| {
-                actor_spawner.post(cx, SpawnActorMessage { gspawn, supervise });
-                Ok(())
-            },
-        ));
+        let supervisor = cx.instance().spawn(
+            Supervisor::bootstrap_uid(
+                liveness,
+                SupervisionOptions::default(),
+                Uid::anonymous(),
+                actor_ref.actor_addr().clone(),
+                ready,
+                move |cx, supervise| {
+                    actor_spawner.post(cx, SpawnActorMessage { gspawn, supervise });
+                    Ok(())
+                },
+            )
+            .with_labels(labels),
+        );
         Ok((actor_ref, supervisor))
     }
 }
@@ -630,6 +639,7 @@ mod tests {
                     parent: client.self_addr().clone(),
                     liveness,
                     options: SupervisionOptions::default(),
+                    labels: Flattrs::new(),
                 },
             },
         );
@@ -925,6 +935,7 @@ mod tests {
                     parent: client.self_addr().clone(),
                     liveness,
                     options: SupervisionOptions::default(),
+                    labels: Flattrs::new(),
                 },
             },
         );

@@ -1610,6 +1610,14 @@ impl Actor for PythonActor {
         event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
         let cx = Context::new(this, Flattrs::new());
+        // Events without a point, such as from a managed mesh's controller,
+        // are reported against the whole mesh.
+        let crashed_ranks = event
+            .labels
+            .get(CAST_POINT)
+            .map(|point| point.rank())
+            .into_iter()
+            .collect();
         self.handle(
             &cx,
             MeshFailure {
@@ -1618,7 +1626,7 @@ impl Actor for PythonActor {
                 // no lookup.
                 actor_mesh_name: self.mesh_base_name.clone(),
                 event: event.clone(),
-                crashed_ranks: vec![],
+                crashed_ranks,
                 // MFCA-4: direct actor-handled supervision conversion, not a
                 // controller report.
                 reporting_controller: None,

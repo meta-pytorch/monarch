@@ -68,6 +68,13 @@ pub struct ActorSupervisionEvent {
     /// If this event is associated with a message, the message headers.
     #[derivative(PartialEq = "ignore")]
     pub message_headers: Option<Flattrs>,
+    /// Semantic labels that describe the actor, such as its point in a mesh.
+    /// hyperactor does not interpret them. A remote supervision proxy replaces
+    /// them with its own labels, so they describe the actor as of the most
+    /// recent remote hop.
+    #[serde(default)]
+    #[derivative(PartialEq = "ignore")]
+    pub labels: Flattrs,
     #[serde(skip, default = "local_fence")]
     #[derivative(PartialEq = "ignore")]
     pub(crate) local_fence: Arc<AtomicBool>,
@@ -92,8 +99,15 @@ impl ActorSupervisionEvent {
             occurred_at: std::time::SystemTime::now(),
             actor_status,
             message_headers,
+            labels: Flattrs::new(),
             local_fence: local_fence(),
         }
+    }
+
+    /// Replace the event's labels.
+    pub fn with_labels(mut self, labels: Flattrs) -> Self {
+        self.labels = labels;
+        self
     }
 
     pub(crate) fn with_local_fence(mut self, local_fence: Arc<AtomicBool>) -> Self {

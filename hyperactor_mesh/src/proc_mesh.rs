@@ -32,6 +32,7 @@ use hyperactor::id::Label;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
+use hyperactor_config::Flattrs;
 use hyperactor_config::NonZeroUsize;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_remote::ActorSpawner;
@@ -866,17 +867,20 @@ impl ProcMeshRef {
                     return Err(error.into());
                 }
             };
+            let point = region
+                .extent()
+                .point_of_rank(rank)
+                .expect("proc mesh rank must have a point");
             let mut environment = cx.instance().actor_environment().clone();
-            if let Err(error) = environment.set(
-                CAST_POINT,
-                region
-                    .extent()
-                    .point_of_rank(rank)
-                    .expect("proc mesh rank must have a point"),
-            ) {
+            if let Err(error) = environment.set(CAST_POINT, point.clone()) {
                 stop_spawned(&stop_handles, "data mesh spawn failed");
                 return Err(Error::Other(error.into()));
             }
+            // The actor's own environment carries its point, but supervision
+            // events are raised on the spawner's side, so they need a copy.
+            // TODO: unify the actor environment and supervision labels.
+            let mut labels = Flattrs::new();
+            labels.set(CAST_POINT, point);
             let actor_spawner = proc_ref.spawner();
             let (actor_ref, stop_handle) = match actor_spawner.spawn_uid_with_link_and_ready(
                 cx,
@@ -885,6 +889,7 @@ impl ProcMeshRef {
                 KeepaliveLink::default(),
                 None,
                 environment,
+                labels,
             ) {
                 Ok(spawned) => spawned,
                 Err(error) => {

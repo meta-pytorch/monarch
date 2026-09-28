@@ -40,6 +40,7 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::Flattrs;
 
 use crate::Gspawn;
 use crate::KeepaliveLink;
@@ -146,6 +147,7 @@ pub struct Supervisor {
     pending_stop: Option<PendingStop>,
     /// Optional one-shot notification posted after the worker links the child.
     ready: Option<OncePortHandle<()>>,
+    labels: Flattrs,
 }
 
 impl Supervisor {
@@ -229,7 +231,15 @@ impl Supervisor {
             session: None,
             pending_stop: None,
             ready,
+            labels: Flattrs::new(),
         }
+    }
+
+    /// Set the labels on every supervision event raised for the supervised
+    /// actor, replacing any labels the event already carries.
+    pub fn with_labels(mut self, labels: Flattrs) -> Self {
+        self.labels = labels;
+        self
     }
 }
 
@@ -250,6 +260,7 @@ impl Actor for Supervisor {
                 parent: this.self_addr().clone(),
                 liveness,
                 options: self.options.clone(),
+                labels: self.labels.clone(),
             },
         )?;
         Ok(())
@@ -386,7 +397,9 @@ impl Supervisor {
 
     fn propagate_event<T>(&self, event: ActorSupervisionEvent) -> anyhow::Result<T> {
         Err(anyhow::Error::new(
-            ActorErrorKind::UnhandledSupervisionEvent(Box::new(event)),
+            ActorErrorKind::UnhandledSupervisionEvent(Box::new(
+                event.with_labels(self.labels.clone()),
+            )),
         ))
     }
 }
@@ -397,6 +410,7 @@ struct WorkerSession {
     supervisor: PortRef<SupervisorEvent>,
     options: SupervisionOptions,
     liveness_handle: AnyActorHandle,
+    labels: Flattrs,
 }
 
 /// Local-only request to spawn a child actor under a [`Worker`].
@@ -604,6 +618,7 @@ impl SupervisedChild {
             supervisor: message.supervisor,
             options: message.options,
             liveness_handle,
+            labels: message.labels,
         });
         supervisor.post(
             cx,
@@ -634,7 +649,7 @@ impl SupervisedChild {
                     this,
                     SupervisorEvent::SupervisionEvent {
                         session_id: session_id.into_uid(),
-                        event: event.clone(),
+                        event: event.clone().with_labels(session.labels.clone()),
                         disposition: RemoteActorDisposition::Terminal,
                     },
                 );
@@ -763,7 +778,8 @@ impl SupervisedChild {
                             event
                         )),
                         None,
-                    ),
+                    )
+                    .with_labels(session.labels.clone()),
                     disposition: RemoteActorDisposition::Unreachable,
                 },
             );
@@ -789,12 +805,23 @@ mod tests {
     use hyperactor::Proc;
     use hyperactor::Uid;
     use hyperactor::mailbox::PortReceiver;
+    use hyperactor_config::attrs::declare_attrs;
     use serde::Deserialize;
     use serde::Serialize;
     use tokio::sync::Notify;
     use typeuri::Named;
 
     use super::*;
+
+    declare_attrs! {
+        attr TEST_LABEL: u64;
+    }
+
+    fn test_labels(value: u64) -> Flattrs {
+        let mut labels = Flattrs::new();
+        labels.set(TEST_LABEL, value);
+        labels
+    }
 
     #[derive(Clone, Debug, Serialize, Deserialize, Named)]
     enum TestChildCommand {
@@ -1107,6 +1134,126 @@ mod tests {
             .unwrap();
     }
 
+    // Same harness as `test_child_failure_propagates_to_parent`, except the
+    // Supervisor carries labels. The Worker stamps the labels it received in
+    // `Supervise`, and the Supervisor replaces them with its own before
+    // re-raising, so Parent observes the Supervisor's labels.
+    #[tokio::test]
+    async fn test_supervisor_labels_replace_child_event_labels() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
+        let (stopped, _stopped_rx) = client.open_port::<String>();
+        let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
+        let worker = proc.spawn(Worker::new());
+        worker.post(
+            &client,
+            Spawn::new(test_child(
+                ready,
+                stopped,
+                Some(TestChildAction::FailAfter(Duration::from_millis(200))),
+            )),
+        );
+        let child_addr = ready_rx.recv().await.unwrap();
+        let parent = proc.spawn(Parent {
+            supervisor: Some(
+                Supervisor::new_uid(
+                    worker.bind::<WorkerLike>(),
+                    KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+                    SupervisionOptions::default(),
+                    Uid::anonymous(),
+                )
+                .with_labels(test_labels(7)),
+            ),
+            events,
+        });
+
+        let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.actor_id, child_addr);
+        assert_eq!(
+            event.labels.get(TEST_LABEL),
+            Some(7),
+            "the parent should observe the supervisor's labels"
+        );
+
+        parent.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap();
+    }
+
+    // The client stands in for the Supervisor and sends `Supervise` with
+    // labels directly. When TestChild fails, the event the Worker reports on
+    // the session port carries those labels, not the child's own (empty) ones.
+    #[tokio::test]
+    async fn test_worker_labels_child_event() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
+        let (stopped, _stopped_rx) = client.open_port::<String>();
+        let (supervisor, mut supervisor_rx) = client.open_port::<SupervisorEvent>();
+        let worker = proc.spawn(Worker::new());
+        worker.post(
+            &client,
+            Spawn::new(test_child(
+                ready,
+                stopped,
+                Some(TestChildAction::FailAfter(Duration::from_millis(200))),
+            )),
+        );
+        let (liveness_handle, liveness) =
+            KeepaliveLink::new(Duration::from_secs(60), Duration::from_secs(60))
+                .spawn_supervisor(&client)
+                .unwrap();
+        let child_addr = ready_rx.recv().await.unwrap();
+
+        worker.post(
+            &client,
+            Supervise {
+                session_id: Uid::anonymous(),
+                supervisor: supervisor.bind(),
+                parent: client.self_addr().clone(),
+                liveness,
+                options: SupervisionOptions::default(),
+                labels: test_labels(11),
+            },
+        );
+        let linked = tokio::time::timeout(Duration::from_secs(5), supervisor_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(linked, SupervisorEvent::Linked { .. }));
+
+        let reported = tokio::time::timeout(Duration::from_secs(5), supervisor_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let SupervisorEvent::SupervisionEvent { event, .. } = reported else {
+            panic!("expected a supervision event, got {reported:?}");
+        };
+        assert_eq!(event.actor_id, child_addr);
+        assert!(matches!(event.actor_status, ActorStatus::Failed(_)));
+        assert_eq!(
+            event.labels.get(TEST_LABEL),
+            Some(11),
+            "the worker should stamp the session's labels"
+        );
+
+        tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap();
+        liveness_handle.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), liveness_handle)
+            .await
+            .unwrap();
+    }
+
     // proc
     // ├── client instance
     // │   ├── ready port: receives the child address
@@ -1193,6 +1340,7 @@ mod tests {
                 parent: client.self_addr().clone(),
                 liveness,
                 options: SupervisionOptions::default(),
+                labels: Flattrs::new(),
             },
         );
         let linked = tokio::time::timeout(Duration::from_secs(5), supervisor_rx.recv())
@@ -1344,6 +1492,7 @@ mod tests {
                     orphan_policy: OrphanPolicy::Detach,
                     ..Default::default()
                 },
+                labels: Flattrs::new(),
             },
         );
         let linked = tokio::time::timeout(Duration::from_secs(5), supervisor_rx.recv())
