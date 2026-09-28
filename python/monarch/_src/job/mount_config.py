@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, List, Mapping, Optional
 
 from monarch._src.job.job_sidecar import (
+    check_sidecar_ok,
     ClearMountsRequest,
     create_job_sidecar,
     find_job_sidecar,
@@ -39,24 +40,30 @@ class RemoteMountEntry:
     # the client can dial directly.
     via_gateway: bool = False
 
-    def apply(self, host_meshes: Mapping[str, HostMesh]) -> "list[Any]":
-        """Open the remote mount for each targeted mesh. Returns handles.
+    def apply(self, host_meshes: Mapping[str, HostMesh], handles: list[Any]) -> None:
+        """Open the remote mount for each targeted mesh.
+
+        Each handle is appended to ``handles`` before it is opened, so the
+        caller can release a partially applied entry if a later mesh fails.
 
         If ``mntpoint`` contains ``$SUBDIR`` it is replaced with the mesh name,
         so multiple local hosts do not collide on the same mount point.
         """
         from monarch.remotemount.remotemount import remotemount as _remotemount
 
-        handles = []
         for mesh_name, raw_mesh in host_meshes.items():
             if self.meshes is not None and mesh_name not in self.meshes:
                 continue
-            handler = _remotemount(
-                raw_mesh, self.source, mntpoint=self.mntpoint, **self.kwargs
-            )
-            handler.open(self.via_gateway)
-            handles.append(handler)
-        return handles
+            try:
+                handler = _remotemount(
+                    raw_mesh, self.source, mntpoint=self.mntpoint, **self.kwargs
+                )
+                handles.append(handler)
+                handler.open(self.via_gateway)
+            except Exception as error:
+                raise RuntimeError(
+                    f"remote mount of {self.source!r} failed on mesh {mesh_name!r}"
+                ) from error
 
 
 @dataclass
@@ -67,8 +74,8 @@ class GatherMountEntry:
     local_mount_point: str
     meshes: Optional[List[str]] = None
 
-    def apply(self, host_meshes: Mapping[str, HostMesh]) -> "list[Any]":
-        """Start the gather mount for each targeted mesh. Returns handles.
+    def apply(self, host_meshes: Mapping[str, HostMesh], handles: list[Any]) -> None:
+        """Start the gather mount for each targeted mesh, appending to ``handles``.
 
         Single targeted mesh: mounts directly at ``local_mount_point``.
         Multiple targeted meshes: mounts each at ``local_mount_point/<mesh_name>``.
@@ -82,15 +89,21 @@ class GatherMountEntry:
         ]
         multi = len(target_meshes) > 1
 
-        handles = []
         for mesh_name, raw_mesh in target_meshes:
             local_path = (
                 os.path.join(self.local_mount_point, mesh_name)
                 if multi
                 else self.local_mount_point
             )
-            handles.append(_gather_mount(raw_mesh, self.remote_mount_point, local_path))
-        return handles
+            try:
+                handles.append(
+                    _gather_mount(raw_mesh, self.remote_mount_point, local_path)
+                )
+            except Exception as error:
+                raise RuntimeError(
+                    f"gather mount of {self.remote_mount_point!r} at {local_path!r} "
+                    f"failed on mesh {mesh_name!r}"
+                ) from error
 
 
 class Mounts:
@@ -153,7 +166,7 @@ class Mounts:
         if not self._remote_entries and not self._gather_entries:
             guard = find_job_sidecar(apply_id)
             if guard is not None:
-                guard.send(ClearMountsRequest()).get()
+                check_sidecar_ok(guard.send(ClearMountsRequest()).get())
             return
 
         guard = create_job_sidecar(apply_id)
@@ -161,7 +174,7 @@ class Mounts:
         # job's scheduler, which is not known when the mount is declared.
         for entry in self._remote_entries:
             entry.via_gateway = via_gateway
-        guard.send(MountsRequest(self, dict(host_meshes))).get()
+        check_sidecar_ok(guard.send(MountsRequest(self, dict(host_meshes))).get())
 
 
 class MountsHandle:
@@ -170,21 +183,19 @@ class MountsHandle:
     def __init__(self, mounts: Mounts, host_meshes: Mapping[str, HostMesh]) -> None:
         self._active_remote: list[Any] = []
         self._active_gather: list[Any] = []
-        for entry in mounts._remote_entries:
-            self._active_remote.extend(entry.apply(host_meshes))
-        for entry in mounts._gather_entries:
-            self._active_gather.extend(entry.apply(host_meshes))
+        try:
+            for entry in mounts._remote_entries:
+                entry.apply(host_meshes, self._active_remote)
+            for entry in mounts._gather_entries:
+                entry.apply(host_meshes, self._active_gather)
+        except Exception:
+            self.close()
+            raise
 
     def refresh(self) -> None:
         """Refresh remote mounts in-place; gather mounts are unaffected."""
         for handler in self._active_remote:
-            try:
-                handler.refresh(handler.sourcepath)
-            except Exception:
-                _dbg(
-                    f"refresh: ERROR refreshing remote mount {handler.sourcepath!r}:\n"
-                    + traceback.format_exc()
-                )
+            handler.refresh(handler.sourcepath)
 
     def close(self) -> None:
         """Unmount all remote and gather mounts."""

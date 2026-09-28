@@ -54,7 +54,9 @@ from monarch._rust_bindings.monarch_distributed_telemetry import (
 )
 from monarch._src.job.job_sidecar import (
     AdminUrlRequest,
+    check_sidecar_ok,
     create_job_sidecar,
+    raise_for_sidecar_error,
     TelemetryRequest,
 )
 from monarch._src.job.telemetry_actor import (
@@ -184,26 +186,22 @@ class Telemetry:
         # than relaunching. That is what makes the two-phase bootstrap to
         # fan-out flow safe to invoke from any of JobTrait's `_connect` branches.
         guard = create_job_sidecar(apply_id)
-        response = guard.send(
-            TelemetryRequest(
-                apply_id=apply_id,
-                config={
-                    "retention_secs": self._config.retention_secs,
-                    "include_dashboard": self._config.include_dashboard,
-                    "dashboard_port": self._config.dashboard_port,
-                },
-                host_meshes=dict(host_meshes or {}),
-                spawn_worker_collectors=spawn_worker_collectors,
-            )
-        ).get()
+        response = raise_for_sidecar_error(
+            guard.send(
+                TelemetryRequest(
+                    apply_id=apply_id,
+                    config={
+                        "retention_secs": self._config.retention_secs,
+                        "include_dashboard": self._config.include_dashboard,
+                        "dashboard_port": self._config.dashboard_port,
+                    },
+                    host_meshes=dict(host_meshes or {}),
+                    spawn_worker_collectors=spawn_worker_collectors,
+                )
+            ).get()
+        )
         if not isinstance(response, dict):
             raise RuntimeError(f"unexpected telemetry handle response: {response!r}")
-        # The wire carries either a `_TelemetryResponse` shape or an
-        # `{"error": traceback_str}` envelope from the sidecar's exception
-        # handler; re-raise on the parent side so failures surface here.
-        error = response.get("error")
-        if isinstance(error, str):
-            raise RuntimeError(error)
         return cast(_TelemetryResponse, response)
 
     def set_admin_url(self, apply_id: str, admin_url: str) -> None:
@@ -211,18 +209,11 @@ class Telemetry:
         if not isinstance(apply_id, str):
             raise RuntimeError("telemetry requires an active apply_id")
 
-        response = (
+        check_sidecar_ok(
             create_job_sidecar(apply_id)
             .send(AdminUrlRequest(apply_id=apply_id, admin_url=admin_url))
             .get()
         )
-        if isinstance(response, dict):
-            error = response.get("error")
-            if isinstance(error, str):
-                raise RuntimeError(error)
-            raise RuntimeError(f"unexpected admin URL response: {response!r}")
-        if response != "ok":
-            raise RuntimeError(f"unexpected admin URL response: {response!r}")
 
 
 class _TelemetryHandle:

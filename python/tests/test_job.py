@@ -48,7 +48,12 @@ from monarch._src.job.job import (
     TelemetryConfig,
 )
 from monarch._src.job.job_components import JobComponent, JobComponents, MountComponent
-from monarch._src.job.mount_config import Mounts
+from monarch._src.job.mount_config import (
+    GatherMountEntry,
+    Mounts,
+    MountsHandle,
+    RemoteMountEntry,
+)
 from monarch._src.job.process import ProcessJob
 from monarch._src.job.process_guard import _Shutdown, _wait_for_socket
 from monarch._src.job.service_identity import (
@@ -101,6 +106,14 @@ class _RecordingMounts:
     def open(self, host_meshes: dict[str, object]) -> _RecordingMountHandle:
         _append_line(self.log_path, f"open:{self.name}:{','.join(host_meshes)}")
         return _RecordingMountHandle(self.name, self.log_path)
+
+
+@dataclass
+class _FailingMounts:
+    message: str
+
+    def open(self, host_meshes: dict[str, object]) -> None:
+        raise RuntimeError(self.message)
 
 
 def _send_sidecar_request(socket_path: str, message: object) -> object:
@@ -297,6 +310,7 @@ def test_mounts_ensure_open_clears_existing_sidecar_when_empty():
     with patch(
         "monarch._src.job.mount_config.find_job_sidecar", return_value=guard
     ) as find_sidecar:
+        guard.send.return_value.get.return_value = "ok"
         Mounts().ensure_open("apply_id", {})
 
     find_sidecar.assert_called_once_with("apply_id")
@@ -319,10 +333,22 @@ def test_mounts_ensure_open_does_not_create_sidecar_when_empty():
     create_sidecar.assert_not_called()
 
 
+def test_mounts_ensure_open_raises_clear_sidecar_error():
+    guard = MagicMock()
+    guard.send.return_value.get.return_value = {
+        "error": "Traceback (most recent call last):\nmount cleanup failed"
+    }
+
+    with patch("monarch._src.job.mount_config.find_job_sidecar", return_value=guard):
+        with pytest.raises(RuntimeError, match="mount cleanup failed"):
+            Mounts().ensure_open("apply_id", {})
+
+
 def test_mounts_ensure_open_sends_mounts_request():
     mounts = Mounts()
     mounts.remote_mount("/tmp/source")
     guard = MagicMock()
+    guard.send.return_value.get.return_value = "ok"
 
     with patch(
         "monarch._src.job.mount_config.create_job_sidecar",
@@ -334,6 +360,155 @@ def test_mounts_ensure_open_sends_mounts_request():
     request = guard.send.call_args.args[0]
     assert isinstance(request, js.MountsRequest)
     guard.send.return_value.get.assert_called_once_with()
+
+
+def test_mounts_ensure_open_raises_sidecar_error():
+    mounts = Mounts()
+    mounts.remote_mount("/tmp/source")
+    guard = MagicMock()
+    guard.send.return_value.get.return_value = {
+        "error": "Traceback (most recent call last):\nmount setup failed"
+    }
+
+    with patch(
+        "monarch._src.job.mount_config.create_job_sidecar",
+        return_value=guard,
+    ):
+        with pytest.raises(RuntimeError, match="mount setup failed"):
+            mounts.ensure_open("apply_id", {})
+
+
+def test_mounts_ensure_open_rejects_unexpected_sidecar_response():
+    mounts = Mounts()
+    mounts.remote_mount("/tmp/source")
+    guard = MagicMock()
+    guard.send.return_value.get.return_value = None
+
+    with patch(
+        "monarch._src.job.mount_config.create_job_sidecar",
+        return_value=guard,
+    ):
+        with pytest.raises(RuntimeError, match="unexpected job sidecar response"):
+            mounts.ensure_open("apply_id", {})
+
+
+def test_state_raises_when_mount_setup_fails():
+    job = MockJobTrait(host_names=["hosts"])
+    job.remote_mount("/tmp/source", python_exe=None)
+
+    with (
+        patch(
+            "monarch._src.job.mount_config.Mounts.ensure_open",
+            side_effect=RuntimeError("mount setup failed"),
+        ),
+        pytest.raises(RuntimeError, match="mount setup failed"),
+    ):
+        job.state(cached_path=None)
+
+
+def test_mounts_handle_closes_opened_mounts_when_later_mount_fails():
+    opened = MagicMock()
+    first = MagicMock()
+    first.apply.side_effect = lambda host_meshes, handles: handles.append(opened)
+    second = MagicMock()
+    second.apply.side_effect = RuntimeError("second mount failed")
+    mounts = Mounts()
+    mounts._remote_entries = [first, second]
+
+    with pytest.raises(RuntimeError, match="second mount failed"):
+        MountsHandle(mounts, {})
+
+    opened.close.assert_called_once_with()
+
+
+def test_remote_mount_entry_names_failed_mesh_and_closes_opened_meshes():
+    first = MagicMock()
+    second = MagicMock()
+    second.open.side_effect = RuntimeError("second mesh failed")
+    mounts = Mounts()
+    mounts._remote_entries = [RemoteMountEntry("/tmp/source")]
+
+    with (
+        patch(
+            "monarch.remotemount.remotemount.remotemount",
+            side_effect=[first, second],
+        ),
+        pytest.raises(
+            RuntimeError,
+            match="remote mount of '/tmp/source' failed on mesh 'second'",
+        ) as raised,
+    ):
+        MountsHandle(mounts, {"first": MagicMock(), "second": MagicMock()})
+
+    assert str(raised.value.__cause__) == "second mesh failed"
+    first.close.assert_called_once_with()
+    second.close.assert_called_once_with()
+
+
+def test_gather_mount_entry_names_failed_mesh_and_closes_opened_meshes():
+    first = MagicMock()
+    mounts = Mounts()
+    mounts._gather_entries = [GatherMountEntry("/remote", "/local")]
+
+    with (
+        patch(
+            "monarch._src.gather_mount.gather_mount.gather_mount",
+            side_effect=[first, RuntimeError("second mesh failed")],
+        ),
+        pytest.raises(
+            RuntimeError,
+            match="gather mount of '/remote' at '/local/second' failed on mesh 'second'",
+        ) as raised,
+    ):
+        MountsHandle(mounts, {"first": MagicMock(), "second": MagicMock()})
+
+    assert str(raised.value.__cause__) == "second mesh failed"
+    first.close.assert_called_once_with()
+
+
+def test_mounts_handle_propagates_refresh_failure():
+    handler = MagicMock()
+    handler.sourcepath = "/tmp/source"
+    handler.refresh.side_effect = RuntimeError("refresh failed")
+    entry = MagicMock()
+    entry.apply.side_effect = lambda host_meshes, handles: handles.append(handler)
+    mounts = Mounts()
+    mounts._remote_entries = [entry]
+    handle = MountsHandle(mounts, {})
+
+    with pytest.raises(RuntimeError, match="refresh failed"):
+        handle.refresh()
+
+
+def test_job_sidecar_clears_mount_state_after_refresh_failure():
+    mounts = _RecordingMounts("one", "/tmp/unused")
+    handle = MagicMock()
+    handle.refresh.side_effect = RuntimeError("refresh failed")
+    state = js._JobSidecarState()
+    state._mounts_handle = handle
+    # @lint-ignore PYTHONPICKLEISBAD
+    state._mounts_key = pickle.dumps(mounts)
+
+    with pytest.raises(RuntimeError, match="refresh failed"):
+        state.handle_mounts(js.MountsRequest(mounts, {}))
+
+    handle.close.assert_called_once_with()
+    assert state._mounts_handle is None
+    assert state._mounts_key is None
+
+
+def test_job_sidecar_clears_mount_state_when_close_fails():
+    handle = MagicMock()
+    handle.close.side_effect = RuntimeError("close failed")
+    state = js._JobSidecarState()
+    state._mounts_handle = handle
+    state._mounts_key = b"key"
+
+    with pytest.raises(RuntimeError, match="close failed"):
+        state.clear_mounts()
+
+    assert state._mounts_handle is None
+    assert state._mounts_key is None
 
 
 def test_job_sidecar_worker_passes_startup_args_to_server():
@@ -392,6 +567,7 @@ def test_mount_entries_carry_whether_the_sidecar_can_dial_the_workers():
         mounts = Mounts()
         mounts.remote_mount("/tmp/source")
         guard = MagicMock()
+        guard.send.return_value.get.return_value = "ok"
 
         with patch(
             "monarch._src.job.mount_config.create_job_sidecar", return_value=guard
@@ -469,6 +645,12 @@ def test_run_job_sidecar_manages_mount_lifecycle():
                 )
                 == "ok"
             )
+            response = _send_sidecar_request(
+                socket_path,
+                js.MountsRequest(_FailingMounts("mount setup failed"), host_meshes),
+            )
+            assert isinstance(response, dict)
+            assert "RuntimeError: mount setup failed" in response["error"]
             assert (
                 _send_sidecar_request(
                     socket_path,
