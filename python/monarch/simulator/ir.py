@@ -806,6 +806,7 @@ class IRGraph:
         if isinstance(timing, str):
             with open(timing, "r") as f:
                 timing = json.load(f)
+        # pyrefly: ignore [bad-argument-type]
         self._apply_timing(timing)
 
     def export_dag_json_timed(self, output_file: str) -> None:

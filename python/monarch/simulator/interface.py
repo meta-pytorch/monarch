@@ -41,7 +41,9 @@ def Simulator(
     ctrl = _SimulatorController(
         hosts * gpus,
         gpu_per_host=gpus,
+        # pyrefly: ignore [bad-argument-type]
         simulate_mode=simulate_mode,
+        # pyrefly: ignore [bad-argument-type]
         trace_mode=trace_mode,
         upload_trace=upload_trace,
         trace_path=trace_path,

@@ -200,6 +200,7 @@ class Controller:
                 match message:
                     case "detach":
                         break
+                    # pyrefly: ignore [bad-match]
                     case messages.DebuggerRead(requested):
                         self.send(
                             rank,
@@ -208,6 +209,7 @@ class Controller:
                                 messages.DebuggerWrite(debugger.read(requested)),
                             ),
                         )
+                    # pyrefly: ignore [bad-match]
                     case messages.DebuggerWrite(payload):
                         debugger.write(payload.decode())
                     case other:

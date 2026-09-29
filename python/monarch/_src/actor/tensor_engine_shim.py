@@ -63,6 +63,7 @@ def shim(
             # TODO: See if there's a reasonable way to assert that the module name is not none
             # pyre-ignore Incompatible parameter type [6]: In call `importlib.import_module`, for 1st positional argument, expected `str` but got `Optional[str]`
             impl = getattr(importlib.import_module(module), name)
+        # pyrefly: ignore [not-callable]
         return impl(*args, **kwargs)
 
     return wrap

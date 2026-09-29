@@ -59,7 +59,9 @@ def make_synthetic_metadata(num_files: int, num_dirs: int = 0) -> dict[str, Any]
             # pyrefly: ignore [unsupported-operation]
             meta[f"/dir_{i}/sub_file_{j}.txt"] = {
                 "attr": file_attr,
+                # pyrefly: ignore [bad-assignment]
                 "global_offset": offset + j * 256,
+                # pyrefly: ignore [bad-assignment]
                 "file_len": 256,
             }
 
@@ -74,7 +76,9 @@ def make_synthetic_metadata(num_files: int, num_dirs: int = 0) -> dict[str, Any]
         # pyrefly: ignore [unsupported-operation]
         meta[f"/file_{i}.bin"] = {
             "attr": file_attr,
+            # pyrefly: ignore [bad-assignment]
             "global_offset": offset,
+            # pyrefly: ignore [bad-assignment]
             "file_len": file_size,
         }
         offset += file_size

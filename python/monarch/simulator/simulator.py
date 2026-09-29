@@ -354,6 +354,7 @@ class Simulator:
         )
 
         if isinstance(self.workers[0], WorkerGroup):
+            # pyrefly: ignore [missing-attribute]
             workers = sorted(self.workers, key=lambda g: min(g.workers))
         else:
             workers = self.workers

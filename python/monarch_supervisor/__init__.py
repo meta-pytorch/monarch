@@ -346,6 +346,7 @@ class Process:
 
     def send(self, msg: object) -> None:
         msg = pickle_dumps(msg)
+        # pyrefly: ignore [bad-argument-type]
         self._context._schedule(lambda: self._send(msg))
 
     def _send(self, msg: bytes) -> None:

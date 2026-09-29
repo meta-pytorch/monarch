@@ -593,14 +593,17 @@ def mast_mesh(
         try:
             _ctx = Context(port=port)
             ctx: Context = _ctx
+            # pyrefly: ignore [bad-argument-type]
             ctx.request_hosts(hosts)
             connections = ctx.messagefilter(HostConnected)
             logger.info(f"connections: {connections}")
+            # pyrefly: ignore [bad-argument-type]
             ctx_hosts = [connections.recv(timeout=30).sender for _ in range(hosts)]
             logger.info(f"connections: {ctx_hosts}")
             logger.info(
                 f"Connected to mast workers ({hosts} hosts, {n_gpus_per_host} gpus per host)"
             )
+            # pyrefly: ignore [bad-argument-type]
             _active_mesh = mesh = world_mesh(ctx, ctx_hosts, n_gpus_per_host)
             mesh.exit = cleanup
 
