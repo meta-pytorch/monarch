@@ -148,6 +148,11 @@ enum Recording {
 )]
 pub struct WorkerActor {
     device: Option<CudaDevice>,
+    /// The device index this worker was spawned for, if any. The `CudaDevice` is
+    /// built from this in the `AssignRankMessage` handler -- after the GPU mask is
+    /// applied -- so we never hold a device before the mask nor query torch too
+    /// early (see `runtime_has_cuda` and the handler).
+    device_index: Option<i8>,
     streams: HashMap<StreamRef, Arc<ActorHandle<StreamActor>>>,
     /// Maps streams to the device mesh and a map of dim names to the concrete
     /// communicator actor that represents the dimension for that stream.
@@ -177,6 +182,19 @@ pub struct WorkerActor {
 
 impl WorkerActor {
     fn runtime_has_cuda() -> bool {
+        // Whether this worker actually has a usable CUDA/ROCm device.
+        //
+        // Uses `torch.cuda.is_available()`, which calls `torch.cuda.device_count()`.
+        // c10 memoizes that count on the first call (c10/cuda/CUDAFunctions.cpp
+        // `device_count()`), reading the visible-device env vars at that moment, so
+        // this MUST only be called AFTER `_initialize_env` has applied the per-worker
+        // GPU mask (i.e. from the AssignRankMessage handler). Calling it during
+        // worker construction would latch the full host device count and every
+        // worker would keep seeing all GPUs after masking (observed on multi-GPU
+        // ROCm: `get_rng_state_all()` returned one state per host GPU). `remote_spawn`
+        // therefore never queries devices -- it just stores the spawn's device_index,
+        // and the `AssignRankMessage` handler builds the `CudaDevice` from it once the
+        // mask is applied.
         monarch_with_gil_blocking(GilSite::WorkerInit, |py| {
             py.import("torch")
                 .expect("torch must be importable in a worker")
@@ -243,13 +261,16 @@ impl RemoteSpawn for WorkerActor {
         monarch_with_gil_blocking(GilSite::WorkerInit, |py| {
             py.import("monarch.safe_torch").unwrap();
         });
-        let device = if Self::runtime_has_cuda() {
-            device_index.map(|i| CudaDevice::new(DeviceIndex(i)))
-        } else {
-            None
-        };
+        // Defer building the device to the `AssignRankMessage` handler, which runs
+        // after `_initialize_env` applies the per-worker GPU mask. We must not query
+        // torch here (any device query before the mask latches the unmasked host
+        // device count -- see `runtime_has_cuda`), and we must not hold a `CudaDevice`
+        // before the mask confirms one exists (a stale device would be handed to real
+        // HIP/CUDA calls if a device-using message ever arrived before AssignRank). So
+        // stash the index now and resolve it there.
         Ok(Self {
-            device,
+            device: None,
+            device_index,
             streams: HashMap::new(),
             device_meshes: HashMap::new(),
             world_size,
@@ -285,6 +306,14 @@ impl Handler<AssignRankMessage> for WorkerActor {
                 .call_method1("_initialize_env", (p, cx.proc().proc_addr().to_string()))
                 .unwrap();
         });
+        // The GPU mask is now applied, so it is safe to query torch and build the
+        // device. Resolve it from the stored index only if this worker actually has a
+        // usable device; otherwise leave it None.
+        self.device = if Self::runtime_has_cuda() {
+            self.device_index.map(|i| CudaDevice::new(DeviceIndex(i)))
+        } else {
+            None
+        };
         Ok(())
     }
 }
