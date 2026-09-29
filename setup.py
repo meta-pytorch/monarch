@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import glob
 import importlib.util
 import os
 import shutil
@@ -119,6 +120,41 @@ def get_rocm_home() -> Optional[str]:
     # Check default ROCm location
     if os.path.exists("/opt/rocm"):
         return "/opt/rocm"
+
+    # ROCm shipped as pip wheels ("rocm-sdk" / TheRock) instead of a system
+    # /opt/rocm install -- e.g. the rocm7.14+ PyTorch nightlies pull in
+    # rocm-sdk-core, which unpacks the toolchain under
+    # site-packages/_rocm_sdk_core and puts a `hipconfig` console-script shim on
+    # PATH. Ask hipconfig for the SDK root so has_rocm is detected and ROCM_PATH
+    # is fed to the Rust build (rdmaxcel-sys locates hipcc/headers/libs there).
+    hipconfig = shutil.which("hipconfig")
+    if hipconfig:
+        try:
+            root = subprocess.check_output([hipconfig, "--rocmpath"], text=True).strip()
+            if root and os.path.exists(root):
+                return root
+        except (subprocess.SubprocessError, OSError):
+            pass
+
+    # hipconfig may not be on PATH (e.g. a pip rocm-sdk install without the
+    # console-script shim exported). Locate the SDK directly via the installed
+    # package instead of relying on PATH: `_rocm_sdk_core` is importable, and the
+    # devel wheel (_rocm_sdk_devel -- hipcc/headers, what `hipconfig --rocmpath`
+    # returns) is its sibling. Return whichever provides a usable toolchain.
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("_rocm_sdk_core")
+        if spec and spec.submodule_search_locations:
+            core = spec.submodule_search_locations[0]
+            site = os.path.dirname(core)
+            for cand in (os.path.join(site, "_rocm_sdk_devel"), core):
+                if os.path.exists(os.path.join(cand, "bin", "hipcc")) or os.path.isdir(
+                    os.path.join(cand, "lib", "llvm", "amdgcn", "bitcode")
+                ):
+                    return cand
+    except Exception:
+        pass
 
     return None
 
@@ -238,6 +274,29 @@ if build_cuda:
     env_vars["CUDA_HOME"] = cuda_home
 elif build_rocm:
     env_vars["ROCM_PATH"] = rocm_home
+    # rocm-sdk / TheRock keeps the GPU device bitcode under
+    # lib/llvm/amdgcn/bitcode rather than the classic <rocm>/amdgcn/bitcode. With
+    # ROCM_PATH pointed at the SDK root, hipcc/clang search the classic location
+    # and abort with "cannot find ROCm device library". Point HIP_DEVICE_LIB_PATH
+    # at the real bitcode dir when that (pip) layout is present; the isdir guard
+    # makes this a no-op on a classic /opt/rocm install.
+    _rocm_devlib = os.path.join(rocm_home, "lib", "llvm", "amdgcn", "bitcode")
+    if os.path.isdir(_rocm_devlib):
+        env_vars["HIP_DEVICE_LIB_PATH"] = _rocm_devlib
+        # rocm-sdk / TheRock ships only versioned runtime libs (libX.so.N) and
+        # omits the unversioned dev symlinks the linker needs to resolve `-lX`
+        # (e.g. rdmaxcel-sys emits `-lamdhip64`, so it needs libamdhip64.so).
+        # Create the missing symlinks in the SDK lib dir. Only runs for the pip
+        # layout (guarded by the bitcode dir above); a classic /opt/rocm install
+        # already provides these via its -devel packages.
+        _rocm_lib = os.path.join(rocm_home, "lib")
+        for _vso in glob.glob(os.path.join(_rocm_lib, "lib*.so.*")):
+            _unversioned = _vso[: _vso.index(".so.")] + ".so"
+            if not os.path.exists(_unversioned):
+                try:
+                    os.symlink(os.path.basename(_vso), _unversioned)
+                except OSError:
+                    pass
 
 os.environ.update(env_vars)
 
