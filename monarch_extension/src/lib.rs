@@ -29,6 +29,8 @@ mod chunked_fuse;
 mod panic;
 #[cfg(target_os = "linux")]
 mod readonly_fuse;
+#[cfg(target_os = "macos")]
+mod readonly_nfs;
 #[cfg(feature = "distributed_sql_telemetry")]
 pub mod snapshot_integration;
 mod trace;
@@ -259,6 +261,12 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::readonly_fuse::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.readonly_fuse",
+    )?)?;
+
+    #[cfg(target_os = "macos")]
+    crate::readonly_nfs::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.readonly_nfs",
     )?)?;
 
     monarch_hyperactor::logging::register_python_bindings(&get_or_add_new_module(

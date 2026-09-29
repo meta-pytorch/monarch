@@ -7,7 +7,7 @@
 # pyre-strict
 
 """
-gather_mount – read-only FUSE mount of remote shard file systems.
+gather_mount – read-only mount of remote shard file systems (FUSE or NFS).
 
 Each host in the host mesh exposes its ``remote_mount_point`` as a
 sub-directory of ``local_mount_point``, named after the host's mesh
@@ -31,11 +31,11 @@ mounts files directly in ``local_mount_point`` without any sub-directory.
   next ``getattr`` for the file goes to the remote and gets a fresh
   size/mtime.
 
-Large transfers (≥ ``_RDMA_THRESHOLD``) are transferred via ``RDMABuffer``
-directly within the async ``GatherClientActor.read_path`` endpoint.
+Large transfers (≥ ``_RDMA_THRESHOLD``) use ``RDMABuffer`` when available;
+otherwise they fetch the same range via byte RPCs.
 
-``_GatherMountFS`` is a thin FUSE adapter with no state of its own; all
-caching and coordination lives in ``GatherClientActor``.
+The Linux FUSE and macOS loopback NFS adapters have no gather-specific state;
+all caching and coordination lives in ``GatherClientActor``.
 """
 
 from __future__ import annotations
@@ -49,14 +49,12 @@ import mmap as _mmap
 import os
 import stat as _stat
 import struct
+import sys
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
 
-from monarch._rust_bindings.monarch_extension.readonly_fuse import (  # pyre-ignore[21]
-    mount_read_only_filesystem,
-)
 from monarch.actor import Actor, context, endpoint, HostMesh, this_proc
 from monarch.remotemount.remotemount import prepare_mount_point
 
@@ -67,6 +65,10 @@ _NOTIFY_BATCH_S: float = 0.05
 
 # Byte threshold above which transfers use RDMABuffer instead of plain bytes.
 _RDMA_THRESHOLD: int = 1 * 1024 * 1024  # 1 MiB
+
+# Maximum payload per byte RPC when RDMA is unavailable (independent of the
+# threshold at which the RDMA path is selected).
+_BYTE_READ_CHUNK_SIZE: int = 32 * 1024 * 1024  # 32 MiB
 
 # inotify flags
 _IN_MODIFY: int = 0x00000002
@@ -290,13 +292,13 @@ class GatherClientActor(Actor):
     """Local actor: owns the stat/file caches and handles all client-side logic.
 
     All cache state lives here so that the actor's single-threaded event loop
-    provides synchronisation for free — no locks needed.  ``_GatherMountFS``
-    is a thin FUSE adapter that delegates every operation to this actor via
-    synchronous ``.call_one(...).get()`` calls from the FUSE threads.
+    provides synchronisation for free — no locks needed.  Both filesystem
+    adapters delegate their operations to this actor.
     """
 
-    def __init__(self, actors: object) -> None:
+    def __init__(self, actors: object, use_rdma: bool = True) -> None:
         self._actors = actors
+        self._use_rdma = use_rdma
         extent: dict[str, int] = dict(actors.extent)  # pyre-ignore[16]
         if not extent:
             shard_points: list[dict[str, int]] = [{}]
@@ -470,6 +472,21 @@ class GatherClientActor(Actor):
         if length <= 0:
             return b""
         actor = self._actor_for(point)
+        if not self._use_rdma:
+            # Fetch the same range as the RDMA path using bounded byte RPCs
+            # when RDMA is unavailable; the cache algorithm is unchanged.
+            chunks: list[bytes] = []
+            while length > 0:
+                # pyrefly: ignore [missing-attribute]
+                chunk = await actor.read_bytes.call_one(
+                    rel_path, offset, min(length, _BYTE_READ_CHUNK_SIZE)
+                )
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                offset += len(chunk)
+                length -= len(chunk)
+            return b"".join(chunks)
         if length < _RDMA_THRESHOLD:
             # pyre-ignore[16]
             return await actor.read_bytes.call_one(rel_path, offset, length)
@@ -536,7 +553,7 @@ def _make_stat(mode: int, size: int, mtime_ns: int) -> dict[str, object]:
 
 
 class GatherMount:
-    """An active FUSE mount of remote shard file systems.
+    """An active read-only mount of remote shard file systems.
 
     Created and mounted immediately by :func:`gather_mount`.  Use as a context
     manager to have the mount closed automatically on exit, or call
@@ -556,29 +573,48 @@ class GatherMount:
         procs = host_mesh.spawn_procs(name="gather_mount")
 
         actors = procs.spawn("GatherSourceActor", GatherSourceActor, remote_mount_point)
-        client_actor = this_proc().spawn("GatherClientActor", GatherClientActor, actors)
+        client_actor = this_proc().spawn(
+            "GatherClientActor", GatherClientActor, actors, sys.platform != "darwin"
+        )
 
-        prepare_mount_point(local_mount_point)
+        if sys.platform == "darwin":
+            os.makedirs(local_mount_point, exist_ok=True)
+        else:
+            prepare_mount_point(local_mount_point)
 
         # Call init_watch on all source actors and wait for completion before
-        # mounting — ensures inotify is ready before the first FUSE operation.
+        # mounting — ensures inotify is ready before the first filesystem operation.
         actors.init_watch.call(client_actor).get()
 
-        # The Rust FUSE session runs on the shared Tokio runtime; it calls
-        # back into client_actor for every filesystem operation.
-        self._fuse_handle: object = mount_read_only_filesystem(
-            client_actor, local_mount_point
-        )
+        # Both adapters call the same three client actor endpoints. Import
+        # only the backend available on this platform.
+        if sys.platform == "darwin":
+            from monarch._rust_bindings.monarch_extension.readonly_nfs import (  # pyre-ignore[21]
+                mount_read_only_nfs,
+            )
+
+            self._mount_handle: object = mount_read_only_nfs(
+                client_actor, local_mount_point
+            )
+        else:
+            from monarch._rust_bindings.monarch_extension.readonly_fuse import (  # pyre-ignore[21]
+                mount_read_only_filesystem,
+            )
+
+            self._mount_handle = mount_read_only_filesystem(
+                client_actor, local_mount_point
+            )
         self._mounted = True
         atexit.register(self.close)
         logger.info("gather_mount: mounted at %s", local_mount_point)
 
     def close(self) -> None:
-        """Unmount the FUSE filesystem."""
+        """Unmount the filesystem."""
         if not self._mounted:
             return
+        # Leave the mount active if unmount fails so callers can retry.
+        self._mount_handle.unmount()  # pyre-ignore[16]
         self._mounted = False
-        self._fuse_handle.unmount()  # pyre-ignore[16]
         logger.info("gather_mount: unmounted %s", self._local_mount_point)
 
     def __enter__(self) -> "GatherMount":
@@ -595,6 +631,9 @@ def gather_mount(
     local_mount_point: str,
 ) -> GatherMount:
     """Mount the file systems of hosts in a Monarch mesh as a local directory.
+
+    Uses FUSE on Linux and a read-only NFSv3 loopback server on macOS. The
+    macOS server binds only to 127.0.0.1 and is stopped when the mount closes.
 
     The mount is live immediately on return.  Use the returned
     :class:`GatherMount` as a context manager to close it automatically, or
@@ -624,7 +663,7 @@ def gather_mount(
         remote_mount_point: The absolute path served from each remote host.
             The token ``$SUBDIR`` is replaced with the host's mesh-coordinate
             key (e.g. ``hosts_0``).
-        local_mount_point: Local directory path where the FUSE filesystem is
+        local_mount_point: Local directory path where the filesystem is
             mounted.  Created automatically if it does not exist.
 
     Returns:
