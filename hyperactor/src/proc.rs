@@ -1517,10 +1517,11 @@ impl Proc {
     /// Create a child instance. Called from `Instance`.
     fn child_instance(&self, parent: InstanceCell) -> (Instance<()>, ActorHandle<()>) {
         let actor_id = self.allocate_anonymous_child_id(parent.actor_addr());
-        let _ = tracing::debug_span!(
+        let span = tracing::debug_span!(
             "child_actor_instance",
             subject = %actor_id.subject(),
         );
+        let _guard = span.enter();
 
         let environment = parent.actor_environment().clone();
         let (instance, _receivers) =
@@ -3555,7 +3556,7 @@ impl<A: Actor> Instance<A> {
                 work = work_rx.recv() => {
                     ACTOR_MESSAGES_RECEIVED.add(1, metric_pairs);
                     account_dequeue(&self.inner.cell.inner.queue_depth, &self.inner.proc.state().queue_stats, &actor_id_str);
-                    let _ = ACTOR_MESSAGE_HANDLER_DURATION.start(metric_pairs);
+                    let _timer = ACTOR_MESSAGE_HANDLER_DURATION.start(metric_pairs);
                     let work = work.expect("inconsistent work queue state");
                     if let Err(err) = work.handle(actor, self).await {
                         while let Ok(supervision_event) = supervision_event_receiver.try_recv() {

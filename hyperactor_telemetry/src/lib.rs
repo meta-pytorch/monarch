@@ -666,7 +666,8 @@ impl Drop for TimerGuard<'_> {
 /// declare_static_timer!(REQUEST_TIMER, "request_processing_time", hyperactor_telemetry::TimeUnit::Millis);
 ///
 /// {
-///     let _ = REQUEST_TIMER.start(kv_pairs!("endpoint" => "/api/users", "method" => "GET"));
+///     let pairs = kv_pairs!("endpoint" => "/api/users", "method" => "GET");
+///     let _timer = REQUEST_TIMER.start(pairs);
 ///     // do something expensive
 /// }
 /// # }

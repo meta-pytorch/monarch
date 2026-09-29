@@ -536,12 +536,12 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
             "py_next_message",
             hyperactor_telemetry::TimeUnit::Nanos
         );
-        let _ = PY_NEXT_MESSAGE_TIMER
-            .start(hyperactor::kv_pairs!("actor_id" => self.actor_addr().to_string(), "mode" => match timeout_msec{
-                None => "blocking",
-                Some(0) => "polling",
-                Some(_) => "blocking_with_timeout",
-            }));
+        let metric_pairs = hyperactor::kv_pairs!("actor_id" => self.actor_addr().to_string(), "mode" => match timeout_msec{
+            None => "blocking",
+            Some(0) => "polling",
+            Some(_) => "blocking_with_timeout",
+        });
+        let _timer = PY_NEXT_MESSAGE_TIMER.start(metric_pairs);
         self.ensure_alive()?;
         match timeout_msec {
             // Blocking wait for next message.
