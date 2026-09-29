@@ -50,7 +50,12 @@ from monarch._src.job.job import (
 from monarch._src.job.job_components import JobComponent, JobComponents, MountComponent
 from monarch._src.job.mount_config import Mounts
 from monarch._src.job.process import ProcessJob
-from monarch._src.job.process_guard import _Shutdown, _wait_for_socket
+from monarch._src.job.process_guard import (
+    _Shutdown,
+    _wait_for_pid_exit,
+    _wait_for_socket,
+    ProcessGuard,
+)
 from monarch._src.job.service_identity import (
     deserialize_service_proc_ids,
     serialize_service_proc_ids,
@@ -261,6 +266,34 @@ def test_spawn_module_reenters_parent_binary_inside_par():
     assert create.call_args.kwargs == {
         "env": {"PAR_MAIN_OVERRIDE": "monarch.fake_module"}
     }
+
+
+def test_process_guard_reports_child_that_exits_during_startup(tmp_path) -> None:
+    """An exited child is a zombie until reaped; startup must not wait out the timeout."""
+    start = time.monotonic()
+    with pytest.raises(RuntimeError, match="exited before the socket"):
+        ProcessGuard.create(
+            str(tmp_path / "guard.lock"),
+            "key",
+            [sys.executable, "-c", "raise SystemExit(3)"],
+        )
+    assert time.monotonic() - start < 10
+
+
+def test_wait_for_pid_exit_reaps_exited_child() -> None:
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    while (
+        not os.path.exists(f"/proc/{child.pid}")
+        or open(f"/proc/{child.pid}/stat").read().split()[2] != "Z"
+    ):
+        time.sleep(0.01)
+
+    start = time.monotonic()
+    with patch("monarch._src.job.process_guard.os.kill", wraps=os.kill) as kill:
+        _wait_for_pid_exit(child.pid)
+
+    assert time.monotonic() - start < 5
+    assert signal.SIGKILL not in [c.args[1] for c in kill.call_args_list]
 
 
 def test_create_job_sidecar_spawns_job_sidecar_worker_module():

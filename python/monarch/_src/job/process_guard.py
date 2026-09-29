@@ -157,17 +157,29 @@ def find_process(lock_path: str) -> "ProcessGuard | None":
         os.close(fd)
 
 
+def _pid_alive(pid: int) -> bool:
+    # A child that exited stays a zombie, which still answers kill(pid, 0),
+    # until its parent reaps it; reap our own children here.
+    try:
+        if os.waitpid(pid, os.WNOHANG)[0] == pid:
+            return False
+    except ChildProcessError:
+        pass  # Not our child; its own parent reaps it.
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 def _wait_for_socket(socket_path: str, pid: int = 0, timeout: float = 60.0) -> None:
     deadline = time.monotonic() + timeout
     while True:
-        if pid:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                raise RuntimeError(
-                    f"Guarded process (pid {pid}) exited before the socket "
-                    f"{socket_path!r} became ready."
-                )
+        if pid and not _pid_alive(pid):
+            raise RuntimeError(
+                f"Guarded process (pid {pid}) exited before the socket "
+                f"{socket_path!r} became ready."
+            )
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             try:
@@ -195,9 +207,7 @@ def _try_acquire_lock(fd: int) -> bool:
 def _wait_for_pid_exit(pid: int, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while True:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not _pid_alive(pid):
             return
         if time.monotonic() >= deadline:
             try:
