@@ -6,13 +6,8 @@
 
 # pyre-strict
 
-import atexit
 import dataclasses
 import logging
-import re
-import select
-import shutil
-import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -33,6 +28,11 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.actor.actor_mesh import _client_attached_to
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._kubernetes_exec import load_kube_config
+from monarch._src.job._kubernetes_port_forward import (
+    ensure_allocation_port_forward,
+    PortForwardSpec,
+    stop_allocation_port_forward,
+)
 from monarch._src.job.job import JobState, JobTrait
 from monarch._src.job.service_identity import (
     allocate_service_proc_ids,
@@ -52,13 +52,6 @@ logger.propagate = False
 # Default monarch port for worker communication
 _DEFAULT_MONARCH_PORT: int = 26600
 _RFC_1123_MAX_LEN = 63
-
-# Seconds to wait for `kubectl port-forward` to report it is ready before giving
-# up, so a silently hung forward cannot stall job initialization indefinitely.
-_PORT_FORWARD_START_TIMEOUT_SECONDS: int = 30
-# Keep both the graceful and forced waits inside the actor runtime's roughly
-# two-second aggregate atexit budget.
-_PORT_FORWARD_TERMINATE_TIMEOUT_SECONDS: float = 0.1
 
 # MonarchMesh CRD coordinates
 _MONARCHMESH_GROUP = "monarch.pytorch.org"
@@ -283,7 +276,8 @@ class KubernetesJob(JobTrait):
                 ``kubectl port-forward pod/<pod-name> <local>:26600``
                 to forward the pod to localhost.
                 When ``kubeconfig`` is provided (out-of-cluster mode) and this is
-                not set, port-forwarding is set up automatically.
+                not set, Monarch starts one port-forward per allocation and every
+                client process reuses it until ``kill()``.
         """
         configure(default_transport=ChannelTransport.TcpWithHostname)
         self._namespace = namespace
@@ -293,8 +287,7 @@ class KubernetesJob(JobTrait):
         self._meshes: dict[str, _MeshConfig] = {}
         self._prepared_mesh_pods: dict[str, list[_MonarchMeshPod]] | None = None
         self._service_proc_ids: dict[str, list[ProcId]] = {}
-        self._port_forward_processes: list[subprocess.Popen[str]] = []
-        self._port_forward_cleanup_registered = False
+        self._gateway_address: str | None = None
         super().__init__()
 
     def __getstate__(self) -> dict[str, Any]:
@@ -308,15 +301,13 @@ class KubernetesJob(JobTrait):
             )
             state["_kubeconfig"] = KubeConfig._for_rebind()
         state["_prepared_mesh_pods"] = None
-        state["_port_forward_processes"] = []
-        state["_port_forward_cleanup_registered"] = False
+        state["_gateway_address"] = None
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         self.__dict__.update(state)
         self._prepared_mesh_pods = None
-        self._port_forward_processes = []
-        self._port_forward_cleanup_registered = False
+        self._gateway_address = None
         configure(default_transport=ChannelTransport.TcpWithHostname)
 
     def _rebind_connection_inputs(self, spec: JobTrait) -> None:
@@ -342,6 +333,9 @@ class KubernetesJob(JobTrait):
         # address is supplied; an explicit address requires the same ordering.
         return self._kubeconfig.out_of_cluster or self._attach_to is not None
 
+    def _sidecar_attach_to(self) -> str | None:
+        return self._gateway_address or super()._sidecar_attach_to()
+
     def _prepare_client_gateway(self) -> None:
         if self._prepared_mesh_pods is not None:
             return
@@ -356,42 +350,52 @@ class KubernetesJob(JobTrait):
             )
 
         attach_to = self._attach_to
-        try:
-            if self._kubeconfig.out_of_cluster and attach_to is None:
-                attach_to = _client_attached_to()
-                if attach_to is not None:
-                    # The actor context is process-global and has no detach
-                    # operation. The job that created an automatic forward
-                    # owns its lifetime, even when another job borrows it.
-                    owner = (
-                        "this job"
-                        if self._port_forward_cleanup_registered
-                        else "its original creator"
-                    )
-                    logger.info(
-                        "Reusing process-global client gateway %s for "
-                        "KubernetesJob in namespace %s; %s retains ownership",
-                        attach_to,
-                        self._namespace,
-                        owner,
-                    )
-                if attach_to is None:
-                    for pods in all_mesh_pods.values():
-                        if pods:
-                            attach_to = self._port_forward_to_pod(pods[0])
-                            break
-                if attach_to is None:
-                    raise RuntimeError(
-                        "out-of-cluster mode requires at least one ready pod "
-                        "and no attach_to was provided"
-                    )
-
-            self._attach_client(attach_to)
-        except Exception:
-            self._terminate_port_forwards()
-            raise
-
+        if self._kubeconfig.out_of_cluster and attach_to is None:
+            pod = next((pods[0] for pods in all_mesh_pods.values() if pods), None)
+            if pod is None:
+                raise RuntimeError(
+                    "out-of-cluster mode requires at least one ready pod "
+                    "and no attach_to was provided"
+                )
+            self._gateway_address = self._allocation_gateway(pod)
+            attach_to = _client_attached_to() or self._gateway_address
+            if attach_to != self._gateway_address:
+                # The actor context is process-global and has no detach
+                # operation, so a client already attached through another
+                # allocation keeps that route; this job's sidecar still uses
+                # its own allocation gateway.
+                logger.info(
+                    "Reusing process-global client gateway %s; KubernetesJob in "
+                    "namespace %s uses allocation gateway %s for its sidecar",
+                    attach_to,
+                    self._namespace,
+                    self._gateway_address,
+                )
+        self._attach_client(attach_to)
         self._prepared_mesh_pods = all_mesh_pods
+
+    def _allocation_gateway(self, pod: _MonarchMeshPod) -> str:
+        """Return this allocation's port-forward address, starting it if needed."""
+        apply_id = self.apply_id
+        if apply_id is None:
+            raise RuntimeError("automatic port-forwarding requires an applied job")
+        local = self._kubeconfig.local
+        if local is None:
+            raise RuntimeError(
+                "automatic port-forwarding requires a kubeconfig file "
+                "(KubeConfig.from_path()); in-memory Kubernetes configurations "
+                "are not supported for it. Pass attach_to to use your own "
+                "forwarded address instead"
+            )
+        return ensure_allocation_port_forward(
+            apply_id,
+            PortForwardSpec(
+                namespace=self._namespace,
+                pod_name=pod.name,
+                remote_port=pod.port,
+                kubeconfig=str(local),
+            ),
+        )
 
     @staticmethod
     def _allocate_service_proc_ids(num_replicas: int) -> list[ProcId]:
@@ -868,129 +872,6 @@ class KubernetesJob(JobTrait):
 
         return _DEFAULT_MONARCH_PORT
 
-    def _port_forward_to_pod(self, pod: _MonarchMeshPod) -> str:
-        """Start kubectl port-forward to the pod's monarch port.
-
-        The frontend address doubles as the duplex attach address, so
-        port-forwarding the monarch port is sufficient for both regular
-        messaging and out-of-cluster client attachment.
-
-        Returns the local ``tcp://127.0.0.1:<local_port>`` address.
-        """
-        if shutil.which("kubectl") is None:
-            raise RuntimeError(
-                "kubectl is required for out-of-cluster port forwarding but was not found in PATH"
-            )
-
-        cmd = [
-            "kubectl",
-            "port-forward",
-            "--namespace",
-            self._namespace,
-            f"pod/{pod.name}",
-            f":{pod.port}",
-        ]
-        if self._kubeconfig.local is not None:
-            cmd.extend(["--kubeconfig", str(self._kubeconfig.local)])
-
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-
-        if process.stdout is None:
-            raise RuntimeError(
-                f"failed to open stdout for kubectl port-forward to pod {pod.name}"
-            )
-
-        # kubectl prints "Forwarding from ..." to stdout once the tunnel is up.
-        # Guard the blocking read so a silently hung forward cannot stall job
-        # initialization indefinitely.
-        ready, _, _ = select.select(
-            [process.stdout], [], [], _PORT_FORWARD_START_TIMEOUT_SECONDS
-        )
-        if not ready:
-            process.kill()
-            process.wait()
-            raise RuntimeError(
-                f"kubectl port-forward to pod {pod.name} did not start within "
-                f"{_PORT_FORWARD_START_TIMEOUT_SECONDS}s"
-            )
-
-        first_line = process.stdout.readline()
-        if not first_line:
-            # kubectl closed stdout without announcing readiness. Terminate it
-            # and drain stderr with a deadline so a process that closed stdout
-            # while still running cannot block us.
-            process.terminate()
-            try:
-                _, stderr_output = process.communicate(
-                    timeout=_PORT_FORWARD_START_TIMEOUT_SECONDS
-                )
-            except subprocess.TimeoutExpired:
-                process.kill()
-                _, stderr_output = process.communicate()
-            raise RuntimeError(
-                f"kubectl port-forward produced no output for pod {pod.name}: "
-                f"{stderr_output}"
-            )
-
-        match = re.search(
-            r"Forwarding from (?:127\.0\.0\.1|\[::1\]):(\d+) ->", first_line
-        )
-        if not match:
-            process.kill()
-            process.wait()
-            raise RuntimeError(
-                f"could not parse local port from kubectl output for pod {pod.name}: {first_line}"
-            )
-
-        local_port = int(match.group(1))
-        self._port_forward_processes.append(process)
-        if not self._port_forward_cleanup_registered:
-            atexit.register(self._terminate_port_forwards)
-            self._port_forward_cleanup_registered = True
-        logger.info(
-            "Port forwarding established to pod/%s on local port %d",
-            pod.name,
-            local_port,
-        )
-        return f"tcp://127.0.0.1:{local_port}"
-
-    def _terminate_port_forwards(self) -> None:
-        """Terminate any running ``kubectl port-forward`` subprocesses."""
-        for process in self._port_forward_processes:
-            if process.poll() is not None:
-                continue
-            try:
-                process.terminate()
-                process.wait(timeout=_PORT_FORWARD_TERMINATE_TIMEOUT_SECONDS)
-                continue
-            except subprocess.TimeoutExpired:
-                pass
-            except OSError:
-                logger.warning(
-                    "failed to terminate or reap kubectl port-forward; attempting kill",
-                    exc_info=True,
-                )
-
-            try:
-                process.kill()
-                process.wait(timeout=_PORT_FORWARD_TERMINATE_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                logger.warning("kubectl port-forward did not exit after being killed")
-            except OSError:
-                logger.warning(
-                    "failed to kill or reap kubectl port-forward",
-                    exc_info=True,
-                )
-        self._port_forward_processes.clear()
-        if self._port_forward_cleanup_registered:
-            atexit.unregister(self._terminate_port_forwards)
-            self._port_forward_cleanup_registered = False
-
     def _state(self) -> JobState:
         """
         Get the current state by connecting to ready pods for each mesh.
@@ -1005,21 +886,17 @@ class KubernetesJob(JobTrait):
         self._prepared_mesh_pods = None
 
         host_meshes = {}
-        try:
-            for mesh_name, pods in all_mesh_pods.items():
-                # Create worker addresses using discovered IPs and ports
-                workers = [f"tcp://{pod.ip}:{pod.port}" for pod in pods]
-                service_proc_ids = self._service_proc_ids.get(mesh_name)
-                # Create host mesh by attaching to workers
-                host_mesh = attach_to_workers(
-                    name=mesh_name,
-                    ca="trust_all_connections",
-                    workers=service_proc_addrs(workers, service_proc_ids),
-                )
-                host_meshes[mesh_name] = host_mesh
-        except Exception:
-            self._terminate_port_forwards()
-            raise
+        for mesh_name, pods in all_mesh_pods.items():
+            # Create worker addresses using discovered IPs and ports
+            workers = [f"tcp://{pod.ip}:{pod.port}" for pod in pods]
+            service_proc_ids = self._service_proc_ids.get(mesh_name)
+            # Create host mesh by attaching to workers
+            host_mesh = attach_to_workers(
+                name=mesh_name,
+                ca="trust_all_connections",
+                workers=service_proc_addrs(workers, service_proc_ids),
+            )
+            host_meshes[mesh_name] = host_mesh
 
         return JobState(host_meshes)
 
@@ -1065,9 +942,13 @@ class KubernetesJob(JobTrait):
             NotImplementedError: If no provisioned meshes exist (all
                 meshes are attach-only).
         """
-        # Close local forwarding even when attach-only meshes make remote
-        # teardown unsupported.
-        self._terminate_port_forwards()
+        # Release the allocation's port-forward even when attach-only meshes
+        # make remote teardown unsupported. JobTrait.kill() has already stopped
+        # the job sidecar that used it.
+        apply_id = self.apply_id
+        if apply_id is not None:
+            stop_allocation_port_forward(apply_id)
+        self._gateway_address = None
         self._prepared_mesh_pods = None
 
         provisioned = [
