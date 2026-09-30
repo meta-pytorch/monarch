@@ -2075,8 +2075,11 @@ impl HostAgent {
                 for (rank, ack) in acknowledgements {
                     ack.post(cx, rank);
                 }
+                // Bounded by the caller's shutdown timeout: a flush toward a
+                // peer that is already gone never completes.
                 let flush_timeout =
-                    hyperactor_config::global::get(hyperactor::config::FORWARDER_FLUSH_TIMEOUT);
+                    hyperactor_config::global::get(hyperactor::config::FORWARDER_FLUSH_TIMEOUT)
+                        .min(timeout);
                 match tokio::time::timeout(flush_timeout, host.gateway().flush()).await {
                     Ok(Err(error)) => {
                         tracing::warn!(%error, "gateway flush failed during host shutdown");

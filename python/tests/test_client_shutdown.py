@@ -36,15 +36,17 @@ def pid_exists(pid: int) -> bool:
 class _ShutdownCallThrough:
     """Record shutdown state and forward to the real native binding."""
 
-    def __init__(self, real_shutdown: Callable[[], Any]) -> None:
+    def __init__(self, real_shutdown: Callable[[float | None], Any]) -> None:
         self._real_shutdown = real_shutdown
         self.calls = 0
         self.shutdown_done_at_call: list[bool] = []
+        self.timeouts: list[float | None] = []
 
-    def __call__(self) -> Any:
+    def __call__(self, timeout_secs: float | None = None) -> Any:
         self.shutdown_done_at_call.append(actor_mesh_module._shutdown_done)
+        self.timeouts.append(timeout_secs)
         self.calls += 1
-        return self._real_shutdown()
+        return self._real_shutdown(timeout_secs)
 
 
 # This test has to be in its own file so it does not share any process state
@@ -76,6 +78,7 @@ def test_client_shutdown() -> None:
         assert first_shutdown.get(timeout=60) is None
         assert call_through.calls == 1
         assert call_through.shutdown_done_at_call == [True]
+        assert call_through.timeouts == [None]
 
         # This Future captured the shutdown-sequence branch before the first
         # one ran, but observes _shutdown_done after the first one completes.

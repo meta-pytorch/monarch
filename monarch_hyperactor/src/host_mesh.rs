@@ -679,7 +679,13 @@ fn py_host_mesh_from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PyHostMesh> {
 }
 
 #[pyfunction]
-fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
+#[pyo3(signature = (timeout_secs=None))]
+fn shutdown_local_host_mesh(timeout_secs: Option<f64>) -> PyResult<PyPythonTask> {
+    let timeout = timeout_secs
+        .map(Duration::try_from_secs_f64)
+        .transpose()
+        .map_err(|e| PyValueError::new_err(format!("timeout_secs: {}", e)))?
+        .unwrap_or(Duration::from_secs(10));
     let agent = HOST_MESH_AGENT_FOR_HOST
         .get()
         .ok_or_else(|| PyRuntimeError::new_err("No local host mesh to shutdown"))?
@@ -706,13 +712,18 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
         agent.post(
             &instance,
             ShutdownHost {
-                timeout: Duration::from_secs(10),
+                timeout,
                 max_in_flight: 16,
                 rank: hyperactor_mesh::resource::Rank::new(0),
                 ack: port,
             },
         );
 
+        // Like the host's own flush, the root client's final flush must not
+        // outlive the shutdown timeout when the peer is already gone.
+        let flush_timeout =
+            hyperactor_config::global::get(hyperactor::config::FORWARDER_FLUSH_TIMEOUT)
+                .min(timeout);
         let shutdown = if let Some(lock) = HOST_SHUTDOWN_HANDLE.get() {
             lock.lock().await.take()
         } else {
@@ -721,14 +732,18 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
         if let Some(shutdown) = shutdown {
             if let Some(root) = ROOT_CLIENT_INSTANCE_FOR_HOST.get() {
                 shutdown
-                    .stop_and_join_after_drain(stop_instance_and_wait(root, "shutdown".to_string()))
+                    .stop_and_join_after_drain(stop_instance_and_wait(
+                        root,
+                        "shutdown".to_string(),
+                        flush_timeout,
+                    ))
                     .await;
             } else {
                 tracing::warn!("shutting down partially bootstrapped host without root client");
                 shutdown.stop_and_join().await;
             }
         } else if let Some(root) = ROOT_CLIENT_INSTANCE_FOR_HOST.get() {
-            stop_instance_and_wait(root, "shutdown".to_string()).await;
+            stop_instance_and_wait(root, "shutdown".to_string(), flush_timeout).await;
         }
 
         Ok(())

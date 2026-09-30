@@ -523,8 +523,11 @@ def _init_client_context(via: Optional[str] = None) -> Context:
     # The timeout must be short enough that the process exits before
     # the test executor's SIGTERM grace period (~2s). Combined with
     # the 1s shutdown_tokio_runtime timeout, total atexit budget is
-    # ~2s, so we allow 1s here.
-    atexit.register(lambda: shutdown_context().get(timeout=1.0))
+    # ~2s, so we allow 1s here. host_timeout bounds each of the two
+    # sequential gateway flushes (host, then root client), which otherwise
+    # wait out FORWARDER_FLUSH_TIMEOUT when the peer is already gone (e.g.
+    # after job.kill() on an attached client).
+    atexit.register(lambda: shutdown_context(host_timeout=0.3).get(timeout=1.0))
 
     return ctx
 
@@ -583,11 +586,15 @@ def attach(addr: str) -> None:
 _shutdown_done = False
 
 
-def shutdown_context() -> "Future[None]":
+def shutdown_context(host_timeout: float | None = None) -> "Future[None]":
     """Shutdown global actor context resources.
 
     Idempotent: subsequent calls return an immediately-resolved future.
     This is safe to call both explicitly and from atexit.
+
+    Args:
+        host_timeout: Seconds the local host may spend draining children and
+            flushing its gateway. Defaults to the host's own default (10s).
 
     Returns:
         Future[None]: A future that completes when shutdown is
@@ -619,7 +626,7 @@ def shutdown_context() -> "Future[None]":
             # With a local host, Rust stops and flushes the root client after
             # child drain but before transport teardown. Repeating that here
             # would flush after teardown; Python owns only the no-host fallback.
-            await shutdown_local_host_mesh()
+            await shutdown_local_host_mesh(host_timeout)
         except RuntimeError:
             # A client created without a local host still needs to be stopped.
             if c is not None:

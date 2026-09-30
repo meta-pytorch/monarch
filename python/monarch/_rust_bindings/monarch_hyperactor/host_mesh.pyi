@@ -148,12 +148,13 @@ def bootstrap_host(
     """
     ...
 
-def shutdown_local_host_mesh() -> PythonTask[None]:
+def shutdown_local_host_mesh(timeout_secs: float | None = None) -> PythonTask[None]:
     """
     Shutdown the local host mesh created by bootstrap_host().
 
     Sends ShutdownHost message to the local host mesh agent with:
-    - timeout: 10 seconds grace period before SIGTERM escalation
+    - timeout: ``timeout_secs`` (default 10 seconds) grace period before
+      SIGTERM escalation; also bounds the final gateway flushes
     - max_in_flight: 16 concurrent child terminations
 
     Raises:
