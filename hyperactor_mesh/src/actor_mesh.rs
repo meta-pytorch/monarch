@@ -129,12 +129,13 @@ enum ActorMeshLifecycle {
 /// The data-only variant of [`ActorMeshRef`]: a cheap, detached cast/address
 /// surface built directly from actor refs.
 ///
-/// Membership is a [`Region`] paired with exactly one actor ref per rank. It
-/// carries no identity beyond its members (two data refs over the same region
-/// and refs are interchangeable) and no remote supervision stream; a caller
-/// monitors it on demand via [`ActorMeshRef::monitor`]. Multi-member casting
-/// uses a bounded-fanout cast domain.
+/// Membership is a [`Region`] paired with exactly one actor ref per rank. The
+/// mesh is identified by the [`ActorMeshId`] it was constructed with, which
+/// slices and serialized copies keep. It has no remote supervision stream; a
+/// caller monitors it on demand via [`ActorMeshRef::monitor`]. Multi-member
+/// casting uses a bounded-fanout cast domain.
 pub struct DataActorMesh<A: Referable> {
+    id: ActorMeshId,
     members: ValueMesh<ActorRef<A>>,
     cast_domain: Arc<ActorMeshCastDomain>,
 }
@@ -142,6 +143,7 @@ pub struct DataActorMesh<A: Referable> {
 impl<A: Referable> fmt::Debug for DataActorMesh<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DataActorMesh")
+            .field("id", &self.id)
             .field("members", &self.members)
             .field("cast_domain", &self.cast_domain)
             .finish_non_exhaustive()
@@ -173,6 +175,7 @@ impl<A: Referable> ActorMesh<A> {
 
     /// Create a data actor mesh from actor refs and their lifecycle handles.
     pub(crate) fn try_new_data(
+        id: ActorMeshId,
         region: Region,
         members: Vec<ActorRef<A>>,
         stop_handles: Vec<ActorMeshStopHandle>,
@@ -183,7 +186,7 @@ impl<A: Referable> ActorMesh<A> {
             members.len(),
             "data actor mesh must own one lifecycle handle per member"
         );
-        let current_ref = ActorMeshRef::try_new_data(region, members).inspect_err(|_| {
+        let current_ref = ActorMeshRef::try_new_data(id, region, members).inspect_err(|_| {
             stop_handles.iter().for_each(|handle| {
                 let _ = handle.stop("data mesh construction failed");
             });
@@ -195,12 +198,6 @@ impl<A: Referable> ActorMesh<A> {
                 stop_requested: Arc::new(OnceCell::new()),
             },
         })
-    }
-
-    /// Return the mesh id, if any. Only managed meshes carry an id; data meshes
-    /// are nameless, identified by their members.
-    pub fn id(&self) -> Option<&ActorMeshId> {
-        self.current_ref.as_managed().map(|managed| managed.id())
     }
 
     pub(crate) fn set_controller(&mut self, controller: Option<ActorRef<ActorMeshController<A>>>) {
@@ -334,6 +331,13 @@ impl<A: Referable> ActorMesh<A> {
     }
 }
 
+declare_attrs! {
+    /// The id of the actor mesh an actor was spawned into. Data meshes label
+    /// their members' supervision events with it, so the owner can name the
+    /// failed mesh.
+    pub attr ACTOR_MESH_ID: ActorMeshId;
+}
+
 impl<A: Referable> fmt::Display for ActorMesh<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.current_ref)
@@ -361,22 +365,26 @@ impl<A: Referable> Clone for ActorMesh<A> {
 
 impl<A: Referable> Drop for ActorMesh<A> {
     fn drop(&mut self) {
-        if let Some(id) = self.id() {
-            tracing::info!(
-                name = "ActorMeshStatus",
-                actor_name = %id,
-                status = "Dropped",
-            );
-        }
+        tracing::info!(
+            name = "ActorMeshStatus",
+            actor_name = %self.id(),
+            status = "Dropped",
+        );
     }
 }
 
 impl<A: Referable> DataActorMesh<A> {
-    fn new_unchecked(members: ValueMesh<ActorRef<A>>) -> Self {
-        Self::with_cast_domain_config(members, CastDomainId::new(), default_cast_tiling_policy())
+    fn new_unchecked(id: ActorMeshId, members: ValueMesh<ActorRef<A>>) -> Self {
+        Self::with_cast_domain_config(
+            id,
+            members,
+            CastDomainId::new(),
+            default_cast_tiling_policy(),
+        )
     }
 
     fn with_cast_domain_config(
+        id: ActorMeshId,
         members: ValueMesh<ActorRef<A>>,
         cast_domain_id: CastDomainId,
         tiling_policy: TilingPolicy,
@@ -393,6 +401,7 @@ impl<A: Referable> DataActorMesh<A> {
             .expect("actor refs from a dense mesh preserve cardinality"),
         );
         Self {
+            id,
             members,
             cast_domain: Arc::new(ActorMeshCastDomain::with_config(
                 cast_domain_id,
@@ -403,12 +412,22 @@ impl<A: Referable> DataActorMesh<A> {
         }
     }
 
-    /// Create a data-only actor mesh from a region and its actor refs.
+    /// Create a data-only actor mesh named `id` from a region and its actor
+    /// refs.
     ///
     /// `members` must hold one ref per rank, in region order. The mesh does not
     /// own, stop, or supervise the actors; it is a plain view over the refs.
-    pub fn try_new(region: Region, members: Vec<ActorRef<A>>) -> crate::Result<Self> {
-        Ok(Self::new_unchecked(ValueMesh::new(region, members)?))
+    pub fn try_new(
+        id: ActorMeshId,
+        region: Region,
+        members: Vec<ActorRef<A>>,
+    ) -> crate::Result<Self> {
+        Ok(Self::new_unchecked(id, ValueMesh::new(region, members)?))
+    }
+
+    /// Return the mesh id.
+    pub fn id(&self) -> &ActorMeshId {
+        &self.id
     }
 
     /// Return the dense actor-ref mesh.
@@ -475,6 +494,7 @@ impl<A: Referable> DataActorMesh<A> {
 impl<A: Referable> Clone for DataActorMesh<A> {
     fn clone(&self) -> Self {
         Self {
+            id: self.id.clone(),
             members: self.members.clone(),
             cast_domain: self.cast_domain.clone(),
         }
@@ -487,6 +507,7 @@ impl<A: Referable> Serialize for DataActorMesh<A> {
         S: Serializer,
     {
         (
+            &self.id,
             &self.members,
             &self.cast_domain.id,
             self.cast_domain.tiling_policy,
@@ -500,8 +521,9 @@ impl<'de, A: Referable> Deserialize<'de> for DataActorMesh<A> {
     where
         D: Deserializer<'de>,
     {
-        let (members, cast_domain_id, tiling_policy) = Deserialize::deserialize(deserializer)?;
+        let (id, members, cast_domain_id, tiling_policy) = Deserialize::deserialize(deserializer)?;
         Ok(Self::with_cast_domain_config(
+            id,
             members,
             cast_domain_id,
             tiling_policy,
@@ -524,6 +546,7 @@ impl<A: Referable> view::Ranked for DataActorMesh<A> {
 impl<A: Referable> view::RankedSliceable for DataActorMesh<A> {
     fn sliced(&self, region: Region) -> Self {
         Self::with_cast_domain_config(
+            self.id.clone(),
             self.members.sliced(region),
             CastDomainId::new(),
             self.cast_domain.tiling_policy,
@@ -581,9 +604,13 @@ impl<A: Referable> ActorMeshRef<A> {
         )))
     }
 
-    /// Create a data-only ref from a region and its actor refs.
-    pub fn try_new_data(region: Region, members: Vec<ActorRef<A>>) -> crate::Result<Self> {
-        Ok(Self::Data(DataActorMesh::try_new(region, members)?))
+    /// Create a data-only ref named `id` from a region and its actor refs.
+    pub fn try_new_data(
+        id: ActorMeshId,
+        region: Region,
+        members: Vec<ActorRef<A>>,
+    ) -> crate::Result<Self> {
+        Ok(Self::Data(DataActorMesh::try_new(id, region, members)?))
     }
 
     /// Return the legacy dense ref when this is the managed variant.
@@ -601,6 +628,15 @@ impl<A: Referable> ActorMeshRef<A> {
             Self::Data(_) => None,
         }
     }
+
+    /// Return the mesh id.
+    pub fn id(&self) -> &ActorMeshId {
+        match self {
+            Self::Managed(managed) => managed.id(),
+            Self::Data(data) => data.id(),
+        }
+    }
+
     /// Cast a message to all the actors in this mesh.
     ///
     /// This initiates delivery without waiting for it; use [`Self::monitor`] to
@@ -810,13 +846,14 @@ impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
 
 impl<A: Referable> PartialEq for DataActorMesh<A> {
     fn eq(&self, other: &Self) -> bool {
-        self.members == other.members
+        self.id == other.id && self.members == other.members
     }
 }
 impl<A: Referable> Eq for DataActorMesh<A> {}
 
 impl<A: Referable> Hash for DataActorMesh<A> {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
         self.members.hash(state);
     }
 }
@@ -1805,9 +1842,11 @@ mod tests {
             ),
         ];
 
+        let id = ActorMeshId::instance(Label::new("data").unwrap());
         let mesh: ActorMeshRef<testactor::TestActor> =
-            ActorMeshRef::try_new_data(region.clone(), members.clone()).unwrap();
+            ActorMeshRef::try_new_data(id.clone(), region.clone(), members.clone()).unwrap();
 
+        assert_eq!(mesh.id(), &id);
         assert_eq!(mesh.region(), &region);
         assert_eq!(mesh.get(1).unwrap().actor_addr(), members[1].actor_addr());
         assert_eq!(
@@ -1843,6 +1882,7 @@ mod tests {
             panic!("data slice changed variant");
         };
         assert_ne!(slice_data.cast_domain.id, cast_domain_id);
+        assert_eq!(slice.id(), &id);
         assert_eq!(slice.region(), &slice_region);
         assert_eq!(slice.values().count(), 1);
         assert_eq!(slice.get(0).unwrap().actor_addr(), members[1].actor_addr());
@@ -1851,6 +1891,7 @@ mod tests {
         let decoded: ActorMeshRef<testactor::TestActor> =
             serde_json::from_slice(&encoded).expect("data ref should deserialize");
         assert_eq!(decoded, mesh);
+        assert_eq!(decoded.id(), &id);
         assert_eq!(decoded.region(), &region);
         assert_eq!(decoded.values().count(), 2);
         let ActorMeshRef::Data(decoded_data) = &decoded else {
@@ -1859,7 +1900,7 @@ mod tests {
         assert_eq!(decoded_data.cast_domain.id, cast_domain_id);
 
         assert!(matches!(
-            ActorMeshRef::try_new_data(region.clone(), vec![members[0].clone()]),
+            ActorMeshRef::try_new_data(id.clone(), region.clone(), vec![members[0].clone()]),
             Err(crate::Error::InvalidRankCardinality {
                 expected: 2,
                 actual: 1,
@@ -1883,6 +1924,7 @@ mod tests {
         )
         .expect("member mesh should be valid");
         let data = DataActorMesh::with_cast_domain_config(
+            ActorMeshId::instance(Label::new("data").unwrap()),
             members,
             CastDomainId::new(),
             TilingPolicy::BlockPartitioning,
@@ -1910,8 +1952,12 @@ mod tests {
             .spawn_with_label("rank0", testactor::TestActor);
         let region: Region = extent!(replicas = 1).into();
         let actor_ref: ActorRef<testactor::TestActor> = target.bind();
-        let mesh = ActorMeshRef::try_new_data(region, vec![actor_ref.clone()])
-            .expect("data ref should be valid");
+        let mesh = ActorMeshRef::try_new_data(
+            ActorMeshId::instance(Label::new("data").unwrap()),
+            region,
+            vec![actor_ref.clone()],
+        )
+        .expect("data ref should be valid");
         let monitor = mesh.monitor(&sender.instance);
         let independent_monitor = mesh.monitor(&sender.instance);
 
@@ -1990,7 +2036,7 @@ mod tests {
         };
         let amr: ActorMeshRef<testactor::TestActor> =
             ActorMeshRef::Managed(Box::new(super::ManagedActorMeshRef::with_page_size(
-                am.id().expect("spawned actor mesh has an id").clone(),
+                am.id().clone(),
                 managed.proc_mesh_id.clone(),
                 am.region().clone(),
                 page_size,

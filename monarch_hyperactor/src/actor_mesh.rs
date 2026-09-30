@@ -670,13 +670,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     }
 
     fn name(&self) -> PyResult<PyPythonTask> {
-        let name = self
-            .mesh_ref()
-            .as_managed()
-            .expect("Python actor mesh names require a managed mesh")
-            .id()
-            .to_string();
-        PyPythonTask::new(async move { Ok(name) })
+        <ActorMeshRef<PythonActor> as ActorMeshProtocol>::name(self.mesh_ref())
     }
 }
 
@@ -773,11 +767,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     }
 
     fn name(&self) -> PyResult<PyPythonTask> {
-        let name = self
-            .as_managed()
-            .expect("Python actor mesh names require a managed mesh")
-            .id()
-            .to_string();
+        let name = self.id().to_string();
         PyPythonTask::new(async move { Ok(name) })
     }
 }
@@ -900,8 +890,6 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 mod tests {
     use std::any::Any;
     use std::cell::RefCell;
-    use std::panic::AssertUnwindSafe;
-    use std::panic::catch_unwind;
     use std::sync::atomic::AtomicU8;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -926,9 +914,6 @@ mod tests {
     use tokio::sync::watch;
 
     use super::*;
-
-    /// The text both name wrappers assert on when handed a data mesh.
-    const MANAGED_ONLY_NAME: &str = "Python actor mesh names require a managed mesh";
 
     /// A mesh id no implementation could return by accident: `instance` draws a
     /// fresh uid, so a hard-coded name cannot match it.
@@ -991,9 +976,9 @@ mod tests {
         mesh_ref
     }
 
-    /// A data `ActorMeshRef<PythonActor>`: the variant both name wrappers
-    /// reject. Its single member is never messaged.
-    fn data_mesh_ref() -> ActorMeshRef<PythonActor> {
+    /// A one-rank data `ActorMeshRef<PythonActor>` carrying `id`. Its single
+    /// member is never messaged.
+    fn data_mesh_ref(id: &ActorMeshId) -> ActorMeshRef<PythonActor> {
         let proc_addr = ProcAddr::new(
             ProcId::new(
                 Uid::Instance(1, None),
@@ -1002,7 +987,7 @@ mod tests {
             ChannelAddr::Local(1).into(),
         );
         let member: ActorRef<PythonActor> = ActorRef::attest(proc_addr.actor_addr("member"));
-        ActorMeshRef::try_new_data(extent!(members = 1).into(), vec![member])
+        ActorMeshRef::try_new_data(id.clone(), extent!(members = 1).into(), vec![member])
             .expect("a one-rank data mesh should be valid")
     }
 
@@ -1040,10 +1025,8 @@ mod tests {
     // returned future; an implementation that cloned the mesh and read the id
     // when driven would pass too. Call-time computation is source-grounded --
     // both bodies compute the string and then move it into
-    // `PyPythonTask::new(async move { Ok(name) })` -- and its synchronous half
-    // is witnessed dynamically by the data-mesh panic below, which happens
-    // before any task exists. Nor is the returned task first-poll ready:
-    // `PyPythonTask::new` converts its result through `monarch_with_gil`, which
+    // `PyPythonTask::new(async move { Ok(name) })`. Nor is the returned task
+    // first-poll ready: `PyPythonTask::new` converts its result through `monarch_with_gil`, which
     // may wait on the process-global GIL lock, so observation is not free.
     #[test]
     fn discarded_managed_name_wrappers_leave_exact_name_repeatable() {
@@ -1076,33 +1059,27 @@ mod tests {
         );
     }
 
-    // KNOWN-BAD CURRENT BEHAVIOR, recorded so a later conversion decides
-    // deliberately rather than by accident: a data mesh has no name, and both
-    // wrappers assert instead of returning a task that fails. The panic happens
-    // in the call itself, so no task ever reaches the caller.
+    // Both data name wrappers yield the mesh id, as on the managed path.
     #[test]
-    fn data_name_wrappers_panic_before_returning_a_task() {
+    fn data_name_wrappers_report_mesh_id() {
         pyo3::Python::initialize();
-        let mesh_ref = data_mesh_ref();
+        let id = fixture_mesh_id();
+        let mesh_ref = data_mesh_ref(&id);
         let mesh_impl = PythonActorMeshImpl::new_ref(mesh_ref.clone());
+        let expected = id.to_string();
 
-        let from_ref = catch_unwind(AssertUnwindSafe(|| {
-            <ActorMeshRef<PythonActor> as ActorMeshProtocol>::name(&mesh_ref).map(|_| ())
-        }));
-        let from_impl = catch_unwind(AssertUnwindSafe(|| {
-            <PythonActorMeshImpl as ActorMeshProtocol>::name(&mesh_impl).map(|_| ())
-        }));
-
-        for (outcome, which) in [(from_ref, "ref"), (from_impl, "impl")] {
-            let payload = outcome
-                .err()
-                .unwrap_or_else(|| panic!("the {which} wrapper must panic on a data mesh"));
-            let message = panic_message(payload.as_ref());
-            assert!(
-                message.contains(MANAGED_ONLY_NAME),
-                "the {which} wrapper must fail the managed-mesh assertion, got: {message}"
-            );
-        }
+        assert_eq!(
+            drive_name(<ActorMeshRef<PythonActor> as ActorMeshProtocol>::name(
+                &mesh_ref
+            )),
+            expected,
+            "the ref wrapper must report the data mesh id"
+        );
+        assert_eq!(
+            drive_name(<PythonActorMeshImpl as ActorMeshProtocol>::name(&mesh_impl)),
+            expected,
+            "the impl wrapper must report the data mesh id"
+        );
     }
 
     // The trait-default `initialized` wrapper resolves to None and leaves the
@@ -2748,7 +2725,7 @@ mod tests {
         pyo3::Python::initialize();
         // Built outside the assertion boundary, so a fixture failure cannot
         // satisfy the rejection assertion below.
-        let mesh_impl = PythonActorMeshImpl::new_ref(data_mesh_ref());
+        let mesh_impl = PythonActorMeshImpl::new_ref(data_mesh_ref(&fixture_mesh_id()));
         let instance = isolated_py_instance("ref_stop_characterization_client");
 
         let rejected = <PythonActorMeshImpl as ActorMeshProtocol>::stop(

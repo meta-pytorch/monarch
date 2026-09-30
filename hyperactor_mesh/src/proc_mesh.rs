@@ -23,7 +23,6 @@ use hyperactor::Handler;
 use hyperactor::ProcAddr;
 use hyperactor::RemoteMessage;
 use hyperactor::RemoteSpawn;
-use hyperactor::Uid;
 use hyperactor::accum::IdleFlushReducerOpts;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
@@ -55,6 +54,7 @@ use crate::ActorMeshRef;
 use crate::Error;
 use crate::HostMeshRef;
 use crate::ValueMesh;
+use crate::actor_mesh::ACTOR_MESH_ID;
 use crate::actor_mesh::ActorMeshStopHandle;
 use crate::casting::CAST_POINT;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
@@ -810,6 +810,8 @@ impl ProcMeshRef {
     }
 
     /// Spawn an actor on all procs in this mesh using the new data-only mesh API.
+    /// `actor_mesh_id` identifies the mesh and its members, and must be an
+    /// instance id.
     ///
     /// This initiates an actor spawn on each proc and constructs a stoppable
     /// data mesh from the actor refs and local supervisor handles without
@@ -825,25 +827,30 @@ impl ProcMeshRef {
     pub async fn spawn_data<A: RemoteSpawn, C: context::Actor>(
         &self,
         cx: &C,
+        actor_mesh_id: ActorMeshId,
         params: &A::Params,
     ) -> crate::Result<ActorMesh<A>>
     where
         A::Params: RemoteMessage,
     {
-        self.spawn_data_mesh_inner(cx, params, None)
+        if !actor_mesh_id.uid().is_instance() {
+            return Err(Error::ConfigurationError(anyhow::anyhow!(
+                "data-backed actor meshes require instance ids"
+            )));
+        }
+        self.spawn_data_mesh_inner(cx, params, actor_mesh_id)
     }
 
     fn spawn_data_mesh_inner<A: RemoteSpawn, C: context::Actor>(
         &self,
         cx: &C,
         params: &A::Params,
-        actor_mesh_id: Option<&ActorMeshId>,
+        actor_mesh_id: ActorMeshId,
     ) -> crate::Result<ActorMesh<A>>
     where
         A::Params: RemoteMessage,
     {
         let region = self.region().clone();
-        let actor_uid = actor_mesh_id.map_or_else(Uid::anonymous, |id| id.uid().clone());
         let mut members = Vec::with_capacity(self.ranks.len());
         let mut stop_handles = Vec::with_capacity(self.ranks.len());
         let serialized_params = bincode::serde::encode_to_vec(params, bincode::config::legacy())?;
@@ -881,10 +888,11 @@ impl ProcMeshRef {
             // TODO: unify the actor environment and supervision labels.
             let mut labels = Flattrs::new();
             labels.set(CAST_POINT, point);
+            labels.set(ACTOR_MESH_ID, actor_mesh_id.clone());
             let actor_spawner = proc_ref.spawner();
             let (actor_ref, stop_handle) = match actor_spawner.spawn_uid_with_link_and_ready(
                 cx,
-                actor_uid.clone(),
+                actor_mesh_id.uid().clone(),
                 params,
                 KeepaliveLink::default(),
                 None,
@@ -901,7 +909,7 @@ impl ProcMeshRef {
             stop_handles.push(stop_handle.into_any());
         }
 
-        ActorMesh::try_new_data(region, members, stop_handles)
+        ActorMesh::try_new_data(actor_mesh_id, region, members, stop_handles)
     }
 
     /// Spawn an actor on all procs in this mesh under the given
@@ -1004,7 +1012,6 @@ impl ProcMeshRef {
                         "{}_{}",
                         crate::mesh_controller::ACTOR_MESH_CONTROLLER_NAME,
                         mesh.id()
-                            .expect("managed spawn result must carry a mesh id")
                     );
                     let controller = cx.spawn_with_label(&controller_name, controller);
                     // Controller and ActorMesh both depend on references from each other, break
@@ -1029,7 +1036,7 @@ impl ProcMeshRef {
             && actor_mesh_id.uid().is_instance()
         {
             return self
-                .spawn_data_mesh_inner(cx, params, Some(&actor_mesh_id))
+                .spawn_data_mesh_inner(cx, params, actor_mesh_id)
                 .map(SpawnedActorMesh::Data);
         }
 
@@ -1527,7 +1534,11 @@ mod tests {
             .expect("spawn proc mesh");
 
         let mut actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
-            .spawn_data(instance, &())
+            .spawn_data(
+                instance,
+                ActorMeshId::instance(Label::strip("default_spawner")),
+                &(),
+            )
             .await
             .expect("spawn data actor mesh through default spawner");
         assert_eq!(actor_mesh.region().num_ranks(), 2);
@@ -1978,10 +1989,7 @@ mod tests {
             .await
             .unwrap();
         assert_shared(&w1, &s1);
-        let s1_states = slice
-            .actor_states(instance, s1.id().unwrap().clone())
-            .await
-            .unwrap();
+        let s1_states = slice.actor_states(instance, s1.id().clone()).await.unwrap();
         for rank in 0..slice.region().num_ranks() {
             assert_eq!(
                 s1_states
@@ -2003,10 +2011,7 @@ mod tests {
             .await
             .unwrap();
         assert_shared(&w2, &s2);
-        let w2_states = whole
-            .actor_states(instance, w2.id().unwrap().clone())
-            .await
-            .unwrap();
+        let w2_states = whole.actor_states(instance, w2.id().clone()).await.unwrap();
         for rank in 0..whole.region().num_ranks() {
             assert_eq!(
                 w2_states
@@ -2031,7 +2036,7 @@ mod tests {
             .spawn_service::<testactor::TestActor, _>(instance, "svc_wait", &())
             .await
             .unwrap();
-        let id = sw.id().unwrap().resource_id().clone();
+        let id = sw.id().resource_id().clone();
         let region = slice.region().clone();
         let num_ranks = region.num_ranks();
         let (port, rx) = instance.mailbox().open_idle_flush_accum_port(
@@ -2137,7 +2142,7 @@ mod tests {
             .unwrap();
         let expected_actor = actor_mesh.get(0).unwrap().actor_addr();
         let states = controller_view
-            .actor_states(instance, actor_mesh.id().unwrap().clone())
+            .actor_states(instance, actor_mesh.id().clone())
             .await
             .unwrap();
         let reported_actor = &states

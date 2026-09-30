@@ -19,10 +19,11 @@
 //! name as an `on mesh "{name}"` segment when `actor_mesh_name`
 //! is populated; stable identifiers continue to appear in detail
 //! segments where the renderer already includes them.
-//! Python-binding-specific plumbing for this carrier — how a
-//! Python-spawned actor ends up with a mesh base-name string to
-//! supply — lives in `monarch_hyperactor/src/actor.rs`
-//! (`PythonActorParams.mesh_base_name`).
+//! A data actor mesh labels each member's supervision events with
+//! its mesh id, so the owner's supervision handler names the failed
+//! mesh from the event (see `ACTOR_MESH_ID` in `actor_mesh.rs` and
+//! `PythonActor::handle_supervision_event` in
+//! `monarch_hyperactor/src/actor.rs`).
 //!
 //! ## Mesh failure controller-attribution invariants (MFCA-*)
 //!
@@ -61,7 +62,7 @@ use typeuri::Named;
 pub struct MeshFailure {
     /// Mesh name carried by the `MeshFailure` construction site,
     /// when locally available. On the direct actor-handled path
-    /// this is the observing PythonActor's mesh base name. On
+    /// this is the failed member's recorded data mesh id. On
     /// controller-owned paths this is the monitored mesh name
     /// supplied by the controller path.
     pub actor_mesh_name: Option<String>,

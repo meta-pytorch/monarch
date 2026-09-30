@@ -1473,6 +1473,14 @@ class ErrorActorWithSupervise(ErrorActor):
         return [str(f) for f in self.failures]
 
     @endpoint
+    async def get_failure_mesh_names(self) -> tuple[str, list[str]]:
+        """Wait for a failure, then return the owned mesh's name and the
+        ``mesh_name`` of every failure observed so far."""
+        await asyncio.wait_for(self.faulted.wait(), timeout=30)
+        mesh_name = await cast(ActorMesh[ErrorActor], self.mesh)._name
+        return mesh_name, [f.mesh_name for f in self.failures]
+
+    @endpoint
     async def kill_nest(self) -> None:
         pids = await self.mesh.get_pid.call()
         # Kill the actors directly, make sure we get an error.
@@ -1563,6 +1571,28 @@ async def test_supervise_callback_handled():
     for msg in r:
         assert "MeshFailure" in msg
         assert "error_actor" in msg
+
+    await pm.stop()
+    await second_mesh.stop()
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+async def test_supervise_failure_mesh_name_matches_owned_mesh() -> None:
+    """``MeshFailure.mesh_name`` identifies the failed owned mesh by its
+    ``_name``."""
+    pm = spawn_procs_on_this_host({"gpus": 1})
+    second_mesh = spawn_procs_on_this_host({"gpus": 1})
+    supervisor = pm.spawn("supervisor", ErrorActorWithSupervise, second_mesh)
+
+    await supervisor.subworker_fail.call_one()
+    mesh_name, failure_names = await supervisor.get_failure_mesh_names.call_one()
+
+    assert "error_actor" in mesh_name
+    assert failure_names, "expected at least one supervision event"
+    assert all(name == mesh_name for name in failure_names), (
+        f"every failure should name the owned mesh {mesh_name!r}, got {failure_names}"
+    )
 
     await pm.stop()
     await second_mesh.stop()

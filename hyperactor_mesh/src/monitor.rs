@@ -202,11 +202,13 @@ mod tests {
 
     use hyperactor::ActorRef;
     use hyperactor::Proc;
+    use hyperactor::id::Label;
     use ndslice::Region;
     use ndslice::extent;
     use tokio::time::Duration;
 
     use super::*;
+    use crate::mesh_id::ActorMeshId;
     use crate::testactor;
 
     #[tokio::test]
@@ -261,8 +263,12 @@ mod tests {
             .map(|actor_ref| actor_ref.actor_addr().clone())
             .collect();
         let region: Region = extent!(replicas = 2).into();
-        let actor_mesh = ActorMeshRef::try_new_data(region, actor_refs)
-            .expect("data actor mesh should be valid");
+        let actor_mesh = ActorMeshRef::try_new_data(
+            ActorMeshId::instance(Label::new("replicas").unwrap()),
+            region,
+            actor_refs,
+        )
+        .expect("data actor mesh should be valid");
         let monitor = actor_mesh.monitor(&client);
 
         let (port, mut receiver) = client.open_port();

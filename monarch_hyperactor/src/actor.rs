@@ -41,6 +41,7 @@ use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ProcMeshRef;
+use hyperactor_mesh::actor_mesh::ACTOR_MESH_ID;
 use hyperactor_mesh::actor_mesh::ActorMeshRef;
 use hyperactor_mesh::casting::CAST_POINT;
 use hyperactor_mesh::casting::CastInfo;
@@ -1015,15 +1016,6 @@ pub struct PythonActor {
     construction_point: OnceLock<Option<Point>>,
     /// Initial message to process during PythonActor::init.
     init_message: Option<PythonMessage>,
-    /// User-provided mesh base-name string plumbed from
-    /// `PythonActorParams`. This is the base name the caller
-    /// supplied when the mesh was spawned, narrowly used to populate
-    /// `MeshFailure.actor_mesh_name` on the direct actor-handled
-    /// supervision path without a lookup. It is not actor display
-    /// text (`display_name` handles that) and it is not a general
-    /// side channel; downstream code must not consume this field for
-    /// any other purpose.
-    mesh_base_name: Option<String>,
 
     /// Per-actor in-flight handler tracker (producer of the mesh
     /// `execution` field). Read GIL-free by the introspect seam; a clone
@@ -1037,7 +1029,6 @@ impl PythonActor {
         actor_type: PickledPyObject,
         init_message: Option<PythonMessage>,
         construction_point: Option<Point>,
-        mesh_base_name: Option<String>,
     ) -> Result<Self, anyhow::Error> {
         Ok(monarch_with_gil_blocking(
             GilSite::ActorConstruct,
@@ -1061,7 +1052,6 @@ impl PythonActor {
                     dispatch_receiver: Some(dispatch_receiver),
                     construction_point: OnceLock::from(construction_point),
                     init_message,
-                    mesh_base_name,
                     execution_tracker: Arc::new(ExecutionTracker::new()),
                 })
             },
@@ -1187,7 +1177,6 @@ impl PythonActor {
             actor_type,
             Some(init_message),
             Some(extent!().point_of_rank(0).unwrap()),
-            None, // root client actor has no user-facing mesh name
         )
         .expect("create client PythonActor");
 
@@ -1610,8 +1599,8 @@ impl Actor for PythonActor {
         event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
         let cx = Context::new(this, Flattrs::new());
-        // Events without a point, such as from a managed mesh's controller,
-        // are reported against the whole mesh.
+        // Events without labels, such as from a managed mesh's controller, are
+        // reported with no mesh name and against the whole mesh.
         let crashed_ranks = event
             .labels
             .get(CAST_POINT)
@@ -1621,10 +1610,13 @@ impl Actor for PythonActor {
         self.handle(
             &cx,
             MeshFailure {
-                // Populate the mesh name from the base-name string
-                // plumbed through PythonActorParams at spawn time —
-                // no lookup.
-                actor_mesh_name: self.mesh_base_name.clone(),
+                // TODO: Replace with a structural mesh reference once
+                // `MeshFailure` and `__supervise__` stop identifying meshes by
+                // name.
+                actor_mesh_name: event
+                    .labels
+                    .get(ACTOR_MESH_ID)
+                    .map(|mesh_id| mesh_id.to_string()),
                 event: event.clone(),
                 crashed_ranks,
                 // MFCA-4: direct actor-handled supervision conversion, not a
@@ -1643,29 +1635,13 @@ pub struct PythonActorParams {
     actor_type: PickledPyObject,
     // Python message to process as part of the actor initialization.
     init_message: Option<PythonMessage>,
-    // User-provided mesh base-name string under which this actor
-    // was spawned. The base name the caller passed when the mesh
-    // was spawned, plumbed through `PythonActor` narrowly to
-    // populate `MeshFailure.actor_mesh_name` on the direct
-    // actor-handled supervision path without a lookup. It is not
-    // actor display text (`display_name` handles that) and it is
-    // not a general side channel; downstream code must not consume
-    // this field for any other purpose. Kept separate from
-    // `supervision_display_name`, which is a rendered supervision
-    // display string passed through `spawn_with_name(...)`.
-    mesh_base_name: Option<String>,
 }
 
 impl PythonActorParams {
-    pub(crate) fn new(
-        actor_type: PickledPyObject,
-        init_message: Option<PythonMessage>,
-        mesh_base_name: Option<String>,
-    ) -> Self {
+    pub(crate) fn new(actor_type: PickledPyObject, init_message: Option<PythonMessage>) -> Self {
         Self {
             actor_type,
             init_message,
-            mesh_base_name,
         }
     }
 }
@@ -1678,12 +1654,11 @@ impl RemoteSpawn for PythonActor {
         PythonActorParams {
             actor_type,
             init_message,
-            mesh_base_name,
         }: PythonActorParams,
         environment: &ActorEnvironment,
     ) -> Result<Self, anyhow::Error> {
         let construction_point = environment.get(CAST_POINT);
-        Self::new(actor_type, init_message, construction_point, mesh_base_name)
+        Self::new(actor_type, init_message, construction_point)
     }
 }
 
