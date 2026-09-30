@@ -367,7 +367,7 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
 /// - PyProcMesh: the local ProcMesh on this HostMesh; and
 /// - PyInstance: the root client actor instance, on the ProcMesh.
 ///
-/// The HostMesh is served on the default transport.
+/// The HostMesh is served on the default transport unless ``bind_addr`` is set.
 ///
 /// If ``via`` is set to a ZMQ-style address of a remote host's duplex
 /// server, the local host's gateway is attached to that remote
@@ -378,12 +378,18 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
 /// returned ``PyHostMesh`` / ``PyProcMesh`` / ``PyInstance`` all live
 /// on the local host's procs.
 ///
+/// If ``bind_addr`` is set, the local host frontend binds that explicit
+/// address instead of the process-wide default transport. This is independent
+/// of ``via`` and does not alter the runtime configuration inherited by other
+/// hosts.
+///
 /// This should be called only once, at process initialization.
 #[pyfunction]
-#[pyo3(signature = (bootstrap_cmd, via=None))]
+#[pyo3(signature = (bootstrap_cmd, via=None, bind_addr=None))]
 fn bootstrap_host(
     bootstrap_cmd: Option<PyBootstrapCommand>,
     via: Option<&str>,
+    bind_addr: Option<&str>,
 ) -> PyResult<PyPythonTask> {
     let bootstrap_cmd = match bootstrap_cmd {
         Some(cmd) => cmd.to_rust(),
@@ -395,6 +401,13 @@ fn bootstrap_host(
                 .map_err(|e| PyValueError::new_err(format!("via address: {}", e)))
         })
         .transpose()?;
+    let bind_addr = bind_addr
+        .map(|s| {
+            ChannelAddr::from_zmq_url(s)
+                .map_err(|e| PyValueError::new_err(format!("bind address: {}", e)))
+        })
+        .transpose()?
+        .unwrap_or_else(|| default_bind_spec().binding_addr());
 
     PyPythonTask::new(async move {
         // Pass the via address into `host` so the gateway's `serve_via`
@@ -407,7 +420,7 @@ fn bootstrap_host(
         let gateway = Gateway::global().clone();
         let service_proc_addr = ProcAddr::new(
             ProcId::singleton(Label::strip(hyperactor::proc::LEGACY_SERVICE_PROC_NAME)),
-            default_bind_spec().binding_addr().into(),
+            bind_addr.into(),
         );
 
         let (host_mesh_agent, shutdown_handle) = host(

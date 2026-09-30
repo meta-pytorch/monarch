@@ -15,6 +15,7 @@ import functools
 import importlib
 import inspect
 import logging
+import sys
 import threading
 import warnings
 from abc import abstractmethod
@@ -490,8 +491,16 @@ def _init_client_context(via: Optional[str] = None) -> Context:
     from monarch._src.actor.host_mesh import default_bootstrap_cmd, HostMesh
     from monarch._src.actor.proc_mesh import ProcMesh
 
+    # An attached client advertises the gateway route, not this local frontend.
+    # macOS corporate hostnames are not necessarily resolvable, so bind only the
+    # Mac frontend to loopback without replacing the process-wide transport. The
+    # latter is inherited by Kubernetes workers and must stay routable between
+    # pods (RemoteMount's worker chain relies on that distinction).
+    bind_addr = (
+        "tcp://127.0.0.1:0" if via is not None and sys.platform == "darwin" else None
+    )
     hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_host(
-        default_bootstrap_cmd(), via=via
+        default_bootstrap_cmd(), via=via, bind_addr=bind_addr
     ).block_on()
 
     ctx = Context._from_instance(cast(Instance, hy_instance))  # type: ignore

@@ -126,6 +126,7 @@ class BootstrapCommand:
 def bootstrap_host(
     bootstrap_cmd: BootstrapCommand | None,
     via: str | None = None,
+    bind_addr: str | None = None,
 ) -> PythonTask[tuple[HostMesh, ProcMesh, Instance]]:
     """
     Bootstrap a host mesh in this process, returning the host mesh,
@@ -141,6 +142,9 @@ def bootstrap_host(
       only controls how this host's procs are reached. It must be supplied
       before actor and port refs are minted, because those refs snapshot
       their location. Supplied via the `attach` entrypoint.
+    - `bind_addr`: Optional ZMQ-style address for the local host frontend.
+      This does not change the process-wide default transport inherited by
+      spawned workers.
     """
     ...
 

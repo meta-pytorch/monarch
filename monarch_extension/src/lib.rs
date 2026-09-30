@@ -22,7 +22,7 @@ mod mesh_controller;
 mod tensor_worker;
 
 mod blocking;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod chain_broadcast;
 #[cfg(target_os = "linux")]
 mod chunked_fuse;
@@ -243,7 +243,7 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_extension.blocking",
     )?)?;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     crate::chain_broadcast::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.chain_broadcast",

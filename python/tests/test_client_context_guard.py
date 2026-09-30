@@ -141,6 +141,31 @@ def test_attach_does_not_publish_failed_initialization() -> None:
         assert actor_mesh._client_context.try_get() is None
 
 
+@pytest.mark.parametrize(
+    "platform, via, expected",
+    [
+        ("darwin", "tcp://host:1", "tcp://127.0.0.1:0"),
+        ("darwin", None, None),
+        ("linux", "tcp://host:1", None),
+    ],
+)
+def test_attached_mac_client_binds_only_its_frontend_to_loopback(
+    platform, via, expected
+) -> None:
+    from monarch._rust_bindings.monarch_hyperactor import host_mesh
+    from monarch._src.actor import actor_mesh
+
+    bootstrap = MagicMock(side_effect=RuntimeError("stop after bootstrap_host"))
+    with (
+        patch.object(actor_mesh.sys, "platform", platform),
+        patch.object(host_mesh, "bootstrap_host", bootstrap),
+    ):
+        with pytest.raises(RuntimeError, match="stop after bootstrap_host"):
+            actor_mesh._init_client_context(via=via)
+
+    assert bootstrap.call_args.kwargs == {"via": via, "bind_addr": expected}
+
+
 def _probe_fresh_bootstrap() -> str:
     """Ask for a context on a Tokio thread with neither actor nor client."""
     from monarch._src.actor.actor_mesh import _client_context, _context, context
