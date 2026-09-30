@@ -28,10 +28,11 @@ use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::mailbox::Message;
 use hyperactor::mailbox::PortReceiver;
+use hyperactor::monitor::MonitorActivation;
 use hyperactor::monitor::MonitorFailure;
 use hyperactor::monitor::MonitorStatus;
 use hyperactor::supervision::ActorSupervisionEvent;
-use ndslice::ViewExt as _;
+use ndslice::view::MapIntoExt as _;
 use ndslice::view::Ranked as _;
 use ndslice::view::Region;
 
@@ -42,30 +43,48 @@ use crate::supervision::MeshFailure;
 /// A liveness monitor over a set of ranked actors.
 ///
 /// A `MeshMonitor` logically monitors one actor per rank in a region. Monitoring
-/// runs until the `MeshMonitor` is dropped. Awaiting a `&MeshMonitor` resolves
-/// with the first rank failure, reported as a [`MeshFailure`] that names the
-/// rank; use [`MeshMonitor::guard`] to run a future until it completes or a rank
-/// fails.
+/// runs until the `MeshMonitor` is dropped. A monitor from [`MeshMonitor::spawn_persistent`]
+/// is persistent and polls throughout; one from [`MeshMonitor::spawn_dormant`]
+/// starts dormant and polls only while active. Awaiting a `&MeshMonitor`
+/// resolves with the first rank failure, reported as a [`MeshFailure`] that
+/// names the rank; use [`MeshMonitor::guard`] to run a future until it completes
+/// or a rank fails.
 pub struct MeshMonitor {
     /// One monitor per rank, keyed by the mesh's region.
     monitors: ValueMesh<ActorMonitor>,
 }
 
 impl MeshMonitor {
-    /// Spawn one [`ActorMonitor`] per rank as a child of `cx`.
+    /// Spawn one persistent [`ActorMonitor`] per rank as a child of `cx`.
     ///
     /// `actors` holds the actor addresses in the mesh's region, so the resulting
     /// monitors share that region: each rank reports failures under the same rank
     /// it holds in the mesh.
-    pub fn spawn(cx: &impl context::Actor, actors: ValueMesh<ActorAddr>) -> Self {
-        let region = actors.region().clone();
-        let monitors = actors
-            .values()
-            .map(|actor| ActorMonitor::spawn(cx, actor.clone()))
-            .collect();
+    pub fn spawn_persistent(cx: &impl context::Actor, actors: ValueMesh<ActorAddr>) -> Self {
+        Self::spawn_with(actors, |actor| ActorMonitor::spawn_persistent(cx, actor))
+    }
+
+    /// Spawn one [`ActorMonitor`] per rank as a child of `cx`, starting dormant.
+    ///
+    /// Each rank observes terminal-status notifications in either state, but
+    /// polls status only while active: while a [`MeshMonitorActivation`] from
+    /// [`Self::activate`] is live.
+    pub fn spawn_dormant(cx: &impl context::Actor, actors: ValueMesh<ActorAddr>) -> Self {
+        Self::spawn_with(actors, |actor| ActorMonitor::spawn_dormant(cx, actor))
+    }
+
+    fn spawn_with(actors: ValueMesh<ActorAddr>, spawn: impl Fn(ActorAddr) -> ActorMonitor) -> Self {
         Self {
-            monitors: ValueMesh::new(region, monitors)
-                .expect("actor monitors preserve actor mesh cardinality"),
+            monitors: actors.map_into(|actor| spawn(actor.clone())),
+        }
+    }
+
+    /// Keep every rank active until the returned activation is dropped.
+    ///
+    /// See [`ActorMonitor::activate`].
+    pub fn activate(&self, cx: &impl context::Actor) -> MeshMonitorActivation {
+        MeshMonitorActivation {
+            activations: self.monitors.map_into(|monitor| monitor.activate(cx)),
         }
     }
 
@@ -162,6 +181,16 @@ impl MeshMonitor {
     }
 }
 
+/// Keeps a [`MeshMonitor`] active; see [`MeshMonitor::activate`].
+#[must_use = "the monitor goes dormant once its last activation is dropped"]
+pub struct MeshMonitorActivation {
+    #[expect(
+        dead_code,
+        reason = "held only so dropping it releases each rank's activation"
+    )]
+    activations: ValueMesh<MonitorActivation>,
+}
+
 /// Awaiting a `&MeshMonitor` resolves with the first rank failure. The borrow
 /// keeps the monitors alive for the duration of the await.
 impl<'a> IntoFuture for &'a MeshMonitor {
@@ -218,7 +247,7 @@ mod tests {
         let target = client.spawn_with_label("rank0", testactor::TestActor);
         let region: Region = extent!(replicas = 1).into();
         let actors = ValueMesh::new(region, vec![target.actor_addr().clone()]).unwrap();
-        let monitor = MeshMonitor::spawn(&client, actors);
+        let monitor = MeshMonitor::spawn_persistent(&client, actors);
         assert_eq!(monitor.status(0), Some(ActorStatus::Unknown));
 
         // No failure should be observed while the actor is alive.

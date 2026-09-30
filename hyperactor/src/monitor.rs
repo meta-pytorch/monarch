@@ -11,6 +11,7 @@
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -207,6 +208,22 @@ struct MonitorInner {
     handle: ActorHandle<MonitorActor>,
     status: watch::Receiver<MonitorStatus>,
     cancelled: Arc<AtomicBool>,
+    activations: Arc<AtomicUsize>,
+}
+
+/// Keeps an [`ActorMonitor`] active; see [`ActorMonitor::activate`].
+#[derive(Debug)]
+#[must_use = "the monitor goes dormant once its last activation is dropped"]
+pub struct MonitorActivation {
+    activations: Arc<AtomicUsize>,
+}
+
+impl Drop for MonitorActivation {
+    fn drop(&mut self) {
+        // The monitor actor observes the release at its next tick, so dropping
+        // needs no actor context.
+        self.activations.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// Actor-local endpoint identifier used for delivery progress.
@@ -356,8 +373,10 @@ where
 }
 
 impl ActorMonitor {
-    /// Spawn a monitor actor for `target` as a child of `cx`.
-    pub fn spawn<C>(cx: &C, target: ActorAddr) -> Self
+    /// Spawn a persistent monitor actor for `target` as a child of `cx`.
+    ///
+    /// A persistent monitor polls the target's status for as long as it runs.
+    pub fn spawn_persistent<C>(cx: &C, target: ActorAddr) -> Self
     where
         C: context::Actor,
     {
@@ -368,6 +387,29 @@ impl ActorMonitor {
             DEFAULT_POLL_INTERVAL,
             DEFAULT_REQUEST_TIMEOUT,
             None,
+            true,
+        )
+    }
+
+    /// Spawn a monitor actor for `target` as a child of `cx`, starting dormant.
+    ///
+    /// The monitor is active, polling the target's status, while at least one
+    /// [`MonitorActivation`] from [`Self::activate`] is live, and dormant
+    /// otherwise. It receives the target's terminal-status notification in
+    /// either state. This lets callers share one monitor across intermittent
+    /// waits without polling between them.
+    pub fn spawn_dormant<C>(cx: &C, target: ActorAddr) -> Self
+    where
+        C: context::Actor,
+    {
+        Self::spawn_with_timings(
+            cx,
+            target,
+            DEFAULT_INITIAL_DELAY,
+            DEFAULT_POLL_INTERVAL,
+            DEFAULT_REQUEST_TIMEOUT,
+            None,
+            false,
         )
     }
 
@@ -382,6 +424,7 @@ impl ActorMonitor {
             DEFAULT_POLL_INTERVAL,
             DEFAULT_REQUEST_TIMEOUT,
             Some(delivery),
+            true,
         )
     }
 
@@ -392,11 +435,15 @@ impl ActorMonitor {
         poll_interval: Duration,
         request_timeout: Duration,
         delivery: Option<DeliveryMonitor>,
+        persistent: bool,
     ) -> Self
     where
         C: context::Actor,
     {
         let cancelled = Arc::new(AtomicBool::new(false));
+        // A persistent monitor holds one activation that is never released, so
+        // it is never dormant.
+        let activations = Arc::new(AtomicUsize::new(usize::from(persistent)));
         let (status_tx, status) = watch::channel(MonitorStatus::Checking);
         let handle = cx.spawn_with_label(
             "monitor",
@@ -407,11 +454,11 @@ impl ActorMonitor {
                 request_timeout,
                 status_tx,
                 cancelled: cancelled.clone(),
-                failure: None,
-                pending_poll: false,
+                state: MonitorState::Dormant,
                 supervised: false,
                 delivery,
                 terminal_status_subscriber: None,
+                activations: activations.clone(),
             },
         );
         Self {
@@ -420,6 +467,7 @@ impl ActorMonitor {
                 handle,
                 status,
                 cancelled,
+                activations,
             }),
         }
     }
@@ -444,6 +492,25 @@ impl ActorMonitor {
             if status.changed().await.is_err() {
                 return MonitorFailure::MonitorStopped { actor_id: target };
             }
+        }
+    }
+
+    /// Keep the monitor active, polling the target's status, until the returned
+    /// activation is dropped.
+    ///
+    /// Activations are counted; the monitor is active while any is live. When
+    /// a dormant monitor becomes active, the first poll waits for the initial
+    /// delay, so short-lived waits that the terminal-status notification
+    /// resolves never poll. The monitor goes dormant at its first tick after the
+    /// last activation is dropped and sends no further polls; reactivating it
+    /// before then keeps its current poll schedule.
+    pub fn activate(&self, cx: &impl context::Actor) -> MonitorActivation {
+        let inner = self.inner();
+        if inner.activations.fetch_add(1, Ordering::AcqRel) == 0 {
+            inner.handle.post(cx, MonitorCommand::Activate);
+        }
+        MonitorActivation {
+            activations: inner.activations.clone(),
         }
     }
 
@@ -513,11 +580,30 @@ struct MonitorActor {
     request_timeout: Duration,
     status_tx: watch::Sender<MonitorStatus>,
     cancelled: Arc<AtomicBool>,
-    failure: Option<MonitorFailure>,
-    pending_poll: bool,
+    state: MonitorState,
     supervised: bool,
     delivery: Option<DeliveryMonitor>,
     terminal_status_subscriber: Option<PortRef<Option<ActorStatus>>>,
+    activations: Arc<AtomicUsize>,
+}
+
+/// The [`MonitorActor`]'s polling state.
+///
+/// A [`MonitorTick`] is outstanding exactly while the monitor is waiting for
+/// its initial delay or poll interval, so there is never more than one. Only
+/// the tick handler decides whether to poll or go dormant.
+#[derive(Debug)]
+enum MonitorState {
+    /// No tick is scheduled and no poll is outstanding.
+    Dormant,
+    /// A tick is scheduled after the initial delay.
+    WaitingForInitialDelay,
+    /// A [`MonitorPollActor`] is outstanding.
+    Polling,
+    /// A tick is scheduled after the poll interval.
+    WaitingForPollInterval,
+    /// A failure was recorded. The monitor no longer polls.
+    Failed(Box<MonitorFailure>),
 }
 
 #[derive(Debug)]
@@ -570,6 +656,7 @@ struct MonitorProbe {
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
 enum MonitorCommand {
     Supervise,
+    Activate,
 }
 wirevalue::register_type!(MonitorCommand);
 
@@ -620,7 +707,9 @@ impl Actor for MonitorActor {
             },
         );
         self.terminal_status_subscriber = Some(subscriber);
-        this.post_after(this, MonitorTick, self.initial_delay);
+        if self.is_active() {
+            self.wait_for_initial_delay(this);
+        }
         Ok(())
     }
 
@@ -792,10 +881,9 @@ impl Handler<MonitorTerminalStatus> for MonitorActor {
         _cx: &Context<Self>,
         MonitorTerminalStatus(status): MonitorTerminalStatus,
     ) -> anyhow::Result<()> {
-        if self.failure.is_some() {
+        if matches!(self.state, MonitorState::Failed(_)) {
             return Ok(());
         }
-        self.pending_poll = false;
         let failure = status.map_or_else(
             || MonitorFailure::ActorGone {
                 actor_id: self.target.clone(),
@@ -812,11 +900,19 @@ impl Handler<MonitorTerminalStatus> for MonitorActor {
 #[async_trait]
 impl Handler<MonitorTick> for MonitorActor {
     async fn handle(&mut self, cx: &Context<Self>, _message: MonitorTick) -> anyhow::Result<()> {
-        if self.failure.is_some() || self.pending_poll {
-            return Ok(());
+        match &self.state {
+            MonitorState::WaitingForInitialDelay | MonitorState::WaitingForPollInterval => {
+                if self.is_active() {
+                    self.start_poll(cx);
+                } else {
+                    self.state = MonitorState::Dormant;
+                }
+            }
+            state => debug_assert!(
+                matches!(state, MonitorState::Failed(_)),
+                "monitor tick while {state:?}"
+            ),
         }
-
-        self.start_poll(cx);
         Ok(())
     }
 }
@@ -828,10 +924,9 @@ impl Handler<MonitorPollResult> for MonitorActor {
         cx: &Context<Self>,
         message: MonitorPollResult,
     ) -> anyhow::Result<()> {
-        if self.failure.is_some() || !self.pending_poll {
+        if !matches!(self.state, MonitorState::Polling) {
             return Ok(());
         }
-        self.pending_poll = false;
 
         let poll_result = match message {
             MonitorPollResult::Status { status, delivery } => {
@@ -877,6 +972,7 @@ impl Handler<MonitorPollResult> for MonitorActor {
 
         match poll_result {
             Ok(()) => {
+                self.state = MonitorState::WaitingForPollInterval;
                 cx.post_after(cx, MonitorTick, self.poll_interval);
                 Ok(())
             }
@@ -905,14 +1001,22 @@ impl Handler<MonitorProbe> for MonitorPollActor {
 
 #[async_trait]
 impl Handler<MonitorCommand> for MonitorActor {
-    async fn handle(&mut self, _cx: &Context<Self>, message: MonitorCommand) -> anyhow::Result<()> {
+    async fn handle(&mut self, cx: &Context<Self>, message: MonitorCommand) -> anyhow::Result<()> {
         match message {
             MonitorCommand::Supervise => {
                 self.supervised = true;
-                if let Some(failure) = self.failure.clone()
+                if let MonitorState::Failed(failure) = &self.state
                     && !self.cancelled.load(Ordering::Acquire)
                 {
-                    return self.fail_supervised(failure);
+                    return self.fail_supervised((**failure).clone());
+                }
+                Ok(())
+            }
+            MonitorCommand::Activate => {
+                // Otherwise the next tick observes the activation, or the
+                // monitor has failed.
+                if matches!(self.state, MonitorState::Dormant) && self.is_active() {
+                    self.wait_for_initial_delay(cx);
                 }
                 Ok(())
             }
@@ -921,14 +1025,17 @@ impl Handler<MonitorCommand> for MonitorActor {
 }
 
 impl MonitorActor {
+    fn is_active(&self) -> bool {
+        self.activations.load(Ordering::Acquire) > 0
+    }
+
+    fn wait_for_initial_delay(&mut self, this: &Instance<Self>) {
+        self.state = MonitorState::WaitingForInitialDelay;
+        this.post_after(this, MonitorTick, self.initial_delay);
+    }
+
     fn start_poll(&mut self, cx: &Context<'_, Self>) {
-        assert!(
-            !self.pending_poll,
-            "monitor actor started a poll while one was already pending"
-        );
-
-        self.pending_poll = true;
-
+        self.state = MonitorState::Polling;
         cx.spawn_with_label(
             "monitor_poll",
             MonitorPollActor {
@@ -1004,7 +1111,7 @@ impl MonitorActor {
     }
 
     fn record_failure(&mut self, failure: MonitorFailure) -> anyhow::Result<()> {
-        self.failure = Some(failure.clone());
+        self.state = MonitorState::Failed(Box::new(failure.clone()));
         self.status_tx
             .send_replace(MonitorStatus::Failed(failure.clone()));
         if self.supervised && !self.cancelled.load(Ordering::Acquire) {
@@ -1110,6 +1217,7 @@ mod tests {
                 Duration::from_millis(10),
                 Duration::from_millis(50),
                 None,
+                true,
             );
             let monitor_id = monitor
                 .inner
@@ -1146,6 +1254,7 @@ mod tests {
                 Duration::from_millis(10),
                 Duration::from_millis(50),
                 None,
+                true,
             );
             let monitor_id = monitor
                 .inner
@@ -1183,6 +1292,7 @@ mod tests {
                 Duration::from_millis(10),
                 Duration::from_millis(50),
                 None,
+                true,
             );
             let monitor_id = monitor
                 .inner
@@ -1219,6 +1329,7 @@ mod tests {
                 Duration::from_millis(10),
                 Duration::from_millis(50),
                 None,
+                true,
             );
             let supervisor = monitor.into_supervisor(this);
             let mut status = supervisor
@@ -1263,6 +1374,7 @@ mod tests {
             Duration::from_millis(10),
             Duration::from_millis(50),
             None,
+            true,
         )
     }
 
@@ -1279,6 +1391,7 @@ mod tests {
                 EndpointId::Handler,
                 Duration::from_millis(50),
             )),
+            true,
         )
     }
 
@@ -1291,11 +1404,11 @@ mod tests {
             request_timeout: Duration::from_millis(50),
             status_tx,
             cancelled: Arc::new(AtomicBool::new(false)),
-            failure: None,
-            pending_poll: false,
+            state: MonitorState::Dormant,
             supervised: false,
             delivery: Some(delivery),
             terminal_status_subscriber: None,
+            activations: Arc::new(AtomicUsize::new(1)),
         }
     }
 
@@ -1353,6 +1466,7 @@ mod tests {
             Duration::from_millis(10),
             Duration::from_millis(50),
             None,
+            true,
         );
 
         assert!(
@@ -1386,6 +1500,7 @@ mod tests {
             Duration::from_millis(10),
             Duration::from_millis(50),
             None,
+            true,
         );
         let mut status = monitor
             .inner
@@ -1432,7 +1547,7 @@ mod tests {
         let client = proc.client("client");
         let handle = proc.spawn(TestActor);
         let actor_id = handle.actor_addr().clone();
-        let monitor = ActorMonitor::spawn(&client, actor_id.clone());
+        let monitor = ActorMonitor::spawn_persistent(&client, actor_id.clone());
         let mut monitor_actor_status = monitor
             .inner
             .as_ref()
@@ -1458,6 +1573,95 @@ mod tests {
             MonitorFailure::ActorStopped {
                 actor_id,
                 status: ActorStatus::Stopped("done".to_string()),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dormant_monitor_observes_terminal_status() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn(TestActor);
+        let actor_id = handle.actor_addr().clone();
+        let monitor = ActorMonitor::spawn_dormant(&client, actor_id.clone());
+        monitor
+            .inner()
+            .handle
+            .status()
+            .wait_for(|status| matches!(status, ActorStatus::Idle))
+            .await
+            .expect("monitor actor should finish initialization");
+
+        handle.drain_and_stop("done").unwrap();
+
+        let expected = MonitorFailure::ActorStopped {
+            actor_id,
+            status: ActorStatus::Stopped("done".to_string()),
+        };
+        assert_eq!(
+            time::timeout(Duration::from_secs(1), monitor.wait_for_failure())
+                .await
+                .expect("dormant monitor should still receive terminal status"),
+            expected
+        );
+
+        // Reactivation applies the initial delay only to polling; a recorded
+        // failure is returned immediately.
+        let _activation = monitor.activate(&client);
+        assert_eq!(
+            time::timeout(Duration::from_millis(100), monitor.wait_for_failure())
+                .await
+                .expect("failed monitor should resolve without waiting for a poll"),
+            expected
+        );
+    }
+
+    #[tokio::test]
+    async fn test_monitor_polls_only_while_active() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let unreachable =
+            crate::ProcAddr::instance(crate::channel::ChannelAddr::Local(1234), "gone")
+                .actor_addr("actor");
+        let monitor = ActorMonitor::spawn_with_timings(
+            &client,
+            unreachable.clone(),
+            Duration::from_millis(100),
+            Duration::from_millis(10),
+            Duration::from_millis(50),
+            None,
+            false,
+        );
+
+        // Only polling can detect an unreachable target, so no failure means no
+        // poll was sent.
+        assert!(
+            time::timeout(Duration::from_millis(300), monitor.wait_for_failure())
+                .await
+                .is_err(),
+            "dormant monitor should not poll"
+        );
+
+        // Release the activation after its first tick is scheduled but before it
+        // fires; the tick must find no activation and return to dormancy.
+        let activation = monitor.activate(&client);
+        time::sleep(Duration::from_millis(20)).await;
+        drop(activation);
+        assert!(
+            time::timeout(Duration::from_millis(300), monitor.wait_for_failure())
+                .await
+                .is_err(),
+            "monitor should not poll after its last activation is released"
+        );
+
+        let _activation = monitor.activate(&client);
+        assert_eq!(
+            time::timeout(Duration::from_secs(5), monitor.wait_for_failure())
+                .await
+                .expect("reactivated monitor should poll"),
+            MonitorFailure::StatusRequestTimedOut {
+                actor_id: unreachable,
+                timeout_millis: 50,
             }
         );
     }
@@ -1645,6 +1849,7 @@ mod tests {
                 EndpointId::Port(port_ref.port_addr().port()),
                 delivery_timeout,
             )),
+            true,
         );
 
         port_ref.post(&client, 123);
@@ -1734,6 +1939,7 @@ mod tests {
             Duration::from_millis(10),
             Duration::from_secs(5),
             None,
+            true,
         );
 
         time::sleep(Duration::from_millis(20)).await;
@@ -1770,6 +1976,7 @@ mod tests {
             Duration::from_millis(10),
             Duration::from_secs(5),
             None,
+            true,
         );
         let poll = proc.spawn(MonitorPollActor {
             target: unreachable,

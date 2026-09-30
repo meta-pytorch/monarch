@@ -138,6 +138,7 @@ pub struct DataActorMesh<A: Referable> {
     id: ActorMeshId,
     members: ValueMesh<ActorRef<A>>,
     cast_domain: Arc<ActorMeshCastDomain>,
+    monitor: Arc<ActorLocal<Arc<MeshMonitor>>>,
 }
 
 impl<A: Referable> fmt::Debug for DataActorMesh<A> {
@@ -409,6 +410,7 @@ impl<A: Referable> DataActorMesh<A> {
                 region,
                 tiling_policy,
             )),
+            monitor: Arc::new(ActorLocal::new()),
         }
     }
 
@@ -497,6 +499,10 @@ impl<A: Referable> Clone for DataActorMesh<A> {
             id: self.id.clone(),
             members: self.members.clone(),
             cast_domain: self.cast_domain.clone(),
+            // Exact clones share their actor-local monitor slot, even before
+            // its key is initialized. Slices use `with_cast_domain_config`
+            // instead, so each sliced region gets its own monitor.
+            monitor: Arc::clone(&self.monitor),
         }
     }
 }
@@ -506,6 +512,9 @@ impl<A: Referable> Serialize for DataActorMesh<A> {
     where
         S: Serializer,
     {
+        // Actor-local monitors are process state, so serialization omits them.
+        // Deserialization creates a fresh slot even when the new ref is used by
+        // the same actor as the original ref.
         (
             &self.id,
             &self.members,
@@ -694,7 +703,18 @@ impl<A: Referable> ActorMeshRef<A> {
     ) -> Result<MeshFailure, anyhow::Error> {
         match self {
             Self::Managed(managed) => managed.next_supervision_event(cx).await,
-            Self::Data(_) => Ok((&self.monitor(cx)).await),
+            Self::Data(data) => {
+                let monitor = data
+                    .monitor
+                    .entry(cx)
+                    .or_insert_with(|| {
+                        Arc::new(MeshMonitor::spawn_dormant(cx, self.monitored_actors()))
+                    })
+                    .get()
+                    .clone();
+                let _activation = monitor.activate(cx);
+                Ok((&*monitor).await)
+            }
         }
     }
 
@@ -714,14 +734,17 @@ impl<A: Referable> ActorMeshRef<A> {
 
     /// Create a new, independent monitor over every rank.
     pub fn monitor(&self, cx: &impl context::Actor) -> MeshMonitor {
+        MeshMonitor::spawn_persistent(cx, self.monitored_actors())
+    }
+
+    fn monitored_actors(&self) -> ValueMesh<ActorAddr> {
         let region = self.region().clone();
         let actors = self
             .values()
             .map(|actor| actor.actor_addr().clone())
             .collect();
-        let actors = ValueMesh::new(region, actors)
-            .expect("actor addresses collected from a dense mesh preserve cardinality");
-        MeshMonitor::spawn(cx, actors)
+        ValueMesh::new(region, actors)
+            .expect("actor addresses collected from a dense mesh preserve cardinality")
     }
 }
 
@@ -1830,6 +1853,41 @@ mod tests {
         assert_send_sync::<ActorMeshRef<()>>();
     }
 
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_data_actor_mesh_ref_observes_terminal_status() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let target = client.spawn_with_label("rank0", testactor::TestActor);
+        let actor_ref = target.bind::<testactor::TestActor>();
+        let actor_addr = target.actor_addr().clone();
+        let mesh = ActorMeshRef::try_new_data(
+            ActorMeshId::instance(Label::new("actors").unwrap()),
+            extent!(actors = 1).into(),
+            vec![actor_ref],
+        )
+        .expect("data actor mesh ref should be valid");
+
+        let mut wait = Box::pin(mesh.next_supervision_event(&client));
+        tokio::select! {
+            failure = &mut wait => panic!("unexpected failure before stop: {failure:?}"),
+            _ = tokio::task::yield_now() => {}
+        }
+        target
+            .drain_and_stop("rank complete")
+            .expect("target should accept stop");
+
+        let failure = tokio::time::timeout(Duration::from_secs(1), wait)
+            .await
+            .expect("timed out waiting for data actor supervision")
+            .expect("data actor supervision should succeed");
+        assert_eq!(failure.crashed_ranks, vec![0]);
+        assert_eq!(failure.event.actor_id, actor_addr);
+        assert!(matches!(
+            failure.event.actor_status,
+            ActorStatus::Stopped(ref reason) if reason == "rank complete"
+        ));
+    }
+
     #[test]
     fn test_actor_mesh_ref_data_variant_is_detached_data_structure() {
         let region: Region = extent!(replicas = 2).into();
@@ -1873,6 +1931,7 @@ mod tests {
             panic!("cloned data ref changed variant");
         };
         assert_eq!(cloned_data.cast_domain.id, cast_domain_id);
+        assert!(Arc::ptr_eq(&data.monitor, &cloned_data.monitor));
 
         let slice_region = region
             .range("replicas", 1..2)
@@ -1882,6 +1941,7 @@ mod tests {
             panic!("data slice changed variant");
         };
         assert_ne!(slice_data.cast_domain.id, cast_domain_id);
+        assert!(!Arc::ptr_eq(&data.monitor, &slice_data.monitor));
         assert_eq!(slice.id(), &id);
         assert_eq!(slice.region(), &slice_region);
         assert_eq!(slice.values().count(), 1);
@@ -1898,6 +1958,7 @@ mod tests {
             panic!("decoded data ref changed variant");
         };
         assert_eq!(decoded_data.cast_domain.id, cast_domain_id);
+        assert!(!Arc::ptr_eq(&data.monitor, &decoded_data.monitor));
 
         assert!(matches!(
             ActorMeshRef::try_new_data(id.clone(), region.clone(), vec![members[0].clone()]),
