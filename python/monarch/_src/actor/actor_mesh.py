@@ -260,6 +260,11 @@ class Instance(abc.ABC):
         ...
 
     @abstractmethod
+    def _inject_failure(self, reason: Optional[str] = None) -> None:
+        """Abort this actor with an injected-failure marker."""
+        ...
+
+    @abstractmethod
     def _execution_start(self, name: str) -> int:
         """
         Producer write-side for the mesh `execution` field: record the start

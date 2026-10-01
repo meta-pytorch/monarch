@@ -81,6 +81,13 @@ pub struct MeshFailure {
 wirevalue::register_type!(MeshFailure);
 
 impl MeshFailure {
+    /// Returns true only when the reported actor failed directly through the
+    /// fault-injection path. A parent that fails while handling this event is
+    /// not itself an injected failure.
+    pub fn is_injected(&self) -> bool {
+        self.event.is_injected()
+    }
+
     /// Returns true if the given rank is part of this failure.
     /// A whole-mesh event (empty crashed_ranks) contains every rank.
     pub fn contains_rank(&self, rank: usize) -> bool {
@@ -168,6 +175,39 @@ mod tests {
             ActorStatus::Failed(ActorErrorKind::Generic("boom".to_string())),
             None,
         )
+    }
+
+    #[test]
+    fn injected_marker_applies_only_to_direct_failure() {
+        let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "test_proc");
+        let injected_event = ActorSupervisionEvent::new(
+            proc_id.actor_addr("injected_actor"),
+            None,
+            ActorStatus::Failed(ActorErrorKind::Injected("test fault".to_string())),
+            None,
+        );
+        let direct_failure = MeshFailure {
+            actor_mesh_name: Some("workers".to_string()),
+            event: injected_event.clone(),
+            crashed_ranks: vec![0],
+            reporting_controller: None,
+        };
+        assert!(direct_failure.is_injected());
+
+        let propagated_failure = MeshFailure {
+            actor_mesh_name: Some("supervisor".to_string()),
+            event: ActorSupervisionEvent::new(
+                proc_id.actor_addr("supervisor"),
+                None,
+                ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(
+                    injected_event,
+                ))),
+                None,
+            ),
+            crashed_ranks: vec![0],
+            reporting_controller: None,
+        };
+        assert!(!propagated_failure.is_injected());
     }
 
     // `MeshFailure::Display` renders the mesh name in its prose
