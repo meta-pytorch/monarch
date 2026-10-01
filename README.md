@@ -417,3 +417,25 @@ uv run pytest python/tests/ -v -m "not oss_skip"
 ## License
 
 Monarch is BSD-3 licensed, as found in the [LICENSE](LICENSE) file.
+
+### Third Party Notice
+
+#### RDMA Core
+
+When built with RDMA support, Monarch statically links these libraries from
+rdma-core: libibverbs, libmlx5, libefa and librdma_util. Monarch's source
+file `rdmaxcel-sys/src/mlx5_ifc_subset.h` is also derived from rdma-core.
+
+- Source: https://github.com/linux-rdma/rdma-core
+- Commit: 224154663a9ad5b1ad5629fb76a0c40c675fb936
+
+Most rdma-core files are offered under a choice of GPL-2.0 or a BSD license.
+Monarch uses them under the BSD license. Copies of applicable licenses can be
+found at:
+
+- https://github.com/linux-rdma/rdma-core/blob/224154663a9ad5b1ad5629fb76a0c40c675fb936/COPYING.BSD_MIT
+- https://github.com/linux-rdma/rdma-core/blob/224154663a9ad5b1ad5629fb76a0c40c675fb936/COPYING.BSD_FB
+- https://github.com/linux-rdma/rdma-core/blob/224154663a9ad5b1ad5629fb76a0c40c675fb936/ccan/LICENSE.MIT
+
+For file-by-file copyright attribution and licensing, refer to the rdma-core
+repository linked above.
