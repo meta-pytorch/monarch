@@ -101,6 +101,15 @@ impl PyInstance {
     }
 
     #[pyo3(signature = (reason = None))]
+    fn _inject_failure(&self, reason: Option<&str>) -> PyResult<()> {
+        let reason = reason.unwrap_or("(no reason provided)");
+        Ok(self
+            .inner
+            .inject_failure(reason)
+            .map_err(anyhow::Error::from)?)
+    }
+
+    #[pyo3(signature = (reason = None))]
     fn kill(&self, reason: Option<&str>) -> PyResult<()> {
         let reason = reason.unwrap_or("(no reason provided)");
         Ok(self.inner.kill(reason).map_err(anyhow::Error::from)?)

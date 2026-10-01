@@ -36,6 +36,11 @@ class MeshFailure:
         to existing meshes names to determine identity"""
         ...
 
+    @property
+    def is_injected(self) -> bool:
+        """Whether the reported actor failed directly through fault injection."""
+        ...
+
     def report(self) -> str:
         """
         User-readable error report for this particular failure.

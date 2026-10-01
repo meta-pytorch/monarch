@@ -13,6 +13,7 @@ from monarch._src.actor.actor_mesh import Actor
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.mock import _actor_registry, get_actor_class, patch_actor
 from monarch._src.job.process import ProcessJob
+from monarch.actor import HostMesh, ProcMesh
 from scoped_state import scoped_state
 
 
@@ -314,15 +315,19 @@ class TestMockRegistryPropagation(unittest.TestCase):
 
 
 class OuterActor(Actor):
-    """Actor that spawns InnerActor from within a subprocess."""
+    """Actor that spawns InnerActor in a new subprocess."""
+
+    def __init__(self, hosts: HostMesh) -> None:
+        self.hosts = hosts
+        self.inner_procs: ProcMesh | None = None
 
     @endpoint
-    def spawn_inner_and_get_type(self) -> str:
-        """Spawn InnerActor using this_proc() and return its type."""
-        from monarch._src.actor.host_mesh import this_proc
+    async def spawn_inner_and_get_type(self) -> str:
+        """Spawn InnerActor using self.hosts and return its type."""
+        self.inner_procs = self.hosts.spawn_procs(name="inner_proc")
 
-        inner = this_proc().spawn("inner", InnerActor)
-        return inner.get_actor_type.call_one().get()
+        inner = self.inner_procs.spawn("inner", InnerActor)
+        return await inner.get_actor_type.call_one()
 
 
 class TestMockPropagationEndToEnd(unittest.TestCase):
@@ -339,15 +344,14 @@ class TestMockPropagationEndToEnd(unittest.TestCase):
         _actor_registry.clear()
 
     @pytest.mark.timeout(60)
-    def test_outer_actor_spawns_mocked_inner_actor(self) -> None:
+    def test_patch_reaches_actor_spawned_in_nested_process(self) -> None:
         """
-        Test that when OuterActor (in subprocess) spawns InnerActor,
-        the mocked version is used.
+        Test that a patch reaches a process spawned by a remote actor.
 
         Flow:
         1. Client patches InnerActor with MockInnerActor
-        2. Client spawns OuterActor on a ProcMesh (runs in subprocess)
-        3. OuterActor spawns InnerActor via this_proc().spawn()
+        2. Client spawns OuterActor on a ProcMesh
+        3. OuterActor spawns another ProcMesh and InnerActor on it
         4. InnerActor should be MockInnerActor (returns "mock" not "real")
         """
         with patch_actor(InnerActor, MockInnerActor):
@@ -357,7 +361,7 @@ class TestMockPropagationEndToEnd(unittest.TestCase):
                 proc_mesh = host.spawn_procs(name="test_proc")
 
                 # Spawn OuterActor in the subprocess
-                outer = proc_mesh.spawn("outer", OuterActor)
+                outer = proc_mesh.spawn("outer", OuterActor, state.hosts)
 
                 # OuterActor spawns InnerActor and returns its type
                 # If mock propagation works, this should return "mock"
