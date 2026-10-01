@@ -23,7 +23,7 @@ from unittest.mock import call, MagicMock, patch
 import monarch._src.job.job_sidecar as js
 import monarch._src.job.telemetry_config as tc
 import pytest
-from monarch._src.job.process_guard import _Shutdown, _wait_for_socket
+from monarch._src.job.once_daemon import _Shutdown, _wait_for_socket
 from monarch._src.job.telemetry_actor import telemetry_socket_dir, telemetry_socket_path
 from monarch.config import ChannelTransport, configured
 from monarch.job import TelemetryConfig
