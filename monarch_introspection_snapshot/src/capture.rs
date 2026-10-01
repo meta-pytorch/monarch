@@ -34,10 +34,13 @@
 //!   [`OrderingSessionRow`]s (CV-9), optionally one
 //!   [`ActorExecutionRow`] (CV-10), all of its [`ActiveHandlerRow`]s
 //!   (CV-11), and all of its [`ChildRow`]s.
-//! - **CS-6 (resolution-error-boundary):** Resolver transport/query
-//!   failure aborts capture with `Err`. Only successfully resolved
-//!   payloads with `NodeProperties::Error` populate
-//!   `resolution_errors`.
+//! - **CS-6 (resolution-error-boundary):** Failure to resolve the root
+//!   aborts capture with `Err`. Failure to resolve a non-root node is
+//!   materialized as a `NodeProperties::Error` row (code
+//!   `resolver_error`) and traversal continues, since nodes can
+//!   disappear between parent enumeration and child resolution.
+//!   Successfully resolved payloads with `NodeProperties::Error` also
+//!   populate `resolution_errors`.
 //! - **CS-7 (typed-visited-key):** Traversal dedup uses typed
 //!   `NodeRef` identity, not stringified IDs.
 //! - **CS-8 (snapshot-ts-capture-start):** `snapshot.snapshot_ts` is
@@ -105,8 +108,9 @@ pub struct SnapshotData {
     /// (CV-11). A prefix of the N oldest when truncated; empty when the
     /// rollup's `complete == false`.
     pub active_handlers: Vec<ActiveHandlerRow>,
-    /// One row per successfully resolved `NodeProperties::Error`
-    /// (CS-6: distinct from resolver transport failures).
+    /// One row per `NodeProperties::Error` node: either a payload that
+    /// resolved as an error, or a non-root node whose resolution failed
+    /// (CS-6).
     pub resolution_errors: Vec<ResolutionErrorRow>,
 }
 
@@ -142,9 +146,11 @@ impl SnapshotData {
 /// Capture a full mesh snapshot by BFS from root.
 ///
 /// The `resolve` closure is called once per distinct `NodeRef`
-/// (CS-2). Resolver transport failures abort capture immediately
+/// (CS-2). A root resolver failure aborts capture; a non-root failure
+/// becomes a resolution-error node with no children, so the rest of
+/// the snapshot remains useful
 /// (CS-6). Successfully resolved `NodeProperties::Error` payloads are
-/// valid rows, not capture failures.
+/// also valid rows.
 pub async fn capture_snapshot<F, Fut>(snapshot_id: &str, resolve: F) -> anyhow::Result<SnapshotData>
 where
     F: Fn(&NodeRef) -> Fut,
@@ -184,10 +190,24 @@ where
             continue;
         }
 
-        // CS-6: resolver failure is an immediate capture error.
-        let payload = resolve(&node_ref)
-            .await
-            .with_context(|| format!("failed to resolve {}", node_ref))?;
+        // CS-6: root resolver failure is a capture error; a non-root
+        // failure becomes an error node and traversal continues.
+        let payload = match resolve(&node_ref).await {
+            Ok(payload) => payload,
+            Err(error) if node_ref == NodeRef::Root => {
+                return Err(error).context("failed to resolve root");
+            }
+            Err(error) => NodePayload {
+                identity: node_ref.clone(),
+                properties: hyperactor_mesh::introspect::NodeProperties::Error {
+                    code: "resolver_error".to_owned(),
+                    message: format!("{error:#}"),
+                },
+                children: Vec::new(),
+                parent: None,
+                as_of: SystemTime::now(),
+            },
+        };
 
         // Enqueue all children unconditionally; dedup happens on
         // dequeue.
@@ -878,9 +898,10 @@ mod tests {
         assert_eq!(data.actor_failures.len(), 1); // from actor
     }
 
-    // CS-6: resolver failure aborts capture.
+    // CS-6: a non-root resolver failure is retained as an error node and the
+    // snapshot still succeeds.
     #[tokio::test]
-    async fn test_capture_aborts_on_resolver_error() {
+    async fn test_capture_keeps_non_root_resolver_error() {
         let host_ref = NodeRef::Host(test_host_actor_id());
 
         // Root has a child, but the child resolver fails.
@@ -894,15 +915,102 @@ mod tests {
                     started_by: "t".to_owned(),
                     system_children: vec![],
                 },
-                vec![host_ref],
+                vec![host_ref.clone()],
             ),
         )]
         .into();
 
-        let result = capture_snapshot("s", stub_resolver(map)).await;
+        let data = capture_snapshot("s", stub_resolver(map)).await.unwrap();
+        assert_eq!(data.nodes.len(), 2);
+        assert_eq!(data.root_nodes.len(), 1);
+        assert_eq!(data.resolution_errors.len(), 1);
+        assert_eq!(data.resolution_errors[0].node_id, host_ref.to_string());
+        assert_eq!(data.resolution_errors[0].error_code, "resolver_error");
+        assert!(
+            data.resolution_errors[0]
+                .error_message
+                .contains("unknown ref"),
+            "CS-6: resolver context should be preserved"
+        );
+    }
+
+    // CS-6: without a root there is no coherent snapshot to publish.
+    #[tokio::test]
+    async fn test_capture_aborts_on_root_resolver_error() {
+        let result = capture_snapshot("s", stub_resolver(HashMap::new())).await;
         assert!(
             result.is_err(),
-            "CS-6: capture should fail when resolver returns Err"
+            "CS-6: capture should fail when the root cannot be resolved"
+        );
+    }
+
+    // CS-6: a stale child must not prevent live siblings from appearing in
+    // the same fresh snapshot.
+    #[tokio::test]
+    async fn test_capture_continues_after_non_root_resolver_error() {
+        let host_ref = NodeRef::Host(test_host_actor_id());
+        let stale_proc_ref = NodeRef::Proc(test_proc_id());
+        let live_proc_addr = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
+            ChannelAddr::Local(0),
+            "live-worker",
+        );
+        let live_proc_ref = NodeRef::Proc(live_proc_addr);
+
+        let map: HashMap<NodeRef, NodePayload> = [
+            (
+                NodeRef::Root,
+                make_payload(
+                    NodeRef::Root,
+                    NodeProperties::Root {
+                        num_hosts: 1,
+                        started_at: test_time(),
+                        started_by: "t".to_owned(),
+                        system_children: vec![],
+                    },
+                    vec![host_ref.clone()],
+                ),
+            ),
+            (
+                host_ref.clone(),
+                make_payload(
+                    host_ref,
+                    NodeProperties::Host {
+                        addr: "a".to_owned(),
+                        num_procs: 2,
+                        system_children: vec![],
+                        memory: Default::default(),
+                    },
+                    vec![stale_proc_ref.clone(), live_proc_ref.clone()],
+                ),
+            ),
+            (
+                live_proc_ref.clone(),
+                make_payload(
+                    live_proc_ref.clone(),
+                    NodeProperties::Proc {
+                        proc_name: "live-worker".to_owned(),
+                        num_actors: 0,
+                        system_children: vec![],
+                        stopped_children: vec![],
+                        stopped_retention_cap: 0,
+                        is_poisoned: false,
+                        failed_actor_count: 0,
+                        debug: Default::default(),
+                    },
+                    vec![],
+                ),
+            ),
+        ]
+        .into();
+
+        let data = capture_snapshot("s", stub_resolver(map)).await.unwrap();
+        assert_eq!(data.nodes.len(), 4);
+        assert_eq!(data.proc_nodes.len(), 1);
+        assert_eq!(data.proc_nodes[0].node_id, live_proc_ref.to_string());
+        assert_eq!(data.resolution_errors.len(), 1);
+        assert_eq!(
+            data.resolution_errors[0].node_id,
+            stale_proc_ref.to_string()
         );
     }
 

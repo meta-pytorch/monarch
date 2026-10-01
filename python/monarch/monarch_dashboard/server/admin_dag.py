@@ -226,6 +226,13 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
                 queue.append((child_ref, None))
             continue
 
+        # A node can disappear after its parent was enumerated. Snapshot
+        # capture records that race as an error node so the rest of the newer
+        # snapshot remains publishable. It has no topology to render; details
+        # remain available in the resolution_errors telemetry table.
+        if ntype == "error":
+            continue
+
         # Derive label for this node.
         if ntype == "host":
             h = host_info.get(ref, {})
