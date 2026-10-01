@@ -110,10 +110,9 @@ fn is_reentrant() -> bool {
 /// should be rare and short-lived.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GilSite {
-    /// Dispatch a message to a Python endpoint (direct dispatch).
+    /// Call into a Python actor from Rust: undeliverable messages, FUSE and NFS
+    /// mounts, and telemetry queries.
     EndpointDispatch,
-    /// Build a queued message for queue-dispatch mode.
-    QueueDispatch,
     /// Start the Python dispatch loop during actor init.
     DispatchInit,
     /// Run an actor's `__cleanup__`.
@@ -173,7 +172,6 @@ fn is_control_plane_allowed(site: GilSite) -> bool {
     match site {
         // Dispatch and reply.
         GilSite::EndpointDispatch
-        | GilSite::QueueDispatch
         | GilSite::DispatchInit
         | GilSite::EndpointCleanup
         | GilSite::ReplyConvert => true,

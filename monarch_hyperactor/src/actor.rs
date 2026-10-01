@@ -225,11 +225,6 @@ impl Default for PythonMessageKind {
     }
 }
 
-fn mailbox<'py, T: Actor>(py: Python<'py>, cx: &Context<'_, T>) -> Bound<'py, PyAny> {
-    let mailbox: PyMailbox = cx.mailbox_for_py().clone().into();
-    mailbox.into_bound_py_any(py).unwrap()
-}
-
 /// A serializable reference to a mesh (actor, proc, or host).
 ///
 /// Serialized as a typed multipart part via [`MeshRefRepr`]: under the multipart
@@ -432,7 +427,7 @@ impl PythonMessage {
 struct ResolvedCallMethod {
     method: MethodSpecifier,
     bytes: FrozenBuffer,
-    local_state: Option<Py<PyAny>>,
+    local_state: PendingLocalState,
     mesh_references: Vec<MeshRef>,
     /// Implements PortProtocol
     /// Concretely either a Port, DroppingPort, or LocalPort
@@ -453,6 +448,91 @@ impl ResponsePort {
             ResponsePort::Port(port) => port.into_py_any(py),
             ResponsePort::Local(port) => port.into_py_any(py),
         }
+    }
+}
+
+enum PendingLocalState {
+    Empty,
+    Indirect {
+        mailbox: PyMailbox,
+        unflatten_args: Vec<UnflattenArg>,
+        state: Vec<Py<PyAny>>,
+    },
+}
+
+impl PendingLocalState {
+    fn into_py_any(self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self {
+            PendingLocalState::Empty => Ok(PyList::empty(py).into_any().unbind()),
+            PendingLocalState::Indirect {
+                mailbox,
+                unflatten_args,
+                state,
+            } => {
+                let mailbox = mailbox.into_bound_py_any(py)?;
+                let mut state = state.into_iter();
+                let items = unflatten_args.into_iter().map(|arg| match arg {
+                    UnflattenArg::Mailbox => mailbox.clone(),
+                    UnflattenArg::PyObject => state
+                        .next()
+                        .expect("local state broker should return an object per PyObject arg")
+                        .into_bound(py),
+                });
+                Ok(PyList::new(py, items)?.into_any().unbind())
+            }
+        }
+    }
+}
+
+/// A resolved message bound for the Python dispatch loop. It holds no Python
+/// objects that need the GIL to create: `pympsc::PyReceiver` converts it into
+/// a [`QueuedMessage`] on the actor's event loop thread. Taking the GIL on the
+/// Tokio worker instead can leave the runtime's I/O driver unpolled while
+/// another thread holds the GIL, stalling unrelated Rust tasks in the proc
+/// (https://github.com/meta-pytorch/monarch/issues/4938).
+struct PendingMessage {
+    instance: Arc<Py<PyInstance>>,
+    rank: Point,
+    recording_span: tracing::Span,
+    resolved: ResolvedCallMethod,
+    telemetry_message_id: Option<u64>,
+}
+
+impl<'py> IntoPyObject<'py> for PendingMessage {
+    type Target = QueuedMessage;
+    type Output = Bound<'py, QueuedMessage>;
+    type Error = PyErr;
+
+    /// On failure, reports the message as failed: `handle` has already
+    /// returned, and no `QueuedMessage` exists to call `_report_failed`.
+    fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
+        let telemetry_message_id = self.telemetry_message_id;
+        self.into_queued(py)
+            .inspect_err(|_| report_message_status(telemetry_message_id, "failed"))
+    }
+}
+
+impl PendingMessage {
+    fn into_queued(self, py: Python<'_>) -> PyResult<Bound<'_, QueuedMessage>> {
+        let context = crate::context::PyContext::from_parts(
+            self.instance.clone_ref(py),
+            self.rank,
+            Some(self.recording_span),
+        );
+        let resolved = self.resolved;
+        Bound::new(
+            py,
+            QueuedMessage {
+                context: Py::new(py, context)?,
+                method: resolved.method,
+                bytes: resolved.bytes,
+                local_state: resolved.local_state.into_py_any(py)?,
+                refs: resolved.mesh_references.into_py_any(py)?,
+                response_port: resolved.response_port.into_py_any(py)?,
+                telemetry_message_id: self.telemetry_message_id,
+                correlation_id: resolved.correlation_id,
+            },
+        )
     }
 }
 
@@ -548,40 +628,23 @@ impl PythonMessage {
                 let (send, recv) = cx.open_once_port();
                 broker.post(cx, LocalStateBrokerMessage::Get(id, send));
                 let state = recv.recv().await?;
-                let mut state_it = state.state.into_iter();
-                monarch_with_gil(GilSite::EndpointDispatch, |py| {
-                    let mailbox = mailbox(py, cx);
-                    let local_state = Some(
-                        PyList::new(
-                            py,
-                            unflatten_args.into_iter().map(|x| -> Bound<'_, PyAny> {
-                                match x {
-                                    UnflattenArg::Mailbox => mailbox.clone(),
-                                    UnflattenArg::PyObject => {
-                                        state_it.next().unwrap().into_bound(py)
-                                    }
-                                }
-                            }),
-                        )
-                        .unwrap()
-                        .into(),
-                    );
-                    let response_port = ResponsePort::Local(LocalPort {
+                Ok(ResolvedCallMethod {
+                    method: name,
+                    bytes: FrozenBuffer {
+                        inner: self.message.into_bytes(),
+                    },
+                    local_state: PendingLocalState::Indirect {
+                        mailbox: cx.mailbox_for_py().clone().into(),
+                        unflatten_args,
+                        state: state.state,
+                    },
+                    mesh_references: self.refs,
+                    response_port: ResponsePort::Local(LocalPort {
                         instance: cx.into(),
                         inner: Some(state.response_port),
-                    });
-                    Ok(ResolvedCallMethod {
-                        method: name,
-                        bytes: FrozenBuffer {
-                            inner: self.message.into_bytes(),
-                        },
-                        local_state,
-                        mesh_references: self.refs,
-                        response_port,
-                        correlation_id,
-                    })
+                    }),
+                    correlation_id,
                 })
-                .await
             }
             PythonMessageKind::CallMethod {
                 name,
@@ -622,7 +685,7 @@ impl PythonMessage {
                     bytes: FrozenBuffer {
                         inner: self.message.into_bytes(),
                     },
-                    local_state: None,
+                    local_state: PendingLocalState::Empty,
                     mesh_references: self.refs,
                     response_port,
                     correlation_id,
@@ -1007,7 +1070,8 @@ pub struct PythonActor {
     task_locals: pyo3_async_runtimes::TaskLocals,
     /// Instance object that we keep across handle calls so that we can store
     /// information from the Init (spawn rank, controller) and provide it to other calls.
-    instance: Option<Py<crate::context::PyInstance>>,
+    /// The `Arc` lets handlers share it without the GIL.
+    instance: Option<Arc<Py<crate::context::PyInstance>>>,
     /// Channel sender for enqueuing messages to Python.
     dispatch_sender: pympsc::Sender,
     /// Channel receiver, taken during Actor::init to start the message loop.
@@ -1096,9 +1160,8 @@ impl PythonActor {
 
     /// Get-or-create the actor's cached `PyInstance`, injecting a clone of
     /// the execution tracker (PE-1) so `_Actor.handle` can bracket each
-    /// invocation. All four `self.instance` creation sites route through
-    /// this so the tracker is never silently absent -- notably the
-    /// supervision path, which can run before the first endpoint.
+    /// invocation. Its callers are `init` and the `MeshFailure` handler;
+    /// `handle_queue` expects the instance `init` created.
     fn ensure_py_instance(
         &mut self,
         py: Python<'_>,
@@ -1109,7 +1172,7 @@ impl PythonActor {
             .get_or_insert_with(|| {
                 let mut inst: crate::context::PyInstance = src.into();
                 inst.set_execution_tracker(tracker);
-                inst.into_pyobject(py).unwrap().into()
+                Arc::new(inst.into_pyobject(py).unwrap().into())
             })
             .clone_ref(py)
     }
@@ -1725,34 +1788,21 @@ impl PythonActor {
     ) -> anyhow::Result<()> {
         let resolved = message.resolve_indirect_call(cx).await?;
 
-        let queued_msg = monarch_with_gil(
-            GilSite::QueueDispatch,
-            |py| -> anyhow::Result<QueuedMessage> {
-                let inst = self.ensure_py_instance(py, cx);
-
-                let py_context = crate::context::PyContext::new(cx, inst.clone_ref(py));
-                let py_context_obj = Py::new(py, py_context)?;
-
-                Ok(QueuedMessage {
-                    context: py_context_obj,
-                    method: resolved.method,
-                    bytes: resolved.bytes,
-                    local_state: resolved
-                        .local_state
-                        .unwrap_or_else(|| PyList::empty(py).unbind().into()),
-                    refs: resolved.mesh_references.into_py_any(py)?,
-                    response_port: resolved.response_port.into_py_any(py)?,
-                    telemetry_message_id: cx
-                        .headers()
-                        .get(hyperactor::mailbox::headers::TELEMETRY_MESSAGE_ID),
-                    correlation_id: resolved.correlation_id,
-                })
-            },
-        )
-        .await?;
+        let pending = PendingMessage {
+            instance: self
+                .instance
+                .clone()
+                .expect("PythonActor::init should have created the instance"),
+            rank: cx.cast_point(),
+            recording_span: cx.recording_span(),
+            resolved,
+            telemetry_message_id: cx
+                .headers()
+                .get(hyperactor::mailbox::headers::TELEMETRY_MESSAGE_ID),
+        };
 
         sender
-            .send(queued_msg)
+            .send(pending)
             .map_err(|_| anyhow::anyhow!("failed to send message to queue"))?;
 
         Ok(())

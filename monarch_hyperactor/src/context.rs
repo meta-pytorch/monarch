@@ -284,10 +284,18 @@ impl PyContext {
         cx: &hyperactor::Context<T>,
         instance: Py<PyInstance>,
     ) -> PyContext {
+        Self::from_parts(instance, cx.cast_point(), Some(cx.recording_span()))
+    }
+
+    pub(crate) fn from_parts(
+        instance: Py<PyInstance>,
+        rank: Point,
+        recording_span: Option<tracing::Span>,
+    ) -> PyContext {
         PyContext {
             instance,
-            rank: cx.cast_point(),
-            recording_span: Some(cx.recording_span()),
+            rank,
+            recording_span,
         }
     }
 
