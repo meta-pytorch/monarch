@@ -84,6 +84,14 @@ class Future(Generic[R]):
         return future
 
     @classmethod
+    def _resolved(cls, value: R) -> "Future[R]":
+        """Return a Future already resolved to ``value``. Unlike ``_from_coro``,
+        this creates no ``PythonTask``, so it never bootstraps the root client."""
+        future = cast("Future[R]", object.__new__(cls))
+        future._status = _Complete(value)
+        return future
+
+    @classmethod
     def _from_handle(cls, handle: Handle[R]) -> "Future[R]":
         if not isinstance(handle, Handle):
             raise TypeError(f"expected Handle, got {type(handle).__name__}")

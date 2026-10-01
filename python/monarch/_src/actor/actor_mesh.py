@@ -590,7 +590,9 @@ def shutdown_context(host_timeout: float | None = None) -> "Future[None]":
     """Shutdown global actor context resources.
 
     Idempotent: subsequent calls return an immediately-resolved future.
-    This is safe to call both explicitly and from atexit.
+    This is safe to call both explicitly and from atexit. If no client
+    context exists, this returns an immediately-resolved future and does not
+    create one.
 
     Args:
         host_timeout: Seconds the local host may spend draining children and
@@ -604,13 +606,18 @@ def shutdown_context(host_timeout: float | None = None) -> "Future[None]":
     from monarch._src.actor.future import Future
 
     if _shutdown_done:
-
-        async def _noop() -> None:
-            pass
-
-        return Future._from_coro(_noop())
+        return Future._resolved(None)
 
     c: Context | None = _context.get()
+    if c is None:
+        # Taking the lock waits out a bootstrap in progress on another thread,
+        # whose client must still be shut down.
+        with _client_context._lock:
+            if _client_context._val is None:
+                # A PythonTask would bootstrap a client just to shut it down.
+                # Leave _shutdown_done false so that a client created later is
+                # still shut down.
+                return Future._resolved(None)
 
     async def _shutdown_sequence() -> None:
         global _shutdown_done
