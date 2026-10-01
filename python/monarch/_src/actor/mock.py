@@ -172,6 +172,7 @@ class _ActorMockRegistryRestorer(
 
     def _set_state(self, state: Dict[Type["Actor"], Type["Actor"]]) -> None:
         set_actor_mock_registry_state(state)
+        _ensure_actor_registered()
 
 
 def _get_actor_mock_restorer() -> Optional[Callable[[], None]]:
