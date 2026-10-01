@@ -17,6 +17,7 @@ by delegating to a module-level SQLiteAdapter instance.
 
 import sqlite3
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from typing import Any
 
 
@@ -46,6 +47,10 @@ class DBAdapter(ABC):
         """Execute *sql* and return the first row, or None."""
         rows = self.query(sql)
         return rows[0] if rows else None
+
+    def query_stream(self, sql: str) -> Iterator[bytes]:
+        """Execute *sql* and return an Arrow IPC stream."""
+        raise NotImplementedError("streaming queries unavailable")
 
     def store_pyspy_dump(  # noqa: B027
         self, dump_id: str, proc_ref: str, pyspy_result_json: str
@@ -123,6 +128,11 @@ def _get_adapter() -> DBAdapter:
 def raw_query(sql: str) -> list[dict[str, Any]]:
     """Execute a raw SQL query (no placeholder substitution)."""
     return _get_adapter().query(sql)
+
+
+def raw_query_stream(sql: str) -> Iterator[bytes]:
+    """Execute a raw SQL query and return an Arrow IPC stream."""
+    return _get_adapter().query_stream(sql)
 
 
 def store_pyspy_dump(dump_id: str, proc_ref: str, pyspy_result_json: str) -> None:

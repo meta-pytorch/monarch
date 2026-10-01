@@ -63,5 +63,16 @@ class QueryEngine:
         Returns:
             PyArrow Table containing query results
         """
-        reader: pa.RecordBatchReader = self._ensure_engine().query(sql)
-        return reader.read_all()
+        reader: pa.RecordBatchReader = self.query_stream(sql)
+        try:
+            return reader.read_all()
+        finally:
+            reader.close()
+
+    def query_stream(self, sql: str) -> pa.RecordBatchReader:
+        """Return a streaming reader for a SQL query.
+
+        The caller should fully consume or close the reader to release its resources promptly.
+        Closing it before exhaustion cancels the remaining query work.
+        """
+        return self._ensure_engine().query(sql)

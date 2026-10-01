@@ -11,11 +11,55 @@ to the live telemetry engine attached to a job state. The QueryEngine
 uses DataFusion as its SQL planner/executor and returns pyarrow Tables.
 """
 
+import contextlib
+import io
 import threading
+from collections.abc import Iterator
 from typing import Any
 
+import pyarrow as pa
 from monarch.distributed_telemetry.engine import QueryEngine
 from monarch.monarch_dashboard.server.db import DBAdapter
+
+
+class _ArrowChunkSink(io.RawIOBase):
+    def __init__(self) -> None:
+        """Initialize an empty writable sink for Arrow IPC bytes."""
+        super().__init__()
+        self._chunks: list[bytes] = []
+        self._position = 0
+
+    def writable(self) -> bool:
+        """Report that PyArrow may write IPC bytes to this sink."""
+        return True
+
+    def write(self, data: Any) -> int:
+        """Accept one IPC fragment and return its byte count."""
+        chunk = bytes(data)
+        self._chunks.append(chunk)
+        self._position += len(chunk)
+        return len(chunk)
+
+    def tell(self) -> int:
+        """Return the total number of IPC bytes written over the stream lifetime."""
+        return self._position
+
+    def take_chunks(self) -> list[bytes]:
+        """Return all unread IPC fragments and mark them as consumed."""
+        chunks = self._chunks
+        self._chunks = []
+        return chunks
+
+
+def _encode_arrow_stream(reader: pa.RecordBatchReader) -> Iterator[bytes]:
+    """Yield a standard Arrow IPC stream and close ``reader`` when finished."""
+    with contextlib.closing(reader), _ArrowChunkSink() as sink:
+        with pa.ipc.new_stream(sink, reader.schema) as writer:
+            yield from sink.take_chunks()
+            for batch in reader:
+                writer.write_batch(batch)
+                yield from sink.take_chunks()
+        yield from sink.take_chunks()
 
 
 class QueryEngineAdapter(DBAdapter):
@@ -38,6 +82,15 @@ class QueryEngineAdapter(DBAdapter):
         # engine path is not reentrant.
         with self._query_lock:
             return self._engine.query(sql).to_pylist()
+
+    def query_stream(self, sql: str) -> Iterator[bytes]:
+        """Yield a SQL result as a standard Arrow IPC stream.
+
+        The shared query engine remains serialized until this iterator is
+        exhausted or closed. Callers must do one of those to release it.
+        """
+        with self._query_lock:
+            yield from _encode_arrow_stream(self._engine.query_stream(sql))
 
     def table_names(self) -> list[str]:
         """Return available table names from the telemetry engine."""

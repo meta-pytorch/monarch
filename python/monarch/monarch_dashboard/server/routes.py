@@ -7,13 +7,13 @@
 """API route definitions for the Monarch Dashboard.
 
 Registers a Flask Blueprint with all REST endpoints for querying meshes,
-actors, status events, messages, and sent messages.  Every handler returns
-JSON and uses standard HTTP status codes (200, 404).
+actors, status events, messages, and sent messages.
 """
 
+from collections.abc import Iterator
 from typing import Any
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, Response
 from monarch._rust_bindings.monarch_extension.snapshot_integration import (
     _snapshot_table_names,
 )
@@ -27,6 +27,7 @@ api = Blueprint("api", __name__, url_prefix="/api")
 
 _SNAPSHOT_TABLE_NAMES = tuple(_snapshot_table_names())
 _SNAPSHOT_TABLE_NAME_SET = frozenset(_SNAPSHOT_TABLE_NAMES)
+_ARROW_STREAM_CONTENT_TYPE = "application/vnd.apache.arrow.stream"
 
 # Monarch uses 64-bit IDs which can exceed JavaScript's Number.MAX_SAFE_INTEGER.
 # We always serialize ID fields as strings for type consistency on the frontend.
@@ -286,16 +287,44 @@ def list_sent_messages():
 
 @api.route("/query", methods=["POST"])
 def query():
-    """Execute an arbitrary SQL query against the DataFusion engine."""
+    """Execute SQL and return JSON rows or an Arrow IPC stream."""
     data = request.get_json()
     if not data or "sql" not in data:
         return jsonify({"error": "missing 'sql' in request body"}), 400
     sql = data["sql"]
     try:
+        if (
+            request.accept_mimetypes.best_match(
+                ["application/json", _ARROW_STREAM_CONTENT_TYPE]
+            )
+            == _ARROW_STREAM_CONTENT_TYPE
+        ):
+            try:
+                stream = db.raw_query_stream(sql)
+            except NotImplementedError as exc:
+                return jsonify({"error": str(exc)}), 501
+            first_chunk = next(stream)
+            return Response(
+                _continue_stream(first_chunk, stream),
+                content_type=_ARROW_STREAM_CONTENT_TYPE,
+            )
         rows = db.raw_query(sql)
         return jsonify({"rows": rows})
+    except StopIteration:
+        return jsonify({"error": "query stream produced no Arrow IPC header"}), 500
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
+
+
+def _continue_stream(first_chunk: bytes, stream: Iterator[bytes]) -> Iterator[bytes]:
+    """Restore a primed first chunk and close the query if the client disconnects."""
+    try:
+        yield first_chunk
+        yield from stream
+    finally:
+        close = getattr(stream, "close", None)
+        if close is not None:
+            close()
 
 
 # ---------------------------------------------------------------------------
