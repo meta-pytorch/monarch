@@ -4856,6 +4856,7 @@ name = "monarch_perfetto_trace"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "arrow",
  "clap",
  "prost",
  "reqwest 0.13.5",

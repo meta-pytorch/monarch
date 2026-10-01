@@ -10,8 +10,10 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
+use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -19,9 +21,19 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+use arrow::array::Array;
+use arrow::array::Int64Array;
+use arrow::array::StringArray;
+use arrow::array::UInt64Array;
+use arrow::ipc::reader::StreamReader;
+use arrow::record_batch::RecordBatch;
+use reqwest::StatusCode;
 use reqwest::blocking::Client;
+use reqwest::header::ACCEPT;
+use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Map;
 use serde_json::Value;
 
@@ -32,6 +44,8 @@ const DRAIN_DELAY: Duration = Duration::from_millis(500);
 const ENDPOINT_TELEMETRY_TARGET: &str = "monarch_hyperactor::telemetry::endpoint";
 const USER_TELEMETRY_TARGET: &str = "monarch_hyperactor::telemetry";
 const QUERY_TIMEOUT: Duration = Duration::from_secs(120);
+const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
+const ARROW_STREAM_EOS: [u8; 8] = [0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0];
 
 struct IncompleteTraceFile<'a> {
     path: &'a Path,
@@ -60,10 +74,53 @@ impl Drop for IncompleteTraceFile<'_> {
 }
 
 #[derive(Debug, Deserialize)]
-struct QueryEnvelope {
-    #[serde(default)]
-    rows: Vec<SpanRow>,
+struct QueryEnvelope<T> {
+    rows: Option<Vec<T>>,
     error: Option<String>,
+}
+
+struct EosTrackingReader<R> {
+    inner: R,
+    tail: [u8; ARROW_STREAM_EOS.len()],
+    tail_len: usize,
+}
+
+impl<R> EosTrackingReader<R> {
+    /// Wrap a reader and retain enough trailing bytes to validate stream completion.
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            tail: [0; ARROW_STREAM_EOS.len()],
+            tail_len: 0,
+        }
+    }
+
+    /// Return whether the bytes consumed from the reader end with Arrow's EOS marker.
+    fn ended_with_eos(&self) -> bool {
+        self.tail_len == self.tail.len() && self.tail == ARROW_STREAM_EOS
+    }
+}
+
+impl<R: Read> Read for EosTrackingReader<R> {
+    /// Read from the wrapped stream while retaining its final EOS-sized suffix.
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        let bytes = &buffer[..count];
+        let tail_len = self.tail.len();
+
+        if bytes.len() >= tail_len {
+            self.tail.copy_from_slice(&bytes[bytes.len() - tail_len..]);
+            self.tail_len = tail_len;
+        } else if !bytes.is_empty() {
+            let retained = self.tail_len.min(tail_len - bytes.len());
+            self.tail
+                .copy_within(self.tail_len - retained..self.tail_len, 0);
+            self.tail[retained..retained + bytes.len()].copy_from_slice(bytes);
+            self.tail_len = retained + bytes.len();
+        }
+
+        Ok(count)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -80,6 +137,21 @@ struct SpanRow {
     fields_json: String,
     start_us: Option<i64>,
     end_us: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SpanMetadataRow {
+    process_id: String,
+    id: u64,
+    name: String,
+    target: String,
+    fields_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct SpanKey {
+    process_id: String,
+    id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -226,8 +298,28 @@ fn export_profile_to_path(
     output: PathBuf,
 ) -> Result<PathBuf> {
     std::thread::sleep(DRAIN_DELAY);
+    // Each span falls into 1 of 4 cases:
+    //
+    //         |-- profile window --|
+    // 1.             |----|
+    // 2.             |--------------
+    // 3. |-----------------|
+    // 4. |--------------------------
+    //
+    // 1. Starts inside, ends inside
+    // 2. Starts inside, ends after
+    // 3. Starts before, ends inside
+    // 4. Starts before, ends after
+    //
+    // `windows_spans` contains cases 1-3 because it is able to match on at least one boundary in the window
+    let window_spans = query_rows(telemetry_url, &profile_sql(start_us, end_us))?;
+    // `spans_active_at_start` is intended to contain case 4 but also case 3
+    let spans_active_at_start = query_spans_active_at_start(telemetry_url, start_us)?;
 
-    let rows = query_spans(telemetry_url, start_us, end_us)?;
+    // `stitch_spans` deduplicates starts from case 3 that are matched by both `window_spans`
+    // and `spans_active_at_start`
+    let rows = stitch_spans(window_spans, spans_active_at_start);
+
     let summary = write_trace_to_output(rows, start_us, end_us, &output)?;
 
     eprintln!(
@@ -246,20 +338,238 @@ fn export_profile_to_path(
     Ok(output)
 }
 
-fn query_spans(telemetry_url: &str, start_us: i64, end_us: i64) -> Result<Vec<SpanRow>> {
-    let client = Client::builder()
+/// Return a telemetry client with the requested I/O timeout.
+/// Connections always time out after [`QUERY_TIMEOUT`].
+fn telemetry_client(timeout: Option<Duration>) -> Result<Client> {
+    Client::builder()
         .no_proxy()
-        .timeout(QUERY_TIMEOUT)
+        .connect_timeout(QUERY_TIMEOUT)
+        .timeout(timeout)
         .build()
-        .context("failed to create telemetry HTTP client")?;
+        .context("failed to create telemetry HTTP client")
+}
+
+/// Return spans active immediately before `start_us`.
+/// Each returned row has its original start and no end.
+fn query_spans_active_at_start(telemetry_url: &str, start_us: i64) -> Result<Vec<SpanRow>> {
+    if !supports_streaming_queries(telemetry_url)? {
+        eprintln!(
+            "Telemetry server does not support streaming queries; omitting spans active at the start of the profile window."
+        );
+        return Ok(Vec::new());
+    }
+
+    let spans_active_at_start = span_ids_active_at_start(telemetry_url, start_us)?;
+
+    if spans_active_at_start.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let sql = spans_by_id_sql(spans_active_at_start.keys().cloned());
+
+    query_rows::<SpanMetadataRow>(telemetry_url, &sql)?
+        .into_iter()
+        .map(|span| {
+            let key = SpanKey {
+                process_id: span.process_id.clone(),
+                id: span.id,
+            };
+
+            let start_us = spans_active_at_start
+                .get(&key)
+                .copied()
+                .context("span metadata query returned an unexpected span")?;
+
+            Ok(SpanRow {
+                process_id: span.process_id,
+                id: span.id,
+                name: span.name,
+                target: span.target,
+                fields_json: span.fields_json,
+                start_us: Some(start_us),
+                end_us: None,
+            })
+        })
+        .collect()
+}
+
+/// Return whether the telemetry server supports streamed Arrow query results.
+fn supports_streaming_queries(telemetry_url: &str) -> Result<bool> {
+    let client = telemetry_client(Some(QUERY_TIMEOUT))?;
+    let url = format!("{}/api/query", telemetry_url.trim_end_matches('/'));
+
+    let response = client
+        .post(&url)
+        .header(ACCEPT, ARROW_STREAM_CONTENT_TYPE)
+        .json(&QueryRequest { sql: "SELECT 1" })
+        .send()
+        .with_context(|| format!("failed to query {url}"))?;
+
+    let status = response.status();
+    if status == StatusCode::NOT_ACCEPTABLE || status == StatusCode::NOT_IMPLEMENTED {
+        return Ok(false);
+    }
+    if !status.is_success() {
+        let body = response.text().with_context(|| {
+            format!("failed to read telemetry query response with status {status}")
+        })?;
+        bail!("telemetry query failed with {status}: {body}");
+    }
+
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+
+    let supports_streaming = content_type.starts_with(ARROW_STREAM_CONTENT_TYPE);
+    if supports_streaming {
+        response
+            .bytes()
+            .context("failed to finish telemetry streaming capability query")?;
+    }
+
+    Ok(supports_streaming)
+}
+
+/// Return retained spans active immediately before `start_us`, keyed by span ID.
+/// Each value is the span's original enter timestamp.
+fn span_ids_active_at_start(telemetry_url: &str, start_us: i64) -> Result<BTreeMap<SpanKey, i64>> {
+    let client = telemetry_client(Some(QUERY_TIMEOUT))?;
+
+    let sql = format!(
+        r#"
+            SELECT process_id, id, timestamp_us, event_type
+            FROM span_events
+            WHERE timestamp_us < {start_us}
+                AND event_type IN ('enter', 'exit')
+        "#
+    );
+
+    let url = format!("{}/api/query", telemetry_url.trim_end_matches('/'));
+
+    let response = client
+        .post(&url)
+        .header(ACCEPT, ARROW_STREAM_CONTENT_TYPE)
+        .json(&QueryRequest { sql: &sql })
+        .send()
+        .with_context(|| format!("failed to query {url}"))?;
+
+    let status = response.status();
+
+    if !status.is_success() {
+        let body = response.text().with_context(|| {
+            format!("failed to read telemetry query response with status {status}")
+        })?;
+        bail!("telemetry query failed with {status}: {body}");
+    }
+
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+
+    if !content_type.starts_with(ARROW_STREAM_CONTENT_TYPE) {
+        bail!(
+            "telemetry query returned {content_type:?} instead of an Arrow stream; restart the job with a streaming telemetry server"
+        );
+    }
+
+    let mut unmatched_enters = HashMap::new();
+
+    let mut unmatched_exits = HashSet::new();
+
+    let mut response = EosTrackingReader::new(response);
+
+    {
+        let reader = StreamReader::try_new(&mut response, None)
+            .context("failed to decode telemetry Arrow stream")?;
+
+        for batch in reader {
+            replay_span_event_batch(batch?, &mut unmatched_enters, &mut unmatched_exits)?;
+        }
+    }
+
+    if !response.ended_with_eos() {
+        bail!("telemetry Arrow stream ended without a completion marker");
+    }
+
+    Ok(unmatched_enters.into_iter().collect())
+}
+
+/// Update unmatched span entries and exits from one Arrow batch.
+/// Rows may arrive in any order and must contain non-null lifecycle columns.
+fn replay_span_event_batch(
+    batch: RecordBatch,
+    unmatched_enters: &mut HashMap<SpanKey, i64>,
+    unmatched_exits: &mut HashSet<SpanKey>,
+) -> Result<()> {
+    let process_ids = typed_column::<StringArray>(&batch, "process_id")?;
+
+    let ids = typed_column::<UInt64Array>(&batch, "id")?;
+
+    let timestamps = typed_column::<Int64Array>(&batch, "timestamp_us")?;
+
+    let event_types = typed_column::<StringArray>(&batch, "event_type")?;
+
+    for index in 0..batch.num_rows() {
+        if process_ids.is_null(index)
+            || ids.is_null(index)
+            || timestamps.is_null(index)
+            || event_types.is_null(index)
+        {
+            bail!("span event row contains null values");
+        }
+
+        let key = SpanKey {
+            process_id: process_ids.value(index).to_owned(),
+            id: ids.value(index),
+        };
+
+        match event_types.value(index) {
+            "enter" => {
+                if !unmatched_exits.remove(&key) {
+                    unmatched_enters
+                        .entry(key)
+                        .and_modify(|timestamp_us| {
+                            *timestamp_us = (*timestamp_us).min(timestamps.value(index));
+                        })
+                        .or_insert_with(|| timestamps.value(index));
+                }
+            }
+            "exit" => {
+                if unmatched_enters.remove(&key).is_none() {
+                    unmatched_exits.insert(key);
+                }
+            }
+            event_type => bail!("unexpected span event type {event_type:?}"),
+        }
+    }
+
+    Ok(())
+}
+
+/// Return a named Arrow column as `T`, with context for missing or mismatched columns.
+fn typed_column<'a, T: 'static>(batch: &'a RecordBatch, name: &str) -> Result<&'a T> {
+    batch
+        .column_by_name(name)
+        .with_context(|| format!("telemetry Arrow stream is missing column {name:?}"))?
+        .as_any()
+        .downcast_ref::<T>()
+        .with_context(|| format!("telemetry Arrow column {name:?} has an unexpected type"))
+}
+
+/// Execute SQL and deserialize the JSON response rows as `T`.
+fn query_rows<T: DeserializeOwned>(telemetry_url: &str, sql: &str) -> Result<Vec<T>> {
+    let client = telemetry_client(Some(QUERY_TIMEOUT))?;
 
     let response = {
-        let sql = profile_sql(start_us, end_us);
         let url = format!("{}/api/query", telemetry_url.trim_end_matches('/'));
 
         client
             .post(&url)
-            .json(&QueryRequest { sql: &sql })
+            .json(&QueryRequest { sql })
             .send()
             .with_context(|| format!("failed to query {url}"))
     }?;
@@ -274,14 +584,14 @@ fn query_spans(telemetry_url: &str, start_us: i64, end_us: i64) -> Result<Vec<Sp
         bail!("telemetry query failed with {status}: {body}");
     }
 
-    let envelope: QueryEnvelope =
+    let envelope: QueryEnvelope<T> =
         serde_json::from_str(&body).context("failed to decode telemetry query response")?;
 
     if let Some(error) = envelope.error {
         bail!("telemetry query failed: {error}");
     }
 
-    Ok(envelope.rows)
+    Ok(envelope.rows.unwrap_or_default())
 }
 
 fn profile_sql(start_us: i64, end_us: i64) -> String {
@@ -314,6 +624,80 @@ SELECT
 FROM profile_events e
 JOIN spans s ON s.process_id = e.process_id AND s.id = e.id"#
     )
+}
+
+/// Build a query for the metadata of a nonempty collection of span IDs.
+fn spans_by_id_sql(span_ids: impl IntoIterator<Item = SpanKey>) -> String {
+    let span_ids_sql = span_ids
+        .into_iter()
+        .map(|key| {
+            format!(
+                "({}, CAST({} AS BIGINT UNSIGNED))",
+                sql_string_literal(&key.process_id),
+                key.id,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n        ");
+
+    format!(
+        r#"
+        WITH span_ids (process_id, id) AS (
+            VALUES
+                {span_ids_sql}
+        )
+        SELECT
+            s.process_id,
+            s.id,
+            s.name,
+            s.target,
+            s.fields_json
+        FROM span_ids i
+        JOIN spans s ON s.process_id = i.process_id AND s.id = i.id
+    "#
+    )
+}
+
+/// Return one row for every span intersecting the profile window.
+/// For a span active at the window start that exits inside it, the returned row
+/// combines the earlier start with the in-window end.
+fn stitch_spans(
+    mut window_spans: Vec<SpanRow>,
+    spans_active_at_start: Vec<SpanRow>,
+) -> Vec<SpanRow> {
+    let mut spans_active_at_start = spans_active_at_start
+        .into_iter()
+        .map(|span| {
+            (
+                SpanKey {
+                    process_id: span.process_id.clone(),
+                    id: span.id,
+                },
+                span,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    for span in &mut window_spans {
+        let key = SpanKey {
+            process_id: span.process_id.clone(),
+            id: span.id,
+        };
+
+        if let Some(active_span) = spans_active_at_start.remove(&key)
+            && span.start_us.is_none()
+        {
+            span.start_us = active_span.start_us;
+        }
+    }
+
+    window_spans.extend(spans_active_at_start.into_values());
+    window_spans
+}
+
+/// Quote a string as a SQL literal, escaping embedded single quotes.
+fn sql_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn write_trace_to_output(

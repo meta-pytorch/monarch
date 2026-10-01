@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
+arrow = { version = "=57.3.0", features = ["ffi", "json", "prettyprint", "pyarrow"] }
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 prost = { version = "0.14.4", default-features = false }
 reqwest = { version = "0.13.5", features = ["blocking", "charset", "cookies", "gzip", "http2", "json", "multipart", "rustls", "socks", "stream", "system-proxy"], default-features = false }
