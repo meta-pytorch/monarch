@@ -6,18 +6,20 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! QueryEngine - DataFusion query execution, creates ports, collects results
+//! QueryEngine - DataFusion query execution and streaming results
 
 use std::sync::Arc;
 
 use arrow::pyarrow::PyArrowType;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::error::ArrowError;
+use datafusion::arrow::error::Result as ArrowResult;
 use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::arrow::record_batch::RecordBatchIterator;
 use datafusion::arrow::record_batch::RecordBatchReader;
 use datafusion::catalog::Session;
 use datafusion::datasource::TableProvider;
+use datafusion::error::DataFusionError;
 use datafusion::error::Result as DFResult;
 use datafusion::logical_expr::Expr;
 use datafusion::logical_expr::TableProviderFilterPushDown;
@@ -35,6 +37,7 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::SessionConfig;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::unparser::expr_to_sql;
+use futures::StreamExt;
 use hyperactor::Instance;
 use hyperactor::context::Mailbox as MailboxTrait;
 use hyperactor::mailbox::PortReceiver;
@@ -51,6 +54,57 @@ use pyo3::types::PyModule;
 use tokio::sync::mpsc;
 
 use crate::QueryResponse;
+
+enum QueryStreamMessage {
+    Batch(RecordBatch),
+    Error(DataFusionError),
+    Finished,
+}
+
+struct StreamingRecordBatchReader {
+    schema: SchemaRef,
+    receiver: mpsc::Receiver<QueryStreamMessage>,
+    finished: bool,
+}
+
+impl Iterator for StreamingRecordBatchReader {
+    type Item = ArrowResult<RecordBatch>;
+
+    /// Return the next query batch, waiting until one is available.
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        match self.receiver.blocking_recv() {
+            Some(QueryStreamMessage::Batch(batch)) => Some(Ok(batch)),
+            Some(QueryStreamMessage::Error(error)) => {
+                self.finished = true;
+                Some(Err(ArrowError::ExternalError(Box::new(error))))
+            }
+            Some(QueryStreamMessage::Finished) => {
+                self.finished = true;
+                None
+            }
+            None => {
+                self.finished = true;
+                Some(Err(ArrowError::ExternalError(Box::new(
+                    std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "query stream ended without a completion message",
+                    ),
+                ))))
+            }
+        }
+    }
+}
+
+impl RecordBatchReader for StreamingRecordBatchReader {
+    /// Return the schema established before query execution begins streaming.
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+}
 
 // ============================================================================
 // Deserialization helpers
@@ -413,25 +467,55 @@ impl QueryEngine {
         "<QueryEngine>".into()
     }
 
-    /// Execute a SQL query and return an Arrow record batch reader.
+    /// Execute SQL and return an Arrow reader that produces batches on demand.
+    /// Dropping the reader cancels the remaining query work.
     fn query(
         &self,
         py: Python<'_>,
         sql: String,
     ) -> PyResult<PyArrowType<Box<dyn RecordBatchReader + Send>>> {
         let session_ctx = self.session.clone();
-        let (schema, results) = py
-            .detach(|| -> DFResult<(SchemaRef, Vec<RecordBatch>)> {
+        let (schema, mut stream) = py
+            .detach(|| -> DFResult<(SchemaRef, SendableRecordBatchStream)> {
                 get_tokio_runtime().block_on(async {
                     let df = session_ctx.sql(&sql).await?;
                     let schema = Arc::clone(df.schema().inner());
-                    let results = df.collect().await?;
-                    Ok((schema, results))
+                    let stream = df.execute_stream().await?;
+                    Ok((schema, stream))
                 })
             })
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
-        let reader = RecordBatchIterator::new(results.into_iter().map(Ok), schema);
+        let (sender, receiver) = mpsc::channel(2);
+
+        get_tokio_runtime().spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = sender.closed() => break,
+                    batch = stream.next() => match batch {
+                        Some(Ok(batch)) => {
+                            if sender.send(QueryStreamMessage::Batch(batch)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(Err(error)) => {
+                            let _ = sender.send(QueryStreamMessage::Error(error)).await;
+                            break;
+                        }
+                        None => {
+                            let _ = sender.send(QueryStreamMessage::Finished).await;
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        let reader = StreamingRecordBatchReader {
+            schema,
+            receiver,
+            finished: false,
+        };
         Ok(PyArrowType(Box::new(reader)))
     }
 }
