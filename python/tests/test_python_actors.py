@@ -43,6 +43,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
+from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import _spawn_admin, HostMesh, this_host, this_proc
@@ -60,6 +61,7 @@ from monarch.actor import (
     current_rank,
     current_size,
     endpoint,
+    MeshFailure,
     ProcMesh,
 )
 from monarch.config import configure, configured
@@ -515,6 +517,90 @@ class Printer(Actor):
         # wasn't delivered.
         self._logger.error(f"Ignoring undeliverable message: {message}")
         return True
+
+
+class InvalidReferenceTarget(Actor):
+    @endpoint
+    async def fail(self) -> None:
+        context().actor_instance.abort("test failure")
+
+    @endpoint
+    async def ping(self) -> str:
+        return "pong"
+
+
+class InvalidReferenceHandler(Actor):
+    def __init__(self, host: HostMesh) -> None:
+        self.host = host
+        self.target_procs = host.spawn_procs(name="invalid_reference_target_proc")
+        self.target = self.target_procs.spawn(
+            "invalid_reference_target",
+            InvalidReferenceTarget,
+        )
+        self.target.initialized.get()
+        self.invalid_references = 0
+        self.invalid_reference_handled = asyncio.Event()
+
+    @endpoint
+    async def call_target(self) -> str:
+        return await self.target.ping.call_one()
+
+    @endpoint
+    async def fail_target(self) -> None:
+        self.target.fail.broadcast()
+
+    @endpoint
+    async def restart_target(self) -> None:
+        await self.target_procs.stop()
+        self.target_procs = self.host.spawn_procs(name="invalid_reference_target_proc")
+        self.target = self.target_procs.spawn(
+            "invalid_reference_target",
+            InvalidReferenceTarget,
+        )
+        await self.target.initialized
+
+    @endpoint
+    async def wait_for_invalid_reference(self) -> int:
+        await asyncio.wait_for(self.invalid_reference_handled.wait(), timeout=5)
+        return self.invalid_references
+
+    def __supervise__(self, failure: MeshFailure) -> bool:
+        return True
+
+    def _handle_invalid_reference(
+        self,
+        message: UndeliverableMessageEnvelope,
+    ) -> bool:
+        self.invalid_references += 1
+        self.invalid_reference_handled.set()
+        return True
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+async def test_python_actor_can_handle_invalid_reference() -> None:
+    host = this_host()
+    supervisor_procs = host.spawn_procs(name="invalid_reference_handler_proc")
+    supervisor = supervisor_procs.spawn(
+        "invalid_reference_handler",
+        InvalidReferenceHandler,
+        host,
+    )
+
+    assert await supervisor.call_target.call_one() == "pong"
+
+    await supervisor.fail_target.call_one()
+
+    with pytest.raises(SupervisionError):
+        await supervisor.call_target.call_one()
+
+    assert await supervisor.wait_for_invalid_reference.call_one() == 1
+
+    await supervisor.restart_target.call_one()
+
+    assert await supervisor.call_target.call_one() == "pong"
+
+    await supervisor_procs.stop()
 
 
 class RedirectedPaths(NamedTuple):
