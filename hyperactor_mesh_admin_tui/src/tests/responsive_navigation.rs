@@ -846,6 +846,76 @@ async fn refresh_keeps_previous_tree_visible() {
 }
 
 #[tokio::test]
+async fn refresh_removes_proc_missing_from_host_introspection() {
+    let TestTopology {
+        tree,
+        mut responses,
+        target_proc,
+        ..
+    } = large_topology();
+    let host_reference = host("host-0");
+    let cached_target = NodePayload::try_from(
+        responses
+            .get(&target_proc.to_string())
+            .expect("target proc response should exist")
+            .clone(),
+    )
+    .expect("target proc response should be valid");
+    let remaining_procs = (1..4)
+        .map(|proc_index| proc_ref(&format!("host-0-proc-{proc_index}")))
+        .collect::<Vec<_>>();
+    responses.insert(
+        host_reference.to_string(),
+        NodePayloadDto::from(NodePayload {
+            identity: host_reference.clone(),
+            properties: NodeProperties::Host {
+                addr: "host-0".to_string(),
+                num_procs: remaining_procs.len(),
+                system_children: Vec::new(),
+                memory: Default::default(),
+            },
+            children: remaining_procs,
+            parent: Some(NodeRef::Root),
+            as_of: SystemTime::UNIX_EPOCH,
+        }),
+    );
+    let server = HeldAdminServer::spawn(responses, []).await;
+    let mut app = app_with_tree(server.base_url.clone(), tree, std::time::Duration::ZERO);
+    select_reference(&mut app, &target_proc);
+    app.fetch_cache.insert(
+        target_proc.clone(),
+        FetchState::Ready {
+            stamp: app.stamps.next(),
+            generation: app.refresh_gen,
+            value: cached_target,
+        },
+    );
+
+    run_refresh(&mut app).await;
+
+    let host_node = app
+        .tree()
+        .and_then(|root| {
+            root.children
+                .iter()
+                .find(|node| node.reference == host_reference)
+        })
+        .expect("host should remain in the refreshed tree");
+    assert_eq!(host_node.children.len(), 3);
+    assert!(
+        host_node
+            .children
+            .iter()
+            .all(|node| node.reference != target_proc),
+        "a gracefully stopping proc should disappear when HostAgent stops advertising it",
+    );
+    assert_ne!(app.selected_reference(), Some(&target_proc));
+    assert!(app.selected_reference().is_some());
+    assert!(!app.fetch_cache.contains_key(&target_proc));
+    assert_eq!(server.request_count(&target_proc), 0);
+}
+
+#[tokio::test]
 async fn refresh_ticks_are_coalesced_while_one_is_in_flight() {
     let TestTopology {
         tree, responses, ..

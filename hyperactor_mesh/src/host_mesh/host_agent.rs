@@ -363,6 +363,10 @@ pub(crate) enum ProcCreationState {
         metadata: ProcMetadata,
         proc_id: ProcAddr,
         mesh_agent: ActorRef<ProcAgent>,
+        /// A graceful stop has been requested. The state remains available to
+        /// resource-status callers, but the proc is no longer a live
+        /// introspection child.
+        stop_requested: bool,
         /// "Owner is alive" deadline communicated by the controller via
         /// `KeepaliveGetState`. The host's `SelfCheck` reaper compares against this
         /// and tears down procs whose owner has stopped extending the keepalive.
@@ -393,6 +397,7 @@ impl ProcCreationState {
                 metadata,
                 proc_id,
                 mesh_agent,
+                stop_requested: false,
                 expiry_time,
             },
             Err(error) => Self::Failed { metadata, error },
@@ -812,7 +817,12 @@ impl HostAgent {
 
         // User procs.
         for state in self.created.values() {
-            if let ProcCreationState::Created { proc_id, .. } = state {
+            if let ProcCreationState::Created {
+                proc_id,
+                stop_requested: false,
+                ..
+            } = state
+            {
                 children.push(hyperactor::introspect::IntrospectRef::Proc(proc_id.clone()));
             }
         }
@@ -1320,6 +1330,11 @@ impl Handler<ProcSpawned> for HostAgent {
         match on_completion.into_state() {
             completion_action::State::Keep => {}
             completion_action::State::Stop { timeout, reason } => {
+                if let Some(ProcCreationState::Created { stop_requested, .. }) =
+                    self.created.get_mut(&id)
+                {
+                    *stop_requested = true;
+                }
                 if let (Some(proc_id), Some(host)) = (proc_id.as_ref(), self.host()) {
                     host.request_stop(cx, proc_id, timeout, &reason).await;
                 }
@@ -1467,20 +1482,31 @@ impl Handler<resource::Stop> for HostAgent {
             return Ok(());
         }
 
-        let host = match self.host() {
-            Some(h) => h,
-            None => {
-                // Host already shut down; all procs are terminated.
-                tracing::debug!(
-                    proc_id = %message.id,
-                    "ignoring Stop: HostAgent has already shut down"
-                );
-                return Ok(());
+        let proc_id = match self.created.get_mut(&message.id) {
+            Some(ProcCreationState::Created {
+                proc_id,
+                stop_requested,
+                ..
+            }) => {
+                *stop_requested = true;
+                Some(proc_id.clone())
             }
+            _ => None,
         };
 
-        if let Some(ProcCreationState::Created { proc_id, .. }) = self.created.get(&message.id) {
-            host.request_stop(cx, proc_id, timeout, &message.reason)
+        if let Some(proc_id) = proc_id {
+            let host = match self.host() {
+                Some(h) => h,
+                None => {
+                    // Host already shut down; all procs are terminated.
+                    tracing::debug!(
+                        proc_id = %message.id,
+                        "ignoring Stop: HostAgent has already shut down"
+                    );
+                    return Ok(());
+                }
+            };
+            host.request_stop(cx, &proc_id, timeout, &message.reason)
                 .await;
         }
 
@@ -2351,20 +2377,28 @@ impl Handler<crate::proc_agent::SelfCheck> for HostAgent {
                 expired.len(),
             );
         }
+        let reaped_any = !expired.is_empty();
 
         for id in expired {
-            if let Some(ProcCreationState::Created { proc_id, .. }) = self.created.get(&id) {
-                let proc_id = proc_id.clone();
-                if let Some(host) = self.host() {
-                    host.request_stop(cx, &proc_id, timeout, "orphaned").await;
-                }
-                // Don't reap repeatedly while teardown is in flight.
-                if let Some(ProcCreationState::Created { expiry_time, .. }) =
-                    self.created.get_mut(&id)
-                {
+            let proc_id = match self.created.get_mut(&id) {
+                Some(ProcCreationState::Created {
+                    proc_id,
+                    stop_requested,
+                    expiry_time,
+                    ..
+                }) => {
+                    *stop_requested = true;
                     *expiry_time = None;
+                    proc_id.clone()
                 }
+                _ => continue,
+            };
+            if let Some(host) = self.host() {
+                host.request_stop(cx, &proc_id, timeout, "orphaned").await;
             }
+        }
+        if reaped_any {
+            self.publish_introspect_properties(cx);
         }
 
         cx.post_after(cx, crate::proc_agent::SelfCheck::default(), duration);
@@ -2654,6 +2688,53 @@ mod tests {
             .expect("host agent should initialize");
 
         host_agent
+    }
+
+    #[derive(Debug, hyperactor::Handler)]
+    struct IsProcExpiryCleared {
+        id: ResourceId,
+        #[reply]
+        reply: PortHandle<bool>,
+    }
+
+    #[async_trait]
+    impl Handler<IsProcExpiryCleared> for HostAgent {
+        async fn handle(
+            &mut self,
+            cx: &Context<Self>,
+            message: IsProcExpiryCleared,
+        ) -> anyhow::Result<()> {
+            let cleared = matches!(
+                self.created.get(&message.id),
+                Some(ProcCreationState::Created {
+                    expiry_time: None,
+                    ..
+                })
+            );
+            message.reply.post(cx, cleared);
+            Ok(())
+        }
+    }
+
+    async fn introspection_children(
+        host_agent: &ActorHandle<HostAgent>,
+        client: &Client,
+    ) -> Vec<hyperactor::introspect::IntrospectRef> {
+        let host_agent_ref: ActorRef<HostAgent> = host_agent.bind();
+        let port = host_agent_ref.actor_addr().introspect_port();
+        let (reply, rx) = client.open_once_port::<hyperactor::introspect::IntrospectResult>();
+        port.post(
+            client,
+            hyperactor::introspect::IntrospectMessage::Query {
+                view: hyperactor::introspect::IntrospectView::Entity,
+                reply: reply.bind(),
+            },
+        );
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("host introspection query timed out")
+            .expect("host introspection reply channel closed")
+            .children
     }
 
     #[derive(Debug)]
@@ -3034,7 +3115,7 @@ mod tests {
 
         assert_matches!(
             host_agent
-                .get_state(&client, id)
+                .get_state(&client, id.clone())
                 .await
                 .expect("pending state should be available"),
             resource::State {
@@ -3061,6 +3142,24 @@ mod tests {
 
         let (_, status) = overlay.runs().next().expect("status overlay has a run");
         assert_eq!(status, &resource::Status::Stopped);
+        let proc_id = match host_agent
+            .get_state(&client, id)
+            .await
+            .expect("stopped state should be available")
+        {
+            resource::State {
+                state: Some(ProcState { proc_id, .. }),
+                ..
+            } => proc_id,
+            state => panic!("expected stopped proc state, got {state:?}"),
+        };
+        let child_ref = hyperactor::introspect::IntrospectRef::Proc(proc_id);
+        assert!(
+            !introspection_children(&host_agent, &client)
+                .await
+                .contains(&child_ref),
+            "a proc stopped during creation should not become an introspection child",
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -4115,6 +4214,196 @@ mod tests {
             .expect("reply timed out — proc did not reach Stopped")
             .expect("reply channel closed");
         assert_overlay_at_rank(&overlay, message_rank);
+    }
+
+    #[tokio::test]
+    async fn test_stopping_proc_is_not_an_introspection_child() {
+        let spawn: ProcManagerSpawnFn =
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
+        let host_agent = spawn_local_host_agent(spawn).await;
+        let client_proc = Proc::direct(
+            ChannelTransport::Unix.any(),
+            "introspection_stop_client".to_string(),
+        )
+        .unwrap();
+        let client = client_proc.client("client");
+        let id = ResourceId::instance(Label::new("ephemeral-proc").unwrap());
+
+        host_agent
+            .create_or_update(
+                &client,
+                id.clone(),
+                resource::Rank::new(0),
+                ProcSpec::default(),
+            )
+            .await
+            .unwrap();
+
+        let (running_reply, mut running_rx) = client.open_port::<crate::StatusOverlay>();
+        host_agent
+            .wait_rank_status(
+                &client,
+                id.clone(),
+                resource::Rank::new(0),
+                resource::Status::Running,
+                idle_flush_status_reply(running_reply.bind()),
+            )
+            .await
+            .unwrap();
+        running_rx.recv().await.expect("proc should start");
+
+        let proc_id = match host_agent.get_state(&client, id.clone()).await.unwrap() {
+            resource::State {
+                state: Some(ProcState { proc_id, .. }),
+                ..
+            } => proc_id,
+            state => panic!("expected created proc state, got {state:?}"),
+        };
+        let child_ref = hyperactor::introspect::IntrospectRef::Proc(proc_id);
+        assert!(
+            introspection_children(&host_agent, &client)
+                .await
+                .contains(&child_ref),
+            "running proc should be a host introspection child",
+        );
+
+        crate::resource::StopClient::stop(
+            &host_agent,
+            &client,
+            id.clone(),
+            "command completed".to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !introspection_children(&host_agent, &client)
+                .await
+                .contains(&child_ref),
+            "stopping proc should not remain a live introspection child",
+        );
+        assert_matches!(
+            host_agent.get_state(&client, id).await.unwrap(),
+            resource::State {
+                status: resource::Status::Stopping | resource::Status::Stopped,
+                ..
+            },
+            "resource state should remain available while the proc stops",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_orphaned_proc_is_not_an_introspection_child() {
+        let config = hyperactor_config::global::lock();
+        let _orphan = config.override_key(
+            crate::proc_agent::MESH_ORPHAN_TIMEOUT,
+            Some(Duration::from_secs(3600)),
+        );
+        let spawn: ProcManagerSpawnFn =
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
+        let host_agent = spawn_local_host_agent(spawn).await;
+        let client_proc = Proc::direct(
+            ChannelTransport::Unix.any(),
+            "introspection_orphan_client".to_string(),
+        )
+        .unwrap();
+        let client = client_proc.client("client");
+        let id = ResourceId::instance(Label::new("orphaned-proc").unwrap());
+
+        host_agent
+            .create_or_update(
+                &client,
+                id.clone(),
+                resource::Rank::new(0),
+                ProcSpec::default(),
+            )
+            .await
+            .unwrap();
+
+        let (running_reply, mut running_rx) = client.open_port::<crate::StatusOverlay>();
+        host_agent
+            .wait_rank_status(
+                &client,
+                id.clone(),
+                resource::Rank::new(0),
+                resource::Status::Running,
+                idle_flush_status_reply(running_reply.bind()),
+            )
+            .await
+            .unwrap();
+        running_rx.recv().await.expect("proc should start");
+
+        let (keepalive_reply, mut keepalive_rx) = client.open_port::<resource::State<ProcState>>();
+        host_agent
+            .try_post(
+                &client,
+                resource::KeepaliveGetState {
+                    expires_after: std::time::SystemTime::UNIX_EPOCH,
+                    get_state: resource::GetState {
+                        id: id.clone(),
+                        reply: keepalive_reply.bind(),
+                    },
+                },
+            )
+            .unwrap();
+        let proc_id = match keepalive_rx.recv().await.expect("state should be returned") {
+            resource::State {
+                state: Some(ProcState { proc_id, .. }),
+                ..
+            } => proc_id,
+            state => panic!("expected running proc state, got {state:?}"),
+        };
+        let child_ref = hyperactor::introspect::IntrospectRef::Proc(proc_id);
+        assert!(
+            introspection_children(&host_agent, &client)
+                .await
+                .contains(&child_ref),
+            "proc should be visible before its keepalive is reaped",
+        );
+
+        host_agent
+            .try_post(&client, crate::proc_agent::SelfCheck::default())
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !introspection_children(&host_agent, &client)
+                    .await
+                    .contains(&child_ref)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("orphaned proc should be removed from introspection");
+        assert_matches!(
+            host_agent.get_state(&client, id.clone()).await.unwrap(),
+            resource::State {
+                status: resource::Status::Stopping | resource::Status::Stopped,
+                ..
+            },
+            "orphaned proc resource state should remain available while it stops",
+        );
+
+        let (expiry_reply, mut expiry_rx) = client.open_port::<bool>();
+        host_agent
+            .try_post(
+                &client,
+                IsProcExpiryCleared {
+                    id,
+                    reply: expiry_reply,
+                },
+            )
+            .unwrap();
+        assert!(
+            expiry_rx
+                .recv()
+                .await
+                .expect("expiry state should be returned"),
+            "orphan reaping should clear expiry_time to avoid repeated stop requests",
+        );
     }
 
     /// WaitRankStatus sent before the proc is created — the waiter is stashed
