@@ -1345,6 +1345,9 @@ impl PythonActor {
                             Some(Signal::Kill(reason)) => {
                                 break Some(ActorError { actor_id: Box::new(instance.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) })
                             },
+                            Some(Signal::InjectFailure(reason)) => {
+                                break Some(ActorError { actor_id: Box::new(instance.self_addr().clone()), kind: Box::new(ActorErrorKind::Injected(reason)) })
+                            },
                             None => {
                                 break Some(ActorError {
                                     actor_id: Box::new(instance.self_addr().clone()),
@@ -1425,6 +1428,12 @@ fn actor_error_to_event(
 ) -> ActorSupervisionEvent {
     match *err.kind {
         ActorErrorKind::UnhandledSupervisionEvent(event) => *event,
+        error_kind @ ActorErrorKind::Injected(_) => ActorSupervisionEvent::new(
+            instance.self_addr().clone(),
+            actor.display_name(),
+            ActorStatus::Failed(error_kind),
+            None,
+        ),
         _ => {
             let status = ActorStatus::generic_failure(err.kind.to_string());
             ActorSupervisionEvent::new(
