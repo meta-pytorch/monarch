@@ -34,6 +34,8 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::context::Actor as ContextActor;
+use hyperactor::mailbox::ExpiredDelivery;
+use hyperactor::mailbox::InvalidReference;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMessageError;
@@ -1577,82 +1579,50 @@ impl Actor for PythonActor {
         &mut self,
         ins: &Instance<Self>,
         reason: UndeliverableReason,
-        mut envelope: Undeliverable<MessageEnvelope>,
+        envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        if envelope
-            .as_message()
-            .is_some_and(|envelope| envelope.sender() != ins.self_addr())
-        {
-            // This can happen if the sender is comm. Update the envelope.
-            envelope = update_undeliverable_envelope_for_casting(envelope);
-        }
-        let envelope = match envelope {
-            Undeliverable::Returned(envelope) => envelope,
-            Undeliverable::Report(report) => {
-                return Err(UndeliverableMessageError::Report { report }.into());
-            }
-        };
-        assert_eq!(
-            envelope.sender(),
-            ins.self_addr(),
-            "undeliverable message was returned to the wrong actor. \
-            Return address = {}, src actor = {}, dest handler port = {}, message type = {}, envelope headers = {}",
-            envelope.sender(),
-            ins.self_addr(),
-            envelope.dest(),
-            envelope.data().typename().unwrap_or("unknown"),
-            envelope.headers()
-        );
+        let (envelope, handled) = self
+            .call_python_delivery_failure_handler(ins, "_handle_undeliverable_message", envelope)
+            .await?;
 
-        let cx = Context::new(ins, envelope.headers().clone());
-
-        let (envelope, handled) = monarch_with_gil(GilSite::EndpointDispatch, |py| {
-            let py_cx = match &self.instance {
-                Some(instance) => crate::context::PyContext::new(&cx, instance.clone_ref(py)),
-                None => {
-                    let py_instance: crate::context::PyInstance = ins.into();
-                    crate::context::PyContext::new(
-                        &cx,
-                        py_instance
-                            .into_py_any(py)?
-                            .cast_bound(py)
-                            .map_err(PyErr::from)?
-                            .clone()
-                            .unbind(),
-                    )
-                }
-            }
-            .into_bound_py_any(py)?;
-            let py_envelope = PythonUndeliverableMessageEnvelope {
-                inner: Some(Undeliverable::Returned(envelope)),
-            }
-            .into_bound_py_any(py)?;
-            let handled = self
-                .actor
-                .call_method(
-                    py,
-                    "_handle_undeliverable_message",
-                    (&py_cx, &py_envelope),
-                    None,
-                )
-                .map_err(|err| anyhow::Error::from(SerializablePyErr::from(py, &err)))?
-                .extract::<bool>(py)?;
-            Ok::<_, anyhow::Error>((
-                py_envelope
-                    .cast::<PythonUndeliverableMessageEnvelope>()
-                    .map_err(PyErr::from)?
-                    .try_borrow_mut()
-                    .map_err(PyErr::from)?
-                    .take()?,
-                handled,
-            ))
-        })
-        .await?;
-
-        if !handled {
-            hyperactor::actor::handle_undeliverable_message(ins, reason, envelope)
-        } else {
+        if handled {
             Ok(())
+        } else {
+            hyperactor::actor::handle_undeliverable_message(ins, reason, envelope)
+        }
+    }
+
+    async fn handle_invalid_reference(
+        &mut self,
+        ins: &Instance<Self>,
+        invalid: InvalidReference,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        let (envelope, handled) = self
+            .call_python_delivery_failure_handler(ins, "_handle_invalid_reference", envelope)
+            .await?;
+
+        if handled {
+            Ok(())
+        } else {
+            hyperactor::actor::handle_invalid_reference(ins, invalid, envelope)
+        }
+    }
+
+    async fn handle_expired_delivery(
+        &mut self,
+        ins: &Instance<Self>,
+        expired: ExpiredDelivery,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        let (envelope, handled) = self
+            .call_python_delivery_failure_handler(ins, "_handle_expired_delivery", envelope)
+            .await?;
+
+        if handled {
+            Ok(())
+        } else {
+            hyperactor::actor::handle_expired_delivery(ins, expired, envelope)
         }
     }
 
@@ -1689,6 +1659,84 @@ impl Actor for PythonActor {
         )
         .await
         .map(|_| true)
+    }
+}
+
+impl PythonActor {
+    async fn call_python_delivery_failure_handler(
+        &self,
+        ins: &Instance<Self>,
+        method_name: &str,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(Undeliverable<MessageEnvelope>, bool), anyhow::Error> {
+        let mut envelope = match envelope {
+            Undeliverable::Report(report) => {
+                return Err(UndeliverableMessageError::Report { report }.into());
+            }
+            envelope => envelope,
+        };
+
+        if envelope
+            .as_message()
+            .is_some_and(|envelope| envelope.sender() != ins.self_addr())
+        {
+            // This can happen if the sender is comm. Update the envelope.
+            envelope = update_undeliverable_envelope_for_casting(envelope);
+        }
+        let message = envelope
+            .as_message()
+            .expect("report envelopes are rejected above");
+        assert_eq!(
+            message.sender(),
+            ins.self_addr(),
+            "undeliverable message was returned to the wrong actor. \
+            Return address = {}, src actor = {}, dest handler port = {}, message type = {}, envelope headers = {}",
+            message.sender(),
+            ins.self_addr(),
+            message.dest(),
+            message.data().typename().unwrap_or("unknown"),
+            message.headers()
+        );
+
+        let cx = Context::new(ins, message.headers().clone());
+
+        monarch_with_gil(GilSite::EndpointDispatch, |py| {
+            let py_cx = match &self.instance {
+                Some(instance) => crate::context::PyContext::new(&cx, instance.clone_ref(py)),
+                None => {
+                    let py_instance: crate::context::PyInstance = ins.into();
+                    crate::context::PyContext::new(
+                        &cx,
+                        py_instance
+                            .into_py_any(py)?
+                            .cast_bound(py)
+                            .map_err(PyErr::from)?
+                            .clone()
+                            .unbind(),
+                    )
+                }
+            }
+            .into_bound_py_any(py)?;
+            let py_envelope = PythonUndeliverableMessageEnvelope {
+                inner: Some(envelope),
+            }
+            .into_bound_py_any(py)?;
+            let handled = self
+                .actor
+                .call_method(py, method_name, (&py_cx, &py_envelope), None)
+                .map_err(|err| anyhow::Error::from(SerializablePyErr::from(py, &err)))?
+                .extract::<bool>(py)?;
+            Ok::<_, anyhow::Error>((
+                py_envelope
+                    .cast::<PythonUndeliverableMessageEnvelope>()
+                    .map_err(PyErr::from)?
+                    .try_borrow_mut()
+                    .map_err(PyErr::from)?
+                    .take()?,
+                handled,
+            ))
+        })
+        .await
     }
 }
 
