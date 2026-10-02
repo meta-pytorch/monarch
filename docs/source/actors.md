@@ -818,12 +818,26 @@ A sync override runs under `fake_sync_state` and cannot observe a running loop
 with `asyncio.get_running_loop`. Both forms receive the same arguments and obey
 the same truthy/falsey handled/unhandled contract.
 
-`__supervise__` is special: Because it handles "exceptions", we have to be able
-to invoke it at any (safe) point. This is because otherwise we might run into a
-deadlock: for example, an actor might be waiting for a result from a failed actor.
-Thus, we define safe points (e.g., waiting for channel receives) at which we may
-safely invoke the supervision handler. This means that __supervise__ handlers have
-to be written carefully: it can potentially change the state of the actor in the middle of handling a message.
+`__supervise__` runs in its own task on the actor's event loop, one failure at a
+time, and the actor keeps handling messages while it is pending. Running it at
+any point, rather than after the current message, avoids deadlock: for example,
+an actor might be waiting for a result from a failed actor. This has
+consequences for how handlers are written:
+
+- It may run at any `await` that suspends, in any async endpoint, even one
+  that does not run concurrently with other endpoints, and even if the `await`
+  has nothing to do with the failure (e.g. `asyncio.sleep`, I/O, or a call to
+  another actor). The same holds in tasks the actor starts. State that
+  `__supervise__` changes may differ after any such `await`.
+- Sync code is never interrupted. A sync endpoint runs to completion before
+  `__supervise__` starts, and a sync `__supervise__` runs between endpoints. An
+  `async def` `__supervise__` interleaves with endpoints at its own `await`s.
+- Messages that arrive after a failure may be handled before `__supervise__`
+  runs, and the actor only fails once it returns a falsey value or raises.
+- An `async def` `__supervise__` may await the actor's own endpoints. Blocking
+  calls in either form block endpoints too, since they share the event loop.
+- If the actor stops before `__supervise__` finishes, the pending call is
+  cancelled.
 
 If `__supervise__` returns a truthy value, the failure will be considered handled
 and not delivered further up the chain. If it returns a falsey value (including None, if there is no return),
