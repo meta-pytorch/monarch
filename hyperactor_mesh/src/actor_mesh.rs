@@ -44,9 +44,11 @@ use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_cast::TilingPolicy;
+use hyperactor_cast::cast_actor::CastActor;
 use hyperactor_cast::cast_actor::CastDestination;
 use hyperactor_cast::cast_actor::CastDomainId;
 use hyperactor_cast::cast_actor::CastDomainRef;
+use hyperactor_cast::cast_actor::CastNode;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
@@ -963,6 +965,39 @@ fn default_cast_tiling_policy() -> TilingPolicy {
     }
 }
 
+/// Build one routing node for each destination without changing the mesh shape.
+///
+/// Input:
+///
+/// ```text
+/// destinations: [proc_0::actor_0, proc_1::actor_1]
+/// policy: BlockPartitioning
+/// ```
+///
+/// Output:
+///
+/// ```text
+/// [
+///   proc_0::cast {actor_0},
+///   proc_1::cast {actor_1},
+/// ]
+/// ```
+fn cast_node_mesh(
+    destinations: &ValueMesh<CastDestination>,
+) -> anyhow::Result<ValueMesh<CastNode>> {
+    let nodes = destinations
+        .values()
+        .map(|destination| {
+            CastNode::new(
+                CastActor::ref_for_proc(destination.actor().proc_addr()),
+                destination,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    ValueMesh::new(destinations.region().clone(), nodes).map_err(Into::into)
+}
+
 #[derive(Clone)]
 struct ActorMeshCastDomain {
     id: CastDomainId,
@@ -1012,12 +1047,11 @@ impl ActorMeshCastDomain {
             return Ok(cast_domain.get().clone());
         }
 
-        let cast_domain = self.id.clone().materialize(
-            cx,
-            Arc::clone(&self.destinations),
-            self.tiling_policy,
-            headers.clone(),
-        )?;
+        let nodes = Arc::new(cast_node_mesh(&self.destinations)?);
+        let cast_domain =
+            self.id
+                .clone()
+                .materialize(cx, nodes, self.tiling_policy, headers.clone())?;
 
         self.cast_domain.entry(cx).or_insert(cast_domain.clone());
 
@@ -2864,13 +2898,16 @@ mod tests {
             .collect::<HashMap<_, _>>();
 
         let region = Region::from(ndslice::shape!(rank = 2));
-        let destinations =
-            CastDestination::mesh(region, (0..2).map(|rank| members[&rank].clone()).collect())
-                .unwrap();
+        let destinations = CastDestination::mesh(
+            region.clone(),
+            (0..2).map(|rank| members[&rank].clone()).collect(),
+        )
+        .unwrap();
+        let nodes = super::cast_node_mesh(&destinations).unwrap();
         let cast_domain = hyperactor_cast::cast_actor::CastDomainId::new()
             .materialize(
                 &client,
-                Arc::new(destinations),
+                Arc::new(nodes),
                 hyperactor_cast::cast_actor::TilingPolicy::BlockPartitioning,
                 hyperactor_config::Flattrs::new(),
             )
