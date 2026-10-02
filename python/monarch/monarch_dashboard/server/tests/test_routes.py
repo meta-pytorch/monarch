@@ -14,8 +14,10 @@ import os
 import tempfile
 import unittest
 from typing import Any
+from unittest.mock import patch
 
 from monarch.monarch_dashboard.fake_data.generate import generate
+from monarch.monarch_dashboard.server import admin_dag, routes
 from monarch.monarch_dashboard.server.app import create_app
 from monarch.monarch_dashboard.server.db import DBAdapter, SQLiteAdapter
 from monarch.monarch_dashboard.server.routes import _SNAPSHOT_TABLE_NAMES
@@ -401,6 +403,50 @@ class MessageActivityRoutesTest(_RouteTestBase):
     def test_buckets_sum_to_total(self):
         data = self.client.get("/api/message-activity").get_json()
         self.assertEqual(sum(data["buckets"]), data["total"])
+
+
+class DagRoutesTest(_RouteTestBase):
+    def test_empty_partial_snapshot_is_not_reported_as_pending(self):
+        root = "root"
+        failed_host = "host:host_agent.service@tcp://host:1"
+
+        def query(sql: str, _params=()):
+            if " FROM nodes " in sql:
+                return [
+                    {"node_id": root, "node_kind": "root"},
+                    {"node_id": failed_host, "node_kind": "error"},
+                ]
+            if " FROM children " in sql:
+                return [
+                    {
+                        "parent_id": root,
+                        "child_id": failed_host,
+                        "is_system": False,
+                        "child_sort_key": 0,
+                    }
+                ]
+            return []
+
+        with (
+            patch.object(
+                admin_dag.db, "_query_one", return_value={"snapshot_id": "partial"}
+            ),
+            patch.object(admin_dag.db, "_query", side_effect=query),
+            patch.object(routes, "cached", side_effect=lambda _key, fn: fn()),
+        ):
+            resp = self.client.get("/api/dag")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.get_json(),
+            {
+                "nodes": [],
+                "edges": [],
+                "snapshot_pending": False,
+                "snapshot_partial": True,
+                "resolution_error_count": 1,
+            },
+        )
 
 
 # ---------------------------------------------------------------------------

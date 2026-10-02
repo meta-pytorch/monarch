@@ -108,9 +108,9 @@ def dag():
     Host → Proc → Actor.  System actors are filtered using the
     snapshot ``is_system`` flag and a name-based heuristic.
 
-    Until the first snapshot is captured (cold start), returns an empty
-    DAG with ``snapshot_pending: true`` so the frontend can show a
-    "waiting for first snapshot" state.
+    The response distinguishes a cold start (``snapshot_pending``) from
+    a partial capture (``snapshot_partial`` and
+    ``resolution_error_count``).
 
     Optional: ?hide_system=true (default) to filter system actors.
     """
@@ -120,21 +120,7 @@ def dag():
 
         def _compute_dag():
             result = build_admin_dag(hide_system=hide_system)
-            if result.get("nodes"):
-                return _sanitize_for_js(
-                    {
-                        "nodes": result["nodes"],
-                        "edges": result["edges"],
-                    }
-                )
-
-            # No snapshot captured yet (cold start — up to the first snapshot
-            # interval). The frontend shows a "waiting for first snapshot"
-            # state. We no longer fall back to the telemetry-SQL DAG: it
-            # produced a divergent second node shape (explicit *_mesh container
-            # nodes) that mesh-view collapse mishandled, and snapshots are
-            # always configured whenever the dashboard is enabled.
-            return {"nodes": [], "edges": [], "snapshot_pending": True}
+            return _sanitize_for_js(result)
 
         return jsonify(cached(cache_key, _compute_dag))
     except Exception as exc:

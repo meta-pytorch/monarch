@@ -25,7 +25,7 @@ import { Actor, ApiDagData, ApiDagEdge, ApiDagNode, DagTier, EntityId } from "..
 import { statusMeta } from "../../lib/status";
 import { cleanNodeLabel, leafName } from "../../lib/format";
 import { meshColor, nodeMesh } from "../../lib/mesh";
-import { Drawer, Loading } from "../common/ui";
+import { Drawer, Loading, PartialSnapshotWarning } from "../common/ui";
 import { ActorDetail } from "../hierarchy/ActorDetail";
 import { MonarchNode } from "./MonarchNode";
 import { MessageEdge } from "./MessageEdge";
@@ -395,10 +395,19 @@ function Flow() {
     return <div className="topo"><Loading label="Building topology…" /></div>;
   }
   if (data && data.nodes.length === 0) {
-    const msg = data.snapshot_pending
+    const msg = rawData?.snapshot_pending
       ? "Topology view will be available 30 seconds after the job is fully started and running."
-      : "No topology data available";
-    return <div className="topo"><div className="state">{msg}</div></div>;
+      : rawData?.snapshot_partial
+        ? "No topology nodes could be resolved in the latest snapshot."
+        : "No topology data available";
+    return (
+      <div className="topo">
+        {rawData?.snapshot_partial && (
+          <PartialSnapshotWarning errorCount={rawData.resolution_error_count} />
+        )}
+        <div className="state">{msg}</div>
+      </div>
+    );
   }
 
   const msgEdgeCount = baseEdges.filter(
@@ -407,6 +416,9 @@ function Flow() {
 
   return (
     <div className="topo">
+      {rawData?.snapshot_partial && (
+        <PartialSnapshotWarning errorCount={rawData.resolution_error_count} />
+      )}
       <div className="topo-canvas">
       <div className="topo-toolbar">
         <button

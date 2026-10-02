@@ -9,7 +9,7 @@
 import React from "react";
 import { statusMeta } from "../../lib/status";
 import { formatTime } from "../../lib/format";
-import { IconClose } from "./icons";
+import { IconAlert, IconClose } from "./icons";
 
 /** Colored status pill with dot + glyph-free label (color+animation encode). */
 export function StatusPill({ status }: { status: string | null | undefined }) {
@@ -42,6 +42,18 @@ export function ErrorState({ message }: { message: string }) {
 
 export function EmptyState({ label }: { label: string }) {
   return <div className="state">{label}</div>;
+}
+
+export function PartialSnapshotWarning({ errorCount }: { errorCount?: number }) {
+  const detail = errorCount != null
+    ? `${errorCount} node${errorCount === 1 ? "" : "s"} could not be resolved.`
+    : "Some nodes could not be resolved.";
+  return (
+    <div className="snapshot-warning" role="status">
+      <IconAlert size={14} />
+      <span><strong>Partial snapshot</strong> — {detail} Topology may be incomplete.</span>
+    </div>
+  );
 }
 
 /** Right-side slide-in drawer with scrim. */

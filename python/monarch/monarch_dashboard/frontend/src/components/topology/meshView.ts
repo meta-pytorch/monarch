@@ -117,5 +117,8 @@ export function collapseToMeshes(raw: ApiDagData): MeshCollapse {
     edges.push({ id: `h-${key}`, source_id: sg.key, target_id: tg.key, type: "hierarchy" });
   }
 
-  return { data: { nodes: [...meshNodes.values()], edges }, ent2node };
+  return {
+    data: { ...raw, nodes: [...meshNodes.values()], edges },
+    ent2node,
+  };
 }

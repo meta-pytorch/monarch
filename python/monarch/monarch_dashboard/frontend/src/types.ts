@@ -157,4 +157,8 @@ export interface ApiDagData {
   edges: ApiDagEdge[];
   /** True when no snapshot has been captured yet (cold start); nodes/edges are empty. */
   snapshot_pending?: boolean;
+  /** True when one or more nodes could not be resolved during capture. */
+  snapshot_partial?: boolean;
+  /** Number of resolution-error nodes omitted from the topology. */
+  resolution_error_count?: number;
 }

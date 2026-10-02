@@ -13,7 +13,7 @@ import { buildTree, countDescendants } from "../topology/layout";
 import { cleanNodeLabel } from "../../lib/format";
 import { nodeMesh, meshColor } from "../../lib/mesh";
 import { statusMeta } from "../../lib/status";
-import { EmptyState, Loading, StatusPill } from "../common/ui";
+import { EmptyState, Loading, PartialSnapshotWarning, StatusPill } from "../common/ui";
 import { ActorDetail } from "./ActorDetail";
 import { PySpyPanel } from "./PySpyPanel";
 import {
@@ -196,6 +196,9 @@ export function HierarchyView() {
             <IconEye size={13} /> {hideSystem ? "Show System" : "Hide System"}
           </button>
         </div>
+        {data?.snapshot_partial && (
+          <PartialSnapshotWarning errorCount={data.resolution_error_count} />
+        )}
         <div className="tree-scroll">
           {loading && !data ? (
             <Loading label="Loading hierarchy…" />

@@ -137,16 +137,28 @@ _LATEST_SNAPSHOT_SQL = (
 def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
     """Build a 4-tier DAG (Host → Proc → Actor) from snapshot tables.
 
-    Returns ``{"nodes": [...], "edges": [...]}``.
+    Returns the nodes and edges plus snapshot availability metadata.
     """
     try:
         snap_row = db._query_one(_LATEST_SNAPSHOT_SQL)
     except Exception:
         logger.debug("Could not query snapshots table", exc_info=True)
-        return {"nodes": [], "edges": []}
+        return {
+            "nodes": [],
+            "edges": [],
+            "snapshot_pending": True,
+            "snapshot_partial": False,
+            "resolution_error_count": 0,
+        }
 
     if not snap_row:
-        return {"nodes": [], "edges": []}
+        return {
+            "nodes": [],
+            "edges": [],
+            "snapshot_pending": True,
+            "snapshot_partial": False,
+            "resolution_error_count": 0,
+        }
 
     snap_id = snap_row["snapshot_id"]
 
@@ -178,10 +190,17 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
         )
     except Exception:
         logger.debug("Could not load snapshot data", exc_info=True)
-        return {"nodes": [], "edges": []}
+        return {
+            "nodes": [],
+            "edges": [],
+            "snapshot_pending": True,
+            "snapshot_partial": False,
+            "resolution_error_count": 0,
+        }
 
     # Index snapshot data.
     node_kinds: Dict[str, str] = {n["node_id"]: n["node_kind"] for n in all_nodes}
+    resolution_error_count = sum(kind == "error" for kind in node_kinds.values())
     host_info: Dict[str, Dict] = {h["node_id"]: h for h in host_rows}
     proc_info: Dict[str, Dict] = {p["node_id"]: p for p in proc_rows}
     actor_info: Dict[str, Dict] = {a["node_id"]: a for a in actor_rows}
@@ -353,7 +372,13 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
     # Add message edges from telemetry.
     _add_message_edges(nodes, edges)
 
-    return {"nodes": nodes, "edges": edges}
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "snapshot_pending": False,
+        "snapshot_partial": resolution_error_count > 0,
+        "resolution_error_count": resolution_error_count,
+    }
 
 
 def _resolve_mesh_names(nodes: List[Dict[str, Any]]) -> None:

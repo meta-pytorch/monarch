@@ -88,12 +88,30 @@ class AdminDagTest(unittest.TestCase):
         entity_ids = {node["entity_id"] for node in result["nodes"]}
         self.assertEqual(entity_ids, {host, live_proc, actor})
         self.assertNotIn(stale_proc, entity_ids)
+        self.assertFalse(result["snapshot_pending"])
+        self.assertTrue(result["snapshot_partial"])
+        self.assertEqual(result["resolution_error_count"], 1)
         self.assertTrue(
             all(
                 edge["source_id"] in {node["id"] for node in result["nodes"]}
                 and edge["target_id"] in {node["id"] for node in result["nodes"]}
                 for edge in result["edges"]
             )
+        )
+
+    def test_no_snapshot_is_pending_not_partial(self) -> None:
+        with patch.object(admin_dag.db, "_query_one", return_value=None):
+            result = admin_dag.build_admin_dag()
+
+        self.assertEqual(
+            result,
+            {
+                "nodes": [],
+                "edges": [],
+                "snapshot_pending": True,
+                "snapshot_partial": False,
+                "resolution_error_count": 0,
+            },
         )
 
 

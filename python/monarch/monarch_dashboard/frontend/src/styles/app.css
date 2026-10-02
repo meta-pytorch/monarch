@@ -1401,6 +1401,24 @@ table.tbl tbody tr.clickable:hover td:first-child {
   height: 13px;
 }
 
+.snapshot-warning {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 8px var(--s3);
+  color: var(--st-created);
+  background: color-mix(in srgb, var(--st-created) 10%, var(--surface-0));
+  border-bottom: 1px solid color-mix(in srgb, var(--st-created) 32%, transparent);
+  font-size: 12px;
+}
+.snapshot-warning svg {
+  flex-shrink: 0;
+}
+.snapshot-warning strong {
+  color: var(--accent-2);
+}
+
 /* ============================================================
    Topology (React Flow)
    ============================================================ */
