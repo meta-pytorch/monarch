@@ -2212,7 +2212,14 @@ impl ChildTeardown {
     fn from_run_result(result: &Result<ActorStopped, ActorError>) -> Self {
         match result {
             Ok(stopped) => Self::Cooperative(stopped.stop_mode),
-            Err(err) if matches!(err.kind.as_ref(), ActorErrorKind::Aborted(_)) => Self::Kill,
+            Err(err)
+                if matches!(
+                    err.kind.as_ref(),
+                    ActorErrorKind::Aborted(_) | ActorErrorKind::Injected(_)
+                ) =>
+            {
+                Self::Kill
+            }
             Err(_) => Self::Cooperative(StopMode::Stop),
         }
     }
@@ -2984,6 +2991,18 @@ impl<A: Actor> Instance<A> {
         self.kill(reason)
     }
 
+    /// Terminate this actor with a failure marked as deliberately injected.
+    pub fn inject_failure(&self, reason: &str) -> Result<(), ActorError> {
+        tracing::info!(
+            actor_id = %self.inner.cell.actor_addr(),
+            reason,
+            "instance injected failure called",
+        );
+        self.inner
+            .cell
+            .signal(Signal::InjectFailure(reason.to_string()))
+    }
+
     /// Close handler ingress for this actor.
     pub fn close(&self) {
         self.inner.delayed_posts.drain();
@@ -3286,6 +3305,16 @@ impl<A: Actor> Instance<A> {
                     .with_local_fence(local_fence);
                     (status, Some(event))
                 }
+                error_kind @ ActorErrorKind::Injected(_) => {
+                    let status = ActorStatus::Failed(error_kind);
+                    let event = ActorSupervisionEvent::new(
+                        self.inner.cell.actor_addr().clone(),
+                        actor.display_name(),
+                        status.clone(),
+                        None,
+                    );
+                    (status, Some(event))
+                }
                 _ => {
                     let error_kind = ActorErrorKind::Generic(err.kind.to_string());
                     let status = ActorStatus::Failed(error_kind);
@@ -3566,6 +3595,9 @@ impl<A: Actor> Instance<A> {
                         }
                         Signal::Kill(reason) => {
                             return Err(ActorError { actor_id: Box::new(self.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) });
+                        }
+                        Signal::InjectFailure(reason) => {
+                            return Err(ActorError { actor_id: Box::new(self.self_addr().clone()), kind: Box::new(ActorErrorKind::Injected(reason)) });
                         }
                     }
                 }
@@ -9233,6 +9265,15 @@ mod tests {
             ActorErrorKind::Aborted("test kill".to_string()),
         ));
         assert_eq!(ChildTeardown::from_run_result(&killed), ChildTeardown::Kill);
+
+        let injected = Err(ActorError::new(
+            &actor_addr,
+            ActorErrorKind::Injected("test fault".to_string()),
+        ));
+        assert_eq!(
+            ChildTeardown::from_run_result(&injected),
+            ChildTeardown::Kill
+        );
 
         let failed = Err(ActorError::new(
             &actor_addr,
