@@ -11,21 +11,24 @@
 Enter the injection context before creating the process meshes that will host
 the selected actors. Each patched actor periodically rolls for failure on its
 event loop. A successful roll aborts the actor and reports a supervision error
-to its owner.
+to its owner. A patched supervisor delegates injected failures to its normal
+``__supervise__`` method and propagates every other failure.
 """
 
 from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import logging
 import math
 import random
-from collections.abc import Generator, Mapping
+from collections.abc import Collection, Generator, Mapping
 from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
+from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch._src.actor.actor_mesh import Instance
 from monarch._src.actor.mock import patch_actor
 from monarch.actor import Actor, context
@@ -102,13 +105,70 @@ def _fault_injected_actor_class(
     return cast(type[Actor], type(actor_type.__name__, (actor_type,), namespace))
 
 
+def _chaos_supervisor_class(supervisor_type: type[Actor]) -> type[Actor]:
+    original_supervise = getattr(supervisor_type, "__supervise__", None)
+
+    if original_supervise is None or getattr(
+        original_supervise,
+        "_monarch_doc_stub",
+        False,
+    ):
+        raise TypeError("chaos supervisors must define __supervise__")
+
+    if inspect.iscoroutinefunction(original_supervise):
+
+        @functools.wraps(original_supervise)
+        async def async_supervise(actor: Any, failure: MeshFailure) -> Any:
+            if not failure.is_injected:
+                return False
+            return await original_supervise(actor, failure)
+
+        supervise = async_supervise
+    else:
+
+        @functools.wraps(original_supervise)
+        def sync_supervise(actor: Any, failure: MeshFailure) -> Any:
+            if not failure.is_injected:
+                return False
+            return original_supervise(actor, failure)
+
+        supervise = sync_supervise
+
+    namespace: dict[str, object] = {
+        "__module__": supervisor_type.__module__,
+        "__qualname__": supervisor_type.__qualname__,
+        "__doc__": supervisor_type.__doc__,
+        "__supervise__": supervise,
+    }
+
+    return cast(
+        type[Actor],
+        type(supervisor_type.__name__, (supervisor_type,), namespace),
+    )
+
+
 @contextmanager
 def inject_actor_failures(
     policies: Mapping[type[Actor], ActorFailurePolicy],
+    *,
+    supervisors: Collection[type[Actor]] = (),
 ) -> Generator[None, None, None]:
-    """Periodically give each selected actor a chance to crash."""
+    """Inject actor crashes and restrict selected supervisors to those crashes.
+
+    A patched supervisor calls its original ``__supervise__`` only for a direct
+    injected failure. It returns ``False`` for every other failure so that the
+    normal supervision chain terminates the job.
+    """
+    patches = {
+        actor_type: _fault_injected_actor_class(actor_type, policy)
+        for actor_type, policy in policies.items()
+    }
+    for supervisor_type in supervisors:
+        patches[supervisor_type] = _chaos_supervisor_class(
+            patches.get(supervisor_type, supervisor_type)
+        )
+
     with ExitStack() as stack:
-        for actor_type, policy in policies.items():
-            injected_type = _fault_injected_actor_class(actor_type, policy)
+        for actor_type, injected_type in patches.items():
             stack.enter_context(patch_actor(actor_type, injected_type))
         yield
