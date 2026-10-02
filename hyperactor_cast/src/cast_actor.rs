@@ -521,8 +521,8 @@ impl CastActor {
 struct CastHop {
     /// Destination that receives local delivery when this hop is reached.
     local_destination: CastDestination,
-    /// Precomputed outgoing routes to communication-child tiles.
-    next_hops: Vec<CastRoute>,
+    /// Precomputed outgoing subtrees.
+    next_hops: Vec<CastSubtree>,
     /// Number of logical destinations reached through this hop.
     num_destinations: usize,
 }
@@ -898,8 +898,12 @@ impl Handler<CreateCastDomain> for CastActor {
         let mut next_hops = Vec::new();
 
         for next_tile in next_tiles(tiling_policy, &tile) {
-            let next_hop = CastRoute::try_from_tile(&region, tiling_policy, &next_tile)?;
-            if let CastRoute::ViaCastActor(next_hop_cast_actor) = &next_hop {
+            let next_hop_served_region =
+                Region::new(region.labels().to_vec(), next_tile.tile().space().clone());
+
+            let route = CastRoute::try_from_tile(&region, tiling_policy, &next_tile)?;
+
+            if let CastRoute::ViaCastActor(next_hop_cast_actor) = &route {
                 next_hop_cast_actor.post(
                     cx,
                     CreateCastDomain {
@@ -910,7 +914,10 @@ impl Handler<CreateCastDomain> for CastActor {
                     },
                 );
             }
-            next_hops.push(next_hop);
+            next_hops.push(CastSubtree {
+                route,
+                served_region: next_hop_served_region,
+            });
         }
 
         let cast_hop = CastHop {
@@ -1269,12 +1276,12 @@ impl CastActor {
         )?;
 
         for next_hop in &domain.next_hops {
-            match next_hop {
-                CastRoute::ViaCastActor(next_hop) => {
+            match &next_hop.route {
+                CastRoute::ViaCastActor(next_hop_cast_actor) => {
                     #[cfg(not(test))]
                     let _ = &local_lineage;
                     let forward_headers = message.headers.clone();
-                    let mut port = next_hop.port();
+                    let mut port = next_hop_cast_actor.port();
                     port.return_undeliverable(message.return_undeliverable);
                     port.post_with_headers(
                         cx,
@@ -1283,7 +1290,9 @@ impl CastActor {
                             cast_domain_id: message.cast_domain_id.clone(),
                             sender: message.sender.clone(),
                             session_id: message.session_id,
-                            seqs: message.seqs.clone(),
+                            seqs: message
+                                .seqs
+                                .sliced_unchecked(next_hop.served_region.clone()),
                             #[cfg(test)]
                             lineage: lineage.actors(),
                             headers: message.headers.clone(),
@@ -1348,7 +1357,7 @@ impl Handler<DestroyCastDomain> for CastActor {
         }
 
         for next_hop in &cast_hop.next_hops {
-            if let CastRoute::ViaCastActor(next_hop) = next_hop {
+            if let CastRoute::ViaCastActor(next_hop) = &next_hop.route {
                 next_hop.post(
                     cx,
                     DestroyCastDomain {
@@ -1487,7 +1496,7 @@ mod tests {
             next_hop_procs: cast_hop
                 .next_hops
                 .iter()
-                .map(|next_hop| match next_hop {
+                .map(|next_hop| match &next_hop.route {
                     CastRoute::ViaCastActor(next_hop) => {
                         next_hop.actor_addr().proc_addr().log_name().to_string()
                     }
@@ -1499,7 +1508,7 @@ mod tests {
             direct_hop_procs: cast_hop
                 .next_hops
                 .iter()
-                .filter_map(|next_hop| match next_hop {
+                .filter_map(|next_hop| match &next_hop.route {
                     CastRoute::ViaCastActor(_) => None,
                     CastRoute::Direct(destination) => {
                         Some(destination.actor.proc_addr().log_name().to_string())

@@ -675,6 +675,21 @@ impl<T: Clone + 'static> view::RankedSliceable for ValueMesh<T> {
     fn sliced(&self, region: Region) -> Self {
         debug_assert!(region.is_subset(self.region()), "sliced: not a subset");
 
+        self.sliced_unchecked(region)
+    }
+}
+
+impl<T: Clone + 'static> ValueMesh<T> {
+    /// Slice this mesh without checking that the selected region belongs to it.
+    ///
+    /// The caller must ensure that `region` is a subset of this mesh's region.
+    ///
+    /// ```text
+    /// mesh:   [v0 v1 v2 v3]
+    /// region:     [1]   [3]
+    /// output: [v1 v3]
+    /// ```
+    pub fn sliced_unchecked(&self, region: Region) -> Self {
         match &self.rep {
             Rep::Dense { .. } => self.slice_dense(region),
             Rep::Compressed { .. } if region.num_ranks() == 0 => Self {
