@@ -80,7 +80,6 @@ use hyperactor_config::Flattrs;
 use hyperactor_config::NonZeroUsize as ConfigNonZeroUsize;
 use ndslice::Point;
 use ndslice::Region;
-use ndslice::view::RankedSliceable;
 use ndslice::view::View;
 use ndslice::view::ViewExt;
 use serde::Deserialize;
@@ -204,18 +203,11 @@ impl CastDomainId {
             "cannot construct root-heaved subtree tiles for an empty tile"
         );
 
-        let root_point = {
-            // Select index 0 in every dimension. For a 4 x 4 tile, H0..H3 x
-            // P0..P3 becomes the root point H0 x P0.
-            let mut root_point_space = root_tile.tile().space().clone();
-            for dim in 0..root_tile.tile().space().sizes().len() {
-                root_point_space = root_point_space.select(dim, 0, 1, 1)?;
-            }
-            Tile::from_view(&Region::new(region.labels().to_vec(), root_point_space))
-        };
+        let root_destination = CastDestination::try_from_tile(&region, &root_tile)?;
 
-        let subtrees = std::iter::once(root_point)
-            .chain(tiling_policy.children(root_tile.tile()))
+        let subtrees = tiling_policy
+            .children(root_tile.tile())
+            .into_iter()
             .map(|subtree_tile| {
                 let served_region =
                     Region::new(region.labels().to_vec(), subtree_tile.space().clone());
@@ -246,7 +238,12 @@ impl CastDomainId {
             }
         }
 
-        Ok(CastDomainRef::from_subtrees(self, subtrees, member_mesh))
+        Ok(CastDomainRef::from_subtrees(
+            self,
+            root_destination,
+            subtrees,
+            member_mesh,
+        ))
     }
 }
 
@@ -264,8 +261,8 @@ impl std::fmt::Display for CastDomainId {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CastDomainRef {
     id: CastDomainId,
-    /// Independently seeded routes for initiating casts into subtrees.
-    subtrees: Vec<CastSubtree>,
+    /// The first hop, executed directly by the sender.
+    sender_hop: CastHop,
     /// Destination actor addresses keyed by this domain's rank space.
     members: Arc<ValueMesh<ActorAddr>>,
     /// Per-rank handler sequence keys derived lazily from `members`.
@@ -280,15 +277,22 @@ struct CastSubtree {
 }
 
 impl CastDomainRef {
-    /// Rebuild a cast-domain handle from a pure id plus its subtrees.
+    /// Rebuild a cast-domain handle from its sender delivery and subtrees.
     fn from_subtrees(
         id: CastDomainId,
+        root_destination: CastDestination,
         subtrees: Vec<CastSubtree>,
         members: Arc<ValueMesh<ActorAddr>>,
     ) -> Self {
+        let num_destinations = members.region().num_ranks();
+
         Self {
             id,
-            subtrees,
+            sender_hop: CastHop {
+                local_destination: root_destination,
+                next_hops: subtrees,
+                num_destinations,
+            },
             members,
             seq_keys: Arc::new(OnceLock::new()),
         }
@@ -312,8 +316,8 @@ impl CastDomainRef {
     /// Cast a message to all members of this domain with caller-supplied headers.
     ///
     /// `headers` are the destination envelope headers supplied by the caller.
-    /// The cast layer stamps cast-owned fields on top before sending the
-    /// [`CastMessage`] through each subtree route.
+    /// The cast layer stamps cast-owned fields on top before delivering through
+    /// the sender hop.
     pub fn cast<M: Serialize + Named>(
         &self,
         cx: &impl context::Actor,
@@ -331,71 +335,23 @@ impl CastDomainRef {
         message: M,
         return_undeliverable: bool,
     ) -> anyhow::Result<()> {
-        let mut data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
-        let sender = cx.mailbox().actor_addr().clone();
-        let dest_port = M::port();
+        let data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
         let (session_id, seqs) = self.seqs_for_cast(cx)?;
+        let cast_message = CastMessage {
+            cast_domain_id: self.id.clone(),
+            sender: cx.mailbox().actor_addr().clone(),
+            session_id,
+            seqs,
+            #[cfg(test)]
+            lineage: Vec::new(),
+            headers,
+            dest_port: M::port(),
+            data,
+            return_undeliverable,
+        };
 
-        let cast_headers = headers.clone();
-        let subtree_seqs = self
-            .subtrees
-            .iter()
-            .map(|subtree| seqs.sliced(subtree.served_region.clone()))
-            .collect::<Vec<_>>();
-        // Split even for one subtree: a direct route bypasses the leaf
-        // CastActor that would otherwise create the one-peer reducer proxy.
-        split_ports(
-            cx,
-            &mut data,
-            SplitFanout {
-                peer_count: self.subtrees.len(),
-                num_destinations: self.members.region().num_ranks(),
-                #[cfg(test)]
-                deliver_here: false,
-            },
-        )?;
-
-        for (subtree, seqs) in self.subtrees.iter().zip(subtree_seqs) {
-            match &subtree.route {
-                CastRoute::ViaCastActor(root_actor) => {
-                    let mut port = root_actor.port();
-                    port.return_undeliverable(return_undeliverable);
-                    port.post_with_headers(
-                        cx,
-                        headers.clone(),
-                        CastMessage {
-                            cast_domain_id: self.id.clone(),
-                            sender: sender.clone(),
-                            session_id,
-                            seqs,
-                            #[cfg(test)]
-                            lineage: Vec::new(),
-                            headers: cast_headers.clone(),
-                            dest_port,
-                            data: data.clone(),
-                            return_undeliverable,
-                        },
-                    );
-                }
-                CastRoute::Direct(destination) => {
-                    deliver_to_destination(
-                        cx,
-                        &CastDelivery {
-                            sender: &sender,
-                            session_id,
-                            seq: destination.seq(&seqs)?,
-                            headers: &cast_headers,
-                            dest_port,
-                            return_undeliverable,
-                        },
-                        destination,
-                        data.clone(),
-                        &ForwardLineage::default().through(&destination.actor),
-                    )?;
-                }
-            }
-        }
-        Ok(())
+        self.sender_hop
+            .forward(cx, &cast_message, &ForwardLineage::default())
     }
 
     /// Release this cast domain after all destination actors have shut down.
@@ -409,7 +365,7 @@ impl CastDomainRef {
     /// This operation is best-effort and does not acknowledge completion.
     pub fn destroy(&self, cx: &impl context::Actor) {
         let origin = cx.mailbox().actor_addr().clone();
-        for subtree in &self.subtrees {
+        for subtree in &self.sender_hop.next_hops {
             if let CastRoute::ViaCastActor(root_actor) = &subtree.route {
                 root_actor.post(
                     cx,
@@ -516,10 +472,10 @@ impl CastActor {
     }
 }
 
-/// One tile-local hop in an installed cast tree.
-#[derive(Debug, Clone)]
+/// One delivery and relay step in a cast tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CastHop {
-    /// Destination that receives local delivery when this hop is reached.
+    /// Destination delivered directly by this hop.
     local_destination: CastDestination,
     /// Precomputed outgoing subtrees.
     next_hops: Vec<CastSubtree>,
@@ -940,14 +896,11 @@ impl Handler<CreateCastDomain> for CastActor {
 /// Fanout counts used to configure reducers for one cast hop.
 #[derive(Debug, Clone, Copy)]
 struct SplitFanout {
-    /// Number of immediate reply sources: child hops plus local delivery, if present.
+    /// Number of immediate reply sources: child hops plus local delivery.
     peer_count: usize,
     /// Total cast destinations covered by this subtree, including the local
     /// destination.
     num_destinations: usize,
-    /// Whether this hop also delivers the cast to a local destination.
-    #[cfg(test)]
-    deliver_here: bool,
 }
 
 /// Rewrite reply port parts in the serialized message so that downstream
@@ -974,7 +927,7 @@ fn split_ports(
 
         #[cfg(test)]
         {
-            tests::collect_split_port(port.port_addr(), &split, fanout.deliver_here);
+            tests::collect_split_port(port.port_addr(), &split);
         }
 
         port.update_port_addr(split);
@@ -1009,7 +962,7 @@ fn split_ports(
 
         #[cfg(test)]
         {
-            tests::collect_split_port(port.port_addr(), &split, fanout.deliver_here);
+            tests::collect_split_port(port.port_addr(), &split);
         }
 
         port.update_port_addr(split);
@@ -1032,7 +985,7 @@ fn split_ports(
 
         #[cfg(test)]
         {
-            tests::collect_split_port(port.port_addr(), &split, fanout.deliver_here);
+            tests::collect_split_port(port.port_addr(), &split);
         }
 
         port.update_port_addr(split);
@@ -1088,10 +1041,9 @@ impl ForwardLineage {
 
 /// Multicast payload routed through a cast domain.
 ///
-/// Clients send this through routes that enter a CastActor. CastActors forward
-/// the same message type to child hops; internal forwards differ only in
-/// test-only lineage. Direct routes deliver the underlying payload without
-/// constructing this envelope.
+/// Senders use this to execute their first hop. CastActors forward the same
+/// message type to child hops; internal forwards differ only in test-only
+/// lineage. Direct routes deliver the underlying payload from this envelope.
 #[derive(Debug, Serialize, Deserialize, typeuri::Named)]
 struct CastMessage {
     /// The domain to cast into.
@@ -1144,7 +1096,8 @@ impl Handler<CastMessage> for CastActor {
             return Ok(());
         };
 
-        if let Err(error) = Self::route_cast_message(cx, &message, domain) {
+        let lineage = ForwardLineage::from_message(&message).through(cx.self_addr());
+        if let Err(error) = domain.forward(cx, &message, &lineage) {
             tracing::error!(
                 %error,
                 domain_id = %message.cast_domain_id,
@@ -1240,46 +1193,56 @@ fn deliver_to_destination(
     Ok(())
 }
 
-impl CastActor {
-    // HOT PATH: Be mindful of performance when making changes here.
-    // To test how performance is affected by a change, run the RPC benchmarks in
-    // `monarch/python/benches/`.
-    fn route_cast_message(
-        cx: &Context<Self>,
+impl CastHop {
+    /// Deliver and forward one cast message from either the sender or a CastActor.
+    ///
+    /// Input:
+    ///
+    /// ```text
+    /// local_destination: actor_0
+    /// next_hops:         [actor_1, cast_2]
+    /// seqs:               [s0 s1 s2 s3]
+    /// ```
+    ///
+    /// Output:
+    ///
+    /// ```text
+    /// actor_0 <- s0
+    /// actor_1 <- s1
+    /// cast_2  <- [s2 s3]
+    /// ```
+    fn forward(
+        &self,
+        cx: &impl context::Actor,
         message: &CastMessage,
-        domain: &CastHop,
+        lineage: &ForwardLineage,
     ) -> Result<(), anyhow::Error> {
-        let lineage = ForwardLineage::from_message(message).through(cx.self_addr());
-
         // Split reply ports so that downstream next hops reply through this
-        // CastActor's local proxy ports instead of directly to the original
-        // sender.
+        // hop's local proxy ports instead of directly to the original sender.
         let mut data = message.data.clone();
         split_ports(
             cx,
             &mut data,
             SplitFanout {
-                peer_count: domain.next_hops.len() + 1,
-                num_destinations: domain.num_destinations,
-                #[cfg(test)]
-                deliver_here: true,
+                peer_count: 1 + self.next_hops.len(),
+                num_destinations: self.num_destinations,
             },
         )?;
 
-        let local_lineage = lineage.through(&domain.local_destination.actor);
+        let destination = &self.local_destination;
+        let local_lineage = lineage.through(&destination.actor);
+
         deliver_to_destination(
             cx,
-            &CastDelivery::try_from_message(message, &domain.local_destination)?,
-            &domain.local_destination,
+            &CastDelivery::try_from_message(message, destination)?,
+            destination,
             data.clone(),
             &local_lineage,
         )?;
 
-        for next_hop in &domain.next_hops {
+        for next_hop in &self.next_hops {
             match &next_hop.route {
                 CastRoute::ViaCastActor(next_hop_cast_actor) => {
-                    #[cfg(not(test))]
-                    let _ = &local_lineage;
                     let forward_headers = message.headers.clone();
                     let mut port = next_hop_cast_actor.port();
                     port.return_undeliverable(message.return_undeliverable);
@@ -1490,9 +1453,10 @@ mod tests {
         cast_hop: &CastHop,
     ) {
         let proc_name = cx.self_addr().proc_addr().log_name().to_string();
+        let local_destination = &cast_hop.local_destination;
         let snapshot = CastHopSnapshot {
-            point_in_domain: cast_hop.local_destination.point_in_domain.clone(),
-            base_rank_in_domain: cast_hop.local_destination.base_rank_in_domain,
+            point_in_domain: local_destination.point_in_domain.clone(),
+            base_rank_in_domain: local_destination.base_rank_in_domain,
             next_hop_procs: cast_hop
                 .next_hops
                 .iter()
@@ -1515,12 +1479,7 @@ mod tests {
                     }
                 })
                 .collect(),
-            local_actor_proc: cast_hop
-                .local_destination
-                .actor
-                .proc_addr()
-                .log_name()
-                .to_string(),
+            local_actor_proc: local_destination.actor.proc_addr().log_name().to_string(),
         };
         installed_domains()
             .lock()
@@ -2259,12 +2218,18 @@ mod tests {
             )
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
 
-        // THEN: its subtrees are nonempty and disjoint, exactly cover the
-        // domain, and use their natural root actors.
+        // THEN: the sender destination and its subtrees are nonempty and
+        // disjoint, exactly cover the domain, and use their natural roots.
         let expected_ranks = region.slice().iter().collect::<BTreeSet<_>>();
         let mut covered_ranks = BTreeSet::new();
+        let root_destination = &domain.sender_hop.local_destination;
+        prop_assert_eq!(
+            &root_destination.actor,
+            &members[&root_destination.base_rank_in_domain]
+        );
+        prop_assert!(covered_ranks.insert(root_destination.base_rank_in_domain));
 
-        for subtree in &domain.subtrees {
+        for subtree in &domain.sender_hop.next_hops {
             let subtree_ranks = subtree
                 .served_region
                 .slice()
@@ -2592,22 +2557,28 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_root_heaved_block_partitioning_delivers_once() {
-        // GIVEN: four hosts with four proc ranks per host.
+    async fn test_root_absorption_block_partitioning_delivers_once() {
+        // GIVEN: a 4-by-4 domain.
         let mut test_mesh = CastTestMesh::new(16);
         test_mesh.spawn_split_port_receivers();
 
         // WHEN: block partitioning is applied to every dimension at the root.
         let root_domain = test_mesh.root_domain(shape!(hosts = 4, procs = 4).into());
 
-        // THEN: both host and proc coordinates select subtree roots.
+        // THEN: the sender owns rank 0 and the remaining coordinates select
+        // subtree roots.
+        assert_eq!(
+            root_domain.sender_hop.local_destination.base_rank_in_domain,
+            0
+        );
         let mut subtree_root_ranks = root_domain
-            .subtrees
+            .sender_hop
+            .next_hops
             .iter()
             .map(|subtree| subtree.served_region.slice().offset())
             .collect::<Vec<_>>();
         subtree_root_ranks.sort_unstable();
-        assert_eq!(subtree_root_ranks, vec![0, 1, 2, 3, 4, 8, 12]);
+        assert_eq!(subtree_root_ranks, vec![1, 2, 3, 4, 8, 12]);
 
         // Every proc receives exactly one reply-producing delivery.
         let proc_names = test_mesh.proc_names();
@@ -3134,7 +3105,7 @@ mod tests {
 
     // -- Port splitting test infrastructure --
     //
-    // The `split_ports` function records (original, split, deliver_here) edges into a
+    // The `split_ports` function records (original, split) edges into a
     // global vec under `#[cfg(test)]`.  After a cast we reconstruct
     // the split-port tree and verify it mirrors the cast tree.
 
@@ -3158,7 +3129,7 @@ mod tests {
         SPLIT_PORT_TREE.get_or_init(|| Mutex::new(None))
     }
 
-    pub(crate) fn collect_split_port(original: &PortAddr, split: &PortAddr, deliver_here: bool) {
+    pub(crate) fn collect_split_port(original: &PortAddr, split: &PortAddr) {
         let mut guard = split_port_tree().lock().unwrap();
         let Some(recording) = guard.as_mut() else {
             return;
@@ -3169,7 +3140,7 @@ mod tests {
         recording.edges.push(SplitEdge {
             from: original.clone(),
             to: split.clone(),
-            is_leaf: deliver_here,
+            is_leaf: original != &recording.root,
         });
     }
 
@@ -3556,20 +3527,25 @@ mod tests {
             .wait_for_domain_snapshots(root_domain.domain_id(), 3)
             .await;
 
-        // THEN: the caller owns the root point and the two immediate policy
-        // children as subtrees.
+        // THEN: the sender owns the root destination and the two immediate
+        // policy children are subtrees.
+        assert_eq!(
+            root_domain.sender_hop.local_destination.base_rank_in_domain,
+            0
+        );
         assert_eq!(
             root_domain
-                .subtrees
+                .sender_hop
+                .next_hops
                 .iter()
                 .map(|subtree| subtree.served_region.slice().offset())
                 .collect::<BTreeSet<_>>(),
-            [0, 1, 5].into_iter().collect()
+            [1, 5].into_iter().collect()
         );
 
         let region = Region::from(shape!(a = 8));
-        // Forwarded subtree roots own their recursive subtrees. The singleton
-        // subtree at proc_0 is delivered directly by the caller.
+        // Forwarded subtree roots own their recursive subtrees. The sender
+        // delivers proc_0 directly.
         let expected_next_hops: BTreeMap<String, BTreeSet<String>> = [
             ("proc_1", vec!["proc_2", "proc_4"]),
             ("proc_2", vec!["proc_3"]),
@@ -3642,20 +3618,25 @@ mod tests {
             .wait_for_domain_snapshots(root_domain.domain_id(), 3)
             .await;
 
-        // THEN: the caller owns the root point and the three immediate policy
-        // children as subtrees.
+        // THEN: the sender owns the root destination and the three immediate
+        // policy children are subtrees.
+        assert_eq!(
+            root_domain.sender_hop.local_destination.base_rank_in_domain,
+            0
+        );
         assert_eq!(
             root_domain
-                .subtrees
+                .sender_hop
+                .next_hops
                 .iter()
                 .map(|subtree| subtree.served_region.slice().offset())
                 .collect::<BTreeSet<_>>(),
-            [0, 1, 2, 4].into_iter().collect()
+            [1, 2, 4].into_iter().collect()
         );
 
         let region = Region::from(shape!(a = 8));
-        // Forwarded subtree roots own their recursive subtrees. The singleton
-        // subtrees at proc_0 and proc_1 are delivered directly by the caller.
+        // Forwarded subtree roots own their recursive subtrees. The sender
+        // delivers proc_0 directly, and proc_1 remains a direct child.
         let expected_next_hops: BTreeMap<String, BTreeSet<String>> = [
             ("proc_2", vec!["proc_3"]),
             ("proc_4", vec!["proc_5", "proc_6"]),
