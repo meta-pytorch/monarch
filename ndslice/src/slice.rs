@@ -200,8 +200,8 @@ impl Slice {
 
     /// Express this slice in the ordinal space of `parent`.
     ///
-    /// Returns an error if this slice does not select a valid, dimension-
-    /// preserving subregion of `parent`.
+    /// Returns `None` if this slice cannot be represented as one affine slice
+    /// in the ordinal space of `parent`.
     ///
     /// ```text
     /// parent ranks (offset=100, sizes=[4, 4], strides=[8, 2]):
@@ -215,67 +215,50 @@ impl Slice {
     /// parent ordinals:  [  5,   6,  13,  14]
     /// result: offset=5, sizes=[2, 2], strides=[8, 1]
     /// ```
-    pub fn relative_ordinal_slice(&self, parent: &Self) -> Result<Self, SliceError> {
+    pub fn relative_ordinal_slice(&self, parent: &Self) -> Option<Self> {
         if parent.num_dim() != self.num_dim() {
-            return Err(SliceError::InvalidDims {
-                expected: parent.num_dim(),
-                got: self.num_dim(),
-            });
+            return None;
         }
 
         // parent_coordinates: [1, 1]
-        let parent_coordinates = parent.coordinates(self.offset())?;
+        let parent_coordinates = parent.coordinates(self.offset()).ok()?;
         // offset: 5
-        let offset = parent.index(self.offset())?;
+        let offset = parent.index(self.offset()).ok()?;
         // parent_ordinal_strides: [4, 1]
         let parent_ordinal_strides = Slice::new_row_major(parent.sizes().to_vec());
         let strides = self
             .sizes()
             .iter()
             .enumerate()
-            .map(|(dimension, &extent)| -> Result<usize, SliceError> {
+            .map(|(dimension, &extent)| -> Option<usize> {
                 if extent == 1 {
-                    return Ok(parent_ordinal_strides.strides()[dimension]);
+                    return Some(parent_ordinal_strides.strides()[dimension]);
                 }
 
                 let parent_stride = parent.strides()[dimension];
                 let selected_stride = self.strides()[dimension];
                 if !selected_stride.is_multiple_of(parent_stride) {
-                    return Err(SliceError::IncompatibleView {
-                        reason: format!(
-                            "stride {selected_stride} in dimension {dimension} is not a multiple of parent stride {parent_stride}"
-                        ),
-                    });
+                    return None;
                 }
 
                 let step = selected_stride / parent_stride;
                 {
-                    let last_coordinate = parent_coordinates[dimension]
-                        .checked_add(
-                            extent
-                                .checked_sub(1)
-                                .and_then(|extent| extent.checked_mul(step))
-                                .ok_or(SliceError::ArithmeticOverflow)?,
-                        )
-                        .ok_or(SliceError::ArithmeticOverflow)?;
+                    let last_coordinate = parent_coordinates[dimension].checked_add(
+                        extent
+                            .checked_sub(1)
+                            .and_then(|extent| extent.checked_mul(step))?,
+                    )?;
 
                     if last_coordinate >= parent.sizes()[dimension] {
-                        return Err(SliceError::IncompatibleView {
-                            reason: format!(
-                                "dimension {dimension} ends at coordinate {last_coordinate}, outside parent extent {}",
-                                parent.sizes()[dimension]
-                            ),
-                        });
+                        return None;
                     }
                 }
 
-                parent_ordinal_strides.strides()[dimension]
-                    .checked_mul(step)
-                    .ok_or(SliceError::ArithmeticOverflow)
+                parent_ordinal_strides.strides()[dimension].checked_mul(step)
             })
-            .collect::<Result<_, _>>()?;
+            .collect::<Option<_>>()?;
 
-        Self::new(offset, self.sizes().to_vec(), strides)
+        Self::new(offset, self.sizes().to_vec(), strides).ok()
     }
 
     pub fn is_contiguous(&self) -> bool {
@@ -1041,10 +1024,7 @@ mod tests {
         let parent = Slice::new_row_major(vec![2, 4]);
         let selected = Slice::new(1, vec![1, 4], vec![4, 1]).expect("selection should be valid");
 
-        assert!(matches!(
-            selected.relative_ordinal_slice(&parent),
-            Err(SliceError::IncompatibleView { .. })
-        ));
+        assert!(selected.relative_ordinal_slice(&parent).is_none());
     }
 
     #[test]
