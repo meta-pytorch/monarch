@@ -9,6 +9,53 @@
 from importlib import import_module as _import_module
 from typing import TYPE_CHECKING
 
+
+# On ROCm, triton bundles its own LLVM, which collides with the rocm-sdk's libLLVM
+# once that library's symbols reach the global (interposing) symbol scope. They get
+# there via rocm_sdk.preload_libraries() (from the `rocm` wheel) -- a
+# ctypes.CDLL(..., RTLD_GLOBAL) that triton itself invokes when it loads its
+# libtriton extension on `import triton`. libtriton's LLVM static initializer can
+# then bind to that interposing libLLVM instead of its own and segfault -- and torch
+# reaches for triton on its own via has_triton() during ordinary work, so monarch
+# procs die with SIGSEGV even though no user asked for triton.
+#
+# Pre-load libtriton with RTLD_DEEPBIND so it resolves its *own* LLVM symbols in
+# preference to the global ones, side-stepping the collision while keeping triton
+# fully functional (import, JIT compile, kernel launch). find_spec locates triton
+# without importing it -- importing is what crashes. No-op off ROCm, when triton is
+# not installed, or when MONARCH_SKIP_TRITON_DEEPBIND=1.
+def _monarch_rocm_triton_deepbind() -> None:
+    import os
+
+    if os.environ.get("MONARCH_SKIP_TRITON_DEEPBIND", "0") == "1":
+        return
+    try:
+        import importlib.metadata
+
+        if "rocm" not in importlib.metadata.version("torch").lower():
+            return
+    except Exception:
+        return
+    try:
+        import ctypes
+        import importlib.util
+
+        spec = importlib.util.find_spec("triton")
+        if spec is None or not spec.submodule_search_locations:
+            return
+        libtriton = os.path.join(
+            spec.submodule_search_locations[0], "_C", "libtriton.so"
+        )
+        if os.path.exists(libtriton):
+            ctypes.CDLL(libtriton, mode=(os.RTLD_NOW | os.RTLD_DEEPBIND))
+    except Exception:
+        # Best-effort: on failure, fall through to stock behavior. We have not
+        # made anything worse than importing triton unguarded would have.
+        pass
+
+
+_monarch_rocm_triton_deepbind()
+
 # Import before monarch to pre-load torch DSOs as, in exploded wheel flows,
 # our RPATHs won't correctly find them.
 try:
