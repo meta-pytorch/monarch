@@ -1837,7 +1837,7 @@ class Actor(MeshTrait):
         return False
 
     @_doc_stub
-    def __supervise__(self, failure: MeshFailure) -> bool:
+    def __supervise__(self, failure: MeshFailure) -> bool | Awaitable[bool]:
         """Called when the actor observes a failure in a resource that it
         owns. A resource is a host, proc, actor, or meshes of these.
         If a truthy value is returned, the failure is considered handled and will not
