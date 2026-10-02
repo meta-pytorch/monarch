@@ -1468,6 +1468,15 @@ class ErrorActorWithSupervise(ErrorActor):
         await asyncio.wait_for(self.faulted.wait(), timeout=30)
 
     @endpoint
+    async def wait_for_failures(self, expected: int) -> None:
+        """Wait until ``__supervise__`` has seen ``expected`` failures, since it
+        runs after the failures arrive and may lag behind other endpoints."""
+        self.expected_failures = expected
+        if len(self.failures) < expected:
+            self.faulted.clear()
+            await asyncio.wait_for(self.faulted.wait(), timeout=30)
+
+    @endpoint
     async def get_failures(self) -> list[str]:
         # MeshFailure is not picklable, so we convert it to a string.
         return [str(f) for f in self.failures]
@@ -1547,6 +1556,73 @@ class RaisingAsyncSuperviseActor(ErrorActorWithSupervise):
     async def __supervise__(self, failure: MeshFailure) -> bool:
         await asyncio.sleep(0)
         raise RuntimeError(self.SUPERVISE_MESSAGE)
+
+
+class CancelledSuperviseActor(ErrorActorWithSupervise):
+    """Variant whose `__supervise__` awaits a cancelled future, so it raises
+    `CancelledError` without its task being cancelled."""
+
+    SUPERVISE_MESSAGE = "CancelledError"
+
+    # pyrefly: ignore [bad-override]
+    async def __supervise__(self, failure: MeshFailure) -> bool:
+        fut = asyncio.get_running_loop().create_future()
+        fut.cancel()
+        await fut
+        return True
+
+
+class BlockingSuperviseActor(ErrorActorWithSupervise):
+    """`__supervise__` waits until `release` is called on the same actor."""
+
+    def __init__(self, proc_mesh: ProcMesh, should_handle: bool = True) -> None:
+        super().__init__(proc_mesh, should_handle)
+        self.supervising = asyncio.Event()
+        self.released = asyncio.Event()
+
+    @endpoint
+    async def wait_supervising(self) -> None:
+        await asyncio.wait_for(self.supervising.wait(), timeout=30)
+
+    @endpoint
+    async def release(self) -> None:
+        self.released.set()
+
+    @endpoint
+    async def wait_faulted(self) -> None:
+        await asyncio.wait_for(self.faulted.wait(), timeout=30)
+
+    # pyrefly: ignore [bad-override]
+    async def __supervise__(self, failure: MeshFailure) -> bool:
+        self.supervising.set()
+        await self.released.wait()
+        return super().__supervise__(failure)
+
+
+class BusySuperviseActor(Actor):
+    """Sync-only actor that records the order in which its endpoints and
+    `__supervise__` run."""
+
+    def __init__(self, proc_mesh: ProcMesh) -> None:
+        self.mesh = proc_mesh.spawn("error_actor", SyncErrorActor)
+        self.events: list[str] = []
+
+    @endpoint
+    def trigger_subworker_fail(self) -> None:
+        self.mesh.fail_with_supervision_error.broadcast()
+
+    @endpoint
+    def busy(self, seconds: float) -> None:
+        time.sleep(seconds)
+        self.events.append("busy")
+
+    @endpoint
+    def get_events(self) -> list[str]:
+        return self.events
+
+    def __supervise__(self, failure: MeshFailure) -> bool:
+        self.events.append("supervise")
+        return True
 
 
 @pytest.mark.timeout(30)
@@ -1683,12 +1759,13 @@ async def test_supervise_callback_with_mesh_ref():
     assert len(results1) == 1
     assert len(results1[0]) == 0
 
+    # The nested mesh of actors also has 4 dimensions.
+    await supervisor2.wait_for_failures.call(4)
     results2 = await supervisor2.get_failures.call()
     results2 = [f for _, f in results2]
     assert len(results2) == 1
     # We only need to check one of the supervisor actors.
     r = results2[0]
-    # The nested mesh of actors also has 4 dimensions.
     assert len(r) == 4
 
     # Supervision events may arrive out of order; check that each rank
@@ -1768,8 +1845,8 @@ async def test_supervise_callback_unhandled():
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize(
     "actor_cls",
-    [RaisingSyncSuperviseActor, RaisingAsyncSuperviseActor],
-    ids=["sync", "async"],
+    [RaisingSyncSuperviseActor, RaisingAsyncSuperviseActor, CancelledSuperviseActor],
+    ids=["sync", "async", "cancelled"],
 )
 @isolate_in_subprocess
 async def test_supervise_callback_raising(actor_cls):
@@ -1787,6 +1864,74 @@ async def test_supervise_callback_raising(actor_cls):
     assert actor_cls.SUPERVISE_MESSAGE in report, (
         f"expected supervise exception message in report, got: {report}"
     )
+
+    await pm.stop()
+    await second_mesh.stop()
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+async def test_supervise_does_not_block_actor():
+    """While `__supervise__` is pending, the actor keeps handling messages,
+    including the one that lets `__supervise__` finish."""
+    pm = spawn_procs_on_this_host({"gpus": 1})
+    second_mesh = spawn_procs_on_this_host({"gpus": 1})
+    supervisor = pm.spawn("supervisor", BlockingSuperviseActor, second_mesh)
+
+    await supervisor.subworker_fail.call()
+    await supervisor.wait_supervising.call()
+    result = await supervisor.get_failures.call()
+    assert [f for _, f in result] == [[]]
+
+    await supervisor.release.call()
+    await supervisor.wait_faulted.call()
+    result = await supervisor.get_failures.call()
+    assert len([f for _, f in result][0]) >= 1
+
+    await pm.stop()
+    await second_mesh.stop()
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+async def test_pending_supervise_cancelled_on_stop():
+    """Stopping an actor whose `__supervise__` is pending cancels it rather
+    than waiting for it or propagating the failure."""
+    faults = []
+    monarch.actor.unhandled_fault_hook = faults.append
+    pm = spawn_procs_on_this_host({"gpus": 1})
+    second_mesh = spawn_procs_on_this_host({"gpus": 1})
+    supervisor = pm.spawn("supervisor", BlockingSuperviseActor, second_mesh)
+
+    await supervisor.subworker_fail.call()
+    await supervisor.wait_supervising.call()
+    await cast(ActorMesh[BlockingSuperviseActor], supervisor).stop()
+    await asyncio.sleep(2)
+    assert faults == []
+
+    await pm.stop()
+    await second_mesh.stop()
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+async def test_supervise_not_starved_by_sync_endpoints():
+    """A backlog of sync endpoints yields to `__supervise__` between messages
+    instead of delaying it until the backlog drains."""
+    pm = spawn_procs_on_this_host({"gpus": 1})
+    second_mesh = spawn_procs_on_this_host({"gpus": 1})
+    supervisor = pm.spawn("supervisor", BusySuperviseActor, second_mesh)
+
+    await supervisor.trigger_subworker_fail.call()
+    num_busy = 200
+    for _ in range(num_busy):
+        supervisor.busy.broadcast(0.05)
+    result = await supervisor.get_events.call()
+    events = [e for _, e in result][0]
+    assert events.count("busy") == num_busy
+    assert "supervise" in events, f"__supervise__ never ran: {events}"
+    busy_after = events[events.index("supervise") :].count("busy")
+    assert busy_after > 0, "__supervise__ only ran after the backlog drained"
 
     await pm.stop()
     await second_mesh.stop()

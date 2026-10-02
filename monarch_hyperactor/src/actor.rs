@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::time::SystemTime;
 
@@ -27,6 +28,7 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::MessageStatusReporting;
 use hyperactor::OncePortHandle;
+use hyperactor::PortHandle;
 use hyperactor::Proc;
 use hyperactor::RemoteSpawn;
 use hyperactor::actor::ActorError;
@@ -55,7 +57,6 @@ use hyperactor_mesh::transport::default_bind_spec;
 use hyperactor_mesh::value_mesh::ValueOverlay;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
-use monarch_types::py_global;
 use ndslice::Point;
 use ndslice::extent;
 use pyo3::IntoPyObjectExt;
@@ -88,12 +89,6 @@ use crate::runtime::mark_actor_event_loop_thread;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
 use crate::supervision::PyMeshFailure;
-
-py_global!(
-    unhandled_fault_hook_exception,
-    "monarch._src.actor.supervision",
-    "UnhandledFaultHookException"
-);
 
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1076,6 +1071,13 @@ pub struct PythonActor {
     dispatch_sender: pympsc::Sender,
     /// Channel receiver, taken during Actor::init to start the message loop.
     dispatch_receiver: Option<pympsc::PyReceiver>,
+    /// Channel sender for enqueuing supervision events to `_supervision_loop`.
+    supervision_sender: pympsc::Sender,
+    /// Channel receiver, taken during Actor::init to start the supervision loop.
+    supervision_receiver: Option<pympsc::PyReceiver>,
+    /// Number of enqueued supervision events whose verdict has not been
+    /// reported yet. See [`SupervisionInFlight`].
+    supervising: Arc<AtomicUsize>,
     /// Inherited or assigned construction context, not proof of mesh membership.
     construction_point: OnceLock<Option<Point>>,
     /// Initial message to process during PythonActor::init.
@@ -1103,10 +1105,14 @@ impl PythonActor {
 
                 let task_locals = Python::detach(py, create_task_locals);
 
-                let (dispatch_sender, dispatch_receiver) = pympsc::channel().map_err(|e| {
-                    let py_err = PyRuntimeError::new_err(e.to_string());
-                    SerializablePyErr::from(py, &py_err)
-                })?;
+                let channel = || {
+                    pympsc::channel().map_err(|e| {
+                        let py_err = PyRuntimeError::new_err(e.to_string());
+                        SerializablePyErr::from(py, &py_err)
+                    })
+                };
+                let (dispatch_sender, dispatch_receiver) = channel()?;
+                let (supervision_sender, supervision_receiver) = channel()?;
 
                 Ok(Self {
                     actor,
@@ -1114,6 +1120,9 @@ impl PythonActor {
                     instance: None,
                     dispatch_sender,
                     dispatch_receiver: Some(dispatch_receiver),
+                    supervision_sender,
+                    supervision_receiver: Some(supervision_receiver),
+                    supervising: Arc::new(AtomicUsize::new(0)),
                     construction_point: OnceLock::from(construction_point),
                     init_message,
                     execution_tracker: Arc::new(ExecutionTracker::new()),
@@ -1160,8 +1169,8 @@ impl PythonActor {
 
     /// Get-or-create the actor's cached `PyInstance`, injecting a clone of
     /// the execution tracker (PE-1) so `_Actor.handle` can bracket each
-    /// invocation. Its callers are `init` and the `MeshFailure` handler;
-    /// `handle_queue` expects the instance `init` created.
+    /// invocation. Its only caller is `init`; `handle_queue` and the
+    /// `MeshFailure` handler expect the instance it created.
     fn ensure_py_instance(
         &mut self,
         py: Python<'_>,
@@ -1281,34 +1290,23 @@ impl PythonActor {
             let mut supervision_rx = supervision_rx;
             let mut work_rx = work_rx;
             let mut need_drain = false;
-            let mut err = 'messages: loop {
+            let mut err = loop {
                 tokio::select! {
                     work = work_rx.recv() => {
                         let work = work.expect("inconsistent work queue state");
                         if let Err(err) = work.handle(&mut actor, instance).await {
-                            // Check for UnhandledFaultHookException on the raw
-                            // anyhow::Error before wrapping in ActorErrorKind.
-                            // If __supervise__ already processed the supervision
-                            // event and the hook raised, don't re-handle it via
-                            // handle_supervision_event — that would call
-                            // __supervise__ a second time.
-                            let is_hook_exception = monarch_with_gil(GilSite::Supervise, |py| {
-                                err.downcast_ref::<pyo3::PyErr>()
-                                    .is_some_and(|pyerr| {
-                                        pyerr.is_instance(
-                                            py,
-                                            &unhandled_fault_hook_exception(py),
-                                        )
-                                    })
-                            }).await;
-
                             let kind = ActorErrorKind::processing(err);
                             let err = ActorError {
                                 actor_id: Box::new(instance.self_addr().clone()),
                                 kind: Box::new(kind),
                             };
 
-                            if is_hook_exception {
+                            // Only a `SupervisionOutcome` verdict fails with
+                            // `UnhandledSupervisionEvent`. It is `__supervise__`'s
+                            // final answer (including an `UnhandledFaultHookException`
+                            // raised by `RootClientActor`), so exit rather than
+                            // supervising it again, which could loop forever.
+                            if matches!(*err.kind, ActorErrorKind::UnhandledSupervisionEvent(_)) {
                                 break Some(err);
                             }
 
@@ -1316,17 +1314,11 @@ impl PythonActor {
                             // in its own message handler. This is important because
                             // we want Undeliverable<MessageEnvelope>, which returns
                             // an Err typically, to create a supervision event and
-                            // call __supervise__.
+                            // call __supervise__. This only enqueues the event, so
+                            // keep handling messages until the `SupervisionOutcome`
+                            // carrying the verdict is delivered.
                             let supervision_event = actor_error_to_event(instance, &actor, err);
-                            // If the immediate supervision event isn't handled, continue with
-                            // exiting the loop.
-                            // Else, continue handling messages.
                             if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
-                                while let Ok(supervision_event) = supervision_rx.try_recv() {
-                                    if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
-                                        break 'messages Some(err);
-                                    }
-                                }
                                 break Some(err);
                             }
                         }
@@ -1470,23 +1462,51 @@ impl Actor for PythonActor {
             .dispatch_receiver
             .take()
             .expect("dispatch receiver already taken");
+        let supervision_receiver = self
+            .supervision_receiver
+            .take()
+            .expect("supervision receiver already taken");
 
         monarch_with_gil(GilSite::DispatchInit, |py| {
             let self_instance = self.ensure_py_instance(py, this);
             let actor_mesh_mod = py.import("monarch._src.actor.actor_mesh")?;
 
-            let tl = &self.task_locals;
-            let awaitable = actor_mesh_mod.call_method(
-                "_dispatch_loop",
-                (self.actor.clone_ref(py), receiver, self_instance),
-                None,
-            )?;
-            let future = pyo3_async_runtimes::into_future_with_locals(tl, awaitable)?;
-            tokio::spawn(async move {
-                if let Err(e) = future.await {
-                    tracing::error!("message loop error: {}", e);
-                }
-            });
+            let loops = [
+                (
+                    "message loop",
+                    actor_mesh_mod.call_method(
+                        "_dispatch_loop",
+                        (
+                            self.actor.clone_ref(py),
+                            receiver,
+                            self_instance.clone_ref(py),
+                            SupervisionInFlight(self.supervising.clone()),
+                        ),
+                        None,
+                    )?,
+                ),
+                (
+                    "supervision loop",
+                    actor_mesh_mod.call_method(
+                        "_supervision_loop",
+                        (
+                            self.actor.clone_ref(py),
+                            supervision_receiver,
+                            self_instance,
+                        ),
+                        None,
+                    )?,
+                ),
+            ];
+            for (name, awaitable) in loops {
+                let future =
+                    pyo3_async_runtimes::into_future_with_locals(&self.task_locals, awaitable)?;
+                tokio::spawn(async move {
+                    if let Err(e) = future.await {
+                        tracing::error!("{} error: {}", name, e);
+                    }
+                });
+            }
             Ok::<_, anyhow::Error>(())
         })
         .await?;
@@ -1656,6 +1676,30 @@ impl Actor for PythonActor {
         }
     }
 
+    /// Enqueues the event for `__supervise__` and returns `Ok(true)` right
+    /// away: `true` means "accepted", not "handled". The verdict comes back
+    /// later as a [`SupervisionOutcome`], whose handler fails the actor if
+    /// the event was not handled.
+    ///
+    /// Waiting for the verdict here is only appropriate when supervision is
+    /// bounded in time and does not need this actor's loop, as with Rust
+    /// actors. `__supervise__` is arbitrary user code on the actor's asyncio
+    /// loop, while this runs on the actor loop, so waiting would stop the
+    /// actor from handling messages and signals for as long as user code
+    /// runs, deadlock a `__supervise__` that calls its own actor, and keep a
+    /// stop from cancelling it.
+    ///
+    /// Consequences of not waiting:
+    /// - The actor keeps handling messages until an unhandled verdict
+    ///   arrives.
+    /// - Supervision still pending when the actor stops is cancelled along
+    ///   with the other asyncio tasks in `cleanup`. This is intentional:
+    ///   recovering from a child failure (e.g. respawning a mesh) is
+    ///   pointless when the result is about to be stopped with us. It
+    ///   includes the events the run loop drains after a handler error, so
+    ///   the actor fails with its own error rather than theirs.
+    /// - The root client's custom loop must keep running after this returns
+    ///   so that it can deliver the `SupervisionOutcome`.
     async fn handle_supervision_event(
         &mut self,
         this: &Instance<Self>,
@@ -1809,6 +1853,153 @@ impl PythonActor {
     }
 }
 
+/// A supervision event enqueued for `_supervision_loop`, which runs
+/// `__supervise__` and reports the verdict with `_handled` or `_raised`.
+/// Dropping it without reporting (e.g. because the loop was cancelled when
+/// the actor stopped) produces no verdict.
+#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+pub struct QueuedSupervision {
+    #[pyo3(get)]
+    context: Py<crate::context::PyContext>,
+    #[pyo3(get)]
+    failure: Py<PyMeshFailure>,
+    reply: Option<SupervisionReply>,
+}
+
+struct SupervisionReply {
+    port: PortHandle<SupervisionOutcome>,
+    instance: PyInstance,
+    failure: MeshFailure,
+    display_name: Option<String>,
+    _in_flight: InFlight,
+}
+
+#[pymethods]
+impl QueuedSupervision {
+    fn _handled(&mut self, handled: bool) {
+        self.report(if handled {
+            SupervisionVerdict::Handled
+        } else {
+            SupervisionVerdict::Unhandled
+        });
+    }
+
+    fn _raised(&mut self, exc: Bound<'_, PyAny>) {
+        self.report(SupervisionVerdict::Raised(
+            PyErr::from_value(exc).to_string(),
+        ));
+    }
+}
+
+impl QueuedSupervision {
+    fn report(&mut self, verdict: SupervisionVerdict) {
+        let SupervisionReply {
+            port,
+            instance,
+            failure,
+            display_name,
+            _in_flight,
+        } = self
+            .reply
+            .take()
+            .expect("supervision verdict reported twice");
+        let outcome = SupervisionOutcome {
+            failure,
+            display_name,
+            verdict,
+        };
+        if let Err(err) = port.try_post(instance.deref(), outcome) {
+            tracing::debug!(
+                actor_id = %instance.self_addr(),
+                "dropping supervision verdict, actor is gone: {}",
+                err
+            );
+        }
+    }
+}
+
+/// A [`QueuedSupervision`] that the actor's event loop thread builds, so
+/// that the Tokio worker never takes the GIL (see [`PendingMessage`]).
+struct PendingSupervision {
+    instance: Arc<Py<PyInstance>>,
+    rank: Point,
+    recording_span: tracing::Span,
+    reply: SupervisionReply,
+}
+
+impl<'py> IntoPyObject<'py> for PendingSupervision {
+    type Target = QueuedSupervision;
+    type Output = Bound<'py, QueuedSupervision>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
+        let mut reply = self.reply;
+        reply.display_name = self.instance.bind(py).str().ok().map(|s| s.to_string());
+        let context = crate::context::PyContext::from_parts(
+            self.instance.clone_ref(py),
+            self.rank,
+            Some(self.recording_span),
+        );
+        let failure = PyMeshFailure::from(reply.failure.clone());
+        Bound::new(
+            py,
+            QueuedSupervision {
+                context: Py::new(py, context)?,
+                failure: Py::new(py, failure)?,
+                reply: Some(reply),
+            },
+        )
+    }
+}
+
+/// Counts a supervision event as in flight until dropped.
+#[derive(Debug)]
+struct InFlight(Arc<AtomicUsize>);
+
+impl InFlight {
+    fn new(count: &Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, AtomicOrdering::Relaxed);
+        Self(count.clone())
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, AtomicOrdering::Relaxed);
+    }
+}
+
+/// Truthy while any supervision event is waiting on `__supervise__`.
+/// `_dispatch_loop` yields to the event loop between messages while this is
+/// true: `recv` does not yield when a message is already queued, so a
+/// backlog of messages would otherwise starve `_supervision_loop`.
+#[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+pub struct SupervisionInFlight(Arc<AtomicUsize>);
+
+#[pymethods]
+impl SupervisionInFlight {
+    fn __bool__(&self) -> bool {
+        self.0.load(AtomicOrdering::Relaxed) > 0
+    }
+}
+
+/// The verdict of `__supervise__` on a [`QueuedSupervision`], which the
+/// actor posts to itself.
+#[derive(Debug)]
+pub struct SupervisionOutcome {
+    failure: MeshFailure,
+    display_name: Option<String>,
+    verdict: SupervisionVerdict,
+}
+
+#[derive(Debug)]
+enum SupervisionVerdict {
+    Handled,
+    Unhandled,
+    /// `__supervise__` raised the formatted exception.
+    Raised(String),
+}
+
 #[async_trait]
 impl Handler<MeshFailure> for PythonActor {
     async fn handle(&mut self, cx: &Context<Self>, message: MeshFailure) -> anyhow::Result<()> {
@@ -1822,148 +2013,106 @@ impl Handler<MeshFailure> for PythonActor {
             );
             return Ok(());
         }
-        // TODO: Consider routing supervision messages through the queue for Queue mode.
-        // For now, supervision is always handled directly since it requires immediate response.
 
-        // `_Actor.__supervise__` is `async def`, so calling it returns a
-        // coroutine, which we schedule on the actor's asyncio event loop --
-        // the same loop that runs endpoint coroutines. A sync user
-        // `__supervise__` is dispatched under `fake_sync_state` inside
-        // `_Actor.__supervise__`, mirroring `__cleanup__`.
-        let (display_name, fut) = monarch_with_gil(GilSite::Supervise, |py| {
-            let inst = self.ensure_py_instance(py, cx);
-            // Compute display_name here since we can't call self.display_name() due to borrow.
-            let display_name: Option<String> = inst.bind(py).str().ok().map(|s| s.to_string());
-            let actor_bound = self.actor.bind(py);
-            // The _Actor class always has a __supervise__ method, so this should
-            // never happen.
-            if !actor_bound.hasattr("__supervise__")? {
-                return Err(anyhow::anyhow!(
-                    "no __supervise__ method on {:?}",
-                    actor_bound
-                ));
+        // Enqueue instead of waiting for `__supervise__`, for the reasons
+        // given on `Actor::handle_supervision_event`. The verdict arrives as
+        // a `SupervisionOutcome`.
+        let pending = PendingSupervision {
+            instance: self
+                .instance
+                .clone()
+                .expect("PythonActor::init should have created the instance"),
+            rank: cx.cast_point(),
+            recording_span: cx.recording_span(),
+            reply: SupervisionReply {
+                port: cx.port(),
+                instance: cx.into(),
+                failure: message,
+                display_name: None,
+                _in_flight: InFlight::new(&self.supervising),
+            },
+        };
+
+        self.supervision_sender
+            .send(pending)
+            .map_err(|_| anyhow::anyhow!("failed to send supervision event to queue"))?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<SupervisionOutcome> for PythonActor {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        outcome: SupervisionOutcome,
+    ) -> anyhow::Result<()> {
+        let SupervisionOutcome {
+            failure: message,
+            display_name,
+            verdict,
+        } = outcome;
+        let (status, description, cause) = match verdict {
+            SupervisionVerdict::Handled => {
+                // TODO: We also don't want to deliver multiple supervision
+                // events from the same mesh if an earlier one is handled.
+                tracing::info!(
+                    name = "ActorMeshStatus",
+                    status = "SupervisionError::Handled",
+                    // only care about the event sender when the message is handled
+                    actor_name = message.actor_mesh_name,
+                    event = %message.event,
+                    "__supervise__ on {} handled a supervision event, not reporting any further",
+                    cx.self_addr(),
+                );
+                return Ok(());
             }
-            let awaitable = actor_bound.call_method(
-                "__supervise__",
-                (
-                    crate::context::PyContext::new(cx, inst.clone_ref(py)),
-                    PyMeshFailure::from(message.clone()),
+            // We propagate the event to the next owning actor by failing
+            // with a new event that names this actor as its creator. This
+            // does not set the causal chain for ActorSupervisionEvent, so
+            // the original event is included in the error.
+            SupervisionVerdict::Unhandled => (
+                "SupervisionError::Unhandled",
+                "did not handle a supervision event, reporting to the next owner",
+                ActorErrorKind::UnhandledSupervisionEvent(Box::new(message.event.clone())),
+            ),
+            SupervisionVerdict::Raised(err) => (
+                "SupervisionError::__supervise__::exception",
+                "threw an exception",
+                ActorErrorKind::ErrorDuringHandlingSupervision(
+                    err,
+                    Box::new(message.event.clone()),
                 ),
+            ),
+        };
+        for (actor_name, status) in [
+            (
+                message
+                    .actor_mesh_name
+                    .as_deref()
+                    .unwrap_or_else(|| message.event.actor_id.log_name()),
+                status,
+            ),
+            (cx.self_addr().log_name(), "UnhandledSupervisionEvent"),
+        ] {
+            tracing::info!(
+                name = "ActorMeshStatus",
+                status,
+                actor_name,
+                event = %message.event,
+                "__supervise__ on {} {}",
+                cx.self_addr(),
+                description,
+            );
+        }
+        Err(anyhow::Error::new(
+            ActorErrorKind::UnhandledSupervisionEvent(Box::new(ActorSupervisionEvent::new(
+                cx.self_addr().clone(),
+                display_name,
+                ActorStatus::Failed(cause),
                 None,
-            )?;
-            let fut = pyo3_async_runtimes::into_future_with_locals(&self.task_locals, awaitable)?;
-            anyhow::Ok((display_name, fut))
-        })
-        .await?;
-
-        let awaited = fut.await;
-
-        monarch_with_gil(GilSite::Supervise, |py| match awaited {
-            Ok(s) => {
-                if s.bind(py).is_truthy()? {
-                    // If the return value is truthy, then the exception was handled
-                    // and doesn't need to be propagated.
-                    // TODO: We also don't want to deliver multiple supervision
-                    // events from the same mesh if an earlier one is handled.
-                    tracing::info!(
-                        name = "ActorMeshStatus",
-                        status = "SupervisionError::Handled",
-                        // only care about the event sender when the message is handled
-                        actor_name = message.actor_mesh_name,
-                        event = %message.event,
-                        "__supervise__ on {} handled a supervision event, not reporting any further",
-                        cx.self_addr(),
-                    );
-                    Ok(())
-                } else {
-                    // For a falsey return value, we propagate the supervision event
-                    // to the next owning actor. We do this by returning a new
-                    // error. This will not set the causal chain for ActorSupervisionEvent,
-                    // so make sure to include the original event in the error message
-                    // to provide context.
-
-                    // False -- we propagate the event onward, but update it with the fact that
-                    // this actor is now the event creator.
-                    for (actor_name, status) in [
-                        (
-                            message
-                                .actor_mesh_name
-                                .as_deref()
-                                .unwrap_or_else(|| message.event.actor_id.log_name()),
-                            "SupervisionError::Unhandled",
-                        ),
-                        (cx.self_addr().log_name(), "UnhandledSupervisionEvent"),
-                    ] {
-                        tracing::info!(
-                            name = "ActorMeshStatus",
-                            status,
-                            actor_name,
-                            event = %message.event,
-                            "__supervise__ on {} did not handle a supervision event, reporting to the next next owner",
-                            cx.self_addr(),
-                        );
-                    }
-                    let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(
-                        ActorSupervisionEvent::new(
-                            cx.self_addr().clone(),
-                            display_name.clone(),
-                            ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(
-                                Box::new(message.event.clone()),
-                            )),
-                            None,
-                        ),
-                    ));
-                    Err(anyhow::Error::new(err))
-                }
-            }
-            Err(err) => {
-                // If __supervise__ raised UnhandledFaultHookException,
-                // return the PyErr directly without wrapping in
-                // ActorErrorKind. The custom run loop detects this by
-                // downcasting the anyhow::Error to PyErr.
-                if err.is_instance(py, &unhandled_fault_hook_exception(py)) {
-                    return Err(err.into());
-                }
-
-                // Any other exception will supersede in the propagation chain,
-                // and will become its own supervision failure.
-                // Include the event it was handling in the error message.
-
-                // Add to caused_by chain.
-                for (actor_name, status) in [
-                    (
-                        message
-                            .actor_mesh_name
-                            .as_deref()
-                            .unwrap_or_else(|| message.event.actor_id.log_name()),
-                        "SupervisionError::__supervise__::exception",
-                    ),
-                    (cx.self_addr().log_name(), "UnhandledSupervisionEvent"),
-                ] {
-                    tracing::info!(
-                        name = "ActorMeshStatus",
-                        status,
-                        actor_name,
-                        event = %message.event,
-                        "__supervise__ on {} threw an exception",
-                        cx.self_addr(),
-                    );
-                }
-                let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(
-                    ActorSupervisionEvent::new(
-                        cx.self_addr().clone(),
-                        display_name,
-                        ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(
-                            err.to_string(),
-                            Box::new(message.event.clone()),
-                        )),
-                        None,
-                    ),
-                ));
-                Err(anyhow::Error::new(err))
-            }
-        })
-        .await
+            ))),
+        ))
     }
 }
 
@@ -2153,6 +2302,8 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<MethodSpecifier>()?;
     hyperactor_mod.add_class::<UnflattenArg>()?;
     hyperactor_mod.add_class::<QueuedMessage>()?;
+    hyperactor_mod.add_class::<QueuedSupervision>()?;
+    hyperactor_mod.add_class::<SupervisionInFlight>()?;
     hyperactor_mod.add_class::<DroppingPort>()?;
     hyperactor_mod.add_class::<Port>()?;
     Ok(())
