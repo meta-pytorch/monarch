@@ -51,14 +51,14 @@ jobs:
 
           # Define test matrices (py3.10 only)
           CUDA='{"name": "cuda", "runner": "${{ inputs.runner-cuda }}", "gpu-arch-type": "cuda", "gpu-arch-version": "13.0", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
-          ROCM_71='{"name": "rocm7.1", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "7.1", "docker-image": "pytorch/manylinux2_28-builder:rocm7.1", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.1/"}'
-          ROCM_72='{"name": "rocm7.2", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "7.2", "docker-image": "pytorch/manylinux2_28-builder:rocm7.2", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/"}'
+          ROCM_714='{"name": "rocm7.14", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "7.14", "docker-image": "pytorch/manylinux2_28-builder:rocm7.14", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.14/"}'
+          ROCM_100='{"name": "rocm10.0", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "10.0", "docker-image": "pytorch/manylinux2_28-builder:rocm10.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm10.0/"}'
 
           # Define build matrices (includes python-version)
           CUDA_PY310='{"name": "cuda", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
           CUDA_PY312='{"name": "cuda", "python-version": "3.12", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
-          ROCM_71_PY310='{"name": "rocm7.1", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm7.1", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.1/"}'
-          ROCM_72_PY310='{"name": "rocm7.2", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm7.2", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/"}'
+          ROCM_714_PY310='{"name": "rocm7.14", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm7.14", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.14/"}'
+          ROCM_100_PY310='{"name": "rocm10.0", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm10.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm10.0/"}'
 
           # Build matrix:
           # - ROCm tag: ROCm only (manual opt-in; CUDA already built in PR run)
@@ -67,7 +67,7 @@ jobs:
           # ciflow/rocm tag to build and test ROCm manually. See
           # https://github.com/meta-pytorch/monarch/issues/4145 for re-enabling.
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
-            BUILD_MATRIX="[$ROCM_71_PY310, $ROCM_72_PY310]"
+            BUILD_MATRIX="[$ROCM_714_PY310, $ROCM_100_PY310]"
           else
             BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312]"
           fi
@@ -75,7 +75,7 @@ jobs:
           # Test matrix: ROCm tested only on a manual ciflow/rocm tag; CUDA
           # otherwise. ROCm is disabled in normal CI while it is broken.
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
-            TEST_MATRIX="[$ROCM_71, $ROCM_72]"
+            TEST_MATRIX="[$ROCM_714, $ROCM_100]"
           else
             TEST_MATRIX="[$CUDA]"
           fi
