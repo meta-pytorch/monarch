@@ -524,6 +524,8 @@ def apply_job(module_path: Optional[str] = None) -> None:
     for them to return.
     """
     from monarch._src.job.job import BashActor, set_current_job  # pyre-ignore[21]
+    from monarch._src.job.job_sidecar import job_sidecar_lock_path
+    from monarch._src.job.once_daemon import daemon_log_path
 
     if module_path is not None:
         set_current_job(module_path)
@@ -532,10 +534,11 @@ def apply_job(module_path: Optional[str] = None) -> None:
     state = job.state()
     apply_id = job.apply_id  # pyre-ignore[16]
     if apply_id is not None:
-        print(
-            f"Mount daemon log: /tmp/monarch_mounts_{apply_id}.log "
-            "(tail for sync/cold-transfer progress, on-demand-pull events)"
-        )
+        # The sidecar, which runs the mount daemon, exists only for jobs with
+        # mounts or telemetry.
+        sidecar_log = daemon_log_path(job_sidecar_lock_path(apply_id))
+        if os.path.exists(sidecar_log):
+            print(f"Job sidecar log: {sidecar_log}")
     t0 = time.time()
     mesh = next(iter(state._hosts.values()))
     procs = mesh.spawn_procs()
