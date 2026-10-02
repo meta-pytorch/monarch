@@ -1789,14 +1789,14 @@ class TestAllocationPortForward(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "boom"):
             ensure_allocation_port_forward("apply", self.FILE_SPEC)
 
-    @patch("monarch._src.job._kubernetes_port_forward.find_process")
+    @patch("monarch._src.job._kubernetes_port_forward.find_daemon")
     def test_stop_shuts_down_running_gateway(self, mock_find: MagicMock) -> None:
         stop_allocation_port_forward("apply")
 
         mock_find.assert_called_once_with(allocation_port_forward_lock_path("apply"))
         mock_find.return_value.shutdown.assert_called_once()
 
-    @patch("monarch._src.job._kubernetes_port_forward.find_process", return_value=None)
+    @patch("monarch._src.job._kubernetes_port_forward.find_daemon", return_value=None)
     def test_stop_without_gateway_is_noop(self, mock_find: MagicMock) -> None:
         stop_allocation_port_forward("apply")
 

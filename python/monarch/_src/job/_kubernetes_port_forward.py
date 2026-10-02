@@ -6,7 +6,7 @@
 
 """Allocation-scoped ``kubectl port-forward`` for out-of-cluster clients.
 
-Each allocation gets one forward, run by its own guarded process and keyed by
+Each allocation gets one forward, run by its own daemon process and keyed by
 ``apply_id`` like the job sidecar. Every client process (scripts, ``monarch
 exec``) and the job sidecar reuse it, so nothing starts ``kubectl`` per run.
 ``job.kill()`` releases it, and it exits on its own if ``kubectl`` does (for
@@ -28,7 +28,7 @@ from types import TracebackType
 from typing import TextIO
 
 from monarch._src.job.job_sidecar import spawn_module
-from monarch._src.job.process_guard import _Shutdown, find_process
+from monarch._src.job.once_daemon import _Shutdown, find_daemon
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -177,13 +177,13 @@ def start_port_forward(spec: PortForwardSpec) -> KubectlPortForward:
 
 
 def allocation_port_forward_lock_path(apply_id: str) -> str:
-    """Return the local guard path for an allocation's shared gateway."""
+    """Return the local lock path for an allocation's shared gateway."""
     return f"/tmp/monarch_kubernetes_gateway_{apply_id}.lock"
 
 
 def ensure_allocation_port_forward(apply_id: str, spec: PortForwardSpec) -> str:
     """Return the address of the allocation's port-forward, starting it if needed."""
-    guard = spawn_module(
+    daemon = spawn_module(
         allocation_port_forward_lock_path(apply_id),
         spec,
         _WORKER_MODULE,
@@ -199,7 +199,7 @@ def ensure_allocation_port_forward(apply_id: str, spec: PortForwardSpec) -> str:
             spec.kubeconfig,
         ],
     )
-    response = guard.send(_ADDRESS_REQUEST).get()
+    response = daemon.send(_ADDRESS_REQUEST).get()
     if not isinstance(response, str):
         raise RuntimeError(f"unexpected Kubernetes gateway response: {response!r}")
     return response
@@ -207,9 +207,9 @@ def ensure_allocation_port_forward(apply_id: str, spec: PortForwardSpec) -> str:
 
 def stop_allocation_port_forward(apply_id: str) -> None:
     """Stop an allocation-scoped port-forward if one is running."""
-    guard = find_process(allocation_port_forward_lock_path(apply_id))
-    if guard is not None:
-        guard.shutdown()
+    daemon = find_daemon(allocation_port_forward_lock_path(apply_id))
+    if daemon is not None:
+        daemon.shutdown()
 
 
 def _drain(stream: TextIO) -> None:
@@ -237,7 +237,7 @@ def _serve(spec: PortForwardSpec, socket_path: str) -> None:
                     except Exception:
                         # A disconnect, stalled client, or malformed request only
                         # costs that client; the forward is shared by the allocation.
-                        # Debug level: ProcessGuard's readiness probe connects and
+                        # Debug level: OnceDaemon's readiness probe connects and
                         # closes without sending a request.
                         logger.debug("dropped gateway client", exc_info=True)
                         continue
@@ -267,7 +267,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run one allocation's shared `kubectl port-forward` and serve its local "
-            "address to Monarch clients. Launched by ProcessGuard via "
+            "address to Monarch clients. Launched by OnceDaemon via "
             "`ensure_allocation_port_forward`, not meant to be run by hand."
         )
     )
@@ -288,13 +288,13 @@ def main() -> None:
     )
     parser.add_argument(
         "socket_path",
-        help="Unix socket to serve address requests on (supplied by ProcessGuard).",
+        help="Unix socket to serve address requests on (supplied by OnceDaemon).",
     )
     parser.add_argument(
         "lock_fd",
         type=int,
         help="Inherited lock file descriptor held for the process lifetime "
-        "(supplied by ProcessGuard).",
+        "(supplied by OnceDaemon).",
     )
     args = parser.parse_args()
     _serve(

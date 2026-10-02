@@ -8,7 +8,7 @@
 
 """Per-job sidecar command server.
 
-The sidecar process is keyed by a job ``apply_id`` and kept alive by ``ProcessGuard``.
+The sidecar process is keyed by a job ``apply_id`` and kept alive by ``OnceDaemon``.
 """
 
 import os
@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec
-from monarch._src.job.process_guard import find_process, ProcessGuard
+from monarch._src.job.once_daemon import find_daemon, OnceDaemon
 from monarch.actor import attach, enable_transport, HostMesh
 from monarch.config import get_runtime_config
 
@@ -49,8 +49,8 @@ def spawn_module(
     attach_to: str | None = None,
     process_name: str | None = None,
     module_args: list[str] | None = None,
-) -> ProcessGuard:
-    """Launch a Python module as a ``ProcessGuard``-managed background process."""
+) -> OnceDaemon:
+    """Launch a Python module as a ``OnceDaemon``-managed background process."""
     env = (
         {"HYPERACTOR_PROCESS_NAME": process_name} if process_name is not None else None
     )
@@ -67,14 +67,14 @@ def spawn_module(
         command.extend(["--attach-to", attach_to])
     if module_args is not None:
         command.extend(module_args)
-    return ProcessGuard.create(lock_path, config_key, command, env=env)
+    return OnceDaemon.create(lock_path, config_key, command, env=env)
 
 
 def create_job_sidecar(
     apply_id: str,
     attach_to: str | None = None,
-) -> ProcessGuard:
-    """Ensure the per-job sidecar process is running and return its guard."""
+) -> OnceDaemon:
+    """Ensure the per-job sidecar process is running and return its handle."""
     runtime_transport = sidecar_transport_from_runtime()
     # Keyed on the route too: a sidecar attached through a gateway that has
     # since moved is replaced rather than left talking to a dead address.
@@ -88,21 +88,21 @@ def create_job_sidecar(
     )
 
 
-def get_job_sidecar(apply_id: str) -> ProcessGuard:
+def get_job_sidecar(apply_id: str) -> OnceDaemon:
     """Return an existing job sidecar, creating an unattached one if absent."""
     return find_job_sidecar(apply_id) or create_job_sidecar(apply_id)
 
 
-def find_job_sidecar(apply_id: str) -> ProcessGuard | None:
-    """Return the per-job sidecar process guard if it exists."""
-    return find_process(job_sidecar_lock_path(apply_id))
+def find_job_sidecar(apply_id: str) -> OnceDaemon | None:
+    """Return a handle to the per-job sidecar process if it exists."""
+    return find_daemon(job_sidecar_lock_path(apply_id))
 
 
 def stop_job_sidecar(apply_id: str) -> None:
     """Shut down the per-job sidecar process for an apply id if it exists."""
-    guard = find_job_sidecar(apply_id)
-    if guard is not None:
-        guard.shutdown()
+    daemon = find_job_sidecar(apply_id)
+    if daemon is not None:
+        daemon.shutdown()
 
 
 def sidecar_transport_from_runtime() -> str | None:
@@ -249,7 +249,7 @@ def _run_job_sidecar(
     if attach_to is not None:
         attach(attach_to)
 
-    from monarch._src.job.process_guard import _Shutdown
+    from monarch._src.job.once_daemon import _Shutdown
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(socket_path)

@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import os
 import pickle
+import re
 import shutil
 import signal
 import socket
@@ -49,13 +50,14 @@ from monarch._src.job.job import (
 )
 from monarch._src.job.job_components import JobComponent, JobComponents, MountComponent
 from monarch._src.job.mount_config import Mounts
-from monarch._src.job.process import ProcessJob
-from monarch._src.job.process_guard import (
+from monarch._src.job.once_daemon import (
     _Shutdown,
     _wait_for_pid_exit,
     _wait_for_socket,
-    ProcessGuard,
+    daemon_log_path,
+    OnceDaemon,
 )
+from monarch._src.job.process import ProcessJob
 from monarch._src.job.service_identity import (
     deserialize_service_proc_ids,
     serialize_service_proc_ids,
@@ -215,7 +217,7 @@ class FailingCleanupContextJobTrait(FailingKillJobTrait):
 def test_spawn_module_uses_module_command_outside_par():
     with (
         patch.object(js, "_IN_PAR", False),
-        patch("monarch._src.job.process_guard.ProcessGuard.create") as create,
+        patch("monarch._src.job.once_daemon.OnceDaemon.create") as create,
     ):
         js.spawn_module("lock", "key", "monarch.fake_module")
 
@@ -229,7 +231,7 @@ def test_spawn_module_uses_module_command_outside_par():
 def test_spawn_module_passes_transport_arg_outside_par():
     with (
         patch.object(js, "_IN_PAR", False),
-        patch("monarch._src.job.process_guard.ProcessGuard.create") as create,
+        patch("monarch._src.job.once_daemon.OnceDaemon.create") as create,
     ):
         js.spawn_module(
             "lock",
@@ -255,7 +257,7 @@ def test_spawn_module_reenters_parent_binary_inside_par():
     with (
         patch.object(js, "_IN_PAR", True),
         patch.object(sys, "argv", ["/tmp/parent.par"]),
-        patch("monarch._src.job.process_guard.ProcessGuard.create") as create,
+        patch("monarch._src.job.once_daemon.OnceDaemon.create") as create,
     ):
         js.spawn_module("lock", "key", "monarch.fake_module")
 
@@ -268,16 +270,38 @@ def test_spawn_module_reenters_parent_binary_inside_par():
     }
 
 
-def test_process_guard_reports_child_that_exits_during_startup(tmp_path) -> None:
+def test_once_daemon_reports_child_that_exits_during_startup(tmp_path) -> None:
     """An exited child is a zombie until reaped; startup must not wait out the timeout."""
     start = time.monotonic()
     with pytest.raises(RuntimeError, match="exited before the socket"):
-        ProcessGuard.create(
+        OnceDaemon.create(
             str(tmp_path / "guard.lock"),
             "key",
             [sys.executable, "-c", "raise SystemExit(3)"],
         )
     assert time.monotonic() - start < 10
+
+
+def test_once_daemon_appends_child_output_to_log(tmp_path) -> None:
+    """The child must not inherit the caller's stdout or stderr, which it would
+    hold open."""
+    lock_path = str(tmp_path / "guard.lock")
+    log_path = daemon_log_path(lock_path)
+    assert log_path == str(tmp_path / "guard.log")
+    with pytest.raises(RuntimeError, match=re.escape(f"See {log_path}")):
+        OnceDaemon.create(
+            lock_path,
+            "key",
+            [
+                sys.executable,
+                "-c",
+                "import sys; print('child stdout'); sys.exit('child startup failed')",
+            ],
+        )
+    with open(log_path) as f:
+        log = f.read()
+    assert "child stdout" in log
+    assert "child startup failed" in log
 
 
 def test_wait_for_pid_exit_reaps_exited_child() -> None:
@@ -289,7 +313,7 @@ def test_wait_for_pid_exit_reaps_exited_child() -> None:
         time.sleep(0.01)
 
     start = time.monotonic()
-    with patch("monarch._src.job.process_guard.os.kill", wraps=os.kill) as kill:
+    with patch("monarch._src.job.once_daemon.os.kill", wraps=os.kill) as kill:
         _wait_for_pid_exit(child.pid)
 
     assert time.monotonic() - start < 5
@@ -300,7 +324,7 @@ def test_create_job_sidecar_spawns_job_sidecar_worker_module():
     with (
         patch.object(js, "_IN_PAR", False),
         patch.object(js, "sidecar_transport_from_runtime", return_value="metatls"),
-        patch("monarch._src.job.process_guard.ProcessGuard.create") as create,
+        patch("monarch._src.job.once_daemon.OnceDaemon.create") as create,
     ):
         js.create_job_sidecar(
             "apply_id",
