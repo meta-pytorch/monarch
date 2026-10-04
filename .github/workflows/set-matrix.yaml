@@ -61,21 +61,22 @@ jobs:
           ROCM_72_PY310='{"name": "rocm7.2", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm7.2", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/"}'
 
           # Build matrix:
-          # - ROCm tag: ROCm only (manual opt-in; CUDA already built in PR run)
-          # - Otherwise (PR/push/schedule): CUDA only
-          # ROCm is disabled in normal CI while it is broken. Push a
-          # ciflow/rocm tag to build and test ROCm manually. See
-          # https://github.com/meta-pytorch/monarch/issues/4145 for re-enabling.
+          # - ROCm tag: ROCm only (CUDA already built in PR run)
+          # - Otherwise (PR/push/schedule): CUDA
+          #
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
             BUILD_MATRIX="[$ROCM_71_PY310, $ROCM_72_PY310]"
+          elif [[ "$IS_PUSH" == "true" || "$IS_SCHEDULE" == "true" ]]; then
+            BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312, $ROCM_71_PY310, $ROCM_72_PY310]"
           else
             BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312]"
           fi
 
-          # Test matrix: ROCm tested only on a manual ciflow/rocm tag; CUDA
-          # otherwise. ROCm is disabled in normal CI while it is broken.
+          # Test matrix: ROCm tested only on push/schedule/tag
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
             TEST_MATRIX="[$ROCM_71, $ROCM_72]"
+          elif [[ "$IS_PUSH" == "true" || "$IS_SCHEDULE" == "true" ]]; then
+            TEST_MATRIX="[$CUDA, $ROCM_72]"
           else
             TEST_MATRIX="[$CUDA]"
           fi
