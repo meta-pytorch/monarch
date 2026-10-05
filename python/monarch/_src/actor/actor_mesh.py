@@ -99,6 +99,8 @@ if TYPE_CHECKING:
         PanicFlag,
         PortProtocol,
         QueuedMessage,
+        QueuedSupervision,
+        SupervisionInFlight,
     )
     from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorMeshProtocol
     from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
@@ -1399,6 +1401,7 @@ async def _dispatch_loop(
     actor: Any,
     receiver: "Receiver[QueuedMessage]",
     self_instance: "Instance",
+    supervising: "SupervisionInFlight",
 ) -> None:
     """
     Message loop for queue-dispatch mode. Called from Rust Actor::init.
@@ -1412,6 +1415,7 @@ async def _dispatch_loop(
         receiver: Channel receiver for queued messages.
         self_instance: The actor's own Instance, used to kill self on
             an unhandled exception.
+        supervising: Truthy while ``_supervision_loop`` has work pending.
     """
     # Messages dispatched since this loop last yielded (QD-1).
     streak = 0
@@ -1425,7 +1429,55 @@ async def _dispatch_loop(
                 streak = 0
             msg = await receiver.recv()
             streak += 1
+            # `recv` doesn't yield when a message is already queued, and sync
+            # endpoints never yield, so a backlog would starve
+            # `_supervision_loop` without this.
+            if supervising:
+                await asyncio.sleep(0)
             await _handle_queued_message(actor, msg)
+        except asyncio.CancelledError:
+            return
+        except BaseException as e:
+            reason = "".join(TracebackException.from_exception(e).format())
+            self_instance.kill(reason)
+            raise
+
+
+async def _supervision_loop(
+    actor: Any,
+    receiver: "Receiver[QueuedSupervision]",
+    self_instance: "Instance",
+) -> None:
+    """
+    Runs ``__supervise__`` for each supervision event, one at a time, as a
+    task beside ``_dispatch_loop`` on the actor's event loop. Called from Rust
+    Actor::init.
+
+    This lets supervision run at any await point of an async endpoint, or
+    between sync endpoints, without blocking the Rust actor from handling
+    messages. The verdict is reported back to the Rust actor, which fails if
+    the event was not handled.
+    """
+    while True:
+        try:
+            item = await receiver.recv()
+            # A separate task, so a `CancelledError` raised by `__supervise__`
+            # is reported as its verdict rather than stopping this loop. Only
+            # cancelling this task, as stop does, interrupts the wait.
+            supervise = asyncio.ensure_future(
+                actor.__supervise__(item.context, item.failure)
+            )
+            try:
+                await asyncio.wait((supervise,))
+            except asyncio.CancelledError:
+                supervise.cancel()
+                raise
+            try:
+                handled = bool(supervise.result())
+            except (Exception, asyncio.CancelledError) as e:
+                item._raised(e)
+            else:
+                item._handled(handled)
         except asyncio.CancelledError:
             return
         except BaseException as e:
@@ -1868,6 +1920,18 @@ class Actor(MeshTrait):
         the exception is treated as a new supervision event chained to the
         one being handled, matching the ``__exit__`` convention of context
         managers.
+
+        Failures are supervised one at a time, in a task on the actor's event
+        loop. That task may run at any ``await`` that suspends, whether in an
+        endpoint (concurrent or not) or in a task the actor started, so state
+        this method changes may differ after any such ``await``. Sync code is
+        never interrupted: a sync endpoint runs to completion first, and a sync
+        override runs between endpoints. The actor keeps handling messages
+        while this is pending, so messages that arrive after the failure may be
+        handled before this runs. An ``async def`` override may await the
+        actor's own endpoints. The actor only fails once this returns a falsey
+        value or raises. If the actor stops first, a pending call is
+        cancelled.
 
         This method is documentation-only on ``Actor``; subclasses provide the
         real implementation.

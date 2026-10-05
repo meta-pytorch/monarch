@@ -26,6 +26,7 @@ from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuff
 from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
 from monarch._rust_bindings.monarch_hyperactor.pickle import PicklingState
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr, Proc, Serialized
+from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 
 class PythonMessageKind:
     @classmethod
@@ -261,3 +262,29 @@ class QueuedMessage:
     def correlation_id(self) -> int | None:
         """The correlation ID for RPC flow tracing."""
         ...
+
+@final
+class QueuedSupervision:
+    """
+    A supervision event queued for ``__supervise__``. Report the verdict
+    with exactly one of ``_handled`` or ``_raised``.
+    """
+
+    @property
+    def context(self) -> Any:
+        """The PyContext to run ``__supervise__`` with."""
+        ...
+
+    @property
+    def failure(self) -> MeshFailure:
+        """The failure to supervise."""
+        ...
+    def _handled(self, handled: bool) -> None: ...
+    def _raised(self, exc: BaseException) -> None: ...
+
+@final
+class SupervisionInFlight:
+    """Truthy while any supervision event is waiting on ``__supervise__``."""
+
+    def __init__(self) -> None: ...
+    def __bool__(self) -> bool: ...

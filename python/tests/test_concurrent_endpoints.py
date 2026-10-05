@@ -18,6 +18,7 @@ from typing import Any, cast, Iterator
 import monarch.actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
+from monarch._rust_bindings.monarch_hyperactor.actor import SupervisionInFlight
 from monarch._rust_bindings.monarch_hyperactor.pympsc import (  # @manual=//monarch/monarch_extension:monarch_extension
     channel_for_test,
 )
@@ -263,7 +264,9 @@ async def _until_dispatched(actor: _RecordingActor, count: int) -> list[int]:
 def _start_dispatch(actor: _RecordingActor, rx: Any) -> asyncio.Task[None]:
     """Run `_dispatch_loop` over a test channel's receiver."""
     return asyncio.create_task(
-        actor_mesh._dispatch_loop(actor, cast(Any, rx), cast(Any, _Instance()))
+        actor_mesh._dispatch_loop(
+            actor, cast(Any, rx), cast(Any, _Instance()), SupervisionInFlight()
+        )
     )
 
 
