@@ -320,6 +320,21 @@
 //!   inclusion/dedup (CH-1) operates on the already-aggregated host
 //!   set, not per-mesh independently.
 //!
+//! ## Host identity and proc ownership
+//!
+//! The root lists hosts by `HostAgent` identity. A channel address
+//! is not a host identity: a client attached through a gateway
+//! advertises the gateway host's channel address, so two hosts can
+//! share one.
+//!
+//! A host alone at its channel address owns the procs at that
+//! address. Where several hosts share an address, the address only
+//! selects them as candidates, and the host whose introspection child
+//! list includes the exact proc owns it. Resolving a configured host
+//! records the procs it lists, so the ordinary root → host → proc walk
+//! needs no further ownership queries. Ownership is never read from
+//! the routing hops of a proc's location.
+//!
 //! ## MAST resolution (disabled)
 //!
 //! `mast_conda:///` resolution is disabled. The old topology-based
@@ -359,6 +374,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::routing::post;
+use futures::StreamExt;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
@@ -473,6 +489,24 @@ async fn query_introspect(
         .await
         .map_err(|_| anyhow::anyhow!("timed out {}", err_ctx))?
         .map_err(|e| anyhow::anyhow!("failed to receive {}: {}", err_ctx, e))
+}
+
+/// The exact procs that a host payload lists, or an error if the
+/// payload does not describe a host.
+fn host_snapshot(payload: &NodePayload) -> Result<HashSet<ProcAddr>, anyhow::Error> {
+    anyhow::ensure!(
+        matches!(payload.properties, NodeProperties::Host { .. }),
+        "{} did not answer as a host",
+        payload.identity
+    );
+    Ok(payload
+        .children
+        .iter()
+        .filter_map(|child| match child {
+            crate::introspect::NodeRef::Proc(proc) => Some(proc.clone()),
+            _ => None,
+        })
+        .collect())
 }
 
 /// Send an `IntrospectMessage::QueryChild` to an actor.
@@ -677,20 +711,31 @@ wirevalue::register_type!(ResolveReferenceMessage);
 /// plus child references.
 #[hyperactor::export(handlers = [MeshAdminMessage, ResolveReferenceMessage])]
 pub struct MeshAdminAgent {
-    /// Map of host address string → `HostAgent` reference used to
-    /// fan out our target admin queries.
-    hosts: HashMap<String, ActorRef<HostAgent>>,
+    /// The configured hosts in first-seen order. The root lists
+    /// exactly these.
+    hosts: Vec<ActorRef<HostAgent>>,
 
-    /// Reverse index: `HostAgent` identity → host address
-    /// string.
+    /// Configured host identity → `HostAgent` reference.
     ///
     /// The host agent itself is an actor that can appear in multiple
     /// places (e.g., as a host node and as a child actor under a
-    /// system proc). This index lets reference resolution treat that
-    /// identity as a *Host* node (via `resolve_host_node`) rather
+    /// system proc). Its identities let reference resolution treat
+    /// that actor as a *Host* node (via `resolve_host_node`) rather
     /// than a generic *Actor* node, avoiding cycles / dropped nodes
     /// in clients like the TUI.
-    host_agents_by_identity: HashMap<HostAgentKey, String>,
+    hosts_by_identity: HashMap<HostAgentKey, ActorRef<HostAgent>>,
+
+    /// Terminal channel address → the configured hosts at that
+    /// address. A channel address is not a host identity: a client
+    /// attached through a gateway (`attach(...)`) advertises the
+    /// gateway host's channel address, so both hosts appear here
+    /// under one key. See [`Self::owning_host`].
+    host_candidates_by_addr: HashMap<String, Vec<HostAgentKey>>,
+
+    /// Proc → owning host, learned from successful host snapshots.
+    /// Every value is a key of `hosts_by_identity`. See
+    /// [`Self::apply_host_snapshots`].
+    proc_owners: HashMap<ProcAddr, HostAgentKey>,
 
     /// `ActorAddr` of the process-global root client (`client[0]` on
     /// the singleton Host's `local_proc`), exposed as a first-class
@@ -746,13 +791,9 @@ impl MeshAdminAgent {
     /// Construct a `MeshAdminAgent` from a list of `(host_addr,
     /// host_agent_ref)` pairs and an optional root client `ActorAddr`.
     ///
-    /// Builds both:
-    /// - `hosts`: the forward map used to route admin queries to the
-    ///   correct `HostAgent`, and
-    /// - `host_agents_by_identity`: a reverse index used during
-    ///   reference resolution to recognize host-agent identities and
-    ///   resolve them as `NodeProperties::Host` rather than as
-    ///   generic actors.
+    /// `hosts` must hold each host-agent identity once, as
+    /// `spawn_admin` guarantees (SA-3). Hosts with different
+    /// identities may share a channel address.
     ///
     /// When `root_client_actor_id` is `Some`, the root client appears
     /// as a first-class child of the root node in the introspection
@@ -766,10 +807,21 @@ impl MeshAdminAgent {
         admin_addr: Option<std::net::SocketAddr>,
         telemetry_url: Option<String>,
     ) -> Self {
-        let host_agents_by_identity: HashMap<HostAgentKey, String> = hosts
-            .iter()
-            .map(|(addr, agent_ref)| (HostAgentKey::new(agent_ref.actor_addr()), addr.clone()))
-            .collect();
+        let mut hosts_by_identity = HashMap::new();
+        let mut host_candidates_by_addr: HashMap<String, Vec<HostAgentKey>> = HashMap::new();
+        let mut ordered = Vec::with_capacity(hosts.len());
+        for (addr, agent_ref) in hosts {
+            let key = HostAgentKey::new(agent_ref.actor_addr());
+            assert!(
+                hosts_by_identity
+                    .insert(key.clone(), agent_ref.clone())
+                    .is_none(),
+                "host agent {} is listed more than once",
+                agent_ref.actor_addr()
+            );
+            host_candidates_by_addr.entry(addr).or_default().push(key);
+            ordered.push(agent_ref);
+        }
 
         // Capture start time and username
         let started_at = chrono::Utc::now().to_rfc3339();
@@ -778,8 +830,10 @@ impl MeshAdminAgent {
             .unwrap_or_else(|_| "unknown".to_string());
 
         Self {
-            hosts: hosts.into_iter().collect(),
-            host_agents_by_identity,
+            hosts: ordered,
+            hosts_by_identity,
+            host_candidates_by_addr,
+            proc_owners: HashMap::new(),
             root_client_actor_id,
             self_actor_id: None,
             admin_addr_override: admin_addr,
@@ -795,8 +849,8 @@ impl MeshAdminAgent {
 impl std::fmt::Debug for MeshAdminAgent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MeshAdminAgent")
-            .field("hosts", &self.hosts.keys().collect::<Vec<_>>())
-            .field("host_agents", &self.host_agents_by_identity.len())
+            .field("hosts", &self.hosts)
+            .field("proc_owners", &self.proc_owners.len())
             .field("root_client_actor_id", &self.root_client_actor_id)
             .field("self_actor_id", &self.self_actor_id)
             .field("admin_addr", &self.admin_addr)
@@ -1057,7 +1111,7 @@ impl Actor for MeshAdminAgent {
             mesh_admin_access_instructions(&admin_url, tls.as_ref().map(|(_, bundle)| bundle));
         let bridge_state = Arc::new(BridgeState {
             admin_ref: ActorRef::attest(this.self_addr().clone()),
-            host_agents: self.host_agents_by_identity.keys().cloned().collect(),
+            host_agents: self.hosts_by_identity.keys().cloned().collect(),
             bridge_cx,
             resolve_semaphore: tokio::sync::Semaphore::new(hyperactor_config::global::get(
                 crate::config::MESH_ADMIN_MAX_CONCURRENT_RESOLVES,
@@ -1246,7 +1300,7 @@ impl MeshAdminAgent {
     /// on
     /// lookup errors.
     async fn resolve_reference(
-        &self,
+        &mut self,
         cx: &Context<'_, Self>,
         reference_string: &str,
     ) -> Result<NodePayload, anyhow::Error> {
@@ -1308,7 +1362,7 @@ impl MeshAdminAgent {
 
         let children: Vec<NodeRef> = self
             .hosts
-            .values()
+            .iter()
             .map(|agent| NodeRef::Host(agent.actor_addr().clone()))
             .collect();
         let system_children: Vec<NodeRef> = Vec::new(); // LC-1
@@ -1330,25 +1384,177 @@ impl MeshAdminAgent {
         }
     }
 
+    /// Find the `HostAgent` that owns `proc_id`.
+    ///
+    /// An owner already learned from a host snapshot is read from
+    /// `proc_owners`. Otherwise the proc's terminal channel address
+    /// selects the configured candidates: with none there is no host,
+    /// and a sole candidate owns every proc at its address. When
+    /// several hosts share the address, the address cannot choose, so
+    /// every candidate's snapshot is fetched and the host that lists
+    /// the exact proc owns it.
+    ///
+    /// Returns `Ok(None)` if every candidate answers and none lists
+    /// the proc. Returns an error if two hosts claim it, or if a
+    /// candidate fails and no answering host lists it.
+    async fn owning_host(
+        &mut self,
+        cx: &Context<'_, Self>,
+        proc_id: &ProcAddr,
+    ) -> Result<Option<ActorRef<HostAgent>>, anyhow::Error> {
+        if let Some(owner) = self.proc_owners.get(proc_id) {
+            return Ok(Some(self.configured_host(owner).clone()));
+        }
+        let Some(candidates) = self
+            .host_candidates_by_addr
+            .get(&proc_id.addr().to_string())
+        else {
+            return Ok(None);
+        };
+        let candidates: Vec<(HostAgentKey, ActorRef<HostAgent>)> = candidates
+            .iter()
+            .map(|key| (key.clone(), self.configured_host(key).clone()))
+            .collect();
+        if let [(_, only)] = candidates.as_slice() {
+            return Ok(Some(only.clone()));
+        }
+
+        // Half the request budget, so that a slow candidate leaves time
+        // for the proc query that follows.
+        let timeout =
+            hyperactor_config::global::get(crate::config::MESH_ADMIN_SINGLE_HOST_TIMEOUT) / 2;
+        let queries: Vec<_> = candidates
+            .iter()
+            .map(|(_, agent)| self.query_host_node(cx, agent.actor_addr(), timeout))
+            .collect();
+        let answers: Vec<_> = futures::stream::iter(queries)
+            .buffered(candidates.len())
+            .collect()
+            .await;
+
+        let mut snapshots = Vec::new();
+        let mut failure = None;
+        for ((key, _), answer) in candidates.into_iter().zip(answers) {
+            match answer.and_then(|payload| host_snapshot(&payload)) {
+                Ok(procs) => snapshots.push((key, procs)),
+                Err(e) => {
+                    failure.get_or_insert(e);
+                }
+            }
+        }
+        self.apply_host_snapshots(snapshots)?;
+
+        if let Some(owner) = self.proc_owners.get(proc_id) {
+            return Ok(Some(self.configured_host(owner).clone()));
+        }
+        match failure {
+            Some(e) => Err(e.context(format!(
+                "cannot tell which host at {} owns {}",
+                proc_id.addr(),
+                proc_id
+            ))),
+            None => Ok(None),
+        }
+    }
+
+    /// The configured host with identity `key`.
+    fn configured_host(&self, key: &HostAgentKey) -> &ActorRef<HostAgent> {
+        self.hosts_by_identity
+            .get(key)
+            .expect("ownership refers only to configured hosts")
+    }
+
+    /// Record the procs listed by successful host snapshots, all or
+    /// nothing. Each snapshot is a configured host's identity and the
+    /// exact procs it lists.
+    ///
+    /// If any proc would have two owners, because two snapshots list it
+    /// or because a snapshot lists a proc another host owns, nothing
+    /// changes and the error names both hosts. Otherwise each host's
+    /// entries are replaced by its snapshot, which drops procs the host
+    /// no longer lists.
+    fn apply_host_snapshots(
+        &mut self,
+        snapshots: Vec<(HostAgentKey, HashSet<ProcAddr>)>,
+    ) -> Result<(), anyhow::Error> {
+        let mut claims: HashMap<&ProcAddr, &HostAgentKey> = HashMap::new();
+        for (host, procs) in &snapshots {
+            anyhow::ensure!(
+                self.hosts_by_identity.contains_key(host),
+                "host agent {:?} is not configured",
+                host
+            );
+            for proc in procs {
+                let other = claims
+                    .insert(proc, host)
+                    .filter(|other| *other != host)
+                    .or_else(|| self.proc_owners.get(proc).filter(|owner| *owner != host));
+                if let Some(other) = other {
+                    anyhow::bail!(
+                        "proc {} is claimed by host agents {} and {}",
+                        proc,
+                        self.configured_host(other).actor_addr(),
+                        self.configured_host(host).actor_addr()
+                    );
+                }
+            }
+        }
+        for (host, procs) in snapshots {
+            self.proc_owners
+                .retain(|proc, owner| *owner != host || procs.contains(proc));
+            self.proc_owners
+                .extend(procs.into_iter().map(|proc| (proc, host.clone())));
+        }
+        Ok(())
+    }
+
     /// Resolve a `HostAgent` actor reference into a host-level
     /// `NodePayload`.
+    ///
+    /// When the host is configured, the procs it lists are recorded in
+    /// `proc_owners`, so that a walk from the root through a host to
+    /// its procs needs no further ownership queries.
+    async fn resolve_host_node(
+        &mut self,
+        cx: &Context<'_, Self>,
+        actor_id: &hyperactor::ActorAddr,
+    ) -> Result<NodePayload, anyhow::Error> {
+        let payload = self
+            .query_host_node(
+                cx,
+                actor_id,
+                hyperactor_config::global::get(crate::config::MESH_ADMIN_SINGLE_HOST_TIMEOUT),
+            )
+            .await?;
+        let key = HostAgentKey::new(actor_id);
+        if self.hosts_by_identity.contains_key(&key)
+            && let Ok(procs) = host_snapshot(&payload)
+        {
+            self.apply_host_snapshots(vec![(key, procs)])?;
+        }
+        Ok(payload)
+    }
+
+    /// Query a `HostAgent` for its host-level `NodePayload`.
     ///
     /// Sends `IntrospectMessage::Query` directly to the
     /// `HostAgent`, which returns a `NodePayload` with
     /// `NodeProperties::Host` and the host's children. The resolver
     /// overrides `parent` to `"root"` since the host agent
     /// doesn't know its position in the navigation tree.
-    async fn resolve_host_node(
+    async fn query_host_node(
         &self,
         cx: &Context<'_, Self>,
         actor_id: &hyperactor::ActorAddr,
+        timeout: Duration,
     ) -> Result<NodePayload, anyhow::Error> {
+        let err_ctx = format!("querying host agent {}", actor_id);
         let result = query_introspect(
             cx,
             actor_id,
             hyperactor::introspect::IntrospectView::Entity,
-            hyperactor_config::global::get(crate::config::MESH_ADMIN_SINGLE_HOST_TIMEOUT),
-            "querying host agent",
+            timeout,
+            &err_ctx,
         )
         .await?;
         Ok(crate::introspect::to_node_payload_with(
@@ -1369,16 +1575,14 @@ impl MeshAdminAgent {
     ///
     /// See PA-1 in module doc.
     async fn resolve_proc_node(
-        &self,
+        &mut self,
         cx: &Context<'_, Self>,
         proc_id: &ProcAddr,
     ) -> Result<NodePayload, anyhow::Error> {
-        let host_addr = proc_id.addr().to_string();
-
         let agent = self
-            .hosts
-            .get(&host_addr)
-            .ok_or_else(|| anyhow::anyhow!("host not found: {}", host_addr))?;
+            .owning_host(cx, proc_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("no host found for proc {}", proc_id))?;
 
         // Try the host agent's QueryChild first.
         let result = query_child_introspect(
@@ -1544,7 +1748,7 @@ impl MeshAdminAgent {
     /// parent is the system proc ref; otherwise it's the proc's
     /// `ProcAddr` string.
     async fn resolve_actor_node(
-        &self,
+        &mut self,
         cx: &Context<'_, Self>,
         actor_id: &hyperactor::ActorAddr,
     ) -> Result<NodePayload, anyhow::Error> {
@@ -1609,8 +1813,7 @@ impl MeshAdminAgent {
         let proc_id = actor_id.proc_addr();
         match &payload.properties {
             NodeProperties::Proc { .. } => {
-                let host_addr = proc_id.addr().to_string();
-                if let Some(agent) = self.hosts.get(&host_addr) {
+                if let Some(agent) = self.owning_host(cx, &proc_id).await? {
                     payload.parent =
                         Some(crate::introspect::NodeRef::Host(agent.actor_addr().clone()));
                 }
@@ -3504,6 +3707,459 @@ mod tests {
             }
             other => panic!("expected Root, got {:?}", other),
         }
+    }
+
+    // Two host refs with distinct identities at one channel address.
+    fn hosts_at_one_address() -> (ChannelAddr, ActorRef<HostAgent>, ActorRef<HostAgent>) {
+        let addr = ChannelAddr::Tcp("10.0.0.1:26600".parse().unwrap());
+        let a =
+            ActorRef::attest(test_proc_id_with_addr(addr.clone(), "a").actor_addr("host_agent"));
+        let b =
+            ActorRef::attest(test_proc_id_with_addr(addr.clone(), "b").actor_addr("host_agent"));
+        (addr, a, b)
+    }
+
+    fn host_key(host: &ActorRef<HostAgent>) -> HostAgentKey {
+        HostAgentKey::new(host.actor_addr())
+    }
+
+    fn procs_at(addr: &ChannelAddr, names: &[&str]) -> HashSet<ProcAddr> {
+        names
+            .iter()
+            .map(|name| test_proc_id_with_addr(addr.clone(), name))
+            .collect()
+    }
+
+    fn admin_for(addr: &ChannelAddr, hosts: &[&ActorRef<HostAgent>]) -> MeshAdminAgent {
+        MeshAdminAgent::new(
+            hosts
+                .iter()
+                .map(|host| (addr.to_string(), (*host).clone()))
+                .collect(),
+            None,
+            None,
+            None,
+        )
+    }
+
+    // A client attached through a gateway shares the gateway host's
+    // channel address. Both hosts are still listed at the root.
+    #[test]
+    fn test_root_lists_hosts_sharing_an_address() {
+        let (addr, a, b) = hosts_at_one_address();
+        let agent = admin_for(&addr, &[&a, &b]);
+
+        let payload = agent.build_root_payload();
+        assert!(matches!(
+            payload.properties,
+            NodeProperties::Root { num_hosts: 2, .. }
+        ));
+        assert_eq!(
+            payload.children,
+            vec![
+                crate::introspect::NodeRef::Host(a.actor_addr().clone()),
+                crate::introspect::NodeRef::Host(b.actor_addr().clone()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_host_snapshot_replaces_only_that_hosts_procs() {
+        let (addr, a, b) = hosts_at_one_address();
+        let mut agent = admin_for(&addr, &[&a, &b]);
+        agent
+            .apply_host_snapshots(vec![
+                (host_key(&a), procs_at(&addr, &["stale", "kept"])),
+                (host_key(&b), procs_at(&addr, &["other"])),
+            ])
+            .unwrap();
+
+        agent
+            .apply_host_snapshots(vec![(host_key(&a), procs_at(&addr, &["kept", "new"]))])
+            .unwrap();
+
+        let owner = |name| {
+            agent
+                .proc_owners
+                .get(&test_proc_id_with_addr(addr.clone(), name))
+        };
+        assert_eq!(owner("stale"), None);
+        assert_eq!(owner("kept"), Some(&host_key(&a)));
+        assert_eq!(owner("new"), Some(&host_key(&a)));
+        assert_eq!(owner("other"), Some(&host_key(&b)));
+    }
+
+    #[test]
+    fn test_host_snapshot_claiming_another_hosts_proc_changes_nothing() {
+        let (addr, a, b) = hosts_at_one_address();
+        let mut agent = admin_for(&addr, &[&a, &b]);
+        agent
+            .apply_host_snapshots(vec![(host_key(&a), procs_at(&addr, &["p"]))])
+            .unwrap();
+        let before = agent.proc_owners.clone();
+
+        let err = agent
+            .apply_host_snapshots(vec![(host_key(&b), procs_at(&addr, &["p", "q"]))])
+            .unwrap_err();
+
+        assert!(err.to_string().contains("claimed by"), "{err}");
+        assert_eq!(agent.proc_owners, before);
+    }
+
+    #[test]
+    fn test_host_snapshots_claiming_one_proc_change_nothing() {
+        let (addr, a, b) = hosts_at_one_address();
+        let mut agent = admin_for(&addr, &[&a, &b]);
+
+        let err = agent
+            .apply_host_snapshots(vec![
+                (host_key(&a), procs_at(&addr, &["p"])),
+                (host_key(&b), procs_at(&addr, &["p"])),
+            ])
+            .unwrap_err();
+
+        assert!(err.to_string().contains("claimed by"), "{err}");
+        assert!(agent.proc_owners.is_empty());
+    }
+
+    #[test]
+    fn test_snapshot_from_unconfigured_host_changes_nothing() {
+        let (addr, a, b) = hosts_at_one_address();
+        let mut agent = admin_for(&addr, &[&a]);
+        agent
+            .apply_host_snapshots(vec![(host_key(&a), procs_at(&addr, &["p"]))])
+            .unwrap();
+        let before = agent.proc_owners.clone();
+
+        let err = agent
+            .apply_host_snapshots(vec![(host_key(&b), procs_at(&addr, &["q"]))])
+            .unwrap_err();
+
+        assert!(err.to_string().contains("not configured"), "{err}");
+        assert_eq!(agent.proc_owners, before);
+    }
+
+    #[test]
+    fn test_registration_order_does_not_change_owner() {
+        let (addr, a, b) = hosts_at_one_address();
+        for order in [[&a, &b], [&b, &a]] {
+            let mut agent = admin_for(&addr, &order);
+            agent
+                .apply_host_snapshots(vec![
+                    (host_key(&b), HashSet::new()),
+                    (host_key(&a), procs_at(&addr, &["p"])),
+                ])
+                .unwrap();
+            assert_eq!(
+                agent
+                    .proc_owners
+                    .get(&test_proc_id_with_addr(addr.clone(), "p")),
+                Some(&host_key(&a))
+            );
+        }
+    }
+
+    /// A stand-in `HostAgent` for ownership tests. It publishes the
+    /// attrs that `HostAgent::publish_introspect_properties` publishes,
+    /// with a child list the test sets.
+    #[derive(Debug)]
+    #[hyperactor::export(handlers = [PublishProcs])]
+    struct StandInHost;
+    impl Actor for StandInHost {}
+
+    /// Replace a stand-in host's published child list, then acknowledge.
+    #[derive(Debug, Serialize, Deserialize, Named)]
+    struct PublishProcs(Vec<ProcAddr>, OncePortRef<()>);
+    wirevalue::register_type!(PublishProcs);
+
+    #[async_trait]
+    impl Handler<PublishProcs> for StandInHost {
+        async fn handle(
+            &mut self,
+            cx: &Context<Self>,
+            PublishProcs(procs, ack): PublishProcs,
+        ) -> Result<(), anyhow::Error> {
+            let mut attrs = hyperactor_config::Attrs::new();
+            attrs.set(crate::introspect::NODE_TYPE, "host".to_string());
+            attrs.set(crate::introspect::ADDR, cx.self_addr().addr().to_string());
+            attrs.set(crate::introspect::NUM_PROCS, procs.len());
+            attrs.set(
+                hyperactor::introspect::CHILDREN,
+                procs
+                    .into_iter()
+                    .map(hyperactor::introspect::IntrospectRef::Proc)
+                    .collect(),
+            );
+            attrs.set(crate::introspect::SYSTEM_CHILDREN, Vec::new());
+            cx.publish_attrs(attrs);
+            ack.post(cx, ());
+            Ok(())
+        }
+    }
+
+    /// Stand-in hosts `a` and `b` on a real proc that runs a
+    /// `ProcAgent`, so the stand-ins and the proc share one channel
+    /// address. The stand-ins have no `QueryChild` handler, so
+    /// resolving the proc falls back to its `ProcAgent` and succeeds,
+    /// and the returned `parent` shows which host the admin chose.
+    struct SharedAddress {
+        proc: hyperactor::Proc,
+        client: hyperactor::Client,
+        a: ActorRef<HostAgent>,
+        b: ActorRef<HostAgent>,
+    }
+
+    impl SharedAddress {
+        async fn new() -> Self {
+            use hyperactor::actor::ActorStatus;
+            use hyperactor::channel::ChannelTransport;
+
+            let proc = hyperactor::Proc::direct(ChannelTransport::Unix.any(), "shared".to_string())
+                .unwrap();
+            let agent = crate::proc_agent::ProcAgent::boot_v1(proc.clone(), None).unwrap();
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                agent.status().wait_for(|s| matches!(s, ActorStatus::Idle)),
+            )
+            .await
+            .expect("proc agent did not become idle")
+            .unwrap();
+            let client = proc.client("client");
+            let a = Self::stand_in(&proc, "host_a");
+            let b = Self::stand_in(&proc, "host_b");
+            Self { proc, client, a, b }
+        }
+
+        fn stand_in(proc: &hyperactor::Proc, label: &str) -> ActorRef<HostAgent> {
+            ActorRef::attest(
+                proc.spawn_with_label(label, StandInHost)
+                    .bind::<StandInHost>()
+                    .actor_addr()
+                    .clone(),
+            )
+        }
+
+        // A configured candidate that never answers.
+        fn silent(&self) -> ActorRef<HostAgent> {
+            ActorRef::attest(self.proc.proc_addr().actor_addr("silent_host"))
+        }
+
+        async fn publish(&self, host: &ActorRef<HostAgent>, procs: &[&hyperactor::Proc]) {
+            let (ack, done) = open_once_port::<()>(&self.client);
+            ActorRef::<StandInHost>::attest(host.actor_addr().clone()).post(
+                &self.client,
+                PublishProcs(
+                    procs.iter().map(|proc| proc.proc_addr()).collect(),
+                    ack.bind(),
+                ),
+            );
+            tokio::time::timeout(Duration::from_secs(10), done.recv())
+                .await
+                .expect("stand-in host did not acknowledge its republish")
+                .unwrap();
+        }
+
+        async fn admin(&self, hosts: &[&ActorRef<HostAgent>]) -> Admin {
+            use hyperactor::channel::ChannelTransport;
+
+            let addr = self.proc.proc_addr().addr().to_string();
+            let proc = hyperactor::Proc::direct(ChannelTransport::Unix.any(), "admin".to_string())
+                .unwrap();
+            let supervision =
+                hyperactor::testing::proc_supervison::ProcSupervisionCoordinator::set(&proc)
+                    .await
+                    .unwrap();
+            let admin_ref = proc
+                .spawn_with_label(
+                    MESH_ADMIN_ACTOR_NAME,
+                    MeshAdminAgent::new(
+                        hosts
+                            .iter()
+                            .map(|host| (addr.clone(), (*host).clone()))
+                            .collect(),
+                        None,
+                        Some("[::]:0".parse().unwrap()),
+                        None,
+                    ),
+                )
+                .bind();
+            Admin {
+                admin_ref,
+                _proc: proc,
+                _supervision: supervision,
+            }
+        }
+
+        async fn resolve(
+            &self,
+            admin: &Admin,
+            node: crate::introspect::NodeRef,
+        ) -> Result<NodePayload, String> {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                admin.admin_ref.resolve(&self.client, node.to_string()),
+            )
+            .await
+            .expect("admin did not answer the resolve")
+            .unwrap()
+            .0
+        }
+
+        async fn resolve_proc(&self, admin: &Admin) -> Result<NodePayload, String> {
+            self.resolve(
+                admin,
+                crate::introspect::NodeRef::Proc(self.proc.proc_addr()),
+            )
+            .await
+        }
+    }
+
+    struct Admin {
+        admin_ref: ActorRef<MeshAdminAgent>,
+        _proc: hyperactor::Proc,
+        _supervision: (
+            hyperactor::testing::proc_supervison::ReportedEvent,
+            ActorHandle<hyperactor::testing::proc_supervison::ProcSupervisionCoordinator>,
+        ),
+    }
+
+    fn host_ref(host: &ActorRef<HostAgent>) -> Option<crate::introspect::NodeRef> {
+        Some(crate::introspect::NodeRef::Host(host.actor_addr().clone()))
+    }
+
+    // Resolving a host records the procs it lists, so a later proc
+    // resolve keeps that owner even after the snapshots change.
+    #[tokio::test]
+    async fn test_host_resolve_records_proc_owner() {
+        let shared = SharedAddress::new().await;
+        let admin = shared.admin(&[&shared.a, &shared.b]).await;
+        shared.publish(&shared.a, &[&shared.proc]).await;
+        shared.publish(&shared.b, &[]).await;
+
+        shared
+            .resolve(
+                &admin,
+                crate::introspect::NodeRef::Host(shared.a.actor_addr().clone()),
+            )
+            .await
+            .unwrap();
+        shared.publish(&shared.a, &[]).await;
+        shared.publish(&shared.b, &[&shared.proc]).await;
+
+        let proc = shared.resolve_proc(&admin).await.unwrap();
+        assert_eq!(proc.parent, host_ref(&shared.a));
+    }
+
+    // A proc at an address shared by two hosts belongs to the host that
+    // lists it, in either registration order, and the answer is kept.
+    #[tokio::test]
+    async fn test_shared_address_proc_resolve_asks_the_candidates() {
+        let shared = SharedAddress::new().await;
+        for order in [[&shared.a, &shared.b], [&shared.b, &shared.a]] {
+            let admin = shared.admin(&order).await;
+            shared.publish(&shared.a, &[&shared.proc]).await;
+            shared.publish(&shared.b, &[]).await;
+
+            let proc = shared.resolve_proc(&admin).await.unwrap();
+            assert_eq!(proc.parent, host_ref(&shared.a));
+
+            shared.publish(&shared.a, &[]).await;
+            shared.publish(&shared.b, &[&shared.proc]).await;
+            let proc = shared.resolve_proc(&admin).await.unwrap();
+            assert_eq!(proc.parent, host_ref(&shared.a));
+        }
+    }
+
+    // Resolving a host the admin was not configured with does not
+    // record or contest ownership.
+    #[tokio::test]
+    async fn test_unconfigured_host_resolve_is_read_only() {
+        let shared = SharedAddress::new().await;
+        let other = SharedAddress::stand_in(&shared.proc, "host_c");
+        let admin = shared.admin(&[&shared.a, &shared.b]).await;
+        shared.publish(&shared.a, &[&shared.proc]).await;
+        shared.publish(&shared.b, &[]).await;
+        shared.publish(&other, &[&shared.proc]).await;
+
+        let proc = shared.resolve_proc(&admin).await.unwrap();
+        assert_eq!(proc.parent, host_ref(&shared.a));
+        shared
+            .resolve(
+                &admin,
+                crate::introspect::NodeRef::Host(other.actor_addr().clone()),
+            )
+            .await
+            .unwrap();
+        let proc = shared.resolve_proc(&admin).await.unwrap();
+        assert_eq!(proc.parent, host_ref(&shared.a));
+    }
+
+    // A sole host at an address owns the procs there without being
+    // asked.
+    #[tokio::test]
+    async fn test_sole_host_owns_procs_at_its_address() {
+        let shared = SharedAddress::new().await;
+        let admin = shared.admin(&[&shared.a]).await;
+        shared.publish(&shared.a, &[]).await;
+
+        let proc = shared.resolve_proc(&admin).await.unwrap();
+        assert_eq!(proc.parent, host_ref(&shared.a));
+    }
+
+    #[tokio::test]
+    async fn test_listing_host_wins_over_silent_candidate() {
+        let config = hyperactor_config::global::lock();
+        let _timeout = config.override_key(
+            crate::config::MESH_ADMIN_SINGLE_HOST_TIMEOUT,
+            Duration::from_secs(1),
+        );
+        let shared = SharedAddress::new().await;
+        let silent = shared.silent();
+        let admin = shared.admin(&[&silent, &shared.a]).await;
+        shared.publish(&shared.a, &[&shared.proc]).await;
+
+        let proc = shared.resolve_proc(&admin).await.unwrap();
+        assert_eq!(proc.parent, host_ref(&shared.a));
+    }
+
+    #[tokio::test]
+    async fn test_proc_no_candidate_lists_has_no_host() {
+        let shared = SharedAddress::new().await;
+        let admin = shared.admin(&[&shared.a, &shared.b]).await;
+        shared.publish(&shared.a, &[]).await;
+        shared.publish(&shared.b, &[]).await;
+
+        let err = shared.resolve_proc(&admin).await.unwrap_err();
+        assert!(err.contains("no host found"), "{err}");
+    }
+
+    // If a candidate does not answer and no answering host lists the
+    // proc, its owner is unknown; the admin does not guess.
+    #[tokio::test]
+    async fn test_silent_candidate_leaves_owner_unknown() {
+        let config = hyperactor_config::global::lock();
+        let _timeout = config.override_key(
+            crate::config::MESH_ADMIN_SINGLE_HOST_TIMEOUT,
+            Duration::from_secs(1),
+        );
+        let shared = SharedAddress::new().await;
+        let silent = shared.silent();
+        let admin = shared.admin(&[&silent, &shared.a]).await;
+        shared.publish(&shared.a, &[]).await;
+
+        let err = shared.resolve_proc(&admin).await.unwrap_err();
+        assert!(err.contains("cannot tell which host"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_two_hosts_listing_a_proc_is_an_error() {
+        let shared = SharedAddress::new().await;
+        let admin = shared.admin(&[&shared.a, &shared.b]).await;
+        shared.publish(&shared.a, &[&shared.proc]).await;
+        shared.publish(&shared.b, &[&shared.proc]).await;
+
+        let err = shared.resolve_proc(&admin).await.unwrap_err();
+        assert!(err.contains("claimed by"), "{err}");
     }
 
     // End-to-end smoke test for MeshAdminAgent::resolve that walks
