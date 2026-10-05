@@ -261,6 +261,11 @@ class Instance(abc.ABC):
         ...
 
     @abstractmethod
+    def _inject_failure(self, reason: Optional[str] = None) -> None:
+        """Abort this actor with an injected-failure marker."""
+        ...
+
+    @abstractmethod
     def _execution_start(self, name: str) -> int:
         """
         Producer write-side for the mesh `execution` field: record the start
@@ -1682,6 +1687,30 @@ class _Actor:
         else:
             return False
 
+    def _handle_invalid_reference(
+        self, cx: Context, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        _set_context(cx)
+        handle_invalid_reference = getattr(
+            self.instance, "_handle_invalid_reference", None
+        )
+        if handle_invalid_reference is not None:
+            return handle_invalid_reference(message)
+        else:
+            return False
+
+    def _handle_expired_delivery(
+        self, cx: Context, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        _set_context(cx)
+        handle_expired_delivery = getattr(
+            self.instance, "_handle_expired_delivery", None
+        )
+        if handle_expired_delivery is not None:
+            return handle_expired_delivery(message)
+        else:
+            return False
+
     async def __supervise__(self, cx: Context, *args: Any, **kwargs: Any) -> object:
         """Dispatch the user's ``__supervise__``.
 
@@ -1841,6 +1870,17 @@ class Actor(MeshTrait):
         undeliverable message was not handled. Returning True indicates that the message
         was handled in some way and does not need to be escalated as an error."""
         # Return False to indicate that the undeliverable message was not handled.
+        return False
+
+    def _handle_invalid_reference(self, message: UndeliverableMessageEnvelope) -> bool:
+        """Called when a message sent by this actor uses an invalid destination
+        reference. Return True to handle the failure, or False to use the default
+        behavior."""
+        return False
+
+    def _handle_expired_delivery(self, message: UndeliverableMessageEnvelope) -> bool:
+        """Called when a message sent by this actor expires before delivery.
+        Return True to handle the failure, or False to use the default behavior."""
         return False
 
     @_doc_stub

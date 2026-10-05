@@ -156,6 +156,11 @@ impl PyMeshFailure {
             .unwrap_or("<none>".into())
     }
 
+    #[getter]
+    fn is_injected(&self) -> bool {
+        self.inner.is_injected()
+    }
+
     fn __repr__(&self) -> String {
         format!("{}", self)
     }
