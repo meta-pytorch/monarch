@@ -7,11 +7,13 @@
 # pyre-unsafe
 
 import asyncio
+import json
 import os
 import pathlib
 import shutil
 import signal
 import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -19,6 +21,8 @@ import tempfile
 import textwrap
 import threading
 import time
+import urllib.parse
+import urllib.request
 import warnings
 import weakref
 from contextlib import ExitStack, suppress
@@ -49,6 +53,7 @@ from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import (
+    _spawn_admin,
     default_bootstrap_cmd,
     HostMesh,
     this_host,
@@ -1593,6 +1598,50 @@ def test_client_attach_service_singleton_spawns_on_client_host() -> None:
         )
 
         assert actor.getenv.call_one(worker_marker).get() is None
+
+
+def _admin_get(base: str, ref: str) -> Dict[str, Any]:
+    ca = "/var/facebook/rootcanal/ca.pem"
+    ctx = ssl.create_default_context(cafile=ca if os.path.exists(ca) else None)
+    if base.startswith("https"):
+        cert = "/var/facebook/x509_identities/server.pem"
+        if os.path.exists(cert):
+            ctx.load_cert_chain(cert, cert)
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx)
+    )
+    url = f"{base}/v1/{urllib.parse.quote(ref, safe='')}"
+    with opener.open(url, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_admin_lists_attached_worker_host() -> None:
+    """An attached client reaches the network through the worker's
+    address, so the client's host and the worker's host share one
+    channel address. The admin must still list both hosts and show the
+    worker's procs under the worker's host."""
+    job = DuplexProcessJob()
+    job.apply()
+    attach(job.duplex_addr)
+    with scoped_state(job, cached_path=None) as state:
+        context()
+        procs = state.hosts.spawn_procs(per_host={"workers": 1}, name="attached")
+        procs.spawn("echo", EchoActor).echo.call("ready").get()
+
+        base, _ = _spawn_admin([state.hosts], admin_addr="[::]:0").get()
+
+        root = _admin_get(base, "root")
+        assert root["properties"]["Root"]["num_hosts"] == 2, root["children"]
+
+        owners = []
+        for host_ref in root["children"]:
+            for proc_ref in _admin_get(base, host_ref)["children"]:
+                if proc_ref.startswith("attached"):
+                    owners.append(host_ref)
+                    assert _admin_get(base, proc_ref)["parent"] == host_ref
+        assert len(owners) == 1, owners
 
 
 class RelayActor(Actor):
