@@ -615,6 +615,10 @@ pub enum ActorErrorKind {
     /// normally.
     #[error("signal channel closed")]
     SignalChannelClosed,
+
+    /// A failure deliberately injected for testing.
+    #[error("injected actor failure: {0}")]
+    Injected(String),
 }
 
 impl ActorErrorKind {
@@ -725,6 +729,9 @@ pub enum Signal {
     /// causing a supervision event to propagate up the supervision
     /// hierarchy.
     Kill(String),
+
+    /// Fail the actor with an injected-error marker.
+    InjectFailure(String),
 }
 
 impl fmt::Display for Signal {
@@ -735,6 +742,7 @@ impl fmt::Display for Signal {
             Signal::ExitRequested(reason) => write!(f, "ExitRequested({})", reason),
             Signal::ChildStopped(uid) => write!(f, "ChildStopped({})", uid),
             Signal::Kill(reason) => write!(f, "Kill({})", reason),
+            Signal::InjectFailure(reason) => write!(f, "InjectFailure({})", reason),
         }
     }
 }

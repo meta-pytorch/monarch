@@ -160,6 +160,14 @@ impl ActorSupervisionEvent {
         self.actor_status.is_failed()
     }
 
+    /// Returns true only when this actor directly received an injected failure.
+    pub fn is_injected(&self) -> bool {
+        matches!(
+            self.actor_status,
+            ActorStatus::Failed(ActorErrorKind::Injected(_))
+        )
+    }
+
     /// Produce a concise failure report. Returns `None` for non-failure
     /// events.
     pub fn failure_report(&self) -> Option<String> {
@@ -223,7 +231,9 @@ impl fmt::Display for ActorSupervisionEvent {
         let name = self.actor_name();
         match &self.actor_status {
             ActorStatus::Failed(
-                err @ (ActorErrorKind::Generic(_) | ActorErrorKind::Aborted(_)),
+                err @ (ActorErrorKind::Generic(_)
+                | ActorErrorKind::Aborted(_)
+                | ActorErrorKind::Injected(_)),
             ) => {
                 writeln!(f, "Supervision event: actor {} failed:", name)?;
                 write!(indented(f).with_str("  "), "{}", err)
