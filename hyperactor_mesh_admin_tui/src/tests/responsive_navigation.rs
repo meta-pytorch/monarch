@@ -473,6 +473,11 @@ async fn rapid_navigation_fetches_only_final_selection() {
     assert_eq!(server.total_request_count(), 0);
 
     tokio::time::advance(std::time::Duration::from_millis(1)).await;
+    // The debounce has elapsed; let the fetch run on real time. A paused clock
+    // auto-advances past the request timeout whenever the loopback connect is
+    // not ready at the instant the runtime idles (typical on macOS), so the
+    // request would never reach the server.
+    tokio::time::resume();
     assert_eq!(server.next_request().await, final_reference.to_string());
     assert_eq!(server.request_count(&final_reference), 1);
     server.assert_no_additional_request();

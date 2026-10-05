@@ -682,6 +682,9 @@ mod tests {
         rendezvous.await;
     }
 
+    // Tokio's I/O driver is not fork-safe on macOS, and `assert_termination`
+    // forks from inside the test runtime.
+    #[cfg_attr(target_os = "macos", ignore = "tokio runtime fork assertion on macOS")]
     #[tokio::test]
     async fn test_join_after_creator_stops_exits() {
         assert_termination(

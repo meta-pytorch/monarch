@@ -62,6 +62,24 @@ _ShellOutput: TypeAlias = _ShellOutputData | _ShellOutputReturncode | _ShellOutp
 _CHUNK_SIZE = 16 * 1024
 _PROCESS_GRACE_SECONDS = 1
 
+# Where util-linux's `setsid --ctty` is unavailable (e.g. macOS), this trampoline
+# does the same: start a new session, adopt stdin (the pty slave) as the
+# controlling terminal, then exec the shell. Done in a child interpreter rather
+# than a `preexec_fn`, which is unsafe in a multithreaded process.
+_SETSID_CTTY_TRAMPOLINE = (
+    "import fcntl, os, sys, termios; "
+    "os.setsid(); "
+    "fcntl.ioctl(0, termios.TIOCSCTTY, 0); "
+    "os.execvp(sys.argv[1], sys.argv[1:])"
+)
+
+
+def _setsid_ctty_command(argv: list[str]) -> list[str]:
+    """Wrap `argv` so it runs as a session leader with stdin as its controlling tty."""
+    if os.path.exists("/usr/bin/setsid"):
+        return ["/usr/bin/setsid", "--ctty", *argv]
+    return [sys.executable, "-c", _SETSID_CTTY_TRAMPOLINE, *argv]
+
 
 def _set_window_size(fd: int, window_size: tuple[int, int]) -> None:
     rows, columns = window_size
@@ -248,10 +266,7 @@ class _ShellActor(Actor):
         shell_executable = child_env.get("SHELL", "/bin/bash")
         try:
             process = await asyncio.create_subprocess_exec(
-                "/usr/bin/setsid",
-                "--ctty",
-                shell_executable,
-                "-i",
+                *_setsid_ctty_command([shell_executable, "-i"]),
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
