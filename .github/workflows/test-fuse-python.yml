@@ -106,7 +106,7 @@ jobs:
           # CPU torch -- importing monarch pulls it in; the slim wheel itself has no
           # tensor engine.
           pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
-          pip install -r python/tests/requirements.txt
+          pip install --group test
 
       - name: Fetch disabled tests
         shell: bash

@@ -16,7 +16,7 @@ install_macos_base_dependencies() {
 }
 
 install_macos_python_test_dependencies() {
-    python -m pip install -r python/tests/requirements.txt
+    python -m pip install --group test
     python -m pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
 }
 

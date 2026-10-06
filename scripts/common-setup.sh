@@ -170,7 +170,7 @@ setup_sccache() {
 # Install Python test dependencies
 install_python_test_dependencies() {
     echo "Installing test dependencies..."
-    pip install -r python/tests/requirements.txt
+    pip install --group test
     dnf install -y rsync # required for code sync tests
 }
 

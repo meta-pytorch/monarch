@@ -357,13 +357,13 @@ cargo-nextest supports all of the filtering flags of "cargo test".
 
 ```sh
 # Install test dependencies (if not already installed via uv sync)
-uv sync --extra test
+uv sync --group test
 
 # Run unit tests with uv
 uv run pytest python/tests/ -v -m "not oss_skip"
 
 # Or if using pip
-pip install -e '.[test]'
+pip install --group test -e .
 pytest python/tests/ -v -m "not oss_skip"
 ```
 
