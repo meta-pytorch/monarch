@@ -693,6 +693,48 @@ pub enum TilingPolicy {
 }
 
 impl TilingPolicy {
+    /// Visit each terminal communication edge in a region's routing tree.
+    ///
+    /// Input:
+    ///
+    /// ```text
+    /// 0
+    /// |-- 1
+    /// |   `-- 2
+    /// `-- 3
+    /// ```
+    ///
+    /// Output: calls `visit(parent_rank, leaf_rank)` with `(1, 2)` and `(0, 3)`.
+    pub fn visit_terminal_edges(&self, region: &Region, mut visit: impl FnMut(usize, usize)) {
+        let root = Tile::from_view(region);
+        let root_rank = root.root_rank();
+        let children = self.children(&root);
+
+        self.visit_terminal_edges_from(root_rank, children, &mut visit);
+    }
+
+    /// Recursively visit terminal edges below one tile.
+    ///
+    /// Input: parent rank `1` and child tile rooted at `2` with no children.
+    /// Output: visits `(1, 2)`.
+    fn visit_terminal_edges_from(
+        &self,
+        parent_rank: usize,
+        children: Vec<Tile>,
+        visit: &mut impl FnMut(usize, usize),
+    ) {
+        for child in children {
+            let child_rank = child.root_rank();
+            let grandchildren = self.children(&child);
+
+            if grandchildren.is_empty() {
+                visit(parent_rank, child_rank);
+            } else {
+                self.visit_terminal_edges_from(child_rank, grandchildren, visit);
+            }
+        }
+    }
+
     pub(crate) fn children(&self, tile: &Tile) -> Vec<Tile> {
         match self {
             Self::BlockPartitioning => {
