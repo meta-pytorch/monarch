@@ -414,6 +414,20 @@ uv run python scripts/fetch_disabled_tests.py   # will skip both writes
 uv run pytest python/tests/ -v -m "not oss_skip"
 ```
 
+## Citation
+
+If you use Monarch in your research, please cite it as:
+
+```bibtex
+@software{monarch2025,
+  title = {Monarch: A distributed programming framework for PyTorch},
+  author = {{Monarch maintainers and contributors}},
+  url = {https://github.com/meta-pytorch/monarch},
+  license = {BSD-3-Clause},
+  year = {2025}
+}
+```
+
 ## License
 
 Monarch is BSD-3 licensed, as found in the [LICENSE](LICENSE) file.

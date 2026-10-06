@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use Monarch in your research, please cite it as below."
+title: "Monarch: A distributed programming framework for PyTorch"
+type: software
+authors:
+  - name: "Monarch maintainers and contributors"
+repository-code: "https://github.com/meta-pytorch/monarch"
+url: "https://meta-pytorch.org/monarch/"
+license: BSD-3-Clause
