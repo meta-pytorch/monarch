@@ -1071,13 +1071,14 @@ pub struct PythonActor {
     dispatch_sender: pympsc::Sender,
     /// Channel receiver, taken during Actor::init to start the message loop.
     dispatch_receiver: Option<pympsc::PyReceiver>,
-    /// Channel sender for enqueuing supervision events to `_supervision_loop`.
-    supervision_sender: pympsc::Sender,
-    /// Channel receiver, taken during Actor::init to start the supervision loop.
-    supervision_receiver: Option<pympsc::PyReceiver>,
-    /// Number of enqueued supervision events whose verdict has not been
-    /// reported yet. See [`SupervisionInFlight`].
-    supervising: Arc<AtomicUsize>,
+    /// Channel sender for enqueuing supervision events and undeliverable
+    /// messages to `_callback_loop`.
+    callback_sender: pympsc::Sender,
+    /// Channel receiver, taken during Actor::init to start the callback loop.
+    callback_receiver: Option<pympsc::PyReceiver>,
+    /// Number of enqueued callbacks whose verdict has not been reported yet.
+    /// See [`CallbacksPending`].
+    callbacks_pending: Arc<AtomicUsize>,
     /// Inherited or assigned construction context, not proof of mesh membership.
     construction_point: OnceLock<Option<Point>>,
     /// Initial message to process during PythonActor::init.
@@ -1112,7 +1113,7 @@ impl PythonActor {
                     })
                 };
                 let (dispatch_sender, dispatch_receiver) = channel()?;
-                let (supervision_sender, supervision_receiver) = channel()?;
+                let (callback_sender, callback_receiver) = channel()?;
 
                 Ok(Self {
                     actor,
@@ -1120,9 +1121,9 @@ impl PythonActor {
                     instance: None,
                     dispatch_sender,
                     dispatch_receiver: Some(dispatch_receiver),
-                    supervision_sender,
-                    supervision_receiver: Some(supervision_receiver),
-                    supervising: Arc::new(AtomicUsize::new(0)),
+                    callback_sender,
+                    callback_receiver: Some(callback_receiver),
+                    callbacks_pending: Arc::new(AtomicUsize::new(0)),
                     construction_point: OnceLock::from(construction_point),
                     init_message,
                     execution_tracker: Arc::new(ExecutionTracker::new()),
@@ -1312,9 +1313,9 @@ impl PythonActor {
 
                             // Give the actor a chance to handle the error produced
                             // in its own message handler. This is important because
-                            // we want Undeliverable<MessageEnvelope>, which returns
-                            // an Err typically, to create a supervision event and
-                            // call __supervise__. This only enqueues the event, so
+                            // we want an undeliverable message that fails the actor
+                            // (via `UndeliverableOutcome`) to create a supervision
+                            // event and call __supervise__. This only enqueues the event, so
                             // keep handling messages until the `SupervisionOutcome`
                             // carrying the verdict is delivered.
                             let supervision_event = actor_error_to_event(instance, &actor, err);
@@ -1462,10 +1463,10 @@ impl Actor for PythonActor {
             .dispatch_receiver
             .take()
             .expect("dispatch receiver already taken");
-        let supervision_receiver = self
-            .supervision_receiver
+        let callback_receiver = self
+            .callback_receiver
             .take()
-            .expect("supervision receiver already taken");
+            .expect("callback receiver already taken");
 
         monarch_with_gil(GilSite::DispatchInit, |py| {
             let self_instance = self.ensure_py_instance(py, this);
@@ -1480,20 +1481,16 @@ impl Actor for PythonActor {
                             self.actor.clone_ref(py),
                             receiver,
                             self_instance.clone_ref(py),
-                            SupervisionInFlight(self.supervising.clone()),
+                            CallbacksPending(self.callbacks_pending.clone()),
                         ),
                         None,
                     )?,
                 ),
                 (
-                    "supervision loop",
+                    "callback loop",
                     actor_mesh_mod.call_method(
-                        "_supervision_loop",
-                        (
-                            self.actor.clone_ref(py),
-                            supervision_receiver,
-                            self_instance,
-                        ),
+                        "_callback_loop",
+                        (self.actor.clone_ref(py), callback_receiver, self_instance),
                         None,
                     )?,
                 ),
@@ -1593,6 +1590,11 @@ impl Actor for PythonActor {
         })
     }
 
+    /// Enqueues the message for `_handle_undeliverable_message` and returns
+    /// right away, for the same reasons `handle_supervision_event` does not
+    /// wait. The verdict comes back later as an [`UndeliverableOutcome`],
+    /// whose handler applies the default handling if the message was not
+    /// handled. A message still pending when the actor stops is dropped.
     async fn handle_undeliverable_message(
         &mut self,
         ins: &Instance<Self>,
@@ -1625,55 +1627,26 @@ impl Actor for PythonActor {
         );
 
         let cx = Context::new(ins, envelope.headers().clone());
+        let pending = PendingUndeliverable {
+            instance: self
+                .instance
+                .clone()
+                .expect("PythonActor::init should have created the instance"),
+            rank: cx.cast_point(),
+            recording_span: cx.recording_span(),
+            envelope: Undeliverable::Returned(envelope),
+            reply: UndeliverableReply {
+                port: ins.port(),
+                instance: ins.into(),
+                reason,
+                _in_flight: InFlight::new(&self.callbacks_pending),
+            },
+        };
 
-        let (envelope, handled) = monarch_with_gil(GilSite::EndpointDispatch, |py| {
-            let py_cx = match &self.instance {
-                Some(instance) => crate::context::PyContext::new(&cx, instance.clone_ref(py)),
-                None => {
-                    let py_instance: crate::context::PyInstance = ins.into();
-                    crate::context::PyContext::new(
-                        &cx,
-                        py_instance
-                            .into_py_any(py)?
-                            .cast_bound(py)
-                            .map_err(PyErr::from)?
-                            .clone()
-                            .unbind(),
-                    )
-                }
-            }
-            .into_bound_py_any(py)?;
-            let py_envelope = PythonUndeliverableMessageEnvelope {
-                inner: Some(Undeliverable::Returned(envelope)),
-            }
-            .into_bound_py_any(py)?;
-            let handled = self
-                .actor
-                .call_method(
-                    py,
-                    "_handle_undeliverable_message",
-                    (&py_cx, &py_envelope),
-                    None,
-                )
-                .map_err(|err| anyhow::Error::from(SerializablePyErr::from(py, &err)))?
-                .extract::<bool>(py)?;
-            Ok::<_, anyhow::Error>((
-                py_envelope
-                    .cast::<PythonUndeliverableMessageEnvelope>()
-                    .map_err(PyErr::from)?
-                    .try_borrow_mut()
-                    .map_err(PyErr::from)?
-                    .take()?,
-                handled,
-            ))
-        })
-        .await?;
-
-        if !handled {
-            hyperactor::actor::handle_undeliverable_message(ins, reason, envelope)
-        } else {
-            Ok(())
-        }
+        self.callback_sender
+            .send(pending)
+            .map_err(|_| anyhow::anyhow!("failed to send undeliverable message to queue"))?;
+        Ok(())
     }
 
     /// Enqueues the event for `__supervise__` and returns `Ok(true)` right
@@ -1853,7 +1826,7 @@ impl PythonActor {
     }
 }
 
-/// A supervision event enqueued for `_supervision_loop`, which runs
+/// A supervision event enqueued for `_callback_loop`, which runs
 /// `__supervise__` and reports the verdict with `_handled` or `_raised`.
 /// Dropping it without reporting (e.g. because the loop was cancelled when
 /// the actor stopped) produces no verdict.
@@ -1952,7 +1925,7 @@ impl<'py> IntoPyObject<'py> for PendingSupervision {
     }
 }
 
-/// Counts a supervision event as in flight until dropped.
+/// Counts a callback as pending until dropped.
 #[derive(Debug)]
 struct InFlight(Arc<AtomicUsize>);
 
@@ -1969,15 +1942,15 @@ impl Drop for InFlight {
     }
 }
 
-/// Truthy while any supervision event is waiting on `__supervise__`.
+/// Truthy while any callback is waiting on `_callback_loop`.
 /// `_dispatch_loop` yields to the event loop between messages while this is
 /// true: `recv` does not yield when a message is already queued, so a
-/// backlog of messages would otherwise starve `_supervision_loop`.
+/// backlog of messages would otherwise starve `_callback_loop`.
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
-pub struct SupervisionInFlight(Arc<AtomicUsize>);
+pub struct CallbacksPending(Arc<AtomicUsize>);
 
 #[pymethods]
-impl SupervisionInFlight {
+impl CallbacksPending {
     /// A count with no supervision pending.
     #[new]
     fn new() -> Self {
@@ -1986,6 +1959,137 @@ impl SupervisionInFlight {
 
     fn __bool__(&self) -> bool {
         self.0.load(AtomicOrdering::Relaxed) > 0
+    }
+}
+
+/// An undeliverable message enqueued for `_callback_loop`, which runs
+/// `_handle_undeliverable_message` and reports the verdict with `_handled` or
+/// `_raised`. Dropping it without reporting produces no verdict.
+#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+pub struct QueuedUndeliverable {
+    #[pyo3(get)]
+    context: Py<crate::context::PyContext>,
+    #[pyo3(get)]
+    envelope: Py<PythonUndeliverableMessageEnvelope>,
+    reply: Option<UndeliverableReply>,
+}
+
+struct UndeliverableReply {
+    port: PortHandle<UndeliverableOutcome>,
+    instance: PyInstance,
+    reason: UndeliverableReason,
+    _in_flight: InFlight,
+}
+
+#[pymethods]
+impl QueuedUndeliverable {
+    fn _handled(&mut self, py: Python<'_>, handled: bool) {
+        let verdict = if handled {
+            UndeliverableVerdict::Handled
+        } else {
+            match self.envelope.bind(py).try_borrow_mut() {
+                Ok(mut envelope) => match envelope.take() {
+                    Ok(envelope) => UndeliverableVerdict::Unhandled(Box::new(envelope)),
+                    Err(err) => UndeliverableVerdict::Raised(err),
+                },
+                Err(err) => UndeliverableVerdict::Raised(PyErr::from(err).into()),
+            }
+        };
+        self.report(verdict);
+    }
+
+    fn _raised(&mut self, exc: Bound<'_, PyAny>) {
+        let err = SerializablePyErr::from(exc.py(), &PyErr::from_value(exc));
+        self.report(UndeliverableVerdict::Raised(err.into()));
+    }
+}
+
+impl QueuedUndeliverable {
+    fn report(&mut self, verdict: UndeliverableVerdict) {
+        let UndeliverableReply {
+            port,
+            instance,
+            reason,
+            _in_flight,
+        } = self
+            .reply
+            .take()
+            .expect("undeliverable verdict reported twice");
+        if let Err(err) = port.try_post(instance.deref(), UndeliverableOutcome { reason, verdict })
+        {
+            tracing::debug!(
+                actor_id = %instance.self_addr(),
+                "dropping undeliverable verdict, actor is gone: {}",
+                err
+            );
+        }
+    }
+}
+
+/// A [`QueuedUndeliverable`] that the actor's event loop thread builds, so
+/// that the Tokio worker never takes the GIL (see [`PendingMessage`]).
+struct PendingUndeliverable {
+    instance: Arc<Py<PyInstance>>,
+    rank: Point,
+    recording_span: tracing::Span,
+    envelope: Undeliverable<MessageEnvelope>,
+    reply: UndeliverableReply,
+}
+
+impl<'py> IntoPyObject<'py> for PendingUndeliverable {
+    type Target = QueuedUndeliverable;
+    type Output = Bound<'py, QueuedUndeliverable>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
+        let context = crate::context::PyContext::from_parts(
+            self.instance.clone_ref(py),
+            self.rank,
+            Some(self.recording_span),
+        );
+        let envelope = PythonUndeliverableMessageEnvelope {
+            inner: Some(self.envelope),
+        };
+        Bound::new(
+            py,
+            QueuedUndeliverable {
+                context: Py::new(py, context)?,
+                envelope: Py::new(py, envelope)?,
+                reply: Some(self.reply),
+            },
+        )
+    }
+}
+
+/// The verdict of `_handle_undeliverable_message` on a
+/// [`QueuedUndeliverable`], which the actor posts to itself.
+#[derive(Debug)]
+pub struct UndeliverableOutcome {
+    reason: UndeliverableReason,
+    verdict: UndeliverableVerdict,
+}
+
+#[derive(Debug)]
+enum UndeliverableVerdict {
+    Handled,
+    Unhandled(Box<Undeliverable<MessageEnvelope>>),
+    Raised(anyhow::Error),
+}
+
+#[async_trait]
+impl Handler<UndeliverableOutcome> for PythonActor {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        outcome: UndeliverableOutcome,
+    ) -> anyhow::Result<()> {
+        match outcome.verdict {
+            UndeliverableVerdict::Handled => Ok(()),
+            UndeliverableVerdict::Unhandled(envelope) => {
+                hyperactor::actor::handle_undeliverable_message(cx, outcome.reason, *envelope)
+            }
+            UndeliverableVerdict::Raised(err) => Err(err),
+        }
     }
 }
 
@@ -2035,11 +2139,11 @@ impl Handler<MeshFailure> for PythonActor {
                 instance: cx.into(),
                 failure: message,
                 display_name: None,
-                _in_flight: InFlight::new(&self.supervising),
+                _in_flight: InFlight::new(&self.callbacks_pending),
             },
         };
 
-        self.supervision_sender
+        self.callback_sender
             .send(pending)
             .map_err(|_| anyhow::anyhow!("failed to send supervision event to queue"))?;
         Ok(())
@@ -2309,7 +2413,8 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<UnflattenArg>()?;
     hyperactor_mod.add_class::<QueuedMessage>()?;
     hyperactor_mod.add_class::<QueuedSupervision>()?;
-    hyperactor_mod.add_class::<SupervisionInFlight>()?;
+    hyperactor_mod.add_class::<CallbacksPending>()?;
+    hyperactor_mod.add_class::<QueuedUndeliverable>()?;
     hyperactor_mod.add_class::<DroppingPort>()?;
     hyperactor_mod.add_class::<Port>()?;
     Ok(())

@@ -23,7 +23,11 @@ from typing import (
 )
 
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
-from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
+from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+    OncePortRef,
+    PortRef,
+    UndeliverableMessageEnvelope,
+)
 from monarch._rust_bindings.monarch_hyperactor.pickle import PicklingState
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr, Proc, Serialized
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
@@ -283,8 +287,27 @@ class QueuedSupervision:
     def _raised(self, exc: BaseException) -> None: ...
 
 @final
-class SupervisionInFlight:
-    """Truthy while any supervision event is waiting on ``__supervise__``."""
+class QueuedUndeliverable:
+    """
+    An undeliverable message queued for ``_handle_undeliverable_message``.
+    Report the verdict with exactly one of ``_handled`` or ``_raised``.
+    """
+
+    @property
+    def context(self) -> Any:
+        """The PyContext to run ``_handle_undeliverable_message`` with."""
+        ...
+
+    @property
+    def envelope(self) -> UndeliverableMessageEnvelope:
+        """The message that could not be delivered."""
+        ...
+    def _handled(self, handled: bool) -> None: ...
+    def _raised(self, exc: BaseException) -> None: ...
+
+@final
+class CallbacksPending:
+    """Truthy while any callback is waiting on ``_callback_loop``."""
 
     def __init__(self) -> None: ...
     def __bool__(self) -> bool: ...

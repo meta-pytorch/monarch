@@ -51,6 +51,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     MethodSpecifier,
     PythonMessage,
     PythonMessageKind,
+    QueuedSupervision,
 )
 from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
@@ -97,11 +98,11 @@ from typing_extensions import Self
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import (
+        CallbacksPending,
         PanicFlag,
         PortProtocol,
         QueuedMessage,
-        QueuedSupervision,
-        SupervisionInFlight,
+        QueuedUndeliverable,
     )
     from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorMeshProtocol
     from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
@@ -1402,7 +1403,7 @@ async def _dispatch_loop(
     actor: Any,
     receiver: "Receiver[QueuedMessage]",
     self_instance: "Instance",
-    supervising: "SupervisionInFlight",
+    callbacks_pending: "CallbacksPending",
 ) -> None:
     """
     Message loop for queue-dispatch mode. Called from Rust Actor::init.
@@ -1416,7 +1417,7 @@ async def _dispatch_loop(
         receiver: Channel receiver for queued messages.
         self_instance: The actor's own Instance, used to kill self on
             an unhandled exception.
-        supervising: Truthy while ``_supervision_loop`` has work pending.
+        callbacks_pending: Truthy while ``_callback_loop`` has work pending.
     """
     # Messages dispatched since this loop last yielded (QD-1).
     streak = 0
@@ -1432,8 +1433,8 @@ async def _dispatch_loop(
             streak += 1
             # `recv` doesn't yield when a message is already queued, and sync
             # endpoints never yield, so a backlog would starve
-            # `_supervision_loop` without this.
-            if supervising:
+            # `_callback_loop` without this.
+            if callbacks_pending:
                 await asyncio.sleep(0)
             await _handle_queued_message(actor, msg)
         except asyncio.CancelledError:
@@ -1444,37 +1445,42 @@ async def _dispatch_loop(
             raise
 
 
-async def _supervision_loop(
+async def _callback_loop(
     actor: Any,
-    receiver: "Receiver[QueuedSupervision]",
+    receiver: "Receiver[QueuedSupervision | QueuedUndeliverable]",
     self_instance: "Instance",
 ) -> None:
     """
-    Runs ``__supervise__`` for each supervision event, one at a time, as a
-    task beside ``_dispatch_loop`` on the actor's event loop. Called from Rust
-    Actor::init.
+    Runs ``__supervise__`` for each supervision event and
+    ``_handle_undeliverable_message`` for each undeliverable message, one at a
+    time, as a task beside ``_dispatch_loop`` on the actor's event loop.
+    Called from Rust Actor::init.
 
-    This lets supervision run at any await point of an async endpoint, or
+    This lets these callbacks run at any await point of an async endpoint, or
     between sync endpoints, without blocking the Rust actor from handling
-    messages. The verdict is reported back to the Rust actor, which fails if
-    the event was not handled.
+    messages. The verdict is reported back to the Rust actor, which acts on it
+    if the callback did not handle the event.
     """
     while True:
         try:
             item = await receiver.recv()
-            # A separate task, so a `CancelledError` raised by `__supervise__`
-            # is reported as its verdict rather than stopping this loop. Only
+            if isinstance(item, QueuedSupervision):
+                callback = actor.__supervise__(item.context, item.failure)
+            else:
+                callback = actor._handle_undeliverable_message(
+                    item.context, item.envelope
+                )
+            # A separate task, so a `CancelledError` raised by the callback is
+            # reported as its verdict rather than stopping this loop. Only
             # cancelling this task, as stop does, interrupts the wait.
-            supervise = asyncio.ensure_future(
-                actor.__supervise__(item.context, item.failure)
-            )
+            task = asyncio.ensure_future(callback)
             try:
-                await asyncio.wait((supervise,))
+                await asyncio.wait((task,))
             except asyncio.CancelledError:
-                supervise.cancel()
+                task.cancel()
                 raise
             try:
-                handled = bool(supervise.result())
+                handled = bool(task.result())
             except (Exception, asyncio.CancelledError) as e:
                 item._raised(e)
             else:
@@ -1723,17 +1729,21 @@ class _Actor:
                 pdb_wrapper.post_mortem(exc_tb)
                 self._maybe_exit_debugger(do_continue=False)
 
-    def _handle_undeliverable_message(
+    async def _handle_undeliverable_message(
         self, cx: Context, message: UndeliverableMessageEnvelope
     ) -> bool:
+        """Dispatch the user's ``_handle_undeliverable_message``, supporting
+        sync and async user methods the same way as ``__supervise__``."""
         _set_context(cx)
         handle_undeliverable = getattr(
             self.instance, "_handle_undeliverable_message", None
         )
-        if handle_undeliverable is not None:
-            return handle_undeliverable(message)
-        else:
+        if handle_undeliverable is None:
             return False
+        if inspect.iscoroutinefunction(handle_undeliverable):
+            return await handle_undeliverable(message)
+        with fake_sync_state():
+            return handle_undeliverable(message)
 
     async def __supervise__(self, cx: Context, *args: Any, **kwargs: Any) -> object:
         """Dispatch the user's ``__supervise__``.
@@ -1955,11 +1965,16 @@ class Actor(MeshTrait):
     # Methods to be (optionally) overridden by user code
     def _handle_undeliverable_message(
         self, message: UndeliverableMessageEnvelope
-    ) -> bool:
+    ) -> bool | Awaitable[bool]:
         """If a message sent by this actor cannot be delivered to its destination, this
         method is called. The default implementation returns False, indicating that the
         undeliverable message was not handled. Returning True indicates that the message
-        was handled in some way and does not need to be escalated as an error."""
+        was handled in some way and does not need to be escalated as an error.
+
+        This may be sync or async. It runs on the actor's event loop, one
+        callback at a time alongside ``__supervise__``, interleaved with
+        endpoints at await points or between sync endpoints. A pending call
+        is cancelled if the actor stops."""
         # Return False to indicate that the undeliverable message was not handled.
         return False
 

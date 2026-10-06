@@ -1368,22 +1368,26 @@ class UndeliverableMessageReceiver(Actor):
         return await self._messages.get()
 
 
+def _send_undeliverable() -> None:
+    actor_instance = context().actor_instance
+    port_id = PortId(
+        actor_id=ActorAddr(addr="local:0", proc_name="bogus", actor_name="bogus"),
+        port=1234,
+    )
+    port_ref = PortRef(port_id)
+    buf = Buffer()
+    buf.write(b"123")
+    port_ref.send(
+        actor_instance._as_rust(),
+        # pyrefly: ignore [bad-argument-count, bad-argument-type]
+        PythonMessage(PythonMessageKind.Result(None), buf.freeze(), []),
+    )
+
+
 class UndeliverableMessageSender(Actor):
     @endpoint
     def send_undeliverable(self) -> None:
-        actor_instance = context().actor_instance
-        port_id = PortId(
-            actor_id=ActorAddr(addr="local:0", proc_name="bogus", actor_name="bogus"),
-            port=1234,
-        )
-        port_ref = PortRef(port_id)
-        buf = Buffer()
-        buf.write(b"123")
-        port_ref.send(
-            actor_instance._as_rust(),
-            # pyrefly: ignore [bad-argument-count, bad-argument-type]
-            PythonMessage(PythonMessageKind.Result(None), buf.freeze(), []),
-        )
+        _send_undeliverable()
 
 
 class UndeliverableMessageSenderWithOverride(UndeliverableMessageSender):
@@ -1412,6 +1416,56 @@ async def test_undeliverable_message_with_override() -> None:
     assert sender != ""
     assert "bogus" in dest
     assert error_msg is not None
+    await pm.stop()
+
+
+class BlockingUndeliverableSender(Actor):
+    def __init__(self) -> None:
+        self._pending = asyncio.Event()
+        self._released = asyncio.Event()
+        self._handled: list[str] = []
+
+    @endpoint
+    async def send_undeliverable(self) -> None:
+        _send_undeliverable()
+
+    @endpoint
+    async def wait_pending(self) -> None:
+        await self._pending.wait()
+
+    @endpoint
+    async def release(self) -> None:
+        self._released.set()
+
+    @endpoint
+    async def handled(self) -> list[str]:
+        return self._handled
+
+    async def _handle_undeliverable_message(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        self._pending.set()
+        await self._released.wait()
+        self._handled.append(str(message.dest()))
+        return True
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+async def test_undeliverable_handler_does_not_block_actor() -> None:
+    pm = this_host().spawn_procs(per_host={"gpus": 1})
+    sender = pm.spawn("undeliverable_sender", BlockingUndeliverableSender)
+    await sender.send_undeliverable.call()
+    await sender.wait_pending.call()
+    # The handler is still waiting, yet the actor keeps handling messages.
+    assert await sender.handled.call_one() == []
+    await sender.release.call()
+    for _ in range(100):
+        handled = await sender.handled.call_one()
+        if handled:
+            break
+        await asyncio.sleep(0.1)
+    assert len(handled) == 1 and "bogus" in handled[0]
     await pm.stop()
 
 

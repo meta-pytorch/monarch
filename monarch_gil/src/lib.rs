@@ -110,8 +110,8 @@ fn is_reentrant() -> bool {
 /// should be rare and short-lived.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GilSite {
-    /// Call into a Python actor from Rust: undeliverable messages, FUSE and NFS
-    /// mounts, and telemetry queries.
+    /// Call into a Python actor from Rust: FUSE and NFS mounts, and telemetry
+    /// queries.
     EndpointDispatch,
     /// Start the Python dispatch loop during actor init.
     DispatchInit,
