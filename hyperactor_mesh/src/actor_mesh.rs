@@ -978,20 +978,20 @@ fn default_cast_tiling_policy() -> TilingPolicy {
 ///
 /// ```text
 /// [
-///   proc_0::cast {actor_0},
-///   proc_1::cast {actor_1},
+///   Some(proc_0::cast {actor_0}),
+///   Some(proc_1::cast {actor_1}),
 /// ]
 /// ```
 fn cast_node_mesh(
     destinations: &ValueMesh<CastDestination>,
-) -> anyhow::Result<ValueMesh<CastNode>> {
+) -> anyhow::Result<ValueMesh<Option<CastNode>>> {
     let nodes = destinations
         .values()
         .map(|destination| {
-            CastNode::new(
+            Some(CastNode::new(
                 CastActor::ref_for_proc(destination.actor().proc_addr()),
                 destination,
-            )
+            ))
         })
         .collect::<Vec<_>>();
 
