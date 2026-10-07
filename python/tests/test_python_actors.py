@@ -1460,6 +1460,7 @@ async def test_undeliverable_handler_does_not_block_actor() -> None:
     # The handler is still waiting, yet the actor keeps handling messages.
     assert await sender.handled.call_one() == []
     await sender.release.call()
+    handled: list[str] = []
     for _ in range(100):
         handled = await sender.handled.call_one()
         if handled:
