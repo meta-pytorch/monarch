@@ -101,6 +101,7 @@ use std::any::Any;
 use std::any::TypeId;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
@@ -109,6 +110,7 @@ use std::panic;
 use std::panic::AssertUnwindSafe;
 use std::panic::Location as PanicLocation;
 use std::pin::Pin;
+use std::ptr;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
@@ -128,6 +130,7 @@ use dashmap::DashMap;
 use dashmap::DashSet;
 use dashmap::mapref::entry::Entry;
 use dashmap::mapref::multiple::RefMulti;
+use enum_as_inner::EnumAsInner;
 use futures::FutureExt;
 use hyperactor_config::Flattrs;
 use hyperactor_telemetry::ActorStatusEvent;
@@ -464,8 +467,11 @@ struct ProcState {
     /// `gspawn_uid` callers with the same uid.
     reserved_child_uids: DashSet<crate::id::Uid>,
 
-    /// All actor instances in this proc.
-    instances: DashMap<ActorId, WeakInstanceCell>,
+    /// The lifecycle state of each actor this proc knows about. Each entry
+    /// moves through [`ActorEntry`]'s states under its entry lock.
+    /// Tombstones are retained for the lifetime of the process, so this map
+    /// grows with the number of actors that have ever existed in the proc.
+    actors: DashMap<ActorId, ActorEntry>,
 
     /// Root actor instances in this proc.
     root_instances: DashMap<ActorId, WeakInstanceCell>,
@@ -481,12 +487,6 @@ struct ProcState {
     /// terminal status. Bounded by
     /// [`config::TERMINATED_SNAPSHOT_RETENTION`].
     terminated_snapshots: DashMap<ActorId, TerminatedSnapshot>,
-
-    /// Terminal statuses for actors that existed on this proc.
-    /// Note: this map is retained for the lifetime of the process; thus
-    /// tombstones will grow with the number of actors that have ever existed
-    /// in the proc.
-    actor_tombstones: DashMap<ActorId, ActorStatus>,
 
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc. Stored as a [`PortRef`] so
@@ -512,6 +512,33 @@ struct ProcState {
     /// set exactly once during construction and never read by anyone
     /// outside of drop ordering.
     _attached_proc_guard: OnceLock<crate::gateway::AttachedProcGuard>,
+}
+
+/// The lifecycle state of an actor in [`ProcState::actors`].
+#[derive(EnumAsInner)]
+enum ActorEntry {
+    /// The actor has not been created yet. Holds status messages that
+    /// arrived before it was, each with the deadline after which it is
+    /// handled as for an absent actor. See [`Proc::post_status`].
+    Pending(Vec<(Instant, StatusMessage)>),
+    /// The actor's instance was created in [`InstanceCell::new`]. The actor
+    /// may have reached a terminal status while its cell is still alive.
+    Running {
+        cell: WeakInstanceCell,
+        /// The cell's status, readable while the cell is being dropped.
+        status: watch::Receiver<ActorStatus>,
+    },
+    /// The actor's cell was dropped with this terminal status.
+    Tombstoned(ActorStatus),
+}
+
+impl ActorEntry {
+    /// Whether this entry is `state`'s running instance, rather than that of
+    /// an instance that reused its actor id.
+    fn is_running_instance(&self, state: &InstanceCellState) -> bool {
+        self.as_running()
+            .is_some_and(|(cell, _)| ptr::eq(cell.inner.as_ptr(), state))
+    }
 }
 
 struct TerminatedSnapshot {
@@ -541,21 +568,39 @@ pub enum StatusMessage {
     /// Best-effort notification to `subscriber` when the destination actor
     /// reaches a terminal status. An actor that is already terminal or unknown
     /// replies immediately.
+    ///
+    /// Status messages are not ordered, so a subscription and its
+    /// cancellation may arrive in either order. Cancellation wins: a
+    /// subscription whose [`StatusMessage::UnsubscribeTerminal`] has already
+    /// arrived is never activated. Use a fresh `subscription_id` for each
+    /// subscription, and send each message once.
     SubscribeTerminal {
+        /// Identifies this subscription.
+        subscription_id: Uuid,
         /// Port receiving `None` for an unknown actor and `Some(status)` for a
         /// known actor. The subscription is removed before notification.
         subscriber: PortRef<Option<ActorStatus>>,
     },
-    /// Remove a terminal-status subscription previously registered for this
-    /// destination actor.
+    /// Cancel the terminal-status subscription with `subscription_id`, even if
+    /// its [`StatusMessage::SubscribeTerminal`] has not arrived yet.
     UnsubscribeTerminal {
-        /// The same port used to subscribe.
-        subscriber: PortRef<Option<ActorStatus>>,
+        /// The id used to subscribe.
+        subscription_id: Uuid,
     },
 }
 wirevalue::register_type!(StatusMessage);
 
 const MAX_TERMINAL_STATUS_SUBSCRIBERS: usize = 100;
+
+/// An actor's terminal-status subscriptions.
+#[derive(Default)]
+struct TerminalSubscriptions {
+    /// At most [`MAX_TERMINAL_STATUS_SUBSCRIBERS`] entries, evicting the
+    /// oldest.
+    active: VecDeque<(Uuid, PortRef<Option<ActorStatus>>)>,
+    /// Subscriptions cancelled before they arrived.
+    cancelled: HashSet<Uuid>,
+}
 
 /// Response to a delivery progress query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
@@ -610,37 +655,7 @@ impl MailboxSender for StatusSender {
             return;
         };
 
-        let actor_id = envelope.dest().actor_id().clone();
-
-        match message {
-            StatusMessage::GetStatus { reply, delivery } => {
-                let status = proc.status_for_actor(&actor_id);
-                if let Err(err) = proc.serialize_and_send_once(
-                    reply,
-                    status,
-                    crate::mailbox::monitored_return_handle(),
-                ) {
-                    tracing::error!("status reply failed: {err}");
-                }
-                if let Some((session_id, destination, reply)) = delivery {
-                    let progress =
-                        proc.delivery_progress_for_actor(&actor_id, session_id, &destination);
-                    if let Err(err) = proc.serialize_and_send_once(
-                        reply,
-                        progress,
-                        crate::mailbox::monitored_return_handle(),
-                    ) {
-                        tracing::error!("delivery progress reply failed: {err}");
-                    }
-                }
-            }
-            StatusMessage::SubscribeTerminal { subscriber } => {
-                proc.subscribe_terminal_status(&envelope.dest().actor_addr(), subscriber);
-            }
-            StatusMessage::UnsubscribeTerminal { subscriber } => {
-                proc.unsubscribe_terminal_status(&actor_id, &subscriber);
-            }
-        }
+        proc.post_status(envelope.dest().actor_id().clone(), message);
     }
 }
 
@@ -839,11 +854,10 @@ impl Proc {
                 proc_muxer: MailboxMuxer::new(),
                 reserved_roots: DashSet::new(),
                 reserved_child_uids: DashSet::new(),
-                instances: DashMap::new(),
+                actors: DashMap::new(),
                 root_instances: DashMap::new(),
                 queue_stats: Arc::new(ProcQueueStats::new()),
                 terminated_snapshots: DashMap::new(),
-                actor_tombstones: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
                 supervision_coordinator_actor_id: OnceLock::new(),
                 mailbox_server_handle: std::sync::Mutex::new(None),
@@ -869,19 +883,115 @@ impl Proc {
         proc
     }
 
+    /// Handle `message` for `actor_id`. A message for an actor that does not
+    /// exist yet waits for it to be created, so an actor that is about to
+    /// start is not reported as absent. If the actor is not created within
+    /// [`config::PENDING_ACTOR_DELIVERY_TIMEOUT`] of the message's arrival,
+    /// the message is handled as for an absent actor. This is consistent with
+    /// other messages for an actor that has not been created yet, which the
+    /// mailbox muxer holds under the same timeout.
+    fn post_status(&self, actor_id: ActorId, message: StatusMessage) {
+        let timeout = hyperactor_config::global::get(config::PENDING_ACTOR_DELIVERY_TIMEOUT);
+        let deadline = Instant::now() + timeout;
+        match self.inner.actors.entry(actor_id.clone()) {
+            Entry::Occupied(mut entry) => {
+                if let Some(pending) = entry.get_mut().as_pending_mut() {
+                    return pending.push((deadline, message));
+                }
+            }
+            Entry::Vacant(entry) if !timeout.is_zero() => {
+                entry.insert(ActorEntry::Pending(vec![(deadline, message)]));
+                crate::init::get_runtime().spawn(Self::expire_pending_status(
+                    self.downgrade(),
+                    actor_id,
+                    deadline,
+                ));
+                return;
+            }
+            Entry::Vacant(_) => {}
+        }
+        self.handle_status(&actor_id, message);
+    }
+
+    /// Handle each pending status message for `actor_id` as for an absent
+    /// actor once its deadline passes. `deadline` is the earliest one. Exits
+    /// when the actor is created or no messages remain.
+    async fn expire_pending_status(proc: WeakProc, actor_id: ActorId, mut deadline: Instant) {
+        loop {
+            tokio::time::sleep_until(deadline.into()).await;
+            let Some(proc) = proc.upgrade() else {
+                return;
+            };
+            let (expired, next) = {
+                let Entry::Occupied(mut entry) = proc.inner.actors.entry(actor_id.clone()) else {
+                    return;
+                };
+                let Some(pending) = entry.get_mut().as_pending_mut() else {
+                    return;
+                };
+                let now = Instant::now();
+                let (expired, remaining): (Vec<_>, Vec<_>) = std::mem::take(pending)
+                    .into_iter()
+                    .partition(|(deadline, _)| *deadline <= now);
+                let next = remaining.iter().map(|(deadline, _)| *deadline).min();
+                if next.is_some() {
+                    *pending = remaining;
+                } else {
+                    entry.remove();
+                }
+                (expired, next)
+            };
+            for (_, message) in expired {
+                proc.handle_status(&actor_id, message);
+            }
+            let Some(next) = next else {
+                return;
+            };
+            deadline = next;
+        }
+    }
+
+    fn handle_status(&self, actor_id: &ActorId, message: StatusMessage) {
+        match message {
+            StatusMessage::GetStatus { reply, delivery } => {
+                let status = self.status_for_actor(actor_id);
+                if let Err(err) = self.serialize_and_send_once(
+                    reply,
+                    status,
+                    crate::mailbox::monitored_return_handle(),
+                ) {
+                    tracing::error!("status reply failed: {err}");
+                }
+                if let Some((session_id, destination, reply)) = delivery {
+                    let progress =
+                        self.delivery_progress_for_actor(actor_id, session_id, &destination);
+                    if let Err(err) = self.serialize_and_send_once(
+                        reply,
+                        progress,
+                        crate::mailbox::monitored_return_handle(),
+                    ) {
+                        tracing::error!("delivery progress reply failed: {err}");
+                    }
+                }
+            }
+            StatusMessage::SubscribeTerminal {
+                subscription_id,
+                subscriber,
+            } => {
+                self.subscribe_terminal_status(actor_id, subscription_id, subscriber);
+            }
+            StatusMessage::UnsubscribeTerminal { subscription_id } => {
+                self.unsubscribe_terminal_status(actor_id, subscription_id);
+            }
+        }
+    }
+
     fn status_for_actor(&self, actor_id: &ActorId) -> Option<ActorStatus> {
-        let live_status = self
-            .inner
-            .instances
-            .get(actor_id)
-            .and_then(|entry| entry.value().upgrade())
-            .map(|cell| cell.status().borrow().clone());
-        live_status.or_else(|| {
-            self.inner
-                .actor_tombstones
-                .get(actor_id)
-                .map(|entry| entry.value().clone())
-        })
+        match self.inner.actors.get(actor_id)?.value() {
+            ActorEntry::Pending(_) => None,
+            ActorEntry::Running { status, .. } => Some(status.borrow().clone()),
+            ActorEntry::Tombstoned(status) => Some(status.clone()),
+        }
     }
 
     fn delivery_progress_for_actor(
@@ -890,12 +1000,7 @@ impl Proc {
         session_id: Uuid,
         destination: &EndpointId,
     ) -> DeliveryProgressResponse {
-        let Some(cell) = self
-            .inner
-            .instances
-            .get(actor_id)
-            .and_then(|entry| entry.value().upgrade())
-        else {
+        let Some(cell) = self.get_instance_by_id(actor_id) else {
             return DeliveryProgressResponse::ActorGone;
         };
 
@@ -931,29 +1036,23 @@ impl Proc {
 
     fn subscribe_terminal_status(
         &self,
-        actor_addr: &ActorAddr,
+        actor_id: &ActorId,
+        subscription_id: Uuid,
         subscriber: PortRef<Option<ActorStatus>>,
     ) {
-        if let Some(cell) = self.get_instance_by_id(actor_addr.id()) {
-            cell.subscribe_terminal_status(subscriber);
+        if let Some(cell) = self.get_instance_by_id(actor_id) {
+            cell.subscribe_terminal_status(subscription_id, subscriber);
             return;
         }
 
-        let status = self
-            .inner
-            .actor_tombstones
-            .get(actor_addr.id())
-            .map(|entry| entry.value().clone());
-        self.send_terminal_status(actor_addr, subscriber, status);
+        let status = self.status_for_actor(actor_id);
+        let actor_addr = ActorAddr::new(actor_id.clone(), self.default_location());
+        self.send_terminal_status(&actor_addr, subscriber, status);
     }
 
-    fn unsubscribe_terminal_status(
-        &self,
-        actor_id: &ActorId,
-        subscriber: &PortRef<Option<ActorStatus>>,
-    ) {
+    fn unsubscribe_terminal_status(&self, actor_id: &ActorId, subscription_id: Uuid) {
         if let Some(cell) = self.get_instance_by_id(actor_id) {
-            cell.unsubscribe_terminal_status(subscriber);
+            cell.unsubscribe_terminal_status(subscription_id);
         }
     }
 
@@ -1458,10 +1557,9 @@ impl Proc {
 
     /// Look up an instance by ActorId.
     pub fn get_instance_by_id(&self, actor_id: &ActorId) -> Option<InstanceCell> {
-        self.state()
-            .instances
-            .get(actor_id)
-            .and_then(|cell| cell.upgrade())
+        let entry = self.state().actors.get(actor_id)?;
+        let (cell, _) = entry.as_running()?;
+        cell.upgrade()
     }
 
     /// Live root instances in this proc.
@@ -1482,30 +1580,38 @@ impl Proc {
     /// have stopped or failed but whose Arc is still held (e.g. by
     /// the introspect task during teardown).
     pub fn all_actor_ids(&self) -> Vec<ActorAddr> {
-        self.state()
-            .instances
+        // Collect the cells before dropping them: a cell dropped while the
+        // iterator holds its shard's read lock would self-deadlock.
+        let cells: Vec<_> = self
+            .state()
+            .actors
             .iter()
             .filter_map(|entry| {
-                let cell = entry.value().upgrade()?;
-                (!cell.status().borrow().is_terminal()).then(|| cell.actor_addr().clone())
+                let (cell, status) = entry.as_running()?;
+                if !status.borrow().is_terminal() {
+                    cell.upgrade()
+                } else {
+                    None
+                }
             })
-            .collect()
+            .collect();
+        cells.iter().map(|cell| cell.actor_addr().clone()).collect()
     }
 
-    /// Snapshot all instance ids from the DashMap without inspecting
-    /// values. Each shard read lock is held only long enough to clone
-    /// the id — no `Weak::upgrade()`, no `watch::borrow()`, no
-    /// `is_terminal()` check. This minimises shard lock hold time to
-    /// avoid convoy starvation with concurrent `insert`/`remove`
-    /// operations during rapid actor churn.
+    /// Snapshot all instance ids from the DashMap. Each shard read lock is
+    /// held only long enough to check the entry's state and clone the id —
+    /// no `Weak::upgrade()`, no `watch::borrow()`, no `is_terminal()` check.
+    /// This minimises shard lock hold time to avoid convoy starvation with
+    /// concurrent `insert`/`remove` operations during rapid actor churn.
     ///
     /// The returned list may include actors that are terminal or whose
     /// `WeakInstanceCell` no longer upgrades. Callers should tolerate stale
     /// ids (e.g. by handling "not found" on subsequent per-actor lookups).
     pub fn all_instance_keys(&self) -> Vec<ActorId> {
         self.state()
-            .instances
+            .actors
             .iter()
+            .filter(|entry| entry.is_running())
             .map(|entry| entry.key().clone())
             .collect()
     }
@@ -1615,30 +1721,24 @@ impl Proc {
     /// root actor. If successful return `Some(root.clone())` else
     /// `None`.
     pub fn abort_root_actor(&self, root: &ActorId) -> Option<impl Future<Output = ActorAddr>> {
-        self.state()
-            .instances
-            .get(root)
-            .into_iter()
-            .flat_map(|entry| entry.value().upgrade())
-            .map(|cell| {
-                let actor_addr = cell.actor_addr().clone();
-                let r1 = actor_addr.clone();
-                let r2 = actor_addr;
-                // `Instance::start()` is infallible and should
-                // complete quickly, so calling `wait()` on `actor_task_handle`
-                // should be safe (i.e., not hang forever).
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        let h = cell.inner.actor_task_handle.wait();
-                        tracing::debug!("{}: aborting {:?}", r1, h);
-                        h.abort();
-                    })
-                    .await
-                    .unwrap();
-                    r2
-                }
-            })
-            .next()
+        self.get_instance_by_id(root).map(|cell| {
+            let actor_addr = cell.actor_addr().clone();
+            let r1 = actor_addr.clone();
+            let r2 = actor_addr;
+            // `Instance::start()` is infallible and should
+            // complete quickly, so calling `wait()` on `actor_task_handle`
+            // should be safe (i.e., not hang forever).
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let h = cell.inner.actor_task_handle.wait();
+                    tracing::debug!("{}: aborting {:?}", r1, h);
+                    h.abort();
+                })
+                .await
+                .unwrap();
+                r2
+            }
+        })
     }
 
     /// Signals to a root actor to stop,
@@ -1650,14 +1750,19 @@ impl Proc {
     ) -> Option<watch::Receiver<ActorStatus>> {
         // Upgrade the weak ref and immediately drop the DashMap entry (read
         // guard) before doing anything with `cell`. InstanceCellState::drop
-        // calls instances.remove(), which needs a write lock on the same shard.
-        // Holding the read guard while cell drops would self-deadlock.
-        let cell = match self.state().instances.get(actor_id) {
+        // updates the actor's entry, which needs a write lock on the same
+        // shard. Holding the read guard while cell drops would self-deadlock.
+        let cell = match self
+            .state()
+            .actors
+            .get(actor_id)
+            .and_then(|entry| entry.as_running().map(|(cell, _)| cell.upgrade()))
+        {
+            Some(cell) => cell,
             None => {
                 tracing::error!(subject = %self.proc_addr().subject(), "no actor {} found", actor_id);
                 return None;
             }
-            Some(entry) => entry.value().upgrade(),
         }; // entry (shard read lock) dropped here
         match cell {
             None => None, // the actor's cell has been dropped
@@ -1818,11 +1923,7 @@ impl Proc {
         &self,
         actor_ref: &ActorRef<R>,
     ) -> Option<ActorHandle<R>> {
-        let cell = self
-            .inner
-            .instances
-            .get(actor_ref.actor_addr().id())?
-            .upgrade()?;
+        let cell = self.get_instance_by_id(actor_ref.actor_addr().id())?;
         // An actor whose status is terminal has stopped processing
         // messages even if its InstanceCell Arc is still alive (e.g.
         // held by the introspect task during teardown).
@@ -4175,7 +4276,7 @@ struct InstanceCellState {
     status: watch::Receiver<ActorStatus>,
 
     /// Best-effort one-shot subscribers for this actor's terminal status.
-    terminal_status_subscribers: Mutex<VecDeque<PortRef<Option<ActorStatus>>>>,
+    terminal_status_subscriptions: Mutex<TerminalSubscriptions>,
 
     /// A weak reference to this instance's parent.
     parent: WeakInstanceCell,
@@ -4409,7 +4510,7 @@ impl InstanceCell {
                 actor_loop,
                 status_tx,
                 status,
-                terminal_status_subscribers: Mutex::new(VecDeque::new()),
+                terminal_status_subscriptions: Mutex::new(TerminalSubscriptions::default()),
                 parent: parent.map_or_else(WeakInstanceCell::new, |cell| cell.downgrade()),
                 children: DashMap::new(),
                 actor_task_handle: OnceLock::new(),
@@ -4431,14 +4532,22 @@ impl InstanceCell {
         };
         cell.maybe_link_parent();
         // TODO: disallow reuse; maybe only for instance ids.
-        proc.inner.actor_tombstones.remove(actor_id.id());
-        proc.inner
-            .instances
-            .insert(actor_id.id().clone(), cell.downgrade());
+        let previous = proc.inner.actors.insert(
+            actor_id.id().clone(),
+            ActorEntry::Running {
+                cell: cell.downgrade(),
+                status: cell.status().clone(),
+            },
+        );
         if is_root_instance {
             proc.inner
                 .root_instances
                 .insert(actor_id.id().clone(), cell.downgrade());
+        }
+        if let Some(ActorEntry::Pending(pending)) = previous {
+            for (_, message) in pending {
+                proc.handle_status(actor_id.id(), message);
+            }
         }
         cell
     }
@@ -4478,39 +4587,51 @@ impl InstanceCell {
         &self.inner.status
     }
 
-    fn subscribe_terminal_status(&self, subscriber: PortRef<Option<ActorStatus>>) {
-        let mut subscribers = self.inner.terminal_status_subscribers.lock().unwrap();
+    fn subscribe_terminal_status(
+        &self,
+        subscription_id: Uuid,
+        subscriber: PortRef<Option<ActorStatus>>,
+    ) {
+        let mut subscriptions = self.inner.terminal_status_subscriptions.lock().unwrap();
+        if subscriptions.cancelled.remove(&subscription_id) {
+            return;
+        }
         let status = self.status().borrow().clone();
         if !status.is_terminal() {
-            if subscribers.contains(&subscriber) {
-                return;
+            if subscriptions.active.len() == MAX_TERMINAL_STATUS_SUBSCRIBERS {
+                subscriptions.active.pop_front();
             }
-            if subscribers.len() == MAX_TERMINAL_STATUS_SUBSCRIBERS {
-                subscribers.pop_front();
-            }
-            subscribers.push_back(subscriber);
+            subscriptions
+                .active
+                .push_back((subscription_id, subscriber));
             return;
         }
 
-        drop(subscribers);
+        drop(subscriptions);
         self.proc()
             .send_terminal_status(self.actor_addr(), subscriber, Some(status));
     }
 
-    fn unsubscribe_terminal_status(&self, subscriber: &PortRef<Option<ActorStatus>>) {
-        let mut subscribers = self.inner.terminal_status_subscribers.lock().unwrap();
-        if let Some(index) = subscribers
+    fn unsubscribe_terminal_status(&self, subscription_id: Uuid) {
+        let mut subscriptions = self.inner.terminal_status_subscriptions.lock().unwrap();
+        match subscriptions
+            .active
             .iter()
-            .position(|candidate| candidate == subscriber)
+            .position(|(id, _)| *id == subscription_id)
         {
-            subscribers.remove(index);
+            Some(index) => {
+                subscriptions.active.remove(index);
+            }
+            None => {
+                subscriptions.cancelled.insert(subscription_id);
+            }
         }
     }
 
     fn notify_terminal_status(&self, status: ActorStatus) {
-        let subscribers =
-            std::mem::take(&mut *self.inner.terminal_status_subscribers.lock().unwrap());
-        for subscriber in subscribers {
+        let subscriptions =
+            std::mem::take(&mut *self.inner.terminal_status_subscriptions.lock().unwrap());
+        for (_, subscriber) in subscriptions.active {
             self.proc()
                 .send_terminal_status(self.actor_addr(), subscriber, Some(status.clone()));
         }
@@ -4518,7 +4639,12 @@ impl InstanceCell {
 
     #[cfg(test)]
     fn terminal_status_subscriber_count(&self) -> usize {
-        self.inner.terminal_status_subscribers.lock().unwrap().len()
+        self.inner
+            .terminal_status_subscriptions
+            .lock()
+            .unwrap()
+            .active
+            .len()
     }
 
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
@@ -4527,7 +4653,6 @@ impl InstanceCell {
     fn change_status(&self, new: ActorStatus) {
         let mut old_status = None;
         let mut illegal_status = None;
-        let actor_id = self.actor_addr().id().clone();
         let changed = self.inner.status_tx.send_if_modified(|status| {
             let old = status.clone();
             let mut status_change = classify_status_change(&old, &new);
@@ -4546,13 +4671,6 @@ impl InstanceCell {
                 }
             }
 
-            if new.is_terminal() {
-                self.inner
-                    .proc
-                    .inner
-                    .actor_tombstones
-                    .insert(actor_id.clone(), new.clone());
-            }
             old_status = Some(old);
             *status = new.clone();
             true
@@ -4624,17 +4742,11 @@ impl InstanceCell {
     }
 
     fn publish_dropped_status(&self, terminal_status: ActorStatus) {
-        let actor_id = self.actor_addr().id().clone();
         let actor_addr = self.actor_addr().clone();
         let changed = self.inner.status_tx.send_if_modified(|status| {
             if status.is_terminal() {
                 false
             } else {
-                self.inner
-                    .proc
-                    .inner
-                    .actor_tombstones
-                    .insert(actor_id.clone(), terminal_status.clone());
                 tracing::info!(
                     name = "ActorStatus",
                     actor_id = %actor_addr,
@@ -5073,14 +5185,16 @@ impl Drop for InstanceCellState {
                 parent.actor_addr()
             );
         }
-        if self
-            .proc
-            .inner
-            .instances
-            .remove(self.actor_id.id())
-            .is_none()
-        {
-            tracing::error!("instance {} was dropped but not in proc", self.actor_id);
+        let status = self.status.borrow().clone();
+        match self.proc.inner.actors.entry(self.actor_id.id().clone()) {
+            Entry::Occupied(mut entry) if entry.get().is_running_instance(self) => {
+                if status.is_terminal() {
+                    entry.insert(ActorEntry::Tombstoned(status));
+                } else {
+                    entry.remove();
+                }
+            }
+            _ => tracing::error!("instance {} was dropped but not in proc", self.actor_id),
         }
         self.proc.inner.root_instances.remove(self.actor_id.id());
     }
@@ -5468,6 +5582,7 @@ mod tests {
         actor.actor_addr().status_port().post(
             &client,
             StatusMessage::SubscribeTerminal {
+                subscription_id: Uuid::new_v4(),
                 subscriber: subscriber.bind(),
             },
         );
@@ -5493,17 +5608,18 @@ mod tests {
         let client = proc.client("client");
         let actor = proc.spawn_with_label("target", TestActor);
         let (subscriber, mut status_rx) = client.open_port::<Option<ActorStatus>>();
-        let subscriber = subscriber.bind();
+        let subscription_id = Uuid::new_v4();
         actor.actor_addr().status_port().post(
             &client,
             StatusMessage::SubscribeTerminal {
-                subscriber: subscriber.clone(),
+                subscription_id,
+                subscriber: subscriber.bind(),
             },
         );
-        actor
-            .actor_addr()
-            .status_port()
-            .post(&client, StatusMessage::UnsubscribeTerminal { subscriber });
+        actor.actor_addr().status_port().post(
+            &client,
+            StatusMessage::UnsubscribeTerminal { subscription_id },
+        );
 
         actor.drain_and_stop("test").unwrap();
         actor.await;
@@ -5525,6 +5641,7 @@ mod tests {
         actor.actor_addr().status_port().post(
             &client,
             StatusMessage::SubscribeTerminal {
+                subscription_id: Uuid::new_v4(),
                 subscriber: subscriber.bind(),
             },
         );
@@ -5546,6 +5663,11 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_status_subscription_notifies_for_terminal_and_missing_actors() {
+        let config = hyperactor_config::global::lock();
+        let _config_guard = config.override_key(
+            crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT,
+            Duration::from_millis(100),
+        );
         let proc = Proc::isolated();
         let client = proc.client("client");
         let actor = proc.spawn_with_label("target", TestActor);
@@ -5561,6 +5683,7 @@ mod tests {
             actor_addr.status_port().post(
                 &client,
                 StatusMessage::SubscribeTerminal {
+                    subscription_id: Uuid::new_v4(),
                     subscriber: subscriber.bind(),
                 },
             );
@@ -5851,17 +5974,169 @@ mod tests {
 
         assert_eq!(
             get_status(&client, &actor_addr).await,
-            Some(terminal_status)
+            Some(terminal_status.clone())
+        );
+
+        while !proc
+            .state()
+            .actors
+            .get(actor_addr.id())
+            .is_some_and(|entry| entry.is_tombstoned())
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            get_status(&client, &actor_addr).await,
+            Some(terminal_status),
+            "a dropped actor should report its terminal status"
         );
     }
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_status_control_port_reports_unknown_actor() {
+        let config = hyperactor_config::global::lock();
+        let _config_guard = config.override_key(
+            crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT,
+            Duration::from_millis(100),
+        );
         let proc = Proc::isolated();
         let client = proc.client("client");
         let missing = proc.root_addr(Uid::instance(Label::strip("missing")));
 
         assert_eq!(get_status(&client, &missing).await, None);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_status_control_port_waits_for_actor_to_start() {
+        let config = hyperactor_config::global::lock();
+        let _config_guard = config.override_key(
+            crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT,
+            Duration::from_secs(10),
+        );
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let uid = Uid::instance(Label::strip("pending"));
+        let pending = proc.root_addr(uid.clone());
+
+        let (reply_port, reply_rx) = client.open_once_port::<Option<ActorStatus>>();
+        pending.status_port().post(
+            &client,
+            StatusMessage::GetStatus {
+                reply: reply_port.bind(),
+                delivery: None,
+            },
+        );
+        let _actor = proc.spawn_with_uid(uid, TestActor).unwrap();
+
+        let status = reply_rx.recv().await.unwrap();
+        assert_matches!(status, Some(status) if !status.is_terminal());
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_status_control_port_times_out_each_message() {
+        let timeout = Duration::from_millis(500);
+        let config = hyperactor_config::global::lock();
+        let _config_guard =
+            config.override_key(crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT, timeout);
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let missing = proc.root_addr(Uid::instance(Label::strip("missing")));
+        let post_get_status = || {
+            let (reply_port, reply_rx) = client.open_once_port::<Option<ActorStatus>>();
+            missing.status_port().post(
+                &client,
+                StatusMessage::GetStatus {
+                    reply: reply_port.bind(),
+                    delivery: None,
+                },
+            );
+            reply_rx
+        };
+
+        let first_rx = post_get_status();
+        tokio::time::sleep(timeout / 2).await;
+        let second_posted = Instant::now();
+        let second_rx = post_get_status();
+
+        assert_eq!(first_rx.recv().await.unwrap(), None);
+        assert_eq!(second_rx.recv().await.unwrap(), None);
+        assert!(
+            second_posted.elapsed() >= timeout,
+            "a message should wait out its own timeout, not the first pending message's"
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_terminal_unsubscribe_before_subscribe_for_pending_actor() {
+        let config = hyperactor_config::global::lock();
+        let _config_guard = config.override_key(
+            crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT,
+            Duration::from_secs(10),
+        );
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let uid = Uid::instance(Label::strip("pending"));
+        let pending = proc.root_addr(uid.clone());
+        let (kept, _kept_rx) = client.open_port::<Option<ActorStatus>>();
+        let (cancelled, _cancelled_rx) = client.open_port::<Option<ActorStatus>>();
+        let cancelled_id = Uuid::new_v4();
+
+        for message in [
+            StatusMessage::UnsubscribeTerminal {
+                subscription_id: cancelled_id,
+            },
+            StatusMessage::SubscribeTerminal {
+                subscription_id: Uuid::new_v4(),
+                subscriber: kept.bind(),
+            },
+            StatusMessage::SubscribeTerminal {
+                subscription_id: cancelled_id,
+                subscriber: cancelled.bind(),
+            },
+        ] {
+            pending.status_port().post(&client, message);
+        }
+        let actor = proc.spawn_with_uid(uid, TestActor).unwrap();
+
+        assert_eq!(
+            proc.terminal_status_subscriber_count(actor.actor_addr().id()),
+            1,
+            "a subscription cancelled before it arrived should not be activated"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_terminal_unsubscribe_before_subscribe_for_live_actor() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let actor = proc.spawn_with_label("target", TestActor);
+        let actor_id = actor.actor_addr().id().clone();
+        let (subscriber, mut status_rx) = client.open_port::<Option<ActorStatus>>();
+        let subscription_id = Uuid::new_v4();
+
+        for message in [
+            StatusMessage::UnsubscribeTerminal { subscription_id },
+            StatusMessage::SubscribeTerminal {
+                subscription_id,
+                subscriber: subscriber.bind(),
+            },
+        ] {
+            actor.actor_addr().status_port().post(&client, message);
+        }
+        assert_eq!(
+            proc.terminal_status_subscriber_count(&actor_id),
+            0,
+            "a subscription cancelled before it arrived should not be activated"
+        );
+
+        actor.drain_and_stop("test").unwrap();
+        actor.await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), status_rx.recv())
+                .await
+                .is_err(),
+            "cancelled terminal status subscriber should not be notified"
+        );
     }
 
     #[derive(Debug)]

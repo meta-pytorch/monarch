@@ -22,6 +22,7 @@ use serde::Serialize;
 use tokio::sync::watch;
 use tokio::time;
 use typeuri::Named;
+use uuid::Uuid;
 
 use crate::Actor;
 use crate::ActorAddr;
@@ -457,7 +458,7 @@ impl ActorMonitor {
                 state: MonitorState::Idle,
                 supervised: false,
                 delivery,
-                terminal_status_subscriber: None,
+                terminal_status_subscription: None,
                 activations: activations.clone(),
             },
         );
@@ -583,7 +584,7 @@ struct MonitorActor {
     state: MonitorState,
     supervised: bool,
     delivery: Option<DeliveryMonitor>,
-    terminal_status_subscriber: Option<PortRef<Option<ActorStatus>>>,
+    terminal_status_subscription: Option<Uuid>,
     activations: Arc<AtomicUsize>,
 }
 
@@ -694,15 +695,17 @@ impl Actor for MonitorActor {
             .port::<MonitorTerminalStatus>()
             .contramap(MonitorTerminalStatus)
             .bind();
+        let subscription_id = Uuid::new_v4();
         let mut status_port = self.target.status_port();
         status_port.return_undeliverable(false);
         status_port.post(
             this,
             StatusMessage::SubscribeTerminal {
-                subscriber: subscriber.clone(),
+                subscription_id,
+                subscriber,
             },
         );
-        self.terminal_status_subscriber = Some(subscriber);
+        self.terminal_status_subscription = Some(subscription_id);
         self.reconcile(this, time::Instant::now())
     }
 
@@ -711,12 +714,12 @@ impl Actor for MonitorActor {
         this: &Instance<Self>,
         _err: Option<&crate::actor::ActorError>,
     ) -> anyhow::Result<()> {
-        let Some(subscriber) = self.terminal_status_subscriber.take() else {
+        let Some(subscription_id) = self.terminal_status_subscription.take() else {
             return Ok(());
         };
         let mut status_port = self.target.status_port();
         status_port.return_undeliverable(false);
-        status_port.post(this, StatusMessage::UnsubscribeTerminal { subscriber });
+        status_port.post(this, StatusMessage::UnsubscribeTerminal { subscription_id });
         Ok(())
     }
 }
@@ -1410,7 +1413,7 @@ mod tests {
             state: MonitorState::Idle,
             supervised: false,
             delivery: Some(delivery),
-            terminal_status_subscriber: None,
+            terminal_status_subscription: None,
             activations: Arc::new(AtomicUsize::new(1)),
         }
     }
@@ -1444,6 +1447,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_monitor_reports_nonexistent_actor() {
+        let config = hyperactor_config::global::lock();
+        let _config_guard = config.override_key(
+            crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT,
+            Duration::ZERO,
+        );
         let proc = Proc::isolated();
         let client = proc.client("client");
         let missing = proc.proc_addr().actor_addr("missing");
@@ -1687,6 +1695,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_monitor_guard_returns_monitor_failure() {
+        let config = hyperactor_config::global::lock();
+        let _config_guard = config.override_key(
+            crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT,
+            Duration::ZERO,
+        );
         let proc = Proc::isolated();
         let client = proc.client("client");
         let missing = proc.proc_addr().actor_addr("missing");
@@ -2062,6 +2075,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_failed_monitor_reports_synthetic_supervision_after_conversion() {
+        let config = hyperactor_config::global::lock();
+        let _config_guard = config.override_key(
+            crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT,
+            Duration::ZERO,
+        );
         let proc = Proc::isolated();
         let client = proc.client("client");
         let target_id = proc.proc_addr().actor_addr("missing");
