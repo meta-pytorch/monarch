@@ -63,6 +63,14 @@ pub trait IbvDeviceImpl: Named + std::fmt::Debug + Send + Sync + 'static {
     /// Seeds an [`IbvConfig`] with backend-appropriate defaults
     /// (e.g., EFA caps `max_send_sge` at 1).
     fn apply_config_defaults(config: &mut IbvConfig);
+
+    /// Whether the NIC places the data of an RDMA READ into GPU memory. When it
+    /// does not, [`IbvBackend`](super::manager_actor::IbvBackend) sends each
+    /// read into GPU memory to the buffer's owner, which RDMA WRITEs the data
+    /// instead.
+    fn supports_read_into_gpu() -> bool {
+        true
+    }
 }
 
 /// Inventory entry submitted by [`register_ibv_device_impl!`] for
