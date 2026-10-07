@@ -13,7 +13,14 @@ from typing import TYPE_CHECKING
 # our RPATHs won't correctly find them.
 try:
     import monarch._rust_bindings  # @manual  # noqa: F401
-except ImportError:
+except ImportError as e:
+    if "libpython" in str(e) and "cannot open shared object file" in str(e):
+        print(
+            f"\nERROR: {e}",
+            "\nHint: Please statically link the library.",
+            "\nIf you're using conda: export LD_LIBRARY_PATH=${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH}",
+        )
+        raise
     try:
         import torch  # @manual  # noqa: F401
     except ImportError:
