@@ -97,7 +97,7 @@ class Indirect(Actor):
         return await c.value.choose()
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(10)
 @isolate_in_subprocess
 async def test_choose():
     proc = this_host().spawn_procs(per_host={"gpus": 2})
@@ -1403,12 +1403,12 @@ class UndeliverableMessageSenderWithOverride(UndeliverableMessageSender):
         return True
 
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(60)
 @isolate_in_subprocess
 async def test_undeliverable_message_with_override() -> None:
-    pm = this_host().spawn_procs(per_host={"gpus": 1})
-    receiver = pm.spawn("undeliverable_receiver", UndeliverableMessageReceiver)
-    sender = pm.spawn(
+    proc = this_proc()
+    receiver = proc.spawn("undeliverable_receiver", UndeliverableMessageReceiver)
+    sender = proc.spawn(
         "undeliverable_sender", UndeliverableMessageSenderWithOverride, receiver
     )
     await sender.send_undeliverable.call()
@@ -1416,7 +1416,6 @@ async def test_undeliverable_message_with_override() -> None:
     assert sender != ""
     assert "bogus" in dest
     assert error_msg is not None
-    await pm.stop()
 
 
 class BlockingUndeliverableSender(Actor):

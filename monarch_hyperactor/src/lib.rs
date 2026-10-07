@@ -42,7 +42,6 @@ pub mod shape;
 pub mod supervision;
 pub mod telemetry;
 pub mod testing;
-mod testresource;
 pub mod value_mesh;
 
 // Register types from dependent crates that don't have wirevalue as a dependency

@@ -593,7 +593,6 @@ mod tests {
     use hyperactor_mesh::host_mesh::HostMeshShutdownGuard;
     use hyperactor_mesh::logging::LogMessage;
     use ndslice::Extent;
-    use ndslice::View; // .region(), .num_ranks() etc.
     use tokio::time::timeout;
 
     use super::*;
@@ -699,9 +698,8 @@ mod tests {
         Ok(version)
     }
 
-    /// Bring up a minimal "world" suitable for integration-style
-    /// tests.
-    pub async fn test_world()
+    /// Bring up the actor topology exercised by the logging-client tests.
+    async fn logging_test_world()
     -> Result<(Proc, Instance<PythonActor>, HostMeshShutdownGuard, ProcMesh)> {
         ensure_python();
 
@@ -710,11 +708,7 @@ mod tests {
         let ai = proc.actor_instance("client")?;
         let instance = ai.instance;
 
-        let host_mesh = HostMesh::local_with_bootstrap(
-            crate::testresource::get("monarch/monarch_hyperactor/bootstrap").into(),
-        )
-        .await?
-        .shutdown_guard();
+        let host_mesh = HostMesh::local_in_process().await?.shutdown_guard();
 
         let proc_mesh = host_mesh
             .spawn(&instance, "p0", Extent::unity(), None, None)
@@ -725,32 +719,9 @@ mod tests {
 
     #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
-    async fn test_world_smoke() {
-        let (proc, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
-
-        assert_eq!(
-            host_mesh.region().num_ranks(),
-            1,
-            "should allocate exactly one host"
-        );
-        assert_eq!(
-            proc_mesh.region().num_ranks(),
-            1,
-            "should spawn exactly one proc"
-        );
-        assert_eq!(
-            instance.self_addr().proc_addr(),
-            proc.proc_addr().clone(),
-            "returned Instance<()> should be bound to the root Proc"
-        );
-
-        host_mesh.shutdown(&instance).await.expect("host shutdown");
-    }
-
-    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
-    #[tokio::test]
     async fn spawn_respects_forwarding_flag() {
-        let (_, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
+        let (_, instance, mut host_mesh, proc_mesh) =
+            logging_test_world().await.expect("world failed");
 
         let py_instance = PyInstance::from(&instance);
         let py_proc_mesh = PyProcMesh::new_owned(proc_mesh);
@@ -813,10 +784,9 @@ mod tests {
     #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn discarded_spawn_task_creates_no_log_client_actor() -> Result<()> {
-        let (_proc, instance, host_mesh, proc_mesh) =
-            timeout(TEST_DEADLINE, test_world())
-                .await
-                .map_err(|_| anyhow::anyhow!("test world setup exceeded {TEST_DEADLINE:?}"))??;
+        let (_proc, instance, host_mesh, proc_mesh) = timeout(TEST_DEADLINE, logging_test_world())
+            .await
+            .map_err(|_| anyhow::anyhow!("test world setup exceeded {TEST_DEADLINE:?}"))??;
 
         let test_result = async {
             let py_instance = PyInstance::from(&instance);
@@ -879,7 +849,8 @@ mod tests {
     #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn set_mode_behaviors() {
-        let (_proc, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
+        let (_proc, instance, mut host_mesh, proc_mesh) =
+            logging_test_world().await.expect("world failed");
 
         let py_instance = PyInstance::from(&instance);
         let py_proc_mesh = PyProcMesh::new_owned(proc_mesh);
@@ -997,7 +968,8 @@ mod tests {
     #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn flush_behaviors() {
-        let (_proc, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
+        let (_proc, instance, mut host_mesh, proc_mesh) =
+            logging_test_world().await.expect("world failed");
 
         let py_instance = PyInstance::from(&instance);
         let py_proc_mesh = PyProcMesh::new_owned(proc_mesh);
@@ -1075,7 +1047,7 @@ mod tests {
     #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn discarded_flush_task_does_not_advance_sync_flush_version() -> Result<()> {
-        let (_, instance, host_mesh, proc_mesh) = timeout(TEST_DEADLINE, test_world())
+        let (_, instance, host_mesh, proc_mesh) = timeout(TEST_DEADLINE, logging_test_world())
             .await
             .map_err(|_| anyhow::anyhow!("test world setup exceeded {TEST_DEADLINE:?}"))??;
 

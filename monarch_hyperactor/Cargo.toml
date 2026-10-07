@@ -51,7 +51,6 @@ typeuri = { version = "0.0.0", path = "../typeuri" }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [dev-dependencies]
-buck-resources = "1"
 dir-diff = "0.3.3"
 
 [build-dependencies]

@@ -4733,7 +4733,6 @@ dependencies = [
  "async-once-cell",
  "async-trait",
  "bincode 2.0.1",
- "buck-resources",
  "build_utils",
  "bytes",
  "dir-diff",
