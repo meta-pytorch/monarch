@@ -92,6 +92,12 @@ class ImageSpec:
         # With the FUSE device required by RemoteMount
         ImageSpec("ghcr.io/meta-pytorch/monarch:latest", enable_fuse=True)
 
+        # With memory-backed shared memory for NCCL
+        ImageSpec(
+            "ghcr.io/meta-pytorch/monarch:latest",
+            shared_memory_size="16Gi",
+        )
+
     Pass the resulting object to ``KubernetesJob.add_mesh(image_spec=...)``.
 
     ``enable_fuse`` runs the worker container in `privileged mode
@@ -111,6 +117,9 @@ class ImageSpec:
 
     enable_fuse: bool = False
     """Whether to configure the worker pod for FUSE-backed mounts."""
+
+    shared_memory_size: str | None = None
+    """Optional size limit for a memory-backed ``/dev/shm`` volume."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -666,29 +675,46 @@ class KubernetesJob(JobTrait):
                 value=serialize_service_proc_ids(service_proc_ids),
             ),
         ]
-        container = client.V1Container(
-            name="worker",
-            image=image_spec.image,
-            command=["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
-            env=env,
-            resources=resources,
-        )
-        volumes = None
+        volume_mounts: list[client.V1VolumeMount] = []
+        volumes: list[client.V1Volume] = []
+        security_context: client.V1SecurityContext | None = None
         if image_spec.enable_fuse:
-            container.security_context = client.V1SecurityContext(privileged=True)
-            container.volume_mounts = [
+            security_context = client.V1SecurityContext(privileged=True)
+            volume_mounts.append(
                 client.V1VolumeMount(name="dev-fuse", mount_path="/dev/fuse")
-            ]
-            volumes = [
+            )
+            volumes.append(
                 client.V1Volume(
                     name="dev-fuse",
                     host_path=client.V1HostPathVolumeSource(
                         path="/dev/fuse", type="CharDevice"
                     ),
                 )
-            ]
+            )
+        if image_spec.shared_memory_size is not None:
+            volume_mounts.append(
+                client.V1VolumeMount(name="dev-shm", mount_path="/dev/shm")
+            )
+            volumes.append(
+                client.V1Volume(
+                    name="dev-shm",
+                    empty_dir=client.V1EmptyDirVolumeSource(
+                        medium="Memory",
+                        size_limit=image_spec.shared_memory_size,
+                    ),
+                )
+            )
+        container = client.V1Container(
+            name="worker",
+            image=image_spec.image,
+            command=["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
+            env=env,
+            resources=resources,
+            security_context=security_context,
+            volume_mounts=volume_mounts or None,
+        )
         return client.V1PodTemplateSpec(
-            spec=client.V1PodSpec(containers=[container], volumes=volumes),
+            spec=client.V1PodSpec(containers=[container], volumes=volumes or None),
         )
 
     def _is_pod_worker_ready(self, pod: client.V1Pod) -> bool:

@@ -674,9 +674,11 @@ class TestBuildWorkerPodTemplate(unittest.TestCase):
         self.assertEqual(template.spec.volumes[0].host_path.path, "/dev/fuse")
         self.assertEqual(template.spec.volumes[0].host_path.type, "CharDevice")
 
-    def test_fuse_disabled_by_default(self) -> None:
+    def test_optional_mounts_disabled_by_default(self) -> None:
+        image_spec = ImageSpec("img")
+        self.assertIsNone(image_spec.shared_memory_size)
         template = KubernetesJob._build_worker_pod_template(
-            ImageSpec("img"),
+            image_spec,
             port=26600,
             service_proc_ids=KubernetesJob._allocate_service_proc_ids(1),
         )
@@ -685,6 +687,49 @@ class TestBuildWorkerPodTemplate(unittest.TestCase):
         self.assertIsNone(container.security_context)
         self.assertIsNone(container.volume_mounts)
         self.assertIsNone(template.spec.volumes)
+
+    def test_shared_memory_enabled(self) -> None:
+        template = KubernetesJob._build_worker_pod_template(
+            ImageSpec("img", shared_memory_size="16Gi"),
+            port=26600,
+            service_proc_ids=KubernetesJob._allocate_service_proc_ids(1),
+        )
+
+        container = template.spec.containers[0]
+        self.assertIsNone(container.security_context)
+        self.assertEqual(len(container.volume_mounts), 1)
+        self.assertEqual(container.volume_mounts[0].name, "dev-shm")
+        self.assertEqual(container.volume_mounts[0].mount_path, "/dev/shm")
+        self.assertEqual(len(template.spec.volumes), 1)
+        volume = template.spec.volumes[0]
+        self.assertEqual(volume.name, "dev-shm")
+        self.assertEqual(volume.empty_dir.medium, "Memory")
+        self.assertEqual(volume.empty_dir.size_limit, "16Gi")
+
+    def test_shared_memory_composes_with_fuse_and_resources(self) -> None:
+        template = KubernetesJob._build_worker_pod_template(
+            ImageSpec(
+                "img",
+                resources={"nvidia.com/gpu": 4},
+                enable_fuse=True,
+                shared_memory_size="1Gi",
+            ),
+            port=26600,
+            service_proc_ids=KubernetesJob._allocate_service_proc_ids(1),
+        )
+
+        container = template.spec.containers[0]
+        self.assertTrue(container.security_context.privileged)
+        self.assertEqual(
+            {mount.name: mount.mount_path for mount in container.volume_mounts},
+            {"dev-fuse": "/dev/fuse", "dev-shm": "/dev/shm"},
+        )
+        volumes = {volume.name: volume for volume in template.spec.volumes}
+        self.assertEqual(volumes["dev-fuse"].host_path.path, "/dev/fuse")
+        self.assertEqual(volumes["dev-shm"].empty_dir.medium, "Memory")
+        self.assertEqual(volumes["dev-shm"].empty_dir.size_limit, "1Gi")
+        self.assertEqual(container.resources.requests, {"nvidia.com/gpu": "4"})
+        self.assertEqual(container.resources.limits, {"nvidia.com/gpu": "4"})
 
 
 class KubeConfigTest(unittest.TestCase):
