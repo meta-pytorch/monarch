@@ -74,9 +74,11 @@ use super::queue_pair::QueuePairOp;
 use super::queue_pair::StripeId;
 use super::queue_pair::StripeResult;
 use super::queue_pair::legacy;
+use crate::RdmaManagerMessageClient;
 use crate::RdmaOp;
 use crate::RdmaOpType;
 use crate::RdmaTransportLevel;
+use crate::ReleaseBufferClient;
 use crate::backend::RdmaBackend;
 use crate::backend::RdmaConfig;
 use crate::backend::ResolveRemoteBackendContext;
@@ -85,6 +87,7 @@ use crate::device_selection::PciPath;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::rdma_components::RdmaRemoteBuffer;
 use crate::rdma_manager_actor::RdmaManagerActor;
+use crate::rdma_manager_actor::WriteBufferInto;
 use crate::validate_execution_context;
 
 const KIB: usize = 1024;
@@ -1078,6 +1081,53 @@ where
 
     /// Submit a batch of RDMA operations.
     ///
+    /// Reads into GPU memory over a NIC that cannot place READ data there (see
+    /// [`IbvDeviceImpl::supports_read_into_gpu`]) are sent to the remote
+    /// buffer's owner as WRITEs ([`read_via_owner_write`]); every other op is
+    /// posted here ([`Self::submit_direct`]). Both groups run concurrently and
+    /// every failure is reported.
+    async fn submit(
+        &self,
+        cx: &(impl hyperactor::context::Actor + Send + Sync),
+        ops: Vec<RdmaOp>,
+        timeout: Duration,
+    ) -> Result<(), anyhow::Error> {
+        let (via_owner, direct): (Vec<_>, Vec<_>) = ops.into_iter().partition(|op| {
+            !I::supports_read_into_gpu()
+                && op.op_type == RdmaOpType::ReadIntoLocal
+                && matches!(op.local.location(), MemoryLocation::Gpu(_))
+        });
+        if via_owner.is_empty() {
+            return self.submit_direct(cx, direct, timeout).await;
+        }
+        let (direct, via_owner) = futures::join!(
+            self.submit_direct(cx, direct, timeout),
+            futures::future::join_all(
+                via_owner
+                    .into_iter()
+                    .map(|op| read_via_owner_write(cx, op, timeout)),
+            ),
+        );
+        let errors: Vec<String> = std::iter::once(direct)
+            .chain(via_owner)
+            .filter_map(|result| result.err().map(|e| format!("{e:#}")))
+            .collect();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(errors.join("\n"))
+        }
+    }
+}
+
+// Same bound as the `RdmaBackend` impl above; `submit_direct` is private.
+#[allow(private_bounds)]
+impl<I: IbvDeviceImpl> IbvBackend<I>
+where
+    RdmaRemoteBuffer: ResolveRemoteBackendContext<IbvBackend<I>>,
+{
+    /// Submit a batch of RDMA operations, each posted on this proc's queue pairs.
+    ///
     /// Translates each op to an `IbvOp`, then forwards them directly to the
     /// relevant queue-pairs when possible; any ops that cannot be forwarded
     /// directly (memory registration needed, QPs don't exist yet) are shipped to
@@ -1086,7 +1136,7 @@ where
     ///
     /// Waits for every stripe of every operation. Every stripe failure is
     /// collected into a single error, grouped by operation.
-    async fn submit(
+    async fn submit_direct(
         &self,
         cx: &(impl hyperactor::context::Actor + Send + Sync),
         ops: Vec<RdmaOp>,
@@ -1195,6 +1245,58 @@ where
         }
         Err(anyhow::anyhow!(msg))
     }
+}
+
+/// Read `op.remote` into `op.local` by asking the remote buffer's owner to
+/// RDMA WRITE it there, for NICs where a READ into `op.local` would not land.
+///
+/// `op.local` is registered with this proc's [`RdmaManagerActor`] for the
+/// duration of the request, so the owner can address it like any other buffer,
+/// and released afterwards. The owner's reply arrives after its WRITE has
+/// completed. The WRITE is unordered with respect to other ops in the same
+/// batch, as the READ would have been.
+async fn read_via_owner_write(
+    cx: &(impl hyperactor::context::Actor + Send + Sync),
+    op: RdmaOp,
+    timeout: Duration,
+) -> Result<(), anyhow::Error> {
+    let manager = RdmaManagerActor::local_handle(cx);
+    let dest = manager.request_buffer(cx, op.local.clone()).await?;
+    let (reply, rx) = cx.mailbox().open_once_port::<Result<(), String>>();
+    op.remote.owner.post(
+        cx,
+        WriteBufferInto {
+            remote_buf_id: op.remote.id,
+            dest: dest.clone(),
+            timeout,
+            reply: reply.bind(),
+        },
+    );
+    let result = match tokio::time::timeout(timeout, rx.recv()).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(e))) => Err(anyhow::anyhow!(
+            "owner failed to write buffer {}: {e}",
+            op.remote.id
+        )),
+        Ok(Err(e)) => Err(anyhow::anyhow!(
+            "no reply from the owner of buffer {}: {e}",
+            op.remote.id
+        )),
+        Err(_) => Err(anyhow::anyhow!(
+            "owner write of buffer {} timed out after {timeout:?}",
+            op.remote.id
+        )),
+    };
+    // On timeout the owner's WRITE may still land later; `op.local` stays
+    // registered on its NICs (registrations live on the memory handle) and only
+    // the buffer id is dropped here.
+    if let Err(e) = manager.release_buffer(cx, dest.id).await {
+        tracing::warn!(
+            "failed to release temporary read destination {}: {e:#}",
+            dest.id
+        );
+    }
+    result
 }
 
 #[cfg(test)]

@@ -79,6 +79,14 @@ impl IbvDeviceImpl for IonicDevice {
         config.max_send_sge = config.max_send_sge.min(IONIC_MAX_SGE);
         config.max_recv_sge = config.max_recv_sge.min(IONIC_MAX_SGE);
     }
+
+    /// On AINIC 25.08 (driver 25.08.4.004, fw 1.117.1-a-63) an RDMA READ whose
+    /// local buffer is GPU (dmabuf) memory completes successfully but leaves
+    /// that buffer unchanged, for every size and GPU allocation kind. READs
+    /// into host memory and WRITEs into GPU memory work.
+    fn supports_read_into_gpu() -> bool {
+        false
+    }
 }
 
 register_ibv_device_impl!(IonicDevice);
