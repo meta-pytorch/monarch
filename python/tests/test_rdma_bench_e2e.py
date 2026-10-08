@@ -83,6 +83,7 @@ def _config(
         rdma_runtime_threads=4,
         rdma_max_nics_per_buffer=None,
         rdma_qps_per_cq=64,
+        rdma_qps_per_peer=4,
         rdma_cq_poller_per_device=True,
         output_csv=output_csv,
         command=bd.RUN_COMMAND,

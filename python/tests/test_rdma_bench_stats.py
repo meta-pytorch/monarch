@@ -263,6 +263,7 @@ def _columns() -> tuple[
             rdma_runtime_threads="16",
             rdma_max_nics_per_buffer="1",
             rdma_qps_per_cq="64",
+            rdma_qps_per_peer="4",
             rdma_cq_poller_per_device="True",
             integrity_ok="True",
             negative_control_ok="True",
