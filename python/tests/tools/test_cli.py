@@ -255,6 +255,36 @@ class TestCli(unittest.TestCase):
                 else:
                     self.assertIn(str(error), str(raised.exception))
 
+    @patch("monarch.tools.cli.job_load")
+    def test_profile_uses_existing_telemetry(self, job_load: MagicMock) -> None:
+        from monarch.tools.cli import ProfileCmd
+
+        job_load.return_value.telemetry_query_client.return_value.base_url = (
+            "http://telemetry"
+        )
+        args = get_parser().parse_args(["profile", "--time", "1s"])
+        self.assertEqual(ProfileCmd()._resolve_telemetry_url(args), "http://telemetry")
+        job_load.return_value.state.assert_not_called()
+
+    @patch("monarch.tools.cli.job_load", side_effect=FileNotFoundError)
+    def test_profile_reports_no_job(self, _job_load: MagicMock) -> None:
+        from monarch.tools.cli import ProfileCmd
+
+        args = get_parser().parse_args(["profile"])
+        with self.assertRaisesRegex(SystemExit, "no active job was found"):
+            ProfileCmd()._resolve_telemetry_url(args)
+
+    @patch("monarch.tools.cli.job_load")
+    def test_profile_reports_unavailable_telemetry(self, job_load: MagicMock) -> None:
+        from monarch.tools.cli import ProfileCmd
+
+        job_load.return_value.telemetry_query_client.side_effect = RuntimeError(
+            "distributed telemetry is configured but unavailable"
+        )
+        args = get_parser().parse_args(["profile"])
+        with self.assertRaisesRegex(SystemExit, "configured but unavailable"):
+            ProfileCmd()._resolve_telemetry_url(args)
+
     @patch("monarch.tools.cli.shell_on_job", return_value=0)
     def test_shell_forwards_single_host_options(self, shell_on_job: MagicMock) -> None:
         parser = get_parser()

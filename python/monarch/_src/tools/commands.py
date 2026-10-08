@@ -638,7 +638,7 @@ def exec_on_job(
 
     env_dict = _parse_env(env)
 
-    state = job.state()
+    state = job.state(services=False)
     if not state._hosts:
         raise RuntimeError("Job has no host meshes")
 
@@ -675,7 +675,7 @@ def exec_on_job(
         output_dir = None
     else:
         output_dir, report = _output_dir_for_job(job)
-        print(report)
+        print(report, file=sys.stderr)
 
     # ── Execute ────────────────────────────────────────────────────────────
     max_rc = 0
@@ -723,7 +723,7 @@ def shell_on_job(
     from monarch._src.job.shell import shell  # pyre-ignore[21]
 
     job = load_current_job()
-    state = job.state()
+    state = job.state(services=False)
     if not state._hosts:
         raise RuntimeError("Job has no host meshes")
 

@@ -453,9 +453,11 @@ class StoreJob(JobTrait):
             return None
         return cls(worker_addrs, name)
 
-    def state(self, cached_path: str | None = None) -> JobState:
+    def state(
+        self, cached_path: str | None = None, *, services: bool = True
+    ) -> JobState:
         """Attach to workers and start configured components without caching."""
-        return super().state(cached_path)
+        return super().state(cached_path, services=services)
 
     def _create(self, client_script: str | None = None) -> None:
         pass

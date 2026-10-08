@@ -27,7 +27,6 @@ from monarch.tools.commands import (
     context_use,
     debug,
     exec_on_job,
-    load_current_job,
     shell_on_job,
 )
 from monarch.tools.debug_env import _get_debug_server_host, _get_debug_server_port
@@ -406,11 +405,17 @@ class ProfileCmd:
         if args.source is not None:
             return args.source
 
-        job = load_current_job()
-        telemetry_url = job.state().telemetry_url
-        if telemetry_url is None:
-            raise RuntimeError("distributed telemetry is not enabled for this job")
-        return telemetry_url
+        try:
+            job = job_load()
+        except FileNotFoundError:
+            raise SystemExit(
+                "monarch profile: no active job was found in this context; "
+                "run 'monarch apply' first"
+            ) from None
+        try:
+            return job.telemetry_query_client().base_url
+        except RuntimeError as error:
+            raise SystemExit(f"monarch profile: {error}") from None
 
 
 def _format_query_table(result: dict[str, Any]) -> str:

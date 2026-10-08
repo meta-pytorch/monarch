@@ -33,6 +33,11 @@ class QueryEngineClient:
             urllib.request.ProxyHandler({})
         )
 
+    @property
+    def base_url(self) -> str:
+        """URL of the connected telemetry service."""
+        return self._base_url
+
     def query(self, sql: str, timeout: float | None = None) -> dict[str, Any]:
         """Run a SQL query through the sidecar API and return its parsed
         JSON response (``{"rows": [...]}`` on success)."""

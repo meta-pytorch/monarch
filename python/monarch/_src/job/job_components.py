@@ -433,12 +433,14 @@ class JobComponents:
     admin: Optional[AdminComponent] = None
     snapshot: Optional[SnapshotComponent] = None
 
-    def needs_sidecar(self) -> bool:
-        """Whether telemetry or mounts require the shared job sidecar."""
-        return self.mounts.needs_sidecar() or self.telemetry is not None
+    def needs_sidecar(self, services: bool = True) -> bool:
+        """Whether the requested connection needs the shared job sidecar."""
+        return self.mounts.needs_sidecar() or (services and self.telemetry is not None)
 
-    def _ordered(self) -> List[JobComponent]:
+    def _ordered(self, services: bool = True) -> List[JobComponent]:
         components: List[JobComponent] = [self.mounts]
+        if not services:
+            return components
         if self.telemetry is not None:
             components.append(self.telemetry)
         if self.admin is not None:
@@ -447,8 +449,8 @@ class JobComponents:
             components.append(self.snapshot)
         return components
 
-    def before_connect(self, job: "JobTrait") -> None:
-        for component in self._ordered():
+    def before_connect(self, job: "JobTrait", services: bool = True) -> None:
+        for component in self._ordered(services):
             component.before_connect(job)
 
     def connect(
@@ -456,13 +458,16 @@ class JobComponents:
         job: "JobTrait",
         host_meshes: Dict[str, HostMesh],
         via_gateway: bool = False,
+        services: bool = True,
     ) -> Dict[str, HostMesh]:
-        for component in self._ordered():
+        for component in self._ordered(services):
             host_meshes = component.connect(job, host_meshes, via_gateway)
         return host_meshes
 
-    def state(self, job: "JobTrait", job_state: "JobState") -> None:
-        for component in self._ordered():
+    def state(
+        self, job: "JobTrait", job_state: "JobState", services: bool = True
+    ) -> None:
+        for component in self._ordered(services):
             component.state(job, job_state)
 
     def reset_runtime(self) -> None:

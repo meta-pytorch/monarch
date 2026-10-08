@@ -465,7 +465,9 @@ class JobTrait(ABC):
         logger.info("Attaching client gateway via duplex address: %s", attach_to)
         attach(attach_to)
 
-    def _connect_host_meshes(self, running_job: "JobTrait") -> Dict[str, HostMesh]:
+    def _connect_host_meshes(
+        self, running_job: "JobTrait", services: bool = True
+    ) -> Dict[str, HostMesh]:
         """Run the connect phases and return the final host meshes.
 
         ``before_connect`` runs before raw host meshes are materialized;
@@ -483,7 +485,7 @@ class JobTrait(ABC):
         # cached job, where `running_job` is a deserialized copy rather than `self`, and
         # the broken combination is a sidecar behind a gateway whose mounts still dial.
         via_gateway = running_job._requires_sidecar_gateway()
-        if via_gateway and self._components.needs_sidecar():
+        if via_gateway and self._components.needs_sidecar(services):
             # The sidecar runs in a separate process, so attaching the client
             # does not make cluster-only worker addresses routable from the
             # sidecar. Start it through the same scheduler gateway before any
@@ -495,9 +497,9 @@ class JobTrait(ABC):
                     self.apply_id,
                     attach_to=attach_to,
                 )
-        self._components.before_connect(self)
+        self._components.before_connect(self, services)
         host_meshes = dict(running_job._state()._hosts)
-        return self._components.connect(self, host_meshes, via_gateway)
+        return self._components.connect(self, host_meshes, via_gateway, services)
 
     def enable_telemetry(
         self,
@@ -641,7 +643,9 @@ class JobTrait(ABC):
         return self._running is not None
 
     def _connect(
-        self, cached_path: Optional[str] = ".monarch/job_state.pkl"
+        self,
+        cached_path: Optional[str] = ".monarch/job_state.pkl",
+        services: bool = True,
     ) -> "JobState":
         """
         Get the current state of this job, containing the host mesh objects of its requires that were requested
@@ -665,17 +669,17 @@ class JobTrait(ABC):
         running_job = self._running
         if running_job is not None:
             logger.info("Job is running, returning current state")
-            return JobState(self._connect_host_meshes(running_job))
+            return JobState(self._connect_host_meshes(running_job, services))
 
         cached = self._load_cached(cached_path)
         if cached is not None:
             self._status = CachedRunning(cached)
             logger.info("Connecting to cached job")
-            return JobState(self._connect_host_meshes(cached))
+            return JobState(self._connect_host_meshes(cached, services))
         logger.info("Applying current job")
         self.apply()
         logger.info("Job has started, connecting to current state")
-        host_meshes = self._connect_host_meshes(self)
+        host_meshes = self._connect_host_meshes(self, services)
         if cached_path is not None:
             # Create the directory for cached_path if it doesn't exist
             cache_dir = os.path.dirname(cached_path)
@@ -686,11 +690,19 @@ class JobTrait(ABC):
         return JobState(host_meshes)
 
     def state(
-        self, cached_path: Optional[str] = ".monarch/job_state.pkl"
+        self,
+        cached_path: Optional[str] = ".monarch/job_state.pkl",
+        *,
+        services: bool = True,
     ) -> "JobState":
-        """Connect and run component state hooks on the final host meshes."""
-        job_state = self._connect(cached_path)
-        self._components.state(self, job_state)
+        """Connect to workers and apply mounts.
+
+        By default, also connect telemetry and start configured admin and
+        snapshot services. Pass ``services=False`` for worker commands that
+        only need host meshes, mounts, and configured Python executables.
+        """
+        job_state = self._connect(cached_path, services)
+        self._components.state(self, job_state, services)
         return job_state
 
     def _load_cached(self, cached_path: Optional[str]) -> "Optional[JobTrait]":
@@ -1260,13 +1272,6 @@ class BatchJob(JobTrait):
 
     def _cleanup_log_context(self) -> dict[str, Any]:
         return self._job._cleanup_log_context()
-
-    def state(
-        self, cached_path: Optional[str] = ".monarch/job_state.pkl"
-    ) -> "JobState":
-        job_state = self._connect(cached_path)
-        self._components.state(self, job_state)
-        return job_state
 
     def _is_running(self) -> bool:
         return self._job._is_running()

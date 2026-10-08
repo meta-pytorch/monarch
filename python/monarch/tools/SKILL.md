@@ -62,6 +62,13 @@ Job reuse:
   across runs. Only run "monarch apply" when you need a new allocation.
   Use "--kill" only when you are done with the workers entirely.
 
+Service connections:
+  apply starts all configured services and reports their URLs.
+  exec and shell connect workers and mounts without starting telemetry,
+  Mesh Admin, or snapshots. Command output stays on stdout; exec output-file
+  locations and connection diagnostics go to stderr.
+  profile and query use the running job's existing telemetry service.
+
 exec options:
 
   Targeting (mutually exclusive; default is --one):

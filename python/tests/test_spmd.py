@@ -44,6 +44,13 @@ def test_store_job_queries_existing_telemetry() -> None:
         attach.assert_not_called()
 
 
+def test_store_state_forwards_worker_only_option() -> None:
+    job = StoreJob(worker_addrs=[], name="workers")
+    with patch("monarch._src.job.job.JobTrait.state") as state:
+        assert job.state(services=False) is state.return_value
+    state.assert_called_once_with(None, services=False)
+
+
 def test_spmd_job_cleanup_log_context_includes_scheduler_handle() -> None:
     job = SPMDJob(handle="scheduler://app", scheduler="scheduler")
 

@@ -943,6 +943,66 @@ def test_telemetry_query_client_uses_only_existing_telemetry():
     m.start_snapshots.assert_not_called()
 
 
+@pytest.mark.parametrize("cached", [False, True])
+def test_worker_state_connects_mounts_without_starting_services(tmp_path, cached):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "python").touch()
+    job = MockJobTrait().enable_telemetry(TelemetryConfig(include_dashboard=True))
+    job.remote_mount(str(source), mntpoint="/mounted", python_exe="python")
+    cached_path = str(tmp_path / "job.pkl")
+    if cached:
+        job.apply()
+        job.dump(cached_path)
+        job = MockJobTrait().enable_telemetry(TelemetryConfig(include_dashboard=True))
+        job.remote_mount(str(source), mntpoint="/mounted", python_exe="python")
+
+    with (
+        _patched_sidecar() as m,
+        patch("monarch._src.job.mount_config.Mounts.ensure_open") as ensure_mounts,
+    ):
+        state = job.state(cached_path=cached_path, services=False)
+        assert state._hosts
+        assert state.query_engine_client is None
+        assert state.admin_url is None
+        assert state.dashboard_url is None
+        ensure_mounts.assert_called_once()
+        assert state._hosts["default"].python_executable == "/mounted/python"
+        m.ensure_open.assert_not_called()
+        m.install_sink.assert_not_called()
+        m.spawn_admin.assert_not_called()
+        m.start_snapshots.assert_not_called()
+
+        # A worker-only connection must not prevent later full service startup.
+        full_state = job.state(cached_path=cached_path)
+        assert full_state.query_engine_client is not None
+        m.spawn_admin.assert_called_once()
+        m.start_snapshots.assert_called_once()
+
+
+def test_worker_state_does_not_start_sidecar_for_unused_telemetry():
+    job = MockJobTrait().enable_telemetry(TelemetryConfig())
+    job._requires_sidecar_gateway = MagicMock(return_value=True)
+    job._prepare_client_gateway = MagicMock()
+    with (
+        _patched_sidecar(),
+        patch("monarch._src.job.job.create_job_sidecar") as create_sidecar,
+    ):
+        job.state(cached_path=None, services=False)
+
+    job._prepare_client_gateway.assert_not_called()
+    create_sidecar.assert_not_called()
+
+
+def test_batch_worker_state_does_not_start_services():
+    job = BatchJob(MockJobTrait().enable_telemetry(TelemetryConfig()))
+    with _patched_sidecar() as m:
+        state = job.state(cached_path=None, services=False)
+    assert state._hosts
+    m.ensure_open.assert_not_called()
+    m.spawn_admin.assert_not_called()
+
+
 def test_telemetry_query_client_reports_unhealthy_job():
     job = MockJobTrait(compatible_specs=[]).enable_telemetry(TelemetryConfig())
     job.apply()

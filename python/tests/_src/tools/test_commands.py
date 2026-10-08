@@ -7,6 +7,7 @@
 # pyre-strict
 
 import asyncio
+import io
 import tempfile
 import unittest
 from datetime import timedelta
@@ -515,6 +516,45 @@ class TestExecOnJobSignature(unittest.TestCase):
         self.assertTrue(hasattr(BashActor, "run_streaming"))
 
 
+class TestExecOnJob(unittest.TestCase):
+    @mock.patch("monarch._src.job.job.exec_command")
+    @mock.patch("monarch._src.tools.commands.load_current_job")
+    def test_uses_worker_connection_and_preserves_exit_code(
+        self, load_current_job: MagicMock, exec_command: MagicMock
+    ) -> None:
+        job = load_current_job.return_value
+        job.state.return_value._hosts = {"workers": MagicMock()}
+        job._components.mounts.python_executable_for_mesh.return_value = None
+        exec_command.return_value.get.return_value = 7
+
+        self.assertEqual(commands.exec_on_job(["false"]), 7)
+        job.state.assert_called_once_with(services=False)
+        exec_command.assert_called_once()
+
+    @mock.patch("monarch._src.job.job.exec_command")
+    @mock.patch("monarch._src.tools.commands.load_current_job")
+    def test_output_file_location_goes_to_stderr(
+        self, load_current_job: MagicMock, exec_command: MagicMock
+    ) -> None:
+        job = load_current_job.return_value
+        job.state.return_value._hosts = {"workers": MagicMock()}
+        job._components.mounts.python_executable_for_mesh.return_value = None
+        exec_command.return_value.get.return_value = 0
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch("sys.stdout", stdout),
+            mock.patch("sys.stderr", stderr),
+            mock.patch(
+                "monarch._src.tools.commands._output_dir_for_job",
+                return_value=("/tmp/outputs", "Output → /tmp/outputs"),
+            ),
+        ):
+            self.assertEqual(commands.exec_on_job(["true"], run_all=True), 0)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "Output → /tmp/outputs\n")
+
+
 class TestShellOnJob(unittest.TestCase):
     @mock.patch("monarch._src.job.shell.shell", return_value=0)
     @mock.patch("monarch._src.tools.commands.load_current_job")
@@ -530,6 +570,7 @@ class TestShellOnJob(unittest.TestCase):
         returncode = commands.shell_on_job(env=["FOO=bar"], workdir="/tmp/work")
 
         self.assertEqual(returncode, 0)
+        job.state.assert_called_once_with(services=False)
         host_mesh.flatten.assert_called_once_with("rank")
         host_mesh.flatten.return_value.slice.assert_called_once_with(rank=0)
         open_shell.assert_called_once_with(

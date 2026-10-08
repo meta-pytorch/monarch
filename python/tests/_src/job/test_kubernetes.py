@@ -2227,12 +2227,12 @@ class TestStateOutOfCluster(unittest.TestCase):
 
         job._components = MagicMock()
         job._components.needs_sidecar.return_value = True
-        job._components.before_connect.side_effect = lambda _job: events.append(
-            "before_connect"
+        job._components.before_connect.side_effect = (
+            lambda _job, services: events.append("before_connect")
         )
         connect_via_gateway = []
 
-        def connect(_job, host_meshes, via_gateway):
+        def connect(_job, host_meshes, via_gateway, services):
             events.append("connect")
             connect_via_gateway.append(via_gateway)
             return host_meshes
@@ -2262,6 +2262,11 @@ class TestStateOutOfCluster(unittest.TestCase):
             ["prepare", "sidecar", "before_connect", "state", "connect"],
         )
         self.assertEqual(host_meshes, {"mesh1": raw_host})
+        job._components.needs_sidecar.assert_called_once_with(True)
+        job._components.before_connect.assert_called_once_with(job, True)
+        job._components.connect.assert_called_once_with(
+            job, {"mesh1": raw_host}, True, True
+        )
         self.assertEqual(
             create_sidecar.call_args.kwargs["attach_to"],
             "tcp://127.0.0.1:45678",
