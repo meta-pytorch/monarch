@@ -150,7 +150,7 @@ def _unix_socket_sink_startup() -> Callable[[], None] | None:
     socket_path = _sidecar_socket_path
     if socket_path is None:
         return None
-    return functools.partial(_set_unix_socket_sink_path, socket_path)
+    return functools.partial(install_sidecar_socket_sink, socket_path)
 
 
 def _ensure_setup_actor_telemetry_provider() -> None:

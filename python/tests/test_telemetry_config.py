@@ -92,6 +92,20 @@ def _cfg_dict(**overrides):
     return base
 
 
+def test_worker_socket_startup_propagates_to_nested_procs() -> None:
+    socket_path = "/tmp/test-telemetry.sock"
+
+    with (
+        patch.object(tc, "_sidecar_socket_path", socket_path),
+        patch.object(tc, "install_sidecar_socket_sink") as install_sink,
+    ):
+        startup = tc._unix_socket_sink_startup()
+        assert startup is not None
+        startup()
+
+    install_sink.assert_called_once_with(socket_path)
+
+
 class _FakeTelemetryHandle:
     """Stand-in for `_TelemetryHandle` so the job sidecar command loop can be
     driven without bootstrapping a real actor system / dashboard."""
