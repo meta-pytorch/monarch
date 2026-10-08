@@ -9,12 +9,13 @@
 import concurrent.futures
 
 import pytest
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._src.actor import actor_mesh as actor_mesh_module
 from monarch.actor import shutdown_context
 
 
-# These tests have to be in their own file so that no other test creates a
-# client in the same process first.
+# OSS CI reuses a worker across files; these tests require a fresh client state.
+@isolate_in_subprocess
 def test_shutdown_without_client_creates_no_client() -> None:
     assert actor_mesh_module._client_context.try_get() is None
 
@@ -24,6 +25,7 @@ def test_shutdown_without_client_creates_no_client() -> None:
     assert not actor_mesh_module._shutdown_done
 
 
+@isolate_in_subprocess
 def test_shutdown_waits_for_client_bootstrap_in_progress() -> None:
     client_context = actor_mesh_module._client_context
     assert client_context.try_get() is None
