@@ -928,6 +928,69 @@ def test_state_query_client_set_with_telemetry():
     )
 
 
+def test_telemetry_query_client_uses_only_existing_telemetry():
+    job = MockJobTrait().enable_telemetry(TelemetryConfig())
+    job.apply()
+
+    with _patched_sidecar() as m:
+        client = job.telemetry_query_client()
+
+    assert client is m.query_engine_client_cls.return_value
+    m.telemetry_info.assert_called_once_with(job.apply_id)
+    m.ensure_open.assert_not_called()
+    m.install_sink.assert_not_called()
+    m.spawn_admin.assert_not_called()
+    m.start_snapshots.assert_not_called()
+
+
+def test_telemetry_query_client_reports_unhealthy_job():
+    job = MockJobTrait(compatible_specs=[]).enable_telemetry(TelemetryConfig())
+    job.apply()
+
+    with pytest.raises(RuntimeError, match="no longer running or healthy"):
+        job.telemetry_query_client()
+
+
+def test_telemetry_query_client_reports_missing_telemetry():
+    job = MockJobTrait()
+    job.apply()
+
+    with pytest.raises(RuntimeError, match="no distributed telemetry configured"):
+        job.telemetry_query_client()
+
+
+def test_telemetry_query_client_reports_unavailable_telemetry():
+    job = MockJobTrait().enable_telemetry(TelemetryConfig())
+    job.apply()
+
+    with _patched_sidecar() as m:
+        m.telemetry_info.side_effect = RuntimeError("sidecar stopped")
+        with pytest.raises(RuntimeError, match="could not connect.*sidecar stopped"):
+            job.telemetry_query_client()
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_non_cacheable_local_job_can_query_existing_telemetry(batch):
+    job = LocalJob().enable_telemetry(TelemetryConfig())
+    job.apply()
+    assert not job.can_run(job)
+    if batch:
+        job = BatchJob(job)
+    with _patched_sidecar() as m:
+        assert job.telemetry_query_client() is m.query_engine_client_cls.return_value
+        m.ensure_open.assert_not_called()
+        m.spawn_admin.assert_not_called()
+
+
+def test_telemetry_query_client_preserves_invalid_apply_id_error():
+    job = MockJobTrait().enable_telemetry(TelemetryConfig())
+    job.apply()
+    job._apply_id = None
+    with pytest.raises(RuntimeError, match="no apply id") as error:
+        job.telemetry_query_client()
+    assert "sidecar may have stopped" not in str(error.value)
+
+
 def test_component_configuration_after_apply_adds_telemetry():
     with _patched_sidecar() as m:
         job = MockJobTrait()
@@ -1429,6 +1492,7 @@ def _patched_sidecar(
         ) as start_snapshots,
     ):
         ensure_open = telemetry_cls.return_value.ensure_open
+        telemetry_info = telemetry_cls.return_value.info
         set_admin_url = telemetry_cls.return_value.set_admin_url
         if ensure_open_side_effect is not None:
             ensure_open.side_effect = ensure_open_side_effect
@@ -1438,6 +1502,11 @@ def _patched_sidecar(
                 "dashboard_url": "http://dashboard",
                 "socket_path": "/tmp/telemetry.sock",
             }
+        telemetry_info.return_value = {
+            "telemetry_url": "http://sidecar",
+            "dashboard_url": "http://dashboard",
+            "socket_path": "/tmp/telemetry.sock",
+        }
         if set_admin_url_side_effect is not None:
             set_admin_url.side_effect = set_admin_url_side_effect
         admin_ref = MagicMock()
@@ -1450,6 +1519,7 @@ def _patched_sidecar(
         )
         yield types.SimpleNamespace(
             ensure_open=ensure_open,
+            telemetry_info=telemetry_info,
             set_admin_url=set_admin_url,
             install_sink=install_sink,
             query_engine_client_cls=qec_cls,

@@ -545,6 +545,37 @@ class JobTrait(ABC):
 
         return profiler.profile(telemetry_url, on_trace_ready=on_trace_ready)
 
+    def telemetry_query_client(self) -> QueryEngineClient:
+        """Return a query client for a healthy job's existing telemetry service.
+
+        This checks the saved allocation without connecting host meshes or
+        starting job services.
+        """
+        running = self._running
+        if running is None:
+            raise RuntimeError("the saved job is not active")
+        try:
+            healthy = running._is_running()
+        except Exception as error:
+            raise RuntimeError(
+                f"could not verify the active job's health: {error}"
+            ) from error
+        if not healthy:
+            raise RuntimeError("the active job is no longer running or healthy")
+
+        telemetry = self._components.telemetry
+        if telemetry is None:
+            raise RuntimeError(
+                "the active job has no distributed telemetry configured; "
+                "call job.enable_telemetry() and apply it again"
+            )
+        try:
+            return telemetry.query_client(self)
+        except Exception as error:
+            raise RuntimeError(
+                f"could not connect to distributed telemetry: {error}"
+            ) from error
+
     def enable_admin(
         self,
         config: "Optional[MeshAdminConfig]" = None,
@@ -811,6 +842,14 @@ class JobTrait(ABC):
         this method returns.
         """
         ...
+
+    def _is_running(self) -> bool:
+        """Check the saved allocation without connecting workers or services.
+
+        Most backends include allocation liveness in their cache check.
+        Non-cacheable backends override this independently of cache policy.
+        """
+        return self.can_run(self)
 
     @abstractmethod
     def can_run(self, spec: "JobTrait") -> bool:
@@ -1106,6 +1145,10 @@ class LocalJob(JobTrait):
         self._log_dir: Optional[str] = None
         super().__init__()
 
+    def _is_running(self) -> bool:
+        # There is no allocation to poll: a LocalJob uses the current host.
+        return True
+
     def _kill(self):
         pass
 
@@ -1224,6 +1267,9 @@ class BatchJob(JobTrait):
         job_state = self._connect(cached_path)
         self._components.state(self, job_state)
         return job_state
+
+    def _is_running(self) -> bool:
+        return self._job._is_running()
 
     def can_run(self, spec: JobTrait):
         if in_batch_job():

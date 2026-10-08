@@ -470,6 +470,11 @@ class StoreJob(JobTrait):
         )
         return JobState({self._name: host_mesh})
 
+    def _is_running(self) -> bool:
+        # The enclosing SPMD allocation owns worker lifetime; telemetry.info()
+        # still checks that this job's sidecar is alive and serving telemetry.
+        return self.active
+
     def can_run(self, spec: JobTrait) -> bool:
         return False
 

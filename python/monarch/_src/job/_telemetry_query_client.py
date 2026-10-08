@@ -14,10 +14,15 @@ import urllib.request
 from typing import Any
 
 
+DEFAULT_QUERY_TIMEOUT_SEC: float = 10.0
+
+
 class QueryEngineClient:
     """Parent-process handle to the telemetry sidecar's query API."""
 
-    def __init__(self, base_url: str, timeout: float = 10.0) -> None:
+    def __init__(
+        self, base_url: str, timeout: float = DEFAULT_QUERY_TIMEOUT_SEC
+    ) -> None:
         self._base_url: str = base_url.rstrip("/")
         self._timeout: float = timeout
         # Build an opener with an empty ProxyHandler so requests bypass any
@@ -28,9 +33,9 @@ class QueryEngineClient:
             urllib.request.ProxyHandler({})
         )
 
-    def query(self, sql: str) -> dict[str, Any]:
+    def query(self, sql: str, timeout: float | None = None) -> dict[str, Any]:
         """Run a SQL query through the sidecar API and return its parsed
-        JSON response (``{"columns": [...], "rows": [...]}`` on success)."""
+        JSON response (``{"rows": [...]}`` on success)."""
         payload = json.dumps({"sql": sql}).encode("utf-8")
         request = urllib.request.Request(
             f"{self._base_url}/api/query",
@@ -39,8 +44,18 @@ class QueryEngineClient:
             method="POST",
         )
         try:
-            with self._opener.open(request, timeout=self._timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
+            effective_timeout = self._timeout if timeout is None else timeout
+            with self._opener.open(request, timeout=effective_timeout) as response:
+                result = json.loads(response.read().decode("utf-8"))
+                if not isinstance(result, dict) or not isinstance(
+                    result.get("rows"), list
+                ):
+                    raise RuntimeError(f"invalid telemetry query response: {result!r}")
+                if not all(isinstance(row, dict) for row in result["rows"]):
+                    raise RuntimeError(
+                        f"invalid telemetry query rows: {result['rows']!r}"
+                    )
+                return result
         except urllib.error.HTTPError as error:
             # urllib raises HTTPError before the caller can read the body, so
             # the server's error detail (e.g. a DataFusion parse/plan failure

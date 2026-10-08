@@ -205,6 +205,17 @@ class TelemetryComponent(JobComponent):
     def telemetry_url(self) -> Optional[str]:
         return self._telemetry_url
 
+    def query_client(self, job: "JobTrait") -> QueryEngineClient:
+        """Connect to the job's existing telemetry query endpoint."""
+        apply_id = job.apply_id
+        if apply_id is None:
+            raise RuntimeError("the active job has no apply id")
+        response = Telemetry(self._config).info(apply_id)
+        telemetry_url = response["telemetry_url"]
+        self._telemetry_url = telemetry_url
+        self._query_engine_client = QueryEngineClient(telemetry_url)
+        return self._query_engine_client
+
     def reset_runtime(self) -> None:
         self._query_engine_client = None
         self._telemetry_url = None

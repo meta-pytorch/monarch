@@ -102,6 +102,9 @@ class _FakeTelemetryHandle:
 
     def open_or_refresh(self, host_meshes, config, spawn_worker_collectors=True):
         self.calls.append((host_meshes, config, spawn_worker_collectors))
+        return self.info()
+
+    def info(self):
         return {
             "telemetry_url": "http://telemetry",
             "dashboard_url": "http://dashboard",
@@ -116,7 +119,7 @@ class _FakeTelemetryHandle:
 
 
 @pytest.mark.timeout(30)
-def test_run_job_sidecar_survives_broken_connection(tmp_path) -> None:
+def test_run_job_sidecar_survives_broken_connection(tmp_path, capsys) -> None:
     """A connection that sends garbage (or breaks mid-request) must drop only
     that connection, not tear down the job sidecar."""
     socket_path = str(tmp_path / "cmd.sock")
@@ -131,6 +134,16 @@ def test_run_job_sidecar_survives_broken_connection(tmp_path) -> None:
         thread.start()
         try:
             _wait_for_socket(socket_path, timeout=10.0)
+
+            info = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            info.connect(socket_path)
+            info.sendall(pickle.dumps(js.TelemetryInfoRequest(apply_id="apply")))
+            info_error = pickle.load(info.makefile("rb"))
+            info.close()
+            assert info_error == {
+                "error": "distributed telemetry is not running for this job"
+            }
+            assert "Traceback" in capsys.readouterr().err
 
             # 1) Unparseable pickle: pickle.load raises (not EOFError), which
             #    must be caught at the connection level, not kill the loop.
@@ -182,6 +195,65 @@ def test_handle_telemetry_refreshes_telemetry_handle() -> None:
             )
         )
     assert fake.calls == [({}, {}, True)]
+
+
+def test_handle_telemetry_info_requires_existing_telemetry() -> None:
+    state = js._JobSidecarState()
+    with pytest.raises(RuntimeError, match="telemetry is not running"):
+        state.handle_telemetry_info(js.TelemetryInfoRequest(apply_id="apply"))
+
+    fake = _FakeTelemetryHandle()
+    with patch.object(tc, "_TelemetryHandle", return_value=fake):
+        state.handle_telemetry(
+            js.TelemetryRequest(
+                apply_id="apply",
+                config={},
+                host_meshes={},
+            )
+        )
+
+    assert state.handle_telemetry_info(js.TelemetryInfoRequest(apply_id="apply")) == {
+        "telemetry_url": "http://telemetry",
+        "dashboard_url": "http://dashboard",
+        "socket_path": "/tmp/fake.sock",
+    }
+
+
+def test_telemetry_info_reuses_existing_sidecar() -> None:
+    sidecar = MagicMock()
+    sidecar.send.return_value.get.return_value = {
+        "telemetry_url": "http://telemetry",
+        "dashboard_url": "http://dashboard",
+        "socket_path": "/tmp/fake.sock",
+    }
+    with patch.object(tc, "find_job_sidecar", return_value=sidecar):
+        response = tc.Telemetry(TelemetryConfig()).info("apply")
+
+    assert response["telemetry_url"] == "http://telemetry"
+    request = sidecar.send.call_args.args[0]
+    assert isinstance(request, js.TelemetryInfoRequest)
+    assert request.apply_id == "apply"
+
+
+def test_telemetry_info_does_not_start_missing_sidecar() -> None:
+    with (
+        patch.object(tc, "find_job_sidecar", return_value=None),
+        pytest.raises(RuntimeError, match="sidecar is not running"),
+    ):
+        tc.Telemetry(TelemetryConfig()).info("apply")
+
+
+@pytest.mark.parametrize(
+    "response", [{}, {"telemetry_url": None}, {"telemetry_url": ""}]
+)
+def test_telemetry_info_rejects_invalid_endpoint(response) -> None:
+    sidecar = MagicMock()
+    sidecar.send.return_value.get.return_value = response
+    with (
+        patch.object(tc, "find_job_sidecar", return_value=sidecar),
+        pytest.raises(RuntimeError, match="invalid job sidecar telemetry response"),
+    ):
+        tc.Telemetry(TelemetryConfig()).info("apply")
 
 
 def test_handle_admin_url_sets_sidecar_env(monkeypatch) -> None:

@@ -145,6 +145,13 @@ class TelemetryRequest:
 
 
 @dataclass
+class TelemetryInfoRequest:
+    """Return the existing telemetry endpoint without starting it."""
+
+    apply_id: str
+
+
+@dataclass
 class AdminUrlRequest:
     """Set the mesh-admin URL in the job sidecar process."""
 
@@ -214,6 +221,11 @@ class _JobSidecarState:
             request.config,
             spawn_worker_collectors=request.spawn_worker_collectors,
         )
+
+    def handle_telemetry_info(self, request: TelemetryInfoRequest) -> object:
+        if self._apply_id != request.apply_id or self._telemetry_handle is None:
+            raise RuntimeError("distributed telemetry is not running for this job")
+        return self._telemetry_handle.info()
 
     def handle_admin_url(self, request: AdminUrlRequest) -> str:
         self._ensure_apply_id(request.apply_id)
@@ -293,6 +305,13 @@ def _run_job_sidecar(
                         except Exception:
                             # TODO: Centralize sidecar error.
                             response = {"error": traceback.format_exc()}
+                    elif isinstance(msg, TelemetryInfoRequest):
+                        try:
+                            response = state.handle_telemetry_info(msg)
+                        except Exception as error:
+                            # Preserve sidecar context in its log, not in CLI errors.
+                            _dbg(traceback.format_exc())
+                            response = {"error": str(error)}
                     elif isinstance(msg, AdminUrlRequest):
                         try:
                             response = state.handle_admin_url(msg)
