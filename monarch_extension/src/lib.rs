@@ -16,6 +16,7 @@ pub mod code_sync;
 pub mod convert;
 #[cfg(feature = "tensor_engine")]
 mod debugger;
+mod mesh_admin_tui;
 #[cfg(feature = "tensor_engine")]
 mod mesh_controller;
 #[cfg(feature = "tensor_engine")]
@@ -272,6 +273,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     monarch_hyperactor::logging::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.logging",
+    )?)?;
+
+    crate::mesh_admin_tui::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.mesh_admin_tui",
     )?)?;
 
     crate::trace::register_python_bindings(&get_or_add_new_module(
