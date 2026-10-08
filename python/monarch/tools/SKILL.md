@@ -43,6 +43,9 @@ Quick start:
   # Collect from a mesh-admin URL directly
   monarch profile https://<mesh-admin-host>:8265
 
+  # Inspect a running mesh in the terminal UI
+  monarch tui --addr https://<mesh-admin-host>:8265
+
   # Kill the job when done
   monarch kill
 
@@ -54,6 +57,7 @@ Commands:
   kill    Kill the active job
   profile Collect job wide perfetto traces of RPC invocations
   query   Run DataFusion SQL against the active job's distributed telemetry
+  tui     Inspect a running mesh in an interactive terminal UI
   context Manage named job contexts
   debug   Connect to the debug server
 

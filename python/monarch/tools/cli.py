@@ -4,7 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
+from __future__ import annotations
+
 import argparse
 import importlib.resources
 import json
@@ -15,6 +16,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from monarch._rust_bindings.monarch_extension.mesh_admin_tui import (
+    run as run_mesh_admin_tui,
+)
 from monarch._rust_bindings.monarch_extension.trace import export_profile
 from monarch._src.job._telemetry_query_client import DEFAULT_QUERY_TIMEOUT_SEC
 from monarch._src.job.job import job_load
@@ -76,6 +80,85 @@ class DebugCmd:
 
     def run(self, args: argparse.Namespace) -> None:
         debug(args.host, args.port)
+
+
+class TuiCmd:
+    """Launch the mesh admin TUI through the Rust extension."""
+
+    def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
+        subparser.set_defaults(_tui_subparser=subparser)
+        subparser.add_argument(
+            "--addr",
+            "-a",
+            required=True,
+            help="Admin server address or MAST handle",
+        )
+        subparser.add_argument(
+            "--admin-port",
+            type=int,
+            default=None,
+            help="Admin port override for a MAST handle",
+        )
+        subparser.add_argument(
+            "--refresh-ms",
+            type=int,
+            default=2000,
+            help="Refresh interval in milliseconds (default: 2000)",
+        )
+        subparser.add_argument(
+            "--theme",
+            choices=("nord", "doom-nord-light"),
+            default="nord",
+            help="Color theme (default: nord)",
+        )
+        subparser.add_argument(
+            "--lang",
+            choices=("en", "zh"),
+            default="en",
+            help="Display language (default: en)",
+        )
+        self._add_tls_arguments(subparser)
+
+    @staticmethod
+    def _add_tls_arguments(subparser: argparse.ArgumentParser) -> None:
+        subparser.add_argument(
+            "--tls-ca",
+            default=None,
+            help="Path to a PEM CA certificate for TLS server verification",
+        )
+        subparser.add_argument(
+            "--tls-cert",
+            default=None,
+            help="Path to a PEM client certificate for mutual TLS",
+        )
+        subparser.add_argument(
+            "--tls-key",
+            default=None,
+            help="Path to a PEM client private key for mutual TLS",
+        )
+        subparser.add_argument(
+            "--plaintext",
+            action="store_true",
+            help="Disable TLS and use plain HTTP",
+        )
+
+    def run(self, args: argparse.Namespace) -> None:
+        tls_paths = (args.tls_ca, args.tls_cert, args.tls_key)
+        if args.plaintext and any(path is not None for path in tls_paths):
+            args._tui_subparser.error(
+                "--plaintext cannot be used with --tls-ca, --tls-cert, or --tls-key"
+            )
+        run_mesh_admin_tui(
+            args.addr,
+            admin_port=args.admin_port,
+            refresh_ms=args.refresh_ms,
+            theme=args.theme,
+            lang=args.lang,
+            tls_ca=args.tls_ca,
+            tls_cert=args.tls_cert,
+            tls_key=args.tls_key,
+            plaintext=args.plaintext,
+        )
 
 
 # ── New commands ──────────────────────────────────────────────────────────
@@ -633,6 +716,7 @@ def get_parser() -> argparse.ArgumentParser:
         ("kill", KillCmd(), "Kill the active job"),
         ("query", QueryCmd(), "Run SQL against distributed telemetry"),
         ("profile", ProfileCmd(), "Collect a Perfetto trace from the active job"),
+        ("tui", TuiCmd(), "Inspect a Monarch mesh in a terminal UI"),
         ("debug", DebugCmd(), "Connect to the debug server"),
         ("dashboard", DashboardCmd(), "Serve Monarch dashboards"),
     ]:
