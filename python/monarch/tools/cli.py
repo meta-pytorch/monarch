@@ -7,13 +7,17 @@
 # pyre-strict
 import argparse
 import importlib.resources
+import json
 import os
 import re
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from monarch._rust_bindings.monarch_extension.trace import export_profile
+from monarch._src.job._telemetry_query_client import DEFAULT_QUERY_TIMEOUT_SEC
+from monarch._src.job.job import job_load
 from monarch.actor import shutdown_context
 from monarch.tools.commands import (
     apply_job,
@@ -409,6 +413,142 @@ class ProfileCmd:
         return telemetry_url
 
 
+def _format_query_table(result: dict[str, Any]) -> str:
+    rows_value = result.get("rows", [])
+    if not isinstance(rows_value, list):
+        raise RuntimeError(f"query returned invalid rows: {rows_value!r}")
+    if not rows_value:
+        return "(0 rows)"
+    if not all(isinstance(row, dict) for row in rows_value):
+        raise RuntimeError(f"query returned invalid rows: {rows_value!r}")
+
+    rows: list[dict[str, Any]] = rows_value
+
+    def row_count() -> str:
+        noun = "row" if len(rows) == 1 else "rows"
+        return f"({len(rows)} {noun})"
+
+    columns: list[str] = []
+    for row in rows:
+        for column in row:
+            if column not in columns:
+                columns.append(column)
+    if not columns:
+        return row_count()
+
+    def render(value: object) -> str:
+        if value is None:
+            return "NULL"
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, separators=(",", ":"), sort_keys=True)
+        return str(value)
+
+    rendered = [[render(row.get(column)) for column in columns] for row in rows]
+    widths = [
+        max(len(column), *(len(row[index]) for row in rendered))
+        for index, column in enumerate(columns)
+    ]
+
+    def line(values: list[str]) -> str:
+        return " | ".join(
+            value.ljust(widths[index]) for index, value in enumerate(values)
+        )
+
+    header = line(columns)
+    separator = "-+-".join("-" * width for width in widths)
+    body = [line(row) for row in rendered]
+    return "\n".join([header, separator, *body, row_count()])
+
+
+class QueryCmd:
+    def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
+        subparser.add_argument(
+            "sql",
+            nargs="?",
+            default=None,
+            help="DataFusion SQL string, or '-' to read from stdin",
+        )
+        subparser.add_argument(
+            "-f",
+            "--file",
+            dest="sql_file",
+            type=Path,
+            default=None,
+            help="Read SQL from a file",
+        )
+        subparser.add_argument(
+            "--format",
+            dest="output_format",
+            choices=("table", "json", "jsonl"),
+            default="table",
+            help="Output format (default: table)",
+        )
+        subparser.add_argument(
+            "--timeout",
+            type=_parse_duration,
+            default=None,
+            help=(
+                "Query timeout, such as 30s or 2m "
+                f"(default: {DEFAULT_QUERY_TIMEOUT_SEC:g}s)"
+            ),
+        )
+
+    def _read_sql(self, args: argparse.Namespace) -> str:
+        if args.sql is not None and args.sql_file is not None:
+            raise RuntimeError("pass SQL or --file, not both")
+        if args.sql_file is not None:
+            sql = args.sql_file.read_text(encoding="utf-8")
+        elif args.sql == "-":
+            sql = sys.stdin.read()
+        elif args.sql is not None:
+            sql = args.sql
+        elif not sys.stdin.isatty():
+            sql = sys.stdin.read()
+        else:
+            raise RuntimeError("pass SQL, --file PATH, or pipe SQL on stdin")
+        if not sql.strip():
+            raise RuntimeError("SQL query is empty")
+        return sql
+
+    def run(self, args: argparse.Namespace) -> None:
+        try:
+            sql = self._read_sql(args)
+        except (RuntimeError, OSError, UnicodeError) as error:
+            raise SystemExit(f"monarch query: {error}") from None
+        try:
+            job = job_load()
+        except FileNotFoundError:
+            raise SystemExit(
+                "monarch query: no active job was found in this context; "
+                "run 'monarch apply' first"
+            ) from None
+        try:
+            client = job.telemetry_query_client()
+            result: dict[str, Any] = (
+                client.query(sql)
+                if args.timeout is None
+                else client.query(sql, timeout=args.timeout)
+            )
+            if args.output_format == "json":
+                output = json.dumps(result, indent=2, sort_keys=True)
+            elif args.output_format == "jsonl":
+                rows = result.get("rows", [])
+                if not isinstance(rows, list):
+                    raise RuntimeError(f"query returned invalid rows: {rows!r}")
+                # Zero rows intentionally produce zero JSONL records.
+                output = "\n".join(json.dumps(row, sort_keys=True) for row in rows)
+            else:
+                output = _format_query_table(result)
+        except TimeoutError:
+            raise SystemExit(
+                "monarch query: query timed out; try increasing --timeout"
+            ) from None
+        except (RuntimeError, OSError, json.JSONDecodeError, UnicodeError) as error:
+            raise SystemExit(f"monarch query: {error}") from None
+        if output:
+            sys.stdout.write(output + "\n")
+
+
 class DashboardCmd:
     def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
         subparser.set_defaults(_dashboard_subparser=subparser)
@@ -491,6 +631,7 @@ def get_parser() -> argparse.ArgumentParser:
         ),
         ("shell", ShellCmd(), "Open an interactive shell on one worker"),
         ("kill", KillCmd(), "Kill the active job"),
+        ("query", QueryCmd(), "Run SQL against distributed telemetry"),
         ("profile", ProfileCmd(), "Collect a Perfetto trace from the active job"),
         ("debug", DebugCmd(), "Connect to the debug server"),
         ("dashboard", DashboardCmd(), "Serve Monarch dashboards"),

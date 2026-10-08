@@ -27,6 +27,16 @@ Quick start:
   # Collect Perfetto traces of actor activity for the next 10 seconds
   monarch profile
 
+  # Discover telemetry tables, then inspect a table's columns
+  monarch query 'SHOW TABLES'
+  monarch query 'DESCRIBE actors'
+
+  # Query the active job's distributed telemetry
+  monarch query 'SELECT COUNT(*) AS failed FROM actor_failures'
+
+  # Agent-friendly structured output; SQL can also come from stdin or --file
+  monarch query --format json 'SELECT * FROM actor_failures LIMIT 10'
+
   # Collect from an existing MAST job
   monarch profile mast <mast-job-id>
 
@@ -43,6 +53,7 @@ Commands:
   shell   Open an interactive shell on one worker
   kill    Kill the active job
   profile Collect job wide perfetto traces of RPC invocations
+  query   Run DataFusion SQL against the active job's distributed telemetry
   context Manage named job contexts
   debug   Connect to the debug server
 
@@ -76,3 +87,17 @@ shell options:
   -e KEY=VALUE      Extra environment variable (repeatable)
   --workdir DIR     Working directory on the worker
   --kill            Kill the job after the shell exits
+
+query options:
+
+  SQL               Quoted DataFusion SQL, or '-' to read stdin
+  --file PATH       Read SQL from a file
+  --format FORMAT   table (default), json, or jsonl
+  --timeout TIME    Query timeout such as 30s or 2m (default: 10s)
+
+Query responses are materialized in memory. Use aggregates or `LIMIT` for
+diagnostics; use the Arrow streaming API for bulk export.
+
+DataFusion SQL supports `SHOW TABLES` to discover the current job's tables and
+`DESCRIBE table_name` to list a table's columns and types. The available tables
+depend on the telemetry enabled for the job, so discover them before querying.

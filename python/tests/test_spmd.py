@@ -12,13 +12,36 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch._src.job.spmd import _parse_torchrun, SPMDJob
+from monarch._src.job.spmd import _parse_torchrun, SPMDJob, StoreJob
 from monarch.actor import Actor, current_rank, current_size, endpoint, this_host
 from monarch.spmd import (
     setup_torch_elastic_env,
     setup_torch_elastic_env_async,
     SPMDActor,
 )
+
+
+def test_store_liveness_is_independent_of_cache_reuse() -> None:
+    job = StoreJob(worker_addrs=[], name="workers")
+    assert not job._is_running()
+    job.apply()
+    assert not job.can_run(job)
+    assert job._is_running()
+    job.kill()
+    assert not job._is_running()
+
+
+def test_store_job_queries_existing_telemetry() -> None:
+    job = StoreJob(worker_addrs=[], name="workers").enable_telemetry()
+    job.apply()
+    with (
+        patch("monarch._src.job.job_components.Telemetry.info") as info,
+        patch("monarch._src.job.spmd.attach_to_workers") as attach,
+    ):
+        info.return_value = {"telemetry_url": "http://telemetry"}
+        job.telemetry_query_client()
+        info.assert_called_once_with(job.apply_id)
+        attach.assert_not_called()
 
 
 def test_spmd_job_cleanup_log_context_includes_scheduler_handle() -> None:

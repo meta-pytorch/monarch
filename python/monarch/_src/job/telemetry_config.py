@@ -54,7 +54,9 @@ from monarch._rust_bindings.monarch_distributed_telemetry import (
 )
 from monarch._src.job.job_sidecar import (
     AdminUrlRequest,
+    find_job_sidecar,
     get_job_sidecar,
+    TelemetryInfoRequest,
     TelemetryRequest,
 )
 from monarch._src.job.telemetry_actor import (
@@ -107,6 +109,15 @@ class _TelemetryResponse(TypedDict):
     telemetry_url: str
     dashboard_url: str | None
     socket_path: str
+
+
+def _telemetry_response(response: object) -> _TelemetryResponse:
+    if not isinstance(response, dict):
+        raise RuntimeError(f"unexpected telemetry handle response: {response!r}")
+    error = response.get("error")
+    if isinstance(error, str):
+        raise RuntimeError(error)
+    return cast(_TelemetryResponse, response)
 
 
 def _config_from_wire(config: Mapping[str, object]) -> TelemetryConfig:
@@ -193,15 +204,21 @@ class Telemetry:
                 spawn_worker_collectors=spawn_worker_collectors,
             )
         ).get()
-        if not isinstance(response, dict):
-            raise RuntimeError(f"unexpected telemetry handle response: {response!r}")
-        # The wire carries either a `_TelemetryResponse` shape or an
-        # `{"error": traceback_str}` envelope from the sidecar's exception
-        # handler; re-raise on the parent side so failures surface here.
-        error = response.get("error")
-        if isinstance(error, str):
-            raise RuntimeError(error)
-        return cast(_TelemetryResponse, response)
+        return _telemetry_response(response)
+
+    def info(self, apply_id: str) -> _TelemetryResponse:
+        """Return an existing telemetry endpoint without starting services."""
+        sidecar = find_job_sidecar(apply_id)
+        if sidecar is None:
+            raise RuntimeError("the job telemetry sidecar is not running")
+        response = sidecar.send(TelemetryInfoRequest(apply_id)).get()
+        result = _telemetry_response(response)
+        if (
+            not isinstance(result.get("telemetry_url"), str)
+            or not result["telemetry_url"]
+        ):
+            raise RuntimeError(f"invalid job sidecar telemetry response: {response!r}")
+        return result
 
     def set_admin_url(self, apply_id: str, admin_url: str) -> None:
         """Set the mesh-admin URL in the job sidecar process."""
@@ -269,6 +286,10 @@ class _TelemetryHandle:
             )
             self._worker_collectors_started = True
 
+        return self.info()
+
+    def info(self) -> _TelemetryResponse:
+        """Return the endpoint for this already-open telemetry handle."""
         dashboard_info = self._dashboard_info
         if dashboard_info is None:
             raise RuntimeError("telemetry handle is not open")
