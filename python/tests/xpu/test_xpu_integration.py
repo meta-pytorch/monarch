@@ -6,22 +6,12 @@
 
 # pyre-strict
 
-"""
-Tests for Intel XPU support in Monarch's actor runtime.
+"""Integration tests for XPU support in the actor runtime.
 
-Three sections:
-  1. Unit tests (no hardware needed) -- mock torch.accelerator to exercise
-     XPU-specific branches in proc_mesh.py and job.py.
-  2. Integration tests (XPU hardware needed) -- spawn real actors and verify
-     environment propagation.
-  3. Smoke tests (XPU hardware needed) -- ping-pong messaging, SPMD/elastic
-     env setup, device visibility, xccl FSDP2, and a simple GRPO loop.
+Every class needs XPU hardware and is skipped without it. Unit tests are in
+test_xpu_unit.py.
 
-Run on UAN (unit tests only):
-    pytest python/tests/test_xpu.py -v
-
-Run on compute node (all tests):
-    pytest python/tests/test_xpu.py -v --timeout=300
+    pytest python/tests/xpu -v --timeout=300
 """
 
 import os
@@ -30,11 +20,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List
-from unittest.mock import patch
 
 import cloudpickle
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 from monarch.actor import Actor, current_rank, current_size, endpoint, this_host
 from monarch.spmd import setup_torch_elastic_env, SPMDActor
@@ -44,75 +32,8 @@ def _num_actors() -> int:
     return int(os.environ.get("NUM_ACTORS", "4"))
 
 
-def _mock_accelerator(accel_type):
-    # current_accelerator() returns a torch.device, not a str
-    return patch(
-        "torch.accelerator.current_accelerator", return_value=torch.device(accel_type)
-    )
-
-
 # ===========================================================================
-# Section 1: Unit tests (no XPU hardware needed)
-# ===========================================================================
-
-
-class TestXpuAcceleratorEnvVars(unittest.TestCase):
-    def test_xpu_includes_xpu_vars(self):
-        from monarch._src.actor.proc_mesh import _get_accelerator_env_vars
-
-        with _mock_accelerator("xpu"):
-            env_vars = _get_accelerator_env_vars()
-            assert "ZE_AFFINITY_MASK" in env_vars
-            assert "ZE_ENABLE_PCI_ID_DEVICE_ORDER" in env_vars
-            assert "PYTORCH_XPU_ALLOC_CONF" in env_vars
-
-    def test_xpu_snapshot_captures_ze_vars(self):
-        from monarch._src.actor.proc_mesh import _accel_env_snapshot
-
-        with _mock_accelerator("xpu"), patch.dict(
-            os.environ,
-            {
-                "ZE_AFFINITY_MASK": "0,1",
-                "PYTORCH_XPU_ALLOC_CONF": "expandable_segments:True",
-            },
-        ):
-            snap = _accel_env_snapshot()
-            assert snap["ZE_AFFINITY_MASK"] == "0,1"
-            assert snap["PYTORCH_XPU_ALLOC_CONF"] == "expandable_segments:True"
-
-    def test_cuda_excludes_xpu_vars(self):
-        from monarch._src.actor.proc_mesh import _get_accelerator_env_vars
-
-        with _mock_accelerator("cuda"):
-            env_vars = _get_accelerator_env_vars()
-            assert "ZE_AFFINITY_MASK" not in env_vars
-            assert "CUDA_VISIBLE_DEVICES" in env_vars
-
-    def test_xpu_dispatches_to_torch_xpu(self):
-        from monarch._src.actor.proc_mesh import _torch_accelerator_already_initialized
-
-        with _mock_accelerator("xpu"), patch.dict(
-            sys.modules, {"torch.xpu": None, "torch.cuda": None}
-        ):
-            assert _torch_accelerator_already_initialized() is False
-
-        with _mock_accelerator("xpu"), patch(
-            "torch.xpu.is_initialized", return_value=True
-        ), patch("torch.cuda.is_initialized", return_value=False):
-            assert _torch_accelerator_already_initialized() is True
-
-    def test_no_torch_returns_cuda_defaults(self):
-        from monarch._src.actor.proc_mesh import (
-            _COMMON_CUDA_ENV_VARS,
-            _get_accelerator_env_vars,
-        )
-
-        with patch.dict(sys.modules, {"torch": None}):
-            assert _get_accelerator_env_vars() == _COMMON_CUDA_ENV_VARS
-
-
-# ===========================================================================
-# Section 2: Integration tests (XPU hardware needed)
+# Integration tests
 # ===========================================================================
 
 
@@ -143,9 +64,7 @@ class TestEnvBeforeXpu(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cloudpickle.unregister_pickle_by_value(
-            sys.modules[XpuInitTestActor.__module__]
-        )
+        cloudpickle.unregister_pickle_by_value(sys.modules[XpuInitTestActor.__module__])
 
     async def test_lambda_sets_env_vars_before_xpu_init(self) -> None:
         xpu_env_vars: Dict[str, str] = {
@@ -220,7 +139,7 @@ class TestEnvBeforeXpu(unittest.IsolatedAsyncioTestCase):
 
 
 # ===========================================================================
-# Section 3: Smoke tests (XPU hardware needed)
+# Smoke tests
 # ===========================================================================
 
 
@@ -259,8 +178,13 @@ class EnvCapture(Actor):
     @endpoint
     async def get_env_vars(self) -> dict:
         keys = [
-            "MASTER_ADDR", "MASTER_PORT", "RANK", "LOCAL_RANK",
-            "LOCAL_WORLD_SIZE", "GROUP_RANK", "GROUP_WORLD_SIZE",
+            "MASTER_ADDR",
+            "MASTER_PORT",
+            "RANK",
+            "LOCAL_RANK",
+            "LOCAL_WORLD_SIZE",
+            "GROUP_RANK",
+            "GROUP_WORLD_SIZE",
             "WORLD_SIZE",
         ]
         return {k: os.environ.get(k, "") for k in keys}
@@ -286,7 +210,8 @@ class XpuProbe(Actor):
     @endpoint
     async def get_fi_env(self) -> dict:
         keys = [
-            "FI_PROVIDER", "CCL_ATL_TRANSPORT",
+            "FI_PROVIDER",
+            "CCL_ATL_TRANSPORT",
             "ZE_FLAT_DEVICE_HIERARCHY",
         ]
         return {k: os.environ.get(k, "<UNSET>") for k in keys}
@@ -314,7 +239,9 @@ class PolicyActor(Actor):
         return float(a.item()), float(lp.item())
 
     @endpoint
-    def update(self, action: float, old_logprob: float, advantage: float) -> Dict[str, Any]:
+    def update(
+        self, action: float, old_logprob: float, advantage: float
+    ) -> Dict[str, Any]:
         a = torch.tensor(action, device=self.device)
         old_lp = torch.tensor(old_logprob, device=self.device)
         adv = torch.tensor(advantage, device=self.device)
@@ -422,7 +349,6 @@ class TestSpmdActorXcclFsdp2(unittest.TestCase):
 import os
 import torch
 import torch.nn as nn
-import torch.distributed as dist
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
@@ -495,9 +421,7 @@ class TestGrpoXpu(unittest.TestCase):
         mesh = this_host().spawn_procs(per_host={"gpus": n})
         actors = mesh.spawn("policy", PolicyActor)
 
-        initial = [
-            actors.slice(gpus=i).mu_value.call_one().get() for i in range(n)
-        ]
+        initial = [actors.slice(gpus=i).mu_value.call_one().get() for i in range(n)]
 
         for _ in range(num_steps):
             rollouts = [
@@ -506,9 +430,11 @@ class TestGrpoXpu(unittest.TestCase):
             actions = [r[0] for r in rollouts]
             old_lps = [r[1] for r in rollouts]
 
-            rewards = [-(a - target) ** 2 for a in actions]
+            rewards = [-((a - target) ** 2) for a in actions]
             mean_r = sum(rewards) / len(rewards)
-            std_r = (sum((r - mean_r) ** 2 for r in rewards) / len(rewards)) ** 0.5 + 1e-6
+            std_r = (
+                sum((r - mean_r) ** 2 for r in rewards) / len(rewards)
+            ) ** 0.5 + 1e-6
             advs = [(r - mean_r) / std_r for r in rewards]
 
             for i in range(n):
@@ -516,9 +442,7 @@ class TestGrpoXpu(unittest.TestCase):
                     actions[i], old_lps[i], advs[i]
                 ).get()
 
-        final = [
-            actors.slice(gpus=i).mu_value.call_one().get() for i in range(n)
-        ]
+        final = [actors.slice(gpus=i).mu_value.call_one().get() for i in range(n)]
 
         init_dist = sum(abs(m - target) for m in initial) / n
         final_dist = sum(abs(m - target) for m in final) / n
