@@ -216,7 +216,15 @@ impl QueuePairRouter {
         Ok(pairs)
     }
 
-    /// Splits an operation across a random subset of its compatible NIC pairs.
+    /// Splits an operation into stripes over its compatible NIC pairs.
+    ///
+    /// An operation gets at least `qps_per_peer` stripes, rounded up to a
+    /// multiple of the pair count, as far as
+    /// [`RDMA_MIN_STRIPE_SIZE_KB`](crate::config::RDMA_MIN_STRIPE_SIZE_KB)
+    /// allows. One that is too small for a stripe on every pair uses a random
+    /// subset of the pairs, one stripe each. Otherwise the pairs take stripes
+    /// in turn, in device-name order. Each stripe uses the next queue pair on
+    /// its route.
     fn plan_ops<I: IbvDeviceImpl>(
         &self,
         op_idx: usize,
@@ -234,20 +242,23 @@ impl QueuePairRouter {
                 .map(|remote| remote.size)
                 .unwrap_or(0),
         };
-        let stripe_count = pairs
-            .len()
-            .min((size / configured_min_stripe_size().get()).max(1));
-        if stripe_count < pairs.len() {
+        let max_stripes = (size / configured_min_stripe_size().get()).max(1);
+        let stripe_count = if max_stripes < pairs.len() {
             pairs.shuffle(&mut rand::rng());
-        }
+            max_stripes
+        } else {
+            // Every pair takes the same number of stripes, so no NIC carries
+            // more than its share.
+            let wanted_per_pair = self.qps_per_peer.get().div_ceil(pairs.len());
+            let allowed_per_pair = max_stripes / pairs.len();
+            pairs.len() * wanted_per_pair.min(allowed_per_pair)
+        };
 
         let stripe_size = size / stripe_count / STRIPE_ALIGNMENT * STRIPE_ALIGNMENT;
         let mut offset = 0;
-        pairs
-            .into_iter()
-            .take(stripe_count)
-            .enumerate()
-            .map(|(stripe_idx, (local, remote))| {
+        (0..stripe_count)
+            .map(|stripe_idx| {
+                let (local, remote) = pairs[stripe_idx % pairs.len()];
                 let size = if stripe_idx + 1 == stripe_count {
                     size - offset
                 } else {
@@ -1186,6 +1197,7 @@ mod tests {
     //! allocations when the actor stops; [`TestEnv::shutdown`]
     //! explicitly drains both procs.
 
+    use std::collections::BTreeMap;
     use std::collections::BTreeSet;
     use std::num::NonZeroUsize;
     use std::sync::Arc;
@@ -1316,6 +1328,13 @@ mod tests {
             #[reply]
             reply: OncePortRef<RdmaRemoteBuffer>,
         },
+        /// Like `Allocate`, but fills byte `i` with [`positional_byte`]`(i)`.
+        AllocatePositional {
+            size: usize,
+            device: BufferDevice,
+            #[reply]
+            reply: OncePortRef<RdmaRemoteBuffer>,
+        },
         /// Look up the local memory behind `remote.id` and reply with
         /// the byte range `[offset, offset + len)`. Tests use this to
         /// sample buffers too large to ship over a single actor
@@ -1343,23 +1362,21 @@ mod tests {
         async fn allocate_impl(
             &mut self,
             cx: &Context<'_, Self>,
-            size: usize,
             device: BufferDevice,
-            pattern: u8,
+            contents: Vec<u8>,
         ) -> Result<RdmaRemoteBuffer, anyhow::Error> {
+            let size = contents.len();
             let local = match device {
                 BufferDevice::Cpu => {
-                    let buf: Box<[u8]> = vec![pattern; size].into_boxed_slice();
-                    KeepaliveLocalMemory::try_new(Arc::new(buf))?
+                    KeepaliveLocalMemory::try_new(Arc::new(contents.into_boxed_slice()))?
                 }
                 BufferDevice::Cuda(device_id) => {
                     let alloc = CudaAllocator::get().allocate(device_id, size, size);
                     let local = KeepaliveLocalMemory::try_new(Arc::new(alloc.clone()))?;
                     self.cuda_allocs.push(alloc);
-                    let fill = vec![pattern; size];
                     // SAFETY: `local` is freshly constructed; no other
                     // holder touches this CUDA range yet.
-                    unsafe { local.write_at(0, &fill) }?;
+                    unsafe { local.write_at(0, &contents) }?;
                     local
                 }
             };
@@ -1448,7 +1465,17 @@ mod tests {
             device: BufferDevice,
             pattern: u8,
         ) -> Result<RdmaRemoteBuffer, anyhow::Error> {
-            self.allocate_impl(cx, size, device, pattern).await
+            self.allocate_impl(cx, device, vec![pattern; size]).await
+        }
+
+        async fn allocate_positional(
+            &mut self,
+            cx: &Context<Self>,
+            size: usize,
+            device: BufferDevice,
+        ) -> Result<RdmaRemoteBuffer, anyhow::Error> {
+            self.allocate_impl(cx, device, positional_contents(size))
+                .await
         }
 
         async fn read_contents(
@@ -1562,6 +1589,92 @@ mod tests {
     ) -> Result<(), anyhow::Error> {
         let got = helper.read_contents(cx, Box::new(remote), 0, size).await?;
         assert_eq!(got, vec![pattern; size]);
+        Ok(())
+    }
+
+    /// The byte at `offset` in a buffer filled by position. 251 is prime, so
+    /// the sequence never lines up with a stripe or alignment boundary, and a
+    /// range copied to the wrong offset reads back wrong.
+    fn positional_byte(offset: usize) -> u8 {
+        (offset % 251) as u8
+    }
+
+    fn positional_contents(size: usize) -> Vec<u8> {
+        (0..size).map(positional_byte).collect()
+    }
+
+    /// Panics at the first byte of `got` that does not hold its own
+    /// [`positional_byte`].
+    fn assert_positional(got: &[u8], size: usize, what: &str) {
+        assert_eq!(got.len(), size, "{what}: read back the wrong length");
+        if let Some(offset) = (0..size).find(|&i| got[i] != positional_byte(i)) {
+            panic!(
+                "{what}: byte {offset} of {size} is {:#04x}, expected {:#04x}",
+                got[offset],
+                positional_byte(offset),
+            );
+        }
+    }
+
+    /// Writes a buffer filled by position from side A into side B, reads one
+    /// from side B into side A, and asserts that every byte lands at its own
+    /// offset.
+    async fn run_positional_write_and_read(
+        env: &TestEnv,
+        size: usize,
+        timeout_secs: u64,
+    ) -> Result<(), anyhow::Error> {
+        let write_src = env
+            .helper_a
+            .allocate_positional(&env.client, size, BufferDevice::Cpu)
+            .await?;
+        let write_dst = env
+            .helper_b
+            .allocate(&env.client, size, BufferDevice::Cpu, 0)
+            .await?;
+        env.helper_a
+            .submit(
+                &env.client,
+                vec![BufferHelperOp {
+                    op_type: RdmaOpType::WriteFromLocal,
+                    local_buf: write_src,
+                    remote_buf: write_dst.clone(),
+                }],
+                timeout_secs,
+            )
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let got = env
+            .helper_b
+            .read_contents(&env.client, Box::new(write_dst), 0, size)
+            .await?;
+        assert_positional(&got, size, "write");
+
+        let read_dst = env
+            .helper_a
+            .allocate(&env.client, size, BufferDevice::Cpu, 0)
+            .await?;
+        let read_src = env
+            .helper_b
+            .allocate_positional(&env.client, size, BufferDevice::Cpu)
+            .await?;
+        env.helper_a
+            .submit(
+                &env.client,
+                vec![BufferHelperOp {
+                    op_type: RdmaOpType::ReadIntoLocal,
+                    local_buf: read_dst.clone(),
+                    remote_buf: read_src,
+                }],
+                timeout_secs,
+            )
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let got = env
+            .helper_a
+            .read_contents(&env.client, Box::new(read_dst), 0, size)
+            .await?;
+        assert_positional(&got, size, "read");
         Ok(())
     }
 
@@ -1753,7 +1866,12 @@ mod tests {
         }
     }
 
-    fn plan_ranges(size: usize, pair_count: usize, min_stripe_kb: usize) -> Vec<(usize, usize)> {
+    fn plan_ranges(
+        size: usize,
+        pair_count: usize,
+        min_stripe_kb: usize,
+        qps_per_peer: usize,
+    ) -> Vec<(usize, usize)> {
         let op = make_plan_op(size, pair_count);
         let local_addr = op.local_memory.addr();
         let lock = hyperactor_config::global::lock();
@@ -1764,7 +1882,7 @@ mod tests {
         );
         let router = QueuePairRouter::new(
             PeerDeviceAffinityPolicy::Any,
-            NonZeroUsize::new(1).expect("1 is non-zero"),
+            NonZeroUsize::new(qps_per_peer).expect("qps_per_peer is non-zero"),
         );
         let mut ranges: Vec<_> = router
             .plan_ops::<MlxDevice>(0, &op)
@@ -1778,29 +1896,169 @@ mod tests {
 
     #[test]
     fn plan_ops_balances_stripes_without_an_undersized_tail() {
-        assert_eq!(plan_ranges(511 * KIB, 4, 512), vec![(0, 511 * KIB)]);
-        assert_eq!(plan_ranges(513 * KIB, 4, 512), vec![(0, 513 * KIB)]);
+        assert_eq!(plan_ranges(511 * KIB, 4, 512, 1), vec![(0, 511 * KIB)]);
+        assert_eq!(plan_ranges(513 * KIB, 4, 512, 1), vec![(0, 513 * KIB)]);
         assert_eq!(
-            plan_ranges(12 * KIB, 3, 1),
+            plan_ranges(12 * KIB, 3, 1, 1),
             vec![(0, 4 * KIB), (4 * KIB, 4 * KIB), (8 * KIB, 4 * KIB)]
         );
         assert_eq!(
-            plan_ranges(15 * KIB, 8, 4),
+            plan_ranges(15 * KIB, 8, 4, 1),
             vec![(0, 5 * KIB), (5 * KIB, 5 * KIB), (10 * KIB, 5 * KIB)]
         );
         assert_eq!(
-            plan_ranges(10 * KIB, 3, 1),
+            plan_ranges(10 * KIB, 3, 1, 1),
             vec![(0, 3392), (3392, 3392), (6784, 3456)]
         );
         assert_eq!(
-            plan_ranges(32_000_000, 4, 8192),
+            plan_ranges(32_000_000, 4, 8192, 1),
             vec![
                 (0, 10_666_624),
                 (10_666_624, 10_666_624),
                 (21_333_248, 10_666_752),
             ]
         );
-        assert_eq!(plan_ranges(0, 4, 1), vec![(0, 0)]);
+        assert_eq!(plan_ranges(0, 4, 1, 1), vec![(0, 0)]);
+    }
+
+    #[test]
+    fn plan_ops_stripes_across_queue_pairs() {
+        let even =
+            |count: usize, size: usize| (0..count).map(|i| (i * size, size)).collect::<Vec<_>>();
+        // One pair with four queue pairs takes one stripe per queue pair.
+        assert_eq!(plan_ranges(4 * KIB, 1, 1, 4), even(4, KIB));
+        // The minimum stripe size still caps the count: 2 KiB at a 1 KiB
+        // minimum makes two stripes, not four.
+        assert_eq!(plan_ranges(2 * KIB, 1, 1, 4), even(2, KIB));
+        // A larger transfer on one pair still makes four stripes, not sixteen.
+        assert_eq!(plan_ranges(16 * KIB, 1, 1, 4), even(4, 4 * KIB));
+        // Two pairs make four stripes, two per pair.
+        assert_eq!(plan_ranges(16 * KIB, 2, 1, 4), even(4, 4 * KIB));
+        // Three pairs round four stripes up to six, two per pair.
+        assert_eq!(plan_ranges(12 * KIB, 3, 1, 4), even(6, 2 * KIB));
+        // With at least as many pairs as queue pairs, each pair takes one stripe.
+        assert_eq!(plan_ranges(16 * KIB, 8, 1, 4), even(8, 2 * KIB));
+        // Room for three stripes on two pairs rounds down to two, one per pair.
+        assert_eq!(plan_ranges(3 * KIB, 2, 1, 4), even(2, 1536));
+        // A transfer below the minimum stays one stripe.
+        assert_eq!(plan_ranges(KIB - 1, 2, 1, 4), vec![(0, KIB - 1)]);
+    }
+
+    /// Plans `op` and returns each stripe's `(device, qp_index)` in stripe order.
+    fn plan_queue_pairs(
+        router: &QueuePairRouter,
+        op_idx: usize,
+        op: &IbvOp<IbvManagerActor<MlxDevice>>,
+    ) -> Vec<(String, usize)> {
+        let mut planned = router
+            .plan_ops::<MlxDevice>(op_idx, op)
+            .expect("plan test operation");
+        planned.sort_unstable_by_key(|planned| planned.stripe_id.stripe_idx);
+        planned
+            .into_iter()
+            .map(|planned| (planned.local.device_name, planned.qp_index))
+            .collect()
+    }
+
+    #[test]
+    fn plan_ops_spreads_one_op_over_distinct_queue_pairs() {
+        let lock = hyperactor_config::global::lock();
+        let _stripe_guard = lock.override_key(
+            crate::config::RDMA_MIN_STRIPE_SIZE_KB,
+            hyperactor_config::NonZeroUsize::new(1).expect("1 is non-zero"),
+        );
+
+        let router = QueuePairRouter::new(
+            PeerDeviceAffinityPolicy::Any,
+            NonZeroUsize::new(3).expect("3 is non-zero"),
+        );
+        let qp_indices: Vec<usize> = plan_queue_pairs(&router, 0, &make_plan_op(3 * KIB, 1))
+            .into_iter()
+            .map(|(_, qp_index)| qp_index)
+            .collect();
+        assert_eq!(qp_indices, vec![0, 1, 2], "one stripe per queue pair");
+
+        // Three pairs with four queue pairs: two stripes per pair, on
+        // different queue pairs.
+        let router = QueuePairRouter::new(
+            PeerDeviceAffinityPolicy::Any,
+            NonZeroUsize::new(4).expect("4 is non-zero"),
+        );
+        assert_eq!(
+            queue_pairs_by_device(&router, &make_plan_op(12 * KIB, 3)),
+            vec![vec![0, 1]; 3]
+        );
+
+        // Room for three stripes on two pairs: one stripe per pair, so neither
+        // pair carries two thirds of the transfer.
+        let router = QueuePairRouter::new(
+            PeerDeviceAffinityPolicy::Any,
+            NonZeroUsize::new(4).expect("4 is non-zero"),
+        );
+        assert_eq!(
+            queue_pairs_by_device(&router, &make_plan_op(3 * KIB, 2)),
+            vec![vec![0]; 2]
+        );
+    }
+
+    #[test]
+    fn plan_ops_assigns_stripes_to_pairs_in_name_order() {
+        let lock = hyperactor_config::global::lock();
+        let _stripe_guard = lock.override_key(
+            crate::config::RDMA_MIN_STRIPE_SIZE_KB,
+            hyperactor_config::NonZeroUsize::new(1).expect("1 is non-zero"),
+        );
+        let router = QueuePairRouter::new(
+            PeerDeviceAffinityPolicy::Any,
+            NonZeroUsize::new(4).expect("4 is non-zero"),
+        );
+
+        // Every op of this size takes the same pair for the same byte range.
+        for op_idx in 0..3 {
+            let devices: Vec<String> = plan_queue_pairs(&router, op_idx, &make_plan_op(4 * KIB, 2))
+                .into_iter()
+                .map(|(device, _)| device)
+                .collect();
+            assert_eq!(devices, vec!["mlx5_0", "mlx5_1", "mlx5_0", "mlx5_1"]);
+        }
+    }
+
+    /// Plans `op` and returns each device's queue-pair indices in stripe
+    /// order, with devices sorted by name.
+    fn queue_pairs_by_device(
+        router: &QueuePairRouter,
+        op: &IbvOp<IbvManagerActor<MlxDevice>>,
+    ) -> Vec<Vec<usize>> {
+        let mut by_device: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (device, qp_index) in plan_queue_pairs(router, 0, op) {
+            by_device.entry(device).or_default().push(qp_index);
+        }
+        by_device.into_values().collect()
+    }
+
+    #[test]
+    fn plan_ops_continues_the_rotation_across_ops() {
+        let lock = hyperactor_config::global::lock();
+        let _stripe_guard = lock.override_key(
+            crate::config::RDMA_MIN_STRIPE_SIZE_KB,
+            hyperactor_config::NonZeroUsize::new(1).expect("1 is non-zero"),
+        );
+        let router = QueuePairRouter::new(
+            PeerDeviceAffinityPolicy::Any,
+            NonZeroUsize::new(3).expect("3 is non-zero"),
+        );
+        let op = make_plan_op(2 * KIB, 1);
+
+        // Two stripes per op on a route with three queue pairs.
+        let qp_indices: Vec<Vec<usize>> = (0..3)
+            .map(|op_idx| {
+                plan_queue_pairs(&router, op_idx, &op)
+                    .into_iter()
+                    .map(|(_, qp_index)| qp_index)
+                    .collect()
+            })
+            .collect();
+        assert_eq!(qp_indices, vec![vec![0, 1], vec![2, 0], vec![1, 2]]);
     }
 
     #[test]
@@ -2013,7 +2271,8 @@ mod tests {
         require_rdma();
         const MAX_NICS: usize = 4;
         const MIN_STRIPE_KB: usize = 512;
-        const SIZE: usize = MAX_NICS * MIN_STRIPE_KB * KIB;
+        // The extra 17 bytes make the size prime, so the stripes split unevenly.
+        const SIZE: usize = MAX_NICS * MIN_STRIPE_KB * KIB + 17;
         let tied = select_optimal_ibv_devices::<MlxDevice>(MemoryLocation::Cpu(None))?.len();
         if tied < 2 {
             panic!("SKIPPED: this host has fewer than two NICs tied for host memory");
@@ -2032,8 +2291,31 @@ mod tests {
             lock.override_key(crate::config::RDMA_PEER_DEVICE_AFFINITY, "any".to_string());
 
         let env = TestEnv::same_config(IbvConfig::default()).await?;
-        run_cross_actor_write(&env, BufferDevice::Cpu, BufferDevice::Cpu, SIZE, 0x6d, 20).await?;
-        run_cross_actor_read(&env, BufferDevice::Cpu, BufferDevice::Cpu, SIZE, 0xa7, 20).await?;
+        run_positional_write_and_read(&env, SIZE, 20).await?;
+        env.shutdown().await
+    }
+
+    /// With a single NIC pair, a transfer is split across that pair's queue pairs.
+    #[timed_test::async_timed_test(timeout_secs = 120)]
+    async fn test_queue_pair_stripes_land_every_byte() -> Result<(), anyhow::Error> {
+        require_rdma();
+        const QPS_PER_PEER: usize = 4;
+        const MIN_STRIPE_KB: usize = 512;
+        // The extra 17 bytes make the size prime, so the stripes split unevenly.
+        const SIZE: usize = QPS_PER_PEER * MIN_STRIPE_KB * KIB + 17;
+
+        let lock = hyperactor_config::global::lock();
+        let _qps_guard = lock.override_key(
+            crate::config::RDMA_QPS_PER_PEER,
+            hyperactor_config::NonZeroUsize::new(QPS_PER_PEER).expect("QPS_PER_PEER is non-zero"),
+        );
+        let _stripe_guard = lock.override_key(
+            crate::config::RDMA_MIN_STRIPE_SIZE_KB,
+            hyperactor_config::NonZeroUsize::new(MIN_STRIPE_KB).expect("MIN_STRIPE_KB is non-zero"),
+        );
+
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
+        run_positional_write_and_read(&env, SIZE, 20).await?;
         env.shutdown().await
     }
 

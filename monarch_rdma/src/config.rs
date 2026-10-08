@@ -135,8 +135,9 @@ declare_attrs! {
 
     /// Minimum RDMA stripe size, in KiB.
     ///
-    /// A transfer uses as many compatible NIC pairs as this minimum allows.
-    /// Transfers smaller than the minimum use one pair.
+    /// No stripe of a transfer is smaller than this, which limits how many
+    /// stripes a transfer is split into. Transfers smaller than the minimum
+    /// use one stripe.
     @meta(CONFIG = ConfigAttr::new(
         Some("MONARCH_RDMA_MIN_STRIPE_SIZE_KB".to_string()),
         Some("rdma_min_stripe_size_kb".to_string()),
@@ -161,7 +162,11 @@ declare_attrs! {
 
     /// How many queue pairs to create for each local-NIC/peer/remote-NIC route.
     ///
-    /// Operations are distributed round robin across the queue pairs.
+    /// A transfer is split into at least this many stripes, rounded up to a
+    /// multiple of its NIC pair count, so a transfer over one NIC pair still
+    /// uses every queue pair. Stripes take each route's queue pairs in round
+    /// robin order. [`RDMA_MIN_STRIPE_SIZE_KB`] lowers the stripe count for
+    /// small transfers.
     @meta(CONFIG = ConfigAttr::new(
         Some("MONARCH_RDMA_QPS_PER_PEER".to_string()),
         Some("rdma_qps_per_peer".to_string()),
