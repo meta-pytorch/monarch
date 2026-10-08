@@ -16,6 +16,7 @@ from typing import Callable
 from unittest.mock import MagicMock, patch
 
 import pytest
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.spmd.host_mesh import _IN_PAR, _spawn_worker_process, _worker_addr_key
 from monarch.job.spmd import StoreJob
@@ -109,27 +110,27 @@ def test_store_job_from_store_requires_torchelastic_env(
         StoreJob.from_store(_InMemoryStore())
 
 
-def test_store_job_from_store_kwargs_override_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@isolate_in_subprocess
+def test_store_job_from_store_kwargs_override_env() -> None:
     # Unset every env var, then pass all four topology values via
     # keyword arguments. Use a rank 3 / local_rank 1 layout so we hit the
     # non-primary passive branch without spawning anything.
-    for var in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE"):
-        monkeypatch.delenv(var, raising=False)
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        for var in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE"):
+            monkeypatch.delenv(var, raising=False)
 
-    store = _InMemoryStore()
-    assert (
-        StoreJob.from_store(
-            store,
-            transport="ipc",
-            rank=3,
-            local_rank=1,
-            world_size=4,
-            local_world_size=2,
+        store = _InMemoryStore()
+        assert (
+            StoreJob.from_store(
+                store,
+                transport="ipc",
+                rank=3,
+                local_rank=1,
+                world_size=4,
+                local_world_size=2,
+            )
+            is None
         )
-        is None
-    )
 
 
 def test_store_job_from_store_validates_world_size(
@@ -143,24 +144,25 @@ def test_store_job_from_store_validates_world_size(
         StoreJob.from_store(_InMemoryStore())
 
 
-def test_store_job_from_store_non_local_rank_zero_is_passive(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@isolate_in_subprocess
+def test_store_job_from_store_non_local_rank_zero_is_passive() -> None:
     # Rank with LOCAL_RANK != 0 and RANK != 0 spawns nothing and returns
     # None. Use rank 3 so group_rank = 3 // 2 = 1, letting us assert the
     # key this rank's group would have published if local rank 0 had
     # incorrectly invoked us is absent.
-    monkeypatch.setenv("RANK", "3")
-    monkeypatch.setenv("LOCAL_RANK", "1")
-    monkeypatch.setenv("WORLD_SIZE", "4")
-    monkeypatch.setenv("LOCAL_WORLD_SIZE", "2")
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setenv("RANK", "3")
+        monkeypatch.setenv("LOCAL_RANK", "1")
+        monkeypatch.setenv("WORLD_SIZE", "4")
+        monkeypatch.setenv("LOCAL_WORLD_SIZE", "2")
 
-    store = _InMemoryStore()
-    assert StoreJob.from_store(store, transport="ipc") is None
-    # This rank did not spawn; nobody published for group 1.
-    assert _worker_addr_key(1) not in store._values
+        store = _InMemoryStore()
+        assert StoreJob.from_store(store, transport="ipc") is None
+        # This rank did not spawn; nobody published for group 1.
+        assert _worker_addr_key(1) not in store._values
 
 
+@isolate_in_subprocess
 @patch("monarch._src.spmd.host_mesh._spawn_worker_process")
 @patch("monarch._src.spmd.host_mesh.new_service_proc_id")
 def test_store_job_carries_worker_service_proc_identity(
@@ -197,6 +199,7 @@ def test_store_job_carries_worker_service_proc_identity(
     )
 
 
+@isolate_in_subprocess
 def test_store_job_defers_attach_until_state() -> None:
     store = _InMemoryStore()
     host_mesh = MagicMock()
