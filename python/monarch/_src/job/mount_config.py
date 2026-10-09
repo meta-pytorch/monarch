@@ -11,13 +11,14 @@ import os
 import sys
 import traceback
 from dataclasses import dataclass, field
-from typing import Any, List, Mapping, Optional
+from typing import Any, Iterator, List, Mapping, Optional
 
 from monarch._src.job.job_sidecar import (
     ClearMountsRequest,
     find_job_sidecar,
     get_job_sidecar,
     MountsRequest,
+    raise_for_sidecar_error,
 )
 from monarch.actor import HostMesh
 
@@ -39,24 +40,21 @@ class RemoteMountEntry:
     # the client can dial directly.
     via_gateway: bool = False
 
-    def apply(self, host_meshes: Mapping[str, HostMesh]) -> "list[Any]":
-        """Open the remote mount for each targeted mesh. Returns handles.
+    def create(self, host_meshes: Mapping[str, HostMesh]) -> Iterator[Any]:
+        """Create a remote mount handle for each targeted mesh.
 
         If ``mntpoint`` contains ``$SUBDIR`` it is replaced with the mesh name,
         so multiple local hosts do not collide on the same mount point.
         """
         from monarch.remotemount.remotemount import remotemount as _remotemount
 
-        handles = []
         for mesh_name, raw_mesh in host_meshes.items():
             if self.meshes is not None and mesh_name not in self.meshes:
                 continue
             handler = _remotemount(
                 raw_mesh, self.source, mntpoint=self.mntpoint, **self.kwargs
             )
-            handler.open(self.via_gateway)
-            handles.append(handler)
-        return handles
+            yield handler
 
 
 @dataclass
@@ -67,8 +65,8 @@ class GatherMountEntry:
     local_mount_point: str
     meshes: Optional[List[str]] = None
 
-    def apply(self, host_meshes: Mapping[str, HostMesh]) -> "list[Any]":
-        """Start the gather mount for each targeted mesh. Returns handles.
+    def apply(self, host_meshes: Mapping[str, HostMesh]) -> Iterator[Any]:
+        """Start each targeted gather mount and yield its handle.
 
         Single targeted mesh: mounts directly at ``local_mount_point``.
         Multiple targeted meshes: mounts each at ``local_mount_point/<mesh_name>``.
@@ -82,15 +80,13 @@ class GatherMountEntry:
         ]
         multi = len(target_meshes) > 1
 
-        handles = []
         for mesh_name, raw_mesh in target_meshes:
             local_path = (
                 os.path.join(self.local_mount_point, mesh_name)
                 if multi
                 else self.local_mount_point
             )
-            handles.append(_gather_mount(raw_mesh, self.remote_mount_point, local_path))
-        return handles
+            yield _gather_mount(raw_mesh, self.remote_mount_point, local_path)
 
 
 class Mounts:
@@ -153,7 +149,8 @@ class Mounts:
         if not self._remote_entries and not self._gather_entries:
             guard = find_job_sidecar(apply_id)
             if guard is not None:
-                guard.send(ClearMountsRequest()).get()
+                response = guard.send(ClearMountsRequest()).get()
+                raise_for_sidecar_error(response, "clear job mounts")
             return
 
         guard = get_job_sidecar(apply_id)
@@ -161,7 +158,8 @@ class Mounts:
         # job's scheduler, which is not known when the mount is declared.
         for entry in self._remote_entries:
             entry.via_gateway = via_gateway
-        guard.send(MountsRequest(self, dict(host_meshes))).get()
+        response = guard.send(MountsRequest(self, dict(host_meshes))).get()
+        raise_for_sidecar_error(response, "open or refresh job mounts")
 
 
 class MountsHandle:
@@ -170,10 +168,24 @@ class MountsHandle:
     def __init__(self, mounts: Mounts, host_meshes: Mapping[str, HostMesh]) -> None:
         self._active_remote: list[Any] = []
         self._active_gather: list[Any] = []
-        for entry in mounts._remote_entries:
-            self._active_remote.extend(entry.apply(host_meshes))
-        for entry in mounts._gather_entries:
-            self._active_gather.extend(entry.apply(host_meshes))
+        try:
+            for entry in mounts._remote_entries:
+                for handler in entry.create(host_meshes):
+                    # Own the handle before open starts so partial opens can be closed.
+                    self._active_remote.append(handler)
+                    handler.open(entry.via_gateway)
+            for entry in mounts._gather_entries:
+                for mount in entry.apply(host_meshes):
+                    self._active_gather.append(mount)
+        except Exception:
+            try:
+                self.close()
+            except Exception:
+                _dbg(
+                    "initialization cleanup: ERROR closing partial mounts:\n"
+                    + traceback.format_exc()
+                )
+            raise
 
     def refresh(self) -> None:
         """Refresh remote mounts in-place; gather mounts are unaffected."""
@@ -188,19 +200,33 @@ class MountsHandle:
 
     def close(self) -> None:
         """Unmount all remote and gather mounts."""
+        failures: list[tuple[str, Exception]] = []
+        active_remote = []
         for handler in self._active_remote:
             try:
                 handler.close()
-            except Exception:
+            except Exception as error:
+                active_remote.append(handler)
+                failures.append((f"remote mount {handler.mntpoint!r}", error))
                 _dbg(
                     f"close: ERROR unmounting {handler.mntpoint!r}:\n"
                     + traceback.format_exc()
                 )
+        self._active_remote = active_remote
+        active_gather = []
         for mount in self._active_gather:
             try:
                 mount.close()
-            except Exception:
+            except Exception as error:
+                active_gather.append(mount)
+                failures.append(("gather mount", error))
                 _dbg("close: ERROR closing gather mount:\n" + traceback.format_exc())
+        self._active_gather = active_gather
+        if failures:
+            labels = ", ".join(label for label, _ in failures)
+            raise RuntimeError(
+                f"failed to close {len(failures)} mount(s): {labels}"
+            ) from failures[0][1]
 
 
 def _dbg(msg: str) -> None:

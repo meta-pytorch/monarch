@@ -27,7 +27,6 @@ from monarch.actor import attach, enable_transport, HostMesh
 from monarch.config import get_runtime_config
 
 _JOB_SIDECAR_WORKER_MODULE = "monarch._src.job._job_sidecar_worker"
-
 try:
     from __manifest__ import fbmake  # noqa
 
@@ -99,10 +98,28 @@ def find_job_sidecar(apply_id: str) -> OnceDaemon | None:
 
 
 def stop_job_sidecar(apply_id: str) -> None:
-    """Shut down the per-job sidecar process for an apply id if it exists."""
+    """Close mounts, then shut down the per-job sidecar for an apply id.
+
+    Mount cleanup is an acknowledged operation so an unmount failure leaves the
+    sidecar alive and retryable instead of destroying the only process holding
+    the mount handle and leaking a stale filesystem.
+    """
     daemon = find_job_sidecar(apply_id)
     if daemon is not None:
+        response = daemon.send(ClearMountsRequest()).get()
+        raise_for_sidecar_error(response, "clear job mounts")
         daemon.shutdown()
+
+
+def raise_for_sidecar_error(response: object, operation: str) -> None:
+    """Raise when a job-sidecar response reports an operation failure."""
+    if isinstance(response, dict) and isinstance(response.get("error"), str):
+        raise RuntimeError(f"job sidecar failed to {operation}:\n{response['error']}")
+    if response != "ok":
+        raise RuntimeError(
+            f"job sidecar returned an unexpected response while attempting to "
+            f"{operation}: {response!r}"
+        )
 
 
 def sidecar_transport_from_runtime() -> str | None:
@@ -300,11 +317,7 @@ def _run_job_sidecar(
                     elif isinstance(msg, ClearMountsRequest):
                         response = state.clear_mounts()
                     elif isinstance(msg, TelemetryRequest):
-                        try:
-                            response = state.handle_telemetry(msg)
-                        except Exception:
-                            # TODO: Centralize sidecar error.
-                            response = {"error": traceback.format_exc()}
+                        response = state.handle_telemetry(msg)
                     elif isinstance(msg, TelemetryInfoRequest):
                         try:
                             response = state.handle_telemetry_info(msg)
@@ -313,18 +326,14 @@ def _run_job_sidecar(
                             _dbg(traceback.format_exc())
                             response = {"error": str(error)}
                     elif isinstance(msg, AdminUrlRequest):
-                        try:
-                            response = state.handle_admin_url(msg)
-                        except Exception:
-                            # TODO: Centralize sidecar error.
-                            response = {"error": traceback.format_exc()}
+                        response = state.handle_admin_url(msg)
                     else:
                         raise RuntimeError(f"unexpected job sidecar request: {msg!r}")
                 except Exception:
                     _dbg(
                         "ERROR during job sidecar operation:\n" + traceback.format_exc()
                     )
-                    response = "ok"
+                    response = {"error": traceback.format_exc()}
                 # @lint-ignore PYTHONPICKLEISBAD
                 conn.sendall(pickle.dumps(response))
         except Exception:

@@ -349,3 +349,77 @@ def test_exec_recreates_job_after_kill(env):
     result = _cli(env, "exec", "echo", "nope")
     assert result.returncode == 0
     assert "nope" in result.stdout
+
+
+def test_exec_kill_cleans_mounts_before_stopping_workers(env):
+    _apply(env, "a")
+
+    from monarch._src.job.job import job_load
+
+    job = job_load(str(env / ".monarch" / "job_state.pkl"))
+    pids = [ps.pid for ps in job._host_to_pid.values()]
+    result = _cli(env, "exec", "--kill", "echo", "finished")
+
+    assert "finished" in result.stdout
+    assert not os.path.ismount(_gathered(env, "a"))
+    assert not os.path.ismount(_mnt(env, "a"))
+    for pid in pids:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+
+
+def test_exec_kill_with_local_job(tmp_path):
+    (tmp_path / "local_job.py").write_text(
+        "from monarch._src.job.job import LocalJob\n"
+        "job = LocalJob(['workers', 'other'])\n"
+    )
+    _cli(tmp_path, "apply", "local_job.job")
+    result = _cli(tmp_path, "exec", "--kill", "echo", "local-finished")
+
+    assert result.returncode == 0
+    assert "local-finished" in result.stdout
+
+
+@pytest.mark.parametrize("point", [None, "hosts=1"])
+def test_shell_kill_cleans_mounts_before_stopping_workers(env, point):
+    import tempfile
+
+    _apply(env, "a")
+
+    from monarch._src.job.job import job_load
+
+    job = job_load(str(env / ".monarch" / "job_state.pkl"))
+    pids = [ps.pid for ps in job._host_to_pid.values()]
+    args = [sys.executable, "-m", "monarch.tools.cli", "shell", "--kill"]
+    if point is not None:
+        args.extend(["--point", point])
+    with tempfile.TemporaryFile() as stderr_file:
+        proc = subprocess.Popen(
+            args,
+            cwd=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+        )
+        assert proc.stdin is not None
+        stdin = proc.stdin
+        try:
+            stdin.write(b"printf 'shell-finished\\n'; exit\n")
+            stdin.flush()
+            proc.stdin = None
+            stdout, _ = proc.communicate(timeout=30)
+        finally:
+            stdin.close()
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        stderr_file.seek(0)
+        stderr = stderr_file.read().decode(errors="replace")
+
+    assert proc.returncode == 0, stderr
+    assert b"shell-finished" in stdout
+    assert not os.path.ismount(_gathered(env, "a"))
+    assert not os.path.ismount(_mnt(env, "a"))
+    for pid in pids:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)

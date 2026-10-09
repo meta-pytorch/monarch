@@ -537,3 +537,139 @@ class TestShellOnJob(unittest.TestCase):
             env={"FOO": "bar"},
             workdir="/tmp/work",
         )
+
+
+class TestKillOnJob(unittest.TestCase):
+    def test_drain_and_client_flush_precede_allocation_release(self) -> None:
+        for command in ("exec", "shell"):
+            with (
+                self.subTest(command=command),
+                mock.patch("monarch._src.tools.commands.load_current_job") as load_job,
+                mock.patch("monarch._src.job.job.exec_command") as execute,
+                mock.patch("monarch._src.job.shell.shell", return_value=0),
+                mock.patch(
+                    "monarch._src.job.job_sidecar.stop_job_sidecar"
+                ) as stop_sidecar,
+                mock.patch("monarch.actor.shutdown_context") as shutdown_context,
+            ):
+                host_mesh = MagicMock()
+                job = load_job.return_value
+                job.apply_id = "apply_id"
+                job.state.return_value._hosts = {"workers": host_mesh}
+                job._components.mounts.python_executable_for_mesh.return_value = None
+                execute.return_value.get.return_value = 0
+                calls = MagicMock()
+                calls.attach_mock(stop_sidecar, "close_mounts")
+                calls.attach_mock(host_mesh.stop.return_value.get, "drain_host")
+                calls.attach_mock(job.kill, "kill_job")
+                calls.attach_mock(shutdown_context.return_value.get, "stop_context")
+
+                if command == "exec":
+                    returncode = commands.exec_on_job(["true"], kill=True)
+                else:
+                    returncode = commands.shell_on_job(kill=True)
+
+                self.assertEqual(returncode, 0)
+                self.assertEqual(
+                    calls.mock_calls,
+                    [
+                        mock.call.close_mounts("apply_id"),
+                        mock.call.drain_host(),
+                        mock.call.stop_context(),
+                        mock.call.kill_job(),
+                    ],
+                )
+                selected_host = host_mesh.flatten.return_value.slice.return_value
+                host_mesh.shutdown.assert_not_called()
+                selected_host.stop.assert_not_called()
+                selected_host.shutdown.assert_not_called()
+
+    def test_mount_cleanup_failure_leaves_hosts_available_for_retry(self) -> None:
+        for command in ("exec", "shell"):
+            with (
+                self.subTest(command=command),
+                mock.patch("monarch._src.tools.commands.load_current_job") as load_job,
+                mock.patch("monarch._src.job.job.exec_command") as execute,
+                mock.patch("monarch._src.job.shell.shell", return_value=0),
+                mock.patch(
+                    "monarch._src.job.job_sidecar.stop_job_sidecar",
+                    side_effect=[RuntimeError("mount busy"), None],
+                ) as stop_sidecar,
+                mock.patch("monarch.actor.shutdown_context") as shutdown_context,
+            ):
+                host_mesh = MagicMock()
+                job = load_job.return_value
+                job.apply_id = "apply_id"
+                job.state.return_value._hosts = {"workers": host_mesh}
+                job._components.mounts.python_executable_for_mesh.return_value = None
+                execute.return_value.get.return_value = 0
+
+                def run_command(command: str = command) -> int:
+                    if command == "exec":
+                        return commands.exec_on_job(["true"], kill=True)
+                    return commands.shell_on_job(kill=True)
+
+                with self.assertRaisesRegex(RuntimeError, "mount busy"):
+                    run_command()
+                host_mesh.stop.assert_not_called()
+                host_mesh.shutdown.assert_not_called()
+                job.kill.assert_not_called()
+                shutdown_context.assert_not_called()
+
+                self.assertEqual(run_command(), 0)
+                self.assertEqual(stop_sidecar.call_count, 2)
+                host_mesh.stop.assert_called_once_with()
+                job.kill.assert_called_once_with()
+
+    def test_kill_drains_all_owned_meshes_for_a_single_target(self) -> None:
+        for command in ("exec", "shell"):
+            with (
+                self.subTest(command=command),
+                mock.patch("monarch._src.tools.commands.load_current_job") as load_job,
+                mock.patch("monarch._src.job.job.exec_command") as execute,
+                mock.patch("monarch._src.job.shell.shell", return_value=0),
+                mock.patch("monarch._src.job.job_sidecar.stop_job_sidecar"),
+                mock.patch("monarch.actor.shutdown_context"),
+            ):
+                job = load_job.return_value
+                hosts = [MagicMock(), MagicMock()]
+                job.state.return_value._hosts = dict(zip(("workers", "other"), hosts))
+                job._components.mounts.python_executable_for_mesh.return_value = None
+                execute.return_value.get.return_value = 0
+                if command == "exec":
+                    self.assertEqual(commands.exec_on_job(["true"], kill=True), 0)
+                else:
+                    self.assertEqual(
+                        commands.shell_on_job(point_str="hosts=1", kill=True), 0
+                    )
+                for host in hosts:
+                    host.stop.assert_called_once_with()
+                    host.shutdown.assert_not_called()
+
+    def test_failed_drain_does_not_release_allocation(self) -> None:
+        with mock.patch("monarch.actor.shutdown_context") as shutdown_context:
+            job = MagicMock(apply_id=None)
+            host = MagicMock()
+            host.stop.return_value.get.side_effect = RuntimeError("drain failed")
+            with self.assertRaisesRegex(RuntimeError, "drain failed"):
+                commands._kill_job(job, [host])
+            shutdown_context.assert_not_called()
+            job.kill.assert_not_called()
+
+    def test_local_job_releases_context_without_stopping_borrowed_hosts(self) -> None:
+        from monarch._src.job.job import LocalJob
+
+        with mock.patch("monarch.actor.shutdown_context") as shutdown_context:
+            job = MagicMock(spec=LocalJob, apply_id=None)
+            host = MagicMock()
+            calls = MagicMock()
+            calls.attach_mock(shutdown_context.return_value.get, "stop_context")
+            calls.attach_mock(job.kill, "kill_job")
+
+            commands._kill_job(job, [host])
+
+            host.stop.assert_not_called()
+            host.shutdown.assert_not_called()
+            self.assertEqual(
+                calls.mock_calls, [mock.call.stop_context(), mock.call.kill_job()]
+            )
