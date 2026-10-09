@@ -26,7 +26,7 @@ import urllib.request
 import warnings
 import weakref
 from contextlib import ExitStack, suppress
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any, Callable, cast, Dict, Generator, IO, List, Optional, Set
 from unittest.mock import patch
 
@@ -1318,16 +1318,128 @@ class CudaVisibleDevicesActor(Actor):
         return os.environ.get("CUDA_VISIBLE_DEVICES", "")
 
 
-def test_get_bootstrap_args_includes_parent_environment(
+def test_default_bootstrap_cmd_inherits_host_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from monarch._src.actor.proc_mesh import _get_bootstrap_args
-
     monkeypatch.setenv("MONARCH_BOOTSTRAP_ENV_TEST", "present")
 
-    _, _, env = _get_bootstrap_args()
+    cmd = default_bootstrap_cmd()
 
-    assert env["MONARCH_BOOTSTRAP_ENV_TEST"] == "present"
+    assert cmd.inherit_env
+    # The caller's environment must not be copied into the command, since it
+    # would override the environment of the remote host that spawns the proc.
+    assert "MONARCH_BOOTSTRAP_ENV_TEST" not in cmd.env
+
+
+def test_bootstrap_command_with_env_preserves_inherit_env() -> None:
+    cmd = BootstrapCommand("/bin/true", None, [], {"A": "1"}, inherit_env=False)
+
+    derived = cmd.with_env({"B": "2"})
+
+    assert not derived.inherit_env
+    assert derived.env == {"A": "1", "B": "2"}
+    assert BootstrapCommand("/bin/true", None, [], {}).inherit_env
+
+
+def test_bootstrap_command_with_env_none_removes() -> None:
+    cmd = BootstrapCommand("/bin/true", None, [], {"A": "1", "B": "2"})
+
+    derived = cmd.with_env({"A": None, "C": None})
+
+    assert derived.env == {"A": None, "B": "2", "C": None}
+    assert cmd.env == {"A": "1", "B": "2"}
+    # A later value restores a removed variable.
+    assert derived.with_env({"A": "3"}).env == {"A": "3", "B": "2", "C": None}
+
+
+def test_bootstrap_command_accepts_mappings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MONARCH_BOOTSTRAP_MAPPING_TEST", "present")
+    cmd = BootstrapCommand("/bin/true", None, [], MappingProxyType({"A": None}))
+
+    assert cmd.env == {"A": None}
+    assert cmd.with_env(os.environ).env["MONARCH_BOOTSTRAP_MAPPING_TEST"] == "present"
+    cmd.env = MappingProxyType({"B": "1"})
+    assert cmd.env == {"B": "1"}
+    non_string_env = {"A": 1}
+    with pytest.raises(TypeError):
+        # pyrefly: ignore [bad-argument-type]
+        BootstrapCommand("/bin/true", None, [], non_string_env)
+
+
+class EnvVarActor(Actor):
+    @endpoint
+    def get_env(self, key: str) -> Optional[str]:
+        return os.environ.get(key)
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_spawn_procs_bootstrap_command_inherits_and_removes_env() -> None:
+    os.environ["MONARCH_BOOTSTRAP_INHERIT_TEST"] = "inherited"
+    os.environ["MONARCH_BOOTSTRAP_REMOVE_TEST"] = "inherited"
+
+    cmd = default_bootstrap_cmd().with_env({"MONARCH_BOOTSTRAP_REMOVE_TEST": None})
+    pm = this_host().spawn_procs(per_host={"procs": 1}, bootstrap_command=cmd)
+    am = pm.spawn("env_probe", EnvVarActor)
+
+    assert am.get_env.call_one("MONARCH_BOOTSTRAP_INHERIT_TEST").get() == "inherited"
+    assert am.get_env.call_one("MONARCH_BOOTSTRAP_REMOVE_TEST").get() is None
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_spawn_procs_bootstrap_command_uses_remote_host_environment() -> None:
+    """Procs inherit their own host's environment, not the controller's."""
+    os.environ["MONARCH_ENV_SHARED"] = "controller"
+    os.environ["MONARCH_ENV_CONTROLLER_ONLY"] = "controller"
+    os.environ.pop("MONARCH_ENV_HOST_ONLY", None)
+
+    worker_env = {
+        k: v for k, v in os.environ.items() if k != "MONARCH_ENV_CONTROLLER_ONLY"
+    }
+    worker_env["MONARCH_ENV_SHARED"] = "host"
+    worker_env["MONARCH_ENV_HOST_ONLY"] = "host"
+    worker_env["MONARCH_ENV_REMOVED"] = "host"
+    if "FB_XAR_INVOKED_NAME" in os.environ:
+        worker_env["PYTHONPATH"] = ":".join(sys.path)
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    addr = f"tcp://127.0.0.1:{port}"
+    worker = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "from monarch.actor import run_worker_loop_forever; "
+            f'run_worker_loop_forever(address={addr!r}, ca="trust_all_connections")',
+        ],
+        env=worker_env,
+    )
+
+    try:
+        # pyrefly: ignore [bad-argument-type]
+        hosts = attach_to_workers(ca="trust_all_connections", workers=[addr])
+        cmd = default_bootstrap_cmd().with_env(
+            {"MONARCH_ENV_REMOVED": None, "MONARCH_ENV_SET": "command"}
+        )
+        am = hosts.spawn_procs(per_host={"procs": 1}, bootstrap_command=cmd).spawn(
+            "env_probe", EnvVarActor
+        )
+
+        def get(key: str) -> Optional[str]:
+            return am.get_env.call_one(key).get()
+
+        assert get("MONARCH_ENV_SHARED") == "host"
+        assert get("MONARCH_ENV_HOST_ONLY") == "host"
+        assert get("MONARCH_ENV_CONTROLLER_ONLY") is None
+        assert get("MONARCH_ENV_REMOVED") is None
+        assert get("MONARCH_ENV_SET") == "command"
+        hosts.shutdown().get()
+    finally:
+        worker.kill()
+        worker.wait()
 
 
 @pytest.mark.timeout(60)

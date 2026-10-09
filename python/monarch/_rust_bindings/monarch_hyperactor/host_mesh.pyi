@@ -6,7 +6,7 @@
 
 # pyre-strict
 
-from typing import Any, Callable, final
+from typing import Any, Callable, final, Mapping
 
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.handle import Handle
@@ -91,14 +91,15 @@ class HostMesh:
 
 @final
 class BootstrapCommand:
-    env: dict[str, str]
+    inherit_env: bool
 
     def __init__(
         self,
         program: str,
         arg0: str | None,
         args: list[str],
-        env: dict[str, str],
+        env: Mapping[str, str | None],
+        inherit_env: bool = True,
     ) -> None:
         """
         Bootstrap command specification.
@@ -107,17 +108,26 @@ class BootstrapCommand:
         - `program`: The program to execute.
         - `arg0`: Optionally, the program's arg0. If not provided, the program's name will be used.
         - `args`: List of command line arguments.
-        - `env`: The complete child environment as key-value pairs. Variables
-          are not inherited from the parent process.
+        - `env`: Environment variables as key-value pairs. A `None` value
+          removes the variable from the inherited environment.
+        - `inherit_env`: If true (the default), the child inherits the
+          environment of the host agent that spawns it, and `env` is applied
+          on top. If false, the child starts from an empty environment.
+          Monarch's launch variables are always set, and some process
+          launchers add their own (e.g., systemd service metadata).
         """
         ...
 
+    @property
+    def env(self) -> dict[str, str | None]: ...
+    @env.setter
+    def env(self, env: Mapping[str, str | None]) -> None: ...
     def __repr__(self) -> str: ...
-    def with_env(self, env: dict[str, str]) -> "BootstrapCommand":
+    def with_env(self, env: Mapping[str, str | None]) -> "BootstrapCommand":
         """
         Return a copy of this command with `env` merged on top of its
         environment. Keys in `env` override any conflicting keys in the
-        existing environment.
+        existing environment; a `None` value removes the variable.
 
         Arguments:
         - `env`: Additional environment variables to merge.

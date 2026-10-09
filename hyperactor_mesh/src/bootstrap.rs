@@ -13,6 +13,7 @@
 //!   the transition; acquiring another lock risks deadlock.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::env::VarError;
 use std::fmt;
@@ -1542,16 +1543,38 @@ impl ProcHandle for BootstrapProcHandle {
 }
 
 /// A specification of the command used to bootstrap procs.
-#[derive(Debug, Named, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Named, Serialize, Deserialize, Clone)]
 pub struct BootstrapCommand {
     pub program: PathBuf,
     pub arg0: Option<String>,
     pub args: Vec<String>,
-    /// The complete environment for the child process. No variables are
-    /// inherited from the spawning process.
+    /// Environment variables for the child process. If `inherit_env`
+    /// is set, these are applied on top of the spawning process's
+    /// environment; otherwise, the child starts from an empty
+    /// environment. These take precedence over `env_remove`.
+    /// Launchers set their bootstrap variables after these.
     pub env: HashMap<String, String>,
+    /// Environment variables to remove from the inherited
+    /// environment.
+    pub env_remove: HashSet<String>,
+    /// Whether the child process inherits the environment of the
+    /// process that spawns it (typically the host agent).
+    pub inherit_env: bool,
 }
 wirevalue::register_type!(BootstrapCommand);
+
+impl Default for BootstrapCommand {
+    fn default() -> Self {
+        Self {
+            program: PathBuf::new(),
+            arg0: None,
+            args: vec![],
+            env: HashMap::new(),
+            env_remove: HashSet::new(),
+            inherit_env: true,
+        }
+    }
+}
 
 impl std::hash::Hash for BootstrapCommand {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -1561,6 +1584,10 @@ impl std::hash::Hash for BootstrapCommand {
         let mut pairs: Vec<_> = self.env.iter().collect();
         pairs.sort();
         pairs.hash(state);
+        let mut removed: Vec<_> = self.env_remove.iter().collect();
+        removed.sort();
+        removed.hash(state);
+        self.inherit_env.hash(state);
     }
 }
 
@@ -1570,6 +1597,8 @@ impl PartialEq for BootstrapCommand {
             && self.arg0 == other.arg0
             && self.args == other.args
             && self.env == other.env
+            && self.env_remove == other.env_remove
+            && self.inherit_env == other.inherit_env
     }
 }
 
@@ -1586,7 +1615,7 @@ impl BootstrapCommand {
             program: std::env::current_exe()?,
             arg0,
             args: args.into(),
-            env: std::env::vars().collect(),
+            ..Default::default()
         })
     }
 
@@ -1600,9 +1629,12 @@ impl BootstrapCommand {
         for arg in &self.args {
             cmd.arg(arg);
         }
-        // `env` is authoritative, so disable `Command`'s implicit
-        // parent-environment inheritance before applying it.
-        cmd.env_clear();
+        if !self.inherit_env {
+            cmd.env_clear();
+        }
+        for k in &self.env_remove {
+            cmd.env_remove(k);
+        }
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
@@ -1620,9 +1652,7 @@ impl BootstrapCommand {
     pub(crate) fn test() -> Self {
         Self {
             program: crate::testresource::get("monarch/hyperactor_mesh/bootstrap"),
-            arg0: None,
-            args: vec![],
-            env: std::env::vars().collect(),
+            ..Default::default()
         }
     }
 }
@@ -1632,9 +1662,7 @@ impl<T: Into<PathBuf>> From<T> for BootstrapCommand {
     fn from(s: T) -> Self {
         Self {
             program: s.into(),
-            arg0: None,
-            args: vec![],
-            env: std::env::vars().collect(),
+            ..Default::default()
         }
     }
 }
@@ -2649,6 +2677,63 @@ mod tests {
         );
     }
 
+    fn env_command() -> BootstrapCommand {
+        BootstrapCommand {
+            program: PathBuf::from("/usr/bin/env"),
+            env: HashMap::from([("BOOTSTRAP_COMMAND_TEST".to_string(), "present".to_string())]),
+            ..Default::default()
+        }
+    }
+
+    async fn env_output(command: BootstrapCommand) -> Vec<String> {
+        let output = command
+            .new()
+            .output()
+            .await
+            .expect("run env with the configured environment");
+        String::from_utf8(output.stdout)
+            .expect("env output should be UTF-8")
+            .lines()
+            .map(String::from)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn bootstrap_command_inherits_environment() {
+        let path = std::env::var("PATH").expect("test runner should set PATH");
+
+        let lines = env_output(env_command()).await;
+
+        assert!(lines.contains(&"BOOTSTRAP_COMMAND_TEST=present".to_string()));
+        assert!(
+            lines.contains(&format!("PATH={path}")),
+            "bootstrap command should inherit the spawning process's environment"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_command_removes_inherited_environment() {
+        assert!(
+            std::env::var_os("PATH").is_some(),
+            "test runner should set PATH"
+        );
+
+        let lines = env_output(BootstrapCommand {
+            env_remove: HashSet::from(["PATH".to_string(), "BOOTSTRAP_COMMAND_TEST".to_string()]),
+            ..env_command()
+        })
+        .await;
+
+        assert!(
+            !lines.iter().any(|line| line.starts_with("PATH=")),
+            "removed variables should not be inherited"
+        );
+        assert!(
+            lines.contains(&"BOOTSTRAP_COMMAND_TEST=present".to_string()),
+            "env should take precedence over env_remove"
+        );
+    }
+
     #[tokio::test]
     async fn bootstrap_command_uses_exact_environment() {
         assert!(
@@ -2656,19 +2741,12 @@ mod tests {
             "test runner should set PATH"
         );
 
-        let output = BootstrapCommand {
-            program: PathBuf::from("/usr/bin/env"),
-            env: HashMap::from([("BOOTSTRAP_COMMAND_TEST".to_string(), "present".to_string())]),
-            ..Default::default()
-        }
-        .new()
-        .output()
-        .await
-        .expect("run env with the configured environment");
-        let stdout = String::from_utf8(output.stdout).expect("env output should be UTF-8");
-
         assert_eq!(
-            stdout.lines().collect::<Vec<_>>(),
+            env_output(BootstrapCommand {
+                inherit_env: false,
+                ..env_command()
+            })
+            .await,
             ["BOOTSTRAP_COMMAND_TEST=present"],
             "bootstrap command should use only its configured environment"
         );

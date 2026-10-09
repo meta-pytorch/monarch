@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashMap;
 use std::future::Future;
 
 use futures::future::try_join_all;
@@ -131,22 +132,20 @@ fn prepare_worker_loop(
     // Check if we're running in a PAR/XAR build by looking for FB_XAR_INVOKED_NAME environment variable
     let invoked_name = std::env::var("FB_XAR_INVOKED_NAME");
 
-    let mut env: std::collections::HashMap<String, String> = std::env::vars().collect();
-
     let command = Some(if let Ok(invoked_name) = invoked_name {
         // For PAR/XAR builds: use argv[0] from Python's sys.argv as the current executable
         let current_exe = std::path::PathBuf::from(&invoked_name);
 
         // For PAR/XAR builds: set PAR_MAIN_OVERRIDE and no additional args
-        env.insert(
-            "PAR_MAIN_OVERRIDE".to_string(),
-            "monarch._src.actor.bootstrap_main".to_string(),
-        );
         BootstrapCommand {
             program: current_exe,
             arg0: Some(invoked_name),
             args: vec![],
-            env,
+            env: HashMap::from([(
+                "PAR_MAIN_OVERRIDE".to_string(),
+                "monarch._src.actor.bootstrap_main".to_string(),
+            )]),
+            ..Default::default()
         }
     } else {
         // For regular Python builds: use argv[0] to preserve the original
@@ -170,7 +169,7 @@ fn prepare_worker_loop(
                 "-m".to_string(),
                 "monarch._src.actor.bootstrap_main".to_string(),
             ],
-            env,
+            ..Default::default()
         }
     });
 

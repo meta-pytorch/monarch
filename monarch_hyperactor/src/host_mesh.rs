@@ -50,6 +50,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use pyo3::types::PyMapping;
 
 use crate::actor::PythonActor;
 use crate::actor::to_py_error;
@@ -65,6 +66,25 @@ use crate::shape::PyExtent;
 use crate::shape::PyPoint;
 use crate::shape::PyRegion;
 
+/// The command used to start a proc.
+///
+/// Arguments:
+/// - `program`: The program to execute.
+/// - `arg0`: Optionally, the program's arg0.
+/// - `args`: Command line arguments.
+/// - `env`: Environment variables as a mapping. A `None` value removes
+///   the variable from the inherited environment.
+/// - `inherit_env`: If true (the default), the proc inherits the
+///   environment of the host agent that spawns it, and `env` is applied
+///   on top. If false, the proc starts from an empty environment.
+///
+/// Monarch always sets its own launch variables (e.g.,
+/// `HYPERACTOR_MESH_BOOTSTRAP_MODE`) after applying `env`, and some
+/// process launchers add their own (e.g., systemd service metadata).
+///
+/// The `env` property returns a copy: `cmd.env["X"] = "1"` does not
+/// change the command. Use `cmd.with_env({"X": "1"})` to merge, or
+/// assign `cmd.env = {...}` to replace the whole mapping.
 #[pyclass(
     name = "BootstrapCommand",
     module = "monarch._rust_bindings.monarch_hyperactor.host_mesh"
@@ -77,46 +97,74 @@ pub struct PyBootstrapCommand {
     pub arg0: Option<String>,
     #[pyo3(get, set)]
     pub args: Vec<String>,
+    /// Environment overrides; `None` removes the variable from the
+    /// inherited environment.
+    pub env: HashMap<String, Option<String>>,
     #[pyo3(get, set)]
-    pub env: HashMap<String, String>,
+    pub inherit_env: bool,
+}
+
+/// Extract environment overrides from any Python mapping of `str` to
+/// `str | None`.
+fn extract_env(env: &Bound<'_, PyAny>) -> PyResult<HashMap<String, Option<String>>> {
+    env.cast::<PyMapping>()?
+        .items()?
+        .iter()
+        .map(|item| item.extract())
+        .collect()
 }
 
 #[pymethods]
 impl PyBootstrapCommand {
     #[new]
+    #[pyo3(signature = (program, arg0, args, env, inherit_env = true))]
     fn new(
         program: String,
         arg0: Option<String>,
         args: Vec<String>,
-        env: HashMap<String, String>,
-    ) -> Self {
-        Self {
+        env: &Bound<'_, PyAny>,
+        inherit_env: bool,
+    ) -> PyResult<Self> {
+        Ok(Self {
             program,
             arg0,
             args,
-            env,
-        }
+            env: extract_env(env)?,
+            inherit_env,
+        })
+    }
+
+    #[getter]
+    fn env(&self) -> HashMap<String, Option<String>> {
+        self.env.clone()
+    }
+
+    #[setter]
+    fn set_env(&mut self, env: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.env = extract_env(env)?;
+        Ok(())
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "BootstrapCommand(program='{}', args={:?}, env={:?})",
-            self.program, self.args, self.env
+            "BootstrapCommand(program='{}', args={:?}, env={:?}, inherit_env={})",
+            self.program,
+            self.args,
+            self.env,
+            if self.inherit_env { "True" } else { "False" }
         )
     }
 
     /// Return a copy of this command with `env` merged on top of its
     /// environment. Keys in `env` override any conflicting keys in the
-    /// existing environment.
-    fn with_env(&self, env: HashMap<String, String>) -> Self {
+    /// existing environment; a `None` value removes the variable.
+    fn with_env(&self, env: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut new_env = self.env.clone();
-        new_env.extend(env);
-        Self {
-            program: self.program.clone(),
-            arg0: self.arg0.clone(),
-            args: self.args.clone(),
+        new_env.extend(extract_env(env)?);
+        Ok(Self {
             env: new_env,
-        }
+            ..self.clone()
+        })
     }
 }
 
@@ -126,7 +174,18 @@ impl PyBootstrapCommand {
             program: PathBuf::from(&self.program),
             arg0: self.arg0.clone(),
             args: self.args.clone(),
-            env: self.env.clone(),
+            env: self
+                .env
+                .iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.clone()?)))
+                .collect(),
+            env_remove: self
+                .env
+                .iter()
+                .filter(|(_, v)| v.is_none())
+                .map(|(k, _)| k.clone())
+                .collect(),
+            inherit_env: self.inherit_env,
         }
     }
 }

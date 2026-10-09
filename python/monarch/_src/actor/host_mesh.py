@@ -29,9 +29,13 @@ from monarch.tools.config.workspace import Workspace
 def default_bootstrap_cmd() -> BootstrapCommand:
     """Get the default bootstrap command for the current environment.
 
-    Returns a BootstrapCommand configured with the current Python executable
-    and environment. This can be used as a base for customization with
-    ``with_env()`` or by modifying its attributes directly.
+    Returns a BootstrapCommand configured with the current Python executable.
+    Spawned procs inherit the environment of the host that spawns them; the
+    command does not carry the caller's environment. This can be used as a
+    base for customization with ``with_env()`` or by modifying its attributes
+    directly. In ``with_env()``, a ``None`` value removes a variable from the
+    inherited environment; set ``inherit_env = False`` to start from an empty
+    environment instead.
 
     Returns:
         BootstrapCommand: The default bootstrap command.

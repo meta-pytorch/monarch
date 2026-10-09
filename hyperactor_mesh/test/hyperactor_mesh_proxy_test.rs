@@ -125,6 +125,7 @@ impl Actor for ProxyActor {
             arg0: None,
             args: vec!["--bootstrap".to_string()],
             env: std::env::vars().collect(),
+            ..Default::default()
         };
 
         let host_mesh = HostMesh::process(extent! { hosts = 1 }, command).await?;
@@ -187,6 +188,7 @@ async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::E
         arg0: None,
         args: vec!["--bootstrap".to_string()],
         env: std::env::vars().collect(),
+        ..Default::default()
     };
 
     let cx = context().await;

@@ -104,6 +104,11 @@ pub(crate) trait SystemdManager {
     /// Return the D-Bus object path for a unit so we can inspect it
     /// further (active state, result, etc.).
     fn get_unit(&self, name: &str) -> Result<OwnedObjectPath>;
+
+    /// The manager's environment, as `KEY=VALUE` strings. systemd
+    /// passes it to every unit it starts.
+    #[zbus(property)]
+    fn environment(&self) -> Result<Vec<String>>;
 }
 
 /// Minimal view of a single systemd unit, used to query its state

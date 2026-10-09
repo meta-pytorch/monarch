@@ -14,7 +14,7 @@ implement to be used with ActorProcLauncher from Rust.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from monarch._src.actor.actor_mesh import Actor, Port
@@ -42,6 +42,15 @@ class LaunchOptions:
             forwarding.
         proc_bind: Optional CPU/NUMA binding configuration dict.
             Keys may include cpunodebind, membind, physcpubind, cpus.
+        inherit_env: Whether the child inherits the launcher's
+            environment (``os.environ`` of the HostAgent's proc).
+        env_remove: Variables to remove from the inherited environment.
+
+    Launchers build the child environment as follows: start from the
+    launcher's environment if ``inherit_env`` is set (otherwise from an
+    empty environment), remove ``env_remove``, apply ``env``, and finally
+    set HYPERACTOR_MESH_BOOTSTRAP_MODE, HYPERACTOR_PROCESS_NAME, and
+    BOOTSTRAP_LOG_CHANNEL (if ``log_channel`` is set).
     """
 
     bootstrap_payload: str
@@ -54,6 +63,8 @@ class LaunchOptions:
     tail_lines: int
     log_channel: str | None
     proc_bind: dict[str, str] | None
+    inherit_env: bool = True
+    env_remove: list[str] = field(default_factory=list)
 
 
 @dataclass

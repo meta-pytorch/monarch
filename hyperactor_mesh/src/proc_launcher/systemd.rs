@@ -64,6 +64,8 @@
 //! [`BOOTSTRAP_MODE_ENV`] (plus [`BOOTSTRAP_LOG_CHANNEL`] when
 //! configured).
 
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::MutexGuard;
@@ -741,23 +743,40 @@ impl SystemdProcLauncher {
         vec![(program, argv, false)]
     }
 
-    /// Build environment variables for the child process.
+    /// Build the `Environment` and `UnsetEnvironment` unit
+    /// properties for the child process.
     ///
-    /// Layers bootstrap-specific vars on top of the command's base
-    /// env:
+    /// The command's environment follows the same contract as
+    /// [`BootstrapCommand::new`]: start from `inherited` (the
+    /// launcher's environment) if `inherit_env` is set, remove
+    /// `env_remove`, and apply `env`. Bootstrap-specific vars are
+    /// layered on top:
     /// - `HYPERACTOR_MESH_BOOTSTRAP_MODE`: serialized bootstrap
     ///   payload
     /// - `HYPERACTOR_PROCESS_NAME`: human-readable process name
     /// - `BOOTSTRAP_LOG_CHANNEL`: log forwarding address (if
     ///   provided)
-    fn build_env(opts: &LaunchOptions) -> Result<Vec<String>, ProcLauncherError> {
-        // Start with command's base environment
-        let mut env: std::collections::BTreeMap<String, String> = opts
-            .command
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+    ///
+    /// systemd also passes its own environment (`manager_env`) to
+    /// every unit and generates per-unit variables (e.g.,
+    /// `INVOCATION_ID`). Manager variables and `env_remove` entries
+    /// that are not part of the result are returned for
+    /// `UnsetEnvironment`; other generated variables remain.
+    fn build_env(
+        opts: &LaunchOptions,
+        inherited: impl IntoIterator<Item = (String, String)>,
+        manager_env: &[String],
+    ) -> (Vec<String>, Vec<String>) {
+        let command = &opts.command;
+        let mut env: BTreeMap<String, String> = if command.inherit_env {
+            inherited
+                .into_iter()
+                .filter(|(k, _)| !command.env_remove.contains(k))
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
+        env.extend(command.env.iter().map(|(k, v)| (k.clone(), v.clone())));
 
         // Add bootstrap payload
         env.insert(
@@ -773,8 +792,19 @@ impl SystemdProcLauncher {
             env.insert(BOOTSTRAP_LOG_CHANNEL.to_string(), addr.to_string());
         }
 
+        let unset: BTreeSet<String> = manager_env
+            .iter()
+            .filter_map(|kv| kv.split_once('=').map(|(k, _)| k))
+            .chain(command.env_remove.iter().map(String::as_str))
+            .filter(|k| !env.contains_key(*k))
+            .map(String::from)
+            .collect();
+
         // Convert to systemd Environment format: "KEY=VALUE"
-        Ok(env.into_iter().map(|(k, v)| format!("{k}={v}")).collect())
+        (
+            env.into_iter().map(|(k, v)| format!("{k}={v}")).collect(),
+            unset.into_iter().collect(),
+        )
     }
 
     /// Build the properties for `StartTransientUnit`.
@@ -782,8 +812,9 @@ impl SystemdProcLauncher {
         proc_id: &hyperactor::ProcAddr,
         exec_start: Vec<(String, Vec<String>, bool)>,
         env_kv: Vec<String>,
+        unset_env: Vec<String>,
     ) -> Vec<(&'a str, Value<'a>)> {
-        vec![
+        let mut props = vec![
             (
                 "Description",
                 Value::from(format!("monarch proc {}", proc_id)),
@@ -800,7 +831,11 @@ impl SystemdProcLauncher {
             ("TimeoutStopUSec", Value::from(5_000_000u64)),
             ("ExecStart", Value::from(exec_start)),
             ("Environment", Value::from(env_kv)),
-        ]
+        ];
+        if !unset_env.is_empty() {
+            props.push(("UnsetEnvironment", Value::from(unset_env)));
+        }
+        props
     }
 
     /// Shared implementation for terminate/kill via systemd StopUnit.
@@ -915,16 +950,32 @@ impl ProcLauncher for SystemdProcLauncher {
         // Record unit in span
         tracing::Span::current().record("unit", &unit);
 
+        // Get or establish D-Bus connection (lazy initialization).
+        let conn = self.connection().await?;
+
+        let manager_env_err = |e: zbus::Error| {
+            ProcLauncherError::Launch(std::io::Error::other(format!(
+                "systemd manager environment: {e}"
+            )))
+        };
+        let manager_env = SystemdManagerProxy::new(conn)
+            .await
+            .map_err(manager_env_err)?
+            .environment()
+            .await
+            .map_err(manager_env_err)?;
+
         // Build command, environment, and unit properties using
         // helper methods
         let exec_start = Self::build_exec_start(&opts);
-        let env_kv = Self::build_env(&opts)?;
-        let props = Self::build_unit_props(proc_id, exec_start, env_kv);
+        // D-Bus strings must be UTF-8, so non-UTF-8 variables cannot be
+        // passed to systemd.
+        let inherited = std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
+        let (env_kv, unset_env) = Self::build_env(&opts, inherited, &manager_env);
+        let props = Self::build_unit_props(proc_id, exec_start, env_kv, unset_env);
 
         let aux = Vec::new();
-
-        // Get or establish D-Bus connection (lazy initialization).
-        let conn = self.connection().await?;
 
         // Start unit and resolve object path
         let handle = start_transient_service_clean(conn, &unit, "replace", props, aux)
@@ -1093,6 +1144,7 @@ impl Drop for SystemdProcLauncher {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -1120,7 +1172,185 @@ mod tests {
         }
     }
 
+    fn env_launch_options(command: BootstrapCommand) -> LaunchOptions {
+        LaunchOptions {
+            command,
+            bootstrap_payload: "payload".to_string(),
+            process_name: "proc".to_string(),
+            want_stdio: false,
+            tail_lines: 0,
+            log_channel: None,
+            proc_bind: None,
+        }
+    }
+
+    fn inherited_env() -> Vec<(String, String)> {
+        vec![
+            ("INHERITED".to_string(), "launcher".to_string()),
+            ("OVERRIDDEN".to_string(), "launcher".to_string()),
+            ("REMOVED".to_string(), "launcher".to_string()),
+        ]
+    }
+
+    fn manager_env() -> Vec<String> {
+        vec![
+            "MANAGER_ONLY=manager".to_string(),
+            "REMOVED=manager".to_string(),
+            "INHERITED=manager".to_string(),
+        ]
+    }
+
     // Tests
+
+    /// The systemd environment follows the `BootstrapCommand`
+    /// contract, and manager variables outside of it are unset.
+    #[test]
+    fn build_env_inherits_removes_and_overrides() {
+        let opts = env_launch_options(BootstrapCommand {
+            env: HashMap::from([("OVERRIDDEN".to_string(), "command".to_string())]),
+            env_remove: HashSet::from(["REMOVED".to_string()]),
+            ..Default::default()
+        });
+
+        let (env, unset) = SystemdProcLauncher::build_env(&opts, inherited_env(), &manager_env());
+
+        assert_eq!(
+            env,
+            [
+                format!("{BOOTSTRAP_MODE_ENV}=payload"),
+                format!("{PROCESS_NAME_ENV}=proc"),
+                "INHERITED=launcher".to_string(),
+                "OVERRIDDEN=command".to_string(),
+            ]
+        );
+        assert_eq!(
+            unset,
+            ["MANAGER_ONLY", "REMOVED"],
+            "manager variables outside the computed environment should be unset"
+        );
+    }
+
+    /// Without inheritance, only the command's environment and the
+    /// bootstrap variables are set.
+    #[test]
+    fn build_env_without_inheritance() {
+        let opts = env_launch_options(BootstrapCommand {
+            env: HashMap::from([("OVERRIDDEN".to_string(), "command".to_string())]),
+            inherit_env: false,
+            ..Default::default()
+        });
+
+        let (env, unset) = SystemdProcLauncher::build_env(&opts, inherited_env(), &manager_env());
+
+        assert_eq!(
+            env,
+            [
+                format!("{BOOTSTRAP_MODE_ENV}=payload"),
+                format!("{PROCESS_NAME_ENV}=proc"),
+                "OVERRIDDEN=command".to_string(),
+            ]
+        );
+        assert_eq!(unset, ["INHERITED", "MANAGER_ONLY", "REMOVED"]);
+    }
+
+    /// Explicit removals are unset even when the manager does not
+    /// provide them (e.g., generated per-unit variables), but never
+    /// override explicit values or launch variables.
+    #[test]
+    fn build_env_unsets_explicit_removals() {
+        let opts = env_launch_options(BootstrapCommand {
+            env: HashMap::from([("RESTORED".to_string(), "command".to_string())]),
+            env_remove: HashSet::from([
+                "INVOCATION_ID".to_string(),
+                "RESTORED".to_string(),
+                BOOTSTRAP_MODE_ENV.to_string(),
+            ]),
+            ..Default::default()
+        });
+        let inherited = vec![("INVOCATION_ID".to_string(), "launcher".to_string())];
+
+        let (env, unset) = SystemdProcLauncher::build_env(&opts, inherited, &[]);
+
+        assert_eq!(
+            env,
+            [
+                format!("{BOOTSTRAP_MODE_ENV}=payload"),
+                format!("{PROCESS_NAME_ENV}=proc"),
+                "RESTORED=command".to_string(),
+            ]
+        );
+        assert_eq!(
+            unset,
+            ["INVOCATION_ID"],
+            "explicit values and launch variables should not be unset"
+        );
+    }
+
+    /// Removing a variable that systemd generates for each unit
+    /// removes it from the child.
+    #[tokio::test]
+    async fn launch_unsets_generated_variables() {
+        // Skip if no session bus available (GitHub CI runners).
+        let Ok(_conn) = Connection::session().await else {
+            return;
+        };
+
+        // SAFETY: `libc::getuid()` has no memory safety concerns and
+        // cannot fail.
+        let uid = unsafe { libc::getuid() };
+        let runtime_dir =
+            std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{uid}"));
+        let out_path = format!(
+            "{}/monarch-env-unset-{}-{}.txt",
+            runtime_dir,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        struct CleanupGuard(String);
+        impl Drop for CleanupGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _cleanup = CleanupGuard(out_path.clone());
+
+        let launcher = SystemdProcLauncher::new();
+        let proc_id = ResourceId::proc_addr_from_name(any_unix_addr(), "env-unset");
+        // systemd expands `${...}` in ExecStart itself, so dump the
+        // whole environment instead of referencing the variable.
+        let opts = env_launch_options(BootstrapCommand {
+            env_remove: HashSet::from(["INVOCATION_ID".to_string()]),
+            ..with_sh(format!(r#"env > "{out_path}""#))
+        });
+
+        let lr = launcher.launch(&proc_id, opts).await.expect("launch");
+        let exit = tokio::time::timeout(Duration::from_secs(5), lr.exit_rx)
+            .await
+            .expect("timed out waiting for exit_rx")
+            .expect("exit_rx dropped");
+        match exit.kind {
+            ProcExitKind::Exited { code } => assert_eq!(code, 0),
+            other => panic!("expected Exited(0), got {other:?}"),
+        }
+
+        let content = std::fs::read_to_string(&out_path).expect("read output file");
+        assert!(
+            content
+                .lines()
+                .any(|line| line.starts_with(&format!("{PROCESS_NAME_ENV}="))),
+            "child environment should include launch variables: {content}"
+        );
+        assert!(
+            !content
+                .lines()
+                .any(|line| line.starts_with("INVOCATION_ID=")),
+            "removed generated variable should not reach the child: {content}"
+        );
+    }
 
     /// Launch propagates bootstrap/diagnostic environment variables
     /// into the child via systemd Environment property.

@@ -682,6 +682,8 @@ impl ProcLauncher for ActorProcLauncher {
                         opts.tail_lines,
                         opts.log_channel.as_ref().map(|a| a.to_string()),
                         py_proc_bind,
+                        opts.command.inherit_env,
+                        opts.command.env_remove.iter().collect::<Vec<_>>(),
                     ))
                     .map_err(|e| {
                         ProcLauncherError::Other(format!("construct LaunchOptions: {e}"))
