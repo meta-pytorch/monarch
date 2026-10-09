@@ -894,6 +894,60 @@ def test_incompatible_cache():
             os.unlink(cache_path)
 
 
+def test_incompatible_cache_stops_stale_sidecar(tmp_path):
+    cached_job = MockJobTrait(compatible_specs=[])
+    cached_job.apply()
+    stale_apply_id = cached_job.apply_id
+    cache_path = str(tmp_path / "job.pkl")
+    cached_job.dump(cache_path)
+
+    new_job = MockJobTrait()
+    with patch("monarch._src.job.job.stop_job_sidecar") as stop_sidecar:
+        new_job.state(cached_path=cache_path)
+
+    stop_sidecar.assert_called_once_with(stale_apply_id)
+    assert new_job.apply_id != stale_apply_id
+
+
+@pytest.mark.parametrize("worker_teardown_fails", [False, True])
+def test_incompatible_cache_kills_workers_when_sidecar_shutdown_fails(
+    tmp_path, worker_teardown_fails
+):
+    cached_job = MockJobTrait(compatible_specs=[])
+    cached_job.apply()
+    stale_apply_id = cached_job.apply_id
+    cache_path = str(tmp_path / "job.pkl")
+    cached_job.dump(cache_path)
+
+    new_job = MockJobTrait(host_names=["workers"])
+    with (
+        patch(
+            "monarch._src.job.job.stop_job_sidecar",
+            side_effect=RuntimeError("sidecar shutdown failed"),
+        ) as stop_sidecar,
+        patch.object(
+            MockJobTrait,
+            "_kill",
+            autospec=True,
+            side_effect=RuntimeError("worker teardown failed")
+            if worker_teardown_fails
+            else None,
+        ) as kill,
+        patch("monarch._src.job.job.logger.warning") as warning,
+    ):
+        state = new_job.state(cached_path=cache_path)
+
+    stop_sidecar.assert_called_once_with(stale_apply_id)
+    kill.assert_called_once()
+    assert kill.call_args.args[0].apply_id == stale_apply_id
+    assert new_job.create_called
+    assert hasattr(state, "workers")
+    assert new_job.apply_id != stale_apply_id
+    assert job_load(cache_path).apply_id == new_job.apply_id
+    assert warning.call_count == 1 + worker_teardown_fails
+    assert warning.call_args_list[0].kwargs.get("exc_info") is True
+
+
 def test_incompatible_cache_is_replaced_when_teardown_fails():
     cached_job = FailingKillJobTrait(compatible_specs=[])
     cached_job.apply()
