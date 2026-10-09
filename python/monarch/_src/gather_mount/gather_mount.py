@@ -49,11 +49,13 @@ import mmap as _mmap
 import os
 import stat as _stat
 import struct
+import subprocess
 import sys
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
+from typing import Protocol
 
 from monarch.actor import Actor, context, endpoint, HostMesh, this_proc
 from monarch.remotemount.remotemount import prepare_mount_point
@@ -69,6 +71,18 @@ _RDMA_THRESHOLD: int = 1 * 1024 * 1024  # 1 MiB
 # Maximum payload per byte RPC when RDMA is unavailable (independent of the
 # threshold at which the RDMA path is selected).
 _BYTE_READ_CHUNK_SIZE: int = 32 * 1024 * 1024  # 32 MiB
+
+# Unmount can transiently report a busy macOS NFS mount while the kernel drains
+# the final filesystem operation. Keep the server alive and retry before giving
+# up so the owner still has a usable handle for a later close attempt.
+_CLOSE_ATTEMPTS: int = 3
+_CLOSE_RETRY_DELAY_S: float = 0.1
+_MOUNT_STATUS_TIMEOUT_S: float = 5.0
+
+
+class _MountHandle(Protocol):
+    def unmount(self) -> None: ...
+
 
 # inotify flags
 _IN_MODIFY: int = 0x00000002
@@ -549,6 +563,69 @@ def _make_stat(mode: int, size: int, mtime_ns: int) -> dict[str, object]:
     }
 
 
+def _decode_mount_path(path: str) -> str:
+    """Decode the octal escapes used by Linux ``/proc/self/mountinfo``."""
+    return (
+        path.replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
+    )
+
+
+def _mount_path_variants(path: str) -> set[str]:
+    """Return absolute and parent-resolved spellings without statting *path*."""
+    absolute = os.path.abspath(path)
+    parent = os.path.dirname(absolute)
+    resolved_parent = os.path.realpath(parent)
+    return {
+        os.path.normpath(absolute),
+        os.path.normpath(os.path.join(resolved_parent, os.path.basename(absolute))),
+    }
+
+
+def _is_mounted(path: str) -> bool:
+    """Check the mount table without touching a potentially dead filesystem."""
+    candidates = _mount_path_variants(path)
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/self/mountinfo") as mountinfo:
+                for line in mountinfo:
+                    fields = line.split()
+                    if (
+                        len(fields) > 4
+                        and os.path.normpath(_decode_mount_path(fields[4]))
+                        in candidates
+                    ):
+                        return True
+            return False
+        except OSError as error:
+            raise RuntimeError("failed to inspect /proc/self/mountinfo") from error
+
+    command = "/sbin/mount" if os.path.exists("/sbin/mount") else "mount"
+    mount_table = ""
+    try:
+        mount_table = subprocess.run(
+            [command],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_MOUNT_STATUS_TIMEOUT_S,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError("failed to inspect the local mount table") from error
+    for line in mount_table.splitlines():
+        _source, separator, remainder = line.partition(" on ")
+        if not separator:
+            continue
+        mountpoint, options_separator, _options = remainder.rpartition(" (")
+        if not options_separator:
+            mountpoint = remainder.split(" type ", 1)[0]
+        if os.path.normpath(_decode_mount_path(mountpoint)) in candidates:
+            return True
+    return False
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
@@ -569,6 +646,19 @@ class GatherMount:
         local_mount_point = os.path.abspath(local_mount_point)
         self._local_mount_point = local_mount_point
         self._mounted: bool = False
+        self._mount_handle: _MountHandle
+
+        # Never stack a second filesystem on an already-mounted path. In
+        # particular, a dead NFS mount left by an interrupted client can make
+        # filesystem operations hang; failing here gives the caller an
+        # actionable error without spawning any remote resources.
+        # An inspection error must also stop construction: treating an unknown
+        # mount state as unmounted could stack filesystems at this path.
+        if _is_mounted(local_mount_point):
+            raise RuntimeError(
+                f"gather_mount target {local_mount_point!r} is already mounted; "
+                "unmount it before creating a new GatherMount"
+            )
 
         procs = host_mesh.spawn_procs(name="gather_mount")
 
@@ -593,9 +683,7 @@ class GatherMount:
                 mount_read_only_nfs,
             )
 
-            self._mount_handle: object = mount_read_only_nfs(
-                client_actor, local_mount_point
-            )
+            self._mount_handle = mount_read_only_nfs(client_actor, local_mount_point)
         else:
             from monarch._rust_bindings.monarch_extension.readonly_fuse import (  # pyre-ignore[21]
                 mount_read_only_filesystem,
@@ -612,10 +700,47 @@ class GatherMount:
         """Unmount the filesystem."""
         if not self._mounted:
             return
-        # Leave the mount active if unmount fails so callers can retry.
-        self._mount_handle.unmount()  # pyre-ignore[16]
-        self._mounted = False
-        logger.info("gather_mount: unmounted %s", self._local_mount_point)
+        unmount_error: OSError | RuntimeError | None = None
+        inspection_error: RuntimeError | None = None
+        for attempt in range(1, _CLOSE_ATTEMPTS + 1):
+            try:
+                self._mount_handle.unmount()
+                unmount_error = None
+            except (OSError, RuntimeError) as error:
+                unmount_error = error
+            try:
+                mounted = _is_mounted(self._local_mount_point)
+            except RuntimeError as error:
+                inspection_error = error
+            else:
+                inspection_error = None
+                if not mounted:
+                    self._mounted = False
+                    if unmount_error is not None:
+                        logger.warning(
+                            "gather_mount: unmount of %s reported an error, but "
+                            "the mount is gone: %s",
+                            self._local_mount_point,
+                            unmount_error,
+                        )
+                    logger.info("gather_mount: unmounted %s", self._local_mount_point)
+                    return
+            if attempt < _CLOSE_ATTEMPTS:
+                time.sleep(_CLOSE_RETRY_DELAY_S)
+        # Leave the mount active if all attempts fail so callers (and the job
+        # sidecar) can retry instead of losing its only handle.
+        if inspection_error is not None:
+            action = "failed" if unmount_error is not None else "returned successfully"
+            raise RuntimeError(
+                f"unmount {action}, but the mount state of "
+                f"{self._local_mount_point!r} could not be verified"
+            ) from inspection_error
+        if unmount_error is not None:
+            raise unmount_error
+        raise OSError(
+            f"unmount returned successfully but "
+            f"{self._local_mount_point!r} is still mounted"
+        )
 
     def __enter__(self) -> "GatherMount":
         return self

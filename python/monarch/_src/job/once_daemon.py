@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
+from typing import BinaryIO
 
 
 class _Shutdown:
@@ -48,7 +49,7 @@ class OnceDaemon:
         self._socket_path = socket_path
         self._pid = pid
         self._conn: "socket.socket | None" = None
-        self._file: "object | None" = None
+        self._file: "BinaryIO | None" = None
 
     @classmethod
     def create(
@@ -122,6 +123,22 @@ class OnceDaemon:
             self._conn = conn
             self._file = conn.makefile("rb")
 
+    def _disconnect(self) -> None:
+        file = self._file
+        conn = self._conn
+        self._file = None
+        self._conn = None
+        if file is not None:
+            try:
+                file.close()
+            except OSError:
+                pass
+        if conn is not None:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
     def send(self, obj: object) -> "OnceDaemon":
         """Pickle *obj* and send it to the process."""
         self._connect()
@@ -129,11 +146,35 @@ class OnceDaemon:
         self._conn.sendall(pickle.dumps(obj))  # pyre-ignore[16]
         return self
 
-    def get(self) -> object:
-        """Receive and unpickle the next response from the process."""
+    def get(self, timeout: "float | None" = None) -> object:
+        """Receive and unpickle the next response from the process.
+
+        ``timeout`` bounds a sidecar operation rather than allowing a dead or
+        wedged daemon to block the caller indefinitely. A timed-out connection
+        is discarded because buffered socket files are not reusable after a
+        read timeout.
+        """
         self._connect()
-        # @lint-ignore PYTHONPICKLEISBAD
-        return pickle.load(self._file)  # pyre-ignore[6]
+        conn = self._conn
+        file = self._file
+        assert conn is not None
+        assert file is not None
+        if timeout is not None:
+            conn.settimeout(timeout)
+        try:
+            # @lint-ignore PYTHONPICKLEISBAD
+            return pickle.load(file)
+        except (TimeoutError, socket.timeout) as error:
+            self._disconnect()
+            raise TimeoutError(
+                f"daemon {self._pid} did not respond within {timeout}s"
+            ) from error
+        except Exception:
+            self._disconnect()
+            raise
+        finally:
+            if self._conn is not None and timeout is not None:
+                self._conn.settimeout(None)
 
     def shutdown(self) -> None:
         """Ask the process to shut down and wait for it to exit."""

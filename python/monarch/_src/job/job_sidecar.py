@@ -27,6 +27,8 @@ from monarch.actor import attach, enable_transport, HostMesh
 from monarch.config import get_runtime_config
 
 _JOB_SIDECAR_WORKER_MODULE = "monarch._src.job._job_sidecar_worker"
+_MOUNT_CLEAR_TIMEOUT_S = 30.0
+
 try:
     from __manifest__ import fbmake  # noqa
 
@@ -106,7 +108,7 @@ def stop_job_sidecar(apply_id: str) -> None:
     """
     daemon = find_job_sidecar(apply_id)
     if daemon is not None:
-        response = daemon.send(ClearMountsRequest()).get()
+        response = daemon.send(ClearMountsRequest()).get(timeout=_MOUNT_CLEAR_TIMEOUT_S)
         raise_for_sidecar_error(response, "clear job mounts")
         daemon.shutdown()
 

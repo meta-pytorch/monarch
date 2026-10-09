@@ -24,6 +24,8 @@ from monarch.actor import HostMesh
 
 logger: logging.Logger = logging.getLogger(__name__)
 
+_MOUNT_REQUEST_TIMEOUT_S = 300.0
+
 
 @dataclass
 class RemoteMountEntry:
@@ -149,7 +151,9 @@ class Mounts:
         if not self._remote_entries and not self._gather_entries:
             guard = find_job_sidecar(apply_id)
             if guard is not None:
-                response = guard.send(ClearMountsRequest()).get()
+                response = guard.send(ClearMountsRequest()).get(
+                    timeout=_MOUNT_REQUEST_TIMEOUT_S
+                )
                 raise_for_sidecar_error(response, "clear job mounts")
             return
 
@@ -158,7 +162,9 @@ class Mounts:
         # job's scheduler, which is not known when the mount is declared.
         for entry in self._remote_entries:
             entry.via_gateway = via_gateway
-        response = guard.send(MountsRequest(self, dict(host_meshes))).get()
+        response = guard.send(MountsRequest(self, dict(host_meshes))).get(
+            timeout=_MOUNT_REQUEST_TIMEOUT_S
+        )
         raise_for_sidecar_error(response, "open or refresh job mounts")
 
 

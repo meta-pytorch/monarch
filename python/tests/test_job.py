@@ -30,6 +30,7 @@ from unittest.mock import MagicMock, patch
 import monarch._src.job._job_sidecar_worker as js_worker
 import monarch._src.job.job_components as jc
 import monarch._src.job.job_sidecar as js
+import monarch._src.job.mount_config as mc
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.handle import Handle, WouldBlockRuntime
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId, Uid
@@ -332,6 +333,20 @@ def test_once_daemon_appends_child_output_to_log(tmp_path) -> None:
     assert "child startup failed" in log
 
 
+def test_once_daemon_get_timeout_disconnects() -> None:
+    reader, writer = socket.socketpair()
+    daemon = OnceDaemon("/unused", 123)
+    daemon._conn = reader
+    daemon._file = reader.makefile("rb")
+    try:
+        with pytest.raises(TimeoutError, match="did not respond"):
+            daemon.get(timeout=0.01)
+        assert daemon._conn is None
+        assert daemon._file is None
+    finally:
+        writer.close()
+
+
 def test_wait_for_pid_exit_reaps_exited_child() -> None:
     child = subprocess.Popen([sys.executable, "-c", "pass"])
     while (
@@ -388,7 +403,9 @@ def test_mounts_ensure_open_clears_existing_sidecar_when_empty():
     find_sidecar.assert_called_once_with("apply_id")
     request = guard.send.call_args.args[0]
     assert isinstance(request, js.ClearMountsRequest)
-    guard.send.return_value.get.assert_called_once_with()
+    guard.send.return_value.get.assert_called_once_with(
+        timeout=mc._MOUNT_REQUEST_TIMEOUT_S
+    )
 
 
 def test_mounts_ensure_open_does_not_create_sidecar_when_empty():
@@ -420,7 +437,9 @@ def test_mounts_ensure_open_sends_mounts_request():
     get_sidecar.assert_called_once_with("apply_id")
     request = guard.send.call_args.args[0]
     assert isinstance(request, js.MountsRequest)
-    guard.send.return_value.get.assert_called_once_with()
+    guard.send.return_value.get.assert_called_once_with(
+        timeout=mc._MOUNT_REQUEST_TIMEOUT_S
+    )
 
 
 def test_mounts_ensure_open_surfaces_sidecar_error():
@@ -526,7 +545,9 @@ def test_stop_job_sidecar_acknowledges_mount_cleanup_before_shutdown():
 
     request = daemon.send.call_args.args[0]
     assert isinstance(request, js.ClearMountsRequest)
-    daemon.send.return_value.get.assert_called_once_with()
+    daemon.send.return_value.get.assert_called_once_with(
+        timeout=js._MOUNT_CLEAR_TIMEOUT_S
+    )
     daemon.shutdown.assert_called_once_with()
 
 
