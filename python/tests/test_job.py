@@ -25,7 +25,7 @@ import time
 import types
 from dataclasses import dataclass
 from typing import cast, Dict, Optional, Sequence
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import monarch._src.job._job_sidecar_worker as js_worker
 import monarch._src.job.job_components as jc
@@ -37,6 +37,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ProcId, Uid
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.runtime import _is_in_tokio_runtime
 from monarch._rust_bindings.monarch_hyperactor.testing import _make_handle_probe
+from monarch._src.gather_mount.gather_mount import _CLOSE_TIMEOUT_S, GatherMount
 
 # Import directly from _src since job module isn't properly exposed
 from monarch._src.job.job import (
@@ -465,7 +466,7 @@ def test_mounts_handle_close_propagates_gather_failure():
     with pytest.raises(RuntimeError, match="failed to close 1 mount"):
         handle.close()
 
-    gather.close.assert_called_once_with()
+    gather.close.assert_called_once_with(deadline=ANY)
 
 
 def test_mounts_handle_closes_partial_initialization():
@@ -518,7 +519,7 @@ def test_mounts_handle_closes_partial_multi_mesh_gather_entry():
     ):
         MountsHandle(mounts, {"one": MagicMock(), "two": MagicMock()})
 
-    opened.close.assert_called_once_with()
+    opened.close.assert_called_once_with(deadline=ANY)
 
 
 def test_mounts_handle_close_retries_only_failures():
@@ -533,8 +534,205 @@ def test_mounts_handle_close_retries_only_failures():
         handle.close()
     handle.close()
 
-    closed.close.assert_called_once_with()
+    closed.close.assert_called_once_with(deadline=ANY)
     assert retry.close.call_count == 2
+
+
+def test_mounts_handle_gather_cleanup_shares_deadline():
+    now = 0.0
+
+    def unmount(*, timeout: float) -> None:
+        nonlocal now
+        now += min(5.0, timeout)
+        raise OSError("mount busy")
+
+    def inspect_mount(_path: str, timeout: float) -> bool:
+        nonlocal now
+        now += timeout
+        raise RuntimeError("mount table unavailable")
+
+    def sleep(delay: float) -> None:
+        nonlocal now
+        now += delay
+
+    mounts = []
+    for path in ["/first", "/second"]:
+        mount = object.__new__(GatherMount)
+        mount._mounted = True
+        mount._local_mount_point = path
+        mount._mount_handle = MagicMock()
+        mount._mount_handle.unmount.side_effect = unmount
+        mounts.append(mount)
+    handle = object.__new__(MountsHandle)
+    handle._active_remote = []
+    handle._active_gather = mounts.copy()
+
+    with (
+        patch("monarch._src.gather_mount.gather_mount.sys.platform", "darwin"),
+        patch("time.monotonic", side_effect=lambda: now),
+        patch("time.sleep", side_effect=sleep),
+        patch(
+            "monarch._src.gather_mount.gather_mount._is_mounted",
+            side_effect=inspect_mount,
+        ),
+        pytest.raises(RuntimeError, match="failed to close 2 mount"),
+    ):
+        handle.close()
+
+    assert now == _CLOSE_TIMEOUT_S
+    assert now < js._MOUNT_CLEAR_TIMEOUT_S
+    assert handle._active_gather == mounts
+    assert all(mount._mounted for mount in mounts)
+    mounts[1]._mount_handle.unmount.assert_not_called()
+
+
+def test_sidecar_retains_failed_initialization_for_cleanup():
+    mounts = Mounts()
+    mounts.remote_mount("/tmp/source")
+    opened = MagicMock()
+    opened.close.side_effect = [OSError("mount busy"), OSError("mount busy"), None]
+    failed = MagicMock()
+    failed.open.side_effect = RuntimeError("second mesh failed")
+    state = js._JobSidecarState()
+    request = js.MountsRequest(mounts, {"one": MagicMock(), "two": MagicMock()})
+
+    with (
+        patch.object(
+            importlib.import_module("monarch.remotemount.remotemount"),
+            "remotemount",
+            side_effect=[opened, failed],
+        ),
+        pytest.raises(RuntimeError, match="second mesh failed"),
+    ):
+        state.handle_mounts(request)
+
+    assert state._mounts_handle is not None
+    assert state._mounts_key is None
+    partial = state._mounts_handle
+    reopened = [MagicMock(), MagicMock()]
+    with patch.object(
+        importlib.import_module("monarch.remotemount.remotemount"),
+        "remotemount",
+        side_effect=reopened,
+    ) as create:
+        with pytest.raises(RuntimeError, match="failed to close"):
+            state.handle_mounts(request)
+        assert state._mounts_handle is partial
+        assert state._mounts_key is None
+        create.assert_not_called()
+        assert state.handle_mounts(request) == "ok"
+    assert opened.close.call_count == 3
+    failed.close.assert_called_once_with()
+    assert state._mounts_handle._active_remote == reopened
+
+
+def test_sidecar_reopens_original_config_after_failed_replacement():
+    original = Mounts()
+    original.remote_mount("/tmp/original")
+    replacement = Mounts()
+    replacement.remote_mount("/tmp/replacement")
+    first = MagicMock()
+    failed = MagicMock()
+    failed.open.side_effect = RuntimeError("replacement failed")
+    reopened = MagicMock()
+    state = js._JobSidecarState()
+    hosts = {"one": MagicMock()}
+
+    with patch.object(
+        importlib.import_module("monarch.remotemount.remotemount"),
+        "remotemount",
+        side_effect=[first, failed, reopened],
+    ):
+        assert state.handle_mounts(js.MountsRequest(original, hosts)) == "ok"
+        with pytest.raises(RuntimeError, match="replacement failed"):
+            state.handle_mounts(js.MountsRequest(replacement, hosts))
+        assert state.handle_mounts(js.MountsRequest(original, hosts)) == "ok"
+
+    first.close.assert_called_once_with()
+    reopened.open.assert_called_once_with(False)
+    assert state._mounts_handle._active_remote == [reopened]
+
+
+def test_sidecar_reopens_after_partially_failed_replacement_cleanup():
+    original = Mounts()
+    original.remote_mount("/tmp/original")
+    replacement = Mounts()
+    replacement.remote_mount("/tmp/replacement")
+    closed = MagicMock()
+    busy = MagicMock()
+    busy.close.side_effect = [OSError("mount busy"), None]
+    reopened = [MagicMock(), MagicMock()]
+    state = js._JobSidecarState()
+    hosts = {"one": MagicMock(), "two": MagicMock()}
+
+    with patch.object(
+        importlib.import_module("monarch.remotemount.remotemount"),
+        "remotemount",
+        side_effect=[closed, busy, *reopened],
+    ):
+        assert state.handle_mounts(js.MountsRequest(original, hosts)) == "ok"
+        with pytest.raises(RuntimeError, match="failed to close"):
+            state.handle_mounts(js.MountsRequest(replacement, hosts))
+        assert state.handle_mounts(js.MountsRequest(original, hosts)) == "ok"
+
+    closed.close.assert_called_once_with()
+    assert busy.close.call_count == 2
+    assert state._mounts_handle._active_remote == reopened
+
+
+def test_sidecar_reopens_after_partially_failed_clear():
+    mounts = Mounts()
+    mounts.remote_mount("/tmp/source")
+    closed = MagicMock()
+    busy = MagicMock()
+    busy.close.side_effect = [OSError("mount busy"), None]
+    reopened = [MagicMock(), MagicMock()]
+    state = js._JobSidecarState()
+    request = js.MountsRequest(mounts, {"one": MagicMock(), "two": MagicMock()})
+
+    with patch.object(
+        importlib.import_module("monarch.remotemount.remotemount"),
+        "remotemount",
+        side_effect=[closed, busy, *reopened],
+    ):
+        assert state.handle_mounts(request) == "ok"
+        with pytest.raises(RuntimeError, match="failed to close"):
+            state.clear_mounts()
+        assert state.handle_mounts(request) == "ok"
+
+    closed.close.assert_called_once_with()
+    assert busy.close.call_count == 2
+    assert state._mounts_handle._active_remote == reopened
+
+
+def test_remote_mount_close_preserves_workers_on_unmount_failure():
+    from monarch.remotemount.remotemount import MountHandlerClient
+
+    client = object.__new__(MountHandlerClient)
+    client.mntpoint = "/tmp/mount"
+    workers = MagicMock()
+    procs = MagicMock()
+    leader = MagicMock()
+    client.fuse_actors = workers
+    client.procs = procs
+    client._leader = leader
+    workers.unmount.call.return_value.get.side_effect = [
+        [("one", ("ok", "")), ("two", ("busy", "resource busy"))],
+        [("one", ("not_mounted", "")), ("two", ("ok", ""))],
+    ]
+
+    with pytest.raises(RuntimeError, match="resource busy"):
+        MountHandlerClient.close._method(client)
+
+    procs.stop.assert_not_called()
+    assert client.fuse_actors is workers
+    assert client.procs is procs
+    assert client._leader is leader
+    MountHandlerClient.close._method(client)
+    procs.stop.assert_called_once_with()
+    assert client.fuse_actors is None
+    assert client.procs is None
+    assert client._leader is None
 
 
 def test_stop_job_sidecar_acknowledges_mount_cleanup_before_shutdown():
@@ -561,6 +759,51 @@ def test_stop_job_sidecar_preserves_daemon_when_mount_cleanup_fails():
         js.stop_job_sidecar("apply_id")
 
     daemon.shutdown.assert_not_called()
+
+
+@pytest.mark.parametrize("reuse_handle", [False, True])
+def test_stop_job_sidecar_retries_with_retained_exception(reuse_handle: bool) -> None:
+    tempdir = tempfile.TemporaryDirectory(prefix="monarch_sidecar_", dir="/tmp")
+    socket_path = os.path.join(tempdir.name, "cmd.sock")
+    thread = threading.Thread(
+        target=js._run_job_sidecar, args=(socket_path,), daemon=True
+    )
+    thread.start()
+    _wait_for_socket(socket_path, timeout=10.0)
+    daemons = [OnceDaemon(socket_path, os.getpid()) for _ in range(2)]
+    if reuse_handle:
+        daemons[1] = daemons[0]
+    try:
+        assert (
+            _send_sidecar_request(
+                socket_path,
+                js.MountsRequest(
+                    _RetryingMounts(os.path.join(tempdir.name, "failed_once")), {}
+                ),
+            )
+            == "ok"
+        )
+        with (
+            patch.object(js, "find_job_sidecar", side_effect=daemons),
+            patch.object(js, "_MOUNT_CLEAR_TIMEOUT_S", 1.0),
+            patch("monarch._src.job.once_daemon._wait_for_pid_exit"),
+        ):
+            with pytest.raises(RuntimeError, match="mount busy") as failure:
+                js.stop_job_sidecar("apply_id")
+            js.stop_job_sidecar("apply_id")
+            assert "mount busy" in str(failure.value)
+        thread.join(timeout=10.0)
+        assert not thread.is_alive(), "job sidecar did not exit on retry"
+    finally:
+        for daemon in daemons:
+            daemon._disconnect()
+        if thread.is_alive():
+            with contextlib.suppress(
+                BrokenPipeError, ConnectionRefusedError, FileNotFoundError
+            ):
+                _send_sidecar_shutdown(socket_path)
+        thread.join(timeout=10.0)
+        tempdir.cleanup()
 
 
 def test_job_sidecar_worker_passes_startup_args_to_server():

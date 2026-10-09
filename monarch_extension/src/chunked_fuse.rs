@@ -714,7 +714,7 @@ impl PyMountHandle {
     /// method returns once `fusermount3 -u` completes, but the tokio task
     /// may still be winding down.
     fn unmount(&mut self, py: Python<'_>) -> PyResult<()> {
-        if self.unmount_tx.take().is_none() {
+        if self.unmount_tx.is_none() {
             return Ok(());
         }
         let mount_point = self.mount_point.clone();
@@ -735,7 +735,9 @@ impl PyMountHandle {
                 ))),
                 _ => Ok(()),
             }
-        })
+        })?;
+        self.unmount_tx.take();
+        Ok(())
     }
 
     /// Atomically swap filesystem metadata + sizing.

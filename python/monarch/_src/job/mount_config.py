@@ -4,15 +4,15 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
-
 import logging
 import os
 import sys
+import time
 import traceback
 from dataclasses import dataclass, field
 from typing import Any, Iterator, List, Mapping, Optional
 
+from monarch._src.gather_mount.gather_mount import _CLOSE_TIMEOUT_S
 from monarch._src.job.job_sidecar import (
     ClearMountsRequest,
     find_job_sidecar,
@@ -168,6 +168,14 @@ class Mounts:
         raise_for_sidecar_error(response, "open or refresh job mounts")
 
 
+class MountOpenError(RuntimeError):
+    """An open failure whose remaining mounts still need cleanup."""
+
+    def __init__(self, handle: "MountsHandle", error: Exception) -> None:
+        super().__init__(f"{error}; partial mounts still require cleanup")
+        self.handle = handle
+
+
 class MountsHandle:
     """Live mount handles for a running background job sidecar."""
 
@@ -183,7 +191,7 @@ class MountsHandle:
             for entry in mounts._gather_entries:
                 for mount in entry.apply(host_meshes):
                     self._active_gather.append(mount)
-        except Exception:
+        except Exception as error:
             try:
                 self.close()
             except Exception:
@@ -191,6 +199,7 @@ class MountsHandle:
                     "initialization cleanup: ERROR closing partial mounts:\n"
                     + traceback.format_exc()
                 )
+                raise MountOpenError(self, error) from error
             raise
 
     def refresh(self) -> None:
@@ -206,6 +215,7 @@ class MountsHandle:
 
     def close(self) -> None:
         """Unmount all remote and gather mounts."""
+        deadline = time.monotonic() + _CLOSE_TIMEOUT_S
         failures: list[tuple[str, Exception]] = []
         active_remote = []
         for handler in self._active_remote:
@@ -222,7 +232,7 @@ class MountsHandle:
         active_gather = []
         for mount in self._active_gather:
             try:
-                mount.close()
+                mount.close(deadline=deadline)
             except Exception as error:
                 active_gather.append(mount)
                 failures.append(("gather mount", error))
