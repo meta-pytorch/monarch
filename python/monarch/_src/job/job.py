@@ -763,11 +763,11 @@ class JobTrait(ABC):
     def kill(self):
         apply_id = self.apply_id
         running = self._running
-        self._components.reset_runtime()
         if apply_id is not None:
             stop_job_sidecar(apply_id)
         if running is not None:
             running._kill()
+        self._components.reset_runtime()
         self._status = "not_running"
 
     def remote_mount(

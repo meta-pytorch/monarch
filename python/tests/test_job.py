@@ -8,7 +8,9 @@
 
 import asyncio
 import contextlib
+import importlib
 import os
+import pathlib
 import pickle
 import re
 import shutil
@@ -49,7 +51,7 @@ from monarch._src.job.job import (
     TelemetryConfig,
 )
 from monarch._src.job.job_components import JobComponent, JobComponents, MountComponent
-from monarch._src.job.mount_config import Mounts
+from monarch._src.job.mount_config import Mounts, MountsHandle
 from monarch._src.job.once_daemon import (
     _Shutdown,
     _wait_for_pid_exit,
@@ -108,6 +110,32 @@ class _RecordingMounts:
     def open(self, host_meshes: dict[str, object]) -> _RecordingMountHandle:
         _append_line(self.log_path, f"open:{self.name}:{','.join(host_meshes)}")
         return _RecordingMountHandle(self.name, self.log_path)
+
+
+class _FailingMounts:
+    def open(self, _host_meshes: dict[str, object]) -> None:
+        raise RuntimeError("mount open failed")
+
+
+@dataclass
+class _RetryingMountHandle:
+    marker_path: str
+
+    def refresh(self) -> None:
+        pass
+
+    def close(self) -> None:
+        if not os.path.exists(self.marker_path):
+            pathlib.Path(self.marker_path).touch()
+            raise OSError("mount busy")
+
+
+@dataclass
+class _RetryingMounts:
+    marker_path: str
+
+    def open(self, _host_meshes: dict[str, object]) -> _RetryingMountHandle:
+        return _RetryingMountHandle(self.marker_path)
 
 
 def _send_sidecar_request(socket_path: str, message: object) -> object:
@@ -351,6 +379,7 @@ def test_create_job_sidecar_spawns_job_sidecar_worker_module():
 def test_mounts_ensure_open_clears_existing_sidecar_when_empty():
     """Empty mount config should clear stale mount state on an existing sidecar."""
     guard = MagicMock()
+    guard.send.return_value.get.return_value = "ok"
     with patch(
         "monarch._src.job.mount_config.find_job_sidecar", return_value=guard
     ) as find_sidecar:
@@ -380,6 +409,7 @@ def test_mounts_ensure_open_sends_mounts_request():
     mounts = Mounts()
     mounts.remote_mount("/tmp/source")
     guard = MagicMock()
+    guard.send.return_value.get.return_value = "ok"
 
     with patch(
         "monarch._src.job.mount_config.get_job_sidecar",
@@ -391,6 +421,125 @@ def test_mounts_ensure_open_sends_mounts_request():
     request = guard.send.call_args.args[0]
     assert isinstance(request, js.MountsRequest)
     guard.send.return_value.get.assert_called_once_with()
+
+
+def test_mounts_ensure_open_surfaces_sidecar_error():
+    mounts = Mounts()
+    mounts.remote_mount("/tmp/source")
+    guard = MagicMock()
+    guard.send.return_value.get.return_value = {"error": "mount failed"}
+
+    with (
+        patch("monarch._src.job.mount_config.get_job_sidecar", return_value=guard),
+        pytest.raises(RuntimeError, match="mount failed"),
+    ):
+        mounts.ensure_open("apply_id", {})
+
+
+def test_mounts_handle_close_propagates_gather_failure():
+    handle = object.__new__(MountsHandle)
+    handle._active_remote = []
+    gather = MagicMock()
+    gather.close.side_effect = OSError("mount busy")
+    handle._active_gather = [gather]
+
+    with pytest.raises(RuntimeError, match="failed to close 1 mount"):
+        handle.close()
+
+    gather.close.assert_called_once_with()
+
+
+def test_mounts_handle_closes_partial_initialization():
+    opened = MagicMock()
+    first = MagicMock()
+    first.create.return_value = [opened]
+    second = MagicMock()
+    second.create.side_effect = RuntimeError("second mount failed")
+    mounts = Mounts()
+    mounts._remote_entries = [first, second]
+
+    with pytest.raises(RuntimeError, match="second mount failed"):
+        MountsHandle(mounts, {})
+
+    opened.close.assert_called_once_with()
+
+
+def test_mounts_handle_closes_partial_multi_mesh_entry():
+    mounts = Mounts()
+    mounts.remote_mount("/tmp/source")
+    opened = MagicMock()
+    failed = MagicMock()
+    failed.open.side_effect = RuntimeError("second mesh failed")
+
+    with (
+        patch.object(
+            importlib.import_module("monarch.remotemount.remotemount"),
+            "remotemount",
+            side_effect=[opened, failed],
+        ),
+        pytest.raises(RuntimeError, match="second mesh failed"),
+    ):
+        MountsHandle(mounts, {"one": MagicMock(), "two": MagicMock()})
+
+    opened.close.assert_called_once_with()
+    failed.close.assert_called_once_with()
+
+
+def test_mounts_handle_closes_partial_multi_mesh_gather_entry():
+    mounts = Mounts()
+    mounts.gather_mount("/remote", "/local")
+    opened = MagicMock()
+
+    with (
+        patch(
+            "monarch._src.gather_mount.gather_mount.gather_mount",
+            side_effect=[opened, RuntimeError("second gather mount failed")],
+        ),
+        pytest.raises(RuntimeError, match="second gather mount failed"),
+    ):
+        MountsHandle(mounts, {"one": MagicMock(), "two": MagicMock()})
+
+    opened.close.assert_called_once_with()
+
+
+def test_mounts_handle_close_retries_only_failures():
+    handle = object.__new__(MountsHandle)
+    handle._active_remote = []
+    closed = MagicMock()
+    retry = MagicMock()
+    retry.close.side_effect = [OSError("mount busy"), None]
+    handle._active_gather = [closed, retry]
+
+    with pytest.raises(RuntimeError, match="failed to close 1 mount"):
+        handle.close()
+    handle.close()
+
+    closed.close.assert_called_once_with()
+    assert retry.close.call_count == 2
+
+
+def test_stop_job_sidecar_acknowledges_mount_cleanup_before_shutdown():
+    daemon = MagicMock()
+    daemon.send.return_value.get.return_value = "ok"
+    with patch.object(js, "find_job_sidecar", return_value=daemon):
+        js.stop_job_sidecar("apply_id")
+
+    request = daemon.send.call_args.args[0]
+    assert isinstance(request, js.ClearMountsRequest)
+    daemon.send.return_value.get.assert_called_once_with()
+    daemon.shutdown.assert_called_once_with()
+
+
+def test_stop_job_sidecar_preserves_daemon_when_mount_cleanup_fails():
+    daemon = MagicMock()
+    daemon.send.return_value.get.return_value = {"error": "mount busy"}
+    with (
+        patch.object(js, "find_job_sidecar", return_value=daemon),
+        pytest.raises(RuntimeError, match="mount busy"),
+    ):
+        js.stop_job_sidecar("apply_id")
+
+    daemon.shutdown.assert_not_called()
 
 
 def test_job_sidecar_worker_passes_startup_args_to_server():
@@ -449,6 +598,7 @@ def test_mount_entries_carry_whether_the_sidecar_can_dial_the_workers():
         mounts = Mounts()
         mounts.remote_mount("/tmp/source")
         guard = MagicMock()
+        guard.send.return_value.get.return_value = "ok"
 
         with patch("monarch._src.job.mount_config.get_job_sidecar", return_value=guard):
             mounts.ensure_open("apply_id", {}, via_gateway)
@@ -549,6 +699,65 @@ def test_run_job_sidecar_manages_mount_lifecycle():
                 "open:two:job",
                 "close:two",
             ]
+
+
+def test_run_job_sidecar_returns_mount_errors():
+    with tempfile.TemporaryDirectory(prefix="monarch_sidecar_", dir="/tmp") as tempdir:
+        socket_path = os.path.join(tempdir, "cmd.sock")
+        thread = threading.Thread(
+            target=js._run_job_sidecar,
+            args=(socket_path,),
+            daemon=True,
+        )
+        with patch("signal.signal"):
+            thread.start()
+            _wait_for_socket(socket_path, timeout=10.0)
+
+        try:
+            response = _send_sidecar_request(
+                socket_path,
+                js.MountsRequest(_FailingMounts(), {}),
+            )
+            assert isinstance(response, dict)
+            assert "mount open failed" in response["error"]
+        finally:
+            _send_sidecar_shutdown(socket_path)
+            thread.join(timeout=10.0)
+
+        assert not thread.is_alive(), "job sidecar did not exit on shutdown"
+
+
+def test_run_job_sidecar_retries_failed_mount_cleanup():
+    with tempfile.TemporaryDirectory(prefix="monarch_sidecar_", dir="/tmp") as tempdir:
+        socket_path = os.path.join(tempdir, "cmd.sock")
+        marker_path = os.path.join(tempdir, "failed_once")
+        thread = threading.Thread(
+            target=js._run_job_sidecar,
+            args=(socket_path,),
+            daemon=True,
+        )
+        with patch("signal.signal"):
+            thread.start()
+            _wait_for_socket(socket_path, timeout=10.0)
+
+        try:
+            assert (
+                _send_sidecar_request(
+                    socket_path,
+                    js.MountsRequest(_RetryingMounts(marker_path), {}),
+                )
+                == "ok"
+            )
+            first = _send_sidecar_request(socket_path, js.ClearMountsRequest())
+            assert isinstance(first, dict)
+            assert "mount busy" in first["error"]
+            assert thread.is_alive()
+            assert _send_sidecar_request(socket_path, js.ClearMountsRequest()) == "ok"
+        finally:
+            _send_sidecar_shutdown(socket_path)
+            thread.join(timeout=10.0)
+
+        assert not thread.is_alive(), "job sidecar did not exit on shutdown"
 
 
 def test_apply():
@@ -829,6 +1038,38 @@ def test_kill():
     # kill_called should now be True
     assert job.kill_called
     stop_sidecar.assert_called_once_with(apply_id)
+
+
+def test_kill_preserves_running_state_when_mount_cleanup_fails():
+    job = MockJobTrait()
+    job.apply()
+    apply_id = job.apply_id
+    assert apply_id is not None
+
+    with (
+        patch(
+            "monarch._src.job.job.stop_job_sidecar",
+            side_effect=RuntimeError("mount busy"),
+        ),
+        patch.object(job._components, "reset_runtime") as reset_runtime,
+        pytest.raises(RuntimeError, match="mount busy"),
+    ):
+        job.kill()
+
+    assert job.active
+    assert not job.kill_called
+    reset_runtime.assert_not_called()
+
+    with (
+        patch("monarch._src.job.job.stop_job_sidecar") as stop_sidecar,
+        patch.object(job._components, "reset_runtime") as reset_runtime,
+    ):
+        job.kill()
+
+    stop_sidecar.assert_called_once_with(apply_id)
+    assert job.kill_called
+    assert not job.active
+    reset_runtime.assert_called_once_with()
 
 
 def test_process_job_kill_reaps_worker_session():

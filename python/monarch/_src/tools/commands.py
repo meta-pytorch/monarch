@@ -26,12 +26,14 @@ import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Mapping, Optional, TYPE_CHECKING, Union
+from typing import Any, Iterable, Mapping, Optional, TYPE_CHECKING, Union
 
 from monarch.tools.colors import CYAN, ENDC
 from monarch.tools.utils import MONARCH_HOME
 
 if TYPE_CHECKING:
+    from monarch._src.job.job import JobTrait
+    from monarch.actor import HostMesh
     from monarch.tools.config import Config
     from monarch.tools.mesh_spec import ServerSpec
     from torchx.runner import Runner
@@ -607,6 +609,26 @@ def _output_dir_for_job(job: "Any") -> tuple[str, str]:
     return output_dir, f"Output → {output_dir}/ on each worker"
 
 
+def _kill_job(job: JobTrait, host_meshes: Iterable[HostMesh]) -> None:
+    """Drain the job and flush the client before releasing its allocation."""
+    from monarch._src.job.job import LocalJob
+    from monarch._src.job.job_sidecar import stop_job_sidecar
+    from monarch.actor import shutdown_context
+
+    apply_id = job.apply_id
+    if apply_id is not None:
+        stop_job_sidecar(apply_id)
+    # Keep worker services alive while the client's final replies and logs
+    # traverse them. Shutting down a gateway host here can lose another host's
+    # acknowledgement and leave the client flushing toward a dead peer.
+    # LocalJob borrows the client's host; its lifetime belongs to the context.
+    if not isinstance(job, LocalJob):
+        for host_mesh in host_meshes:
+            host_mesh.stop().get()
+    shutdown_context().get()
+    job.kill()
+
+
 def exec_on_job(
     cmd: list[str],
     run_all: bool = False,
@@ -679,9 +701,7 @@ def exec_on_job(
 
     # ── Execute ────────────────────────────────────────────────────────────
     max_rc = 0
-    last_mesh = None
     for name, host_mesh in target_meshes:
-        last_mesh = host_mesh
         # If a python_exe was set for this mesh's remote mount, prepend its
         # directory to PATH so commands like "python" resolve to the right one.
         mesh_env = dict(env_dict)
@@ -702,12 +722,8 @@ def exec_on_job(
         ).get()
         max_rc = max(max_rc, rc)
 
-    if kill and last_mesh is not None:
-        from monarch.actor import shutdown_context  # pyre-ignore[21]
-
-        last_mesh.shutdown().get()
-        job.kill()
-        shutdown_context().get()
+    if kill:
+        _kill_job(job, state._hosts.values())
 
     return max_rc
 
@@ -749,9 +765,5 @@ def shell_on_job(
 
     returncode = shell(host_mesh, env=shell_env, workdir=workdir)
     if kill:
-        from monarch.actor import shutdown_context  # pyre-ignore[21]
-
-        host_mesh.shutdown().get()
-        job.kill()
-        shutdown_context().get()
+        _kill_job(job, state._hosts.values())
     return returncode
