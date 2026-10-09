@@ -100,8 +100,8 @@ class GatherMountCloseTest(unittest.TestCase):
         mount.close()
 
         self.assertFalse(mount._mounted)
-        mount._mount_handle.unmount.assert_called_once_with()
-        ismount.assert_called_once_with("/unused")
+        mount._mount_handle.unmount.assert_called_once()
+        ismount.assert_called_once_with("/unused", timeout=_MOUNT_STATUS_TIMEOUT_S)
 
     @patch(
         "monarch._src.gather_mount.gather_mount._is_mounted",

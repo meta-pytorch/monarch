@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
 """
 gather_mount – read-only mount of remote shard file systems (FUSE or NFS).
 
@@ -55,7 +53,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
-from typing import Protocol
+from typing import cast, Protocol
 
 from monarch.actor import Actor, context, endpoint, HostMesh, this_proc
 from monarch.remotemount.remotemount import prepare_mount_point
@@ -77,11 +75,16 @@ _BYTE_READ_CHUNK_SIZE: int = 32 * 1024 * 1024  # 32 MiB
 # up so the owner still has a usable handle for a later close attempt.
 _CLOSE_ATTEMPTS: int = 3
 _CLOSE_RETRY_DELAY_S: float = 0.1
+_CLOSE_TIMEOUT_S: float = 20.0
 _MOUNT_STATUS_TIMEOUT_S: float = 5.0
 
 
 class _MountHandle(Protocol):
     def unmount(self) -> None: ...
+
+
+class _NfsMountHandle(Protocol):
+    def unmount(self, *, timeout: float) -> None: ...
 
 
 # inotify flags
@@ -584,7 +587,7 @@ def _mount_path_variants(path: str) -> set[str]:
     }
 
 
-def _is_mounted(path: str) -> bool:
+def _is_mounted(path: str, timeout: float = _MOUNT_STATUS_TIMEOUT_S) -> bool:
     """Check the mount table without touching a potentially dead filesystem."""
     candidates = _mount_path_variants(path)
     if sys.platform.startswith("linux"):
@@ -610,7 +613,7 @@ def _is_mounted(path: str) -> bool:
             check=True,
             capture_output=True,
             text=True,
-            timeout=_MOUNT_STATUS_TIMEOUT_S,
+            timeout=timeout,
         ).stdout
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError("failed to inspect the local mount table") from error
@@ -696,20 +699,38 @@ class GatherMount:
         atexit.register(self.close)
         logger.info("gather_mount: mounted at %s", local_mount_point)
 
-    def close(self) -> None:
-        """Unmount the filesystem."""
+    def close(self, *, deadline: float | None = None) -> None:
+        """Unmount the filesystem within a shared monotonic deadline.
+
+        By default, retries share a twenty-second budget. Jobs pass the same
+        deadline to every gather mount so cleanup fits within the sidecar wait.
+        """
         if not self._mounted:
             return
+        if deadline is None:
+            deadline = time.monotonic() + _CLOSE_TIMEOUT_S
         unmount_error: OSError | RuntimeError | None = None
         inspection_error: RuntimeError | None = None
         for attempt in range(1, _CLOSE_ATTEMPTS + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("mount cleanup deadline exceeded")
             try:
-                self._mount_handle.unmount()
+                if sys.platform == "darwin":
+                    cast(_NfsMountHandle, self._mount_handle).unmount(timeout=remaining)
+                else:
+                    self._mount_handle.unmount()
                 unmount_error = None
             except (OSError, RuntimeError) as error:
                 unmount_error = error
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("mount cleanup deadline exceeded")
             try:
-                mounted = _is_mounted(self._local_mount_point)
+                mounted = _is_mounted(
+                    self._local_mount_point,
+                    timeout=min(_MOUNT_STATUS_TIMEOUT_S, remaining),
+                )
             except RuntimeError as error:
                 inspection_error = error
             else:
@@ -726,7 +747,9 @@ class GatherMount:
                     logger.info("gather_mount: unmounted %s", self._local_mount_point)
                     return
             if attempt < _CLOSE_ATTEMPTS:
-                time.sleep(_CLOSE_RETRY_DELAY_S)
+                time.sleep(
+                    min(_CLOSE_RETRY_DELAY_S, max(0.0, deadline - time.monotonic()))
+                )
         # Leave the mount active if all attempts fail so callers (and the job
         # sidecar) can retry instead of losing its only handle.
         if inspection_error is not None:

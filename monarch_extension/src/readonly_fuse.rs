@@ -527,7 +527,7 @@ struct ReadOnlyFilesystemHandle {
 impl ReadOnlyFilesystemHandle {
     /// Unmount the FUSE filesystem using `fusermount3 -uz` (lazy unmount).
     fn unmount(&mut self, py: Python<'_>) -> PyResult<()> {
-        if self.unmount_tx.take().is_none() {
+        if self.unmount_tx.is_none() {
             return Ok(());
         }
         let mount_point = self.mount_point.clone();
@@ -552,7 +552,9 @@ impl ReadOnlyFilesystemHandle {
                 }
             }
             Ok(())
-        })
+        })?;
+        self.unmount_tx.take();
+        Ok(())
     }
 }
 

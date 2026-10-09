@@ -871,9 +871,14 @@ class MountHandlerClient(Actor):
         """
         if self.fuse_actors is not None:
             result = self.fuse_actors.unmount.call(self.mntpoint).get()
+            failures = []
             for _point, (status, detail) in result:
                 if status not in ("ok", "not_mounted"):
-                    logger.warning(f"unmount failed ({status}): {detail}")
+                    failures.append(f"{_point}: {status}: {detail}")
+            if failures:
+                raise RuntimeError(
+                    f"failed to unmount {self.mntpoint!r}: {'; '.join(failures)}"
+                )
             # Stop the proc mesh -- this also stops the FUSEActors on it -- so the
             # workers are freed and the next open() spawns a clean, fresh mesh.
             none_throws(self.procs).stop().get()

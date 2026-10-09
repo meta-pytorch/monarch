@@ -194,25 +194,27 @@ class _JobSidecarState:
             raise RuntimeError(f"job sidecar already owns apply id {self._apply_id}")
 
     def handle_mounts(self, request: MountsRequest) -> str:
+        from monarch._src.job.mount_config import MountOpenError
+
         # The request carries declarative mount config. Compare that serialized
         # config so edited mounts replace the live handles, while unchanged
         # config refreshes existing remote mounts in-place.
         # @lint-ignore PYTHONPICKLEISBAD
         mounts_key = pickle.dumps(request.mounts)
         t0 = time.time()
+        if self._mounts_handle is not None and mounts_key != self._mounts_key:
+            _dbg("replacing mounts")
+            self.clear_mounts()
+
         if self._mounts_handle is None:
             _dbg("initialising mounts")
-            self._mounts_handle = request.mounts.open(request.host_meshes)
+            try:
+                self._mounts_handle = request.mounts.open(request.host_meshes)
+            except MountOpenError as error:
+                self._mounts_handle = error.handle
+                raise
             self._mounts_key = mounts_key
             _dbg(f"mounts opened in {time.time() - t0:.2f}s")
-            return "ok"
-
-        if mounts_key != self._mounts_key:
-            _dbg("replacing mounts")
-            self._mounts_handle.close()
-            self._mounts_handle = request.mounts.open(request.host_meshes)
-            self._mounts_key = mounts_key
-            _dbg(f"mounts replaced in {time.time() - t0:.2f}s")
             return "ok"
 
         _dbg("refreshing mounts")
@@ -223,9 +225,10 @@ class _JobSidecarState:
     def clear_mounts(self) -> str:
         """Close any live mounts and reset mount state."""
         if self._mounts_handle is not None:
+            # A failed close may already have removed some mounts.
+            self._mounts_key = None
             self._mounts_handle.close()
             self._mounts_handle = None
-            self._mounts_key = None
         return "ok"
 
     def handle_telemetry(self, request: TelemetryRequest) -> object:

@@ -11,12 +11,16 @@
 //! remote filesystem discovery, caching and invalidation.
 
 use std::collections::HashMap;
-use std::io::{self};
+use std::io;
 use std::net::TcpListener as StdTcpListener;
 use std::pin::Pin;
 use std::process::Command;
+use std::process::ExitStatus;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 
 use futures::Future;
 use monarch_gil::GilSite;
@@ -39,6 +43,27 @@ const MAX_DIRECTORY_SNAPSHOTS: usize = 64;
 const XDR_ALIGNMENT: usize = 4;
 const RPC_RECORD_LAST_FRAGMENT: u32 = 1 << 31;
 const MAX_RPC_REQUEST_BYTES: usize = 1024 * 1024;
+const UNMOUNT_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn wait_command(command: &mut Command, timeout: Duration) -> io::Result<ExitStatus> {
+    let mut child = command.spawn()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            // The child may exit between try_wait and kill; always reap it.
+            let _ = child.kill();
+            child.wait()?;
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("unmount did not finish within {timeout:?}"),
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
 
 // ONC RPC and NFSv3 wire assignments (RFCs 5531, 1833, and 1813).
 const RPC_VERSION: u32 = 2;
@@ -774,9 +799,13 @@ struct NfsMount {
 
 #[pymethods]
 impl NfsMount {
-    fn unmount(&mut self, py: Python<'_>) -> PyResult<()> {
+    #[pyo3(signature = (timeout=5.0))]
+    fn unmount(&mut self, py: Python<'_>, timeout: f64) -> PyResult<()> {
+        let timeout = Duration::try_from_secs_f64(timeout)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+            .min(UNMOUNT_TIMEOUT);
         let status = py
-            .detach(|| Command::new("/sbin/umount").arg(&self.mountpoint).status())
+            .detach(|| wait_command(Command::new("/sbin/umount").arg(&self.mountpoint), timeout))
             .map_err(|e| pyo3::exceptions::PyOSError::new_err(e.to_string()))?;
         if !status.success() {
             return Err(pyo3::exceptions::PyOSError::new_err(format!(
@@ -878,4 +907,29 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NfsMount>()?;
     module.add_function(wrap_pyfunction!(mount_read_only_nfs, module)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unmount_command_timeout_reaps_child() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exec sleep 60"]);
+        let start = Instant::now();
+        let error = wait_command(&mut command, Duration::from_millis(20)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn unmount_command_preserves_failure_status() {
+        let status = wait_command(
+            Command::new("/bin/sh").args(["-c", "exit 7"]),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        assert_eq!(status.code(), Some(7));
+    }
 }

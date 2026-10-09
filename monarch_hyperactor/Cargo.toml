@@ -56,6 +56,9 @@ dir-diff = "0.3.3"
 [build-dependencies]
 build_utils = { version = "0.0.0", path = "../build_utils" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.186"
+
 [features]
 default = []
 packaged_rsync = []

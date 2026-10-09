@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+from __future__ import annotations
 
 import fcntl
 import os
@@ -150,9 +150,9 @@ class OnceDaemon:
         """Receive and unpickle the next response from the process.
 
         ``timeout`` bounds a sidecar operation rather than allowing a dead or
-        wedged daemon to block the caller indefinitely. A timed-out connection
-        is discarded because buffered socket files are not reusable after a
-        read timeout.
+        wedged daemon to block the caller indefinitely. Each response closes
+        the connection, allowing the serial server to accept the next client
+        even when this handle is retained by an exception traceback.
         """
         self._connect()
         conn = self._conn
@@ -165,16 +165,11 @@ class OnceDaemon:
             # @lint-ignore PYTHONPICKLEISBAD
             return pickle.load(file)
         except (TimeoutError, socket.timeout) as error:
-            self._disconnect()
             raise TimeoutError(
                 f"daemon {self._pid} did not respond within {timeout}s"
             ) from error
-        except Exception:
-            self._disconnect()
-            raise
         finally:
-            if self._conn is not None and timeout is not None:
-                self._conn.settimeout(None)
+            self._disconnect()
 
     def shutdown(self) -> None:
         """Ask the process to shut down and wait for it to exit."""
