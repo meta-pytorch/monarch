@@ -147,34 +147,24 @@ class MyActor:
 @pytest.mark.timeout(30)
 async def test_bind_and_pickling() -> None:
     @run_on_tokio
-    async def run() -> Handle[None]:
+    async def spawn() -> tuple[ProcMesh, PythonActorMesh]:
         proc_mesh_task = task()
         actor_mesh = spawn_actor_mesh(proc_mesh_task)
+        return await proc_mesh_task, actor_mesh
 
-        # Need to make sure the mesh is initialized before pickling to
-        # prevent blocking the tokio runtime.
-        await actor_mesh.initialized()
+    proc_mesh, actor_mesh = spawn()
+    # Legacy proc creation is driven on Tokio; Handle observation belongs on
+    # asyncio. Complete each mesh before exercising its resolved pickle path.
+    assert await actor_mesh.initialized() is None
+    pickle.dumps(actor_mesh)
 
-        pickle.dumps(actor_mesh)
+    actor_mesh_ref = actor_mesh.new_with_region(proc_mesh.region)
+    assert await actor_mesh_ref.initialized() is None
+    obj = pickle.dumps(actor_mesh_ref)
+    pickle.loads(obj)
 
-        # Get the actual ProcMesh to access its region
-        proc_mesh = await proc_mesh_task
-
-        actor_mesh_ref = actor_mesh.new_with_region(proc_mesh.region)
-
-        # Need to make sure the mesh is initialized before pickling to
-        # prevent blocking the tokio runtime.
-        await actor_mesh_ref.initialized()
-
-        obj = pickle.dumps(actor_mesh_ref)
-        pickle.loads(obj)
-
-        instance = context().actor_instance._as_rust()
-        return proc_mesh.stop_nonblocking(instance, "test cleanup")
-
-    # `run()` blocks while Tokio drives the inner coroutine, then returns the
-    # cleanup Handle; this `await` observes that Handle on asyncio.
-    await run()
+    instance = context().actor_instance._as_rust()
+    await proc_mesh.stop_nonblocking(instance, "test cleanup")
 
 
 def spawn_actor_mesh(proc_mesh_task: Shared[ProcMesh]) -> PythonActorMesh:

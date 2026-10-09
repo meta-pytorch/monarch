@@ -2482,19 +2482,29 @@ class ActorMesh(MeshTrait, Generic[T]):
     def __repr__(self) -> str:
         return f"ActorMesh(class={self._class}, shape={self._shape}), inner={type(self._inner)})"
 
-    def stop(self, reason: str = "stopped by client") -> "Future[None]":
+    def stop(self, reason: str = "stopped by client") -> Future[None]:
+        """Start stopping this actor mesh and return a Future for completion.
+
+        Dropping the Future or timing out while waiting does not cancel the stop.
+        ``reason`` is included in the shutdown message sent to the actors.
+        """
         instance = context().actor_instance._as_rust()
-        return Future._from_coro(self._inner.stop(instance, reason))
+        return Future._from_handle(self._inner.stop(instance, reason))
 
     @property
     def initialized(self) -> Future[None]:
-        return Future._from_coro(self._inner.initialized())
+        """Return a Future that waits for native mesh creation.
+
+        For a pending slice, reading this property starts the work to create
+        the native slice, even if the Future is never observed.
+        """
+        return Future._from_handle(self._inner.initialized())
 
     @property
     def _name(self) -> Future[str]:
-        """Retrieves the name stored in the ActorMesh internally."""
+        """Return a Future for the mesh's name. Pending meshes wait for creation."""
         # Not called "name" to avoid clashing with a common endpoint name.
-        return Future._from_coro(self._inner.name())
+        return Future._from_handle(self._inner.name())
 
 
 class ActorError(Exception):

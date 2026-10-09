@@ -350,13 +350,13 @@ pytokio_import = "monarch._rust_bindings.monarch_hyperactor.pytokio"
 doc_legacy_surface = "PythonTask|PyShared|pytokio"
 
 [totals]
-py_python_task_new = 15
+py_python_task_new = 6
 raw_python_task_new = 5
-from_coro = 8
+from_coro = 5
 rust_from_coro = 2
 from_coroutine = 7
 take_inner = 2
-rust_take_inner = 2
+rust_take_inner = 3
 take_inner_retire = 2
 caller_free_primitive = 4
 shared_from_value = 4
@@ -369,9 +369,9 @@ shared_reconstruction = 2
 reserve_binding = 1
 py_mesh_reserve = 2
 py_is_tokio_thread = 0
-pytokio_import = 27
-pytokio_module_ref = 14
-helper_symbol = 15
+pytokio_import = 26
+pytokio_module_ref = 15
+helper_symbol = 16
 helper_definition = 1
 would_block_surface = 0
 binding_stub_symbol = 3
@@ -631,6 +631,7 @@ owns = [
 id = "6.3c"
 allowed_states = ["migrated", "removed_upstream"]
 owns = [
+  "im.actor_mesh.module",
   "dr.bootstrap._as_python_task[PythonTask.from_coroutinejust]",
   "dr.host_mesh.HostMesh._new_with_shape[PythonTask.from_coroutinetask]",
   "dr.host_mesh.HostMesh._spawn_nonblocking[PythonTask.from_coroutinetask]",
@@ -717,10 +718,13 @@ allowed_states = ["migrated", "removed_upstream"]
 owns = [
   "hs.query_engine.PyPythonTask",
   "hs.readonly_fuse.PyPythonTask",
+  "hs.readonly_nfs.PyPythonTask",
   "mr.query_engine.file",
   "mr.readonly_fuse.file",
+  "mr.readonly_nfs.file",
   "ot.query_engine.DistributedExec_as_ExecutionPlan.execute",
-  "ot.readonly_fuse.take_actor_future"
+  "ot.readonly_fuse.take_actor_future",
+  "ot.readonly_nfs.NfsServer.call"
 ]
 
 [[transition]]
@@ -782,7 +786,6 @@ owns = [
   "hd.pytokio.ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK",
   "hs.attrs.unawaited_pytokio_traceback",
   "hs.lib.register_python_bindings",
-  "im.actor_mesh.module",
   "im.bootstrap.module",
   "im.context.module",
   "im.endpoint.module",
@@ -1026,7 +1029,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
 symbol = "ActorMesh._name[Future._from_coro(self._inner.name())]"
 operation = "from_coro"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1037,7 +1041,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
 symbol = "ActorMesh.initialized[Future._from_coro(self._inner.initialized())]"
 operation = "from_coro"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1048,7 +1053,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/actor_mesh.py"
 symbol = "ActorMesh.stop[Future._from_coro(self._inner.stop(instance, reason))]"
 operation = "from_coro"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1610,6 +1616,17 @@ id = "hs.readonly_fuse.PyPythonTask"
 category = "helper_residue"
 language = "rust"
 path = "fbcode/monarch/monarch_extension/src/readonly_fuse.rs"
+symbol = "PyPythonTask"
+operation = "helper_symbol"
+scope = "production"
+state = "legacy"
+transition = "6.4c"
+
+[[site]]
+id = "hs.readonly_nfs.PyPythonTask"
+category = "helper_residue"
+language = "rust"
+path = "fbcode/monarch/monarch_extension/src/readonly_nfs.rs"
 symbol = "PyPythonTask"
 operation = "helper_symbol"
 scope = "production"
@@ -2201,22 +2218,23 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "<ActorMeshRef<PythonActor> as ActorMeshProtocol>::name"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <ActorMeshRef<PythonActor> as ActorMeshProtocol>::name"
-consumer = "none in tree; both call sites that reach ActorMeshProtocol::name go through Arc<dyn SupervisableActorMesh>, and ActorMeshRef<PythonActor> implements neither Supervisable nor SupervisableActorMesh"
-driver = "none in tree; driven only by the in-crate characterization tests"
-start_point = "no deferred domain work; for a managed ref the id is read synchronously before the task is built, though observing the task still performs Python result conversion under the GIL. A data ref panics at the managed-only assertion before any task exists"
-abandonment = "possible in principle, but no in-tree caller holds a task to drop"
+consumer = "PythonActorMeshImpl::name delegates to this implementation; PythonActorMesh.name reaches it through AsyncActorMesh::name once creation completes"
+driver = "the AsyncActorMesh command queue drives the legacy name task; direct native tests drive it on Tokio"
+start_point = "no deferred domain work; for a managed ref the id is read synchronously before the task is built, though observing the task still performs Python result conversion under the GIL. A data ref returns its mesh id through the same task wrapper"
+abandonment = "the outer name observer can be dropped, but the queue retains and drives the delegated task"
 eager_effect = "only wraps a ready value"
 drop_behavior = "no effect; the name was already computed"
-unobserved_error = "none through the task; a data ref fails as a synchronous panic instead"
+unobserved_error = "none; both managed and data refs return their mesh id"
 disposition = "replace with a direct value"
 semantic_class = "ready_no_op_wrapper"
 oracle = [
   "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::discarded_managed_name_wrappers_leave_exact_name_repeatable",
-  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::data_name_wrappers_panic_before_returning_a_task",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::data_name_wrappers_report_mesh_id",
 ]
 
 [[site]]
@@ -2255,7 +2273,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "<AsyncActorMesh as ActorMeshProtocol>::initialized"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::initialized"
@@ -2266,9 +2285,10 @@ abandonment = "possible; root initialization continues, and a dropped slice obse
 eager_effect = "mixed, and the two cases differ. For a root an eager carrier only observes already-running queue-driven work. For an otherwise idle slice it begins the retained derived-region computation, which no queue item would otherwise start"
 drop_behavior = "abandons this observer only; it never cancels root initialization, and a slice stays re-observable and undriven. Evidence boundary: the in-crate tests enqueue the root initializer themselves so they can retain and join the driver, so they pin behaviour given an equivalent enqueued item; production new_queue supplying it is source-grounded"
 unobserved_error = "surfaced on the next observation of the shared future"
-disposition = "preserve timing"
+disposition = "intentionally become eager"
 semantic_class = "already_started_lazy_observer"
 oracle = [
+  "fbcode//monarch/python/tests:test_proc_mesh::test_actor_mesh_readiness_survives_timeout_on_the_same_future",
   "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::dropped_root_observers_do_not_cancel_initialization",
   "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::dropped_slice_observers_leave_the_slice_reobservable",
 ]
@@ -2281,7 +2301,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "<AsyncActorMesh as ActorMeshProtocol>::name"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::name"
@@ -2295,7 +2316,7 @@ unobserved_error = "the queue driver panics rather than reporting"
 disposition = "require a binding-specific design"
 semantic_class = "already_started_lazy_observer"
 oracle = [
-  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::async_name_runs_before_a_dropped_observer_panics_the_queue",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::async_name_survives_a_dropped_observer_and_leaves_queue_usable",
 ]
 
 [[site]]
@@ -2306,7 +2327,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "<AsyncActorMesh as ActorMeshProtocol>::stop"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::stop"
@@ -2320,7 +2342,7 @@ unobserved_error = "the queue driver panics rather than reporting"
 disposition = "require a binding-specific design"
 semantic_class = "already_started_lazy_observer"
 oracle = [
-  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::async_stop_runs_before_a_dropped_observer_panics_the_queue",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::async_stop_survives_a_dropped_observer_and_leaves_queue_usable",
   "fbcode//monarch/python/tests:test_actor_error::test_actor_mesh_stop",
 ]
 
@@ -2332,7 +2354,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "<ControlledActorMesh as ActorMeshProtocol>::name"
 operation = "py_python_task_new"
 scope = "test"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from the characterization fixture's name implementation"
@@ -2348,7 +2371,7 @@ semantic_class = "deferred_side_effect"
 oracle = [
   "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::dropped_root_observers_do_not_cancel_initialization",
   "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::dropped_slice_observers_leave_the_slice_reobservable",
-  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::async_name_runs_before_a_dropped_observer_panics_the_queue",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::async_name_survives_a_dropped_observer_and_leaves_queue_usable",
 ]
 
 [[site]]
@@ -2359,7 +2382,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "<ControlledActorMesh as ActorMeshProtocol>::stop"
 operation = "py_python_task_new"
 scope = "test"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from the characterization fixture's stop implementation"
@@ -2373,7 +2397,7 @@ unobserved_error = "reachable only through the outer observer: the queued frame 
 disposition = "require a binding-specific design"
 semantic_class = "deferred_side_effect"
 oracle = [
-  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::async_stop_runs_before_a_dropped_observer_panics_the_queue",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::async_stop_survives_a_dropped_observer_and_leaves_queue_usable",
 ]
 
 [[site]]
@@ -2384,7 +2408,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "<PythonActorMeshImpl as ActorMeshProtocol>::name"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "removed_upstream"
+transition_revision = "D121488376"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <PythonActorMeshImpl as ActorMeshProtocol>::name"
@@ -2399,7 +2424,7 @@ disposition = "replace with a direct value"
 semantic_class = "ready_no_op_wrapper"
 oracle = [
   "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::discarded_managed_name_wrappers_leave_exact_name_repeatable",
-  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::data_name_wrappers_panic_before_returning_a_task",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::data_name_wrappers_report_mesh_id",
 ]
 
 [[site]]
@@ -2410,7 +2435,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "<PythonActorMeshImpl as ActorMeshProtocol>::stop"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <PythonActorMeshImpl as ActorMeshProtocol>::stop"
@@ -2424,7 +2450,7 @@ unobserved_error = "on the normal queued route the inner result is forwarded to 
 disposition = "require a binding-specific design"
 semantic_class = "deferred_side_effect"
 oracle = [
-  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::actor_mesh_impl_ref_stop_rejects_before_returning_a_task",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::actor_mesh_impl_ref_stop_rejects_before_returning_a_future",
   "fbcode//monarch/python/tests:test_actor_error::test_actor_mesh_stop",
 ]
 
@@ -2436,7 +2462,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "ActorMeshProtocol::initialized"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from initialized"
@@ -2906,8 +2933,9 @@ path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/actor_me
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "stub"
-state = "legacy"
-transition = "6.8"
+state = "migrated"
+transition_revision = "self"
+transition = "6.3c"
 members = ["PythonTask"]
 
 [[site]]
@@ -3384,6 +3412,17 @@ state = "legacy"
 transition = "6.4c"
 
 [[site]]
+id = "mr.readonly_nfs.file"
+category = "module_reference"
+language = "rust"
+path = "fbcode/monarch/monarch_extension/src/readonly_nfs.rs"
+symbol = "<file>"
+operation = "pytokio_module_ref"
+scope = "production"
+state = "legacy"
+transition = "6.4c"
+
+[[site]]
 id = "mr.actor.file"
 category = "module_reference"
 language = "rust"
@@ -3741,6 +3780,17 @@ category = "ownership_transfer"
 language = "rust"
 path = "fbcode/monarch/monarch_extension/src/readonly_fuse.rs"
 symbol = "take_actor_future"
+operation = "rust_take_inner"
+scope = "production"
+state = "legacy"
+transition = "6.4c"
+
+[[site]]
+id = "ot.readonly_nfs.NfsServer.call"
+category = "ownership_transfer"
+language = "rust"
+path = "fbcode/monarch/monarch_extension/src/readonly_nfs.rs"
+symbol = "NfsServer::call"
 operation = "rust_take_inner"
 scope = "production"
 state = "legacy"

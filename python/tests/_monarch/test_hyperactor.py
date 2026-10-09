@@ -20,6 +20,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     MethodSpecifier,
     PythonMessageKind,
 )
+from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 from monarch._rust_bindings.monarch_hyperactor.pickle import (
     PendingMessage,
@@ -127,42 +128,42 @@ async def test_proc_mesh() -> None:
     assert "ProcMesh" in str(proc_mesh)
 
 
-@_python_task_test
-async def test_actor_mesh() -> None:
-    host_mesh: HostMesh = this_host()
+def test_actor_mesh() -> None:
+    async def spawn() -> PythonActorMesh:
+        host_mesh: HostMesh = this_host()
 
-    async def task() -> ProcMesh:
-        hy_host_mesh = await host_mesh._hy_host_mesh
-        return await hy_host_mesh.spawn_nonblocking(
-            context().actor_instance._as_rust(),
-            "test",
-            Extent(["replicas"], [2]),
+        async def task() -> ProcMesh:
+            hy_host_mesh = await host_mesh._hy_host_mesh
+            return await hy_host_mesh.spawn_nonblocking(
+                context().actor_instance._as_rust(),
+                "test",
+                Extent(["replicas"], [2]),
+            )
+
+        proc_mesh_task: Shared[ProcMesh] = PythonTask.from_coroutine(task()).spawn()
+
+        # Create an explicit init message
+        init_state = monarch_pickle(None)
+        init_message = PendingMessage(
+            # pyrefly: ignore [bad-argument-count, bad-argument-type]
+            PythonMessageKind.CallMethod(MethodSpecifier.Init(), None),
+            init_state,
         )
 
-    proc_mesh_task: Shared[ProcMesh] = PythonTask.from_coroutine(task()).spawn()
+        # Use spawn_async with the explicit init message
+        return ProcMesh.spawn_async(
+            proc_mesh_task,
+            context().actor_instance._as_rust(),
+            "test",
+            cast(Type["Actor"], MyActor),
+            init_message,
+            ActorKind.ASYNC,
+            False,  # emulated
+        )
 
-    # Create an explicit init message
-    init_state = monarch_pickle(None)
-    init_message = PendingMessage(
-        # pyrefly: ignore [bad-argument-count, bad-argument-type]
-        PythonMessageKind.CallMethod(MethodSpecifier.Init(), None),
-        init_state,
-    )
-
-    # Use spawn_async with the explicit init message
-    actor_mesh = ProcMesh.spawn_async(
-        proc_mesh_task,
-        context().actor_instance._as_rust(),
-        "test",
-        cast(Type["Actor"], MyActor),
-        init_message,
-        ActorKind.ASYNC,
-        False,  # emulated
-    )
-
-    await actor_mesh.initialized()
-
-    # assert isinstance(actor_mesh.client, Mailbox)
+    actor_mesh = PythonTask.from_coroutine(spawn()).block_on()
+    # Handle waits run outside Tokio; legacy proc creation above still uses it.
+    assert actor_mesh.initialized().get(timeout=30) is None
 
 
 def test_buffer_read_write() -> None:

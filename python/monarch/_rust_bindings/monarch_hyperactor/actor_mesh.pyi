@@ -10,9 +10,9 @@ from typing import final, Protocol
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
+from monarch._rust_bindings.monarch_hyperactor.handle import Handle
 from monarch._rust_bindings.monarch_hyperactor.pickle import PendingMessage
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Region
 from typing_extensions import Self
 
@@ -21,7 +21,7 @@ class ActorMeshProtocol(Protocol):
     Protocol defining the common interface for actor mesh and mesh ref.
     """
 
-    def name(self) -> PythonTask[str]:
+    def name(self) -> Handle[str]:
         """Get the name of the mesh."""
         ...
 
@@ -44,8 +44,8 @@ class ActorMeshProtocol(Protocol):
         ...
     # pyrefly: ignore [not-a-type]
     def new_with_region(self, region: Region) -> Self: ...
-    def stop(self, instance: Instance, reason: str) -> PythonTask[None]: ...
-    def initialized(self) -> PythonTask[None]: ...
+    def stop(self, instance: Instance, reason: str) -> Handle[None]: ...
+    def initialized(self) -> Handle[None]: ...
 
 @final
 class PythonActorMesh(ActorMeshProtocol):

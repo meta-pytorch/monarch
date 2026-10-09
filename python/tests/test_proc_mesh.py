@@ -258,6 +258,35 @@ async def test_proc_mesh_initialized_fails_when_bootstrap_fails() -> None:
 
 @pytest.mark.timeout(90)
 @isolate_in_subprocess
+def test_actor_mesh_readiness_survives_timeout_on_the_same_future() -> None:
+    with tempfile.TemporaryDirectory(prefix="monarch_actor_ready_") as directory:
+        entered = pathlib.Path(directory) / "entered"
+        release = pathlib.Path(directory) / "release"
+        with ExitStack() as cleanup:
+            state = cleanup.enter_context(
+                scoped_state(ProcessJob({"hosts": 1}), cached_path=None)
+            )
+            cleanup.callback(release.touch)
+            proc_mesh = state.hosts.spawn_procs(
+                bootstrap=partial(_gated_bootstrap, str(entered), str(release), None)
+            )
+            _wait_for_marker(entered)
+            actor = proc_mesh.spawn("readiness", TestActor, 0)
+            readiness = actor.initialized
+
+            # Actor spawn waits for proc setup, which has acknowledged the
+            # closed gate. This timeout cannot be a race with completed spawn.
+            with pytest.raises(TimeoutError):
+                readiness.get(timeout=0.25)
+            release.touch()
+
+            assert readiness.get(timeout=30) is None
+            assert readiness.get(timeout=30) is None
+            assert actor.get_rank_plus_init_value.call_one().get(timeout=30) == 0
+
+
+@pytest.mark.timeout(90)
+@isolate_in_subprocess
 def test_proc_mesh_readiness_replays_success_after_discarded_observer() -> None:
     with tempfile.TemporaryDirectory(prefix="monarch_proc_ready_") as directory:
         entered = pathlib.Path(directory) / "entered"

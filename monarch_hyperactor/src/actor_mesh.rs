@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::future;
+use futures::future::BoxFuture;
 use futures::future::FutureExt;
 use futures::future::Shared;
 use hyperactor::Instance;
@@ -42,6 +43,7 @@ use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
+use crate::handle::PyHandle;
 use crate::pickle::PendingMessage;
 use crate::proc::PyActorAddr;
 use crate::pytokio::PyPythonTask;
@@ -147,23 +149,32 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     /// it, or (a pending mesh) have none and error explicitly.
     fn mesh_ref(&self) -> PyResult<ActorMeshRef<PythonActor>>;
 
-    /// Stop the actor mesh asynchronously.
-    /// Default implementation raises NotImplementedError for types that don't support stopping.
-    fn stop(&self, _instance: &PyInstance, _reason: String) -> PyResult<PyPythonTask> {
+    /// Return a future that completes when the mesh has stopped.
+    ///
+    /// The default implementation rejects the call immediately.
+    /// Mesh types that support stopping override this method.
+    fn stop(
+        &self,
+        _instance: &PyInstance,
+        _reason: String,
+    ) -> PyResult<BoxFuture<'static, PyResult<()>>> {
         Err(PyNotImplementedError::new_err(format!(
             "stop() is not supported for {}",
             std::any::type_name::<Self>()
         )))
     }
 
-    /// Initialize the actor mesh asynchronously.
-    /// Default implementation returns None (no initialization needed).
-    fn initialized(&self) -> PyResult<PyPythonTask> {
-        PyPythonTask::new(async { Ok(None::<()>) })
+    /// Return a future that completes when the mesh has been created.
+    ///
+    /// The default returns an already-completed future: the mesh exists.
+    /// Pending meshes override this method to wait for creation.
+    /// The completion value is exposed to Python as None.
+    fn initialized(&self) -> BoxFuture<'static, PyResult<Option<()>>> {
+        future::ready(Ok(None)).boxed()
     }
 
-    /// The name of the mesh.
-    fn name(&self) -> PyResult<PyPythonTask>;
+    /// Return a future that reports the mesh's name once creation has finished.
+    fn name(&self) -> BoxFuture<'static, PyResult<String>>;
 }
 
 pub(crate) trait SupervisableActorMesh: ActorMeshProtocol + Supervisable {
@@ -244,16 +255,23 @@ impl PythonActorMesh {
         })
     }
 
-    fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
-        self.inner.stop(instance, reason)
+    /// Start stopping the mesh and return a Handle that reports the outcome.
+    /// A mesh type that does not support stopping may reject the call before
+    /// returning a Handle. Dropping the Handle does not cancel an accepted stop.
+    fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyHandle> {
+        self.inner.stop(instance, reason).map(PyHandle::spawn)
     }
 
-    fn initialized(&self) -> PyResult<PyPythonTask> {
-        self.inner.initialized()
+    /// Start waiting for mesh creation and return a Handle that completes
+    /// with Python None. Dropping the Handle does not cancel creation.
+    fn initialized(&self) -> PyHandle {
+        PyHandle::spawn(self.inner.initialized())
     }
 
-    fn name(&self) -> PyResult<PyPythonTask> {
-        self.inner.name()
+    /// Return a Handle for the mesh's name, waiting for creation if necessary.
+    /// The wait starts with this call; dropping the Handle does not cancel it.
+    fn name(&self) -> PyHandle {
+        PyHandle::spawn(self.inner.name())
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
@@ -492,38 +510,62 @@ impl ActorMeshProtocol for AsyncActorMesh {
         ))
     }
 
-    fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
+    /// Queue the stop after work already queued for this mesh, and return a
+    /// future for its result.
+    ///
+    /// The queued work waits for mesh creation, then stops the mesh. Dropping
+    /// the returned future does not cancel that work.
+    fn stop(
+        &self,
+        instance: &PyInstance,
+        reason: String,
+    ) -> PyResult<BoxFuture<'static, PyResult<()>>> {
+        // The queued work owns these clones so it can outlive this call.
         let mesh = self.mesh.clone();
         let instance = monarch_with_gil_blocking(GilSite::Stop, |_py| instance.clone());
+        // The queue runs the stop; this channel reports its outcome to the
+        // caller's future. Observing that future does not drive the stop.
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.push(async move {
-            let result =
-                async move { mesh.await?.stop(&instance, reason)?.take_task()?.await }.await;
-            if tx.send(result).is_err() {
-                panic!("oneshot failed");
+            // If a step fails, `?` exits this inner async block with an error.
+            // Awaiting the block binds either Ok or Err to `result`, after which
+            // the outer block calls tx.send(result). No additional task is spawned.
+            let result = async move {
+                // Wait for mesh creation; a creation failure becomes the result.
+                let mesh = mesh.await?;
+                // Request the stop. A mesh reference rejects it here; an owned
+                // mesh returns a future that performs the stop.
+                let completion = mesh.stop(&instance, reason)?;
+                // Run that future until stopping succeeds or fails.
+                completion.await
             }
+            .await;
+            // The future returned by stop owns rx. If that future has been
+            // dropped, tx.send fails. Ignore the error rather than panic and
+            // prevent later queued work from running.
+            let _ = tx.send(result);
         });
-        PyPythonTask::new(async move { rx.await.map_err(anyhow::Error::from)? })
+        Ok(async move { rx.await.map_err(anyhow::Error::from)? }.boxed())
     }
 
-    fn initialized<'py>(&self) -> PyResult<PyPythonTask> {
+    /// Return a future that waits for mesh creation without adding a queue item.
+    /// Creation errors fail the future; success is exposed to Python as None.
+    fn initialized(&self) -> BoxFuture<'static, PyResult<Option<()>>> {
         let mesh = self.mesh.clone();
-        PyPythonTask::new(async {
+        async move {
+            // Wait for creation. If it fails, the future returned by initialized
+            // completes with that error.
             mesh.await?;
             Ok(None::<()>)
-        })
+        }
+        .boxed()
     }
 
-    fn name(&self) -> PyResult<PyPythonTask> {
+    /// Return a future that waits for mesh creation, then reads its name.
+    /// This does not add a queue item; creation or name errors fail the future.
+    fn name(&self) -> BoxFuture<'static, PyResult<String>> {
         let mesh = self.mesh.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.push(async move {
-            let result = async move { mesh.await?.name()?.take_task()?.await }.await;
-            if tx.send(result).is_err() {
-                panic!("oneshot failed");
-            }
-        });
-        PyPythonTask::new(async move { rx.await.map_err(anyhow::Error::from)? })
+        async move { mesh.await?.name().await }.boxed()
     }
 }
 
@@ -644,16 +686,25 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         )
     }
 
-    fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
+    /// Return a future that stops an owned mesh.
+    ///
+    /// A mesh reference is rejected immediately with NotImplementedError.
+    /// Native stop failures make the returned future fail with ValueError.
+    fn stop(
+        &self,
+        instance: &PyInstance,
+        reason: String,
+    ) -> PyResult<BoxFuture<'static, PyResult<()>>> {
         let (slf, instance) =
             monarch_with_gil_blocking(GilSite::Stop, |_py| (self.clone(), instance.clone()));
         match slf {
-            PythonActorMeshImpl::Owned(mut mesh) => PyPythonTask::new(async move {
+            PythonActorMeshImpl::Owned(mut mesh) => Ok(async move {
                 mesh.mesh
                     .stop(instance.deref(), reason)
                     .await
                     .map_err(|err| PyValueError::new_err(err.to_string()))
-            }),
+            }
+            .boxed()),
             PythonActorMeshImpl::Ref(_) => Err(PyNotImplementedError::new_err(
                 "Cannot call stop on an ActorMeshRef, requires an owned ActorMesh",
             )),
@@ -669,7 +720,10 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         Ok(PythonActorMeshImpl::mesh_ref(self).clone())
     }
 
-    fn name(&self) -> PyResult<PyPythonTask> {
+    /// Return the mesh reference's ID as its name, for both owned and
+    /// reference meshes. The delegated method reads the ID immediately
+    /// and returns an already-completed future.
+    fn name(&self) -> BoxFuture<'static, PyResult<String>> {
         <ActorMeshRef<PythonActor> as ActorMeshProtocol>::name(self.mesh_ref())
     }
 }
@@ -736,8 +790,13 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         }
     }
 
-    /// Stop the actor mesh asynchronously.
-    fn stop(&self, _instance: &PyInstance, _reason: String) -> PyResult<PyPythonTask> {
+    /// Reject the call immediately with NotImplementedError: stopping
+    /// requires an owned mesh, not a reference. No future is returned.
+    fn stop(
+        &self,
+        _instance: &PyInstance,
+        _reason: String,
+    ) -> PyResult<BoxFuture<'static, PyResult<()>>> {
         Err(PyNotImplementedError::new_err(
             "This cannot be used on ActorMeshRef, only on owned ActorMesh",
         ))
@@ -766,9 +825,11 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         Ok(self.clone())
     }
 
-    fn name(&self) -> PyResult<PyPythonTask> {
+    /// Read the mesh ID immediately and return it as the name in an
+    /// already-completed future. No creation wait or queue item is needed.
+    fn name(&self) -> BoxFuture<'static, PyResult<String>> {
         let name = self.id().to_string();
-        PyPythonTask::new(async move { Ok(name) })
+        future::ready(Ok(name)).boxed()
     }
 }
 
@@ -888,7 +949,6 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 
 #[cfg(test)]
 mod tests {
-    use std::any::Any;
     use std::cell::RefCell;
     use std::sync::atomic::AtomicU8;
     use std::sync::atomic::AtomicUsize;
@@ -991,29 +1051,11 @@ mod tests {
             .expect("a one-rank data mesh should be valid")
     }
 
-    /// Drive a wrapper task to completion and return the string it yields.
-    fn drive_name(task: PyResult<PyPythonTask>) -> String {
-        let mut task = task.expect("name() should return a task");
-        let value = get_tokio_runtime()
-            .block_on(task.take_task().expect("a fresh task is not consumed"))
-            .expect("the name task should resolve");
-        monarch_with_gil_blocking(GilSite::Test, |py| {
-            value
-                .extract::<String>(py)
-                .expect("name() should resolve to a string")
-        })
-    }
-
-    fn panic_message(payload: &(dyn Any + Send)) -> String {
-        payload
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| {
-                payload
-                    .downcast_ref::<&str>()
-                    .map(|text| (*text).to_string())
-            })
-            .unwrap_or_else(|| "<non-string panic payload>".to_string())
+    /// Drive the native name future to completion.
+    fn drive_name(future: BoxFuture<'static, PyResult<String>>) -> String {
+        get_tokio_runtime()
+            .block_on(future)
+            .expect("the name future should resolve")
     }
 
     // Both managed name wrappers yield the mesh id, and discarding a wrapper
@@ -1024,10 +1066,8 @@ mod tests {
     // dynamically that the id is read at call time rather than inside the
     // returned future; an implementation that cloned the mesh and read the id
     // when driven would pass too. Call-time computation is source-grounded --
-    // both bodies compute the string and then move it into
-    // `PyPythonTask::new(async move { Ok(name) })`. Nor is the returned task
-    // first-poll ready: `PyPythonTask::new` converts its result through `monarch_with_gil`, which
-    // may wait on the process-global GIL lock, so observation is not free.
+    // both bodies compute the string and return a ready Rust future. The
+    // Python binding converts the result separately through `PyHandle::spawn`.
     #[test]
     fn discarded_managed_name_wrappers_leave_exact_name_repeatable() {
         pyo3::Python::initialize();
@@ -1036,14 +1076,10 @@ mod tests {
         let mesh_impl = PythonActorMeshImpl::new_ref(mesh_ref.clone());
         let expected = id.to_string();
 
-        drop(
-            <ActorMeshRef<PythonActor> as ActorMeshProtocol>::name(&mesh_ref)
-                .expect("the ref wrapper should return a task"),
-        );
-        drop(
-            <PythonActorMeshImpl as ActorMeshProtocol>::name(&mesh_impl)
-                .expect("the impl wrapper should return a task"),
-        );
+        drop(<ActorMeshRef<PythonActor> as ActorMeshProtocol>::name(
+            &mesh_ref,
+        ));
+        drop(<PythonActorMeshImpl as ActorMeshProtocol>::name(&mesh_impl));
 
         assert_eq!(
             drive_name(<ActorMeshRef<PythonActor> as ActorMeshProtocol>::name(
@@ -1086,10 +1122,10 @@ mod tests {
     // mesh usable, on both implementors that inherit it.
     //
     // What this establishes and what it does not. The absence of domain work is
-    // a property of the default's source body, `async { Ok(None::<()>) }`, not
+    // a property of the default's source body, `future::ready(Ok(None))`, not
     // something these assertions measure: driving through `block_on` would also
     // pass if the future yielded or did unrelated non-mutating work first, and
-    // `PyPythonTask::new` converts its result through `monarch_with_gil`, which
+    // `PyHandle::spawn` converts its result through `monarch_with_gil`, which
     // may wait on the process-global GIL lock. So this is not a first-poll-ready
     // claim. Re-reading the name afterwards shows the mesh is still usable; it
     // is not a work counter.
@@ -1118,16 +1154,12 @@ mod tests {
         let mesh_ref = managed_mesh_ref(&id);
         let mesh_impl = PythonActorMeshImpl::new_ref(mesh_ref.clone());
 
-        drop(
-            <ActorMeshRef<PythonActor> as ActorMeshProtocol>::initialized(&mesh_ref)
-                .expect("the ref default should return a task"),
-        );
-        drop(
-            <PythonActorMeshImpl as ActorMeshProtocol>::initialized(&mesh_impl)
-                .expect("the impl default should return a task"),
-        );
+        drop(<ActorMeshRef<PythonActor> as ActorMeshProtocol>::initialized(&mesh_ref));
+        drop(<PythonActorMeshImpl as ActorMeshProtocol>::initialized(
+            &mesh_impl,
+        ));
 
-        for (task, which) in [
+        for (future, which) in [
             (
                 <ActorMeshRef<PythonActor> as ActorMeshProtocol>::initialized(&mesh_ref),
                 "ref",
@@ -1137,10 +1169,10 @@ mod tests {
                 "impl",
             ),
         ] {
-            let mut task = task.expect("initialized() should return a task");
+            let handle = PyHandle::spawn(future);
             let value = get_tokio_runtime()
-                .block_on(task.take_task().expect("a fresh task is not consumed"))
-                .expect("the default initialized task should resolve");
+                .block_on(handle.wait_future())
+                .expect("the default initialized Handle should resolve");
             assert!(
                 monarch_with_gil_blocking(GilSite::Test, |py| value.is_none(py)),
                 "the default {which} initialized wrapper must resolve to None"
@@ -1409,13 +1441,14 @@ mod tests {
             ))
         }
 
-        fn name(&self) -> PyResult<PyPythonTask> {
+        fn name(&self) -> BoxFuture<'static, PyResult<String>> {
             let name = self.name.clone();
             let ops = self.ops.name.clone();
-            PyPythonTask::new(async move {
+            async move {
                 ops.run().await?;
                 Ok(name)
-            })
+            }
+            .boxed()
         }
 
         /// Resolves to `()`, mirroring the owned production arm, whose
@@ -1424,12 +1457,17 @@ mod tests {
         /// `PyTuple::empty`. Without this method the trait default returns
         /// `PyNotImplementedError` synchronously, and a queued caller's `?`
         /// would short-circuit before any inner work ran.
-        fn stop(&self, _instance: &PyInstance, _reason: String) -> PyResult<PyPythonTask> {
+        fn stop(
+            &self,
+            _instance: &PyInstance,
+            _reason: String,
+        ) -> PyResult<BoxFuture<'static, PyResult<()>>> {
             let ops = self.ops.stop.clone();
-            PyPythonTask::new(async move {
+            Ok(async move {
                 ops.run().await?;
                 Ok(())
-            })
+            }
+            .boxed())
         }
     }
 
@@ -1525,26 +1563,18 @@ mod tests {
         rx.recv_timeout(WAIT).is_ok()
     }
 
-    /// Drive a wrapper task under a bound. Returns `None` on timeout so a
+    /// Drive a native future under a bound. Returns `None` on timeout so a
     /// stranded `Shared` fails a named assertion rather than blocking forever
     /// and taking the whole test binary with it.
-    fn drive_bounded(task: PyResult<PyPythonTask>) -> Option<Py<PyAny>> {
-        let mut task = task.expect("the wrapper should return a task");
-        let fut = task.take_task().expect("a fresh task is not consumed");
+    fn drive_bounded<T>(future: BoxFuture<'static, PyResult<T>>) -> Option<T> {
         get_tokio_runtime()
-            .block_on(async { tokio::time::timeout(WAIT, fut).await })
+            .block_on(async { tokio::time::timeout(WAIT, future).await })
             .ok()
-            .map(|resolved| resolved.expect("the task should resolve"))
+            .map(|resolved| resolved.expect("the future should resolve"))
     }
 
-    fn bounded_name(task: PyResult<PyPythonTask>) -> Option<String> {
-        drive_bounded(task).map(|value| {
-            monarch_with_gil_blocking(GilSite::Test, |py| {
-                value
-                    .extract::<String>(py)
-                    .expect("name() should resolve to a string")
-            })
-        })
+    fn bounded_name(future: BoxFuture<'static, PyResult<String>>) -> Option<String> {
+        drive_bounded(future)
     }
 
     /// Owns every release gate and the retained queue driver for one test.
@@ -1592,7 +1622,7 @@ mod tests {
 
         /// True only if the loop returned normally. A panicked or aborted task
         /// yields `Ok(Err(JoinError))`, which the outer `is_ok()` alone would
-        /// accept -- and `AsyncActorMesh::name`/`stop` can panic a driver.
+        /// accept.
         fn join(&mut self) -> bool {
             let Some(driver) = self.driver.as_mut() else {
                 return false;
@@ -1602,8 +1632,7 @@ mod tests {
             match outcome {
                 // Only a normal return counts. A panicked or aborted task
                 // yields `Ok(Err(JoinError))`, which an outer `is_ok()` alone
-                // would accept -- and `AsyncActorMesh::name`/`stop` can panic a
-                // driver.
+                // would accept.
                 Ok(result) => {
                     self.driver.take();
                     result.is_ok()
@@ -1639,68 +1668,6 @@ mod tests {
                         let _ = tokio::time::timeout(WAIT, driver).await;
                     }
                     false
-                }
-            }
-        }
-
-        /// The inverse of `join`: the panic payload if the loop panicked, and
-        /// `None` otherwise.
-        ///
-        /// A sibling rather than a relaxation of `join`, which must keep
-        /// rejecting `Ok(Err(JoinError))` for the assertions that depend on it.
-        /// Returning the payload rather than a bool is what lets a caller check
-        /// the `oneshot failed` boundary instead of merely "something panicked".
-        /// A normal return yields `None`, so a driver that exited cleanly cannot
-        /// satisfy an expected-panic assertion.
-        fn join_expecting_panic(&mut self) -> Option<String> {
-            let driver = self.driver.as_mut()?;
-            let outcome =
-                get_tokio_runtime().block_on(async { tokio::time::timeout(WAIT, driver).await });
-            match outcome {
-                Ok(Err(join_error)) if join_error.is_panic() => {
-                    self.driver.take();
-                    Some(panic_message(join_error.into_panic().as_ref()))
-                }
-                Ok(_) => {
-                    self.driver.take();
-                    None
-                }
-                // Wedged. Attempt bounded reaping rather than detaching; the
-                // second wait can itself elapse, so this requests cancellation
-                // and returns under a bound rather than proving a reap.
-                Err(_) => {
-                    if let Some(driver) = self.driver.take() {
-                        driver.abort();
-                        let _ = get_tokio_runtime()
-                            .block_on(async { tokio::time::timeout(WAIT, driver).await });
-                    }
-                    None
-                }
-            }
-        }
-
-        /// `join_expecting_panic` for a caller already inside a runtime.
-        async fn join_expecting_panic_async(&mut self) -> Option<String> {
-            let driver = self.driver.as_mut()?;
-            let outcome = tokio::time::timeout(WAIT, driver).await;
-            match outcome {
-                Ok(Err(join_error)) if join_error.is_panic() => {
-                    self.driver.take();
-                    Some(panic_message(join_error.into_panic().as_ref()))
-                }
-                Ok(_) => {
-                    self.driver.take();
-                    None
-                }
-                // Wedged. Attempt bounded reaping rather than detaching; the
-                // second await can itself elapse, so this requests cancellation
-                // and returns under a bound rather than proving a reap.
-                Err(_) => {
-                    if let Some(driver) = self.driver.take() {
-                        driver.abort();
-                        let _ = tokio::time::timeout(WAIT, driver).await;
-                    }
-                    None
                 }
             }
         }
@@ -1862,8 +1829,8 @@ mod tests {
         args.into_any().unbind()
     }
 
-    // Dropping a transient reduction observer, and an unpolled readiness
-    // observer, cancels neither. The root keeps its own queued initializer, so
+    // Dropping a transient reduction observer does not cancel initialization.
+    // The root keeps its own queued initializer, so
     // it completes on its own and stays usable.
     //
     // The completion signal is emitted by the queued initializer *after* its
@@ -1919,12 +1886,6 @@ mod tests {
         monarch_with_gil_blocking(GilSite::Test, move |_py| drop(tuple));
         let acknowledged = awaited(&probe_dropped_rx);
 
-        // A second, never-polled observer.
-        drop(
-            mesh.initialized()
-                .expect("initialized() should return a task"),
-        );
-
         gate.open();
         let completed = awaited(&completed_rx);
 
@@ -1952,7 +1913,7 @@ mod tests {
         );
         let readiness = readiness.flatten().expect("readiness must resolve in time");
         assert!(
-            monarch_with_gil_blocking(GilSite::Test, |py| readiness.is_none(py)),
+            readiness.is_none(),
             "a replacement readiness observer resolves to None"
         );
         assert_eq!(
@@ -1970,8 +1931,8 @@ mod tests {
     // discarding its observers leaves it dormant and re-observable.
     //
     // Boundary of this claim: `new_with_region` enqueues no independent
-    // initializer, but a later `name`, `stop` or cast enqueues an await and
-    // `supervision_event` awaits the derived `Shared` directly. These assertions
+    // initializer, but a later `stop` or cast enqueues an await, and name,
+    // readiness and `supervision_event` await the derived `Shared` directly. These assertions
     // therefore prove dormancy only after the named observers are discarded and
     // while no other mesh operation occurs. They do not prove that an
     // `initialized` observer is the only thing that can ever drive a slice.
@@ -2032,12 +1993,6 @@ mod tests {
         monarch_with_gil_blocking(GilSite::Test, move |_py| drop(tuple));
         let acknowledged = awaited(&probe_dropped_rx);
 
-        drop(
-            slice
-                .initialized()
-                .expect("initialized() should return a task"),
-        );
-
         gate.open();
         let completed = awaited(&completed_rx);
         let dormant = slices.load(Ordering::SeqCst);
@@ -2065,7 +2020,7 @@ mod tests {
         );
         let readiness = readiness.flatten().expect("readiness must resolve in time");
         assert!(
-            monarch_with_gil_blocking(GilSite::Test, |py| readiness.is_none(py)),
+            readiness.is_none(),
             "a replacement slice observer resolves to None"
         );
         assert_eq!(
@@ -2083,7 +2038,7 @@ mod tests {
         );
     }
 
-    // Queued name and stop characterization
+    // Name and stop completion and abandonment
 
     /// The fixed message a controlled operation fails with, so a test can
     /// assert the exact error text rather than merely that an error arrived.
@@ -2129,7 +2084,7 @@ mod tests {
         (mesh, root_gate, root_entered_rx, teardown)
     }
 
-    /// Drive the queued closure as far as the inner operation, reporting what
+    /// Drive the producer as far as the inner operation, reporting what
     /// was observed instead of asserting it.
     ///
     /// Returns `(root entered, operation entered)`. Both waits are bounded, and
@@ -2140,8 +2095,8 @@ mod tests {
     ///
     /// The order is fixed and load-bearing. This seam builds the mesh with
     /// `AsyncActorMesh::new`, which enqueues no initializer, so nothing polls
-    /// the root future until a queued operation awaits it. With the root gate
-    /// still shut the closure parks at that await and never reaches the inner
+    /// the root future until a queued stop or a name Handle awaits it. With the
+    /// root gate still shut the producer parks there and never reaches the inner
     /// method, so the operation acknowledgement would never arrive. Opening the
     /// root gate only after the root acknowledgement is what makes the
     /// operation acknowledgement mean "entered the inner method".
@@ -2155,40 +2110,18 @@ mod tests {
         (reached_root, awaited(op_entered))
     }
 
-    /// Destroy the observer the call actually returned, reporting whether one
-    /// was returned at all.
-    ///
-    /// The outer observer is constructed *after* its work is enqueued, and
-    /// `PyPythonTask::new` is fallible -- it propagates `current_traceback()?`.
-    /// A construction failure therefore drops the receiver too, so the queued
-    /// work still runs, still fails at `tx.send`, and still panics the driver.
-    /// Without proving construction succeeded, "the caller discarded a returned
-    /// observer" and "the observer was never returned" satisfy the same
-    /// assertions, and they are different public boundaries.
-    ///
-    /// No GIL scope: `PyPythonTask` owns `Option<PythonTask>`, which owns the
-    /// boxed future directly, so dropping this Rust value destroys the future
-    /// and the `rx` it captured immediately. Only the task's optional
-    /// `Py<PyAny>` traceback defers a decref, and nothing here depends on when
-    /// that happens.
-    fn discard_observer(task: PyResult<PyPythonTask>) -> Result<(), PyErr> {
-        match task {
-            Ok(observer) => {
-                drop(observer);
-                Ok(())
-            }
-            Err(err) => Err(err),
-        }
+    /// Drop the returned completion future or Handle. For a queued stop,
+    /// dropping the Rust future immediately closes its oneshot receiver.
+    fn discard_observer<T>(observer: PyResult<T>) -> PyResult<()> {
+        observer.map(drop)
     }
 
-    /// Everything driving a wrapper task can produce, as data rather than as a
+    /// Everything observing a Handle can produce, as data rather than as a
     /// panic. Nothing here asserts: a subcase collects an outcome, runs its
     /// cleanup, and only then decides whether it is the expected one.
     enum DriveOutcome {
         /// The call returned an error instead of an observer.
         NotConstructed(PyErr),
-        /// The observer existed but its future had already been taken.
-        TaskConsumed,
         /// The observer did not resolve within `WAIT`.
         TimedOut,
         Resolved(PyResult<Py<PyAny>>),
@@ -2202,39 +2135,23 @@ mod tests {
                 DriveOutcome::NotConstructed(err) => {
                     panic!("{context}: the wrapper returned no observer: {err:?}")
                 }
-                DriveOutcome::TaskConsumed => {
-                    panic!("{context}: the observer's future was already taken")
-                }
                 DriveOutcome::TimedOut => panic!("{context}: the observer did not resolve"),
             }
         }
     }
 
-    /// Drive a wrapper task under a bound without asserting anything.
-    fn drive_evidence(task: PyResult<PyPythonTask>) -> DriveOutcome {
-        let mut task = match task {
-            Ok(task) => task,
-            Err(err) => return DriveOutcome::NotConstructed(err),
-        };
-        let Ok(fut) = task.take_task() else {
-            return DriveOutcome::TaskConsumed;
-        };
-        match get_tokio_runtime().block_on(async { tokio::time::timeout(WAIT, fut).await }) {
-            Ok(resolved) => DriveOutcome::Resolved(resolved),
-            Err(_) => DriveOutcome::TimedOut,
-        }
+    /// Observe a Handle under a bound without asserting before cleanup.
+    fn drive_evidence(handle: PyResult<PyHandle>) -> DriveOutcome {
+        get_tokio_runtime().block_on(drive_evidence_async(handle))
     }
 
     /// `drive_evidence` for a caller already inside a runtime.
-    async fn drive_evidence_async(task: PyResult<PyPythonTask>) -> DriveOutcome {
-        let mut task = match task {
-            Ok(task) => task,
+    async fn drive_evidence_async(handle: PyResult<PyHandle>) -> DriveOutcome {
+        let handle = match handle {
+            Ok(handle) => handle,
             Err(err) => return DriveOutcome::NotConstructed(err),
         };
-        let Ok(fut) = task.take_task() else {
-            return DriveOutcome::TaskConsumed;
-        };
-        match tokio::time::timeout(WAIT, fut).await {
+        match tokio::time::timeout(WAIT, handle.wait_future()).await {
             Ok(resolved) => DriveOutcome::Resolved(resolved),
             Err(_) => DriveOutcome::TimedOut,
         }
@@ -2281,29 +2198,18 @@ mod tests {
         });
     }
 
-    // `AsyncActorMesh::name` enqueues its work when it is called, not when the
-    // returned observer is awaited, and reports through a one-shot channel. A
-    // retained observer receives the inner value, or the inner error verbatim.
-    //
-    // The queue panics when the receiver has been destroyed at the moment
-    // `tx.send` runs. That is narrower than "never observed": tokio's
-    // `oneshot::Sender::send` fails only if the receiver has been deallocated,
-    // so an observer that is merely unpolled still takes delivery, and dropping
-    // it afterwards loses the buffered value without touching the driver. Both
-    // sides are covered below.
-    //
-    // This panic is current behavior being characterized, not behavior the
-    // migration should preserve.
+    // Name waits directly on the mesh, outside the cast/stop queue. A native
+    // Handle drives that wait even when its last observer is dropped. A
+    // retained observer receives the inner value or error verbatim.
     //
     // Every subcase collects evidence, opens its gates, closes the queue and
-    // joins the driver, and only then asserts. Unwinding earlier would leave a
-    // gate shut and the driver merely abort-requested, since `Teardown::Drop`
-    // cannot await.
+    // joins the driver before asserting. Name completion is acknowledged
+    // separately: a queue barrier cannot prove off-queue work has finished.
     //
     // A plain `#[test]`: no subcase needs a `PyInstance`, so nothing here
     // requires a per-test runtime and the sync helpers apply.
     #[test]
-    fn async_name_runs_before_a_dropped_observer_panics_the_queue() {
+    fn async_name_survives_a_dropped_observer_and_leaves_queue_usable() {
         pyo3::Python::initialize();
 
         // Retained observer, success: the inner value reaches the caller.
@@ -2317,10 +2223,10 @@ mod tests {
                 &[],
             );
 
-            let task = <AsyncActorMesh as ActorMeshProtocol>::name(&mesh);
+            let handle = PyHandle::spawn(<AsyncActorMesh as ActorMeshProtocol>::name(&mesh));
             let reached_root = awaited(&root_entered);
             root_gate.open();
-            let outcome = drive_evidence(task);
+            let outcome = drive_evidence(Ok(handle));
 
             teardown.open_all();
             drop(mesh);
@@ -2328,7 +2234,7 @@ mod tests {
 
             assert!(
                 reached_root,
-                "the queued closure should reach root initialization"
+                "the name producer should reach root initialization"
             );
             let value = outcome
                 .resolved("retained name success")
@@ -2351,9 +2257,6 @@ mod tests {
         }
 
         // Retained observer, error: the inner error reaches the caller intact.
-        // It must be read through a retained observer, because once the
-        // receiver is gone the queue panic replaces the inner result and a
-        // discarded observer can never be the error oracle.
         {
             let name_ops = Arc::new(OpControl::immediate(OpOutcome::Fail(CONTROLLED_FAILURE)));
             let (mesh, root_gate, root_entered, mut teardown) = controlled_fixture(
@@ -2364,10 +2267,10 @@ mod tests {
                 &[],
             );
 
-            let task = <AsyncActorMesh as ActorMeshProtocol>::name(&mesh);
+            let handle = PyHandle::spawn(<AsyncActorMesh as ActorMeshProtocol>::name(&mesh));
             let reached_root = awaited(&root_entered);
             root_gate.open();
-            let outcome = drive_evidence(task);
+            let outcome = drive_evidence(Ok(handle));
 
             teardown.open_all();
             drop(mesh);
@@ -2375,7 +2278,7 @@ mod tests {
 
             assert!(
                 reached_root,
-                "the queued closure should reach root initialization"
+                "the name producer should reach root initialization"
             );
             let err = outcome
                 .resolved("retained name error")
@@ -2389,12 +2292,7 @@ mod tests {
             assert!(joined, "the driver must return once its senders close");
         }
 
-        // Unpolled observer destroyed *after* the send: no panic.
-        //
-        // The complement of the case below, and what limits the panic claim to
-        // receiver destruction before `tx.send`. The barrier is a rendezvous
-        // with the send, not a delay: the queue is serial, so observing an item
-        // enqueued behind the name closure proves that closure finished.
+        // Last Handle dropped after completion: the result need not be read.
         {
             let name_ops = Arc::new(OpControl::immediate(OpOutcome::Succeed));
             let (mesh, root_gate, root_entered, mut teardown) = controlled_fixture(
@@ -2404,41 +2302,31 @@ mod tests {
                 },
                 &[],
             );
-
-            let task = <AsyncActorMesh as ActorMeshProtocol>::name(&mesh);
+            let (completed_tx, completed_rx) = signal();
+            let future = mesh.name();
+            let handle = PyHandle::spawn(async move {
+                let result = future.await;
+                let _ = completed_tx.try_send(());
+                result
+            });
             let reached_root = awaited(&root_entered);
             root_gate.open();
-            let sent = queue_barrier(&mesh);
-            // Never polled, and destroyed only after the send succeeded.
-            let construction = discard_observer(task);
-
+            let completed = awaited(&completed_rx);
+            drop(handle);
+            let usable = queue_barrier(&mesh);
             teardown.open_all();
             drop(mesh);
             let joined = teardown.join();
 
-            assert!(
-                reached_root,
-                "the queued closure should reach root initialization"
-            );
-            assert!(sent, "the barrier should prove the name closure completed");
-            assert!(
-                construction.is_ok(),
-                "the outer observer must have been constructed: {:?}",
-                construction.err()
-            );
-            assert_eq!(
-                name_ops.completions(),
-                1,
-                "the inner operation must run exactly once"
-            );
-            assert!(
-                joined,
-                "destroying an unpolled observer after a successful send must not panic the driver"
-            );
+            assert!(reached_root, "the name producer must reach initialization");
+            assert!(completed, "name must complete before its Handle is dropped");
+            assert_eq!(name_ops.completions(), 1);
+            assert!(usable, "later queue work must still run");
+            assert!(joined, "the queue driver must return normally");
         }
 
-        // Observer destroyed while the operation is still pending: the work
-        // completes, then the report fails.
+        // Last Handle dropped while name is pending. The queue can serve work
+        // before the name gate opens, and name still completes after release.
         {
             let (op_entered_tx, op_entered) = signal();
             let (op_gate, op_release) = Gate::new(op_entered_tx);
@@ -2450,64 +2338,50 @@ mod tests {
                 },
                 std::slice::from_ref(&op_gate),
             );
-
-            let task = <AsyncActorMesh as ActorMeshProtocol>::name(&mesh);
+            let (completed_tx, completed_rx) = signal();
+            let future = mesh.name();
+            let handle = PyHandle::spawn(async move {
+                let result = future.await;
+                let _ = completed_tx.try_send(());
+                result
+            });
             let (reached_root, entered_op) =
                 reach_inner_operation(&root_entered, &root_gate, &op_entered);
-            let construction = discard_observer(task);
-
+            drop(handle);
+            let usable = queue_barrier(&mesh);
             teardown.open_all();
-            // Join before reading the counter. `Gate::open` is a `watch` send
-            // with no rendezvous, so it returns before the released future has
-            // been polled; a counter read here could legitimately see zero. The
-            // join is the ordering: the driver terminates only after the queued
-            // closure reached its send, which is after the increment.
-            let payload = teardown.join_expecting_panic();
+            let completed = awaited(&completed_rx);
             drop(mesh);
+            let joined = teardown.join();
 
-            assert!(
-                reached_root,
-                "the queued closure should reach root initialization"
-            );
+            assert!(reached_root, "the name producer must reach initialization");
             assert!(
                 entered_op,
-                "the queued closure should enter the inner operation"
+                "name must be pending when its Handle is dropped"
             );
-            assert!(
-                construction.is_ok(),
-                "the outer observer must have been constructed: {:?}",
-                construction.err()
-            );
-            let payload = payload.expect("discarding the observer must panic the driver");
-            assert!(
-                payload.contains("oneshot failed"),
-                "the driver must fail at the report boundary, got: {payload}"
-            );
-            assert_eq!(
-                name_ops.completions(),
-                1,
-                "the inner operation must have completed once, and the panic must not re-run it"
-            );
+            assert!(usable, "name must not hold up the cast/stop queue");
+            assert!(completed, "unobserved name must complete after release");
+            assert_eq!(name_ops.completions(), 1);
+            assert!(joined, "the queue driver must return normally");
         }
     }
 
-    // `AsyncActorMesh::stop` has the same queued shape as `name`, plus a
-    // `GilSite::Stop` instance clone taken before the work is enqueued. A
-    // retained observer receives the success value -- an empty tuple, since the
-    // owned production arm wraps `ActorMesh::stop`, whose `Ok` type is `()`,
-    // and pyo3 converts the unit type with `IntoPyObject for () ->
-    // PyTuple::empty` -- or the inner error verbatim. Destroying the receiver
-    // while the operation is still pending panics the driver at `tx.send`.
+    // Stop keeps its queue position and its pre-enqueue instance clone under
+    // `GilSite::Stop`. A retained Handle receives the inner error verbatim or
+    // the current owned-stop result: an empty tuple, since pyo3 converts Rust
+    // `()` through `PyTuple::empty`.
     //
-    // This panic is current behavior being characterized, not behavior the
-    // migration should preserve.
+    // Dropping the returned Rust future closes the oneshot receiver, but the
+    // queued stop must still finish and permit later queue work. Test that
+    // inner boundary directly; a dropped Handle alone would leave its producer
+    // holding the receiver and would not exercise the failed `tx.send`.
     //
     // A `#[tokio::test]`: `stop` needs a real `PyInstance`, and `actor_instance`
     // spawns detached introspect tasks that the per-test runtime reaps. That in
     // turn rules out the `block_on` helpers, so this test uses the async
     // siblings throughout.
     #[tokio::test]
-    async fn async_stop_runs_before_a_dropped_observer_panics_the_queue() {
+    async fn async_stop_survives_a_dropped_observer_and_leaves_queue_usable() {
         pyo3::Python::initialize();
         let instance = isolated_py_instance("stop_characterization_client");
 
@@ -2529,7 +2403,7 @@ mod tests {
             );
             let reached_root = awaited(&root_entered);
             root_gate.open();
-            let outcome = drive_evidence_async(task).await;
+            let outcome = drive_evidence_async(task.map(PyHandle::spawn)).await;
 
             teardown.open_all();
             drop(mesh);
@@ -2581,7 +2455,7 @@ mod tests {
             );
             let reached_root = awaited(&root_entered);
             root_gate.open();
-            let outcome = drive_evidence_async(task).await;
+            let outcome = drive_evidence_async(task.map(PyHandle::spawn)).await;
 
             teardown.open_all();
             drop(mesh);
@@ -2603,8 +2477,8 @@ mod tests {
             assert!(joined, "the driver must return once its senders close");
         }
 
-        // Unpolled observer destroyed after the send: no panic. See the name
-        // test's equivalent subcase for why the barrier is a rendezvous.
+        // Completion future dropped after the send. The serial queue barrier
+        // proves the stop closure, including its send, has finished.
         {
             let stop_ops = Arc::new(OpControl::immediate(OpOutcome::Succeed));
             let (mesh, root_gate, root_entered, mut teardown) = controlled_fixture(
@@ -2673,8 +2547,9 @@ mod tests {
             let construction = discard_observer(task);
 
             teardown.open_all();
-            let payload = teardown.join_expecting_panic_async().await;
+            let sent = queue_barrier(&mesh);
             drop(mesh);
+            let joined = teardown.join_async().await;
 
             assert!(
                 reached_root,
@@ -2689,26 +2564,26 @@ mod tests {
                 "the outer observer must have been constructed: {:?}",
                 construction.err()
             );
-            let payload = payload.expect("discarding the observer must panic the driver");
             assert!(
-                payload.contains("oneshot failed"),
-                "the driver must fail at the report boundary, got: {payload}"
+                sent,
+                "later queue work must run after the closed-receiver send"
             );
+            assert!(joined, "the queue driver must return normally");
             assert_eq!(
                 stop_ops.completions(),
                 1,
-                "the inner operation must have completed once, and the panic must not re-run it"
+                "the inner stop must finish exactly once despite losing its observer"
             );
         }
     }
 
     // Asking a `PythonActorMeshImpl::Ref` to stop is rejected by the inner arm
-    // itself, with no task returned: there is nothing to observe, nothing to
+    // itself, with no future returned: there is nothing to observe, nothing to
     // drop, and no queue involved.
     //
-    // The assertions cover what is returned. "No task was constructed" is read
-    // off the source -- the `Ref` arm returns before reaching any
-    // `PyPythonTask::new` -- and is not proven here, because an `Err` return
+    // The assertions cover what is returned. "No future was returned" is read
+    // off the source -- the `Ref` arm returns before constructing its future --
+    // and is not proven here, because an `Err` return
     // cannot distinguish "never constructed" from "constructed and dropped".
     // The arm is also not side-effect free: `stop` clones `self` and the
     // instance under `GilSite::Stop` before the match, so this rejection still
@@ -2721,7 +2596,7 @@ mod tests {
     // A `#[tokio::test]` for the same reason as the queued stop test: the
     // signature takes a `&PyInstance`.
     #[tokio::test]
-    async fn actor_mesh_impl_ref_stop_rejects_before_returning_a_task() {
+    async fn actor_mesh_impl_ref_stop_rejects_before_returning_a_future() {
         pyo3::Python::initialize();
         // Built outside the assertion boundary, so a fixture failure cannot
         // satisfy the rejection assertion below.
@@ -2735,7 +2610,7 @@ mod tests {
         );
 
         let Err(err) = rejected else {
-            panic!("the Ref arm must reject rather than return a task");
+            panic!("the Ref arm must reject rather than return a future");
         };
         assert_exact_error::<PyNotImplementedError>(&err, REF_STOP_REJECTION, "Ref stop rejection");
     }
