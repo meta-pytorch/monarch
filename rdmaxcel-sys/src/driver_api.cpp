@@ -46,7 +46,7 @@
 #define SYM_CTX_SET_CURRENT hipCtxSetCurrent
 #define SYM_CTX_SYNCHRONIZE hipCtxSynchronize
 #define SYM_GET_ERROR_STRING hipDrvGetErrorString
-#define RDMAXCEL_DRIVER_LIB "libamdhip64.so"
+#define RDMAXCEL_DRIVER_LIB "libamdhip64.so.7"
 #else
 #define SYM_MEM_GET_HANDLE_FOR_ADDRESS_RANGE cuMemGetHandleForAddressRange
 #define SYM_MEM_GET_ADDRESS_RANGE cuMemGetAddressRange_v2
