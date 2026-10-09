@@ -719,6 +719,15 @@ class JobTrait(ABC):
                     exc_info=True,
                 )
             try:
+                if running._apply_id is not None:
+                    stop_job_sidecar(running._apply_id)
+            except Exception:
+                logger.warning(
+                    "Failed to stop stale cached job sidecar; continuing teardown: %s",
+                    cleanup_context,
+                    exc_info=True,
+                )
+            try:
                 running._kill()
             except Exception:
                 # Teardown is best-effort here. A stale cache must not make
