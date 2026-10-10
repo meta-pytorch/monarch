@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["unix"],"struct":["ProcSpawner"],"trait":["ProcSpawnerEndpoint"]};

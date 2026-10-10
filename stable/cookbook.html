@@ -1,9 +1,8 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="./" >
 
   <head>
     <meta charset="utf-8" />
@@ -17,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Task-oriented recipes for common Monarch patterns. Each recipe is small, self-contained, and answers a single “how do I …?” question. Every snippet below is embedded directly from a test in python/..." />
 
-    <title>Monarch Cookbook &#8212; Monarch v0.6.0 documentation</title>
+    <title>Monarch Cookbook &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -37,29 +36,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js"></script>
-    <script src="_static/doctools.js"></script>
-    <script src="_static/sphinx_highlight.js"></script>
-    <script src="_static/design-tabs.js"></script>
+    <script src="_static/documentation_options.js?v=05c9169f"></script>
+    <script src="_static/doctools.js?v=888ff710"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cookbook';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/cookbook.html" />
@@ -85,7 +84,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -199,7 +198,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -564,6 +563,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -634,6 +639,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -925,6 +936,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -995,6 +1012,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1308,7 +1331,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="monarch-cookbook">
-<h1>Monarch Cookbook<a class="headerlink" href="#monarch-cookbook" title="Permalink to this heading">#</a></h1>
+<h1>Monarch Cookbook<a class="headerlink" href="#monarch-cookbook" title="Link to this heading">#</a></h1>
 <p>Task-oriented recipes for common Monarch patterns. Each recipe is small,
 self-contained, and answers a single “how do I …?” question.</p>
 <p>Every snippet below is embedded directly from a test in
@@ -1317,13 +1340,13 @@ and runs in CI, so the code here stays in sync with the API. To add a recipe,
 write a test with a <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">cookbook:</span> <span class="pre">&lt;slug&gt;</span></code> / <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">cookbook:</span> <span class="pre">end</span></code> marker pair and
 embed the region here with <code class="docutils literal notranslate"><span class="pre">literalinclude</span></code>.</p>
 <section id="meshes-and-slicing">
-<h2>Meshes and Slicing<a class="headerlink" href="#meshes-and-slicing" title="Permalink to this heading">#</a></h2>
+<h2>Meshes and Slicing<a class="headerlink" href="#meshes-and-slicing" title="Link to this heading">#</a></h2>
 <section id="get-the-rank-0-actor-of-a-mesh">
-<h3>Get the rank-0 actor of a mesh<a class="headerlink" href="#get-the-rank-0-actor-of-a-mesh" title="Permalink to this heading">#</a></h3>
+<h3>Get the rank-0 actor of a mesh<a class="headerlink" href="#get-the-rank-0-actor-of-a-mesh" title="Link to this heading">#</a></h3>
 <p>You often need the rank-0 actor of a mesh, for example to use it as the coordinator
 of the SPMD job running on the mesh. Do:</p>
 <div class="literal-block-wrapper docutils container" id="id1">
-<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L48-L49">View source</a></span><a class="headerlink" href="#id1" title="Permalink to this code">#</a></div>
+<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L48-L49">View source</a></span><a class="headerlink" href="#id1" title="Link to this code">#</a></div>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">rank_0</span> <span class="o">=</span> <span class="n">counters</span><span class="o">.</span><span class="n">flatten</span><span class="p">(</span><span class="s2">&quot;rank&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
 <span class="k">await</span> <span class="n">rank_0</span><span class="o">.</span><span class="n">increment</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span>
 </pre></div>
@@ -1341,14 +1364,14 @@ if those names change.</p></li>
 </section>
 </section>
 <section id="intra-mesh-communication">
-<h2>Intra-mesh Communication<a class="headerlink" href="#intra-mesh-communication" title="Permalink to this heading">#</a></h2>
+<h2>Intra-mesh Communication<a class="headerlink" href="#intra-mesh-communication" title="Link to this heading">#</a></h2>
 <section id="call-a-specific-rank-of-your-own-mesh">
-<h3>Call a specific rank of your own mesh<a class="headerlink" href="#call-a-specific-rank-of-your-own-mesh" title="Permalink to this heading">#</a></h3>
+<h3>Call a specific rank of your own mesh<a class="headerlink" href="#call-a-specific-rank-of-your-own-mesh" title="Link to this heading">#</a></h3>
 <p>An actor often needs to reach another rank of its own mesh — for example, a
 coordinator at rank 0. Give each actor a handle to its mesh after spawning, then
 slice that handle to the target rank inside an endpoint:</p>
 <div class="literal-block-wrapper docutils container" id="id2">
-<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L77-L78">View source</a></span><a class="headerlink" href="#id2" title="Permalink to this code">#</a></div>
+<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L77-L78">View source</a></span><a class="headerlink" href="#id2" title="Link to this code">#</a></div>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">coordinator</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">mesh</span><span class="o">.</span><span class="n">flatten</span><span class="p">(</span><span class="s2">&quot;rank&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
 <span class="k">return</span> <span class="k">await</span> <span class="n">coordinator</span><span class="o">.</span><span class="n">ping</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span>
 </pre></div>
@@ -1360,13 +1383,13 @@ mesh at construction time, so we pass the handle to every member through a
 reference to the chosen rank, so the call is a direct point-to-point message.</p>
 </section>
 <section id="return-results-asynchronously-with-a-port">
-<h3>Return results asynchronously with a port<a class="headerlink" href="#return-results-asynchronously-with-a-port" title="Permalink to this heading">#</a></h3>
+<h3>Return results asynchronously with a port<a class="headerlink" href="#return-results-asynchronously-with-a-port" title="Link to this heading">#</a></h3>
 <p>The previous recipe returns synchronously because <code class="docutils literal notranslate"><span class="pre">call</span></code> (and <code class="docutils literal notranslate"><span class="pre">call_one</span></code>) hand
 back the endpoint’s return value inline. A port is the asynchronous counterpart.
 The coordinator opens a <code class="docutils literal notranslate"><span class="pre">Channel</span></code> and <code class="docutils literal notranslate"><span class="pre">broadcast</span></code>s the sending half (a <code class="docutils literal notranslate"><span class="pre">Port</span></code>) to
 the other ranks, which send or stream results back to it whenever they are ready:</p>
 <div class="literal-block-wrapper docutils container" id="id3">
-<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L109-L113">View source</a></span><a class="headerlink" href="#id3" title="Permalink to this code">#</a></div>
+<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L109-L113">View source</a></span><a class="headerlink" href="#id3" title="Link to this code">#</a></div>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">port</span><span class="p">,</span> <span class="n">receiver</span> <span class="o">=</span> <span class="n">Channel</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span><span class="o">.</span><span class="n">open</span><span class="p">()</span>
 <span class="n">others</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">mesh</span><span class="o">.</span><span class="n">flatten</span><span class="p">(</span><span class="s2">&quot;rank&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="nb">slice</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="kc">None</span><span class="p">))</span>
 <span class="n">others</span><span class="o">.</span><span class="n">produce</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span><span class="n">port</span><span class="p">)</span>
@@ -1378,7 +1401,7 @@ the other ranks, which send or stream results back to it whenever they are ready
 <p>Each rank’s <code class="docutils literal notranslate"><span class="pre">produce</span></code> endpoint launches a background task and returns
 immediately; the task sends its values to the port over time:</p>
 <div class="literal-block-wrapper docutils container" id="id4">
-<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L119-L125">View source</a></span><a class="headerlink" href="#id4" title="Permalink to this code">#</a></div>
+<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L119-L125">View source</a></span><a class="headerlink" href="#id4" title="Link to this code">#</a></div>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">rank</span> <span class="o">=</span> <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">actor_instance</span><span class="o">.</span><span class="n">rank</span><span class="p">[</span><span class="s2">&quot;gpus&quot;</span><span class="p">]</span>
 
 <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">stream</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
@@ -1661,7 +1684,7 @@ immediately; the task sends its values to the port over time:</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>

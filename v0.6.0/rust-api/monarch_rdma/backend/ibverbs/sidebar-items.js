@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["device","device_selection","efa_device","efa_domain","manager_actor","memory_region","mlx_device","mlx_domain","mlx_queue_pair","primitives","queue_pair"],"struct":["IbvBuffer","IbvOp"]};

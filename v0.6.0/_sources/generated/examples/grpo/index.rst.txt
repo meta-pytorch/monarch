@@ -1,0 +1,43 @@
+
+
+.. _sphx_glr_generated_examples_grpo:
+
+GRPO Examples
+============
+
+Examples demonstrating Group Relative Policy Optimization (GRPO) training with Monarch.
+
+
+
+.. raw:: html
+
+    <div class="sphx-glr-thumbnails">
+
+
+.. raw:: html
+
+    <div class="sphx-glr-thumbcontainer" tooltip="This tutorial runs a GRPO-style RL fine-tuning loop on Kubernetes using Monarch&#x27;s KubernetesJob...">
+
+.. only:: html
+
+  .. image:: /generated/examples/grpo/images/thumb/sphx_glr_kubernetes_grpo_thumb.png
+    :alt:
+
+  :ref:`sphx_glr_generated_examples_grpo_kubernetes_grpo.py`
+
+.. raw:: html
+
+      <div class="sphx-glr-thumbnail-title">GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)</div>
+    </div>
+
+
+.. raw:: html
+
+    </div>
+
+
+.. toctree::
+   :hidden:
+
+   /generated/examples/grpo/kubernetes_grpo
+

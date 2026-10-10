@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["GENERATED_COMMENT"],"fn":["insert_generated_comment","main","write_openapi","write_schema"]};

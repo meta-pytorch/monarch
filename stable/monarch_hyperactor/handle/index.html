@@ -1,6 +1,6 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="`Handle`: an observe-only handle to a background Tokio task."><title>monarch_hyperactor::handle - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module handle</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../monarch_hyperactor/index.html">monarch_<wbr>hyperactor</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module handle</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#handle-invariants-hdl-" title="Handle invariants (HDL-*)">Handle invariants (HDL-*)</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate monarch_<wbr>hyperactor</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">monarch_hyperactor</a></div><h1>Module <span>handle</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/monarch_hyperactor/handle.rs.html#9-1390">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p><code>Handle</code>: an observe-only handle to a background Tokio task.</p>
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="`Handle`: an observe-only handle to a background operation."><title>monarch_hyperactor::handle - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (c397dae80 2026-07-02)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module handle</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../monarch_hyperactor/index.html">monarch_<wbr>hyperactor</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module handle</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#handle-invariants-hdl-" title="Handle invariants (HDL-*)">Handle invariants (HDL-*)</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate monarch_<wbr>hyperactor</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">monarch_hyperactor</a></div><h1>Module <span>handle</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/monarch_hyperactor/handle.rs.html#9-2511">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p><code>Handle</code>: an observe-only handle to a background operation.</p>
 <p>A <code>Handle</code> wraps a <code>watch</code> channel that a producer fulfills exactly once with
-the task’s <code>PyResult&lt;Py&lt;PyAny&gt;&gt;</code>. You observe its eventual result:
+the operation’s <code>PyResult&lt;Py&lt;PyAny&gt;&gt;</code>. You observe its eventual result:
 synchronously via <code>get()</code>, on an <code>asyncio</code> loop via <code>as_asyncio()</code>/<code>await</code>, or
 without blocking via <code>poll()</code>. The channel is multi-observer, so a resolved
 value stays observable by any number of later observers.</p>
@@ -13,9 +13,11 @@ before changing a tagged site.</p>
 <ul>
 <li><strong>HDL-1 (single terminal completion).</strong> The watch value goes <code>None</code> -&gt;
 <code>Some(_)</code> exactly once and is never reset (<code>Some</code> -&gt; <code>Some</code>, <code>Some</code> -&gt;
-<code>None</code>). Relied on by [<code>HandleCore::wait_future</code>] (wait loop + <code>expect</code>) and
-[<code>HandleCore::poll</code>] (re-borrow across the GIL). Held by convention: every
-producer sends once, always <code>Some(_)</code>. A send-once sender (a newtype
+<code>None</code>). Relied on by [<code>HandleCore::wait_future</code>] (wait loop + <code>expect</code>),
+[<code>HandleCore::poll</code>] (re-borrow across the GIL), and
+<a href="struct.PyHandle.html#method.wait_completion" title="method monarch_hyperactor::handle::PyHandle::wait_completion"><code>PyHandle::wait_completion</code></a> (discriminant check then GIL re-borrow). Held
+by convention: every producer sends once, always <code>Some(_)</code> (including the
+direct <a href="struct.PyHandle.html#method.spawn" title="associated function monarch_hyperactor::handle::PyHandle::spawn"><code>PyHandle::spawn</code></a> producer). A send-once sender (a newtype
 consuming the <code>watch::Sender</code>) could make it structural, hardening <code>poll</code>’s
 re-borrow.</li>
 <li><strong>HDL-2 (value encoding).</strong> <code>None</code> is pending, <code>Some(Ok(_))</code> success,
@@ -23,9 +25,11 @@ re-borrow.</li>
 </ul>
 <p>Guaranteed by this module:</p>
 <ul>
-<li><strong>HDL-3 (non-consuming reads).</strong> Every read clones the value out
-(<code>clone_ref</code>) rather than moving it, so any number of observers see the
-same result. Enforced by construction: no read path moves the value.</li>
+<li><strong>HDL-3 (non-consuming reads).</strong> No read moves the value out: a
+value-extracting read clones it (<code>clone_ref</code>), and a discriminant-only read
+(<code>wait_completion</code>’s success fast path) borrows just the <code>Ok</code>/<code>Err</code> tag and
+clones nothing. Either way any number of observers see the same result.
+Enforced by construction: no read path moves the value.</li>
 <li><strong>HDL-4 (drop does not cancel; drop never panics).</strong> Dropping a <code>Handle</code>
 never cancels its producer; a <code>Handle</code> observes, it does not own the
 producer’s lifecycle. Enforced by construction: a <code>Handle</code>’s core has
@@ -37,39 +41,65 @@ gone) cannot escape <code>Drop</code> and abort the process.</li>
 and every acquisition goes through <code>monarch_with_gil{,_blocking}</code>. Enforced
 by the crate’s <code>#![deny(clippy::disallowed_methods)]</code> ban on raw
 <code>Python::with_gil</code>/<code>attach</code> – a hard compile error, not a <code>debug_assert</code>.</li>
-<li><strong>HDL-6 (<code>WouldBlockRuntime</code> is <code>get()</code>’s alone).</strong> Only <code>get()</code> raises it,
-and only in a Tokio runtime context; <code>as_asyncio()</code>/<code>__await__</code> off a loop
-raise the native <code>RuntimeError</code> instead.</li>
+<li><strong>HDL-6 (<code>WouldBlockRuntime</code> is <code>get()</code>’s alone <em>among the observers</em>).</strong>
+Of the <code>Handle</code> observers only <code>get()</code> raises it, and only in a Tokio
+runtime context; <code>as_asyncio()</code>/<code>__await__</code> off a loop raise the native
+<code>RuntimeError</code> instead. The exception type itself is not private to this
+module: it marks synchronous APIs that refuse to enter or block on Tokio
+from an existing Tokio runtime context. The Python layer also raises it for
+fresh root-client bootstrap (<code>monarch._src.actor.actor_mesh</code>), the
+blocking worker-loop wrappers (<code>monarch._src.actor.bootstrap</code>), and a
+<code>returns_future</code> <code>.get()</code> that would block a running event loop
+(<code>monarch._src.actor.returns_future</code>, RF-7).</li>
 <li><strong>HDL-7 (<code>as_asyncio</code> publish).</strong> The observer waits borrow-first (via
-<code>wait_ready</code>, never <code>changed()</code>-first) and sets a result only on a
-non-cancelled future, swallowing <code>InvalidStateError</code>; any <code>StopIteration</code>
-(including subclasses) is wrapped in <code>RuntimeError</code> first, since
-<code>set_exception</code> rejects <code>StopIteration</code> (PEP 479); if the loop has closed it
-logs rather than panics.</li>
+<code>wait_ready</code>, never <code>changed()</code>-first). The result is published on the
+loop thread through <code>complete_asyncio_future</code>, by the wake reader
+(HDL-17) or by the fallback’s <code>call_soon_threadsafe</code> callback (HDL-21),
+or, for a Handle already complete, by <code>as_asyncio</code> itself (HDL-22).
+It sets a result only on a non-cancelled future, swallowing
+<code>InvalidStateError</code>; any <code>StopIteration</code> (including subclasses) is wrapped
+in <code>RuntimeError</code> first, since <code>set_exception</code> rejects <code>StopIteration</code>
+(PEP 479). If the loop has closed, the fallback logs rather than panics
+and the wake reader never runs. A wake-reader failure, including a
+future whose <code>done()</code> raises, is reported through the future’s loop
+exception handler, as asyncio reports an exception from a callback.</li>
 <li><strong>HDL-8 (<code>get()</code> loop-warning is call-pattern, not outcome).</strong> <code>get()</code> on a
 running asyncio loop warns regardless of whether the value is ready: it
 flags the blocking-call-from-a-loop anti-pattern, not whether this call
 happens to block. A ready value returns after warning; under a
 warnings-as-errors filter the warning escalates to an error.</li>
 <li><strong>HDL-9 (GIL/watch borrow discipline).</strong> A <code>watch</code> borrow is never held
-across a GIL acquisition or an <code>.await</code>. <code>poll</code> drops its read guard before
-taking the GIL and re-borrows under it (GIL-then-watch order, never the
-inverse against the producer’s write-lock <code>send</code>); the <code>wait_ready</code>/
+across a GIL acquisition or an <code>.await</code>. <code>poll</code> and <code>wait_completion</code>’s error
+path drop their read guard before taking the GIL and re-borrow under it
+(GIL-then-watch order, never the inverse against the producer’s write-lock
+<code>send</code>); the <code>wait_ready</code>/
 <code>wait_future</code> loops drop the temporary <code>Ref</code> before each <code>.await</code>; and their
 returned futures own a cloned receiver (<code>Send + 'static</code>, borrowing nothing
 from <code>&amp;self</code>), which is what lets <code>get()</code> <code>drop(slf)</code> + release the GIL
-before blocking and lets <code>as_asyncio</code> <code>spawn</code> the observer. Enforced partly
-by the compiler (<code>Send</code> bounds, the borrow checker on <code>drop(slf)</code>) and
-partly by construction; exercised by the multi-observer/blocking tests.</li>
+before blocking and lets <code>as_asyncio</code> <code>spawn</code> the observer. <code>as_asyncio</code>’s
+fallback observer clones the value under the one GIL acquisition it makes
+to schedule; its wake observer never reads the value (HDL-17). Enforced
+partly by the compiler (<code>Send</code> bounds, the borrow checker on <code>drop(slf)</code>)
+and partly by construction; exercised by the multi-observer/blocking
+tests.</li>
 <li><strong>HDL-10 (dropped producer surfaces, never hangs).</strong> If every producer drops
 its sender without sending, the wait loop’s <code>changed().await?</code> yields a
-<code>RecvError</code> turned into a Python exception (<code>to_py_error</code>) on both the sync
-(<code>get</code>/<code>wait_future</code>) and async (<code>as_asyncio</code>) paths, so an observer raises
-rather than hanging forever.</li>
-<li><strong>HDL-11 (<code>Handle</code> is not constructible from Python).</strong> The pyclass has no
-<code>#[new]</code> and the only <code>from_value</code> constructor is <code>#[cfg(test)]</code>-gated, so a
-live <code>Handle</code> always wraps a producer-supplied core (upholding HDL-1/HDL-2);
-exposing a Python constructor would let user code mint an unresolvable core.</li>
+<code>RecvError</code> converted to <code>RuntimeError("Handle producer ended without publishing a result")</code> on the non-blocking (<code>poll</code>), sync
+(<code>get</code>/<code>wait_future</code>), async (<code>as_asyncio</code>), and <code>wait_completion</code> paths,
+so every observer receives the same producer-lifecycle failure rather than
+waiting forever.</li>
+<li><strong>HDL-11 (Python construction is paired).</strong> Neither <code>Handle</code> nor
+<code>_HandleCompleter</code> has <code>#[new]</code>. Internal Python may call the private
+<code>_new_handle_pair()</code>, which atomically creates a pending <code>Handle</code> and its
+sole producer. The factory initializes the completer with <code>Some(sender)</code>.
+<code>set_exception()</code> rejects a non-<code>BaseException</code> before taking it; the first
+<code>set_result()</code> or valid <code>set_exception()</code> takes it, producing the only
+state transition to <code>None</code>, and any later completion attempt raises. No
+sender clone escapes. Dropping the completer unresolved closes the channel
+and surfaces through HDL-10. Python therefore cannot create a pending
+<code>Handle</code> without its producer. Native producers remain the default; this
+private pair is reserved for operations whose semantics and scheduling are
+owned by Python.</li>
 <li><strong>HDL-12 (<code>get()</code> timeout contract).</strong> <code>get()</code> validates the timeout up
 front (rejecting negative/NaN/non-finite as <code>ValueError</code> via
 <code>try_from_secs_f64</code>, never panicking) and before the ready fast path, so an
@@ -77,5 +107,83 @@ invalid timeout raises deterministically even for a ready handle. A timeout
 is non-cancelling: it raises <code>TimeoutError</code> while leaving the producer and
 every observer untouched, so a later <code>poll()</code>/<code>get()</code>/<code>await</code> still observes
 completion.</li>
+<li><strong>HDL-13 (direct Rust producer).</strong> A Rust caller can eagerly produce a
+<code>Handle</code> from a <code>Send + 'static</code> future via <a href="struct.PyHandle.html#method.spawn" title="associated function monarch_hyperactor::handle::PyHandle::spawn"><code>PyHandle::spawn</code></a>, without a
+<code>PyPythonTask</code>: it spawns one producer that converts the terminal value to
+<code>Py&lt;PyAny&gt;</code> under <code>monarch_with_gil</code> and publishes it once through the shared
+<code>send_result</code> helper (same one-shot core and unobserved-error policy as
+pytokio’s producers, HDL-1/HDL-2), with <code>abort_on_drop: None</code> (HDL-4).
+<a href="struct.PyHandle.html#method.wait_completion" title="method monarch_hyperactor::handle::PyHandle::wait_completion"><code>PyHandle::wait_completion</code></a> is the matching observer: it projects the
+terminal value to <code>PyResult&lt;()&gt;</code>, touching neither the GIL nor the Python
+value on the ready-success fast path (a discriminant-only read, HDL-3) and
+cloning the <code>PyErr</code> under the HDL-9 borrow order only on the error path. Both
+are <code>pub</code> Rust-only methods outside <code>#[pymethods]</code> (HDL-11).</li>
+<li><strong>HDL-14 (Rust value observation is owned and non-consuming).</strong>
+<a href="struct.PyHandle.html#method.wait_future" title="method monarch_hyperactor::handle::PyHandle::wait_future"><code>PyHandle::wait_future</code></a> returns a <code>Send + 'static</code> future over a cloned
+watch receiver. The waiter borrows nothing from the <code>PyHandle</code>, survives
+the wrapper being dropped, and leaves the terminal value available to
+every other observer.</li>
+<li><strong>HDL-15 (Rust ready construction starts no work).</strong>
+<a href="struct.PyHandle.html#method.from_value" title="associated function monarch_hyperactor::handle::PyHandle::from_value"><code>PyHandle::from_value</code></a> constructs an already-complete, non-aborting core
+without spawning a task. It is public to Rust callers but remains outside
+<code>#[pymethods]</code>, preserving HDL-11’s direct-construction restriction.</li>
+<li><strong>HDL-16 (permanent Python identity).</strong> <code>Handle</code> and <code>WouldBlockRuntime</code>
+have the canonical module <code>monarch._rust_bindings.monarch_hyperactor.handle</code>.
+The legacy <code>pytokio</code> module does not export <code>Handle</code>.</li>
+<li><strong>HDL-17 (GIL-free completion wake).</strong> For a Handle still pending when
+<code>as_asyncio</code> is called, on a loop that accepts <code>add_reader</code>, the observer
+task holds a <code>Notifier</code> (a token,
+an mpsc sender and an <code>Arc&lt;Waker&gt;</code>) and the <code>wait_ready</code> future. It
+publishes by pushing the token and writing the loop’s pipe, never reading
+the value and taking no GIL; the loop thread reads the value from the
+<code>Handle</code> and sets it (see <a href="../handle_wake/index.html" title="mod monarch_hyperactor::handle_wake"><code>crate::handle_wake</code></a>). Enforced by
+construction: <code>Notifier</code> has no <code>Py&lt;_&gt;</code>, and the task body makes no
+<code>monarch_with_gil</code> call.</li>
+<li><strong>HDL-18 (notification ordering under supported pipe outcomes).</strong> A
+notifier pushes its token before writing the pipe, and the reader drains
+the pipe before the queue, never returning between the two; both retry
+<code>EINTR</code>. A write that succeeds or returns <code>EAGAIN</code> leaves a byte pending,
+so a token pushed after a queue drain is delivered by a later wake.
+<code>EPIPE</code> or a disconnected queue means the channel is gone and the token is
+dropped. Any other errno is logged as a broken wake channel, not claimed
+as delivered.</li>
+<li><strong>HDL-19 (loop not retained).</strong> The wake registry holds each loop as a
+weak key and its channel through a weak reference; the loop’s selector,
+through the channel’s reader callback, is the channel’s only strong
+owner. A channel holds no reference to its loop. It holds each pending
+await’s asyncio future strongly until delivery, cancellation or loop
+close, because asyncio holds tasks weakly and that reference is the
+waiting task’s only owner outside the task’s own cycle; <code>__traverse__</code>
+exposes each entry’s future and <code>Handle</code> object to the garbage collector.
+Closing a loop therefore releases the channel-owned graph (the channel,
+its read end, its entries, their futures and <code>Handle</code>s). The write end
+stays open until every <code>Notifier</code> is dropped, so a loop closed while an
+await waits on a <code>Handle</code> that never completes keeps that descriptor
+(HDL-20). A loop dropped
+without being closed while an await on a pending <code>Handle</code> is registered
+is still freed by the collector. Not freed: a loop dropped without being
+closed while an undelivered entry’s <code>Handle</code> value references it, and any
+independent cycle through a <code>Handle</code>, such as a value that references its
+own <code>Handle</code>. Both run through <code>PyHandle</code>, which the garbage collector
+does not traverse.</li>
+<li><strong>HDL-20 (late wake is harmless).</strong> A notify after its channel is gone is
+dropped without error or panic: the send fails, or the write gets <code>EPIPE</code>.
+This requires <code>SIGPIPE</code> to be ignored, as Rust’s runtime and CPython set
+it by default; in a process that restores <code>SIG_DFL</code>, a completion that
+races loop teardown can kill the process. Every <code>Notifier</code> owns the write
+end through its <code>Arc&lt;Waker&gt;</code> until its <code>Handle</code> completes, so no write
+reaches a reused descriptor.</li>
+<li><strong>HDL-21 (fallback).</strong> For a Handle still pending, a loop whose
+<code>add_reader</code> raises <code>NotImplementedError</code> or that cannot be weakly
+referenced uses the <code>call_soon_threadsafe</code> path; HDL-7 applies there
+unchanged.</li>
+<li><strong>HDL-22 (ready shortcut).</strong> <code>as_asyncio()</code> on a Handle that already holds
+its outcome, a value, a stored exception or producer loss (HDL-10),
+returns a loop future already completed with it through
+<code>complete_asyncio_future</code>, with no observer task and no wake-channel
+registration. Awaiting it returns without giving the loop a turn, as for
+any finished asyncio future.</li>
 </ul>
-</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.PyHandle.html" title="struct monarch_hyperactor::handle::PyHandle">PyHandle</a></dt><dd>The observe-only handle to a background Tokio task.</dd><dt><a class="struct" href="struct.WouldBlockRuntime.html" title="struct monarch_hyperactor::handle::WouldBlockRuntime">Would<wbr>Block<wbr>Runtime</a></dt><dd>raised when Handle.get() is called from a Tokio runtime context</dd></dl></section></div></main></body></html>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.PyHandle.html" title="struct monarch_hyperactor::handle::PyHandle">PyHandle</a></dt><dd>The observe-only handle to a background Tokio task or Python-owned operation.</dd><dt><a class="struct" href="struct.WouldBlockRuntime.html" title="struct monarch_hyperactor::handle::WouldBlockRuntime">Would<wbr>Block<wbr>Runtime</a></dt><dd>raised when a synchronous API refuses to enter or block on Tokio from an existing Tokio runtime context – Handle.get(), fresh root-client bootstrap, or a blocking worker-loop wrapper – or when a returns_future .get() would block a running event loop</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.after_ready.html" title="fn monarch_hyperactor::handle::after_ready">after_<wbr>ready</a></dt><dd>Run <code>operation</code> only after <code>ready</code> resolves <code>Ok</code>, returning the readiness
+error unchanged if it does not.</dd><dt><a class="fn" href="fn.register_python_bindings.html" title="fn monarch_hyperactor::handle::register_python_bindings">register_<wbr>python_<wbr>bindings</a></dt><dd>Register the permanent Handle Python bindings.</dd><dt><a class="fn" href="fn.to_py_error.html" title="fn monarch_hyperactor::handle::to_py_error">to_<wbr>py_<wbr>error</a></dt><dd>Convert a Rust error into the generic Python <code>ValueError</code> used by Monarch’s
+native bindings.</dd></dl></section></div></main></body></html>

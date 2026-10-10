@@ -1,9 +1,8 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="../../../../" >
 
   <head>
     <meta charset="utf-8" />
@@ -17,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The Handler trait defines how an actor receives and responds to messages of a specific type. Each message type that an actor can handle must be declared by implementing this trait. The runtime invo..." />
 
-    <title>The Handler Trait &#8212; Monarch v0.6.0 documentation</title>
+    <title>The Handler Trait &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -37,29 +36,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
-    <script src="../../../../_static/doctools.js"></script>
-    <script src="../../../../_static/sphinx_highlight.js"></script>
-    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/actors/handler';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/actors/handler.html" />
@@ -83,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -197,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -562,6 +561,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -632,6 +637,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -925,6 +936,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -995,6 +1012,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1299,7 +1322,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="the-handler-trait">
-<h1>The <code class="docutils literal notranslate"><span class="pre">Handler</span></code> Trait<a class="headerlink" href="#the-handler-trait" title="Permalink to this heading">#</a></h1>
+<h1>The <code class="docutils literal notranslate"><span class="pre">Handler</span></code> Trait<a class="headerlink" href="#the-handler-trait" title="Link to this heading">#</a></h1>
 <p>The <code class="docutils literal notranslate"><span class="pre">Handler</span></code> trait defines how an actor receives and responds to messages of a specific type.</p>
 <p>Each message type that an actor can handle must be declared by implementing this trait. The runtime invokes the <code class="docutils literal notranslate"><span class="pre">handle</span></code> method when such a message is delivered.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[async_trait]</span>
@@ -1309,7 +1332,7 @@ document.write(`
 </pre></div>
 </div>
 <section id="message-dispatch-handle">
-<h2>Message Dispatch: <code class="docutils literal notranslate"><span class="pre">handle</span></code><a class="headerlink" href="#message-dispatch-handle" title="Permalink to this heading">#</a></h2>
+<h2>Message Dispatch: <code class="docutils literal notranslate"><span class="pre">handle</span></code><a class="headerlink" href="#message-dispatch-handle" title="Link to this heading">#</a></h2>
 <p>The <code class="docutils literal notranslate"><span class="pre">handle</span></code> method is invoked by the runtime whenever a message of type <code class="docutils literal notranslate"><span class="pre">M</span></code> arrives at a matching port on the actor.</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">message</span></code> is the received payload.</p></li>
@@ -1319,10 +1342,10 @@ document.write(`
 <p>An actor may implement <code class="docutils literal notranslate"><span class="pre">Handler&lt;M&gt;</span></code> multiple times — once for each message type <code class="docutils literal notranslate"><span class="pre">M</span></code> it supports.</p>
 </section>
 <section id="built-in-handlers">
-<h2>Built-in Handlers<a class="headerlink" href="#built-in-handlers" title="Permalink to this heading">#</a></h2>
+<h2>Built-in Handlers<a class="headerlink" href="#built-in-handlers" title="Link to this heading">#</a></h2>
 <p>The runtime provides implementations of <code class="docutils literal notranslate"><span class="pre">Handler&lt;M&gt;</span></code> for a few internal message types:</p>
 <section id="handler-signal">
-<h3><code class="docutils literal notranslate"><span class="pre">Handler&lt;Signal&gt;</span></code><a class="headerlink" href="#handler-signal" title="Permalink to this heading">#</a></h3>
+<h3><code class="docutils literal notranslate"><span class="pre">Handler&lt;Signal&gt;</span></code><a class="headerlink" href="#handler-signal" title="Link to this heading">#</a></h3>
 <p>This is a marker implementation indicating that all actors can receive <code class="docutils literal notranslate"><span class="pre">Signal</span></code>. The handler is not expected to be invoked directly — its real behavior is implemented inside the runtime.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[async_trait]</span>
 <span class="k">impl</span><span class="o">&lt;</span><span class="n">A</span><span class="p">:</span><span class="w"> </span><span class="nc">Actor</span><span class="o">&gt;</span><span class="w"> </span><span class="n">Handler</span><span class="o">&lt;</span><span class="n">Signal</span><span class="o">&gt;</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">A</span><span class="w"> </span><span class="p">{</span>
@@ -1338,7 +1361,7 @@ document.write(`
 </div>
 </section>
 <section id="multipart-routed-messages">
-<h3>Multipart routed messages<a class="headerlink" href="#multipart-routed-messages" title="Permalink to this heading">#</a></h3>
+<h3>Multipart routed messages<a class="headerlink" href="#multipart-routed-messages" title="Link to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">message</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">wirevalue</span><span class="p">::</span><span class="n">Any</span><span class="p">::</span><span class="o">&lt;</span><span class="n">wirevalue</span><span class="p">::</span><span class="n">encoding</span><span class="p">::</span><span class="n">Multipart</span><span class="o">&gt;</span><span class="p">::</span><span class="n">serialize</span><span class="p">(</span><span class="o">&amp;</span><span class="n">value</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
 <span class="n">message</span><span class="p">.</span><span class="n">visit_multipart_parts_mut</span><span class="p">::</span><span class="o">&lt;</span><span class="n">PortRefRepr</span><span class="p">,</span><span class="w"> </span><span class="n">anyhow</span><span class="p">::</span><span class="n">Error</span><span class="o">&gt;</span><span class="p">(</span><span class="o">|</span><span class="n">port</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">port</span><span class="p">.</span><span class="n">update_port_addr</span><span class="p">(</span><span class="n">rewritten_addr</span><span class="p">);</span>
@@ -1584,7 +1607,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>

@@ -4,10 +4,11 @@ Typed references are strongly typed wrappers over addresses like `ActorAddr` and
 
 ## Overview
 
-There are three main typed reference types:
+There are four main typed reference types:
 
 - [`ActorRef<A>`](#actorrefa): A typed reference to an actor implementing the `Referable` trait.
 - [`PortRef<M>`](#portrefm): A reference to a reusable mailbox port for messages of type `M` implementing the `RemoteMessage` trait.
+- [`IdleFlushPortRef<M>`](#idleflushportrefm): A reusable reply port that applies idle-flush reduction in cast trees.
 - [`OncePortRef<M>`](#onceportrefm): A reference to a one-shot port for receiving a single response of type `M` implementing the `RemoteMessage` trait.
 
 These types are used as parameters in messages, return values from bindings, and components of the routing system.
@@ -62,6 +63,10 @@ pub struct PortRef<M> {
 }
 ```
 As with `ActorRef`, this is a typed wrapper around an address (`PortAddr`), carrying a phantom type for safety. It ensures that only messages of type `M` can be sent through this reference.
+
+## `IdleFlushPortRef<M>`
+
+`IdleFlushPortRef<M>` is a reusable reply port with a distinct serialized representation. Cast splitting recognizes it and installs `ReducerMode::IdleFlush` at each branch. Create one from a bound `PortRef` with `PortRef::into_idle_flush`.
 
 ## `OncePortRef<M>`
 

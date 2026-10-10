@@ -1,9 +1,8 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="../../../../" >
 
   <head>
     <meta charset="utf-8" />
@@ -17,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="A Mailbox is an actor’s in-process inbox. It owns the actor’s ports, allocates new port indices, binds serializable ports into a routing table, and delivers MessageEnvelope s to the correct typed r..." />
 
-    <title>Mailbox &#8212; Monarch v0.6.0 documentation</title>
+    <title>Mailbox &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -37,29 +36,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
-    <script src="../../../../_static/doctools.js"></script>
-    <script src="../../../../_static/sphinx_highlight.js"></script>
-    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/mailboxes/mailbox';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/mailboxes/mailbox.html" />
@@ -83,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -197,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -562,6 +561,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -632,6 +637,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -925,6 +936,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -995,6 +1012,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1299,11 +1322,11 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="mailbox">
-<h1>Mailbox<a class="headerlink" href="#mailbox" title="Permalink to this heading">#</a></h1>
+<h1>Mailbox<a class="headerlink" href="#mailbox" title="Link to this heading">#</a></h1>
 <p>A <code class="docutils literal notranslate"><span class="pre">Mailbox</span></code> is an actor’s in-process inbox. It owns the actor’s ports, allocates new port indices, binds serializable ports into a routing table, and delivers <code class="docutils literal notranslate"><span class="pre">MessageEnvelope</span></code>s to the correct typed receiver.</p>
 <p>A mailbox is deliberately local. If an envelope is addressed to a different actor, <code class="docutils literal notranslate"><span class="pre">Mailbox::post_unchecked</span></code> returns it as an invalid reference (<code class="docutils literal notranslate"><span class="pre">WrongMailboxOwner</span></code>). Cross-actor and cross-proc routing happens before the mailbox, through procs, gateways, and routers.</p>
 <section id="opening-ports">
-<h2>Opening ports<a class="headerlink" href="#opening-ports" title="Permalink to this heading">#</a></h2>
+<h2>Opening ports<a class="headerlink" href="#opening-ports" title="Link to this heading">#</a></h2>
 <p>The most common API is <code class="docutils literal notranslate"><span class="pre">open_port</span></code>, which creates a reusable typed port:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">handle</span><span class="p">,</span><span class="w"> </span><span class="n">receiver</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mailbox</span><span class="p">.</span><span class="n">open_port</span><span class="p">::</span><span class="o">&lt;</span><span class="n">MyMessage</span><span class="o">&gt;</span><span class="p">();</span>
 </pre></div>
@@ -1322,7 +1345,7 @@ document.write(`
 </ul>
 </section>
 <section id="binding-ports">
-<h2>Binding ports<a class="headerlink" href="#binding-ports" title="Permalink to this heading">#</a></h2>
+<h2>Binding ports<a class="headerlink" href="#binding-ports" title="Link to this heading">#</a></h2>
 <p>Binding is required only when a port must be addressable through routed delivery, such as when a port reference is sent to another actor:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">port_ref</span><span class="p">:</span><span class="w"> </span><span class="nc">PortRef</span><span class="o">&lt;</span><span class="n">MyMessage</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">handle</span><span class="p">.</span><span class="n">bind</span><span class="p">();</span>
 </pre></div>
@@ -1331,7 +1354,7 @@ document.write(`
 <p>By contrast, an unbound <code class="docutils literal notranslate"><span class="pre">PortHandle&lt;M&gt;</span></code> can still be used for local in-process sends and only requires <code class="docutils literal notranslate"><span class="pre">M:</span> <span class="pre">Message</span></code>.</p>
 </section>
 <section id="routed-delivery">
-<h2>Routed delivery<a class="headerlink" href="#routed-delivery" title="Permalink to this heading">#</a></h2>
+<h2>Routed delivery<a class="headerlink" href="#routed-delivery" title="Link to this heading">#</a></h2>
 <p>Routed delivery enters through <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code>:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Mailbox::post(envelope, return_handle)
 -&gt; decrement envelope TTL
@@ -1345,7 +1368,7 @@ document.write(`
 <p>Delivery can fail if the destination actor does not match, the port was never allocated, the handler port was not bound, the actor has stopped or failed, deserialization fails, or the receiving side is gone. Failures are returned as structured <code class="docutils literal notranslate"><span class="pre">DeliveryFailure</span></code>s; see <a class="reference internal" href="delivery.html"><span class="std std-doc">Delivery Semantics</span></a>.</p>
 </section>
 <section id="state">
-<h2>State<a class="headerlink" href="#state" title="Permalink to this heading">#</a></h2>
+<h2>State<a class="headerlink" href="#state" title="Link to this heading">#</a></h2>
 <p>All clones of a <code class="docutils literal notranslate"><span class="pre">Mailbox</span></code> share one state object:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">Mailbox</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">inner</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="n">State</span><span class="o">&gt;</span><span class="p">,</span>
@@ -1362,7 +1385,7 @@ document.write(`
 <p>The <code class="docutils literal notranslate"><span class="pre">ports</span></code> map is keyed by <code class="docutils literal notranslate"><span class="pre">Port</span></code> (an ephemeral index, a handler uid, or a control port). Each value is type-erased, but it knows the expected message type and attempts to deserialize the incoming <code class="docutils literal notranslate"><span class="pre">wirevalue::Any</span></code> before enqueueing it.</p>
 </section>
 <section id="capabilities">
-<h2>Capabilities<a class="headerlink" href="#capabilities" title="Permalink to this heading">#</a></h2>
+<h2>Capabilities<a class="headerlink" href="#capabilities" title="Link to this heading">#</a></h2>
 <p>Mailbox operations are gated by sealed <em>context</em> traits in <code class="docutils literal notranslate"><span class="pre">hyperactor::context</span></code>. An API takes the narrowest context it needs, and these traits cannot be implemented outside the crate.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -1612,7 +1635,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>

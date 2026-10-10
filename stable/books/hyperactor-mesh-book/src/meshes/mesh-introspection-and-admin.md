@@ -86,13 +86,16 @@ There are three layers involved in a normal lookup.
 
 `MeshAdminAgent` owns:
 
-- the map of host address -> `ActorRef<HostAgent>`,
-- the reverse map of `HostAgent ActorId` -> host address,
+- the configured hosts, listed by `HostAgent` identity,
+- an index from channel address to the hosts at that address,
+- a cache of proc -> owning host,
 - the synthetic root node,
 - the `ResolveReferenceMessage` handler,
 - the background Axum server started from `init`.
 
 It does **not** directly know every actor in the mesh. Instead it is the orchestrator that decides which downstream actor to ask next.
+
+A channel address is not a host identity: a client attached through a gateway advertises the gateway host's channel address, so two hosts can share one. A host alone at its address owns the procs there. Where several hosts share an address, the address only selects them as candidates, and the host whose introspection child list includes the exact proc owns it. Resolving a configured host records the procs it lists, so a walk from the root through a host to its procs needs no further ownership queries. If two hosts list one proc, or a candidate fails to answer and no answering host lists the proc, the lookup fails rather than guessing.
 
 The core resolver is:
 

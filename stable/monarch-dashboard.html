@@ -1,9 +1,8 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="./" >
 
   <head>
     <meta charset="utf-8" />
@@ -17,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The Monarch Dashboard is a web-based GUI for monitoring Monarch actor systems in real time. It connects to the distributed telemetry system and renders the full mesh topology — hosts, processes, ac..." />
 
-    <title>Monarch Dashboard &#8212; Monarch v0.6.0 documentation</title>
+    <title>Monarch Dashboard &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -37,29 +36,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js"></script>
-    <script src="_static/doctools.js"></script>
-    <script src="_static/sphinx_highlight.js"></script>
-    <script src="_static/design-tabs.js"></script>
+    <script src="_static/documentation_options.js?v=05c9169f"></script>
+    <script src="_static/doctools.js?v=888ff710"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'monarch-dashboard';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/monarch-dashboard.html" />
@@ -85,7 +84,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -199,7 +198,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -564,6 +563,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -634,6 +639,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -925,6 +936,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -995,6 +1012,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1217,6 +1240,7 @@ document.write(`
   <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
   <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="distributed-telemetry.html">Distributed Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="metrics.html">Metrics</a></li>
 <li class="toctree-l1"><a class="reference internal" href="admin-tui.html">Mesh Admin TUI</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Monarch Dashboard</a></li>
 </ul>
@@ -1322,12 +1346,13 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="monarch-dashboard">
-<h1>Monarch Dashboard<a class="headerlink" href="#monarch-dashboard" title="Permalink to this heading">#</a></h1>
+<h1>Monarch Dashboard<a class="headerlink" href="#monarch-dashboard" title="Link to this heading">#</a></h1>
 <p>The <strong>Monarch Dashboard</strong> is a web-based GUI for monitoring Monarch actor systems
 in real time. It connects to the distributed telemetry system and renders the
-full mesh topology — hosts, processes, actor meshes, and individual actors — as
-interactive views with live-updating metrics, message traffic analysis, and a
-full DAG visualization.</p>
+full mesh topology — hosts, processes, actor meshes, and individual actors —
+across three tabs: <strong>Overview</strong> for live metrics and message traffic,
+<strong>Topology</strong> for an interactive job graph, and <strong>Explorer</strong> for drilling into a
+single entity.</p>
 <p>See the <a class="reference internal" href="observability.html"><span class="doc std std-doc">observability overview</span></a> for how the dashboard uses
 <a class="reference internal" href="distributed-telemetry.html"><span class="doc std std-doc">distributed telemetry</span></a> and complements the
 <a class="reference internal" href="admin-tui.html"><span class="doc std std-doc">Mesh Admin TUI</span></a>.</p>
@@ -1340,10 +1365,15 @@ sidecar hosts its query service. Set
 <code class="docutils literal notranslate"><span class="pre">TelemetryConfig(include_dashboard=True)</span></code> to advertise the browser UI and print
 its URL.</p>
 <section id="quick-start">
-<h2>Quick Start<a class="headerlink" href="#quick-start" title="Permalink to this heading">#</a></h2>
-<p>Start any Monarch application that enables telemetry. The <strong>Dining Philosophers</strong>
+<h2>Quick Start<a class="headerlink" href="#quick-start" title="Link to this heading">#</a></h2>
+<p>Start any Monarch application that enables telemetry. The
+<a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/main/python/examples/dining_philosophers.py"><strong>Dining Philosophers</strong></a>
 example is the easiest way to try it — five philosopher actors share chopsticks
-around a table, mediated by a waiter actor that prevents deadlock.</p>
+around a table, mediated by a waiter actor that prevents deadlock. The
+<a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/main/python/examples/airport_turnaround_demo.py"><strong>Airport Turnaround</strong></a>
+example is a busier alternative — a fleet of flights cycles through turnaround
+phases while contending for a small pool of gates, runways, fuel trucks, and
+baggage crews. Both accept <code class="docutils literal notranslate"><span class="pre">--dashboard</span></code>.</p>
 <p><strong>Terminal 1</strong> — start the example with the dashboard enabled:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>python/examples/dining_philosophers.py<span class="w"> </span>--dashboard
 </pre></div>
@@ -1354,91 +1384,126 @@ around a table, mediated by a waiter actor that prevents deadlock.</p>
 </div>
 <p>Open <a class="reference external" href="http://localhost:8265">http://localhost:8265</a> in your browser.</p>
 </section>
-<section id="summary-view">
-<h2>Summary View<a class="headerlink" href="#summary-view" title="Permalink to this heading">#</a></h2>
-<p>The default view provides at-a-glance metrics for the entire mesh.</p>
-<a class="reference internal image-reference" href="_images/dashboard-summary.png"><img alt="Dashboard summary view showing overview cards, session timeline, status breakdown, error panel, and message traffic" src="_images/dashboard-summary.png" style="width: 100%;" /></a>
-<p>The summary is organized into sections:</p>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<p>The default tab summarizes the whole job. The header persists across tabs,
+carrying the tab switcher, a freshness indicator for the live poll, and an
+overall health chip.</p>
+<a class="reference internal image-reference" href="_images/dashboard-summary.png"><img alt="Overview tab showing metric cards, a health gauge, message activity, actor status, message traffic by endpoint, the actor fleet, and a topology breakdown" src="_images/dashboard-summary.png" style="width: 100%;" /></a>
+<p>The tab is organized into panels:</p>
 <ul class="simple">
-<li><p><strong>Overview cards</strong> — host mesh count, proc mesh count, total actors (with
-status count), and total messages (with delivery rate percentage).</p></li>
-<li><p><strong>Session timeline</strong> — a horizontal bar spanning the session lifetime with
-error notches marking when actors failed or stopped.</p></li>
-<li><p><strong>Actor status breakdown</strong> — a segmented bar and legend showing how many
-actors are in each state (Running, Idle, Failed, Stopped, etc.).</p></li>
-<li><p><strong>Errors &amp; failures</strong> — failed actors, stopped actors, and undelivered
-messages, each with the actor name, failure reason, and timestamp.</p></li>
-<li><p><strong>Message traffic</strong> — delivery rate bar segmented by message status, plus
-a ranked bar chart of messages by endpoint name.</p></li>
-<li><p><strong>Hierarchy breakdown</strong> — chip counts of host meshes, proc meshes, and
-actor meshes.</p></li>
+<li><p><strong>Metric cards</strong> — host meshes, proc meshes, actors (split into workload and
+system), messages over the retention window, handler success rate, and the
+health score.</p></li>
+<li><p><strong>System Health</strong> — a gauge scoring the workload actors. System actors are
+excluded, and the caption reports how many.</p></li>
+<li><p><strong>Message Activity</strong> — throughput across the retention window, annotated with
+the sampled time range. Viewing the dashboard itself adds a little <code class="docutils literal notranslate"><span class="pre">scan</span></code>
+traffic, which the panel notes.</p></li>
+<li><p><strong>Actor Status</strong> — a donut of the current state of every actor, with a legend
+per status.</p></li>
+<li><p><strong>Errors &amp; Failures</strong> — failed and stopped actors with their reasons, or a
+clean bill of health.</p></li>
+<li><p><strong>Message Traffic</strong> — the handler lifecycle (queued → active →
+completed / failed) and a ranked list of message volume by endpoint. These
+are handler states, not delivery kinds.</p></li>
+<li><p><strong>Actor Fleet</strong> — one chip per workload actor showing its role, proc, and
+live status; click a chip to inspect it. Toggle <strong>Show System</strong> to include
+system actors.</p></li>
+<li><p><strong>Topology Breakdown</strong> — counts and proportions of host, proc, and actor
+meshes.</p></li>
 </ul>
 </section>
-<section id="hierarchy-view">
-<h2>Hierarchy View<a class="headerlink" href="#hierarchy-view" title="Permalink to this heading">#</a></h2>
-<p>The hierarchy view lets you drill down through the full Monarch mesh tree one
-level at a time. Click any row to navigate deeper; use the breadcrumb bar at
-the top to jump back to a parent level.</p>
-<a class="reference internal image-reference" href="_images/dashboard-hierarchy.png"><img alt="Dashboard hierarchy view showing a breadcrumb bar and a table of actors with name, rank, and status columns" src="_images/dashboard-hierarchy.png" style="width: 100%;" /></a>
-<p>The navigation levels are:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Host Meshes
-  └─ Host Units (individual hosts)
-       └─ Proc Meshes
-            └─ Proc Units (individual processes)
-                 └─ Actor Meshes
-                      └─ Actors
-                           └─ Actor Detail
-</pre></div>
-</div>
-<section id="actor-detail">
-<h3>Actor Detail<a class="headerlink" href="#actor-detail" title="Permalink to this heading">#</a></h3>
-<p>Selecting an individual actor opens its detail page with three sections:</p>
-<ul class="simple">
-<li><p><strong>Actor info</strong> — full name, ID, rank, mesh ID, current status, and
-creation timestamp.</p></li>
-<li><p><strong>Status timeline</strong> — chronological list of every status transition with
-timestamp and reason.</p></li>
-<li><p><strong>Messages</strong> — incoming and outgoing message tables showing sender/receiver,
-endpoint name, delivery status, and timestamp. Click any message to expand
-its full status event history (e.g. Sent → Delivered).</p></li>
-</ul>
-</section>
-</section>
-<section id="dag-view">
-<h2>DAG View<a class="headerlink" href="#dag-view" title="Permalink to this heading">#</a></h2>
-<p>The DAG view renders the entire job as an interactive directed graph, helping you to understand your job better.  It also shows message flows between your user actors.</p>
+<section id="topology">
+<h2>Topology<a class="headerlink" href="#topology" title="Link to this heading">#</a></h2>
+<p>The Topology tab renders the job as an interactive directed graph. Solid edges
+are the mesh hierarchy; dashed edges are message flow between actors, rolled up
+to whichever nodes are currently visible.</p>
+<p>Two view modes trade detail against legibility. Switch between them with the
+leftmost toolbar button.</p>
+<section id="actors-view">
+<h3>Actors view<a class="headerlink" href="#actors-view" title="Link to this heading">#</a></h3>
+<p>One node per entity — host, proc, and actor — each tagged with its mesh. Use
+this to follow individual actors and see which of them talk to each other.</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Host → Proc → Actor
 </pre></div>
 </div>
-<a class="reference internal image-reference" href="_images/dashboard-dag.png"><img alt="DAG view showing the full mesh topology as an interactive directed graph with color-coded nodes" src="_images/dashboard-dag.png" style="width: 100%;" /></a>
+<a class="reference internal image-reference" href="_images/dashboard-dag.png"><img alt="Topology tab in Actors view, fully expanded, showing a host and a controller above six procs and their philosopher and waiter actors, with dashed message edges" src="_images/dashboard-dag.png" style="width: 100%;" /></a>
+</section>
+<section id="meshes-view">
+<h3>Meshes view<a class="headerlink" href="#meshes-view" title="Link to this heading">#</a></h3>
+<p>Each host, proc, and actor mesh collapses to a single node carrying its member
+count. This keeps larger and more complex jobs clear: rather than hundreds of
+individual actors, the graph shows only the meshes and the relationships
+between them.</p>
+<a class="reference internal image-reference" href="_images/dashboard-dag-meshes.png"><img alt="Topology tab in Meshes view, fully expanded, showing two host meshes above two proc meshes and two actor meshes, each labeled with its member count" src="_images/dashboard-dag-meshes.png" style="width: 100%;" /></a>
+<p>Both modes share the same controls:</p>
 <ul class="simple">
-<li><p><strong>Nodes</strong> are color-coded by status (green = healthy, red = failed,
-gray = stopped).</p></li>
-<li><p><strong>Edges</strong> show parent-child relationships in the mesh hierarchy.</p></li>
-<li><p><strong>Pan</strong> by dragging the canvas; <strong>zoom</strong> with the scroll wheel.</p></li>
-<li><p><strong>Hover</strong> any node for a tooltip with its name, type, and status, and mesh.</p></li>
-<li><p><strong>Click</strong> a node to open its detail panel on the right.</p></li>
+<li><p><strong>Expand All</strong> and <strong>Collapse</strong> open or close every level. A collapsed node
+reports how many descendants it hides.</p></li>
+<li><p><strong>Show System</strong> brings in the system actors, which are hidden by default.</p></li>
+<li><p><strong>Top-Down</strong> and <strong>Left-Right</strong> flip the layout direction; <strong>Fit</strong> frames the
+graph. <strong>Auto-fit</strong> re-frames on a structural change but never on a live
+refresh, so it leaves a manual zoom alone.</p></li>
+<li><p><strong>Pan</strong> by dragging the canvas, and <strong>zoom</strong> with the scroll wheel, the zoom
+buttons, or the minimap.</p></li>
+<li><p><strong>Hover</strong> a node for its name, type, status, mesh, and reference. <strong>Click</strong> an
+actor to open its detail drawer; clicking a node that has children expands or
+collapses it instead.</p></li>
+<li><p>Nodes are colored by status. The legend keys those colors, the mesh colors,
+and the two kinds of edge.</p></li>
 </ul>
+</section>
+</section>
+<section id="explorer">
+<h2>Explorer<a class="headerlink" href="#explorer" title="Link to this heading">#</a></h2>
+<p>The Explorer pairs a hierarchy tree with a detail pane. Filter the tree by
+name, expand or collapse every level, and toggle <strong>Show System</strong> to include
+system actors.</p>
+<a class="reference internal image-reference" href="_images/dashboard-hierarchy.png"><img alt="Explorer tab showing the hierarchy tree on the left and an actor detail pane on the right with a breadcrumb, actor info, and a status timeline" src="_images/dashboard-hierarchy.png" style="width: 100%;" /></a>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Controller (the client host)
+Host
+  └─ Proc
+       └─ Actor
+</pre></div>
+</div>
+<p>Every row is tagged with its mesh and carries a status dot. Hosts and procs
+also report how many actors sit below them.</p>
+<section id="entity-detail">
+<h3>Entity detail<a class="headerlink" href="#entity-detail" title="Link to this heading">#</a></h3>
+<p>Selecting a host or proc reports its name, mesh, status, direct child count,
+the number of actors below it, and its reference, followed by a rollup of the
+statuses below it and a list of its children.</p>
+</section>
+<section id="actor-detail">
+<h3>Actor detail<a class="headerlink" href="#actor-detail" title="Link to this heading">#</a></h3>
+<p>Selecting an actor shows a breadcrumb of its ancestors and four sections:</p>
+<ul class="simple">
+<li><p><strong>Py-spy</strong> — capture a live stack trace. Sampling is proc-level, so a dump
+covers every actor sharing that Python process.</p></li>
+<li><p><strong>Actor info</strong> — full name, ID, rank, mesh, current status, and creation
+timestamp.</p></li>
+<li><p><strong>Status timeline</strong> — the most recent status transitions, with timestamps.</p></li>
+<li><p><strong>Messages</strong> — incoming and outgoing messages with peer, endpoint, and
+status. Click a row to expand its status event history.</p></li>
+</ul>
+</section>
+</section>
 <section id="programmatic-usage">
-<h3>Programmatic Usage<a class="headerlink" href="#programmatic-usage" title="Permalink to this heading">#</a></h3>
+<h2>Programmatic Usage<a class="headerlink" href="#programmatic-usage" title="Link to this heading">#</a></h2>
 <p>Here is an example of how to enable the dashboard on your job via the <a class="reference internal" href="api/monarch.job.html"><span class="doc std std-doc">Jobs API</span></a>.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.job</span><span class="w"> </span><span class="kn">import</span> <span class="n">ProcessJob</span><span class="p">,</span> <span class="n">TelemetryConfig</span>
 
-<span class="n">job</span> <span class="o">=</span> <span class="p">(</span>
-    <span class="n">ProcessJob</span><span class="p">({</span><span class="s2">&quot;workers&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">})</span>
-    <span class="o">.</span><span class="n">enable_admin</span><span class="p">()</span>
-    <span class="o">.</span><span class="n">enable_telemetry</span><span class="p">(</span>
-        <span class="n">TelemetryConfig</span><span class="p">(</span><span class="n">include_dashboard</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">dashboard_port</span><span class="o">=</span><span class="mi">8265</span><span class="p">)</span>
-    <span class="p">)</span>
+<span class="n">job</span> <span class="o">=</span> <span class="n">ProcessJob</span><span class="p">({</span><span class="s2">&quot;workers&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">})</span><span class="o">.</span><span class="n">enable_telemetry</span><span class="p">(</span>
+    <span class="n">TelemetryConfig</span><span class="p">(</span><span class="n">include_dashboard</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">dashboard_port</span><span class="o">=</span><span class="mi">8265</span><span class="p">)</span>
 <span class="p">)</span>
 <span class="n">state</span> <span class="o">=</span> <span class="n">job</span><span class="o">.</span><span class="n">state</span><span class="p">(</span><span class="n">cached_path</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">dashboard_url</span><span class="p">)</span>
 </pre></div>
 </div>
-<p>With both services enabled, the dashboard receives periodic mesh-admin
+<p><code class="docutils literal notranslate"><span class="pre">enable_telemetry()</span></code> also starts mesh admin and periodic introspection
 snapshots. Use <code class="docutils literal notranslate"><span class="pre">state.query_engine_client</span></code> to query the same data directly; see
 <a class="reference internal" href="distributed-telemetry.html"><span class="doc std std-doc">Distributed Telemetry</span></a>.</p>
-</section>
 </section>
 </section>
 
@@ -1560,15 +1625,18 @@ snapshots. Use <code class="docutils literal notranslate"><span class="pre">stat
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#quick-start">Quick Start</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#summary-view">Summary View</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hierarchy-view">Hierarchy View</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#actor-detail">Actor Detail</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#topology">Topology</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#actors-view">Actors view</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#meshes-view">Meshes view</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dag-view">DAG View</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#programmatic-usage">Programmatic Usage</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#explorer">Explorer</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#entity-detail">Entity detail</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#actor-detail">Actor detail</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#programmatic-usage">Programmatic Usage</a></li>
 </ul>
   </nav></div>
     
@@ -1711,7 +1779,7 @@ snapshots. Use <code class="docutils literal notranslate"><span class="pre">stat
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>
@@ -1740,7 +1808,7 @@ snapshots. Use <code class="docutils literal notranslate"><span class="pre">stat
        "headline": "Monarch Dashboard",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/monarch-dashboard.html",
-       "articleBody": "Monarch Dashboard# The Monarch Dashboard is a web-based GUI for monitoring Monarch actor systems in real time. It connects to the distributed telemetry system and renders the full mesh topology \u2014 hosts, processes, actor meshes, and individual actors \u2014 as interactive views with live-updating metrics, message traffic analysis, and a full DAG visualization. See the observability overview for how the dashboard uses distributed telemetry and complements the Mesh Admin TUI. Note \u2014 The Monarch Dashboard is in early development and may change significantly between releases. The dashboard is included in the torchmonarch PyPI package. The telemetry sidecar hosts its query service. Set TelemetryConfig(include_dashboard=True) to advertise the browser UI and print its URL. Quick Start# Start any Monarch application that enables telemetry. The Dining Philosophers example is the easiest way to try it \u2014 five philosopher actors share chopsticks around a table, mediated by a waiter actor that prevents deadlock. Terminal 1 \u2014 start the example with the dashboard enabled: python python/examples/dining_philosophers.py --dashboard The example prints the dashboard URL on startup: Monarch Dashboard: http://localhost:8265 Open http://localhost:8265 in your browser. Summary View# The default view provides at-a-glance metrics for the entire mesh. The summary is organized into sections: Overview cards \u2014 host mesh count, proc mesh count, total actors (with status count), and total messages (with delivery rate percentage). Session timeline \u2014 a horizontal bar spanning the session lifetime with error notches marking when actors failed or stopped. Actor status breakdown \u2014 a segmented bar and legend showing how many actors are in each state (Running, Idle, Failed, Stopped, etc.). Errors \u0026 failures \u2014 failed actors, stopped actors, and undelivered messages, each with the actor name, failure reason, and timestamp. Message traffic \u2014 delivery rate bar segmented by message status, plus a ranked bar chart of messages by endpoint name. Hierarchy breakdown \u2014 chip counts of host meshes, proc meshes, and actor meshes. Hierarchy View# The hierarchy view lets you drill down through the full Monarch mesh tree one level at a time. Click any row to navigate deeper; use the breadcrumb bar at the top to jump back to a parent level. The navigation levels are: Host Meshes \u2514\u2500 Host Units (individual hosts) \u2514\u2500 Proc Meshes \u2514\u2500 Proc Units (individual processes) \u2514\u2500 Actor Meshes \u2514\u2500 Actors \u2514\u2500 Actor Detail Actor Detail# Selecting an individual actor opens its detail page with three sections: Actor info \u2014 full name, ID, rank, mesh ID, current status, and creation timestamp. Status timeline \u2014 chronological list of every status transition with timestamp and reason. Messages \u2014 incoming and outgoing message tables showing sender/receiver, endpoint name, delivery status, and timestamp. Click any message to expand its full status event history (e.g. Sent \u2192 Delivered). DAG View# The DAG view renders the entire job as an interactive directed graph, helping you to understand your job better. It also shows message flows between your user actors. Host \u2192 Proc \u2192 Actor Nodes are color-coded by status (green = healthy, red = failed, gray = stopped). Edges show parent-child relationships in the mesh hierarchy. Pan by dragging the canvas; zoom with the scroll wheel. Hover any node for a tooltip with its name, type, and status, and mesh. Click a node to open its detail panel on the right. Programmatic Usage# Here is an example of how to enable the dashboard on your job via the Jobs API. from monarch.job import ProcessJob, TelemetryConfig job = ( ProcessJob({\"workers\": 2}) .enable_admin() .enable_telemetry( TelemetryConfig(include_dashboard=True, dashboard_port=8265) ) ) state = job.state(cached_path=None) print(state.dashboard_url) With both services enabled, the dashboard receives periodic mesh-admin snapshots. Use state.query_engine_client to query the same data directly; see Distributed Telemetry.",
+       "articleBody": "Monarch Dashboard# The Monarch Dashboard is a web-based GUI for monitoring Monarch actor systems in real time. It connects to the distributed telemetry system and renders the full mesh topology \u2014 hosts, processes, actor meshes, and individual actors \u2014 across three tabs: Overview for live metrics and message traffic, Topology for an interactive job graph, and Explorer for drilling into a single entity. See the observability overview for how the dashboard uses distributed telemetry and complements the Mesh Admin TUI. Note \u2014 The Monarch Dashboard is in early development and may change significantly between releases. The dashboard is included in the torchmonarch PyPI package. The telemetry sidecar hosts its query service. Set TelemetryConfig(include_dashboard=True) to advertise the browser UI and print its URL. Quick Start# Start any Monarch application that enables telemetry. The Dining Philosophers example is the easiest way to try it \u2014 five philosopher actors share chopsticks around a table, mediated by a waiter actor that prevents deadlock. The Airport Turnaround example is a busier alternative \u2014 a fleet of flights cycles through turnaround phases while contending for a small pool of gates, runways, fuel trucks, and baggage crews. Both accept --dashboard. Terminal 1 \u2014 start the example with the dashboard enabled: python python/examples/dining_philosophers.py --dashboard The example prints the dashboard URL on startup: Monarch Dashboard: http://localhost:8265 Open http://localhost:8265 in your browser. Overview# The default tab summarizes the whole job. The header persists across tabs, carrying the tab switcher, a freshness indicator for the live poll, and an overall health chip. The tab is organized into panels: Metric cards \u2014 host meshes, proc meshes, actors (split into workload and system), messages over the retention window, handler success rate, and the health score. System Health \u2014 a gauge scoring the workload actors. System actors are excluded, and the caption reports how many. Message Activity \u2014 throughput across the retention window, annotated with the sampled time range. Viewing the dashboard itself adds a little scan traffic, which the panel notes. Actor Status \u2014 a donut of the current state of every actor, with a legend per status. Errors \u0026 Failures \u2014 failed and stopped actors with their reasons, or a clean bill of health. Message Traffic \u2014 the handler lifecycle (queued \u2192 active \u2192 completed / failed) and a ranked list of message volume by endpoint. These are handler states, not delivery kinds. Actor Fleet \u2014 one chip per workload actor showing its role, proc, and live status; click a chip to inspect it. Toggle Show System to include system actors. Topology Breakdown \u2014 counts and proportions of host, proc, and actor meshes. Topology# The Topology tab renders the job as an interactive directed graph. Solid edges are the mesh hierarchy; dashed edges are message flow between actors, rolled up to whichever nodes are currently visible. Two view modes trade detail against legibility. Switch between them with the leftmost toolbar button. Actors view# One node per entity \u2014 host, proc, and actor \u2014 each tagged with its mesh. Use this to follow individual actors and see which of them talk to each other. Host \u2192 Proc \u2192 Actor Meshes view# Each host, proc, and actor mesh collapses to a single node carrying its member count. This keeps larger and more complex jobs clear: rather than hundreds of individual actors, the graph shows only the meshes and the relationships between them. Both modes share the same controls: Expand All and Collapse open or close every level. A collapsed node reports how many descendants it hides. Show System brings in the system actors, which are hidden by default. Top-Down and Left-Right flip the layout direction; Fit frames the graph. Auto-fit re-frames on a structural change but never on a live refresh, so it leaves a manual zoom alone. Pan by dragging the canvas, and zoom with the scroll wheel, the zoom buttons, or the minimap. Hover a node for its name, type, status, mesh, and reference. Click an actor to open its detail drawer; clicking a node that has children expands or collapses it instead. Nodes are colored by status. The legend keys those colors, the mesh colors, and the two kinds of edge. Explorer# The Explorer pairs a hierarchy tree with a detail pane. Filter the tree by name, expand or collapse every level, and toggle Show System to include system actors. Controller (the client host) Host \u2514\u2500 Proc \u2514\u2500 Actor Every row is tagged with its mesh and carries a status dot. Hosts and procs also report how many actors sit below them. Entity detail# Selecting a host or proc reports its name, mesh, status, direct child count, the number of actors below it, and its reference, followed by a rollup of the statuses below it and a list of its children. Actor detail# Selecting an actor shows a breadcrumb of its ancestors and four sections: Py-spy \u2014 capture a live stack trace. Sampling is proc-level, so a dump covers every actor sharing that Python process. Actor info \u2014 full name, ID, rank, mesh, current status, and creation timestamp. Status timeline \u2014 the most recent status transitions, with timestamps. Messages \u2014 incoming and outgoing messages with peer, endpoint, and status. Click a row to expand its status event history. Programmatic Usage# Here is an example of how to enable the dashboard on your job via the Jobs API. from monarch.job import ProcessJob, TelemetryConfig job = ProcessJob({\"workers\": 2}).enable_telemetry( TelemetryConfig(include_dashboard=True, dashboard_port=8265) ) state = job.state(cached_path=None) print(state.dashboard_url) enable_telemetry() also starts mesh admin and periodic introspection snapshots. Use state.query_engine_client to query the same data directly; see Distributed Telemetry.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

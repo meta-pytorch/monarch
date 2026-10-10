@@ -44,9 +44,9 @@ Prerequisites
 - Internet access from worker pods (for downloading Qwen3.5-0.8B-Base and pip
   installing ``transformers``). No HF token is required -- Qwen3.5 is Apache
   2.0 and ungated.
-- The controller pod installs ``datasets`` at startup (see
-  ``manifests/grpo_provision.yaml``); the worker pods do not need it
-  because prompts are loaded in ``main()`` on the controller.
+- The controller environment needs ``datasets`` and access to Hugging Face.
+  ``manifests/grpo_provision.yaml`` installs it in-cluster; the ``uv`` command
+  below supplies it out-of-cluster.
 
 RDMA transport caveat
 ---------------------
@@ -76,6 +76,15 @@ Running the example
     kubectl cp kubernetes_grpo.py monarch-tests/grpo-controller:/tmp/kubernetes_grpo.py
     kubectl exec -it grpo-controller -n monarch-tests -- python /tmp/kubernetes_grpo.py
     kubectl delete -f manifests/grpo_provision.yaml
+
+To run the controller outside the cluster with the default kubeconfig::
+
+    uv run --no-project \
+        --with torchmonarch --with accelerate --with datasets \
+        --with kubernetes --with transformers \
+        python docs/source/examples/grpo/kubernetes_grpo.py \
+        --out_of_cluster \
+        --image ghcr.io/meta-pytorch/monarch:latest
 
 Each step prints one ``[Step NNN] loss=... reward=... gn=...`` line.
 ``reward`` is the mean correctness of the sampled replay-buffer batch;
@@ -172,8 +181,15 @@ from kubernetes.client import (
     V1VolumeMount,
 )
 from monarch._src.job.kubernetes import _WORKER_BOOTSTRAP_SCRIPT
-from monarch.actor import Actor, current_rank, current_size, endpoint
-from monarch.job.kubernetes import KubernetesJob
+from monarch.actor import (
+    Actor,
+    concurrent_endpoint,
+    current_rank,
+    current_size,
+    endpoint,
+)
+from monarch.job import TelemetryConfig
+from monarch.job.kubernetes import KubeConfig, KubernetesJob
 from monarch.rdma import RDMABuffer
 
 # %%
@@ -470,7 +486,9 @@ class Scorer(Actor):
         )
         await self.replay_buffer.put.call(scored)
 
-    @endpoint
+    # Run as a concurrent endpoint so the scorer can queue completions from
+    # the generator mesh while the learner is busy with the previous rollout.
+    @concurrent_endpoint
     async def run(self) -> None:
         if self.running:
             return
@@ -548,7 +566,9 @@ class Generator(Actor):
         self.cond = asyncio.Condition()
         self.policy_version = 0
 
-    @endpoint
+    # Run concurrently so a rollout can wait for the learner's weight update;
+    # serial endpoint dispatch would leave the update queued behind that wait.
+    @concurrent_endpoint
     async def generate(self, prompt_text: str, ground_truth: str) -> None:
         async with self.cond:
             await self.cond.wait_for(
@@ -889,7 +909,9 @@ PIP_INSTALL = textwrap.dedent("""\
 
 
 def build_pod_template(
-    gpus: int, resource_claim_template: Optional[str] = None
+    gpus: int,
+    image: str,
+    resource_claim_template: Optional[str] = None,
 ) -> V1PodTemplateSpec:
     """Shared pod template for learner and generator meshes.
 
@@ -951,7 +973,7 @@ def build_pod_template(
             containers=[
                 V1Container(
                     name="worker",
-                    image=MONARCH_IMAGE,
+                    image=image,
                     command=["python", "-u", "-c", bootstrap],
                     env=env,
                     resources=resources,
@@ -1026,6 +1048,9 @@ async def main(
     dataset_split: str,
     num_prompts: int,
     eval_size: int,
+    out_of_cluster: bool,
+    kubeconfig: str,
+    image: str,
     learner_resource_claim_template: Optional[str] = None,
     generator_resource_claim_template: Optional[str] = None,
 ) -> None:
@@ -1049,7 +1074,12 @@ async def main(
 
     # 600s timeout lets the meshes finish cold-start pip install + model
     # download before state() gives up.
-    k8s_job = KubernetesJob(namespace=namespace, timeout=600)
+    k8s_job = KubernetesJob(
+        namespace=namespace,
+        timeout=600,
+        kubeconfig=KubeConfig.from_path(kubeconfig) if out_of_cluster else None,
+    )
+    k8s_job.enable_telemetry(TelemetryConfig(include_dashboard=True, dashboard_port=0))
     # Learner pod requests 2 GPUs; ``device_map="auto"`` inside the actor
     # spreads the trainable policy across both. ``spawn_procs({"gpus": 1})``
     # below still spawns a single learner proc that sees both GPUs in its
@@ -1060,7 +1090,9 @@ async def main(
         "learner",
         num_replicas=1,
         pod_template=build_pod_template(
-            gpus=2, resource_claim_template=learner_resource_claim_template
+            gpus=2,
+            image=image,
+            resource_claim_template=learner_resource_claim_template,
         ),
     )
     k8s_job.add_mesh(
@@ -1068,6 +1100,7 @@ async def main(
         num_replicas=num_generator_hosts,
         pod_template=build_pod_template(
             gpus=gpus_per_generator,
+            image=image,
             resource_claim_template=generator_resource_claim_template,
         ),
     )
@@ -1154,12 +1187,12 @@ async def main(
         # Best-effort per-mesh cleanup; one failure must not skip the other.
         if learner_mesh is not None:
             try:
-                learner_mesh.stop().get()
+                await learner_mesh.stop()
             except Exception as e:
                 print(f"[cleanup] learner_mesh.stop() failed: {e}")
         if gen_mesh is not None:
             try:
-                gen_mesh.stop().get()
+                await gen_mesh.stop()
             except Exception as e:
                 print(f"[cleanup] gen_mesh.stop() failed: {e}")
         # Unconditional so MonarchMesh CRDs and pods are always torn down.
@@ -1223,6 +1256,23 @@ if __name__ == "__main__":
         help="Number of held-out GSM8K test prompts used for eval.",
     )
     parser.add_argument(
+        "--out_of_cluster",
+        action="store_true",
+        help="Use kubeconfig authentication and automatic port forwarding",
+    )
+    parser.add_argument(
+        "--kubeconfig",
+        type=str,
+        default="~/.kube/config",
+        help="Path to kubeconfig file (default: ~/.kube/config)",
+    )
+    parser.add_argument(
+        "--image",
+        type=str,
+        default=MONARCH_IMAGE,
+        help="Container image for learner and generator pods",
+    )
+    parser.add_argument(
         "--learner_resource_claim_template",
         type=str,
         default=None,
@@ -1245,6 +1295,9 @@ if __name__ == "__main__":
             dataset_split=args.dataset_split,
             num_prompts=args.num_prompts,
             eval_size=args.eval_size,
+            out_of_cluster=args.out_of_cluster,
+            kubeconfig=args.kubeconfig,
+            image=args.image,
             learner_resource_claim_template=args.learner_resource_claim_template,
             generator_resource_claim_template=args.generator_resource_claim_template,
         )

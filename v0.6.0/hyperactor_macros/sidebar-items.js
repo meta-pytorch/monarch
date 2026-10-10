@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"attr":["export","handle","instrument","instrument_infallible","observe_async","observe_result","spawnable"],"derive":["HandleClient","Handler","RefClient"],"macro":["behavior","uid"]};

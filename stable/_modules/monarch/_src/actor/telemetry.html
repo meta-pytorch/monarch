@@ -1,14 +1,13 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="../../../../" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.actor.telemetry &#8212; Monarch v0.6.0 documentation</title>
+    <title>monarch._src.actor.telemetry &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -28,31 +27,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
-    <script src="../../../../_static/doctools.js"></script>
-    <script src="../../../../_static/sphinx_highlight.js"></script>
-    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/actor/telemetry';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/actor/telemetry.html" />
@@ -76,7 +75,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -190,7 +189,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -555,6 +554,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -625,6 +630,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -914,6 +925,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -984,6 +1001,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1351,7 +1374,9 @@ document.write(`
 <span class="k">def</span><span class="w"> </span><span class="nf">traced</span><span class="p">(</span><span class="o">*</span><span class="p">,</span> <span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Callable</span><span class="p">[</span><span class="n">_P</span><span class="p">,</span> <span class="n">_R</span><span class="p">]],</span> <span class="n">Callable</span><span class="p">[</span><span class="n">_P</span><span class="p">,</span> <span class="n">_R</span><span class="p">]]:</span> <span class="o">...</span>
 
 
-<div class="viewcode-block" id="traced"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.traced">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">traced</span><span class="p">(</span>
+<div class="viewcode-block" id="traced">
+<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.traced">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">traced</span><span class="p">(</span>
     <span class="n">fn</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="n">_P</span><span class="p">,</span> <span class="n">_R</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[</span><span class="n">_P</span><span class="p">,</span> <span class="n">_R</span><span class="p">]</span> <span class="o">|</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Callable</span><span class="p">[</span><span class="n">_P</span><span class="p">,</span> <span class="n">_R</span><span class="p">]],</span> <span class="n">Callable</span><span class="p">[</span><span class="n">_P</span><span class="p">,</span> <span class="n">_R</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Decorator that wraps a function in a telemetry span.</span>
@@ -1396,6 +1421,11 @@ document.write(`
     <span class="k">if</span> <span class="n">fn</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">decorator</span><span class="p">(</span><span class="n">fn</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">decorator</span></div>
+
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">span_with_correlation_id</span><span class="p">(</span><span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">correlation_id</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">PySpan</span><span class="p">:</span>
+    <span class="k">return</span> <span class="n">PySpan</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">_current_actor_id</span><span class="p">(),</span> <span class="n">correlation_id</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">log_with_tracing</span><span class="p">(</span>
@@ -1609,6 +1639,12 @@ document.write(`
 <span class="n">METER</span><span class="p">:</span> <span class="n">metrics</span><span class="o">.</span><span class="n">Meter</span> <span class="o">=</span> <span class="n">Meter</span><span class="p">(</span><span class="s2">&quot;monarch&quot;</span><span class="p">)</span>
 
 
+<span class="k">def</span><span class="w"> </span><span class="nf">get_meter</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">metrics</span><span class="o">.</span><span class="n">Meter</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return Monarch&#39;s process-global OpenTelemetry meter.&quot;&quot;&quot;</span>
+
+    <span class="k">return</span> <span class="n">METER</span>
+
+
 <span class="k">def</span><span class="w"> </span><span class="nf">install</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
     <span class="k">global</span> <span class="n">_INSTALLED</span>
     <span class="k">if</span> <span class="n">_INSTALLED</span><span class="p">:</span>
@@ -1771,7 +1807,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>
@@ -1800,7 +1836,7 @@ document.write(`
        "headline": "monarch._src.actor.telemetry",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/actor/telemetry.html",
-       "articleBody": "Source code for monarch._src.actor.telemetry # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import functools import inspect import logging import warnings from typing import Callable, Dict, Optional, overload, Sequence, TypeVar import opentelemetry.metrics as metrics # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api import opentelemetry.trace as trace # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr from monarch._rust_bindings.monarch_hyperactor.telemetry import ( # @manual=//monarch/monarch_extension:monarch_extension forward_to_tracing, PyCounter, PyHistogram, PySpan, PyUpDownCounter, ) from opentelemetry.context import Context from opentelemetry.metrics import CallbackT from opentelemetry.util.types import Attributes from typing_extensions import ParamSpec def _current_actor_id() -\u003e ActorAddr | None: from monarch._src.actor.actor_mesh import _context ctx = _context.get(None) return None if ctx is None else ctx.actor_instance.actor_id def span(name: str) -\u003e PySpan: return PySpan(name, _current_actor_id()) _P = ParamSpec(\"_P\") _R = TypeVar(\"_R\") @overload def traced(fn: Callable[_P, _R]) -\u003e Callable[_P, _R]: ... @overload def traced(*, name: str) -\u003e Callable[[Callable[_P, _R]], Callable[_P, _R]]: ... [docs]def traced( fn: Callable[_P, _R] | None = None, *, name: str | None = None ) -\u003e Callable[_P, _R] | Callable[[Callable[_P, _R]], Callable[_P, _R]]: \"\"\"Decorator that wraps a function in a telemetry span. Works with both sync and async functions. The span is automatically associated with the current actor context, if any. When no name is provided, the function\u0027s ``__name__`` is used as the span name. Usage:: @traced async def do_work(): ... @traced(name=\"custom_name\") def compute(): ... \"\"\" def decorator(fn: Callable[_P, _R]) -\u003e Callable[_P, _R]: span_name: str = name if name is not None else fn.__name__ if inspect.iscoroutinefunction(fn): @functools.wraps(fn) # pyrefly: ignore [bad-return] async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -\u003e _R: with span(span_name): return await fn(*args, **kwargs) # type: ignore[misc] return async_wrapper # type: ignore[return-value] else: @functools.wraps(fn) # pyrefly: ignore [bad-return] def sync_wrapper(*args: _P.args, **kwargs: _P.kwargs) -\u003e _R: with span(span_name): return fn(*args, **kwargs) return sync_wrapper if fn is not None: return decorator(fn) return decorator def log_with_tracing( level: int, msg: object, *args: object, stack_info: bool = False, stacklevel: int = 1, extra: Dict[str, object] | None = None, logger: logging.Logger | None = None, ) -\u003e None: \"\"\"Emit a log record through the normal `logging` handler chain and also forward it directly to Rust tracing. Use this in library code that must guarantee the event reaches the tracing backend even when no `TracingForwarder` handler is attached to the calling process\u0027s loggers (e.g., a non-actor driver process). `stacklevel=1` attributes the record\u0027s pathname/lineno/funcName to the immediate caller of `log_with_tracing`. \"\"\" logger = logger or logging.getLogger(__name__) fn, lno, func, sinfo = logger.findCaller( stack_info=stack_info, stacklevel=stacklevel + 1, ) record = logger.makeRecord( logger.name, level, fn, lno, msg, args, None, func, extra=extra, sinfo=sinfo, ) logger.handle(record) forward_to_tracing(record) class TracingForwarder(logging.Handler): def emit(self, record: logging.LogRecord) -\u003e None: # Try to add actor_id from the current context to the logging record try: actor_id = _current_actor_id() if actor_id is not None: # Add actor_id as an attribute to the logging record record.actor_id = str(actor_id) # type: ignore[attr-defined] except Exception: # If we can\u0027t get the context or actor_id for any reason, just continue # without adding the actor_id field pass forward_to_tracing(record) class Counter(metrics.Counter): inner: PyCounter def __init__(self, name: str) -\u003e None: # pyrefly: ignore [missing-attribute] super().__init__(name) self.inner = PyCounter(name) def add( self, amount: int | float, attributes: Optional[Attributes] = None, context: Optional[Context] = None, ) -\u003e None: rust_attributes = None if attributes: rust_attributes = {str(k): str(v) for k, v in attributes.items()} return self.inner.add(int(amount), attributes=rust_attributes) class UpDownCounter(metrics.UpDownCounter): inner: PyUpDownCounter def __init__(self, name: str) -\u003e None: # pyrefly: ignore [missing-attribute] super().__init__(name) self.inner = PyUpDownCounter(name) def add( self, amount: int | float, attributes: Optional[Attributes] = None, context: Optional[Context] = None, ) -\u003e None: rust_attributes = None if attributes: rust_attributes = {str(k): str(v) for k, v in attributes.items()} self.inner.add(int(amount), attributes=rust_attributes) class Histogram(metrics.Histogram): inner: PyHistogram def __init__(self, name: str) -\u003e None: # pyrefly: ignore [missing-attribute] super().__init__(name) self.inner = PyHistogram(name) def record( self, amount: int | float, attributes: Optional[Attributes] = None, context: Optional[Context] = None, ) -\u003e None: rust_attributes = None if attributes: rust_attributes = {str(k): str(v) for k, v in attributes.items()} self.inner.record(amount, attributes=rust_attributes) class Meter(metrics.Meter): def create_counter( self, name: str, unit: str = \"\", description: str = \"\", ) -\u003e metrics.Counter: return Counter(name) def create_up_down_counter( self, name: str, unit: str = \"\", description: str = \"\", ) -\u003e metrics.UpDownCounter: return UpDownCounter(name) def create_observable_counter( self, name: str, callbacks: Optional[Sequence[CallbackT]] = None, unit: str = \"\", description: str = \"\", ) -\u003e metrics.ObservableCounter: raise NotImplementedError() def create_histogram( self, name: str, unit: str = \"\", description: str = \"\", *, explicit_bucket_boundaries_advisory: Optional[Sequence[float]] = None, ) -\u003e metrics.Histogram: return Histogram(name) def create_gauge( # type: ignore # pylint: disable=no-self-use self, name: str, unit: str = \"\", description: str = \"\", ) -\u003e metrics._Gauge: # pyright: ignore[reportReturnType] warnings.warn( \"create_gauge() is not implemented and will be a no-op\", stacklevel=2 ) raise NotImplementedError() def create_observable_gauge( self, name: str, callbacks: Optional[Sequence[CallbackT]] = None, unit: str = \"\", description: str = \"\", ) -\u003e metrics.ObservableGauge: raise NotImplementedError() def create_observable_up_down_counter( self, name: str, callbacks: Optional[Sequence[CallbackT]] = None, unit: str = \"\", description: str = \"\", ) -\u003e metrics.ObservableUpDownCounter: raise NotImplementedError() class MeterProvider(metrics.MeterProvider): def get_meter( self, name: str, version: Optional[str] = None, schema_url: Optional[str] = None, attributes: Optional[Attributes] = None, ) -\u003e metrics.Meter: return Meter(name, version, schema_url) _TRACER: trace.Tracer = trace.NoOpTracer() def get_monarch_tracer() -\u003e trace.Tracer: \"\"\" Return a no-op OTEL tracer for compatibility with older call sites. Prefer `span()` for new code. \"\"\" return _TRACER _INSTALLED = False METER: metrics.Meter = Meter(\"monarch\") def install() -\u003e None: global _INSTALLED if _INSTALLED: return metrics.set_meter_provider(MeterProvider()) global METER METER = metrics.get_meter(\"monarch\") _INSTALLED = True",
+       "articleBody": "Source code for monarch._src.actor.telemetry # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import functools import inspect import logging import warnings from typing import Callable, Dict, Optional, overload, Sequence, TypeVar import opentelemetry.metrics as metrics # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api import opentelemetry.trace as trace # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr from monarch._rust_bindings.monarch_hyperactor.telemetry import ( # @manual=//monarch/monarch_extension:monarch_extension forward_to_tracing, PyCounter, PyHistogram, PySpan, PyUpDownCounter, ) from opentelemetry.context import Context from opentelemetry.metrics import CallbackT from opentelemetry.util.types import Attributes from typing_extensions import ParamSpec def _current_actor_id() -\u003e ActorAddr | None: from monarch._src.actor.actor_mesh import _context ctx = _context.get(None) return None if ctx is None else ctx.actor_instance.actor_id def span(name: str) -\u003e PySpan: return PySpan(name, _current_actor_id()) _P = ParamSpec(\"_P\") _R = TypeVar(\"_R\") @overload def traced(fn: Callable[_P, _R]) -\u003e Callable[_P, _R]: ... @overload def traced(*, name: str) -\u003e Callable[[Callable[_P, _R]], Callable[_P, _R]]: ... [docs] def traced( fn: Callable[_P, _R] | None = None, *, name: str | None = None ) -\u003e Callable[_P, _R] | Callable[[Callable[_P, _R]], Callable[_P, _R]]: \"\"\"Decorator that wraps a function in a telemetry span. Works with both sync and async functions. The span is automatically associated with the current actor context, if any. When no name is provided, the function\u0027s ``__name__`` is used as the span name. Usage:: @traced async def do_work(): ... @traced(name=\"custom_name\") def compute(): ... \"\"\" def decorator(fn: Callable[_P, _R]) -\u003e Callable[_P, _R]: span_name: str = name if name is not None else fn.__name__ if inspect.iscoroutinefunction(fn): @functools.wraps(fn) # pyrefly: ignore [bad-return] async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -\u003e _R: with span(span_name): return await fn(*args, **kwargs) # type: ignore[misc] return async_wrapper # type: ignore[return-value] else: @functools.wraps(fn) # pyrefly: ignore [bad-return] def sync_wrapper(*args: _P.args, **kwargs: _P.kwargs) -\u003e _R: with span(span_name): return fn(*args, **kwargs) return sync_wrapper if fn is not None: return decorator(fn) return decorator def span_with_correlation_id(name: str, correlation_id: int | None = None) -\u003e PySpan: return PySpan(name, _current_actor_id(), correlation_id) def log_with_tracing( level: int, msg: object, *args: object, stack_info: bool = False, stacklevel: int = 1, extra: Dict[str, object] | None = None, logger: logging.Logger | None = None, ) -\u003e None: \"\"\"Emit a log record through the normal `logging` handler chain and also forward it directly to Rust tracing. Use this in library code that must guarantee the event reaches the tracing backend even when no `TracingForwarder` handler is attached to the calling process\u0027s loggers (e.g., a non-actor driver process). `stacklevel=1` attributes the record\u0027s pathname/lineno/funcName to the immediate caller of `log_with_tracing`. \"\"\" logger = logger or logging.getLogger(__name__) fn, lno, func, sinfo = logger.findCaller( stack_info=stack_info, stacklevel=stacklevel + 1, ) record = logger.makeRecord( logger.name, level, fn, lno, msg, args, None, func, extra=extra, sinfo=sinfo, ) logger.handle(record) forward_to_tracing(record) class TracingForwarder(logging.Handler): def emit(self, record: logging.LogRecord) -\u003e None: # Try to add actor_id from the current context to the logging record try: actor_id = _current_actor_id() if actor_id is not None: # Add actor_id as an attribute to the logging record record.actor_id = str(actor_id) # type: ignore[attr-defined] except Exception: # If we can\u0027t get the context or actor_id for any reason, just continue # without adding the actor_id field pass forward_to_tracing(record) class Counter(metrics.Counter): inner: PyCounter def __init__(self, name: str) -\u003e None: # pyrefly: ignore [missing-attribute] super().__init__(name) self.inner = PyCounter(name) def add( self, amount: int | float, attributes: Optional[Attributes] = None, context: Optional[Context] = None, ) -\u003e None: rust_attributes = None if attributes: rust_attributes = {str(k): str(v) for k, v in attributes.items()} return self.inner.add(int(amount), attributes=rust_attributes) class UpDownCounter(metrics.UpDownCounter): inner: PyUpDownCounter def __init__(self, name: str) -\u003e None: # pyrefly: ignore [missing-attribute] super().__init__(name) self.inner = PyUpDownCounter(name) def add( self, amount: int | float, attributes: Optional[Attributes] = None, context: Optional[Context] = None, ) -\u003e None: rust_attributes = None if attributes: rust_attributes = {str(k): str(v) for k, v in attributes.items()} self.inner.add(int(amount), attributes=rust_attributes) class Histogram(metrics.Histogram): inner: PyHistogram def __init__(self, name: str) -\u003e None: # pyrefly: ignore [missing-attribute] super().__init__(name) self.inner = PyHistogram(name) def record( self, amount: int | float, attributes: Optional[Attributes] = None, context: Optional[Context] = None, ) -\u003e None: rust_attributes = None if attributes: rust_attributes = {str(k): str(v) for k, v in attributes.items()} self.inner.record(amount, attributes=rust_attributes) class Meter(metrics.Meter): def create_counter( self, name: str, unit: str = \"\", description: str = \"\", ) -\u003e metrics.Counter: return Counter(name) def create_up_down_counter( self, name: str, unit: str = \"\", description: str = \"\", ) -\u003e metrics.UpDownCounter: return UpDownCounter(name) def create_observable_counter( self, name: str, callbacks: Optional[Sequence[CallbackT]] = None, unit: str = \"\", description: str = \"\", ) -\u003e metrics.ObservableCounter: raise NotImplementedError() def create_histogram( self, name: str, unit: str = \"\", description: str = \"\", *, explicit_bucket_boundaries_advisory: Optional[Sequence[float]] = None, ) -\u003e metrics.Histogram: return Histogram(name) def create_gauge( # type: ignore # pylint: disable=no-self-use self, name: str, unit: str = \"\", description: str = \"\", ) -\u003e metrics._Gauge: # pyright: ignore[reportReturnType] warnings.warn( \"create_gauge() is not implemented and will be a no-op\", stacklevel=2 ) raise NotImplementedError() def create_observable_gauge( self, name: str, callbacks: Optional[Sequence[CallbackT]] = None, unit: str = \"\", description: str = \"\", ) -\u003e metrics.ObservableGauge: raise NotImplementedError() def create_observable_up_down_counter( self, name: str, callbacks: Optional[Sequence[CallbackT]] = None, unit: str = \"\", description: str = \"\", ) -\u003e metrics.ObservableUpDownCounter: raise NotImplementedError() class MeterProvider(metrics.MeterProvider): def get_meter( self, name: str, version: Optional[str] = None, schema_url: Optional[str] = None, attributes: Optional[Attributes] = None, ) -\u003e metrics.Meter: return Meter(name, version, schema_url) _TRACER: trace.Tracer = trace.NoOpTracer() def get_monarch_tracer() -\u003e trace.Tracer: \"\"\" Return a no-op OTEL tracer for compatibility with older call sites. Prefer `span()` for new code. \"\"\" return _TRACER _INSTALLED = False METER: metrics.Meter = Meter(\"monarch\") def get_meter() -\u003e metrics.Meter: \"\"\"Return Monarch\u0027s process-global OpenTelemetry meter.\"\"\" return METER def install() -\u003e None: global _INSTALLED if _INSTALLED: return metrics.set_meter_provider(MeterProvider()) global METER METER = metrics.get_meter(\"monarch\") _INSTALLED = True",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

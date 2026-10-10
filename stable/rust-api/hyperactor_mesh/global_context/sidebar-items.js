@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["context","register_client_host","this_host","this_proc","try_this_host"],"struct":["GlobalClientActor","GlobalContext"]};
+window.SIDEBAR_ITEMS = {"fn":["context","register_client_host","register_client_proc","this_host","this_proc","try_registered_client_proc","try_this_host"],"struct":["GlobalClientActor","GlobalContext"]};

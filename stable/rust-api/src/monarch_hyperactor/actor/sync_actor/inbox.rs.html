@@ -1,0 +1,518 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `monarch_hyperactor/src/actor/sync_actor/inbox.rs`."><title>inbox.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="monarch_hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (c397dae80 2026-07-02)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">monarch_hyperactor/actor/sync_actor/</div>inbox.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
+<a href=#2 id=2 data-nosnippet>2</a> * Copyright (c) Meta Platforms, Inc. and affiliates.
+<a href=#3 id=3 data-nosnippet>3</a> * All rights reserved.
+<a href=#4 id=4 data-nosnippet>4</a> *
+<a href=#5 id=5 data-nosnippet>5</a> * This source code is licensed under the BSD-style license found in the
+<a href=#6 id=6 data-nosnippet>6</a> * LICENSE file in the root directory of this source tree.
+<a href=#7 id=7 data-nosnippet>7</a> */
+<a href=#8 id=8 data-nosnippet>8</a>
+<a href=#9 id=9 data-nosnippet>9</a></span><span class="doccomment">//! Blocking handoff from a Rust actor running on Tokio to a Python driver with
+<a href=#10 id=10 data-nosnippet>10</a>//! no persistent actor event loop.
+<a href=#11 id=11 data-nosnippet>11</a>//!
+<a href=#12 id=12 data-nosnippet>12</a>//! `PythonActor` owns the message and control senders.
+<a href=#13 id=13 data-nosnippet>13</a>//! `Handler&lt;PythonMessage&gt;` enqueues `PendingMessage`, `Handler&lt;MeshFailure&gt;`
+<a href=#14 id=14 data-nosnippet>14</a>//! enqueues `PendingSupervision`, undeliverable-message handling enqueues
+<a href=#15 id=15 data-nosnippet>15</a>//! `PendingUndeliverable`, and sync cleanup enqueues `PendingSyncCleanup`.
+<a href=#16 id=16 data-nosnippet>16</a>//! `Actor::init` passes the [`Receiver`] to `_sync_dispatch_loop` on
+<a href=#17 id=17 data-nosnippet>17</a>//! the Python driver thread, which receives and runs one item at a time.
+<a href=#18 id=18 data-nosnippet>18</a>//!
+<a href=#19 id=19 data-nosnippet>19</a>//! # Sync-inbox invariants
+<a href=#20 id=20 data-nosnippet>20</a>//!
+<a href=#21 id=21 data-nosnippet>21</a>//! - **SI-1 (two planes, one consumer):** message and control queues are each
+<a href=#22 id=22 data-nosnippet>22</a>//!   FIFO and have one consumer. When selecting the next item, control has
+<a href=#23 id=23 data-nosnippet>23</a>//!   priority over messages; it never preempts an item already running.
+<a href=#24 id=24 data-nosnippet>24</a>//! - **SI-2 (enqueue before wake):** a sender enqueues its value before writing
+<a href=#25 id=25 data-nosnippet>25</a>//!   the common wake pipe. A wake byte carries no queue or item identity and
+<a href=#26 id=26 data-nosnippet>26</a>//!   may be stale.
+<a href=#27 id=27 data-nosnippet>27</a>//! - **SI-3 (no lost wake):** after finding both queues empty, `next()` releases
+<a href=#28 id=28 data-nosnippet>28</a>//!   the GIL and polls the pipe. Any later send has already written the pipe;
+<a href=#29 id=29 data-nosnippet>29</a>//!   after waking, `next()` drains it and checks both queues again.
+<a href=#30 id=30 data-nosnippet>30</a>//! - **SI-4 (GIL boundary):** Tokio enqueues `PendingMessage`,
+<a href=#31 id=31 data-nosnippet>31</a>//!   `PendingSupervision`, `PendingUndeliverable`, and `PendingSyncCleanup`
+<a href=#32 id=32 data-nosnippet>32</a>//!   without the GIL. The driver holds the GIL while converting them to Python
+<a href=#33 id=33 data-nosnippet>33</a>//!   objects and releases it only while polling.
+<a href=#34 id=34 data-nosnippet>34</a>//! - **SI-5 (disconnect):** a sender's queue disconnects before its pipe
+<a href=#35 id=35 data-nosnippet>35</a>//!   writer closes (field order in `pympsc::Sender`), and closing the final
+<a href=#36 id=36 data-nosnippet>36</a>//!   writer wakes a blocked receiver. A disconnected control plane means the
+<a href=#37 id=37 data-nosnippet>37</a>//!   owning actor is gone: `next()` returns `None` without taking another
+<a href=#38 id=38 data-nosnippet>38</a>//!   message, after any control item queued before the close.
+<a href=#39 id=39 data-nosnippet>39</a>//! - **SI-6 (stop claim):** cleanup sets `stopping` before enqueueing
+<a href=#40 id=40 data-nosnippet>40</a>//!   `PendingSyncCleanup`. A dequeued `QueuedSupervision` or
+<a href=#41 id=41 data-nosnippet>41</a>//!   `QueuedUndeliverable` runs only if the driver observes `stopping` as
+<a href=#42 id=42 data-nosnippet>42</a>//!   false. The resulting `SyncCleanup` runs if the driver is still running
+<a href=#43 id=43 data-nosnippet>43</a>//!   and can convert it.
+<a href=#44 id=44 data-nosnippet>44</a>
+<a href=#45 id=45 data-nosnippet>45</a></span><span class="kw">use </span>std::os::fd::AsFd;
+<a href=#46 id=46 data-nosnippet>46</a><span class="kw">use </span>std::os::fd::OwnedFd;
+<a href=#47 id=47 data-nosnippet>47</a><span class="kw">use </span>std::sync::Arc;
+<a href=#48 id=48 data-nosnippet>48</a><span class="kw">use </span>std::sync::Mutex;
+<a href=#49 id=49 data-nosnippet>49</a><span class="kw">use </span>std::sync::atomic::AtomicBool;
+<a href=#50 id=50 data-nosnippet>50</a><span class="kw">use </span>std::sync::atomic::Ordering;
+<a href=#51 id=51 data-nosnippet>51</a><span class="kw">use </span>std::sync::mpsc;
+<a href=#52 id=52 data-nosnippet>52</a>
+<a href=#53 id=53 data-nosnippet>53</a><span class="kw">use </span>monarch_types::MapPyErr;
+<a href=#54 id=54 data-nosnippet>54</a><span class="kw">use </span>nix::errno::Errno;
+<a href=#55 id=55 data-nosnippet>55</a><span class="kw">use </span>nix::poll::PollFd;
+<a href=#56 id=56 data-nosnippet>56</a><span class="kw">use </span>nix::poll::PollFlags;
+<a href=#57 id=57 data-nosnippet>57</a><span class="kw">use </span>nix::poll::PollTimeout;
+<a href=#58 id=58 data-nosnippet>58</a><span class="kw">use </span>nix::poll::poll;
+<a href=#59 id=59 data-nosnippet>59</a><span class="kw">use </span>nix::unistd::read;
+<a href=#60 id=60 data-nosnippet>60</a><span class="kw">use </span>pyo3::Bound;
+<a href=#61 id=61 data-nosnippet>61</a><span class="kw">use </span>pyo3::Py;
+<a href=#62 id=62 data-nosnippet>62</a><span class="kw">use </span>pyo3::PyAny;
+<a href=#63 id=63 data-nosnippet>63</a><span class="kw">use </span>pyo3::PyResult;
+<a href=#64 id=64 data-nosnippet>64</a><span class="kw">use </span>pyo3::Python;
+<a href=#65 id=65 data-nosnippet>65</a><span class="kw">use </span>pyo3::pyclass;
+<a href=#66 id=66 data-nosnippet>66</a><span class="kw">use </span>pyo3::pymethods;
+<a href=#67 id=67 data-nosnippet>67</a><span class="kw">use </span>pyo3::types::PyModule;
+<a href=#68 id=68 data-nosnippet>68</a><span class="kw">use </span>pyo3::types::PyModuleMethods;
+<a href=#69 id=69 data-nosnippet>69</a>
+<a href=#70 id=70 data-nosnippet>70</a><span class="kw">use </span><span class="kw">crate</span>::pympsc::IntoPyObjectBox;
+<a href=#71 id=71 data-nosnippet>71</a><span class="kw">use </span><span class="kw">crate</span>::pympsc::Sender;
+<a href=#72 id=72 data-nosnippet>72</a><span class="kw">use </span><span class="kw">crate</span>::pywaker;
+<a href=#73 id=73 data-nosnippet>73</a><span class="kw">use </span><span class="kw">crate</span>::pywaker::retry_eintr;
+<a href=#74 id=74 data-nosnippet>74</a>
+<a href=#75 id=75 data-nosnippet>75</a><span class="doccomment">/// The complete inbox created for one sync actor.
+<a href=#76 id=76 data-nosnippet>76</a></span><span class="kw">pub</span>(<span class="kw">in </span><span class="kw">super</span>::<span class="kw">super</span>) <span class="kw">struct </span>Inbox {
+<a href=#77 id=77 data-nosnippet>77</a>    <span class="doccomment">/// Enqueues messages for the driver.
+<a href=#78 id=78 data-nosnippet>78</a>    </span><span class="kw">pub</span>(<span class="kw">in </span><span class="kw">super</span>::<span class="kw">super</span>) message_sender: Sender,
+<a href=#79 id=79 data-nosnippet>79</a>    <span class="doccomment">/// Enqueues `PendingSupervision`, `PendingUndeliverable`, and
+<a href=#80 id=80 data-nosnippet>80</a>    /// `PendingSyncCleanup` for the driver.
+<a href=#81 id=81 data-nosnippet>81</a>    </span><span class="kw">pub</span>(<span class="kw">in </span><span class="kw">super</span>::<span class="kw">super</span>) control_sender: Sender,
+<a href=#82 id=82 data-nosnippet>82</a>    <span class="doccomment">/// Receives both queues, with control taking priority over messages.
+<a href=#83 id=83 data-nosnippet>83</a>    </span><span class="kw">pub</span>(<span class="kw">in </span><span class="kw">super</span>::<span class="kw">super</span>) receiver: Receiver,
+<a href=#84 id=84 data-nosnippet>84</a>}
+<a href=#85 id=85 data-nosnippet>85</a>
+<a href=#86 id=86 data-nosnippet>86</a><span class="doccomment">/// Create a sync actor inbox. Both senders write the same wake pipe, so one
+<a href=#87 id=87 data-nosnippet>87</a>/// blocking wait observes both queues.
+<a href=#88 id=88 data-nosnippet>88</a></span><span class="kw">pub</span>(<span class="kw">in </span><span class="kw">super</span>::<span class="kw">super</span>) <span class="kw">fn </span>new() -&gt; <span class="prelude-ty">Result</span>&lt;Inbox, nix::Error&gt; {
+<a href=#89 id=89 data-nosnippet>89</a>    <span class="comment">// SI-1 message plane: actor messages in FIFO order.
+<a href=#90 id=90 data-nosnippet>90</a>    </span><span class="kw">let </span>(messages_tx, messages_rx) = mpsc::channel();
+<a href=#91 id=91 data-nosnippet>91</a>
+<a href=#92 id=92 data-nosnippet>92</a>    <span class="comment">// SI-1 control plane: PendingSupervision, PendingUndeliverable, and
+<a href=#93 id=93 data-nosnippet>93</a>    // PendingSyncCleanup values in FIFO order. The receiver checks this queue
+<a href=#94 id=94 data-nosnippet>94</a>    // before the message plane.
+<a href=#95 id=95 data-nosnippet>95</a>    </span><span class="kw">let </span>(control_tx, control_rx) = mpsc::channel();
+<a href=#96 id=96 data-nosnippet>96</a>
+<a href=#97 id=97 data-nosnippet>97</a>    <span class="comment">// SI-2 common waker: the pipe carries no work or queue identity. Both
+<a href=#98 id=98 data-nosnippet>98</a>    // pympsc::Senders enqueue first, then write through this shared Waker.
+<a href=#99 id=99 data-nosnippet>99</a>    </span><span class="kw">let </span>(waker, read_fd) = pywaker::pipe()<span class="question-mark">?</span>;
+<a href=#100 id=100 data-nosnippet>100</a>    <span class="kw">let </span>waker = Arc::new(waker);
+<a href=#101 id=101 data-nosnippet>101</a>
+<a href=#102 id=102 data-nosnippet>102</a>    <span class="comment">// Inbox: both producer sides plus the single driver-owned receiver.
+<a href=#103 id=103 data-nosnippet>103</a>    </span><span class="prelude-val">Ok</span>(Inbox {
+<a href=#104 id=104 data-nosnippet>104</a>        message_sender: Sender::new(messages_tx, waker.clone()),
+<a href=#105 id=105 data-nosnippet>105</a>        control_sender: Sender::new(control_tx, waker),
+<a href=#106 id=106 data-nosnippet>106</a>        receiver: Receiver {
+<a href=#107 id=107 data-nosnippet>107</a>            control: Mutex::new(control_rx),
+<a href=#108 id=108 data-nosnippet>108</a>            messages: Mutex::new(messages_rx),
+<a href=#109 id=109 data-nosnippet>109</a>            read_fd,
+<a href=#110 id=110 data-nosnippet>110</a>            stopping: Arc::new(AtomicBool::new(<span class="bool-val">false</span>)),
+<a href=#111 id=111 data-nosnippet>111</a>        },
+<a href=#112 id=112 data-nosnippet>112</a>    })
+<a href=#113 id=113 data-nosnippet>113</a>}
+<a href=#114 id=114 data-nosnippet>114</a>
+<a href=#115 id=115 data-nosnippet>115</a><span class="doccomment">/// Blocking receiver used by one sync actor's Python driver thread.
+<a href=#116 id=116 data-nosnippet>116</a>///
+<a href=#117 id=117 data-nosnippet>117</a>/// Messages and control items use separate FIFO queues. Their senders share a
+<a href=#118 id=118 data-nosnippet>118</a>/// non-blocking pipe and write one byte after enqueueing; the byte carries no
+<a href=#119 id=119 data-nosnippet>119</a>/// work or identity and may be stale. It only tells the driver to inspect the
+<a href=#120 id=120 data-nosnippet>120</a>/// queues again.
+<a href=#121 id=121 data-nosnippet>121</a>///
+<a href=#122 id=122 data-nosnippet>122</a>/// On each `_sync_dispatch_loop` iteration, the Python driver calls
+<a href=#123 id=123 data-nosnippet>123</a>/// [`Receiver::next`] with the GIL held. `next` checks control first
+<a href=#124 id=124 data-nosnippet>124</a>/// and then messages, converts one available item, and returns it to the driver.
+<a href=#125 id=125 data-nosnippet>125</a>/// If both queues are empty, that same call releases the GIL and blocks in
+<a href=#126 id=126 data-nosnippet>126</a>/// `poll()`. A pipe wake makes it reacquire the GIL and check both queues again;
+<a href=#127 id=127 data-nosnippet>127</a>/// a stale wake may send it back to `poll()`. After `next` returns, the driver
+<a href=#128 id=128 data-nosnippet>128</a>/// processes the item and begins its next iteration.
+<a href=#129 id=129 data-nosnippet>129</a>///
+<a href=#130 id=130 data-nosnippet>130</a>/// A control item cannot interrupt an item already running. After that item
+<a href=#131 id=131 data-nosnippet>131</a>/// finishes, the next `next()` call selects queued control before queued
+<a href=#132 id=132 data-nosnippet>132</a>/// messages. Once the control queue is disconnected, the owning actor is gone,
+<a href=#133 id=133 data-nosnippet>133</a>/// so `next` returns `None` without taking another message. Closing the final
+<a href=#134 id=134 data-nosnippet>134</a>/// pipe writer wakes a blocked `next`, so disconnect cannot be missed.
+<a href=#135 id=135 data-nosnippet>135</a>///
+<a href=#136 id=136 data-nosnippet>136</a>/// `pympsc::Sender::send` boxes each value as `Box&lt;dyn IntoPyObjectBox&gt;` before
+<a href=#137 id=137 data-nosnippet>137</a>/// enqueueing it. When `next` dequeues a value, it invokes that erased
+<a href=#138 id=138 data-nosnippet>138</a>/// conversion: `PendingMessage` becomes `QueuedMessage`, `PendingSupervision`
+<a href=#139 id=139 data-nosnippet>139</a>/// becomes `QueuedSupervision`, `PendingUndeliverable` becomes
+<a href=#140 id=140 data-nosnippet>140</a>/// `QueuedUndeliverable`, and `PendingSyncCleanup` becomes `SyncCleanup`. Both
+<a href=#141 id=141 data-nosnippet>141</a>/// senders therefore stay GIL-free, and conversion happens on the driver
+<a href=#142 id=142 data-nosnippet>142</a>/// thread.
+<a href=#143 id=143 data-nosnippet>143</a>///
+<a href=#144 id=144 data-nosnippet>144</a>/// Actor cleanup sets `stopping` before enqueueing `PendingSyncCleanup`. If
+<a href=#145 id=145 data-nosnippet>145</a>/// `next` returns an older `QueuedSupervision` or `QueuedUndeliverable` first,
+<a href=#146 id=146 data-nosnippet>146</a>/// the driver reads this flag and drops that callback instead of invoking user
+<a href=#147 id=147 data-nosnippet>147</a>/// code. The resulting `SyncCleanup` runs if the driver is still running. The
+<a href=#148 id=148 data-nosnippet>148</a>/// Python driver is the only
+<a href=#149 id=149 data-nosnippet>149</a>/// consumer of the control and message queues.
+<a href=#150 id=150 data-nosnippet>150</a>///
+<a href=#151 id=151 data-nosnippet>151</a>/// `mpsc::Receiver` is `Send` but not `Sync`. `next` holds a shared reference
+<a href=#152 id=152 data-nosnippet>152</a>/// to this object across [`Python::detach`], which releases the GIL while the
+<a href=#153 id=153 data-nosnippet>153</a>/// driver waits. Wrapping each receiver in a `Mutex` makes the enclosing
+<a href=#154 id=154 data-nosnippet>154</a>/// `Receiver` safe across that boundary. The mutexes do not represent
+<a href=#155 id=155 data-nosnippet>155</a>/// multiple consumers and are uncontended in production.
+<a href=#156 id=156 data-nosnippet>156</a>///
+<a href=#157 id=157 data-nosnippet>157</a>/// `Actor::init` starts a Python `threading.Thread` whose target is
+<a href=#158 id=158 data-nosnippet>158</a>/// `_sync_dispatch_loop`, passing this receiver as the function's `inbox`
+<a href=#159 id=159 data-nosnippet>159</a>/// argument. The driver calls `next()` and `stopping()` on it directly; the
+<a href=#160 id=160 data-nosnippet>160</a>/// class is an internal Rust/Python boundary, not a user API.
+<a href=#161 id=161 data-nosnippet>161</a></span><span class="attr">#[pyclass(
+<a href=#162 id=162 data-nosnippet>162</a>    name = <span class="string">"SyncInbox"</span>,
+<a href=#163 id=163 data-nosnippet>163</a>    module = <span class="string">"monarch._rust_bindings.monarch_hyperactor.actor"
+<a href=#164 id=164 data-nosnippet>164</a></span>)]
+<a href=#165 id=165 data-nosnippet>165</a></span><span class="kw">pub</span>(<span class="kw">in </span><span class="kw">super</span>::<span class="kw">super</span>) <span class="kw">struct </span>Receiver {
+<a href=#166 id=166 data-nosnippet>166</a>    <span class="doccomment">/// Receives `PendingSupervision`, `PendingUndeliverable`, and
+<a href=#167 id=167 data-nosnippet>167</a>    /// `PendingSyncCleanup` values sent through `pympsc::Sender::send`, which
+<a href=#168 id=168 data-nosnippet>168</a>    /// erases each value to `Box&lt;dyn IntoPyObjectBox&gt;` before enqueueing it.
+<a href=#169 id=169 data-nosnippet>169</a>    /// Checked before messages.
+<a href=#170 id=170 data-nosnippet>170</a>    </span>control: Mutex&lt;mpsc::Receiver&lt;Box&lt;<span class="kw">dyn </span>IntoPyObjectBox&gt;&gt;&gt;,
+<a href=#171 id=171 data-nosnippet>171</a>    <span class="doccomment">/// Receives `PendingMessage` values sent through `pympsc::Sender::send`,
+<a href=#172 id=172 data-nosnippet>172</a>    /// which erases each value to `Box&lt;dyn IntoPyObjectBox&gt;` before enqueueing
+<a href=#173 id=173 data-nosnippet>173</a>    /// it, even though this queue has one logical payload type.
+<a href=#174 id=174 data-nosnippet>174</a>    </span>messages: Mutex&lt;mpsc::Receiver&lt;Box&lt;<span class="kw">dyn </span>IntoPyObjectBox&gt;&gt;&gt;,
+<a href=#175 id=175 data-nosnippet>175</a>    <span class="doccomment">/// Read end of the shared wake pipe. `Inbox::message_sender` and
+<a href=#176 id=176 data-nosnippet>176</a>    /// `Inbox::control_sender` are `pympsc::Sender`s: each owns a different
+<a href=#177 id=177 data-nosnippet>177</a>    /// `mpsc::Sender&lt;Box&lt;dyn IntoPyObjectBox&gt;&gt;`, and both hold a clone of the
+<a href=#178 id=178 data-nosnippet>178</a>    /// same `Arc&lt;pywaker::Waker&gt;`. That shared `Waker` owns the write end.
+<a href=#179 id=179 data-nosnippet>179</a>    </span>read_fd: OwnedFd,
+<a href=#180 id=180 data-nosnippet>180</a>    <span class="doccomment">/// Set when cleanup begins, before its control item is enqueued.
+<a href=#181 id=181 data-nosnippet>181</a>    </span>stopping: Arc&lt;AtomicBool&gt;,
+<a href=#182 id=182 data-nosnippet>182</a>}
+<a href=#183 id=183 data-nosnippet>183</a>
+<a href=#184 id=184 data-nosnippet>184</a><span class="comment">// `next` borrows the receiver across `Python::detach`; keep that boundary
+<a href=#185 id=185 data-nosnippet>185</a>// compiler-checked as the representation changes.
+<a href=#186 id=186 data-nosnippet>186</a></span><span class="kw">const _</span>: <span class="kw">fn</span>() = {
+<a href=#187 id=187 data-nosnippet>187</a>    <span class="kw">fn </span>assert_send_sync&lt;T: Send + Sync&gt;() {}
+<a href=#188 id=188 data-nosnippet>188</a>    assert_send_sync::&lt;Receiver&gt;
+<a href=#189 id=189 data-nosnippet>189</a>};
+<a href=#190 id=190 data-nosnippet>190</a>
+<a href=#191 id=191 data-nosnippet>191</a><span class="kw">impl </span>std::fmt::Debug <span class="kw">for </span>Receiver {
+<a href=#192 id=192 data-nosnippet>192</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>std::fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; std::fmt::Result {
+<a href=#193 id=193 data-nosnippet>193</a>        f.debug_struct(<span class="string">"SyncInboxReceiver"</span>).finish_non_exhaustive()
+<a href=#194 id=194 data-nosnippet>194</a>    }
+<a href=#195 id=195 data-nosnippet>195</a>}
+<a href=#196 id=196 data-nosnippet>196</a>
+<a href=#197 id=197 data-nosnippet>197</a><span class="doccomment">/// Result of checking one inbox plane without blocking.
+<a href=#198 id=198 data-nosnippet>198</a></span><span class="kw">enum </span>Take {
+<a href=#199 id=199 data-nosnippet>199</a>    <span class="doccomment">/// One queued value, removed from the plane.
+<a href=#200 id=200 data-nosnippet>200</a>    </span>Item(Box&lt;<span class="kw">dyn </span>IntoPyObjectBox&gt;),
+<a href=#201 id=201 data-nosnippet>201</a>    <span class="doccomment">/// No value is available, but a sender may still enqueue one.
+<a href=#202 id=202 data-nosnippet>202</a>    </span>Empty,
+<a href=#203 id=203 data-nosnippet>203</a>    <span class="doccomment">/// No value remains and every sender for this plane is disconnected.
+<a href=#204 id=204 data-nosnippet>204</a>    </span>Closed,
+<a href=#205 id=205 data-nosnippet>205</a>}
+<a href=#206 id=206 data-nosnippet>206</a>
+<a href=#207 id=207 data-nosnippet>207</a><span class="doccomment">/// Check one inbox plane without blocking, consuming at most one value.
+<a href=#208 id=208 data-nosnippet>208</a>/// The receiver lock is released before that value is converted into Python.
+<a href=#209 id=209 data-nosnippet>209</a></span><span class="kw">fn </span>try_take(rx: <span class="kw-2">&amp;</span>Mutex&lt;mpsc::Receiver&lt;Box&lt;<span class="kw">dyn </span>IntoPyObjectBox&gt;&gt;&gt;) -&gt; Take {
+<a href=#210 id=210 data-nosnippet>210</a>    <span class="kw">match </span>rx
+<a href=#211 id=211 data-nosnippet>211</a>        .lock()
+<a href=#212 id=212 data-nosnippet>212</a>        .expect(<span class="string">"sync inbox receiver lock should not be poisoned: only the driver takes it"</span>)
+<a href=#213 id=213 data-nosnippet>213</a>        .try_recv()
+<a href=#214 id=214 data-nosnippet>214</a>    {
+<a href=#215 id=215 data-nosnippet>215</a>        <span class="prelude-val">Ok</span>(item) =&gt; Take::Item(item),
+<a href=#216 id=216 data-nosnippet>216</a>        <span class="prelude-val">Err</span>(mpsc::TryRecvError::Empty) =&gt; Take::Empty,
+<a href=#217 id=217 data-nosnippet>217</a>        <span class="prelude-val">Err</span>(mpsc::TryRecvError::Disconnected) =&gt; Take::Closed,
+<a href=#218 id=218 data-nosnippet>218</a>    }
+<a href=#219 id=219 data-nosnippet>219</a>}
+<a href=#220 id=220 data-nosnippet>220</a>
+<a href=#221 id=221 data-nosnippet>221</a><span class="kw">impl </span>Receiver {
+<a href=#222 id=222 data-nosnippet>222</a>    <span class="doccomment">/// The SI-6 flag cleanup sets before enqueueing `PendingSyncCleanup`.
+<a href=#223 id=223 data-nosnippet>223</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>stop_flag(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; Arc&lt;AtomicBool&gt; {
+<a href=#224 id=224 data-nosnippet>224</a>        <span class="self">self</span>.stopping.clone()
+<a href=#225 id=225 data-nosnippet>225</a>    }
+<a href=#226 id=226 data-nosnippet>226</a>
+<a href=#227 id=227 data-nosnippet>227</a>    <span class="doccomment">/// Block until the pipe is readable, then drain it (SI-3, SI-5). A send may
+<a href=#228 id=228 data-nosnippet>228</a>    /// occur after `next` checks both queues but before this method enters
+<a href=#229 id=229 data-nosnippet>229</a>    /// `poll()`. That send enqueues its value before writing the pipe, so the
+<a href=#230 id=230 data-nosnippet>230</a>    /// byte is already waiting and `poll()` returns immediately instead of
+<a href=#231 id=231 data-nosnippet>231</a>    /// missing the wake. Closing every write end also makes the pipe readable.
+<a href=#232 id=232 data-nosnippet>232</a>    </span><span class="kw">fn </span>wait(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; nix::Result&lt;()&gt; {
+<a href=#233 id=233 data-nosnippet>233</a>        <span class="comment">// `poll` accepts a slice, so use a one-entry array and wait indefinitely
+<a href=#234 id=234 data-nosnippet>234</a>        // for data or pipe closure.
+<a href=#235 id=235 data-nosnippet>235</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>wake_fd = [PollFd::new(<span class="self">self</span>.read_fd.as_fd(), PollFlags::POLLIN)];
+<a href=#236 id=236 data-nosnippet>236</a>        <span class="comment">// EINTR means a signal interrupted the wait, not that the pipe failed, so
+<a href=#237 id=237 data-nosnippet>237</a>        // retry it.
+<a href=#238 id=238 data-nosnippet>238</a>        </span>retry_eintr(|| poll(<span class="kw-2">&amp;mut </span>wake_fd, PollTimeout::NONE))<span class="question-mark">?</span>;
+<a href=#239 id=239 data-nosnippet>239</a>
+<a href=#240 id=240 data-nosnippet>240</a>        <span class="comment">// Drain all wake bytes currently in the pipe. After the last byte, the
+<a href=#241 id=241 data-nosnippet>241</a>        // non-blocking read returns EAGAIN instead of waiting for a future wake.
+<a href=#242 id=242 data-nosnippet>242</a>        // The receiver ignores the byte values and count; pipe readability
+<a href=#243 id=243 data-nosnippet>243</a>        // alone tells it to inspect the queues. Each read removes up to 64
+<a href=#244 id=244 data-nosnippet>244</a>        // accumulated wake bytes.
+<a href=#245 id=245 data-nosnippet>245</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>buf = [<span class="number">0u8</span>; <span class="number">64</span>];
+<a href=#246 id=246 data-nosnippet>246</a>        <span class="kw">loop </span>{
+<a href=#247 id=247 data-nosnippet>247</a>            <span class="comment">// Retry if a signal interrupts the read.
+<a href=#248 id=248 data-nosnippet>248</a>            </span><span class="kw">match </span>retry_eintr(|| read(<span class="kw-2">&amp;</span><span class="self">self</span>.read_fd, <span class="kw-2">&amp;mut </span>buf)) {
+<a href=#249 id=249 data-nosnippet>249</a>                <span class="comment">// EOF: every Sender has released the pipe's write end.
+<a href=#250 id=250 data-nosnippet>250</a>                </span><span class="prelude-val">Ok</span>(<span class="number">0</span>) =&gt; <span class="kw">return </span><span class="prelude-val">Ok</span>(()),
+<a href=#251 id=251 data-nosnippet>251</a>                <span class="comment">// One batch drained; keep reading until the pipe is empty.
+<a href=#252 id=252 data-nosnippet>252</a>                </span><span class="prelude-val">Ok</span>(<span class="kw">_</span>) =&gt; {}
+<a href=#253 id=253 data-nosnippet>253</a>                <span class="comment">// The non-blocking pipe is now empty.
+<a href=#254 id=254 data-nosnippet>254</a>                </span><span class="prelude-val">Err</span>(Errno::EAGAIN) =&gt; <span class="kw">return </span><span class="prelude-val">Ok</span>(()),
+<a href=#255 id=255 data-nosnippet>255</a>                <span class="comment">// A real pipe failure propagates through `next` to the driver.
+<a href=#256 id=256 data-nosnippet>256</a>                </span><span class="prelude-val">Err</span>(err) =&gt; <span class="kw">return </span><span class="prelude-val">Err</span>(err),
+<a href=#257 id=257 data-nosnippet>257</a>            }
+<a href=#258 id=258 data-nosnippet>258</a>        }
+<a href=#259 id=259 data-nosnippet>259</a>    }
+<a href=#260 id=260 data-nosnippet>260</a>}
+<a href=#261 id=261 data-nosnippet>261</a>
+<a href=#262 id=262 data-nosnippet>262</a><span class="attr">#[pymethods]
+<a href=#263 id=263 data-nosnippet>263</a></span><span class="kw">impl </span>Receiver {
+<a href=#264 id=264 data-nosnippet>264</a>    <span class="doccomment">/// Return one queued item, preferring control over messages (SI-1). Return
+<a href=#265 id=265 data-nosnippet>265</a>    /// `None` once the control queue is disconnected and drained, without
+<a href=#266 id=266 data-nosnippet>266</a>    /// taking another message (SI-5). While no item is ready and control is
+<a href=#267 id=267 data-nosnippet>267</a>    /// still connected, call `self.wait()` with the GIL released to block on
+<a href=#268 id=268 data-nosnippet>268</a>    /// and drain the shared wake pipe, then reacquire the GIL and recheck both
+<a href=#269 id=269 data-nosnippet>269</a>    /// queues (SI-3, SI-4).
+<a href=#270 id=270 data-nosnippet>270</a>    </span><span class="kw">fn </span>next(<span class="kw-2">&amp;</span><span class="self">self</span>, py: Python&lt;<span class="lifetime">'_</span>&gt;) -&gt; PyResult&lt;<span class="prelude-ty">Option</span>&lt;Py&lt;PyAny&gt;&gt;&gt; {
+<a href=#271 id=271 data-nosnippet>271</a>        <span class="kw">loop </span>{
+<a href=#272 id=272 data-nosnippet>272</a>            <span class="comment">// SI-1: a ready control item wins without inspecting the message
+<a href=#273 id=273 data-nosnippet>273</a>            // plane. Conversion happens after `try_take` releases its lock.
+<a href=#274 id=274 data-nosnippet>274</a>            </span><span class="kw">match </span>try_take(<span class="kw-2">&amp;</span><span class="self">self</span>.control) {
+<a href=#275 id=275 data-nosnippet>275</a>                Take::Item(item) =&gt; <span class="kw">return </span>item.into_py_object(py).map(<span class="prelude-val">Some</span>),
+<a href=#276 id=276 data-nosnippet>276</a>                <span class="comment">// SI-5: the owning actor is gone, so queued messages have no
+<a href=#277 id=277 data-nosnippet>277</a>                // one to answer to.
+<a href=#278 id=278 data-nosnippet>278</a>                </span>Take::Closed =&gt; <span class="kw">return </span><span class="prelude-val">Ok</span>(<span class="prelude-val">None</span>),
+<a href=#279 id=279 data-nosnippet>279</a>                Take::Empty =&gt; {}
+<a href=#280 id=280 data-nosnippet>280</a>            }
+<a href=#281 id=281 data-nosnippet>281</a>            <span class="kw">match </span>try_take(<span class="kw-2">&amp;</span><span class="self">self</span>.messages) {
+<a href=#282 id=282 data-nosnippet>282</a>                <span class="comment">// Return exactly one message, converted under the GIL.
+<a href=#283 id=283 data-nosnippet>283</a>                </span>Take::Item(item) =&gt; <span class="kw">return </span>item.into_py_object(py).map(<span class="prelude-val">Some</span>),
+<a href=#284 id=284 data-nosnippet>284</a>                <span class="comment">// Nothing is ready and control is still connected. Release the
+<a href=#285 id=285 data-nosnippet>285</a>                // GIL while waiting, then retry the priority checks in this
+<a href=#286 id=286 data-nosnippet>286</a>                // same call (SI-3, SI-4).
+<a href=#287 id=287 data-nosnippet>287</a>                </span>Take::Empty | Take::Closed =&gt; py.detach(|| <span class="self">self</span>.wait()).map_pyerr()<span class="question-mark">?</span>,
+<a href=#288 id=288 data-nosnippet>288</a>            }
+<a href=#289 id=289 data-nosnippet>289</a>        }
+<a href=#290 id=290 data-nosnippet>290</a>    }
+<a href=#291 id=291 data-nosnippet>291</a>
+<a href=#292 id=292 data-nosnippet>292</a>    <span class="doccomment">/// Whether the actor's cleanup has begun. The driver claims a callback it
+<a href=#293 id=293 data-nosnippet>293</a>    /// has dequeued only if this is still false.
+<a href=#294 id=294 data-nosnippet>294</a>    </span><span class="kw">fn </span>stopping(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#295 id=295 data-nosnippet>295</a>        <span class="self">self</span>.stopping.load(Ordering::Acquire)
+<a href=#296 id=296 data-nosnippet>296</a>    }
+<a href=#297 id=297 data-nosnippet>297</a>}
+<a href=#298 id=298 data-nosnippet>298</a>
+<a href=#299 id=299 data-nosnippet>299</a><span class="comment">// Compiled into the normal extension because Python tests load that extension,
+<a href=#300 id=300 data-nosnippet>300</a>// not Rust's `#[cfg(test)]` build.
+<a href=#301 id=301 data-nosnippet>301</a></span><span class="kw">mod </span>testing {
+<a href=#302 id=302 data-nosnippet>302</a>    <span class="kw">use </span>pyo3::pyfunction;
+<a href=#303 id=303 data-nosnippet>303</a>    <span class="kw">use </span>pyo3::types::PyAnyMethods;
+<a href=#304 id=304 data-nosnippet>304</a>    <span class="kw">use </span>pyo3::wrap_pyfunction;
+<a href=#305 id=305 data-nosnippet>305</a>
+<a href=#306 id=306 data-nosnippet>306</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#307 id=307 data-nosnippet>307</a>    <span class="kw">use </span><span class="kw">crate</span>::pympsc::testing::PyTestSender;
+<a href=#308 id=308 data-nosnippet>308</a>
+<a href=#309 id=309 data-nosnippet>309</a>    <span class="doccomment">/// A sync inbox with its message and control senders.
+<a href=#310 id=310 data-nosnippet>310</a>    </span><span class="attr">#[pyfunction(name = <span class="string">"_sync_inbox_for_test"</span>)]
+<a href=#311 id=311 data-nosnippet>311</a>    </span><span class="kw">fn </span>sync_inbox_for_test(_py: Python&lt;<span class="lifetime">'_</span>&gt;) -&gt; PyResult&lt;(PyTestSender, PyTestSender, Receiver)&gt; {
+<a href=#312 id=312 data-nosnippet>312</a>        <span class="kw">let </span>Inbox {
+<a href=#313 id=313 data-nosnippet>313</a>            message_sender,
+<a href=#314 id=314 data-nosnippet>314</a>            control_sender,
+<a href=#315 id=315 data-nosnippet>315</a>            receiver,
+<a href=#316 id=316 data-nosnippet>316</a>        } = new().map_pyerr()<span class="question-mark">?</span>;
+<a href=#317 id=317 data-nosnippet>317</a>        <span class="comment">// Wrap only the Rust senders; Receiver is already a pyclass.
+<a href=#318 id=318 data-nosnippet>318</a>        </span><span class="prelude-val">Ok</span>((
+<a href=#319 id=319 data-nosnippet>319</a>            PyTestSender::new(message_sender),
+<a href=#320 id=320 data-nosnippet>320</a>            PyTestSender::new(control_sender),
+<a href=#321 id=321 data-nosnippet>321</a>            receiver,
+<a href=#322 id=322 data-nosnippet>322</a>        ))
+<a href=#323 id=323 data-nosnippet>323</a>    }
+<a href=#324 id=324 data-nosnippet>324</a>
+<a href=#325 id=325 data-nosnippet>325</a>    <span class="kw">pub</span>(<span class="kw">in </span><span class="kw">super</span>::<span class="kw">super</span>) <span class="kw">fn </span>register_python_bindings(
+<a href=#326 id=326 data-nosnippet>326</a>        testing_mod: <span class="kw-2">&amp;</span>Bound&lt;<span class="lifetime">'_</span>, PyModule&gt;,
+<a href=#327 id=327 data-nosnippet>327</a>    ) -&gt; PyResult&lt;()&gt; {
+<a href=#328 id=328 data-nosnippet>328</a>        <span class="kw">let </span>sync_inbox_for_test = <span class="macro">wrap_pyfunction!</span>(sync_inbox_for_test, testing_mod)<span class="question-mark">?</span>;
+<a href=#329 id=329 data-nosnippet>329</a>        sync_inbox_for_test.setattr(
+<a href=#330 id=330 data-nosnippet>330</a>            <span class="string">"__module__"</span>,
+<a href=#331 id=331 data-nosnippet>331</a>            <span class="string">"monarch._rust_bindings.monarch_hyperactor.testing"</span>,
+<a href=#332 id=332 data-nosnippet>332</a>        )<span class="question-mark">?</span>;
+<a href=#333 id=333 data-nosnippet>333</a>        testing_mod.add_function(sync_inbox_for_test)<span class="question-mark">?</span>;
+<a href=#334 id=334 data-nosnippet>334</a>        <span class="prelude-val">Ok</span>(())
+<a href=#335 id=335 data-nosnippet>335</a>    }
+<a href=#336 id=336 data-nosnippet>336</a>}
+<a href=#337 id=337 data-nosnippet>337</a>
+<a href=#338 id=338 data-nosnippet>338</a><span class="kw">pub</span>(<span class="kw">in </span><span class="kw">super</span>::<span class="kw">super</span>) <span class="kw">fn </span>register_python_bindings(
+<a href=#339 id=339 data-nosnippet>339</a>    hyperactor_mod: <span class="kw-2">&amp;</span>Bound&lt;<span class="lifetime">'_</span>, PyModule&gt;,
+<a href=#340 id=340 data-nosnippet>340</a>) -&gt; PyResult&lt;()&gt; {
+<a href=#341 id=341 data-nosnippet>341</a>    hyperactor_mod.add_class::&lt;Receiver&gt;()<span class="question-mark">?</span>;
+<a href=#342 id=342 data-nosnippet>342</a>    <span class="prelude-val">Ok</span>(())
+<a href=#343 id=343 data-nosnippet>343</a>}
+<a href=#344 id=344 data-nosnippet>344</a>
+<a href=#345 id=345 data-nosnippet>345</a><span class="kw">pub</span>(<span class="kw">in </span><span class="kw">super</span>::<span class="kw">super</span>) <span class="kw">fn </span>register_testing_python_bindings(
+<a href=#346 id=346 data-nosnippet>346</a>    testing_mod: <span class="kw-2">&amp;</span>Bound&lt;<span class="lifetime">'_</span>, PyModule&gt;,
+<a href=#347 id=347 data-nosnippet>347</a>) -&gt; PyResult&lt;()&gt; {
+<a href=#348 id=348 data-nosnippet>348</a>    testing::register_python_bindings(testing_mod)<span class="question-mark">?</span>;
+<a href=#349 id=349 data-nosnippet>349</a>    <span class="prelude-val">Ok</span>(())
+<a href=#350 id=350 data-nosnippet>350</a>}
+<a href=#351 id=351 data-nosnippet>351</a>
+<a href=#352 id=352 data-nosnippet>352</a><span class="attr">#[cfg(test)]
+<a href=#353 id=353 data-nosnippet>353</a></span><span class="kw">mod </span>tests {
+<a href=#354 id=354 data-nosnippet>354</a>    <span class="kw">use </span>std::thread;
+<a href=#355 id=355 data-nosnippet>355</a>
+<a href=#356 id=356 data-nosnippet>356</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#357 id=357 data-nosnippet>357</a>    <span class="kw">use </span><span class="kw">crate</span>::pympsc::testing::Unconvertible;
+<a href=#358 id=358 data-nosnippet>358</a>    <span class="kw">use </span><span class="kw">crate</span>::runtime::GilSite;
+<a href=#359 id=359 data-nosnippet>359</a>    <span class="kw">use </span><span class="kw">crate</span>::runtime::ensure_python;
+<a href=#360 id=360 data-nosnippet>360</a>    <span class="kw">use </span><span class="kw">crate</span>::runtime::monarch_with_gil_blocking;
+<a href=#361 id=361 data-nosnippet>361</a>
+<a href=#362 id=362 data-nosnippet>362</a>    <span class="doccomment">/// Receive and extract the integer payload used by these tests. The caller
+<a href=#363 id=363 data-nosnippet>363</a>    /// supplies the GIL token so tests can coordinate another thread against
+<a href=#364 id=364 data-nosnippet>364</a>    /// the GIL release inside `next`.
+<a href=#365 id=365 data-nosnippet>365</a>    </span><span class="kw">fn </span>next_value_with_gil(receiver: <span class="kw-2">&amp;</span>Receiver, py: Python&lt;<span class="lifetime">'_</span>&gt;) -&gt; <span class="prelude-ty">Option</span>&lt;i64&gt; {
+<a href=#366 id=366 data-nosnippet>366</a>        receiver
+<a href=#367 id=367 data-nosnippet>367</a>            .next(py)
+<a href=#368 id=368 data-nosnippet>368</a>            .expect(<span class="string">"next should not fail"</span>)
+<a href=#369 id=369 data-nosnippet>369</a>            .map(|item| item.extract::&lt;i64&gt;(py).expect(<span class="string">"items are ints"</span>))
+<a href=#370 id=370 data-nosnippet>370</a>    }
+<a href=#371 id=371 data-nosnippet>371</a>
+<a href=#372 id=372 data-nosnippet>372</a>    <span class="doccomment">/// Receive through the production GIL and Python-conversion path.
+<a href=#373 id=373 data-nosnippet>373</a>    </span><span class="kw">fn </span>next_value(receiver: <span class="kw-2">&amp;</span>Receiver) -&gt; <span class="prelude-ty">Option</span>&lt;i64&gt; {
+<a href=#374 id=374 data-nosnippet>374</a>        monarch_with_gil_blocking(GilSite::Test, |py| next_value_with_gil(receiver, py))
+<a href=#375 id=375 data-nosnippet>375</a>    }
+<a href=#376 id=376 data-nosnippet>376</a>
+<a href=#377 id=377 data-nosnippet>377</a>    <span class="comment">// SI-2, SI-3: work published before a wait is visible immediately.
+<a href=#378 id=378 data-nosnippet>378</a>    </span><span class="attr">#[test]
+<a href=#379 id=379 data-nosnippet>379</a>    </span><span class="kw">fn </span>a_send_before_the_wait_is_received() {
+<a href=#380 id=380 data-nosnippet>380</a>        ensure_python();
+<a href=#381 id=381 data-nosnippet>381</a>        <span class="kw">let </span>Inbox {
+<a href=#382 id=382 data-nosnippet>382</a>            message_sender,
+<a href=#383 id=383 data-nosnippet>383</a>            control_sender: _control_sender_guard,
+<a href=#384 id=384 data-nosnippet>384</a>            receiver,
+<a href=#385 id=385 data-nosnippet>385</a>        } = new().unwrap();
+<a href=#386 id=386 data-nosnippet>386</a>        message_sender.send(<span class="number">1i64</span>).unwrap();
+<a href=#387 id=387 data-nosnippet>387</a>        <span class="macro">assert_eq!</span>(next_value(<span class="kw-2">&amp;</span>receiver), <span class="prelude-val">Some</span>(<span class="number">1</span>));
+<a href=#388 id=388 data-nosnippet>388</a>    }
+<a href=#389 id=389 data-nosnippet>389</a>
+<a href=#390 id=390 data-nosnippet>390</a>    <span class="comment">// SI-3, SI-4: a send wakes a blocked `next`, which releases the GIL while
+<a href=#391 id=391 data-nosnippet>391</a>    // it waits.
+<a href=#392 id=392 data-nosnippet>392</a>    </span><span class="attr">#[test]
+<a href=#393 id=393 data-nosnippet>393</a>    </span><span class="kw">fn </span>a_send_during_the_wait_wakes_it() {
+<a href=#394 id=394 data-nosnippet>394</a>        ensure_python();
+<a href=#395 id=395 data-nosnippet>395</a>        <span class="kw">let </span>Inbox {
+<a href=#396 id=396 data-nosnippet>396</a>            message_sender,
+<a href=#397 id=397 data-nosnippet>397</a>            control_sender: _control_sender_guard,
+<a href=#398 id=398 data-nosnippet>398</a>            receiver,
+<a href=#399 id=399 data-nosnippet>399</a>        } = new().unwrap();
+<a href=#400 id=400 data-nosnippet>400</a>        <span class="kw">let </span>(received, sender) = monarch_with_gil_blocking(GilSite::Test, |py| {
+<a href=#401 id=401 data-nosnippet>401</a>            <span class="kw">let </span>sender = thread::spawn(<span class="kw">move </span>|| {
+<a href=#402 id=402 data-nosnippet>402</a>                <span class="comment">// The test thread holds the GIL until `next` detaches. If
+<a href=#403 id=403 data-nosnippet>403</a>                // `next` kept it while blocked, this thread could never reach
+<a href=#404 id=404 data-nosnippet>404</a>                // `send` and the test would hang.
+<a href=#405 id=405 data-nosnippet>405</a>                </span>monarch_with_gil_blocking(GilSite::Test, |_py| {});
+<a href=#406 id=406 data-nosnippet>406</a>                message_sender.send(<span class="number">7i64</span>).unwrap();
+<a href=#407 id=407 data-nosnippet>407</a>                <span class="comment">// Keep the sender alive until after the assertion, so its drop
+<a href=#408 id=408 data-nosnippet>408</a>                // cannot add a disconnect wake to the behavior under test.
+<a href=#409 id=409 data-nosnippet>409</a>                </span>message_sender
+<a href=#410 id=410 data-nosnippet>410</a>            });
+<a href=#411 id=411 data-nosnippet>411</a>            (next_value_with_gil(<span class="kw-2">&amp;</span>receiver, py), sender)
+<a href=#412 id=412 data-nosnippet>412</a>        });
+<a href=#413 id=413 data-nosnippet>413</a>        <span class="macro">assert_eq!</span>(received, <span class="prelude-val">Some</span>(<span class="number">7</span>));
+<a href=#414 id=414 data-nosnippet>414</a>        drop(sender.join().unwrap());
+<a href=#415 id=415 data-nosnippet>415</a>    }
+<a href=#416 id=416 data-nosnippet>416</a>
+<a href=#417 id=417 data-nosnippet>417</a>    <span class="comment">// SI-1: the message plane is FIFO.
+<a href=#418 id=418 data-nosnippet>418</a>    </span><span class="attr">#[test]
+<a href=#419 id=419 data-nosnippet>419</a>    </span><span class="kw">fn </span>a_backlog_is_delivered_in_order() {
+<a href=#420 id=420 data-nosnippet>420</a>        ensure_python();
+<a href=#421 id=421 data-nosnippet>421</a>        <span class="kw">let </span>Inbox {
+<a href=#422 id=422 data-nosnippet>422</a>            message_sender,
+<a href=#423 id=423 data-nosnippet>423</a>            control_sender: _control_sender_guard,
+<a href=#424 id=424 data-nosnippet>424</a>            receiver,
+<a href=#425 id=425 data-nosnippet>425</a>        } = new().unwrap();
+<a href=#426 id=426 data-nosnippet>426</a>        <span class="kw">for </span>value <span class="kw">in </span><span class="number">1</span>..=<span class="number">3i64 </span>{
+<a href=#427 id=427 data-nosnippet>427</a>            message_sender.send(value).unwrap();
+<a href=#428 id=428 data-nosnippet>428</a>        }
+<a href=#429 id=429 data-nosnippet>429</a>        <span class="kw">let </span>received: Vec&lt;<span class="kw">_</span>&gt; = (<span class="number">0</span>..<span class="number">3</span>).map(|<span class="kw">_</span>| next_value(<span class="kw-2">&amp;</span>receiver)).collect();
+<a href=#430 id=430 data-nosnippet>430</a>        <span class="macro">assert_eq!</span>(received, <span class="macro">vec!</span>[<span class="prelude-val">Some</span>(<span class="number">1</span>), <span class="prelude-val">Some</span>(<span class="number">2</span>), <span class="prelude-val">Some</span>(<span class="number">3</span>)]);
+<a href=#431 id=431 data-nosnippet>431</a>    }
+<a href=#432 id=432 data-nosnippet>432</a>
+<a href=#433 id=433 data-nosnippet>433</a>    <span class="comment">// SI-1: control is selected before an existing message backlog.
+<a href=#434 id=434 data-nosnippet>434</a>    </span><span class="attr">#[test]
+<a href=#435 id=435 data-nosnippet>435</a>    </span><span class="kw">fn </span>a_control_item_jumps_the_message_backlog() {
+<a href=#436 id=436 data-nosnippet>436</a>        ensure_python();
+<a href=#437 id=437 data-nosnippet>437</a>        <span class="kw">let </span>Inbox {
+<a href=#438 id=438 data-nosnippet>438</a>            message_sender,
+<a href=#439 id=439 data-nosnippet>439</a>            control_sender,
+<a href=#440 id=440 data-nosnippet>440</a>            receiver,
+<a href=#441 id=441 data-nosnippet>441</a>        } = new().unwrap();
+<a href=#442 id=442 data-nosnippet>442</a>        message_sender.send(<span class="number">1i64</span>).unwrap();
+<a href=#443 id=443 data-nosnippet>443</a>        message_sender.send(<span class="number">2i64</span>).unwrap();
+<a href=#444 id=444 data-nosnippet>444</a>        control_sender.send(<span class="number">99i64</span>).unwrap();
+<a href=#445 id=445 data-nosnippet>445</a>        <span class="kw">let </span>received: Vec&lt;<span class="kw">_</span>&gt; = (<span class="number">0</span>..<span class="number">3</span>).map(|<span class="kw">_</span>| next_value(<span class="kw-2">&amp;</span>receiver)).collect();
+<a href=#446 id=446 data-nosnippet>446</a>        <span class="macro">assert_eq!</span>(
+<a href=#447 id=447 data-nosnippet>447</a>            received,
+<a href=#448 id=448 data-nosnippet>448</a>            <span class="macro">vec!</span>[<span class="prelude-val">Some</span>(<span class="number">99</span>), <span class="prelude-val">Some</span>(<span class="number">1</span>), <span class="prelude-val">Some</span>(<span class="number">2</span>)],
+<a href=#449 id=449 data-nosnippet>449</a>            <span class="string">"the control item should come first, then the messages in order"
+<a href=#450 id=450 data-nosnippet>450</a>        </span>);
+<a href=#451 id=451 data-nosnippet>451</a>    }
+<a href=#452 id=452 data-nosnippet>452</a>
+<a href=#453 id=453 data-nosnippet>453</a>    <span class="comment">// SI-5: once control disconnects, a control item queued before the close
+<a href=#454 id=454 data-nosnippet>454</a>    // is still returned, but the queued message is not.
+<a href=#455 id=455 data-nosnippet>455</a>    </span><span class="attr">#[test]
+<a href=#456 id=456 data-nosnippet>456</a>    </span><span class="kw">fn </span>a_closed_control_plane_returns_none_without_draining_messages() {
+<a href=#457 id=457 data-nosnippet>457</a>        ensure_python();
+<a href=#458 id=458 data-nosnippet>458</a>        <span class="kw">let </span>Inbox {
+<a href=#459 id=459 data-nosnippet>459</a>            message_sender,
+<a href=#460 id=460 data-nosnippet>460</a>            control_sender,
+<a href=#461 id=461 data-nosnippet>461</a>            receiver,
+<a href=#462 id=462 data-nosnippet>462</a>        } = new().unwrap();
+<a href=#463 id=463 data-nosnippet>463</a>        message_sender.send(<span class="number">5i64</span>).unwrap();
+<a href=#464 id=464 data-nosnippet>464</a>        control_sender.send(<span class="number">7i64</span>).unwrap();
+<a href=#465 id=465 data-nosnippet>465</a>        drop(message_sender);
+<a href=#466 id=466 data-nosnippet>466</a>        drop(control_sender);
+<a href=#467 id=467 data-nosnippet>467</a>        <span class="macro">assert_eq!</span>(next_value(<span class="kw-2">&amp;</span>receiver), <span class="prelude-val">Some</span>(<span class="number">7</span>));
+<a href=#468 id=468 data-nosnippet>468</a>        <span class="macro">assert_eq!</span>(next_value(<span class="kw-2">&amp;</span>receiver), <span class="prelude-val">None</span>);
+<a href=#469 id=469 data-nosnippet>469</a>    }
+<a href=#470 id=470 data-nosnippet>470</a>
+<a href=#471 id=471 data-nosnippet>471</a>    <span class="comment">// SI-4: conversion occurs after dequeue on the GIL-holding receiver.
+<a href=#472 id=472 data-nosnippet>472</a>    </span><span class="attr">#[test]
+<a href=#473 id=473 data-nosnippet>473</a>    </span><span class="kw">fn </span>a_conversion_failure_raises_and_consumes_the_item() {
+<a href=#474 id=474 data-nosnippet>474</a>        ensure_python();
+<a href=#475 id=475 data-nosnippet>475</a>        <span class="kw">let </span>Inbox {
+<a href=#476 id=476 data-nosnippet>476</a>            message_sender,
+<a href=#477 id=477 data-nosnippet>477</a>            control_sender: _control_sender_guard,
+<a href=#478 id=478 data-nosnippet>478</a>            receiver,
+<a href=#479 id=479 data-nosnippet>479</a>        } = new().unwrap();
+<a href=#480 id=480 data-nosnippet>480</a>        message_sender.send(Unconvertible).unwrap();
+<a href=#481 id=481 data-nosnippet>481</a>        <span class="comment">// A valid item behind the failing one proves that conversion failure
+<a href=#482 id=482 data-nosnippet>482</a>        // consumes only the item it failed to convert.
+<a href=#483 id=483 data-nosnippet>483</a>        </span>message_sender.send(<span class="number">9i64</span>).unwrap();
+<a href=#484 id=484 data-nosnippet>484</a>        <span class="kw">let </span>error = monarch_with_gil_blocking(GilSite::Test, |py| {
+<a href=#485 id=485 data-nosnippet>485</a>            receiver
+<a href=#486 id=486 data-nosnippet>486</a>                .next(py)
+<a href=#487 id=487 data-nosnippet>487</a>                .expect_err(<span class="string">"the conversion should fail"</span>)
+<a href=#488 id=488 data-nosnippet>488</a>                .to_string()
+<a href=#489 id=489 data-nosnippet>489</a>        });
+<a href=#490 id=490 data-nosnippet>490</a>        <span class="macro">assert!</span>(error.contains(<span class="string">"unconvertible test item"</span>), <span class="string">"{error}"</span>);
+<a href=#491 id=491 data-nosnippet>491</a>        <span class="macro">assert_eq!</span>(next_value(<span class="kw-2">&amp;</span>receiver), <span class="prelude-val">Some</span>(<span class="number">9</span>));
+<a href=#492 id=492 data-nosnippet>492</a>    }
+<a href=#493 id=493 data-nosnippet>493</a>
+<a href=#494 id=494 data-nosnippet>494</a>    <span class="comment">// SI-5: the final sender's drop closes the pipe's write end, and that EOF
+<a href=#495 id=495 data-nosnippet>495</a>    // wakes a waiting `next`; without it this test hangs.
+<a href=#496 id=496 data-nosnippet>496</a>    </span><span class="attr">#[test]
+<a href=#497 id=497 data-nosnippet>497</a>    </span><span class="kw">fn </span>a_disconnect_during_the_wait_wakes_it() {
+<a href=#498 id=498 data-nosnippet>498</a>        ensure_python();
+<a href=#499 id=499 data-nosnippet>499</a>        <span class="kw">let </span>Inbox {
+<a href=#500 id=500 data-nosnippet>500</a>            message_sender,
+<a href=#501 id=501 data-nosnippet>501</a>            control_sender,
+<a href=#502 id=502 data-nosnippet>502</a>            receiver,
+<a href=#503 id=503 data-nosnippet>503</a>        } = new().unwrap();
+<a href=#504 id=504 data-nosnippet>504</a>        <span class="kw">let </span>(received, dropper) = monarch_with_gil_blocking(GilSite::Test, |py| {
+<a href=#505 id=505 data-nosnippet>505</a>            <span class="kw">let </span>dropper = thread::spawn(<span class="kw">move </span>|| {
+<a href=#506 id=506 data-nosnippet>506</a>                <span class="comment">// The test thread holds the GIL until `next` detaches, so the
+<a href=#507 id=507 data-nosnippet>507</a>                // senders cannot be dropped before `next` begins waiting.
+<a href=#508 id=508 data-nosnippet>508</a>                </span>monarch_with_gil_blocking(GilSite::Test, |_py| {});
+<a href=#509 id=509 data-nosnippet>509</a>                drop(control_sender);
+<a href=#510 id=510 data-nosnippet>510</a>                drop(message_sender);
+<a href=#511 id=511 data-nosnippet>511</a>            });
+<a href=#512 id=512 data-nosnippet>512</a>            (next_value_with_gil(<span class="kw-2">&amp;</span>receiver, py), dropper)
+<a href=#513 id=513 data-nosnippet>513</a>        });
+<a href=#514 id=514 data-nosnippet>514</a>        <span class="macro">assert_eq!</span>(received, <span class="prelude-val">None</span>);
+<a href=#515 id=515 data-nosnippet>515</a>        dropper.join().unwrap();
+<a href=#516 id=516 data-nosnippet>516</a>    }
+<a href=#517 id=517 data-nosnippet>517</a>}
+</code></pre></div></section></main></body></html>

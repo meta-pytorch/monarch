@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["local"],"struct":["Counter","CounterTrack","Ctx","EndSlice","Instant","RawEvent","StartSlice","TimeNs","Track"],"trait":["Annotable","Nameable","Sink"]};
+window.SIDEBAR_ITEMS = {"mod":["local","profile"],"struct":["Counter","CounterTrack","Ctx","EndSlice","Instant","RawEvent","StartSlice","TimeNs","Track"],"trait":["Annotable","Nameable","Sink"]};

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["unix"],"struct":["ProcSpawner"],"trait":["ProcSpawnerEndpoint"]};
+window.SIDEBAR_ITEMS = {"fn":["actor_spawner_uid"],"mod":["unix"],"struct":["SpawnProc"],"trait":["ProcSpawnerEndpoint"]};

@@ -47,12 +47,11 @@ registered peer sender.
 gateway, so they reach each other—and the host reaches them—through the
 gateway's local `procs` table, with zero dialing.
 
-Their ids are *legacy pseudo-singletons*: literally the names `"service"` and
-`"local"`, identical across every host. A gateway can hold at most one proc per
-id, so a gateway can host at most one `service`/`local` pair—i.e. at most one
-host. `Host::new` uses `Gateway::global()`; callers that need more than one
-host in the same process, or need a pre-attached gateway, must use
-`Host::new_with_gateway`.
+`local_proc` always has a fresh instance id labeled `"local"`. Launchers can
+also give `service_proc` a fresh instance id labeled `"service"` through
+`Host::new_with_gateway`. The default remains the legacy `"service"`
+pseudo-singleton for compatibility. A gateway can contain multiple hosts only
+when each host has a distinct service proc id.
 
 ## Spawned children
 
@@ -79,8 +78,14 @@ let backend_addr = gateway.default_location().addr().clone();
 let frontend_handle = gateway.serve_with_listener(addr, listener)?;
 let frontend_addr = gateway.default_location().addr().clone();
 
-let service_proc = Proc::legacy_service_pseudo_singleton_on_gateway(gateway.clone());
-let local_proc = Proc::legacy_local_pseudo_singleton_on_gateway(gateway.clone());
+let service_proc = Proc::builder()
+    .proc_id(service_proc_id)
+    .shared_gateway(gateway.clone())
+    .build()?;
+let local_proc = Proc::builder()
+    .proc_id(ProcId::instance(Label::strip("local")))
+    .shared_gateway(gateway.clone())
+    .build()?;
 ```
 
 The backend address is passed to each child as its fallback route back to the
@@ -94,9 +99,9 @@ the frontend serve becomes the default location until a newer serve replaces it.
 
 ## Local proc invariant (LP-1)
 
-The local proc always exists as the singleton proc id `"local"` on the host
-gateway and is forwarded in-process, but it starts with zero actors. A
-`ProcAgent` and root client actor are added only when
+The local proc always exists as an instance proc with the label `"local"` on
+the host gateway and is routed through the gateway's local proc table, but it
+starts with zero actors. A `ProcAgent` and root client actor are added only when
 `HostMeshAgent::handle(GetLocalProc)` is first called.
 
 ## See Also

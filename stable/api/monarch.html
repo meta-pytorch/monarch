@@ -1,9 +1,8 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="../" >
 
   <head>
     <meta charset="utf-8" />
@@ -17,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="These API functions define monarch’s distributed tensor computation API. See Distributed Tensors in Monarch for an overview. Types: Distributed Computing: Simulation: Builtins: Builtins for Monarch..." />
 
-    <title>monarch &#8212; Monarch v0.6.0 documentation</title>
+    <title>monarch &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -37,29 +36,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="../" id="documentation_options" src="../_static/documentation_options.js"></script>
-    <script src="../_static/doctools.js"></script>
-    <script src="../_static/sphinx_highlight.js"></script>
-    <script src="../_static/design-tabs.js"></script>
+    <script src="../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../_static/doctools.js?v=888ff710"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'api/monarch';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/api/monarch.html" />
@@ -85,7 +84,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -199,7 +198,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -564,6 +563,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -634,6 +639,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -925,6 +936,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -995,6 +1012,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1223,12 +1246,15 @@ document.write(`
 
 
 
+
 <li class="toctree-l1"><a class="reference internal" href="monarch.config.html">monarch.config</a></li>
 
 
 
 
 <li class="toctree-l1"><a class="reference internal" href="monarch.job.html">monarch.job</a></li>
+
+
 
 
 
@@ -1349,11 +1375,11 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="monarch">
-<h1>monarch<a class="headerlink" href="#monarch" title="Permalink to this heading">#</a></h1>
+<h1>monarch<a class="headerlink" href="#monarch" title="Link to this heading">#</a></h1>
 <p>These API functions define monarch’s distributed tensor computation API. See <a class="reference internal" href="../generated/examples/distributed_tensors.html"><span class="doc">Distributed Tensors in Monarch</span></a> for an overview.</p>
 <dl class="py class">
 <dt class="sig sig-object py" id="monarch.Tensor">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Tensor</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fake</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stream</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor" title="Permalink to this definition">#</a></dt>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Tensor</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fake</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stream</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Referenceable</span></code>, <code class="xref py py-class docutils literal notranslate"><span class="pre">BaseTensor</span></code></p>
 <p>A distributed tensor for distributed computation across device meshes.</p>
 <p>Tensor represents a distributed tensor that spans across multiple devices
@@ -1363,32 +1389,32 @@ enables distributed operations and communication patterns.</p>
 </dl>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.Tensor.stream">
-<span class="sig-name descname"><span class="pre">stream</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference internal" href="#monarch.Stream" title="monarch.common.stream.Stream"><span class="pre">Stream</span></a></em><a class="headerlink" href="#monarch.Tensor.stream" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">stream</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference internal" href="#monarch.Stream" title="monarch.common.stream.Stream"><span class="pre">Stream</span></a></em><a class="headerlink" href="#monarch.Tensor.stream" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.Tensor.mesh">
-<span class="sig-name descname"><span class="pre">mesh</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">DeviceMesh</span></em><a class="headerlink" href="#monarch.Tensor.mesh" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">mesh</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">DeviceMesh</span></em><a class="headerlink" href="#monarch.Tensor.mesh" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.Tensor.ref">
-<span class="sig-name descname"><span class="pre">ref</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#monarch.Tensor.ref" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">ref</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><span class="pre">int</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/constants.html#None" title="(in Python v3.15)"><span class="pre">None</span></a></em><a class="headerlink" href="#monarch.Tensor.ref" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Tensor.drop">
-<span class="sig-name descname"><span class="pre">drop</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.drop"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.drop" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">drop</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.drop"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.drop" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py property">
 <dt class="sig sig-object py" id="monarch.Tensor.dropped">
-<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">dropped</span></span><a class="headerlink" href="#monarch.Tensor.dropped" title="Permalink to this definition">#</a></dt>
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">dropped</span></span><a class="headerlink" href="#monarch.Tensor.dropped" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Tensor.to_mesh">
-<span class="sig-name descname"><span class="pre">to_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stream</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.to_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.to_mesh" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">to_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stream</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.to_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.to_mesh" title="Link to this definition">#</a></dt>
 <dd><p>Move data between one device mesh and another. Sizes of named dimensions must match.
 If mesh has dimensions that self.mesh does not, it will broadcast to those dimensions.</p>
 <dl class="simple">
@@ -1401,14 +1427,14 @@ If mesh has dimensions that self.mesh does not, it will broadcast to those dimen
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Tensor.reduce_">
-<span class="sig-name descname"><span class="pre">reduce_</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sum'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scatter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.reduce_"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.reduce_" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">reduce_</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sum'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scatter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.reduce_"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.reduce_" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Tensor.reduce">
-<span class="sig-name descname"><span class="pre">reduce</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sum'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scatter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_inplace</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.reduce"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.reduce" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">reduce</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sum'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scatter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_inplace</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.reduce"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.reduce" title="Link to this definition">#</a></dt>
 <dd><p>Perform a reduction operation along dim, and move the data to mesh. If mesh=None, then mesh=self.mesh
 ‘stack’ (gather) will concat the values along dim, and produce a local result tensor with an addition outer dimension of len(dim).
 If scatter=True, the local result tensor will be evenly split across dim.</p>
@@ -1440,13 +1466,13 @@ ok because we eliminated the ‘gpu’ dim via reduction.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>dims</strong> (<em>Dims</em><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – The dimensions along which to perform the reduction.</p></li>
+<li><p><strong>dims</strong> (<em>Dims</em><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – The dimensions along which to perform the reduction.</p></li>
 <li><p><strong>reduction</strong> (<em>_valid_reduce</em>) – The type of reduction to perform. Defaults to “sum”.</p></li>
-<li><p><strong>scatter</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, the local result tensor will be evenly split across dimensions.
+<li><p><strong>scatter</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>) – If True, the local result tensor will be evenly split across dimensions.
 Defaults to False.</p></li>
 <li><p><strong>mesh</strong> (<em>Optional</em><em>[</em><em>&quot;DeviceMesh&quot;</em><em>]</em><em>, </em><em>optional</em>) – The target mesh to move the data to.
 If None, uses self.mesh. Defaults to None.</p></li>
-<li><p><strong>_inplace</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, performs the operation in-place. Defaults to False.
+<li><p><strong>_inplace</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>) – If True, performs the operation in-place. Defaults to False.
 Note that not all the reduction operations support in-place.</p></li>
 <li><p><strong>out</strong> (<em>Optional</em><em>[</em><em>&quot;Tensor&quot;</em><em>]</em>) – The output tensor to store the result. If None, a new tensor
 will be created on the stream where the reduce operation executes. Defaults to None.</p></li>
@@ -1463,14 +1489,14 @@ will be created on the stream where the reduce operation executes. Defaults to N
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Tensor.slice_mesh">
-<span class="sig-name descname"><span class="pre">slice_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.slice_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.slice_mesh" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">slice_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.slice_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.slice_mesh" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Tensor.delete_ref">
-<span class="sig-name descname"><span class="pre">delete_ref</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ref</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.delete_ref"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.delete_ref" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">delete_ref</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ref</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.delete_ref"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.delete_ref" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
@@ -1479,25 +1505,25 @@ will be created on the stream where the reduce operation executes. Defaults to N
 
 <dl class="py class">
 <dt class="sig sig-object py" id="monarch.Stream">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Stream</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_default</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#Stream"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Stream" title="Permalink to this definition">#</a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Stream</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_default</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#Stream"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Stream" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/builtins/functions.html#object" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <dl class="field-list simple">
 </dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Stream.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_default</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#Stream.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Stream.__init__" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_default</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#Stream.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Stream.__init__" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Stream.activate">
-<span class="sig-name descname"><span class="pre">activate</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#Stream.activate"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Stream.activate" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">activate</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#Stream.activate"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Stream.activate" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Stream.borrow">
-<span class="sig-name descname"><span class="pre">borrow</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">t</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mutable</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#Stream.borrow"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Stream.borrow" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">borrow</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">t</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mutable</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#Stream.borrow"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Stream.borrow" title="Link to this definition">#</a></dt>
 <dd><blockquote>
 <div><p>borrowed_tensor, borrow = self.borrow(t)</p>
 </div></blockquote>
@@ -1516,35 +1542,35 @@ the borrow is returned (becomes free and a wait_for has been issued).</p>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.remote">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">function</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.14)"><span class="pre">Callable</span></a><span class="p"><span class="pre">[</span></span><span class="p"><span class="pre">[</span></span><span class="pre">P</span><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">R</span><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">propagate</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><span class="pre">Any</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Remote</span><span class="p"><span class="pre">[</span></span><span class="pre">P</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">R</span><span class="p"><span class="pre">]</span></span></span></span><a class="reference internal" href="../_modules/monarch/common/remote.html#remote"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.remote" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">function</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.15)"><span class="pre">Callable</span></a><span class="p"><span class="pre">[</span></span><span class="p"><span class="pre">[</span></span><span class="pre">P</span><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">R</span><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">propagate</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.15)"><span class="pre">Any</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Remote</span><span class="p"><span class="pre">[</span></span><span class="pre">P</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">R</span><span class="p"><span class="pre">]</span></span></span></span><a class="reference internal" href="../_modules/monarch/common/remote.html#remote"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.remote" title="Link to this definition">#</a></dt>
 <dt class="sig sig-object py">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">function</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">propagate</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Literal" title="(in Python v3.14)"><span class="pre">Literal</span></a><span class="p"><span class="pre">[</span></span><span class="s"><span class="pre">'mocked'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'cached'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'inspect'</span></span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Remote</span></span></span></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">function</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><span class="pre">str</span></a></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">propagate</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Literal" title="(in Python v3.15)"><span class="pre">Literal</span></a><span class="p"><span class="pre">[</span></span><span class="s"><span class="pre">'mocked'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'cached'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'inspect'</span></span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/constants.html#None" title="(in Python v3.15)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Remote</span></span></span></dt>
 <dt class="sig sig-object py">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">function</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">propagate</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.14)"><span class="pre">Callable</span></a><span class="p"><span class="pre">[</span></span><span class="p"><span class="pre">[</span></span><span class="pre">P</span><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">R</span><span class="p"><span class="pre">]</span></span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Remote</span><span class="p"><span class="pre">[</span></span><span class="pre">P</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">R</span><span class="p"><span class="pre">]</span></span></span></span></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">function</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><span class="pre">str</span></a></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">propagate</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.15)"><span class="pre">Callable</span></a><span class="p"><span class="pre">[</span></span><span class="p"><span class="pre">[</span></span><span class="pre">P</span><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">R</span><span class="p"><span class="pre">]</span></span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Remote</span><span class="p"><span class="pre">[</span></span><span class="pre">P</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">R</span><span class="p"><span class="pre">]</span></span></span></span></dt>
 <dt class="sig sig-object py">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">propagate</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><span class="pre">Any</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">RemoteIfy</span></span></span></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">propagate</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.15)"><span class="pre">Any</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">RemoteIfy</span></span></span></dt>
 <dd></dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.coalescing">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">coalescing</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/_coalescing.html#coalescing"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.coalescing" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">coalescing</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/_coalescing.html#coalescing"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.coalescing" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.get_active_mesh">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">get_active_mesh</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#get_active_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.get_active_mesh" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">get_active_mesh</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#get_active_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.get_active_mesh" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.no_mesh">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">no_mesh</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.no_mesh" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">no_mesh</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.no_mesh" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.to_mesh">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">to_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tensors</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stream</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#to_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.to_mesh" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">to_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tensors</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stream</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#to_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.to_mesh" title="Link to this definition">#</a></dt>
 <dd><p>Move all tensors in tensors to the given mesh.</p>
 <dl class="field-list simple">
 </dl>
@@ -1552,7 +1578,7 @@ the borrow is returned (becomes free and a wait_for has been issued).</p>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.slice_mesh">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">slice_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tensors</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#slice_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.slice_mesh" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">slice_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tensors</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#slice_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.slice_mesh" title="Link to this definition">#</a></dt>
 <dd><p>Performs the slice_mesh operation for each tensor in tensors.</p>
 <dl class="field-list simple">
 </dl>
@@ -1560,12 +1586,12 @@ the borrow is returned (becomes free and a wait_for has been issued).</p>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.get_active_stream">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">get_active_stream</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#get_active_stream"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.get_active_stream" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">get_active_stream</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#get_active_stream"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.get_active_stream" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.reduce">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">reduce</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tensors</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sum'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scatter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_inplace</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#reduce"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.reduce" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">reduce</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tensors</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sum'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scatter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_inplace</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#reduce"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.reduce" title="Link to this definition">#</a></dt>
 <dd><p>Performs the tensor reduction operation for each tensor in tensors.
 :param tensors: The pytree of input tensors to reduce.
 :type tensors: pytree[“Tensor”]
@@ -1582,7 +1608,7 @@ the borrow is returned (becomes free and a wait_for has been issued).</p>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>mesh</strong> (<em>Optional</em><em>[</em><em>&quot;DeviceMesh&quot;</em><em>]</em><em>, </em><em>optional</em>) – The target mesh to move the data to.
 If None, uses self.mesh. Defaults to None.</p></li>
-<li><p><strong>_inplace</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, performs the operation in-place. Defaults to False.
+<li><p><strong>_inplace</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>) – If True, performs the operation in-place. Defaults to False.
 Note that not all the reduction operations support in-place.</p></li>
 </ul>
 </dd>
@@ -1591,21 +1617,21 @@ Note that not all the reduction operations support in-place.</p></li>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.reduce_">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">reduce_</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tensors</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sum'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scatter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#reduce_"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.reduce_" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">reduce_</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tensors</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sum'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scatter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#reduce_"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.reduce_" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.call_on_shard_and_fetch">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">call_on_shard_and_fetch</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">remote</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shard</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/remote.html#call_on_shard_and_fetch"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.call_on_shard_and_fetch" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">call_on_shard_and_fetch</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">remote</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shard</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/remote.html#call_on_shard_and_fetch"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.call_on_shard_and_fetch" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.fetch_shard">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">fetch_shard</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">obj</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shard</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/fetch.html#fetch_shard"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.fetch_shard" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">fetch_shard</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">obj</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shard</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/fetch.html#fetch_shard"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.fetch_shard" title="Link to this definition">#</a></dt>
 <dd><p>Retrieve the shard at <cite>coordinates</cite> of the current device mesh of each
 tensor in obj. All tensors in <cite>obj</cite> will be fetched to the CPU device.</p>
 <blockquote>
@@ -1623,45 +1649,45 @@ shard - a dictionary from mesh dimension name to coordinate of the shard</p>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.inspect">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">inspect</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">obj</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shard</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/fetch.html#inspect"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.inspect" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">inspect</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">obj</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shard</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/fetch.html#inspect"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.inspect" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.show">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">show</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">obj</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shard</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/fetch.html#show"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.show" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">show</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">obj</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shard</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/fetch.html#show"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.show" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.grad_function">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">grad_function</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fn</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/gradient_generator.html#grad_function"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.grad_function" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">grad_function</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fn</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/gradient_generator.html#grad_function"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.grad_function" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.grad_generator">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">grad_generator</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">roots</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">with_respect_to</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grad_roots</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/gradient_generator.html#grad_generator"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.grad_generator" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">grad_generator</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">roots</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">with_respect_to</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grad_roots</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/gradient_generator.html#grad_generator"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.grad_generator" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.timer">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">timer</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.timer" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">timer</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.timer" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.world_mesh">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">world_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ctx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hosts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gpu_per_host</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_processes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/world_mesh.html#world_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.world_mesh" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">world_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ctx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hosts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gpu_per_host</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_processes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/world_mesh.html#world_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.world_mesh" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.function_resolvers">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">function_resolvers</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.function_resolvers" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">function_resolvers</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.function_resolvers" title="Link to this definition">#</a></dt>
 <dd><p>Built-in mutable sequence.</p>
 <p>If no argument is given, the constructor creates a new empty list.
 The argument must be an iterable if specified.</p>
@@ -1669,111 +1695,111 @@ The argument must be an iterable if specified.</p>
 
 </section>
 <section id="types">
-<h1>Types<a class="headerlink" href="#types" title="Permalink to this heading">#</a></h1>
+<h1>Types<a class="headerlink" href="#types" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="monarch.Extent">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Extent</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">labels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sizes</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Extent" title="Permalink to this definition">#</a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Extent</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">labels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sizes</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Extent" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/builtins/functions.html#object" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Extent.from_bytes">
-<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_bytes</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">bytes</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Extent.from_bytes" title="Permalink to this definition">#</a></dt>
+<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_bytes</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">bytes</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Extent.from_bytes" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Extent.keys">
-<span class="sig-name descname"><span class="pre">keys</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Extent.keys" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">keys</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Extent.keys" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.Extent.labels">
-<span class="sig-name descname"><span class="pre">labels</span></span><a class="headerlink" href="#monarch.Extent.labels" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">labels</span></span><a class="headerlink" href="#monarch.Extent.labels" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.Extent.nelements">
-<span class="sig-name descname"><span class="pre">nelements</span></span><a class="headerlink" href="#monarch.Extent.nelements" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">nelements</span></span><a class="headerlink" href="#monarch.Extent.nelements" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.Extent.region">
-<span class="sig-name descname"><span class="pre">region</span></span><a class="headerlink" href="#monarch.Extent.region" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">region</span></span><a class="headerlink" href="#monarch.Extent.region" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.Extent.sizes">
-<span class="sig-name descname"><span class="pre">sizes</span></span><a class="headerlink" href="#monarch.Extent.sizes" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">sizes</span></span><a class="headerlink" href="#monarch.Extent.sizes" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 </dd></dl>
 
 <dl class="py class">
 <dt class="sig sig-object py" id="monarch.Shape">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Shape</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">labels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">slice</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape" title="Permalink to this definition">#</a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Shape</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">labels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">slice</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/builtins/functions.html#object" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Shape.at">
-<span class="sig-name descname"><span class="pre">at</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">label</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">index</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.at" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">at</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">label</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">index</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.at" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Shape.coordinates">
-<span class="sig-name descname"><span class="pre">coordinates</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">rank</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.coordinates" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">coordinates</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">rank</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.coordinates" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.Shape.extent">
-<span class="sig-name descname"><span class="pre">extent</span></span><a class="headerlink" href="#monarch.Shape.extent" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">extent</span></span><a class="headerlink" href="#monarch.Shape.extent" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Shape.from_bytes">
-<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_bytes</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">bytes</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.from_bytes" title="Permalink to this definition">#</a></dt>
+<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_bytes</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">bytes</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.from_bytes" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Shape.index">
-<span class="sig-name descname"><span class="pre">index</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.index" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">index</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.index" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.Shape.labels">
-<span class="sig-name descname"><span class="pre">labels</span></span><a class="headerlink" href="#monarch.Shape.labels" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">labels</span></span><a class="headerlink" href="#monarch.Shape.labels" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.Shape.ndslice">
-<span class="sig-name descname"><span class="pre">ndslice</span></span><a class="headerlink" href="#monarch.Shape.ndslice" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">ndslice</span></span><a class="headerlink" href="#monarch.Shape.ndslice" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Shape.ranks">
-<span class="sig-name descname"><span class="pre">ranks</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.ranks" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">ranks</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.ranks" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.Shape.region">
-<span class="sig-name descname"><span class="pre">region</span></span><a class="headerlink" href="#monarch.Shape.region" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">region</span></span><a class="headerlink" href="#monarch.Shape.region" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Shape.select">
-<span class="sig-name descname"><span class="pre">select</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">label</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">slice</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.select" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">select</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">label</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">slice</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.select" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Shape.unity">
-<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">unity</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.unity" title="Permalink to this definition">#</a></dt>
+<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">unity</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.unity" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 </dd></dl>
 
 <dl class="py class">
 <dt class="sig sig-object py" id="monarch.Selection">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Selection</span></span><a class="headerlink" href="#monarch.Selection" title="Permalink to this definition">#</a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Selection</span></span><a class="headerlink" href="#monarch.Selection" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/builtins/functions.html#object" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Selection.all">
-<span class="sig-name descname"><span class="pre">all</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Selection.all" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">all</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Selection.all" title="Link to this definition">#</a></dt>
 <dd><p>Selects all elements in the mesh — use this to mean “route to
 all nodes”.</p>
 <p>The ‘*’ expression is automatically expanded to match the
@@ -1783,7 +1809,7 @@ selection becomes <cite>*, *, *</cite>.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Selection.any">
-<span class="sig-name descname"><span class="pre">any</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Selection.any" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">any</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Selection.any" title="Link to this definition">#</a></dt>
 <dd><p>Selects one element nondeterministically — use this to mean
 “route to a single random node”.</p>
 <p>The ‘?’ expression is automatically expanded to match the
@@ -1793,14 +1819,14 @@ selection becomes <cite>?, ?, ?</cite>.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Selection.from_string">
-<span class="sig-name descname"><span class="pre">from_string</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Selection.from_string" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">from_string</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Selection.from_string" title="Link to this definition">#</a></dt>
 <dd><p>Parses a selection expression from a string.</p>
 <p>This allows you to construct a <cite>PySelection</cite> using the
 selection algebra surface syntax, such as <cite>“(*, 0:4, ?)”</cite>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Raises<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.14)"><strong>ValueError</strong></a> – If the input string is not a valid selection</p></li>
+<li><p><a class="reference external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError" title="(in Python v3.15)"><strong>ValueError</strong></a> – If the input string is not a valid selection</p></li>
 <li><p><strong>expression.</strong> – </p></li>
 </ul>
 </dd>
@@ -1813,14 +1839,14 @@ selection algebra surface syntax, such as <cite>“(*, 0:4, ?)”</cite>.</p>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.NDSlice">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">NDSlice</span></span><a class="headerlink" href="#monarch.NDSlice" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">NDSlice</span></span><a class="headerlink" href="#monarch.NDSlice" title="Link to this definition">#</a></dt>
 <dd><p>alias of <code class="xref py py-class docutils literal notranslate"><span class="pre">Slice</span></code></p>
 </dd></dl>
 
 <dl class="py class">
 <dt class="sig sig-object py" id="monarch.OpaqueRef">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">OpaqueRef</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">value</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/opaque_ref.html#OpaqueRef"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.OpaqueRef" title="Permalink to this definition">#</a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">OpaqueRef</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">value</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/opaque_ref.html#OpaqueRef"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.OpaqueRef" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/builtins/functions.html#object" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>OpaqueRef is a reference to an object that is only resolvable on the worker
 This is used to pass objects from the controller to the worker across User Defined Functions</p>
 <dl>
@@ -1840,25 +1866,25 @@ run_step(model_ref)</p>
 </dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.OpaqueRef.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">value</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/opaque_ref.html#OpaqueRef.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.OpaqueRef.__init__" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">value</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/opaque_ref.html#OpaqueRef.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.OpaqueRef.__init__" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py property">
 <dt class="sig sig-object py" id="monarch.OpaqueRef.value">
-<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">value</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><span class="pre">Any</span></a></em><a class="headerlink" href="#monarch.OpaqueRef.value" title="Permalink to this definition">#</a></dt>
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">value</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.15)"><span class="pre">Any</span></a></em><a class="headerlink" href="#monarch.OpaqueRef.value" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.OpaqueRef.check_worker">
-<span class="sig-name descname"><span class="pre">check_worker</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">what</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/opaque_ref.html#OpaqueRef.check_worker"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.OpaqueRef.check_worker" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">check_worker</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">what</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/opaque_ref.html#OpaqueRef.check_worker"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.OpaqueRef.check_worker" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 </dd></dl>
 
 <dl class="py class">
 <dt class="sig sig-object py" id="monarch.Future">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Future</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">client</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future" title="Permalink to this definition">#</a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Generic" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">Generic</span></code></a>[<code class="xref py py-obj docutils literal notranslate"><span class="pre">T</span></code>]</p>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Future</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">client</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Generic" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">Generic</span></code></a>[<code class="xref py py-obj docutils literal notranslate"><span class="pre">T</span></code>]</p>
 <p>A future object representing the result of an asynchronous computation.</p>
 <p>Future provides a way to access the result of a computation that may not
 have completed yet. It allows for non-blocking execution and provides
@@ -1870,89 +1896,89 @@ methods to wait for completion and retrieve results.</p>
 </dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Future.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">client</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.__init__" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">client</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.__init__" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Future.result">
-<span class="sig-name descname"><span class="pre">result</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.result"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.result" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">result</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.result"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.result" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Future.done">
-<span class="sig-name descname"><span class="pre">done</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.done"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.done" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">done</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.done"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.done" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Future.exception">
-<span class="sig-name descname"><span class="pre">exception</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.exception"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.exception" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">exception</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.exception"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.exception" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.Future.add_callback">
-<span class="sig-name descname"><span class="pre">add_callback</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">callback</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.add_callback"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.add_callback" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">add_callback</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">callback</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.add_callback"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.add_callback" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 </dd></dl>
 
 </section>
 <section id="distributed-computing">
-<h1>Distributed Computing<a class="headerlink" href="#distributed-computing" title="Permalink to this heading">#</a></h1>
+<h1>Distributed Computing<a class="headerlink" href="#distributed-computing" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="monarch.RemoteProcessGroup">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">RemoteProcessGroup</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device_mesh</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup" title="Permalink to this definition">#</a></dt>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">RemoteProcessGroup</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device_mesh</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Referenceable</span></code></p>
 <p>Client’s view of a process group.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.RemoteProcessGroup.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device_mesh</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.__init__" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device_mesh</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.__init__" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.RemoteProcessGroup.ensure_split_comm_remotely">
-<span class="sig-name descname"><span class="pre">ensure_split_comm_remotely</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">stream</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.ensure_split_comm_remotely"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.ensure_split_comm_remotely" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">ensure_split_comm_remotely</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">stream</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.ensure_split_comm_remotely"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.ensure_split_comm_remotely" title="Link to this definition">#</a></dt>
 <dd><p>If we haven’t already, send a message to the worker to split off a
 communicator for this PG on the given stream.</p>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.RemoteProcessGroup.delete_ref">
-<span class="sig-name descname"><span class="pre">delete_ref</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ref</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.delete_ref"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.delete_ref" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">delete_ref</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ref</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.delete_ref"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.delete_ref" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.RemoteProcessGroup.drop">
-<span class="sig-name descname"><span class="pre">drop</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.drop"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.drop" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">drop</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.drop"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.drop" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.RemoteProcessGroup.size">
-<span class="sig-name descname"><span class="pre">size</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.size"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.size" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">size</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.size"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.size" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py property">
 <dt class="sig sig-object py" id="monarch.RemoteProcessGroup.dropped">
-<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">dropped</span></span><a class="headerlink" href="#monarch.RemoteProcessGroup.dropped" title="Permalink to this definition">#</a></dt>
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">dropped</span></span><a class="headerlink" href="#monarch.RemoteProcessGroup.dropped" title="Link to this definition">#</a></dt>
 <dd></dd></dl>
 
 </dd></dl>
 
 </section>
 <section id="simulation">
-<h1>Simulation<a class="headerlink" href="#simulation" title="Permalink to this heading">#</a></h1>
+<h1>Simulation<a class="headerlink" href="#simulation" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="monarch.Simulator">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Simulator</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">hosts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gpus</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">simulate_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">SimulatorBackendMode.SIMULATE</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">trace_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">SimulatorTraceMode.STREAM_ONLY</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">upload_trace</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">trace_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'trace.json'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">command_history_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'command_history.pkl'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">group_workers</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">build_ir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/simulator/interface.html#Simulator"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Simulator" title="Permalink to this definition">#</a></dt>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Simulator</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">hosts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gpus</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">simulate_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">SimulatorBackendMode.SIMULATE</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">trace_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">SimulatorTraceMode.STREAM_ONLY</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">upload_trace</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">trace_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'trace.json'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">command_history_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'command_history.pkl'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">group_workers</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">build_ir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/simulator/interface.html#Simulator"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Simulator" title="Link to this definition">#</a></dt>
 <dd><p>Bases:</p>
 <dl class="field-list simple">
 </dl>
@@ -1960,7 +1986,7 @@ communicator for this PG on the given stream.</p>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.set_meta">
-<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">set_meta</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">new_value</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/simulator/config.html#set_meta"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.set_meta" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">set_meta</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">new_value</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/simulator/config.html#set_meta"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.set_meta" title="Link to this definition">#</a></dt>
 <dd><p>Context manager that sets metadata for simulator tasks created within its scope.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -1977,7 +2003,7 @@ communicator for this PG on the given stream.</p>
 
 </section>
 <section id="module-monarch.builtins">
-<span id="builtins"></span><h1>Builtins<a class="headerlink" href="#module-monarch.builtins" title="Permalink to this heading">#</a></h1>
+<span id="builtins"></span><h1>Builtins<a class="headerlink" href="#module-monarch.builtins" title="Link to this heading">#</a></h1>
 <p>Builtins for Monarch is a set of remote function defintions for PyTorch functions and other utilities.</p>
 </section>
 
@@ -2346,7 +2372,7 @@ communicator for this PG on the given stream.</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>

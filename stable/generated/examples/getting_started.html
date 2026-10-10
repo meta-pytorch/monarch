@@ -1,9 +1,8 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="../../" >
 
   <head>
     <meta charset="utf-8" />
@@ -17,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="This guide introduces the core concepts of Monarch, a framework for building multi-machine training programs using actors. We’ll cover: Defining actors with endpoint functions, Spawning actors loca..." />
 
-    <title>Getting Started &#8212; Monarch v0.6.0 documentation</title>
+    <title>Getting Started &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -37,29 +36,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="../../_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="../../" id="documentation_options" src="../../_static/documentation_options.js"></script>
-    <script src="../../_static/doctools.js"></script>
-    <script src="../../_static/sphinx_highlight.js"></script>
-    <script src="../../_static/design-tabs.js"></script>
+    <script src="../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'generated/examples/getting_started';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/generated/examples/getting_started.html" />
@@ -85,7 +84,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="api">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -199,7 +198,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -564,6 +563,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -634,6 +639,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -925,6 +936,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -995,6 +1012,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1304,7 +1327,7 @@ document.write(`
 to download the full example code</p>
 </div>
 <section class="sphx-glr-example-title" id="getting-started">
-<span id="sphx-glr-generated-examples-getting-started-py"></span><h1>Getting Started<a class="headerlink" href="#getting-started" title="Permalink to this heading">#</a></h1>
+<span id="sphx-glr-generated-examples-getting-started-py"></span><h1>Getting Started<a class="headerlink" href="#getting-started" title="Link to this heading">#</a></h1>
 <p>This guide introduces the core concepts of Monarch, a framework for building
 multi-machine training programs using actors. We’ll cover:</p>
 <ul class="simple">
@@ -1315,7 +1338,7 @@ multi-machine training programs using actors. We’ll cover:</p>
 <li><p>Distributed tensors and RDMA capabilities</p></li>
 </ul>
 <section id="defining-an-actor">
-<h2>Defining an Actor<a class="headerlink" href="#defining-an-actor" title="Permalink to this heading">#</a></h2>
+<h2>Defining an Actor<a class="headerlink" href="#defining-an-actor" title="Link to this heading">#</a></h2>
 <p>At its core, Monarch uses actors as a way to create multi-machine training programs.
 Actors are Python objects that expose a number of endpoint functions. These functions
 can be called by other actors in the system and their responses gathered asynchronously.</p>
@@ -1342,7 +1365,7 @@ actor calls with correct types.</p>
 </section>
 </section>
 <section id="spawning-an-actor-in-the-local-process">
-<h1>Spawning An Actor In The Local Process<a class="headerlink" href="#spawning-an-actor-in-the-local-process" title="Permalink to this heading">#</a></h1>
+<h1>Spawning An Actor In The Local Process<a class="headerlink" href="#spawning-an-actor-in-the-local-process" title="Link to this heading">#</a></h1>
 <p>We can then spawn an actor in the currently running process like so:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">counter</span><span class="p">:</span> <span class="n">Counter</span> <span class="o">=</span> <span class="n">this_proc</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;counter&quot;</span><span class="p">,</span> <span class="n">Counter</span><span class="p">,</span> <span class="n">initial_value</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
 </pre></div>
@@ -1355,7 +1378,7 @@ Note that passing messages between two actors (even if they are on the same proc
 always implies serialization.</p>
 </section>
 <section id="sending-a-simple-message">
-<h1>Sending A Simple Message<a class="headerlink" href="#sending-a-simple-message" title="Permalink to this heading">#</a></h1>
+<h1>Sending A Simple Message<a class="headerlink" href="#sending-a-simple-message" title="Link to this heading">#</a></h1>
 <p>Once spawned we can send messages to the actor:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">Future</span>
 
@@ -1373,7 +1396,7 @@ the sender do other things before it needs the reply. <code class="docutils lite
 Futures can also be awaited if you are in an asyncio context.</p>
 </section>
 <section id="multiple-actors-at-once">
-<h1>Multiple Actors at Once<a class="headerlink" href="#multiple-actors-at-once" title="Permalink to this heading">#</a></h1>
+<h1>Multiple Actors at Once<a class="headerlink" href="#multiple-actors-at-once" title="Link to this heading">#</a></h1>
 <p>Monarch scales to thousands of machines because of its ability to broadcast a single
 message to many actors at once rather than send many point-to-point messages. By
 organizing communication into trees, monarch can multicast messages to thousands of
@@ -1391,7 +1414,7 @@ indexing across the hosts in a cluster, or “gpus”, indexing across things in
 </pre></div>
 </div>
 <section id="broadcasting-messages">
-<h2>Broadcasting Messages<a class="headerlink" href="#broadcasting-messages" title="Permalink to this heading">#</a></h2>
+<h2>Broadcasting Messages<a class="headerlink" href="#broadcasting-messages" title="Link to this heading">#</a></h2>
 <p>Now messages can be sent to all the actors in the mesh:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">counters</span><span class="o">.</span><span class="n">increment</span><span class="o">.</span><span class="n">broadcast</span><span class="p">()</span>
 </pre></div>
@@ -1402,7 +1425,7 @@ Note however that all messages (including broadcasts) are delivered in the order
 the client (about which more later).</p>
 </section>
 <section id="slicing-meshes">
-<h2>Slicing Meshes<a class="headerlink" href="#slicing-meshes" title="Permalink to this heading">#</a></h2>
+<h2>Slicing Meshes<a class="headerlink" href="#slicing-meshes" title="Link to this heading">#</a></h2>
 <p>We can also slice up the mesh and send to only some of it (gpus 0 through 4):</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">counters</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">gpus</span><span class="o">=</span><span class="nb">slice</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span><span class="o">.</span><span class="n">increment</span><span class="o">.</span><span class="n">broadcast</span><span class="p">()</span>
 </pre></div>
@@ -1418,16 +1441,17 @@ a single actor being messaged.</p>
 </section>
 </section>
 <section id="multiple-hosts">
-<h1>Multiple Hosts<a class="headerlink" href="#multiple-hosts" title="Permalink to this heading">#</a></h1>
+<h1>Multiple Hosts<a class="headerlink" href="#multiple-hosts" title="Link to this heading">#</a></h1>
 <p>When we created our processes before, we spawned them on <cite>this_host()</cite> – the machine
 running the top-level script. For larger jobs, monarch controls many machines. How these
 machines are obtained depends on the scheduling system (Slurm, Kubernetes, SkyPilot, etc.),
 but these schedulers are typically encapsulated in a config file.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">context</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">,</span> <span class="n">hosts_from_config</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">context</span><span class="p">,</span> <span class="n">HostMesh</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch.job</span><span class="w"> </span><span class="kn">import</span> <span class="n">hosts_from_config</span>
 </pre></div>
 </div>
 <p>We obtain the mesh of hosts for the job by loading that config:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">hosts</span><span class="p">:</span> <span class="n">HostMesh</span> <span class="o">=</span> <span class="n">hosts_from_config</span><span class="p">(</span><span class="s2">&quot;MONARCH_HOSTS&quot;</span><span class="p">)</span>  <span class="c1"># NYI: hosts_from_config</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">hosts</span><span class="p">:</span> <span class="n">HostMesh</span> <span class="o">=</span> <span class="n">hosts_from_config</span><span class="p">(</span><span class="s2">&quot;MONARCH_HOSTS&quot;</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">hosts</span><span class="o">.</span><span class="n">extent</span><span class="p">)</span>
 
 <span class="c1"># An extent is the logical shape of a mesh. It is an ordered map, specifying the size of</span>
@@ -1455,7 +1479,7 @@ but these schedulers are typically encapsulated in a config file.</p>
 </pre></div>
 </div>
 <section id="logging">
-<h2>Logging<a class="headerlink" href="#logging" title="Permalink to this heading">#</a></h2>
+<h2>Logging<a class="headerlink" href="#logging" title="Link to this heading">#</a></h2>
 <p>Since we’re talking about having multiple hosts now, it’s worth briefly covering how Monarch handles distributed logging.
 User logs from a Monarch job are routed to stdout and stderr of the corresponding process.
 In distributed runs, you can stream all worker logs to the client and aggregate them to reduce verbosity.
@@ -1473,7 +1497,7 @@ include <code class="docutils literal notranslate"><span class="pre">[&quot;TRAC
 </section>
 </section>
 <section id="actor-and-process-references">
-<h1>Actor and Process References<a class="headerlink" href="#actor-and-process-references" title="Permalink to this heading">#</a></h1>
+<h1>Actor and Process References<a class="headerlink" href="#actor-and-process-references" title="Link to this heading">#</a></h1>
 <p>Actors, processes, and hosts can be sent between actors as arguments to messages.
 This lets programs establish more complicated messaging patterns or establish point-to-point
 connectivity between actors. For instance, we can launch DataLoader actors and Trainer actors
@@ -1509,7 +1533,7 @@ without the trainer needing to be modified.</p>
 </div>
 </section>
 <section id="the-supervision-tree">
-<h1>The Supervision Tree<a class="headerlink" href="#the-supervision-tree" title="Permalink to this heading">#</a></h1>
+<h1>The Supervision Tree<a class="headerlink" href="#the-supervision-tree" title="Link to this heading">#</a></h1>
 <p>Large scale training will run into issues with faulty hardware, flaky networks, and
 software bugs. Monarch is designed to provide good behaviors for errors and faults by
 default with the option to define more sophisticated behavior for faster recovery or
@@ -1531,7 +1555,7 @@ has a parent that launched it and is responsible for its health.</p>
 </pre></div>
 </div>
 <section id="broadcasting-without-response">
-<h2>Broadcasting Without Response<a class="headerlink" href="#broadcasting-without-response" title="Permalink to this heading">#</a></h2>
+<h2>Broadcasting Without Response<a class="headerlink" href="#broadcasting-without-response" title="Link to this heading">#</a></h2>
 <p>We also might call something and provide it no way to respond.
 In this case, the error will not show up as an exception, but will be delivered
 to the owner of “e”.</p>
@@ -1546,13 +1570,16 @@ stop the spawning processes.</p>
 </section>
 </section>
 <section id="fine-grained-supervision">
-<h1>Fine-grained Supervision<a class="headerlink" href="#fine-grained-supervision" title="Permalink to this heading">#</a></h1>
+<h1>Fine-grained Supervision<a class="headerlink" href="#fine-grained-supervision" title="Link to this heading">#</a></h1>
 <p>Sometimes fine-grained recovery is possible. For instance, if a data loader failed to
 read a URL, perhaps it would work to just restart it. In these cases, we also offer a
 different API. If an actor defines a <cite>__supervise__</cite> special method, then it will get
 called to handle supervision events for meshes owned by the actor. It may be declared
-with either <cite>def</cite> or <cite>async def</cite>; an <cite>async def</cite> override runs on the actor’s asyncio
-event loop and can <cite>await</cite> other endpoints or I/O.
+with either <cite>def</cite> or <cite>async def</cite>, except that an actor whose endpoints are all <cite>def</cite>
+needs a <cite>def</cite> <cite>__supervise__</cite>; an <cite>async def</cite> override runs on the actor’s asyncio
+event loop and can <cite>await</cite> other endpoints or I/O. The actor keeps handling messages
+while <cite>__supervise__</cite> is pending, and it may run at any <cite>await</cite> in the actor’s
+endpoints, so re-check any state it changes after an <cite>await</cite>.
 If an error happens on an ActorMesh that is a reference, such as a slice, or
 a mesh that is sent to another actor, then the recovery is done on the original
 creator of that mesh, not the holder of the reference. There is currently
@@ -1606,7 +1633,7 @@ with a KeyboardInterrupt.</p>
 </div>
 </section>
 <section id="point-to-point-rdma">
-<h1>Point-to-Point RDMA<a class="headerlink" href="#point-to-point-rdma" title="Permalink to this heading">#</a></h1>
+<h1>Point-to-Point RDMA<a class="headerlink" href="#point-to-point-rdma" title="Link to this heading">#</a></h1>
 <p>Monarch provides first-class RDMA support through the RDMABuffer API. This lets
 you separate data references from data movement - instead of sending large tensors
 through your messaging patterns, you pass lightweight buffer references anywhere
@@ -1662,7 +1689,7 @@ build higher-level libraries for transferring tensors or implementing collective
 on top of these primitives.</p>
 </section>
 <section id="distributed-tensors">
-<h1>Distributed Tensors<a class="headerlink" href="#distributed-tensors" title="Permalink to this heading">#</a></h1>
+<h1>Distributed Tensors<a class="headerlink" href="#distributed-tensors" title="Link to this heading">#</a></h1>
 <p>Monarch also comes with a ‘tensor engine’ that provides distributed torch tensors.
 This lets a single actor directly compute with tensors distributed across a mesh of processes.</p>
 <p>We can use distributed features by ‘activating’ a ProcMesh:</p>
@@ -1721,7 +1748,7 @@ However, currently the performance of messaging for distributed tensors is not o
 still useful for interactive debugging.</p>
 </section>
 <section id="summary">
-<h1>Summary<a class="headerlink" href="#summary" title="Permalink to this heading">#</a></h1>
+<h1>Summary<a class="headerlink" href="#summary" title="Link to this heading">#</a></h1>
 <p>We have now seen all four major features of Monarch:</p>
 <ol class="arabic simple">
 <li><p><strong>Scalable messaging</strong> using multidimensional meshes of actors</p></li>
@@ -1735,7 +1762,7 @@ clear semantics for distribution, fault tolerance, and communication patterns.</
 with the above features.</p>
 </section>
 <section id="actor-context">
-<h1>Actor Context<a class="headerlink" href="#actor-context" title="Permalink to this heading">#</a></h1>
+<h1>Actor Context<a class="headerlink" href="#actor-context" title="Link to this heading">#</a></h1>
 <p>At any point, code might need to know ‘what’ it is and ‘where’ it is. For instance,
 when initializing torch.distributed, it will need a RANK/WORLD_SIZE. In monarch, the
 ‘what’ is always what actor is currently running the code. The ‘where’ can be
@@ -1759,7 +1786,7 @@ looked up using the <cite>context()</cite> API:</p>
 of the dimension names to the index within that dimension.</p>
 </section>
 <section id="free-remote-functions">
-<h1>Free Remote Functions<a class="headerlink" href="#free-remote-functions" title="Permalink to this heading">#</a></h1>
+<h1>Free Remote Functions<a class="headerlink" href="#free-remote-functions" title="Link to this heading">#</a></h1>
 <p>It is possible to run functions on a process mesh that are not associated with any actor.
 These can be useful to set up state on a process, or perform pre-post processing of
 data before sending it to an actor:</p>
@@ -1779,7 +1806,7 @@ data before sending it to an actor:</p>
 </div>
 </section>
 <section id="channels-and-low-level-messaging">
-<h1>Channels and Low-level messaging<a class="headerlink" href="#channels-and-low-level-messaging" title="Permalink to this heading">#</a></h1>
+<h1>Channels and Low-level messaging<a class="headerlink" href="#channels-and-low-level-messaging" title="Link to this heading">#</a></h1>
 <p>It is sometimes useful to establish direct channels between two points,
 or forward the handling of some messages from one actor to another.
 To enable this, all messaging in monarch is built out of port objects.</p>
@@ -1812,7 +1839,7 @@ the  <code class="docutils literal notranslate"><span class="pre">send</span></c
 implemented in terms of ports and send.</p>
 </section>
 <section id="message-ordering">
-<h1>Message Ordering<a class="headerlink" href="#message-ordering" title="Permalink to this heading">#</a></h1>
+<h1>Message Ordering<a class="headerlink" href="#message-ordering" title="Link to this heading">#</a></h1>
 <p>Messages from an actor are delivered to the destination actor in order in which they are sent.
 In particular, if actor A sends a message M0 to actor B, and then
 later A sends another message M1 to B, then actor B will receive M0 before M1.
@@ -1824,7 +1851,7 @@ before the next message on the actor is called.</p>
 <p>Different actors in the same process handle messages concurrently.</p>
 </section>
 <section id="responding-out-of-order">
-<h1>Responding Out of Order<a class="headerlink" href="#responding-out-of-order" title="Permalink to this heading">#</a></h1>
+<h1>Responding Out of Order<a class="headerlink" href="#responding-out-of-order" title="Link to this heading">#</a></h1>
 <p>Messages to actors are delivered in order, but sometimes an actor might want to
 respond to later messages first. The normal way of defining an endpoint does not
 allow for this since it must return the response before future messages are delivered.</p>
@@ -2177,7 +2204,7 @@ even if update_weights was called after infer:</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>
@@ -2206,7 +2233,7 @@ even if update_weights was called after infer:</p>
        "headline": "Getting Started",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/generated/examples/getting_started.html",
-       "articleBody": "Note Go to the end to download the full example code Getting Started# This guide introduces the core concepts of Monarch, a framework for building multi-machine training programs using actors. We\u2019ll cover: Defining actors with endpoint functions Spawning actors locally and across multiple hosts and processes Sending messages and organizing actors into meshes The supervision tree for fault tolerance Distributed tensors and RDMA capabilities Defining an Actor# At its core, Monarch uses actors as a way to create multi-machine training programs. Actors are Python objects that expose a number of endpoint functions. These functions can be called by other actors in the system and their responses gathered asynchronously. Let\u2019s start by defining a simple actor: from monarch.actor import Actor, endpoint, this_proc class Counter(Actor): def __init__(self, initial_value: int): self.value = initial_value @endpoint def increment(self) -\u003e None: self.value += 1 @endpoint def get_value(self) -\u003e int: return self.value The decorator endpoint specifies functions of the Actor that can be called remotely from other actors. We do it this way to ensure that IDE can offer autocompletions of actor calls with correct types. Spawning An Actor In The Local Process# We can then spawn an actor in the currently running process like so: counter: Counter = this_proc().spawn(\"counter\", Counter, initial_value=0) this_proc() is a handle to a process and lets us directly control where an actor runs. Monarch is very literal about where things run so that code can be written in the most efficient way. For instance, two actors in the same proc can rely on the fact that they have the same memory space. Two actors on the same host can communicate through /dev/shm, etc. Note that passing messages between two actors (even if they are on the same proc) currently always implies serialization. Sending A Simple Message# Once spawned we can send messages to the actor: from monarch.actor import Future fut: Future[int] = counter.get_value.call_one() value: int = fut.get() print(f\"Counter value: {value}\") Here we invoked the get_value message, returning 0, the current value of the Counter. We refer to the call_one method as an \u2018adverb\u2019 because it modifies how results of the endpoint are handled. call_one just invokes a single actor and gets its value. Notice the return value is a Future[int] \u2013 the message is sent asynchronously, letting the sender do other things before it needs the reply. get() waits on the result. Futures can also be awaited if you are in an asyncio context. Multiple Actors at Once# Monarch scales to thousands of machines because of its ability to broadcast a single message to many actors at once rather than send many point-to-point messages. By organizing communication into trees, monarch can multicast messages to thousands of machines in a scalable way with good latency. We express broadcasted communication by organizing actors into a Mesh \u2013 a multidimensional container with named dimensions. For instance a cluster might have dimensions {\u201chosts\u201d: 32, \u201cgpus\u201d: 8}. Dimension names are normally things like \u201chosts\u201d, indexing across the hosts in a cluster, or \u201cgpus\u201d, indexing across things in a machine. from monarch.actor import ProcMesh, this_host To create a mesh of actors, we first create a mesh of processes, and spawn an actor on them: procs: ProcMesh = this_host().spawn_procs(per_host={\"gpus\": 8}) counters: Counter = procs.spawn(\"counters\", Counter, 0) Broadcasting Messages# Now messages can be sent to all the actors in the mesh: counters.increment.broadcast() The broadcast adverb means that we are sending a message to all members of the mesh. broadcast is inherently asynchronous: it does not return a future that you can wait on. Note however that all messages (including broadcasts) are delivered in the order sent by the client (about which more later). Slicing Meshes# We can also slice up the mesh and send to only some of it (gpus 0 through 4): counters.slice(gpus=slice(0, 4)).increment.broadcast() The call adverb lets us broadcast a message to a group of actors, and then aggregate their responses back: print(counters.get_value.call().get()) broadcast and call are the most commonly used adverbs. The call_one adverb we used earlier is actually just a special case of call, asserting that you know there is only a single actor being messaged. Multiple Hosts# When we created our processes before, we spawned them on this_host() \u2013 the machine running the top-level script. For larger jobs, monarch controls many machines. How these machines are obtained depends on the scheduling system (Slurm, Kubernetes, SkyPilot, etc.), but these schedulers are typically encapsulated in a config file. from monarch.actor import context, HostMesh, hosts_from_config We obtain the mesh of hosts for the job by loading that config: hosts: HostMesh = hosts_from_config(\"MONARCH_HOSTS\") # NYI: hosts_from_config print(hosts.extent) # An extent is the logical shape of a mesh. It is an ordered map, specifying the size of # each dimension in the mesh. Let\u2019s imagine we are writing a trainer across multiple hosts: class Trainer(Actor): @endpoint def step(self): my_point = context().message_rank return f\"Trainer {my_point} taking a step.\" trainer_procs: ProcMesh = hosts.spawn_procs(per_host={\"gpus\": 4}) print(f\"Process mesh extent: {trainer_procs.extent}\") Spawn the trainers trainers = trainer_procs.spawn(\"trainer\", Trainer) Do one training step and wait for all to finish it print(trainers.step.call().get()) Logging# Since we\u2019re talking about having multiple hosts now, it\u2019s worth briefly covering how Monarch handles distributed logging. User logs from a Monarch job are routed to stdout and stderr of the corresponding process. In distributed runs, you can stream all worker logs to the client and aggregate them to reduce verbosity. logging_option is an async method, so it must be awaited: import asyncio asyncio.run(procs.logging_option(stream_to_client=True, aggregate_window_sec=3)) With stream_to_client=True, Monarch forwards logs from all processes (best effort) and applies a windowed aggregator that collapses similar lines and emits summaries that allow to get a holistic view of the job. If you wish to inspect Monarch system logs, you can find them at /tmp/$USER/monarch* on the servers running the client and the other Monarch processes. You can override the log levels by setting MONARCH_FILE_LOG (stdout), and MONARCH_STDERR_LOG (stderr). Valid values include [\"TRACE\", \"DEBUG\", \"INFO\", \"WARN\", \"ERROR\"]. Actor and Process References# Actors, processes, and hosts can be sent between actors as arguments to messages. This lets programs establish more complicated messaging patterns or establish point-to-point connectivity between actors. For instance, we can launch DataLoader actors and Trainer actors then pass the dataloaders to the trainers. The nice part of doing it this way instead of having the trainers launch the data loaders is that we can relocate the data loader to live on another host without the trainer needing to be modified. class DataLoader(Actor): def __init__(self): self.i = 0 @endpoint def example(self): self.i += 1 return f\"\u003cfake data {self.i}\u003e\" class Trainer(Actor): def __init__(self, dataloader: DataLoader): my_rank = context().actor_instance.rank # select or single corresponding data loader to work with. self.dataloader = dataloader.slice(**my_rank) @endpoint def step(self, input=None): data = self.dataloader.example.call_one().get() return f\"Step with data {data} and input = {input}\" dataloaders = trainer_procs.spawn(\"dataloader\", DataLoader) dtrainers = trainer_procs.spawn(\"dtrainers\", Trainer, dataloaders) print(dtrainers.step.call().get()) The Supervision Tree# Large scale training will run into issues with faulty hardware, flaky networks, and software bugs. Monarch is designed to provide good behaviors for errors and faults by default with the option to define more sophisticated behavior for faster recovery or fault tolerance. We borrow from Erlang the idea of a tree of supervision. Each process, and each actor has a parent that launched it and is responsible for its health. class Errorful(Actor): @endpoint def say_hello(self): raise Exception(\"I don\u0027t want to\") If we are calling the endpoint and expecting a response, the error will get routed to the caller: e = this_proc().spawn(\"errorful\", Errorful) try: e.say_hello.call_one().get() except Exception: print(\"It didn\u0027t say hello\") Broadcasting Without Response# We also might call something and provide it no way to respond. In this case, the error will not show up as an exception, but will be delivered to the owner of \u201ce\u201d. if False: e.say_hello.broadcast() # do not expect a response The default behavior of the supervision tree means that an error at any level of process or actor creation will not go unreported. This can prevent a lot of accidental deadlocks compared to the standard unix-style defaults where threads and processes exiting do not stop the spawning processes. Fine-grained Supervision# Sometimes fine-grained recovery is possible. For instance, if a data loader failed to read a URL, perhaps it would work to just restart it. In these cases, we also offer a different API. If an actor defines a __supervise__ special method, then it will get called to handle supervision events for meshes owned by the actor. It may be declared with either def or async def; an async def override runs on the actor\u2019s asyncio event loop and can await other endpoints or I/O. If an error happens on an ActorMesh that is a reference, such as a slice, or a mesh that is sent to another actor, then the recovery is done on the original creator of that mesh, not the holder of the reference. There is currently no way to transfer the ownership from the original creator, this way we ensure every actor has a single owner to report errors to. from monarch.actor import MeshFailure class SupervisorActor(Actor): def __supervise__(self, failure: MeshFailure): # The failure message will include the id of the actor that failed and # the reason why. print(f\"Failure received: {failure}\") # Logic to handle failures and potentially restart failed actors # If a truthy value is returned, the supervision event is considered handled # and will not be propagated further. # Otherwise, the event will be propagated to the creator of this actor. # That will be the Actor (or client) which called the spawn() method. return True # `__supervise__` can also be declared `async def`, e.g. to await # a restart endpoint: # # async def __supervise__(self, failure: MeshFailure) -\u003e bool: # await self.restart_failed_mesh(failure) # return True If a MeshFailure is not handled by any __supervise__ in the supervision tree, it will reach the client, where monarch.actor.unhandled_fault_hook will be called with the MeshFailure object. By default, this function exits the process with a KeyboardInterrupt. # You can overwrite the global unhandled_fault_hook function to customize this # behavior. The function can either: # - raise any exception (including BaseException) to indicate that the failure was not handled # - return any value (including None) to indicate that the failure was handled import monarch.actor def my_unhandled_fault_hook(failure: MeshFailure) -\u003e None: # Log it, add metrics, etc. print(f\"Mesh failure was not handled: {failure}\") # The failure will be ignored unless this hook returns an exception. # pyre-ignore[9]: Callable is compatible. monarch.actor.unhandled_fault_hook = my_unhandled_fault_hook Point-to-Point RDMA# Monarch provides first-class RDMA support through the RDMABuffer API. This lets you separate data references from data movement - instead of sending large tensors through your messaging patterns, you pass lightweight buffer references anywhere in your system, then explicitly transfer the actual data only when and where you need it. This approach lets you design your service\u2019s coordination patterns based on your application logic rather than being constrained by when the framework forces data transfers. RDMA transfers use libibverbs to transfer data over infiniband or RoCE. Unlike traditional NCCL collectives where a send must be matched to a receive, once an actor has a handle to a buffer, it can read or write to the buffer without the owner of the buffer. import torch from monarch.rdma import RDMABuffer class ParameterServer(Actor): def __init__(self): self.weights = torch.rand(1000, 1000) # Large model weights # RDMABuffer does not copy the data. It just # creates a view of the data that can be passed to # other processes. self.weight_buffer = RDMABuffer(self.weights.view(torch.uint8).flatten()) @endpoint def get_weights(self) -\u003e RDMABuffer: return self.weight_buffer # Small message: just a reference! class Worker(Actor): def __init__(self): self.local_weights = torch.zeros(1000, 1000) @endpoint def sync_weights(self, server: ParameterServer): # Control plane: get lightweight reference weight_ref = server.get_weights.call_one().get() # Data plane: explicit bulk transfer when needed weight_ref.read_into(self.local_weights.view(torch.uint8).flatten()).get() server_proc = this_host().spawn_procs(per_host={\"gpus\": 1}) worker_proc = this_host().spawn_procs(per_host={\"gpus\": 1}) server = server_proc.spawn(\"server\", ParameterServer) worker = worker_proc.spawn(\"worker\", Worker) worker.sync_weights.call_one(server).get() RDMABuffers are intentionally low-level: they do just the data movement when requested. It is up to the caller to ensure that the data is not modified until the movement is complete. We intend to build higher-level libraries for transferring tensors or implementing collective operations on top of these primitives. Distributed Tensors# Monarch also comes with a \u2018tensor engine\u2019 that provides distributed torch tensors. This lets a single actor directly compute with tensors distributed across a mesh of processes. We can use distributed features by \u2018activating\u2019 a ProcMesh: with trainer_procs.activate(): t = torch.rand(3, 4) print(t) The tensor t is now a distributed tensor with a unique value across each process in the mesh. we can examine the values on each proc using built in functions: from monarch import fetch_shard print(\"one\", fetch_shard(t, hosts=0, gpus=0).get()) print(\"two\", fetch_shard(t, hosts=0, gpus=1).get()) and compute with the tensors using any torch function: with trainer_procs.activate(): dist_compute = t @ t.T print(\"dist\", fetch_shard(dist_compute, hosts=0, gpus=0).get()) A distributed tensor can be passed to any mesh of actors that is located on the same mesh of processes as the tensors. Each actor will receive the shard of the distributed tensor that is on the same process as the actor: print(dtrainers.step.call(dist_compute[0]).get()) And actors themselves can define their own distributed tensors with the rref adverb: class LinearActor(Actor): def __init__(self): self.w = torch.rand(3, 3) # The propagation function is like a type signature: it computes the # shape of the output, given an input of a particular shape. It is used # by the tensor engine to correctly create the (local) returned distributed # tensor references; this way local references can be created and used # immediately, without needing to synchronize the calls with the actors. @endpoint(propagate=lambda x: x) def forward(self, input): return input @ self.w linear = trainer_procs.spawn(\"linear\", LinearActor) o = torch.relu(linear.forward.rref(t)) The rref adverb invokes the endpoint and then makes the output of the endpoint into a distributed tensor that can be used in further distributed computation. Distributed tensors also include ways of doing reductions and gathers across shards and moving tensors between processes. See Distributed Tensors in Monarch for more information including reductions across shards and moving tensors between processes. We eventually want it to be possible for an entirely training framework to be written in terms of distributed tensors. However, currently the performance of messaging for distributed tensors is not optimized enough to make this practice. They are still useful for interactive debugging. Summary# We have now seen all four major features of Monarch: Scalable messaging using multidimensional meshes of actors Fault tolerance through supervision trees and __supervise__ Point-to-point low-level RDMA Built-in distributed tensors This foundation enables building sophisticated multi-machine training programs with clear semantics for distribution, fault tolerance, and communication patterns. The remaining sections fill in more details about how to accomplish common patterns with the above features. Actor Context# At any point, code might need to know \u2018what\u2019 it is and \u2018where\u2019 it is. For instance, when initializing torch.distributed, it will need a RANK/WORLD_SIZE. In monarch, the \u2018what\u2019 is always what actor is currently running the code. The \u2018where\u2019 can be looked up using the context() API: class ContextAwareActor(Actor): @endpoint def get_context_info(self): actor_instance = context().actor_instance # `context().message_rank` returns the coordinates in the message. This isn\u0027t always the # same as the actor\u0027s rank because messages can be sent to a slice of actors rather than # the whole thing. message_rank = context().message_rank return f\"Actor rank: {actor_instance.rank}, message rank: {message_rank}\" c = trainer_procs.spawn(\"context_actor\", ContextAwareActor) print(c.get_context_info.call().get()) Ranks are always multidimensional and reported as Point objects (dict-like mappings) of the dimension names to the index within that dimension. Free Remote Functions# It is possible to run functions on a process mesh that are not associated with any actor. These can be useful to set up state on a process, or perform pre-post processing of data before sending it to an actor: from monarch import remote @remote def check_memory(): import psutil return psutil.Process().memory_info() with trainer_procs.activate(): print(check_memory.call().get()) Channels and Low-level messaging# It is sometimes useful to establish direct channels between two points, or forward the handling of some messages from one actor to another. To enable this, all messaging in monarch is built out of port objects. An actor can create a new channel, which provides a Port for sending and a PortReceiver for receiving messages. The Port object can then be sent to any endpoint. from monarch.actor import Channel, Port port, recv = Channel.open() port.send(3) print(recv.recv().get()) Ports can be passed as arguments to actors and sent a response remotely. We can also directly ask an endpoint to send its response to a port using the send messaging primitive. from monarch.actor import send with trainer_procs.activate(): send(check_memory, args=(), kwargs={}, port=port) The port will receive a response from each actor send the message: for _ in range(4): print(recv.recv().get()) The other adverbs like call, stream, and broadcast are just implemented in terms of ports and send. Message Ordering# Messages from an actor are delivered to the destination actor in order in which they are sent. In particular, if actor A sends a message M0 to actor B, and then later A sends another message M1 to B, then actor B will receive M0 before M1. Messages in monarch are sent to a mesh of multiple actor instances at once. For the purpose of message ordering, this bulk send behaves as if it sent each message individually to each destination. Each actor handles its messages sequentially. It must finish the handling of a message before the next message on the actor is called. Different actors in the same process handle messages concurrently. Responding Out of Order# Messages to actors are delivered in order, but sometimes an actor might want to respond to later messages first. The normal way of defining an endpoint does not allow for this since it must return the response before future messages are delivered. Instead, an endpoint can request an explicit port object on which to deliver a response. Here is an example of an inference engine where we use an explicit reponse port for the infer endpoint so that we can make sure that we always use the most recent version of the weights even if update_weights was called after infer: import threading import time from queue import Queue class InferenceEngine(Actor): def __init__(self): self.q = Queue() self.new_weights = None self.worker = threading.Thread(target=self.run) self.worker.start() @endpoint def update_weights(self, new_weights): self.new_weights = new_weights @endpoint(explicit_response_port=True) def infer(self, port: Port[int]): self.q.put(port) def run(self): while True: request = self.q.get() # always use the most recent weight version we have: result = f\"inferred with: {self.new_weights}\" # pretend to take time time.sleep(1) # process request, send response request.send(result) engine = this_proc().spawn(\"engine\", InferenceEngine) engine.update_weights.broadcast(0) first = engine.infer.call_one() second = engine.infer.call_one() engine.update_weights.broadcast(1) print(first.get()) print(second.get()) # still uses newest weights Total running time of the script: (0 minutes 0.000 seconds) Download Python source code: getting_started.py Download Jupyter notebook: getting_started.ipynb Gallery generated by Sphinx-Gallery",
+       "articleBody": "Note Go to the end to download the full example code Getting Started# This guide introduces the core concepts of Monarch, a framework for building multi-machine training programs using actors. We\u2019ll cover: Defining actors with endpoint functions Spawning actors locally and across multiple hosts and processes Sending messages and organizing actors into meshes The supervision tree for fault tolerance Distributed tensors and RDMA capabilities Defining an Actor# At its core, Monarch uses actors as a way to create multi-machine training programs. Actors are Python objects that expose a number of endpoint functions. These functions can be called by other actors in the system and their responses gathered asynchronously. Let\u2019s start by defining a simple actor: from monarch.actor import Actor, endpoint, this_proc class Counter(Actor): def __init__(self, initial_value: int): self.value = initial_value @endpoint def increment(self) -\u003e None: self.value += 1 @endpoint def get_value(self) -\u003e int: return self.value The decorator endpoint specifies functions of the Actor that can be called remotely from other actors. We do it this way to ensure that IDE can offer autocompletions of actor calls with correct types. Spawning An Actor In The Local Process# We can then spawn an actor in the currently running process like so: counter: Counter = this_proc().spawn(\"counter\", Counter, initial_value=0) this_proc() is a handle to a process and lets us directly control where an actor runs. Monarch is very literal about where things run so that code can be written in the most efficient way. For instance, two actors in the same proc can rely on the fact that they have the same memory space. Two actors on the same host can communicate through /dev/shm, etc. Note that passing messages between two actors (even if they are on the same proc) currently always implies serialization. Sending A Simple Message# Once spawned we can send messages to the actor: from monarch.actor import Future fut: Future[int] = counter.get_value.call_one() value: int = fut.get() print(f\"Counter value: {value}\") Here we invoked the get_value message, returning 0, the current value of the Counter. We refer to the call_one method as an \u2018adverb\u2019 because it modifies how results of the endpoint are handled. call_one just invokes a single actor and gets its value. Notice the return value is a Future[int] \u2013 the message is sent asynchronously, letting the sender do other things before it needs the reply. get() waits on the result. Futures can also be awaited if you are in an asyncio context. Multiple Actors at Once# Monarch scales to thousands of machines because of its ability to broadcast a single message to many actors at once rather than send many point-to-point messages. By organizing communication into trees, monarch can multicast messages to thousands of machines in a scalable way with good latency. We express broadcasted communication by organizing actors into a Mesh \u2013 a multidimensional container with named dimensions. For instance a cluster might have dimensions {\u201chosts\u201d: 32, \u201cgpus\u201d: 8}. Dimension names are normally things like \u201chosts\u201d, indexing across the hosts in a cluster, or \u201cgpus\u201d, indexing across things in a machine. from monarch.actor import ProcMesh, this_host To create a mesh of actors, we first create a mesh of processes, and spawn an actor on them: procs: ProcMesh = this_host().spawn_procs(per_host={\"gpus\": 8}) counters: Counter = procs.spawn(\"counters\", Counter, 0) Broadcasting Messages# Now messages can be sent to all the actors in the mesh: counters.increment.broadcast() The broadcast adverb means that we are sending a message to all members of the mesh. broadcast is inherently asynchronous: it does not return a future that you can wait on. Note however that all messages (including broadcasts) are delivered in the order sent by the client (about which more later). Slicing Meshes# We can also slice up the mesh and send to only some of it (gpus 0 through 4): counters.slice(gpus=slice(0, 4)).increment.broadcast() The call adverb lets us broadcast a message to a group of actors, and then aggregate their responses back: print(counters.get_value.call().get()) broadcast and call are the most commonly used adverbs. The call_one adverb we used earlier is actually just a special case of call, asserting that you know there is only a single actor being messaged. Multiple Hosts# When we created our processes before, we spawned them on this_host() \u2013 the machine running the top-level script. For larger jobs, monarch controls many machines. How these machines are obtained depends on the scheduling system (Slurm, Kubernetes, SkyPilot, etc.), but these schedulers are typically encapsulated in a config file. from monarch.actor import context, HostMesh from monarch.job import hosts_from_config We obtain the mesh of hosts for the job by loading that config: hosts: HostMesh = hosts_from_config(\"MONARCH_HOSTS\") print(hosts.extent) # An extent is the logical shape of a mesh. It is an ordered map, specifying the size of # each dimension in the mesh. Let\u2019s imagine we are writing a trainer across multiple hosts: class Trainer(Actor): @endpoint def step(self): my_point = context().message_rank return f\"Trainer {my_point} taking a step.\" trainer_procs: ProcMesh = hosts.spawn_procs(per_host={\"gpus\": 4}) print(f\"Process mesh extent: {trainer_procs.extent}\") Spawn the trainers trainers = trainer_procs.spawn(\"trainer\", Trainer) Do one training step and wait for all to finish it print(trainers.step.call().get()) Logging# Since we\u2019re talking about having multiple hosts now, it\u2019s worth briefly covering how Monarch handles distributed logging. User logs from a Monarch job are routed to stdout and stderr of the corresponding process. In distributed runs, you can stream all worker logs to the client and aggregate them to reduce verbosity. logging_option is an async method, so it must be awaited: import asyncio asyncio.run(procs.logging_option(stream_to_client=True, aggregate_window_sec=3)) With stream_to_client=True, Monarch forwards logs from all processes (best effort) and applies a windowed aggregator that collapses similar lines and emits summaries that allow to get a holistic view of the job. If you wish to inspect Monarch system logs, you can find them at /tmp/$USER/monarch* on the servers running the client and the other Monarch processes. You can override the log levels by setting MONARCH_FILE_LOG (stdout), and MONARCH_STDERR_LOG (stderr). Valid values include [\"TRACE\", \"DEBUG\", \"INFO\", \"WARN\", \"ERROR\"]. Actor and Process References# Actors, processes, and hosts can be sent between actors as arguments to messages. This lets programs establish more complicated messaging patterns or establish point-to-point connectivity between actors. For instance, we can launch DataLoader actors and Trainer actors then pass the dataloaders to the trainers. The nice part of doing it this way instead of having the trainers launch the data loaders is that we can relocate the data loader to live on another host without the trainer needing to be modified. class DataLoader(Actor): def __init__(self): self.i = 0 @endpoint def example(self): self.i += 1 return f\"\u003cfake data {self.i}\u003e\" class Trainer(Actor): def __init__(self, dataloader: DataLoader): my_rank = context().actor_instance.rank # select or single corresponding data loader to work with. self.dataloader = dataloader.slice(**my_rank) @endpoint def step(self, input=None): data = self.dataloader.example.call_one().get() return f\"Step with data {data} and input = {input}\" dataloaders = trainer_procs.spawn(\"dataloader\", DataLoader) dtrainers = trainer_procs.spawn(\"dtrainers\", Trainer, dataloaders) print(dtrainers.step.call().get()) The Supervision Tree# Large scale training will run into issues with faulty hardware, flaky networks, and software bugs. Monarch is designed to provide good behaviors for errors and faults by default with the option to define more sophisticated behavior for faster recovery or fault tolerance. We borrow from Erlang the idea of a tree of supervision. Each process, and each actor has a parent that launched it and is responsible for its health. class Errorful(Actor): @endpoint def say_hello(self): raise Exception(\"I don\u0027t want to\") If we are calling the endpoint and expecting a response, the error will get routed to the caller: e = this_proc().spawn(\"errorful\", Errorful) try: e.say_hello.call_one().get() except Exception: print(\"It didn\u0027t say hello\") Broadcasting Without Response# We also might call something and provide it no way to respond. In this case, the error will not show up as an exception, but will be delivered to the owner of \u201ce\u201d. if False: e.say_hello.broadcast() # do not expect a response The default behavior of the supervision tree means that an error at any level of process or actor creation will not go unreported. This can prevent a lot of accidental deadlocks compared to the standard unix-style defaults where threads and processes exiting do not stop the spawning processes. Fine-grained Supervision# Sometimes fine-grained recovery is possible. For instance, if a data loader failed to read a URL, perhaps it would work to just restart it. In these cases, we also offer a different API. If an actor defines a __supervise__ special method, then it will get called to handle supervision events for meshes owned by the actor. It may be declared with either def or async def, except that an actor whose endpoints are all def needs a def __supervise__; an async def override runs on the actor\u2019s asyncio event loop and can await other endpoints or I/O. The actor keeps handling messages while __supervise__ is pending, and it may run at any await in the actor\u2019s endpoints, so re-check any state it changes after an await. If an error happens on an ActorMesh that is a reference, such as a slice, or a mesh that is sent to another actor, then the recovery is done on the original creator of that mesh, not the holder of the reference. There is currently no way to transfer the ownership from the original creator, this way we ensure every actor has a single owner to report errors to. from monarch.actor import MeshFailure class SupervisorActor(Actor): def __supervise__(self, failure: MeshFailure): # The failure message will include the id of the actor that failed and # the reason why. print(f\"Failure received: {failure}\") # Logic to handle failures and potentially restart failed actors # If a truthy value is returned, the supervision event is considered handled # and will not be propagated further. # Otherwise, the event will be propagated to the creator of this actor. # That will be the Actor (or client) which called the spawn() method. return True # `__supervise__` can also be declared `async def`, e.g. to await # a restart endpoint: # # async def __supervise__(self, failure: MeshFailure) -\u003e bool: # await self.restart_failed_mesh(failure) # return True If a MeshFailure is not handled by any __supervise__ in the supervision tree, it will reach the client, where monarch.actor.unhandled_fault_hook will be called with the MeshFailure object. By default, this function exits the process with a KeyboardInterrupt. # You can overwrite the global unhandled_fault_hook function to customize this # behavior. The function can either: # - raise any exception (including BaseException) to indicate that the failure was not handled # - return any value (including None) to indicate that the failure was handled import monarch.actor def my_unhandled_fault_hook(failure: MeshFailure) -\u003e None: # Log it, add metrics, etc. print(f\"Mesh failure was not handled: {failure}\") # The failure will be ignored unless this hook returns an exception. # pyre-ignore[9]: Callable is compatible. monarch.actor.unhandled_fault_hook = my_unhandled_fault_hook Point-to-Point RDMA# Monarch provides first-class RDMA support through the RDMABuffer API. This lets you separate data references from data movement - instead of sending large tensors through your messaging patterns, you pass lightweight buffer references anywhere in your system, then explicitly transfer the actual data only when and where you need it. This approach lets you design your service\u2019s coordination patterns based on your application logic rather than being constrained by when the framework forces data transfers. RDMA transfers use libibverbs to transfer data over infiniband or RoCE. Unlike traditional NCCL collectives where a send must be matched to a receive, once an actor has a handle to a buffer, it can read or write to the buffer without the owner of the buffer. import torch from monarch.rdma import RDMABuffer class ParameterServer(Actor): def __init__(self): self.weights = torch.rand(1000, 1000) # Large model weights # RDMABuffer does not copy the data. It just # creates a view of the data that can be passed to # other processes. self.weight_buffer = RDMABuffer(self.weights.view(torch.uint8).flatten()) @endpoint def get_weights(self) -\u003e RDMABuffer: return self.weight_buffer # Small message: just a reference! class Worker(Actor): def __init__(self): self.local_weights = torch.zeros(1000, 1000) @endpoint def sync_weights(self, server: ParameterServer): # Control plane: get lightweight reference weight_ref = server.get_weights.call_one().get() # Data plane: explicit bulk transfer when needed weight_ref.read_into(self.local_weights.view(torch.uint8).flatten()).get() server_proc = this_host().spawn_procs(per_host={\"gpus\": 1}) worker_proc = this_host().spawn_procs(per_host={\"gpus\": 1}) server = server_proc.spawn(\"server\", ParameterServer) worker = worker_proc.spawn(\"worker\", Worker) worker.sync_weights.call_one(server).get() RDMABuffers are intentionally low-level: they do just the data movement when requested. It is up to the caller to ensure that the data is not modified until the movement is complete. We intend to build higher-level libraries for transferring tensors or implementing collective operations on top of these primitives. Distributed Tensors# Monarch also comes with a \u2018tensor engine\u2019 that provides distributed torch tensors. This lets a single actor directly compute with tensors distributed across a mesh of processes. We can use distributed features by \u2018activating\u2019 a ProcMesh: with trainer_procs.activate(): t = torch.rand(3, 4) print(t) The tensor t is now a distributed tensor with a unique value across each process in the mesh. we can examine the values on each proc using built in functions: from monarch import fetch_shard print(\"one\", fetch_shard(t, hosts=0, gpus=0).get()) print(\"two\", fetch_shard(t, hosts=0, gpus=1).get()) and compute with the tensors using any torch function: with trainer_procs.activate(): dist_compute = t @ t.T print(\"dist\", fetch_shard(dist_compute, hosts=0, gpus=0).get()) A distributed tensor can be passed to any mesh of actors that is located on the same mesh of processes as the tensors. Each actor will receive the shard of the distributed tensor that is on the same process as the actor: print(dtrainers.step.call(dist_compute[0]).get()) And actors themselves can define their own distributed tensors with the rref adverb: class LinearActor(Actor): def __init__(self): self.w = torch.rand(3, 3) # The propagation function is like a type signature: it computes the # shape of the output, given an input of a particular shape. It is used # by the tensor engine to correctly create the (local) returned distributed # tensor references; this way local references can be created and used # immediately, without needing to synchronize the calls with the actors. @endpoint(propagate=lambda x: x) def forward(self, input): return input @ self.w linear = trainer_procs.spawn(\"linear\", LinearActor) o = torch.relu(linear.forward.rref(t)) The rref adverb invokes the endpoint and then makes the output of the endpoint into a distributed tensor that can be used in further distributed computation. Distributed tensors also include ways of doing reductions and gathers across shards and moving tensors between processes. See Distributed Tensors in Monarch for more information including reductions across shards and moving tensors between processes. We eventually want it to be possible for an entirely training framework to be written in terms of distributed tensors. However, currently the performance of messaging for distributed tensors is not optimized enough to make this practice. They are still useful for interactive debugging. Summary# We have now seen all four major features of Monarch: Scalable messaging using multidimensional meshes of actors Fault tolerance through supervision trees and __supervise__ Point-to-point low-level RDMA Built-in distributed tensors This foundation enables building sophisticated multi-machine training programs with clear semantics for distribution, fault tolerance, and communication patterns. The remaining sections fill in more details about how to accomplish common patterns with the above features. Actor Context# At any point, code might need to know \u2018what\u2019 it is and \u2018where\u2019 it is. For instance, when initializing torch.distributed, it will need a RANK/WORLD_SIZE. In monarch, the \u2018what\u2019 is always what actor is currently running the code. The \u2018where\u2019 can be looked up using the context() API: class ContextAwareActor(Actor): @endpoint def get_context_info(self): actor_instance = context().actor_instance # `context().message_rank` returns the coordinates in the message. This isn\u0027t always the # same as the actor\u0027s rank because messages can be sent to a slice of actors rather than # the whole thing. message_rank = context().message_rank return f\"Actor rank: {actor_instance.rank}, message rank: {message_rank}\" c = trainer_procs.spawn(\"context_actor\", ContextAwareActor) print(c.get_context_info.call().get()) Ranks are always multidimensional and reported as Point objects (dict-like mappings) of the dimension names to the index within that dimension. Free Remote Functions# It is possible to run functions on a process mesh that are not associated with any actor. These can be useful to set up state on a process, or perform pre-post processing of data before sending it to an actor: from monarch import remote @remote def check_memory(): import psutil return psutil.Process().memory_info() with trainer_procs.activate(): print(check_memory.call().get()) Channels and Low-level messaging# It is sometimes useful to establish direct channels between two points, or forward the handling of some messages from one actor to another. To enable this, all messaging in monarch is built out of port objects. An actor can create a new channel, which provides a Port for sending and a PortReceiver for receiving messages. The Port object can then be sent to any endpoint. from monarch.actor import Channel, Port port, recv = Channel.open() port.send(3) print(recv.recv().get()) Ports can be passed as arguments to actors and sent a response remotely. We can also directly ask an endpoint to send its response to a port using the send messaging primitive. from monarch.actor import send with trainer_procs.activate(): send(check_memory, args=(), kwargs={}, port=port) The port will receive a response from each actor send the message: for _ in range(4): print(recv.recv().get()) The other adverbs like call, stream, and broadcast are just implemented in terms of ports and send. Message Ordering# Messages from an actor are delivered to the destination actor in order in which they are sent. In particular, if actor A sends a message M0 to actor B, and then later A sends another message M1 to B, then actor B will receive M0 before M1. Messages in monarch are sent to a mesh of multiple actor instances at once. For the purpose of message ordering, this bulk send behaves as if it sent each message individually to each destination. Each actor handles its messages sequentially. It must finish the handling of a message before the next message on the actor is called. Different actors in the same process handle messages concurrently. Responding Out of Order# Messages to actors are delivered in order, but sometimes an actor might want to respond to later messages first. The normal way of defining an endpoint does not allow for this since it must return the response before future messages are delivered. Instead, an endpoint can request an explicit port object on which to deliver a response. Here is an example of an inference engine where we use an explicit reponse port for the infer endpoint so that we can make sure that we always use the most recent version of the weights even if update_weights was called after infer: import threading import time from queue import Queue class InferenceEngine(Actor): def __init__(self): self.q = Queue() self.new_weights = None self.worker = threading.Thread(target=self.run) self.worker.start() @endpoint def update_weights(self, new_weights): self.new_weights = new_weights @endpoint(explicit_response_port=True) def infer(self, port: Port[int]): self.q.put(port) def run(self): while True: request = self.q.get() # always use the most recent weight version we have: result = f\"inferred with: {self.new_weights}\" # pretend to take time time.sleep(1) # process request, send response request.send(result) engine = this_proc().spawn(\"engine\", InferenceEngine) engine.update_weights.broadcast(0) first = engine.infer.call_one() second = engine.infer.call_one() engine.update_weights.broadcast(1) print(first.get()) print(second.get()) # still uses newest weights Total running time of the script: (0 minutes 0.000 seconds) Download Python source code: getting_started.py Download Jupyter notebook: getting_started.ipynb Gallery generated by Sphinx-Gallery",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

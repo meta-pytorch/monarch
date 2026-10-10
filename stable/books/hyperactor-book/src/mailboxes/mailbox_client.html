@@ -1,9 +1,8 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="../../../../" >
 
   <head>
     <meta charset="utf-8" />
@@ -17,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="A MailboxClient is the sending counterpart to a MailboxServer. It owns a buffer of outgoing messages and transmits them over a channel::Tx interface to a remote server. The client handles undeliver..." />
 
-    <title>MailboxClient &#8212; Monarch v0.6.0 documentation</title>
+    <title>MailboxClient &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -37,29 +36,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
-    <script src="../../../../_static/doctools.js"></script>
-    <script src="../../../../_static/sphinx_highlight.js"></script>
-    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/mailboxes/mailbox_client';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/mailboxes/mailbox_client.html" />
@@ -83,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -197,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -562,6 +561,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -632,6 +637,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -925,6 +936,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -995,6 +1012,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1299,7 +1322,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="mailboxclient">
-<h1>MailboxClient<a class="headerlink" href="#mailboxclient" title="Permalink to this heading">#</a></h1>
+<h1>MailboxClient<a class="headerlink" href="#mailboxclient" title="Link to this heading">#</a></h1>
 <p>A <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> is the sending counterpart to a <code class="docutils literal notranslate"><span class="pre">MailboxServer</span></code>. It owns a buffer of outgoing messages and transmits them over a <code class="docutils literal notranslate"><span class="pre">channel::Tx</span></code> interface to a remote server.</p>
 <p>The client handles undeliverable returns, maintains a background task for monitoring channel health, and implements <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> for compatibility.</p>
 <p>Topics in this section:</p>
@@ -1309,7 +1332,7 @@ document.write(`
 <li><p>Delivery error handling and monitoring</p></li>
 </ul>
 <section id="internal-buffering">
-<h2>Internal Buffering<a class="headerlink" href="#internal-buffering" title="Permalink to this heading">#</a></h2>
+<h2>Internal Buffering<a class="headerlink" href="#internal-buffering" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> uses a <code class="docutils literal notranslate"><span class="pre">Buffer&lt;MessageEnvelope&gt;</span></code> internally to decouple message submission from actual transmission. This buffer ensures ordered, asynchronous delivery while preserving undeliverable routing guarantees.</p>
 <p>This is a foundational buffer abstraction used in several types in the remainder of the program. It’s a concurrency-safe buffered message processor, parameterized on the message type <code class="docutils literal notranslate"><span class="pre">T</span></code>.</p>
 <p>The buffer:</p>
@@ -1385,7 +1408,7 @@ document.write(`
 <p>Internally, <code class="docutils literal notranslate"><span class="pre">flush(</span></code>) uses the buffer’s watch channel to observe updates as message processing advances. Each time a message completes processing, the background task updates the watch channel, allowing<code class="docutils literal notranslate"> <span class="pre">flush()</span></code> to efficiently wait without busy-waiting or polling.</p>
 </section>
 <section id="role-and-behavior-of-mailboxclient">
-<h2>Role and Behavior of <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code><a class="headerlink" href="#role-and-behavior-of-mailboxclient" title="Permalink to this heading">#</a></h2>
+<h2>Role and Behavior of <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code><a class="headerlink" href="#role-and-behavior-of-mailboxclient" title="Link to this heading">#</a></h2>
 <p>The <code class="docutils literal notranslate"><span class="pre">MailboxServer</span></code> listens for incoming messages on a channel and delivers them to the system. The <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> acts as the sender, enqueueing messages for transmission to the server.</p>
 <p>A <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> is the <strong>dual</strong> of a <code class="docutils literal notranslate"><span class="pre">MailboxServer</span></code>. It:</p>
 <ul class="simple">
@@ -1464,7 +1487,7 @@ document.write(`
 </ul>
 <p>The resulting <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> consists of the constructed <code class="docutils literal notranslate"><span class="pre">Buffer</span></code> and the cancellation token used to coordinate monitoring.</p>
 <section id="mailboxclient-implements-mailboxsender">
-<h3><code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> implements <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code><a class="headerlink" href="#mailboxclient-implements-mailboxsender" title="Permalink to this heading">#</a></h3>
+<h3><code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> implements <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code><a class="headerlink" href="#mailboxclient-implements-mailboxsender" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> itself implements the <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> trait. This is made possible by delegating its <code class="docutils literal notranslate"><span class="pre">post</span></code> method to the underlying <code class="docutils literal notranslate"><span class="pre">Buffer</span></code> (by calling <code class="docutils literal notranslate"><span class="pre">send</span></code> on it). As a result, any component expecting a <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> can use a <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> transparently:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">MailboxClient</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">post</span><span class="p">(</span>
@@ -1723,7 +1746,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>

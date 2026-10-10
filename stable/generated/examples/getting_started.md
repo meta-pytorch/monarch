@@ -141,13 +141,14 @@ machines are obtained depends on the scheduling system (Slurm, Kubernetes, SkyPi
 but these schedulers are typically encapsulated in a config file.
 
 ```
-from monarch.actor import context, HostMesh, hosts_from_config
+from monarch.actor import context, HostMesh
+from monarch.job import hosts_from_config
 ```
 
 We obtain the mesh of hosts for the job by loading that config:
 
 ```
-hosts: HostMesh = hosts_from_config("MONARCH_HOSTS") # NYI: hosts_from_config
+hosts: HostMesh = hosts_from_config("MONARCH_HOSTS")
 print(hosts.extent)
 
 # An extent is the logical shape of a mesh. It is an ordered map, specifying the size of
@@ -283,8 +284,11 @@ Sometimes fine-grained recovery is possible. For instance, if a data loader fail
 read a URL, perhaps it would work to just restart it. In these cases, we also offer a
 different API. If an actor defines a __supervise__ special method, then it will get
 called to handle supervision events for meshes owned by the actor. It may be declared
-with either def or async def; an async def override runs on the actor's asyncio
-event loop and can await other endpoints or I/O.
+with either def or async def, except that an actor whose endpoints are all def
+needs a def __supervise__; an async def override runs on the actor's asyncio
+event loop and can await other endpoints or I/O. The actor keeps handling messages
+while __supervise__ is pending, and it may run at any await in the actor's
+endpoints, so re-check any state it changes after an await.
 If an error happens on an ActorMesh that is a reference, such as a slice, or
 a mesh that is sent to another actor, then the recovery is done on the original
 creator of that mesh, not the holder of the reference. There is currently

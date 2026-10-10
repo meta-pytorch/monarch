@@ -50,9 +50,10 @@ parallel, all writing into the same rollouts port. A single ``Scorer``,
 The only hop that is *not* a port send is the weight update. The
 ``Trainer`` uses ``send(gen_mesh.update_weights, ..., selection="choose")``
 to dispatch each fresh ``state_dict`` to exactly one of the four
-generators, fire-and-forget. This pattern load-balances weight transfer
-across the pool and mirrors how real asynchronous RL systems drift
-generator and trainer replicas in and out of lock-step.
+generators, fire-and-forget. The generator is selected uniformly at
+random on each call, spreading weight transfer across the pool over many
+steps, and mirrors how real asynchronous RL systems drift generator and
+trainer replicas in and out of lock-step.
 
 Coroutine analogy
 -----------------
@@ -109,9 +110,9 @@ Contrast with ``grpo_actor.py``
 ``grpo_actor.py`` funnels data through dedicated queue actors
 (``TrajectoryQueue``, ``ReplayBuffer``) and copies weights via
 ``RDMABuffer``. Here we use neither — only ``Channel.open()``,
-``Port.send(...)``, and one ``send(..., selection="choose")`` call for
-load-balanced weight dispatch. The code is shorter, and the data-flow
-graph is visible at a glance in ``main``.
+``Port.send(...)``, and one ``send(..., selection="choose")`` call to
+dispatch weights to a randomly selected generator. The code is shorter,
+and the data-flow graph is visible at a glance in ``main``.
 
 Ports and RDMA are compatible
 -----------------------------
@@ -125,7 +126,7 @@ tensors. That retains the zero-copy GPU-to-GPU path of
 ``grpo_actor.py`` while keeping the port-driven control flow shown
 here.
 
-.. GENERATED FROM PYTHON SOURCE LINES 117-127
+.. GENERATED FROM PYTHON SOURCE LINES 118-128
 
 .. code-block:: default
 
@@ -140,7 +141,7 @@ here.
     from torch.distributions import Categorical
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 128-137
+.. GENERATED FROM PYTHON SOURCE LINES 129-138
 
 Problem setup
 -------------
@@ -152,7 +153,7 @@ policy at step 0 and provides the log-probs used in the KL penalty.
 The trainer applies a PPO-clip update with a KL-to-reference term and
 ships the fresh weights to one of the generators.
 
-.. GENERATED FROM PYTHON SOURCE LINES 137-168
+.. GENERATED FROM PYTHON SOURCE LINES 138-169
 
 .. code-block:: default
 
@@ -188,12 +189,12 @@ ships the fresh weights to one of the generators.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 169-171
+.. GENERATED FROM PYTHON SOURCE LINES 170-172
 
 Messages around the ring
 ------------------------
 
-.. GENERATED FROM PYTHON SOURCE LINES 171-197
+.. GENERATED FROM PYTHON SOURCE LINES 172-198
 
 .. code-block:: default
 
@@ -224,7 +225,7 @@ Messages around the ring
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 198-214
+.. GENERATED FROM PYTHON SOURCE LINES 199-215
 
 Generator pool
 --------------
@@ -243,7 +244,7 @@ actor. Because Monarch schedules async endpoints cooperatively on one
 event loop, ``update_weights`` can land while ``run`` is between
 iterations, and vice versa.
 
-.. GENERATED FROM PYTHON SOURCE LINES 214-298
+.. GENERATED FROM PYTHON SOURCE LINES 215-299
 
 .. code-block:: default
 
@@ -332,7 +333,7 @@ iterations, and vice versa.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 299-304
+.. GENERATED FROM PYTHON SOURCE LINES 300-305
 
 Scorer actor
 ------------
@@ -340,7 +341,7 @@ Stateless reward model. Receives rollouts from the shared port
 (populated by every generator in the pool), computes a per-action
 reward, forwards a ``ScoredRollout``.
 
-.. GENERATED FROM PYTHON SOURCE LINES 304-346
+.. GENERATED FROM PYTHON SOURCE LINES 305-347
 
 .. code-block:: default
 
@@ -387,14 +388,14 @@ reward, forwards a ``ScoredRollout``.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 347-351
+.. GENERATED FROM PYTHON SOURCE LINES 348-352
 
 Reference-model actor
 ---------------------
 Frozen copy of the initial policy. Adds reference log-probs of the
 sampled actions so the trainer can compute a KL-to-reference penalty.
 
-.. GENERATED FROM PYTHON SOURCE LINES 351-393
+.. GENERATED FROM PYTHON SOURCE LINES 352-394
 
 .. code-block:: default
 
@@ -441,18 +442,18 @@ sampled actions so the trainer can compute a KL-to-reference penalty.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 394-402
+.. GENERATED FROM PYTHON SOURCE LINES 395-403
 
 Trainer actor
 -------------
 Runs GRPO: PPO-clip on group-normalised advantages plus a KL penalty
 against the reference model. On each step it dispatches a fresh
-``state_dict`` to one of the generators via
+``state_dict`` to a randomly selected generator via
 ``send(..., selection="choose")`` — fire-and-forget. After
 ``MAX_STEPS`` updates it broadcasts ``stop`` to the generator pool and
 fires the one-shot done port.
 
-.. GENERATED FROM PYTHON SOURCE LINES 402-485
+.. GENERATED FROM PYTHON SOURCE LINES 403-486
 
 .. code-block:: default
 
@@ -519,9 +520,9 @@ fires the one-shot done port.
                     f"kl={kl.item():+.3f}"
                 )
 
-                # Fire-and-forget weight dispatch. ``selection="choose"``
-                # load-balances across the generator pool; ``port=None``
-                # means no response is collected.
+                # Fire-and-forget weight dispatch. ``selection="choose"`` picks
+                # one generator uniformly at random; ``port=None`` means no
+                # response is collected.
                 new_sd = copy.deepcopy(self.model.state_dict())
                 send(
                     gen_mesh.update_weights,
@@ -540,7 +541,7 @@ fires the one-shot done port.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 486-500
+.. GENERATED FROM PYTHON SOURCE LINES 487-501
 
 Controller
 ----------
@@ -557,7 +558,7 @@ All the controller does is:
 6. ``await done_recv.recv()``. That single await is the whole main
    loop.
 
-.. GENERATED FROM PYTHON SOURCE LINES 500-551
+.. GENERATED FROM PYTHON SOURCE LINES 501-552
 
 .. code-block:: default
 
@@ -613,7 +614,7 @@ All the controller does is:
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 552-554
+.. GENERATED FROM PYTHON SOURCE LINES 553-555
 
 .. code-block:: default
 

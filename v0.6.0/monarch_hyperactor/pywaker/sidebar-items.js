@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["event","register_python_bindings"],"struct":["PyEvent","Waker"]};

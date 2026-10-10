@@ -36,9 +36,10 @@ Generator x4 ─┐
 The only hop that is *not* a port send is the weight update. The
 `Trainer` uses `send(gen_mesh.update_weights, ..., selection="choose")`
 to dispatch each fresh `state_dict` to exactly one of the four
-generators, fire-and-forget. This pattern load-balances weight transfer
-across the pool and mirrors how real asynchronous RL systems drift
-generator and trainer replicas in and out of lock-step.
+generators, fire-and-forget. The generator is selected uniformly at
+random on each call, spreading weight transfer across the pool over many
+steps, and mirrors how real asynchronous RL systems drift generator and
+trainer replicas in and out of lock-step.
 
 ## Coroutine analogy
 
@@ -94,9 +95,9 @@ endpoints.
 `grpo_actor.py` funnels data through dedicated queue actors
 (`TrajectoryQueue`, `ReplayBuffer`) and copies weights via
 `RDMABuffer`. Here we use neither -- only `Channel.open()`,
-`Port.send(...)`, and one `send(..., selection="choose")` call for
-load-balanced weight dispatch. The code is shorter, and the data-flow
-graph is visible at a glance in `main`.
+`Port.send(...)`, and one `send(..., selection="choose")` call to
+dispatch weights to a randomly selected generator. The code is shorter,
+and the data-flow graph is visible at a glance in `main`.
 
 ## Ports and RDMA are compatible
 
@@ -382,7 +383,7 @@ class RefModel(Actor):
 
 Runs GRPO: PPO-clip on group-normalised advantages plus a KL penalty
 against the reference model. On each step it dispatches a fresh
-`state_dict` to one of the generators via
+`state_dict` to a randomly selected generator via
 `send(..., selection="choose")` -- fire-and-forget. After
 `MAX_STEPS` updates it broadcasts `stop` to the generator pool and
 fires the one-shot done port.
@@ -449,9 +450,9 @@ class Trainer(Actor):
  f"kl={kl.item():+.3f}"
  )
 
- # Fire-and-forget weight dispatch. ``selection="choose"``
- # load-balances across the generator pool; ``port=None``
- # means no response is collected.
+ # Fire-and-forget weight dispatch. ``selection="choose"`` picks
+ # one generator uniformly at random; ``port=None`` means no
+ # response is collected.
  new_sd = copy.deepcopy(self.model.state_dict())
  send(
  gen_mesh.update_weights,

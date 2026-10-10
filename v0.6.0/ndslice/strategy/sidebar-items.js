@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["gen_extent","gen_region","gen_region_strided","gen_selection","gen_slice","gen_slice_and_subview"]};

@@ -36,7 +36,7 @@ dataloader_hosts = state.dataloaders
 
 *class*monarch.job.JobState(*hosts*)[[source]](../_modules/monarch/_src/job/job_state.html#JobState)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 Container for the current state of a job.
 
@@ -52,6 +52,44 @@ state.dataloaders # HostMesh for the "dataloaders" mesh
 ```
 
 __init__(*hosts*)[[source]](../_modules/monarch/_src/job/job_state.html#JobState.__init__)
+
+# Interactive Shell
+
+Use a singleton slice of a job's host mesh to open an interactive terminal on
+that host.
+
+monarch.job.shell(*host_mesh_singleton*, ***, *env=None*, *workdir=None*)[[source]](../_modules/monarch/_src/job/shell.html#shell)
+
+Run an interactive shell on a singleton host mesh.
+
+The Python actors establish two native Monarch channels, then terminal
+input and output travel directly through their Rust ports.
+
+Parameters:
+
+- **host_mesh_singleton** ([*HostMesh*](monarch.actor.html#monarch.actor.HostMesh)) - A HostMesh containing exactly one host.
+- **env** ([*dict*](https://docs.python.org/3/builtins/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*]**|**None*) - Extra environment variables for the remote shell.
+- **workdir** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - Working directory on the remote host. If omitted, the
+client's working directory is used when it exists remotely.
+
+Returns:
+
+The remote shell's exit status.
+
+Return type:
+
+[int](https://docs.python.org/3/builtins/functions.html#int)
+
+# Port Forwarding
+
+*class*monarch.job.PortForwarder[[source]](../_modules/monarch/_src/job/port_forward.html#PortForwarder)
+
+Local actor that owns point-to-point port forwards.
+
+Spawn one on the local process, call `forward()` for each desired
+forward, and stop the actor to close every forward it started.
+
+forward
 
 # Job Base Class
 
@@ -97,14 +135,16 @@ pre-emptively sets `_status = "running"`, the `state()` method
 will skip the cache dump, breaking job persistence. Instead, let
 `apply()` set the status after `_create()` returns.
 
-enable_telemetry(*config=None*, ***kwargs*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.enable_telemetry)
+enable_telemetry(*config=None*, ***, *mesh_admin_config=None*, ***kwargs*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.enable_telemetry)
 
-Configure automatic telemetry startup on the next `state()` call.
+Configure telemetry services on the next `state()` call.
 
 Parameters:
 
-**config** (*TelemetryConfig**|**None*) - A `TelemetryConfig` instance. If omitted, one is
+- **config** (*TelemetryConfig**|**None*) - A `TelemetryConfig` instance. If omitted, one is
 constructed from *kwargs* (forwarded to `TelemetryConfig`).
+- **mesh_admin_config** (*MeshAdminConfig**|**None*) - A `MeshAdminConfig` instance. If omitted,
+the default is configured unless mesh admin was already configured.
 
 Returns:
 
@@ -113,6 +153,17 @@ Returns:
 Return type:
 
 [*Self*](https://docs.python.org/3/library/typing.html#typing.Self)
+
+profile(***, *on_trace_ready=None*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.profile)
+
+Profile a block of work using this job's distributed telemetry.
+
+telemetry_query_client()[[source]](../_modules/monarch/_src/job/job.html#JobTrait.telemetry_query_client)
+
+Return a query client for a healthy job's existing telemetry service.
+
+This checks the saved allocation without connecting host meshes or
+starting job services.
 
 enable_admin(*config=None*, ***kwargs*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.enable_admin)
 
@@ -145,7 +196,7 @@ that instructs the client to connect to the job that it is running in.
 Then we will schedule the job including that .monarch/job_state.pkl.
 When the client calls .state(), it will find the .monarch/job_state.pkl and connect to it.
 
-*property*apply_id*: [str](https://docs.python.org/3/library/stdtypes.html#str) | [None](https://docs.python.org/3/library/constants.html#None)*
+*property*apply_id*: [str](https://docs.python.org/3/builtins/stdtypes.html#str) | [None](https://docs.python.org/3/builtins/constants.html#None)*
 
 A UUID identifying the current allocation of this job.
 
@@ -153,7 +204,7 @@ Generated fresh each time `apply()` creates a new allocation.
 `None` if the job has not been applied yet. When a job is loaded
 from a cached file, the original `apply_id` is preserved.
 
-*property*active*: [bool](https://docs.python.org/3/library/functions.html#bool)*
+*property*active*: [bool](https://docs.python.org/3/builtins/functions.html#bool)*
 
 state(*cached_path='.monarch/job_state.pkl'*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.state)
 
@@ -181,11 +232,11 @@ to `state()`.
 
 Parameters:
 
-- **source** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Local directory path to mount.
-- **mntpoint** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)*|**None*) - Mount point on workers. Defaults to `source`.
-- **meshes** ([*List*](https://docs.python.org/3/library/typing.html#typing.List)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*]**|**None*) - Names of meshes to mount on. `None` means all meshes
+- **source** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Local directory path to mount.
+- **mntpoint** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - Mount point on workers. Defaults to `source`.
+- **meshes** ([*List*](https://docs.python.org/3/library/typing.html#typing.List)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*]**|**None*) - Names of meshes to mount on. `None` means all meshes
 returned by `state()`.
-- **python_exe** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)*|**None*) - Path to the Python executable relative to the mount
+- **python_exe** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - Path to the Python executable relative to the mount
 point, used to set `python_executable` on the returned mesh.
 Set to `None` to skip. Defaults to `".venv/bin/python"`.
 - ****kwargs** ([*Any*](https://docs.python.org/3/library/typing.html#typing.Any)) - Forwarded to `remotemount()`.
@@ -200,12 +251,12 @@ to `state()`.
 
 Parameters:
 
-- **remote_mount_point** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Path on workers to expose. The token
+- **remote_mount_point** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Path on workers to expose. The token
 `$SUBDIR` is replaced with each host's mesh-coordinate key
 (e.g. `hosts_0`).
-- **local_mount_point** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Local path where the remote directory will be
+- **local_mount_point** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Local path where the remote directory will be
 mounted.
-- **meshes** ([*List*](https://docs.python.org/3/library/typing.html#typing.List)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*]**|**None*) - Names of meshes to gather from. `None` means all meshes
+- **meshes** ([*List*](https://docs.python.org/3/library/typing.html#typing.List)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*]**|**None*) - Names of meshes to gather from. `None` means all meshes
 returned by `state()`.
 
 *abstract*can_run(*spec*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.can_run)
@@ -220,51 +271,51 @@ It is also used by the batch run infrastructure to indicate that the batch job c
 See the [Observability](../observability.html) guide for the relationship between distributed
 telemetry, the Monarch Dashboard, and the Mesh Admin TUI.
 
-*class*monarch.job.TelemetryConfig(*retention_secs=600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=0*)[[source]](../_modules/monarch/_src/job/telemetry_config.html#TelemetryConfig)
+*class*monarch.job.TelemetryConfig(*retention_secs=3600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=30.0*)[[source]](../_modules/monarch/_src/job/telemetry_config.html#TelemetryConfig)
 
-Configuration for automatic telemetry startup.
+Configuration for automatic telemetry and snapshot startup.
 
-When configured via `JobTrait.enable_telemetry`, telemetry
-(and optionally a dashboard) is started when `state()` is called.
+When configured via `JobTrait.enable_telemetry`, telemetry, mesh admin,
+and optionally snapshots and a dashboard are started when `state()` is
+called.
 
 Parameters:
 
-- **retention_secs** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Retention window in seconds for message tables.
+- **retention_secs** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Retention window in seconds for message and trace
+history. Trace tables are filtered independently by row timestamp.
 0 disables retention.
-- **include_dashboard** ([*bool*](https://docs.python.org/3/library/functions.html#bool)) - Whether to start the monarch dashboard web server.
-- **dashboard_port** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Preferred port for the dashboard.
-- **snapshot_interval_secs** ([*float*](https://docs.python.org/3/library/functions.html#float)) - Interval in seconds between periodic mesh
+- **include_dashboard** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - Whether to start the monarch dashboard web server.
+- **dashboard_port** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Preferred port for the dashboard.
+- **snapshot_interval_secs** ([*float*](https://docs.python.org/3/builtins/functions.html#float)) - Interval in seconds between periodic mesh
 introspection snapshots. Snapshots capture the mesh topology
-into the telemetry query surface. 0 disables periodic capture
-(default). When `include_dashboard` is True and this is 0,
-it is automatically set to 30s because the dashboard requires
-snapshot data for system actor filtering.
+into the telemetry query surface. The default is 30 seconds;
+0 disables periodic capture.
 
-retention_secs*: [int](https://docs.python.org/3/library/functions.html#int)**= 600*
+retention_secs*: [int](https://docs.python.org/3/builtins/functions.html#int)**= 3600*
 
-include_dashboard*: [bool](https://docs.python.org/3/library/functions.html#bool)**= False*
+include_dashboard*: [bool](https://docs.python.org/3/builtins/functions.html#bool)**= False*
 
-dashboard_port*: [int](https://docs.python.org/3/library/functions.html#int)**= 8265*
+dashboard_port*: [int](https://docs.python.org/3/builtins/functions.html#int)**= 8265*
 
-snapshot_interval_secs*: [float](https://docs.python.org/3/library/functions.html#float)**= 0*
+snapshot_interval_secs*: [float](https://docs.python.org/3/builtins/functions.html#float)**= 30.0*
 
-__init__(*retention_secs=600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=0*)
+__init__(*retention_secs=3600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=30.0*)
 
 *class*monarch.job.MeshAdminConfig(*admin_addr=None*)[[source]](../_modules/monarch/_src/job/job_components.html#MeshAdminConfig)
 
 Configuration for automatic mesh admin agent startup.
 
-When configured via `JobTrait.enable_admin`, a MeshAdminAgent HTTP
-server is spawned when `state()` is called. The server aggregates
-topology across all host meshes and exposes it via a REST API that the
-admin TUI can attach to.
+When passed to `JobTrait.enable_telemetry`, a MeshAdminAgent HTTP server
+is spawned when `state()` is called. The server aggregates topology
+across all host meshes and exposes it via a REST API that the admin TUI
+can attach to.
 
 Parameters:
 
-**admin_addr** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)*|**None*) - Bind address for the admin HTTP server. When
-`None` the server picks an available address automatically.
+**admin_addr** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - Bind address for the admin HTTP server. When `None`, the
+server uses the configured `MESH_ADMIN_ADDR`.
 
-admin_addr*: [str](https://docs.python.org/3/library/stdtypes.html#str) | [None](https://docs.python.org/3/library/constants.html#None)**= None*
+admin_addr*: [str](https://docs.python.org/3/builtins/stdtypes.html#str) | [None](https://docs.python.org/3/builtins/constants.html#None)**= None*
 
 __init__(*admin_addr=None*)
 
@@ -319,7 +370,7 @@ It is also used by the batch run infrastructure to indicate that the batch job c
 
 ## SlurmJob
 
-*class*monarch.job.SlurmJob(*meshes*, *python_exe='python'*, *slurm_args=()*, *monarch_port=22222*, *job_name='monarch_job'*, *ntasks_per_node=1*, *time_limit=None*, *partition=None*, *log_dir=None*, *exclusive=True*, *gpus_per_node=None*, *cpus_per_task=None*, *mem=None*, *job_start_timeout=None*)[[source]](../_modules/monarch/_src/job/slurm.html#SlurmJob)
+*class*monarch.job.SlurmJob(*meshes*, *python_exe='python'*, *slurm_args=()*, *monarch_port=22222*, *job_name='monarch_job'*, *ntasks_per_node=1*, *time_limit=None*, *partition=None*, *log_dir=None*, *exclusive=True*, *gpus_per_node=None*, *cpus_per_task=None*, *mem=None*, *job_start_timeout=None*, *account=None*, *qos=None*, *out_of_cluster=False*, *attach_to=None*, *bind_to=None*)[[source]](../_modules/monarch/_src/job/slurm.html#SlurmJob)
 
 Bases: `JobTrait`
 
@@ -381,31 +432,31 @@ provision the pods.
 
 Parameters:
 
-- **name** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Name of the mesh. Must follow RFC 1123 DNS label standard and Monarch hostname restriction:
+- **name** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Name of the mesh. Must follow RFC 1123 DNS label standard and Monarch hostname restriction:
 * At most 63 characters
 * only lowercase alphanumeric characters
 * must start with an alphabetic character,
 * and end with an alphanumeric character.
-- **num_replicas** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Number of pod replicas (expects all ranks 0 to num_replicas-1)
-- **label_selector** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)*|**None*) - Custom label selector for pod discovery. Cannot be set when provisioning.
-- **pod_rank_label** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Label key containing the pod rank. Cannot be customized when provisioning.
+- **num_replicas** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Number of pod replicas (expects all ranks 0 to num_replicas-1)
+- **label_selector** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - Custom label selector for pod discovery. Cannot be set when provisioning.
+- **pod_rank_label** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Label key containing the pod rank. Cannot be customized when provisioning.
 - **image_spec** (*ImageSpec**|**None*) - `ImageSpec` with container image and optional resources for simple provisioning.
 Mutually exclusive with `pod_template`.
-- **port** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Monarch worker port (default: 26600).
+- **port** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Monarch worker port (default: 26600).
 - **pod_template** (*V1PodTemplateSpec**|**None*) - `V1PodTemplateSpec` for advanced provisioning (e.g. custom volumes, sidecars,
 pod-level labels/annotations). Mutually exclusive with `image_spec`.
-- **labels** ([*dict*](https://docs.python.org/3/library/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*]**|**None*) - Optional labels to apply to the MonarchMesh CRD metadata.
+- **labels** ([*dict*](https://docs.python.org/3/builtins/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*]**|**None*) - Optional labels to apply to the MonarchMesh CRD metadata.
 Propagated by the operator to the StatefulSet metadata. To set
 labels on the worker pods, use `pod_template.metadata.labels`.
 Only used when provisioning (`image_spec` or `pod_template` supplied).
-- **annotations** ([*dict*](https://docs.python.org/3/library/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*]**|**None*) - Optional annotations to apply to the MonarchMesh CRD metadata.
+- **annotations** ([*dict*](https://docs.python.org/3/builtins/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*]**|**None*) - Optional annotations to apply to the MonarchMesh CRD metadata.
 Propagated by the operator to the StatefulSet metadata. To set
 annotations on the worker pods, use `pod_template.metadata.annotations`.
 Only used when provisioning (`image_spec` or `pod_template` supplied).
 
 Raises:
 
-[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - On invalid name or conflicting parameters.
+[**ValueError**](https://docs.python.org/3/builtins/exceptions.html#ValueError) - On invalid name or conflicting parameters.
 
 can_run(*spec*)[[source]](../_modules/monarch/_src/job/kubernetes.html#KubernetesJob.can_run)
 
@@ -425,7 +476,58 @@ True if this job matches the spec and all required pods are available
 
 Return type:
 
-[bool](https://docs.python.org/3/library/functions.html#bool)
+[bool](https://docs.python.org/3/builtins/functions.html#bool)
+
+*class*monarch.job.kubernetes.ImageSpec(*image*, *resources=None*, *enable_fuse=False*, *shared_memory_size=None*)[[source]](../_modules/monarch/_src/job/kubernetes.html#ImageSpec)
+
+Container image specification for provisioning worker pods.
+
+Use this to provision MonarchMesh workers with a specific container
+image and optional K8s resource requests/limits:
+
+```
+# Simple -- image only
+ImageSpec("ghcr.io/meta-pytorch/monarch:latest")
+
+# With GPU resources
+ImageSpec("ghcr.io/meta-pytorch/monarch:latest",
+ resources={"nvidia.com/gpu": 4})
+
+# With the FUSE device required by RemoteMount
+ImageSpec("ghcr.io/meta-pytorch/monarch:latest", enable_fuse=True)
+
+# With memory-backed shared memory for NCCL
+ImageSpec(
+ "ghcr.io/meta-pytorch/monarch:latest",
+ shared_memory_size="16Gi",
+)
+```
+
+Pass the resulting object to `KubernetesJob.add_mesh(image_spec=...)`.
+
+`enable_fuse` runs the worker container in [privileged mode](https://kubernetes.io/docs/concepts/security/linux-kernel-security-constraints/#privileged-containers)
+and mounts the host's `/dev/fuse` device. The cluster's [admission policy](https://kubernetes.io/docs/concepts/security/pod-security-admission/)
+must allow privileged containers in the worker namespace, and its worker
+nodes must provide `/dev/fuse`. The option defaults to `False` and does
+not affect jobs that do not need FUSE.
+
+image*: [str](https://docs.python.org/3/builtins/stdtypes.html#str)*
+
+Required container image to use for worker pods.
+
+resources*: [dict](https://docs.python.org/3/builtins/stdtypes.html#dict)[[str](https://docs.python.org/3/builtins/stdtypes.html#str), [str](https://docs.python.org/3/builtins/stdtypes.html#str) | [int](https://docs.python.org/3/builtins/functions.html#int)] | [None](https://docs.python.org/3/builtins/constants.html#None)**= None*
+
+Optional K8s resource requests/limits (e.g. `{"nvidia.com/gpu": 4}`).
+
+enable_fuse*: [bool](https://docs.python.org/3/builtins/functions.html#bool)**= False*
+
+Whether to configure the worker pod for FUSE-backed mounts.
+
+shared_memory_size*: [str](https://docs.python.org/3/builtins/stdtypes.html#str) | [None](https://docs.python.org/3/builtins/constants.html#None)**= None*
+
+Optional size limit for a memory-backed `/dev/shm` volume.
+
+__init__(*image*, *resources=None*, *enable_fuse=False*, *shared_memory_size=None*)
 
 # Serialization
 
@@ -437,7 +539,7 @@ Load a job from a file.
 
 Parameters:
 
-**filename** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Path to the pickled job file, typically from `JobTrait.dump()`.
+**filename** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Path to the pickled job file, typically from `JobTrait.dump()`.
 Defaults to `.monarch/job_state.pkl`.
 
 Returns:
@@ -454,7 +556,7 @@ Deserialize a job from bytes.
 
 Parameters:
 
-**data** ([*bytes*](https://docs.python.org/3/library/stdtypes.html#bytes)) - Pickled job bytes, typically from `JobTrait.dumps()`.
+**data** ([*bytes*](https://docs.python.org/3/builtins/stdtypes.html#bytes)) - Pickled job bytes, typically from `JobTrait.dumps()`.
 
 Returns:
 

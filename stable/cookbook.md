@@ -16,7 +16,7 @@ embed the region here with `literalinclude`.
 You often need the rank-0 actor of a mesh, for example to use it as the coordinator
 of the SPMD job running on the mesh. Do:
 
-[View source](https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L48-L49)
+[View source](https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L48-L49)
 
 ```
 rank_0 = counters.flatten("rank").slice(rank=0)
@@ -40,7 +40,7 @@ An actor often needs to reach another rank of its own mesh -- for example, a
 coordinator at rank 0. Give each actor a handle to its mesh after spawning, then
 slice that handle to the target rank inside an endpoint:
 
-[View source](https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L77-L78)
+[View source](https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L77-L78)
 
 ```
 coordinator = self.mesh.flatten("rank").slice(rank=0)
@@ -59,7 +59,7 @@ back the endpoint's return value inline. A port is the asynchronous counterpart.
 The coordinator opens a `Channel` and `broadcast`s the sending half (a `Port`) to
 the other ranks, which send or stream results back to it whenever they are ready:
 
-[View source](https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L109-L113)
+[View source](https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L109-L113)
 
 ```
 port, receiver = Channel[int].open()
@@ -72,7 +72,7 @@ return sorted([await receiver.recv() for _ in range(expected)])
 Each rank's `produce` endpoint launches a background task and returns
 immediately; the task sends its values to the port over time:
 
-[View source](https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L119-L125)
+[View source](https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L119-L125)
 
 ```
 rank = context().actor_instance.rank["gpus"]
