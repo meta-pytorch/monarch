@@ -1,11 +1,12 @@
 sphinx==7.2.6
-pytorch-sphinx-theme2
-sphinxcontrib.katex==0.9.10
-docutils>=0.18.1,<0.21
-sphinx-design==0.6.1
-sphinxcontrib-mermaid==1.0.0
-myst-parser #==0.18.1
-sphinx-gallery==0.14.0
-sphinx-sitemap==2.7.1
-sphinxext-opengraph
-pillow
+pytorch-sphinx-theme2==0.4.13
+sphinxcontrib.katex==0.9.11
+docutils==0.20.1
+sphinx-design==0.6.1; python_version < "3.11"
+sphinx-design==0.7.0; python_version >= "3.11"
+sphinxcontrib-mermaid==2.1.1
+myst-parser==4.0.1
+sphinx-gallery==0.22.1
+sphinx-sitemap==2.9.0
+sphinxext-opengraph==0.13.0
+pillow==12.3.0
