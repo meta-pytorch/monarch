@@ -177,6 +177,7 @@ myst_update_mathjax = False
 myst_heading_anchors = 3
 # Configure code blocks with just mermaid to be rendered as diagrams.
 myst_fence_as_directive = ["mermaid"]
+mermaid_version = "12.1.0"
 
 # The suffix(es) of source filenames.
 source_suffix = {
