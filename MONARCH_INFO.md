@@ -230,19 +230,14 @@ cargo clippy
 ### Building Documentation
 
 ```bash
-cd docs
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Build all documentation (includes Python API docs, Rust docs, examples)
-make html
+# From the project root, build with locked documentation dependencies
+make -C docs html
 
 # View the results
-open build/html/index.html
+open docs/build/html/index.html
 
 # Clean build
-make clean
+make -C docs clean
 ```
 
 The documentation system:

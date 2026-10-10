@@ -134,6 +134,11 @@ test = [
     "torchx-nightly",
 ]
 docs = [
+    "build",
+    "setuptools>=77",
+    "setuptools-rust",
+    "wheel",
+    "numpy>=1.26",
     "sphinx>=7.2.6",
     "pytorch-sphinx-theme2>=0.4.13",
     "sphinxcontrib.katex>=0.9.11",

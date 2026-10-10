@@ -56,9 +56,6 @@ jobs:
         source scripts/common-setup.sh
 
         # Setup build environment (conda + system deps + rust + build deps).
-        # Keep docs CI on Python 3.11 because this OSS job installs locked
-        # PyPI deps, and locked runtime deps such as numpy 1.24.4 can still
-        # expect distutils when they build from source on Python 3.12+.
         setup_build_environment 3.11
 
         # Setup Tensor Engine
@@ -66,9 +63,7 @@ jobs:
 
         # Setup Python dependencies
         python -m pip install --upgrade pip uv
-        uv sync --frozen --python 3.11 --inexact --group docs --extra kubernetes --no-dev --no-install-project
-        uv pip install --python .venv/bin/python -r build-requirements.txt
-        uv pip install --python .venv/bin/python --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132
+        uv sync --locked --python 3.11 --inexact --group docs --extra kubernetes --no-dev --no-install-project
 
         # Set environment variables for CUDA build
         export USE_CUDA=1

@@ -10,19 +10,17 @@ For most users, this is all you need to get started:
 
 ```bash
 # From project root
-cd docs
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Build all documentation
-make html
+make -C docs html
 
 # View the results
-open build/html/index.html
+open docs/build/html/index.html
 ```
 
 The generated documentation will be available in `docs/build/html/`.
+
+The Makefile installs the `docs` dependency group from `uv.lock` with
+`uv sync --locked`, then runs Sphinx in that environment. It fails if the
+lockfile needs an update. Update dependencies explicitly before building.
 
 ### CI/CD Builds
 
@@ -38,14 +36,41 @@ For faster iteration during development:
 
 ```bash
 # Clean previous builds
-make clean
+make -C docs clean
 
 # Build with CI environment (if you have full Monarch built)
-CI=true make html
+CI=true make -C docs html
 
 # Standard build (uses mocked imports for unavailable Rust bindings)
-make html
+make -C docs html
 ```
+
+### Updating Documentation Dependencies
+
+Python documentation dependencies are declared in the root `pyproject.toml`
+under `[dependency-groups].docs` and locked in `uv.lock`. Mermaid's JavaScript
+version is set by `mermaid_version` in `docs/source/conf.py`.
+
+From the project root:
+
+```bash
+# Upgrade Python documentation packages within their declared constraints
+uv lock --upgrade-group docs
+
+# Check the latest Mermaid JavaScript release, then update mermaid_version
+npm view mermaid version
+
+# Install the updated dependencies and rebuild
+make -C docs clean
+make -C docs html
+
+# Check the lockfile and lint the changes
+uv lock --check
+arc lint
+```
+
+The PyTorch theme constrains Sphinx and PyData Sphinx Theme versions. A newer
+version of either may require an updated theme first.
 
 ## Overview
 
@@ -56,7 +81,6 @@ The Monarch documentation system is built using **Sphinx** (for Python documenta
 ```
 docs/
 ├── Makefile              # Main build commands
-├── requirements.txt      # Python dependencies for docs
 ├── source/
 │   ├── conf.py          # Sphinx configuration
 │   ├── index.md         # Main documentation homepage
@@ -250,11 +274,12 @@ Key configuration sections:
 
 ### Build Dependencies
 
-**Python packages** (from `docs/requirements.txt`):
+**Python packages** (from the `docs` dependency group in `pyproject.toml`):
 - Sphinx and extensions
 - Theme packages
 - MyST parser for Markdown
 - Sphinx Gallery for examples
+- Build tools and NumPy for the Monarch build used by docs CI
 
 **System dependencies**:
 - Rust toolchain (for `cargo doc`)
@@ -265,10 +290,10 @@ Key configuration sections:
 
 ### Common Issues
 
-1. **Import Errors**: Ensure Monarch is properly installed with `python -m pip install -e .`
+1. **Import Errors**: After syncing the docs dependencies, build Monarch with `uv run --frozen --no-sync bash scripts/build_monarch_for_docs.sh` from the project root
 2. **Missing Rust Docs**: Run `cargo doc --workspace --no-deps` before building
 3. **Theme Issues**: Check that all theme dependencies are installed
-4. **Build Failures**: Use `make clean` then `make html` for a fresh build
+4. **Build Failures**: Use `make -C docs clean` then `make -C docs html` from the project root for a fresh build
 
 ### Environment Differences
 
