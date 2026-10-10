@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["Flattrs","FlattrsIter"]};
+window.SIDEBAR_ITEMS = {"enum":["FlattrsValidationError"],"struct":["Flattrs","FlattrsIter"]};

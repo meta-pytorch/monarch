@@ -1,14 +1,13 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="../../../../" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.job.slurm &#8212; Monarch v0.6.0 documentation</title>
+    <title>monarch._src.job.slurm &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -28,31 +27,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
-    <script src="../../../../_static/doctools.js"></script>
-    <script src="../../../../_static/sphinx_highlight.js"></script>
-    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/job/slurm';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/job/slurm.html" />
@@ -76,7 +75,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -190,7 +189,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -555,6 +554,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -625,6 +630,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -914,6 +925,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -984,6 +1001,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1305,6 +1328,7 @@ document.write(`
 
 <span class="c1"># pyre-strict</span>
 
+<span class="kn">import</span><span class="w"> </span><span class="nn">ipaddress</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
@@ -1315,10 +1339,17 @@ document.write(`
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.channel</span><span class="w"> </span><span class="kn">import</span> <span class="n">ChannelTransport</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.config</span><span class="w"> </span><span class="kn">import</span> <span class="n">configure</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.proc</span><span class="w"> </span><span class="kn">import</span> <span class="n">ProcId</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.bootstrap</span><span class="w"> </span><span class="kn">import</span> <span class="n">attach_to_workers</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job._batch_env</span><span class="w"> </span><span class="kn">import</span> <span class="n">in_batch_job</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job._slurm_batch</span><span class="w"> </span><span class="kn">import</span> <span class="n">_WORKER_BOOTSTRAP</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job._slurm_batch</span><span class="w"> </span><span class="kn">import</span> <span class="n">_worker_bootstrap</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job.job</span><span class="w"> </span><span class="kn">import</span> <span class="n">BatchJob</span><span class="p">,</span> <span class="n">JobState</span><span class="p">,</span> <span class="n">JobTrait</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job.service_identity</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">allocate_service_proc_ids</span><span class="p">,</span>
+    <span class="n">serialize_service_proc_ids</span><span class="p">,</span>
+    <span class="n">service_proc_addrs</span><span class="p">,</span>
+    <span class="n">SERVICE_PROC_IDS_ENV</span><span class="p">,</span>
+<span class="p">)</span>
 
 
 <span class="n">logger</span><span class="p">:</span> <span class="n">logging</span><span class="o">.</span><span class="n">Logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
@@ -1332,7 +1363,9 @@ document.write(`
 <span class="p">)</span>
 
 
-<div class="viewcode-block" id="SlurmJob"><a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.SlurmJob">[docs]</a><span class="k">class</span><span class="w"> </span><span class="nc">SlurmJob</span><span class="p">(</span><span class="n">JobTrait</span><span class="p">):</span>
+<div class="viewcode-block" id="SlurmJob">
+<a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.SlurmJob">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">SlurmJob</span><span class="p">(</span><span class="n">JobTrait</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    A job scheduler that uses SLURM command line tools to schedule jobs.</span>
 
@@ -1364,6 +1397,11 @@ document.write(`
         <span class="n">cpus_per_task</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
         <span class="n">mem</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
         <span class="n">job_start_timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">account</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">qos</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">out_of_cluster</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+        <span class="n">attach_to</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">bind_to</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Args:</span>
@@ -1382,6 +1420,18 @@ document.write(`
 <span class="sd">            gpus_per_node: Number of GPUs to request per node. If None, no GPU resources are requested.</span>
 <span class="sd">            job_start_timeout: Maximum time in seconds to wait for the SLURM job to start running.</span>
 <span class="sd">                      This should account for potential queueing delays. If None (default), waits indefinitely.</span>
+<span class="sd">            account: SLURM account to charge the job to (``#SBATCH --account``). If None, uses the cluster default.</span>
+<span class="sd">            qos: SLURM quality-of-service to request (``#SBATCH --qos``). If None, uses the cluster default.</span>
+<span class="sd">            out_of_cluster: Whether the client runs outside the cluster network.</span>
+<span class="sd">                      The client attaches through the first allocated worker so</span>
+<span class="sd">                      workers can route messages back through that gateway.</span>
+<span class="sd">            attach_to: ZMQ-style address of the worker gateway for out-of-cluster</span>
+<span class="sd">                      access. When omitted in out-of-cluster mode, the first</span>
+<span class="sd">                      allocated worker&#39;s Monarch address is used.</span>
+<span class="sd">            bind_to: Optional IP address on which workers listen, without a port.</span>
+<span class="sd">                      When set, workers advertise their Slurm hostname while</span>
+<span class="sd">                      binding this address through the ``dial_to@bind_to`` alias</span>
+<span class="sd">                      format. The bind address uses ``monarch_port``.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="n">configure</span><span class="p">(</span><span class="n">default_transport</span><span class="o">=</span><span class="n">ChannelTransport</span><span class="o">.</span><span class="n">TcpWithHostname</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_meshes</span> <span class="o">=</span> <span class="n">meshes</span>
@@ -1398,10 +1448,27 @@ document.write(`
         <span class="bp">self</span><span class="o">.</span><span class="n">_cpus_per_task</span> <span class="o">=</span> <span class="n">cpus_per_task</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_mem</span> <span class="o">=</span> <span class="n">mem</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_job_start_timeout</span> <span class="o">=</span> <span class="n">job_start_timeout</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_account</span> <span class="o">=</span> <span class="n">account</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_qos</span> <span class="o">=</span> <span class="n">qos</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_out_of_cluster</span> <span class="o">=</span> <span class="n">out_of_cluster</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_attach_to</span> <span class="o">=</span> <span class="n">attach_to</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_bind_to</span> <span class="o">=</span> <span class="p">(</span>
+                <span class="nb">str</span><span class="p">(</span><span class="n">ipaddress</span><span class="o">.</span><span class="n">ip_address</span><span class="p">(</span><span class="n">bind_to</span><span class="p">))</span> <span class="k">if</span> <span class="n">bind_to</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+            <span class="p">)</span>
+        <span class="k">except</span> <span class="ne">ValueError</span> <span class="k">as</span> <span class="n">error</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="s2">&quot;bind_to must be an IPv4 or IPv6 address without a port&quot;</span>
+            <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">error</span>
         <span class="c1"># Track the single SLURM job ID and all allocated hostnames</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_slurm_job_id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_all_hostnames</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_service_proc_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">ProcId</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
         <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_allocate_service_proc_ids</span><span class="p">(</span><span class="n">num_nodes</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">ProcId</span><span class="p">]:</span>
+        <span class="k">return</span> <span class="n">allocate_service_proc_ids</span><span class="p">(</span><span class="n">num_nodes</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">__setstate__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="c1"># In batch mode the in-allocation client rehydrates this object via</span>
@@ -1410,10 +1477,40 @@ document.write(`
         <span class="c1"># address remote workers can dial back, instead of an abstract unix</span>
         <span class="c1"># socket whose namespace is local to the original (head) node.</span>
         <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+        <span class="k">if</span> <span class="s2">&quot;_bind_to&quot;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">state</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_bind_to</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="n">configure</span><span class="p">(</span><span class="n">default_transport</span><span class="o">=</span><span class="n">ChannelTransport</span><span class="o">.</span><span class="n">TcpWithHostname</span><span class="p">)</span>
 
-<div class="viewcode-block" id="SlurmJob.add_mesh"><a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.SlurmJob.add_mesh">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">add_mesh</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">num_nodes</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_resolve_attach_to</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_attach_to</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_attach_to</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_out_of_cluster</span><span class="p">:</span>
+            <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;tcp://</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_all_hostnames</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_port</span><span class="si">}</span><span class="s2">&quot;</span>
+        <span class="k">return</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_requires_sidecar_gateway</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_out_of_cluster</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_attach_to</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_prepare_client_gateway</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_jobs_active</span><span class="p">():</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;SLURM job is no longer active&quot;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_all_hostnames</span><span class="p">:</span>
+            <span class="n">job_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_resolved_job_id</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">job_id</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;SLURM job ID is not set&quot;</span><span class="p">)</span>
+            <span class="n">total_nodes</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_meshes</span><span class="o">.</span><span class="n">values</span><span class="p">())</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_all_hostnames</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wait_for_job_start</span><span class="p">(</span>
+                <span class="n">job_id</span><span class="p">,</span> <span class="n">total_nodes</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_job_start_timeout</span>
+            <span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_attach_client</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_resolve_attach_to</span><span class="p">())</span>
+
+<div class="viewcode-block" id="SlurmJob.add_mesh">
+<a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.SlurmJob.add_mesh">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">add_mesh</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">num_nodes</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_meshes</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">num_nodes</span></div>
+
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_resolved_job_id</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;The submitted job id, falling back to ``$SLURM_JOB_ID`` in batch mode</span>
@@ -1424,6 +1521,12 @@ document.write(`
             <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_slurm_job_id</span>
         <span class="k">return</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;SLURM_JOB_ID&quot;</span><span class="p">)</span> <span class="k">if</span> <span class="n">in_batch_job</span><span class="p">()</span> <span class="k">else</span> <span class="kc">None</span>
 
+    <span class="k">def</span><span class="w"> </span><span class="nf">_cleanup_log_context</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+        <span class="k">return</span> <span class="p">{</span>
+            <span class="s2">&quot;job_type&quot;</span><span class="p">:</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="p">,</span>
+            <span class="s2">&quot;job_id&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_resolved_job_id</span><span class="p">(),</span>
+        <span class="p">}</span>
+
     <span class="k">def</span><span class="w"> </span><span class="nf">_create</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">client_script</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Submit a single SLURM job for all meshes.</span>
 
@@ -1433,6 +1536,7 @@ document.write(`
 <span class="sd">        instead of submitting a new one.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="n">total_nodes</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_meshes</span><span class="o">.</span><span class="n">values</span><span class="p">())</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_service_proc_ids</span><span class="p">(</span><span class="n">total_nodes</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">client_script</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="c1"># Dumped before submit: the job id isn&#39;t known yet, and the client</span>
             <span class="c1"># resolves it from $SLURM_JOB_ID anyway.</span>
@@ -1445,6 +1549,7 @@ document.write(`
         <span class="bp">self</span><span class="p">,</span> <span class="n">num_nodes</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">client_script</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Submit a SLURM job for all nodes.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_service_proc_ids</span><span class="p">(</span><span class="n">num_nodes</span><span class="p">)</span>
         <span class="n">unique_job_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_job_name</span><span class="si">}</span><span class="s2">_</span><span class="si">{</span><span class="n">os</span><span class="o">.</span><span class="n">getpid</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span>
 
         <span class="c1"># Create log directory if it doesn&#39;t exist</span>
@@ -1481,6 +1586,12 @@ document.write(`
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_partition</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">sbatch_directives</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;#SBATCH --partition=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_partition</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_account</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">sbatch_directives</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;#SBATCH --account=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_account</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_qos</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">sbatch_directives</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;#SBATCH --qos=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_qos</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
         <span class="k">if</span> <span class="p">(</span>
             <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_exclusive</span>
             <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_partition</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
@@ -1502,18 +1613,27 @@ document.write(`
                 <span class="n">sbatch_directives</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;#SBATCH </span><span class="si">{</span><span class="n">arg</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 
         <span class="n">batch_script</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">sbatch_directives</span><span class="p">)</span>
+        <span class="n">batch_script</span> <span class="o">+=</span> <span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">export </span><span class="si">{</span><span class="n">SERVICE_PROC_IDS_ENV</span><span class="si">}</span><span class="s2">=&quot;</span>
+            <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">shlex</span><span class="o">.</span><span class="n">quote</span><span class="p">(</span><span class="n">serialize_service_proc_ids</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_service_proc_ids</span><span class="p">))</span><span class="si">}</span><span class="se">\n</span><span class="s2">&quot;</span>
+        <span class="p">)</span>
         <span class="k">if</span> <span class="n">client_script</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="c1"># Workers only; an external controller attaches and manages the</span>
-            <span class="c1"># lifetime. Shares _WORKER_BOOTSTRAP with the batch runner.</span>
-            <span class="n">worker_cmd</span> <span class="o">=</span> <span class="n">_WORKER_BOOTSTRAP</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">_port</span>
+            <span class="c1"># lifetime. Shares worker bootstrap generation with the batch runner.</span>
+            <span class="n">worker_cmd</span> <span class="o">=</span> <span class="n">_worker_bootstrap</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_port</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_bind_to</span><span class="p">)</span>
             <span class="n">batch_script</span> <span class="o">+=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">srun </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_python_exe</span><span class="si">}</span><span class="s2"> -c &#39;</span><span class="si">{</span><span class="n">worker_cmd</span><span class="si">}</span><span class="s2">&#39;</span><span class="se">\n</span><span class="s2">&quot;</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="c1"># Batch mode: the in-allocation runner seeds the workers, runs the</span>
             <span class="c1"># client (MONARCH_BATCH_JOB=1 so its cached BatchJob reconnects to</span>
             <span class="c1"># this allocation), and tears the workers down in a finally.</span>
+            <span class="n">bind_to_arg</span> <span class="o">=</span> <span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot; --bind-to </span><span class="si">{</span><span class="n">shlex</span><span class="o">.</span><span class="n">quote</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_bind_to</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_bind_to</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+                <span class="k">else</span> <span class="s2">&quot;&quot;</span>
+            <span class="p">)</span>
             <span class="n">batch_script</span> <span class="o">+=</span> <span class="p">(</span>
                 <span class="sa">f</span><span class="s2">&quot;</span><span class="se">\n</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_python_exe</span><span class="si">}</span><span class="s2"> -m monarch._src.job._slurm_batch &quot;</span>
-                <span class="sa">f</span><span class="s2">&quot;--port </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_port</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">shlex</span><span class="o">.</span><span class="n">quote</span><span class="p">(</span><span class="n">client_script</span><span class="p">)</span><span class="si">}</span><span class="se">\n</span><span class="s2">&quot;</span>
+                <span class="sa">f</span><span class="s2">&quot;--port </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_port</span><span class="si">}{</span><span class="n">bind_to_arg</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">shlex</span><span class="o">.</span><span class="n">quote</span><span class="p">(</span><span class="n">client_script</span><span class="p">)</span><span class="si">}</span><span class="se">\n</span><span class="s2">&quot;</span>
             <span class="p">)</span>
 
         <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Submitting SLURM job with </span><span class="si">{</span><span class="n">num_nodes</span><span class="si">}</span><span class="s2"> nodes&quot;</span><span class="p">)</span>
@@ -1546,6 +1666,14 @@ document.write(`
 
         <span class="k">except</span> <span class="n">subprocess</span><span class="o">.</span><span class="n">CalledProcessError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Failed to submit SLURM job: </span><span class="si">{</span><span class="n">e</span><span class="o">.</span><span class="n">stderr</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">e</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_ensure_service_proc_ids</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">num_nodes</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_service_proc_ids</span><span class="p">)</span> <span class="o">!=</span> <span class="n">num_nodes</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_service_proc_ids</span> <span class="o">=</span> <span class="p">[</span>
+                <span class="n">proc_id</span>
+                <span class="k">for</span> <span class="n">mesh_nodes</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_meshes</span><span class="o">.</span><span class="n">values</span><span class="p">()</span>
+                <span class="k">for</span> <span class="n">proc_id</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_allocate_service_proc_ids</span><span class="p">(</span><span class="n">mesh_nodes</span><span class="p">)</span>
+            <span class="p">]</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_get_job_info_json</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Get job information using squeue --json.&quot;&quot;&quot;</span>
@@ -1626,6 +1754,7 @@ document.write(`
             <span class="k">raise</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_state</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">JobState</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_prepare_client_gateway</span><span class="p">()</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_jobs_active</span><span class="p">():</span>
             <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;SLURM job is no longer active&quot;</span><span class="p">)</span>
 
@@ -1634,33 +1763,41 @@ document.write(`
             <span class="n">job_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_resolved_job_id</span><span class="p">()</span>
             <span class="k">if</span> <span class="n">job_id</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
                 <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;SLURM job ID is not set&quot;</span><span class="p">)</span>
+
             <span class="n">total_nodes</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_meshes</span><span class="o">.</span><span class="n">values</span><span class="p">())</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_all_hostnames</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wait_for_job_start</span><span class="p">(</span>
                 <span class="n">job_id</span><span class="p">,</span> <span class="n">total_nodes</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_job_start_timeout</span>
             <span class="p">)</span>
+
+        <span class="n">attach_to</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_attach_to</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_out_of_cluster</span> <span class="ow">and</span> <span class="n">attach_to</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">attach_to</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;tcp://</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_all_hostnames</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_port</span><span class="si">}</span><span class="s2">&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_attach_client</span><span class="p">(</span><span class="n">attach_to</span><span class="p">)</span>
 
         <span class="c1"># Distribute the allocated hostnames among meshes</span>
         <span class="n">host_meshes</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="n">hostname_idx</span> <span class="o">=</span> <span class="mi">0</span>
 
         <span class="k">for</span> <span class="n">mesh_name</span><span class="p">,</span> <span class="n">num_nodes</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_meshes</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
-            <span class="n">mesh_hostnames</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_all_hostnames</span><span class="p">[</span>
-                <span class="n">hostname_idx</span> <span class="p">:</span> <span class="n">hostname_idx</span> <span class="o">+</span> <span class="n">num_nodes</span>
-            <span class="p">]</span>
-            <span class="n">hostname_idx</span> <span class="o">+=</span> <span class="n">num_nodes</span>
+            <span class="n">next_hostname_idx</span> <span class="o">=</span> <span class="n">hostname_idx</span> <span class="o">+</span> <span class="n">num_nodes</span>
+            <span class="n">mesh_hostnames</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_all_hostnames</span><span class="p">[</span><span class="n">hostname_idx</span><span class="p">:</span><span class="n">next_hostname_idx</span><span class="p">]</span>
+            <span class="n">service_proc_ids</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_service_proc_ids</span><span class="p">[</span><span class="n">hostname_idx</span><span class="p">:</span><span class="n">next_hostname_idx</span><span class="p">]</span>
+            <span class="n">hostname_idx</span> <span class="o">=</span> <span class="n">next_hostname_idx</span>
 
             <span class="n">workers</span> <span class="o">=</span> <span class="p">[</span><span class="sa">f</span><span class="s2">&quot;tcp://</span><span class="si">{</span><span class="n">hostname</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_port</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">for</span> <span class="n">hostname</span> <span class="ow">in</span> <span class="n">mesh_hostnames</span><span class="p">]</span>
             <span class="n">host_mesh</span> <span class="o">=</span> <span class="n">attach_to_workers</span><span class="p">(</span>
                 <span class="n">name</span><span class="o">=</span><span class="n">mesh_name</span><span class="p">,</span>
                 <span class="n">ca</span><span class="o">=</span><span class="s2">&quot;trust_all_connections&quot;</span><span class="p">,</span>
-                <span class="n">workers</span><span class="o">=</span><span class="n">workers</span><span class="p">,</span>  <span class="c1"># type: ignore[arg-type]</span>
+                <span class="n">workers</span><span class="o">=</span><span class="n">service_proc_addrs</span><span class="p">(</span><span class="n">workers</span><span class="p">,</span> <span class="n">service_proc_ids</span><span class="p">),</span>
             <span class="p">)</span>
 
             <span class="n">host_meshes</span><span class="p">[</span><span class="n">mesh_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">host_mesh</span>
 
         <span class="k">return</span> <span class="n">JobState</span><span class="p">(</span><span class="n">host_meshes</span><span class="p">)</span>
 
-<div class="viewcode-block" id="SlurmJob.can_run"><a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.SlurmJob.can_run">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">can_run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">spec</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<div class="viewcode-block" id="SlurmJob.can_run">
+<a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.SlurmJob.can_run">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">can_run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">spec</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Check if this job can run the given spec.&quot;&quot;&quot;</span>
         <span class="k">return</span> <span class="p">(</span>
             <span class="nb">isinstance</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="n">SlurmJob</span><span class="p">)</span>
@@ -1676,8 +1813,14 @@ document.write(`
             <span class="ow">and</span> <span class="n">spec</span><span class="o">.</span><span class="n">_cpus_per_task</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cpus_per_task</span>
             <span class="ow">and</span> <span class="n">spec</span><span class="o">.</span><span class="n">_mem</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">_mem</span>
             <span class="ow">and</span> <span class="n">spec</span><span class="o">.</span><span class="n">_job_start_timeout</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">_job_start_timeout</span>
+            <span class="ow">and</span> <span class="n">spec</span><span class="o">.</span><span class="n">_account</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">_account</span>
+            <span class="ow">and</span> <span class="n">spec</span><span class="o">.</span><span class="n">_qos</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">_qos</span>
+            <span class="ow">and</span> <span class="n">spec</span><span class="o">.</span><span class="n">_out_of_cluster</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">_out_of_cluster</span>
+            <span class="ow">and</span> <span class="n">spec</span><span class="o">.</span><span class="n">_attach_to</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">_attach_to</span>
+            <span class="ow">and</span> <span class="n">spec</span><span class="o">.</span><span class="n">_bind_to</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">_bind_to</span>
             <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_jobs_active</span><span class="p">()</span>
         <span class="p">)</span></div>
+
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_jobs_active</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Check if SLURM job is still active by querying squeue.&quot;&quot;&quot;</span>
@@ -1703,7 +1846,9 @@ document.write(`
 
         <span class="k">return</span> <span class="kc">True</span>
 
-<div class="viewcode-block" id="SlurmJob.share_node"><a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.SlurmJob.share_node">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">share_node</span><span class="p">(</span>
+<div class="viewcode-block" id="SlurmJob.share_node">
+<a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.SlurmJob.share_node">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">share_node</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span> <span class="n">tasks_per_node</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">gpus_per_task</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">partition</span><span class="p">:</span> <span class="nb">str</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
@@ -1725,12 +1870,13 @@ document.write(`
         <span class="bp">self</span><span class="o">.</span><span class="n">_cpus_per_task</span> <span class="o">=</span> <span class="n">slurm_args</span><span class="p">[</span><span class="s2">&quot;cpus_per_task&quot;</span><span class="p">]</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_mem</span> <span class="o">=</span> <span class="n">slurm_args</span><span class="p">[</span><span class="s2">&quot;memory&quot;</span><span class="p">]</span></div>
 
+
     <span class="k">def</span><span class="w"> </span><span class="nf">_kill</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Cancel the SLURM job.</span>
 
 <span class="sd">        No-op in batch mode: ``BatchJob`` registers this as an ``atexit`` hook on</span>
 <span class="sd">        the in-allocation client, but the sbatch runner owns teardown there, so</span>
-<span class="sd">        the client must not scancel its own allocation. The external-controller</span>
+<span class="sd">        the client must not scancel its own allocation. The external-client</span>
 <span class="sd">        path scancels as before.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">if</span> <span class="n">in_batch_job</span><span class="p">():</span>
@@ -1750,6 +1896,7 @@ document.write(`
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_slurm_job_id</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_all_hostnames</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span></div>
+
 </pre></div>
 
                 </article>
@@ -1902,7 +2049,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>
@@ -1931,7 +2078,7 @@ document.write(`
        "headline": "monarch._src.job.slurm",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/job/slurm.html",
-       "articleBody": "Source code for monarch._src.job.slurm # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import json import logging import os import shlex import subprocess import sys from typing import Any, Dict, FrozenSet, List, Optional, Sequence from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport from monarch._rust_bindings.monarch_hyperactor.config import configure from monarch._src.actor.bootstrap import attach_to_workers from monarch._src.job._batch_env import in_batch_job from monarch._src.job._slurm_batch import _WORKER_BOOTSTRAP from monarch._src.job.job import BatchJob, JobState, JobTrait logger: logging.Logger = logging.getLogger(__name__) logger.setLevel(logging.INFO) logger.addHandler(logging.StreamHandler(sys.stderr)) logger.propagate = False # terminal states that indicate the job is no longer active _SLURM_TERMINAL_STATES: FrozenSet[str] = frozenset( [\"FAILED\", \"CANCELLED\", \"TIMEOUT\", \"PREEMPTED\", \"COMPLETED\"] ) [docs]class SlurmJob(JobTrait): \"\"\" A job scheduler that uses SLURM command line tools to schedule jobs. This implementation: 1. Uses sbatch to submit SLURM jobs that start monarch workers 2. Queries job status with squeue to get allocated hostnames 3. Uses the hostnames to connect to the started workers Two launch modes are supported: - External controller (default): ``apply()`` submits the workers; a separate controller process attaches via ``state()``. - Batch (``apply(client_script=...)``): one allocation runs both the workers and the client; the allocation is released when the client exits. \"\"\" def __init__( self, meshes: Dict[str, int], python_exe: str = \"python\", slurm_args: Sequence[str] = (), monarch_port: int = 22222, job_name: str = \"monarch_job\", ntasks_per_node: int = 1, time_limit: Optional[str] = None, partition: Optional[str] = None, log_dir: Optional[str] = None, exclusive: bool = True, gpus_per_node: Optional[int] = None, cpus_per_task: Optional[int] = None, mem: Optional[str] = None, job_start_timeout: Optional[int] = None, ) -\u003e None: \"\"\" Args: meshes: Dictionary mapping mesh names to number of nodes python_exe: Python executable to use for worker processes slurm_args: Additional SLURM arguments to pass to sbatch monarch_port: Port for TCP communication between workers job_name: Name for the SLURM job ntasks_per_node: Number of tasks per node time_limit: Maximum runtime in HH:MM:SS format. If None, uses SLURM\u0027s default time limit. partition: SLURM partition to submit to log_dir: Directory for SLURM log files exclusive: Whether to request exclusive node access (no other jobs can run on the nodes). Defaults to True for predictable performance and resource isolation, but may increase queue times and waste resources if nodes are underutilized. gpus_per_node: Number of GPUs to request per node. If None, no GPU resources are requested. job_start_timeout: Maximum time in seconds to wait for the SLURM job to start running. This should account for potential queueing delays. If None (default), waits indefinitely. \"\"\" configure(default_transport=ChannelTransport.TcpWithHostname) self._meshes = meshes self._python_exe = python_exe self._slurm_args = slurm_args self._port = monarch_port self._job_name = job_name self._ntasks_per_node = ntasks_per_node self._time_limit = time_limit self._partition = partition self._log_dir: str = log_dir if log_dir is not None else os.getcwd() self._exclusive = exclusive self._gpus_per_node = gpus_per_node self._cpus_per_task = cpus_per_task self._mem = mem self._job_start_timeout = job_start_timeout # Track the single SLURM job ID and all allocated hostnames self._slurm_job_id: Optional[str] = None self._all_hostnames: List[str] = [] super().__init__() def __setstate__(self, state: Dict[str, Any]) -\u003e None: # In batch mode the in-allocation client rehydrates this object via # pickle.load (job_load), which bypasses __init__. Re-apply the # transport config here so the client\u0027s host_agent serves on a TCP # address remote workers can dial back, instead of an abstract unix # socket whose namespace is local to the original (head) node. self.__dict__.update(state) configure(default_transport=ChannelTransport.TcpWithHostname) [docs] def add_mesh(self, name: str, num_nodes: int) -\u003e None: self._meshes[name] = num_nodes def _resolved_job_id(self) -\u003e Optional[str]: \"\"\"The submitted job id, falling back to ``$SLURM_JOB_ID`` in batch mode where the unpickled instance never had ``_slurm_job_id`` set. Gated on batch mode so an external controller doesn\u0027t adopt an unrelated id from its own surrounding SLURM job.\"\"\" if self._slurm_job_id is not None: return self._slurm_job_id return os.environ.get(\"SLURM_JOB_ID\") if in_batch_job() else None def _create(self, client_script: Optional[str]) -\u003e None: \"\"\"Submit a single SLURM job for all meshes. In batch mode (``client_script`` set) the job runs the client inside the allocation alongside the workers, and a ``BatchJob`` wrapper is cached to ``.monarch/job_state.pkl`` so the client reconnects to this allocation instead of submitting a new one. \"\"\" total_nodes = sum(self._meshes.values()) if client_script is not None: # Dumped before submit: the job id isn\u0027t known yet, and the client # resolves it from $SLURM_JOB_ID anyway. BatchJob(self).dump(\".monarch/job_state.pkl\") self._slurm_job_id = self._submit_slurm_job( total_nodes, client_script=client_script ) def _submit_slurm_job( self, num_nodes: int, client_script: Optional[str] = None ) -\u003e str: \"\"\"Submit a SLURM job for all nodes.\"\"\" unique_job_name = f\"{self._job_name}_{os.getpid()}\" # Create log directory if it doesn\u0027t exist os.makedirs(self._log_dir, exist_ok=True) log_path_out = os.path.join(self._log_dir, f\"slurm_%j_{unique_job_name}.out\") log_path_err = os.path.join(self._log_dir, f\"slurm_%j_{unique_job_name}.err\") # Build SBATCH directives sbatch_directives = [ \"#!/bin/bash\", f\"#SBATCH --job-name={unique_job_name}\", f\"#SBATCH --ntasks-per-node={self._ntasks_per_node}\", f\"#SBATCH --nodes={num_nodes}\", f\"#SBATCH --output={log_path_out}\", f\"#SBATCH --error={log_path_err}\", ] if self._time_limit is not None: sbatch_directives.append(f\"#SBATCH --time={self._time_limit}\") if self._gpus_per_node is not None: sbatch_directives.append(f\"#SBATCH --gpus-per-node={self._gpus_per_node}\") if self._cpus_per_task is not None: sbatch_directives.append(f\"#SBATCH --cpus-per-task={self._cpus_per_task}\") if self._mem is not None: sbatch_directives.append(f\"#SBATCH --mem={self._mem}\") if self._exclusive: sbatch_directives.append(\"#SBATCH --exclusive\") if self._partition is not None: sbatch_directives.append(f\"#SBATCH --partition={self._partition}\") if ( not self._exclusive and self._partition is not None and self._gpus_per_node is not None ): gpus_per_task = self._gpus_per_node // self._ntasks_per_node assert self._partition, ( \"Slurm partition must be set for jobs that share nodes with other jobs\" ) self.share_node( tasks_per_node=self._ntasks_per_node, gpus_per_task=gpus_per_task, partition=self._partition, ) # Add any additional slurm args as directives for arg in self._slurm_args: if arg.startswith(\"-\"): sbatch_directives.append(f\"#SBATCH {arg}\") batch_script = \"\\n\".join(sbatch_directives) if client_script is None: # Workers only; an external controller attaches and manages the # lifetime. Shares _WORKER_BOOTSTRAP with the batch runner. worker_cmd = _WORKER_BOOTSTRAP % self._port batch_script += f\"\\nsrun {self._python_exe} -c \u0027{worker_cmd}\u0027\\n\" else: # Batch mode: the in-allocation runner seeds the workers, runs the # client (MONARCH_BATCH_JOB=1 so its cached BatchJob reconnects to # this allocation), and tears the workers down in a finally. batch_script += ( f\"\\n{self._python_exe} -m monarch._src.job._slurm_batch \" f\"--port {self._port} {shlex.quote(client_script)}\\n\" ) logger.info(f\"Submitting SLURM job with {num_nodes} nodes\") try: result = subprocess.run( [\"sbatch\"], input=batch_script, capture_output=True, text=True, check=True, ) # Parse the job ID from sbatch output (typically \"Submitted batch job 12345\") job_id = None for line in result.stdout.strip().split(\"\\n\"): if \"Submitted batch job\" in line: job_id = line.split()[-1] break if not job_id: raise RuntimeError( f\"Failed to parse job ID from sbatch output: {result.stdout}\" ) logger.info( f\"SLURM job {job_id} submitted. Logs will be written to: {self._log_dir}/slurm_{job_id}_{unique_job_name}.out\" ) return job_id except subprocess.CalledProcessError as e: raise RuntimeError(f\"Failed to submit SLURM job: {e.stderr}\") from e def _get_job_info_json(self, job_id: str) -\u003e Optional[Dict[str, Any]]: \"\"\"Get job information using squeue --json.\"\"\" try: result = subprocess.run( [\"squeue\", \"--job\", job_id, \"--json\"], capture_output=True, text=True, check=True, ) if result.stdout.strip(): data = json.loads(result.stdout) jobs = data.get(\"jobs\", []) return jobs[0] if jobs else None return None except subprocess.CalledProcessError as e: logger.warning(f\"Error checking job {job_id} status: {e.stderr}\") return None except (json.JSONDecodeError, KeyError) as e: logger.warning(f\"Error parsing JSON response for job {job_id}: {e}\") return None def _wait_for_job_start( self, job_id: str, expected_nodes: int, timeout: Optional[int] = None ) -\u003e List[str]: \"\"\" Wait for the SLURM job to start and return the allocated hostnames. Requires Slurm 20.02+ for squeue --json support. \"\"\" import time start_time = time.time() try: while timeout is None or time.time() - start_time \u003c timeout: job_info = self._get_job_info_json(job_id) if not job_info: raise RuntimeError(f\"SLURM job {job_id} not found in queue\") job_state = job_info.get(\"job_state\", []) if \"RUNNING\" in job_state: # Extract hostnames from job_resources.nodes.allocation job_resources = job_info.get(\"job_resources\", {}) nodes_info = job_resources.get(\"nodes\", {}) allocation = nodes_info.get(\"allocation\", []) hostnames = [node[\"name\"] for node in allocation] logger.info( f\"SLURM job {job_id} is running on {len(hostnames)} nodes: {hostnames}\" ) if len(hostnames) != expected_nodes: raise RuntimeError( f\"Expected {expected_nodes} nodes but got {len(hostnames)}. \" f\"Partial allocation not supported.\" ) return hostnames elif any(state in job_state for state in _SLURM_TERMINAL_STATES): raise RuntimeError( f\"SLURM job {job_id} failed with status: {job_state}\" ) else: logger.debug(f\"SLURM job {job_id} status: {job_state}, waiting...\") time.sleep(2) # Check every 2 seconds raise RuntimeError(f\"Timeout waiting for SLURM job {job_id} to start\") except Exception: # Cleanup on failure - reuse _kill() logic logger.error(f\"Failed to start SLURM job {job_id}, cancelling job\") self._kill() raise def _state(self) -\u003e JobState: if not self._jobs_active(): raise RuntimeError(\"SLURM job is no longer active\") # Wait for job to start and get hostnames if not already done if not self._all_hostnames: job_id = self._resolved_job_id() if job_id is None: raise RuntimeError(\"SLURM job ID is not set\") total_nodes = sum(self._meshes.values()) self._all_hostnames = self._wait_for_job_start( job_id, total_nodes, timeout=self._job_start_timeout ) # Distribute the allocated hostnames among meshes host_meshes = {} hostname_idx = 0 for mesh_name, num_nodes in self._meshes.items(): mesh_hostnames = self._all_hostnames[ hostname_idx : hostname_idx + num_nodes ] hostname_idx += num_nodes workers = [f\"tcp://{hostname}:{self._port}\" for hostname in mesh_hostnames] host_mesh = attach_to_workers( name=mesh_name, ca=\"trust_all_connections\", workers=workers, # type: ignore[arg-type] ) host_meshes[mesh_name] = host_mesh return JobState(host_meshes) [docs] def can_run(self, spec: \"JobTrait\") -\u003e bool: \"\"\"Check if this job can run the given spec.\"\"\" return ( isinstance(spec, SlurmJob) and spec._meshes == self._meshes and spec._python_exe == self._python_exe and spec._port == self._port and spec._slurm_args == self._slurm_args and spec._job_name == self._job_name and spec._ntasks_per_node == self._ntasks_per_node and spec._time_limit == self._time_limit and spec._partition == self._partition and spec._gpus_per_node == self._gpus_per_node and spec._cpus_per_task == self._cpus_per_task and spec._mem == self._mem and spec._job_start_timeout == self._job_start_timeout and self._jobs_active() ) def _jobs_active(self) -\u003e bool: \"\"\"Check if SLURM job is still active by querying squeue.\"\"\" # A batch job reloaded inside its own allocation pickles as not_running, # so fall back to $SLURM_JOB_ID + squeue instead of the active flag. if not self.active and not in_batch_job(): return False job_id = self._resolved_job_id() if job_id is None: return False job_info = self._get_job_info_json(job_id) if not job_info: logger.warning(f\"SLURM job {job_id} not found in queue\") return False job_state = job_info.get(\"job_state\", []) if any(state in job_state for state in _SLURM_TERMINAL_STATES): logger.warning(f\"SLURM job {job_id} has status: {job_state}\") return False return True [docs] def share_node( self, tasks_per_node: int, gpus_per_task: int, partition: str ) -\u003e None: \"\"\" Share a node with other jobs. \"\"\" try: import clusterscope except ImportError: raise RuntimeError( \"please install clusterscope to use share_node. `pip install clusterscope`\" ) self._exclusive = False slurm_args = clusterscope.job_gen_task_slurm( partition=partition, gpus_per_task=gpus_per_task, tasks_per_node=tasks_per_node, ) self._cpus_per_task = slurm_args[\"cpus_per_task\"] self._mem = slurm_args[\"memory\"] def _kill(self) -\u003e None: \"\"\"Cancel the SLURM job. No-op in batch mode: ``BatchJob`` registers this as an ``atexit`` hook on the in-allocation client, but the sbatch runner owns teardown there, so the client must not scancel its own allocation. The external-controller path scancels as before. \"\"\" if in_batch_job(): return job_id = self._resolved_job_id() if job_id is not None: try: subprocess.run( [\"scancel\", job_id], capture_output=True, text=True, check=True, ) logger.info(f\"Cancelled SLURM job {job_id}\") except subprocess.CalledProcessError as e: logger.warning(f\"Failed to cancel SLURM job {job_id}: {e.stderr}\") self._slurm_job_id = None self._all_hostnames.clear()",
+       "articleBody": "Source code for monarch._src.job.slurm # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import ipaddress import json import logging import os import shlex import subprocess import sys from typing import Any, Dict, FrozenSet, List, Optional, Sequence from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport from monarch._rust_bindings.monarch_hyperactor.config import configure from monarch._rust_bindings.monarch_hyperactor.proc import ProcId from monarch._src.actor.bootstrap import attach_to_workers from monarch._src.job._batch_env import in_batch_job from monarch._src.job._slurm_batch import _worker_bootstrap from monarch._src.job.job import BatchJob, JobState, JobTrait from monarch._src.job.service_identity import ( allocate_service_proc_ids, serialize_service_proc_ids, service_proc_addrs, SERVICE_PROC_IDS_ENV, ) logger: logging.Logger = logging.getLogger(__name__) logger.setLevel(logging.INFO) logger.addHandler(logging.StreamHandler(sys.stderr)) logger.propagate = False # terminal states that indicate the job is no longer active _SLURM_TERMINAL_STATES: FrozenSet[str] = frozenset( [\"FAILED\", \"CANCELLED\", \"TIMEOUT\", \"PREEMPTED\", \"COMPLETED\"] ) [docs] class SlurmJob(JobTrait): \"\"\" A job scheduler that uses SLURM command line tools to schedule jobs. This implementation: 1. Uses sbatch to submit SLURM jobs that start monarch workers 2. Queries job status with squeue to get allocated hostnames 3. Uses the hostnames to connect to the started workers Two launch modes are supported: - External controller (default): ``apply()`` submits the workers; a separate controller process attaches via ``state()``. - Batch (``apply(client_script=...)``): one allocation runs both the workers and the client; the allocation is released when the client exits. \"\"\" def __init__( self, meshes: Dict[str, int], python_exe: str = \"python\", slurm_args: Sequence[str] = (), monarch_port: int = 22222, job_name: str = \"monarch_job\", ntasks_per_node: int = 1, time_limit: Optional[str] = None, partition: Optional[str] = None, log_dir: Optional[str] = None, exclusive: bool = True, gpus_per_node: Optional[int] = None, cpus_per_task: Optional[int] = None, mem: Optional[str] = None, job_start_timeout: Optional[int] = None, account: Optional[str] = None, qos: Optional[str] = None, out_of_cluster: bool = False, attach_to: Optional[str] = None, bind_to: Optional[str] = None, ) -\u003e None: \"\"\" Args: meshes: Dictionary mapping mesh names to number of nodes python_exe: Python executable to use for worker processes slurm_args: Additional SLURM arguments to pass to sbatch monarch_port: Port for TCP communication between workers job_name: Name for the SLURM job ntasks_per_node: Number of tasks per node time_limit: Maximum runtime in HH:MM:SS format. If None, uses SLURM\u0027s default time limit. partition: SLURM partition to submit to log_dir: Directory for SLURM log files exclusive: Whether to request exclusive node access (no other jobs can run on the nodes). Defaults to True for predictable performance and resource isolation, but may increase queue times and waste resources if nodes are underutilized. gpus_per_node: Number of GPUs to request per node. If None, no GPU resources are requested. job_start_timeout: Maximum time in seconds to wait for the SLURM job to start running. This should account for potential queueing delays. If None (default), waits indefinitely. account: SLURM account to charge the job to (``#SBATCH --account``). If None, uses the cluster default. qos: SLURM quality-of-service to request (``#SBATCH --qos``). If None, uses the cluster default. out_of_cluster: Whether the client runs outside the cluster network. The client attaches through the first allocated worker so workers can route messages back through that gateway. attach_to: ZMQ-style address of the worker gateway for out-of-cluster access. When omitted in out-of-cluster mode, the first allocated worker\u0027s Monarch address is used. bind_to: Optional IP address on which workers listen, without a port. When set, workers advertise their Slurm hostname while binding this address through the ``dial_to@bind_to`` alias format. The bind address uses ``monarch_port``. \"\"\" configure(default_transport=ChannelTransport.TcpWithHostname) self._meshes = meshes self._python_exe = python_exe self._slurm_args = slurm_args self._port = monarch_port self._job_name = job_name self._ntasks_per_node = ntasks_per_node self._time_limit = time_limit self._partition = partition self._log_dir: str = log_dir if log_dir is not None else os.getcwd() self._exclusive = exclusive self._gpus_per_node = gpus_per_node self._cpus_per_task = cpus_per_task self._mem = mem self._job_start_timeout = job_start_timeout self._account = account self._qos = qos self._out_of_cluster = out_of_cluster self._attach_to = attach_to try: self._bind_to = ( str(ipaddress.ip_address(bind_to)) if bind_to is not None else None ) except ValueError as error: raise ValueError( \"bind_to must be an IPv4 or IPv6 address without a port\" ) from error # Track the single SLURM job ID and all allocated hostnames self._slurm_job_id: Optional[str] = None self._all_hostnames: List[str] = [] self._service_proc_ids: list[ProcId] = [] super().__init__() @staticmethod def _allocate_service_proc_ids(num_nodes: int) -\u003e list[ProcId]: return allocate_service_proc_ids(num_nodes) def __setstate__(self, state: Dict[str, Any]) -\u003e None: # In batch mode the in-allocation client rehydrates this object via # pickle.load (job_load), which bypasses __init__. Re-apply the # transport config here so the client\u0027s host_agent serves on a TCP # address remote workers can dial back, instead of an abstract unix # socket whose namespace is local to the original (head) node. self.__dict__.update(state) if \"_bind_to\" not in state: self._bind_to = None configure(default_transport=ChannelTransport.TcpWithHostname) def _resolve_attach_to(self) -\u003e str | None: if self._attach_to is not None: return self._attach_to if self._out_of_cluster: return f\"tcp://{self._all_hostnames[0]}:{self._port}\" return None def _requires_sidecar_gateway(self) -\u003e bool: return self._out_of_cluster or self._attach_to is not None def _prepare_client_gateway(self) -\u003e None: if not self._jobs_active(): raise RuntimeError(\"SLURM job is no longer active\") if not self._all_hostnames: job_id = self._resolved_job_id() if job_id is None: raise RuntimeError(\"SLURM job ID is not set\") total_nodes = sum(self._meshes.values()) self._all_hostnames = self._wait_for_job_start( job_id, total_nodes, timeout=self._job_start_timeout ) self._attach_client(self._resolve_attach_to()) [docs] def add_mesh(self, name: str, num_nodes: int) -\u003e None: self._meshes[name] = num_nodes def _resolved_job_id(self) -\u003e Optional[str]: \"\"\"The submitted job id, falling back to ``$SLURM_JOB_ID`` in batch mode where the unpickled instance never had ``_slurm_job_id`` set. Gated on batch mode so an external controller doesn\u0027t adopt an unrelated id from its own surrounding SLURM job.\"\"\" if self._slurm_job_id is not None: return self._slurm_job_id return os.environ.get(\"SLURM_JOB_ID\") if in_batch_job() else None def _cleanup_log_context(self) -\u003e dict[str, Any]: return { \"job_type\": type(self).__name__, \"job_id\": self._resolved_job_id(), } def _create(self, client_script: Optional[str]) -\u003e None: \"\"\"Submit a single SLURM job for all meshes. In batch mode (``client_script`` set) the job runs the client inside the allocation alongside the workers, and a ``BatchJob`` wrapper is cached to ``.monarch/job_state.pkl`` so the client reconnects to this allocation instead of submitting a new one. \"\"\" total_nodes = sum(self._meshes.values()) self._ensure_service_proc_ids(total_nodes) if client_script is not None: # Dumped before submit: the job id isn\u0027t known yet, and the client # resolves it from $SLURM_JOB_ID anyway. BatchJob(self).dump(\".monarch/job_state.pkl\") self._slurm_job_id = self._submit_slurm_job( total_nodes, client_script=client_script ) def _submit_slurm_job( self, num_nodes: int, client_script: Optional[str] = None ) -\u003e str: \"\"\"Submit a SLURM job for all nodes.\"\"\" self._ensure_service_proc_ids(num_nodes) unique_job_name = f\"{self._job_name}_{os.getpid()}\" # Create log directory if it doesn\u0027t exist os.makedirs(self._log_dir, exist_ok=True) log_path_out = os.path.join(self._log_dir, f\"slurm_%j_{unique_job_name}.out\") log_path_err = os.path.join(self._log_dir, f\"slurm_%j_{unique_job_name}.err\") # Build SBATCH directives sbatch_directives = [ \"#!/bin/bash\", f\"#SBATCH --job-name={unique_job_name}\", f\"#SBATCH --ntasks-per-node={self._ntasks_per_node}\", f\"#SBATCH --nodes={num_nodes}\", f\"#SBATCH --output={log_path_out}\", f\"#SBATCH --error={log_path_err}\", ] if self._time_limit is not None: sbatch_directives.append(f\"#SBATCH --time={self._time_limit}\") if self._gpus_per_node is not None: sbatch_directives.append(f\"#SBATCH --gpus-per-node={self._gpus_per_node}\") if self._cpus_per_task is not None: sbatch_directives.append(f\"#SBATCH --cpus-per-task={self._cpus_per_task}\") if self._mem is not None: sbatch_directives.append(f\"#SBATCH --mem={self._mem}\") if self._exclusive: sbatch_directives.append(\"#SBATCH --exclusive\") if self._partition is not None: sbatch_directives.append(f\"#SBATCH --partition={self._partition}\") if self._account is not None: sbatch_directives.append(f\"#SBATCH --account={self._account}\") if self._qos is not None: sbatch_directives.append(f\"#SBATCH --qos={self._qos}\") if ( not self._exclusive and self._partition is not None and self._gpus_per_node is not None ): gpus_per_task = self._gpus_per_node // self._ntasks_per_node assert self._partition, ( \"Slurm partition must be set for jobs that share nodes with other jobs\" ) self.share_node( tasks_per_node=self._ntasks_per_node, gpus_per_task=gpus_per_task, partition=self._partition, ) # Add any additional slurm args as directives for arg in self._slurm_args: if arg.startswith(\"-\"): sbatch_directives.append(f\"#SBATCH {arg}\") batch_script = \"\\n\".join(sbatch_directives) batch_script += ( f\"\\nexport {SERVICE_PROC_IDS_ENV}=\" f\"{shlex.quote(serialize_service_proc_ids(self._service_proc_ids))}\\n\" ) if client_script is None: # Workers only; an external controller attaches and manages the # lifetime. Shares worker bootstrap generation with the batch runner. worker_cmd = _worker_bootstrap(self._port, self._bind_to) batch_script += f\"\\nsrun {self._python_exe} -c \u0027{worker_cmd}\u0027\\n\" else: # Batch mode: the in-allocation runner seeds the workers, runs the # client (MONARCH_BATCH_JOB=1 so its cached BatchJob reconnects to # this allocation), and tears the workers down in a finally. bind_to_arg = ( f\" --bind-to {shlex.quote(self._bind_to)}\" if self._bind_to is not None else \"\" ) batch_script += ( f\"\\n{self._python_exe} -m monarch._src.job._slurm_batch \" f\"--port {self._port}{bind_to_arg} {shlex.quote(client_script)}\\n\" ) logger.info(f\"Submitting SLURM job with {num_nodes} nodes\") try: result = subprocess.run( [\"sbatch\"], input=batch_script, capture_output=True, text=True, check=True, ) # Parse the job ID from sbatch output (typically \"Submitted batch job 12345\") job_id = None for line in result.stdout.strip().split(\"\\n\"): if \"Submitted batch job\" in line: job_id = line.split()[-1] break if not job_id: raise RuntimeError( f\"Failed to parse job ID from sbatch output: {result.stdout}\" ) logger.info( f\"SLURM job {job_id} submitted. Logs will be written to: {self._log_dir}/slurm_{job_id}_{unique_job_name}.out\" ) return job_id except subprocess.CalledProcessError as e: raise RuntimeError(f\"Failed to submit SLURM job: {e.stderr}\") from e def _ensure_service_proc_ids(self, num_nodes: int) -\u003e None: if len(self._service_proc_ids) != num_nodes: self._service_proc_ids = [ proc_id for mesh_nodes in self._meshes.values() for proc_id in self._allocate_service_proc_ids(mesh_nodes) ] def _get_job_info_json(self, job_id: str) -\u003e Optional[Dict[str, Any]]: \"\"\"Get job information using squeue --json.\"\"\" try: result = subprocess.run( [\"squeue\", \"--job\", job_id, \"--json\"], capture_output=True, text=True, check=True, ) if result.stdout.strip(): data = json.loads(result.stdout) jobs = data.get(\"jobs\", []) return jobs[0] if jobs else None return None except subprocess.CalledProcessError as e: logger.warning(f\"Error checking job {job_id} status: {e.stderr}\") return None except (json.JSONDecodeError, KeyError) as e: logger.warning(f\"Error parsing JSON response for job {job_id}: {e}\") return None def _wait_for_job_start( self, job_id: str, expected_nodes: int, timeout: Optional[int] = None ) -\u003e List[str]: \"\"\" Wait for the SLURM job to start and return the allocated hostnames. Requires Slurm 20.02+ for squeue --json support. \"\"\" import time start_time = time.time() try: while timeout is None or time.time() - start_time \u003c timeout: job_info = self._get_job_info_json(job_id) if not job_info: raise RuntimeError(f\"SLURM job {job_id} not found in queue\") job_state = job_info.get(\"job_state\", []) if \"RUNNING\" in job_state: # Extract hostnames from job_resources.nodes.allocation job_resources = job_info.get(\"job_resources\", {}) nodes_info = job_resources.get(\"nodes\", {}) allocation = nodes_info.get(\"allocation\", []) hostnames = [node[\"name\"] for node in allocation] logger.info( f\"SLURM job {job_id} is running on {len(hostnames)} nodes: {hostnames}\" ) if len(hostnames) != expected_nodes: raise RuntimeError( f\"Expected {expected_nodes} nodes but got {len(hostnames)}. \" f\"Partial allocation not supported.\" ) return hostnames elif any(state in job_state for state in _SLURM_TERMINAL_STATES): raise RuntimeError( f\"SLURM job {job_id} failed with status: {job_state}\" ) else: logger.debug(f\"SLURM job {job_id} status: {job_state}, waiting...\") time.sleep(2) # Check every 2 seconds raise RuntimeError(f\"Timeout waiting for SLURM job {job_id} to start\") except Exception: # Cleanup on failure - reuse _kill() logic logger.error(f\"Failed to start SLURM job {job_id}, cancelling job\") self._kill() raise def _state(self) -\u003e JobState: self._prepare_client_gateway() if not self._jobs_active(): raise RuntimeError(\"SLURM job is no longer active\") # Wait for job to start and get hostnames if not already done if not self._all_hostnames: job_id = self._resolved_job_id() if job_id is None: raise RuntimeError(\"SLURM job ID is not set\") total_nodes = sum(self._meshes.values()) self._all_hostnames = self._wait_for_job_start( job_id, total_nodes, timeout=self._job_start_timeout ) attach_to = self._attach_to if self._out_of_cluster and attach_to is None: attach_to = f\"tcp://{self._all_hostnames[0]}:{self._port}\" self._attach_client(attach_to) # Distribute the allocated hostnames among meshes host_meshes = {} hostname_idx = 0 for mesh_name, num_nodes in self._meshes.items(): next_hostname_idx = hostname_idx + num_nodes mesh_hostnames = self._all_hostnames[hostname_idx:next_hostname_idx] service_proc_ids = self._service_proc_ids[hostname_idx:next_hostname_idx] hostname_idx = next_hostname_idx workers = [f\"tcp://{hostname}:{self._port}\" for hostname in mesh_hostnames] host_mesh = attach_to_workers( name=mesh_name, ca=\"trust_all_connections\", workers=service_proc_addrs(workers, service_proc_ids), ) host_meshes[mesh_name] = host_mesh return JobState(host_meshes) [docs] def can_run(self, spec: \"JobTrait\") -\u003e bool: \"\"\"Check if this job can run the given spec.\"\"\" return ( isinstance(spec, SlurmJob) and spec._meshes == self._meshes and spec._python_exe == self._python_exe and spec._port == self._port and spec._slurm_args == self._slurm_args and spec._job_name == self._job_name and spec._ntasks_per_node == self._ntasks_per_node and spec._time_limit == self._time_limit and spec._partition == self._partition and spec._gpus_per_node == self._gpus_per_node and spec._cpus_per_task == self._cpus_per_task and spec._mem == self._mem and spec._job_start_timeout == self._job_start_timeout and spec._account == self._account and spec._qos == self._qos and spec._out_of_cluster == self._out_of_cluster and spec._attach_to == self._attach_to and spec._bind_to == self._bind_to and self._jobs_active() ) def _jobs_active(self) -\u003e bool: \"\"\"Check if SLURM job is still active by querying squeue.\"\"\" # A batch job reloaded inside its own allocation pickles as not_running, # so fall back to $SLURM_JOB_ID + squeue instead of the active flag. if not self.active and not in_batch_job(): return False job_id = self._resolved_job_id() if job_id is None: return False job_info = self._get_job_info_json(job_id) if not job_info: logger.warning(f\"SLURM job {job_id} not found in queue\") return False job_state = job_info.get(\"job_state\", []) if any(state in job_state for state in _SLURM_TERMINAL_STATES): logger.warning(f\"SLURM job {job_id} has status: {job_state}\") return False return True [docs] def share_node( self, tasks_per_node: int, gpus_per_task: int, partition: str ) -\u003e None: \"\"\" Share a node with other jobs. \"\"\" try: import clusterscope except ImportError: raise RuntimeError( \"please install clusterscope to use share_node. `pip install clusterscope`\" ) self._exclusive = False slurm_args = clusterscope.job_gen_task_slurm( partition=partition, gpus_per_task=gpus_per_task, tasks_per_node=tasks_per_node, ) self._cpus_per_task = slurm_args[\"cpus_per_task\"] self._mem = slurm_args[\"memory\"] def _kill(self) -\u003e None: \"\"\"Cancel the SLURM job. No-op in batch mode: ``BatchJob`` registers this as an ``atexit`` hook on the in-allocation client, but the sbatch runner owns teardown there, so the client must not scancel its own allocation. The external-client path scancels as before. \"\"\" if in_batch_job(): return job_id = self._resolved_job_id() if job_id is not None: try: subprocess.run( [\"scancel\", job_id], capture_output=True, text=True, check=True, ) logger.info(f\"Cancelled SLURM job {job_id}\") except subprocess.CalledProcessError as e: logger.warning(f\"Failed to cancel SLURM job {job_id}: {e.stderr}\") self._slurm_job_id = None self._all_hostnames.clear()",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["LEGACY_LOCAL_PROC_NAME","LEGACY_SERVICE_PROC_NAME"],"enum":["StatusMessage"],"struct":["ActorInstance","ActorWorkReceiver","Builder","Context","GlobalGateway","HandlerPorts","Instance","InstanceCell","InstanceReceivers","PrivateGateway","Proc","SharedGateway","WeakInstanceCell","WeakProc","WorkCell"]};

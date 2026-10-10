@@ -49,15 +49,6 @@ flight recorder events.
 
 [![Mesh Admin TUI showing the topology tree with philosopher actors expanded and actor details on the right](_images/tui-tree.png)](_images/tui-tree.png)
 
-## Diagnostics
-
-Press `d` to run a full health check across the mesh. The diagnostics overlay
-probes every node in the topology and reports pass/slow/fail for each, separated
-into **Admin Infrastructure** (admin server, host agents, service procs) and
-**Mesh** (user procs and actors). Each probe shows its latency in milliseconds.
-
-[![Diagnostics overlay showing health check results for all nodes in the mesh](_images/tui-diagnostics.png)](_images/tui-diagnostics.png)
-
 ## Py-spy Stack Traces
 
 Press `p` on any proc or actor to capture a live Python stack trace via
@@ -66,7 +57,10 @@ stacks with frame-level detail, GIL ownership, and thread names. Each press
 fetches a fresh trace -- useful for diagnosing hangs in C extensions and CUDA
 calls.
 
-`py-spy` is included as a default dependency of `torchmonarch`.
+`py-spy` is not bundled with `torchmonarch`; it must be resolvable on the
+target host -- either on `PATH` or via the `PYSPY_BIN` environment variable. If
+it cannot be found, the stack-trace request reports that py-spy is unavailable
+rather than failing the proc.
 
 [![Py-spy overlay showing per-thread Python stack traces with native frames](_images/tui-pyspy.png)](_images/tui-pyspy.png)
 
@@ -84,7 +78,6 @@ calls.
 | `c` | Collapse all nodes |
 | `s` | Toggle system actor visibility |
 | `h` | Toggle stopped actor visibility (failed actors always remain visible) |
-| `d` | Run diagnostics overlay |
 | `p` | Py-spy stack trace for selected proc or actor |
 | `Ctrl+L` | Scroll selected item to top of viewport |
 | `Esc` | Dismiss overlay |
@@ -102,19 +95,9 @@ monarch-tui [OPTIONS] --addr <ADDR>
 | `--refresh-ms` | Auto-refresh interval in milliseconds | `2000` |
 | `--theme` | Color theme: `nord` (dark) or `doom-nord-light` (light) | `nord` |
 | `--lang` | Display language: `en` or `zh` (Simplified Chinese) | `en` |
-| `--diagnose` | Run diagnostics non-interactively, print JSON, and exit | `false` |
 | `--tls-ca` | Path to PEM CA certificate for TLS | auto-detected |
 | `--tls-cert` | Path to PEM client certificate for mutual TLS | auto-detected |
 | `--tls-key` | Path to PEM client key for mutual TLS | -- |
-
-### Non-interactive diagnostics
-
-For scripted health checks, use `--diagnose` to get a JSON report on stdout:
-
-```
-monarch-tui --addr 127.0.0.1:1729 --diagnose
-# Exits 0 if healthy, 1 if any check failed.
-```
 
 ## Telemetry Query Proxy
 

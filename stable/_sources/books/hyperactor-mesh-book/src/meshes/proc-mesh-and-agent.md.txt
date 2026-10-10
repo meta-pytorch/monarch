@@ -89,6 +89,7 @@ impl ProcMeshRef {
               spec: mesh_agent::ActorSpec {
                   actor_type: actor_type.clone(),
                   params_data: serialized_params.clone(),
+                  actor_environment: cx.instance().actor_environment().clone(),
               },
           },
       )?;
@@ -131,6 +132,7 @@ What this does, step by step:
            spec: mesh_agent::ActorSpec {
                actor_type: actor_type.clone(),
                params_data: serialized_params.clone(),
+               actor_environment: cx.instance().actor_environment().clone(),
            },
        },
    )?;
@@ -140,9 +142,10 @@ What this does, step by step:
    - `cast` sends the same `CreateOrUpdate<ActorSpec>` to **every** `ProcAgent`,
    - the `name` field is the *mesh-level* actor name ("this actor, on this mesh"),
    - `actor_type` is the *global* type name resolved via `Remote`,
-   - `params_data` is the serialized `A::Params`.
+   - `params_data` is the serialized `A::Params`,
+   - `actor_environment` is the spawning actor's persistent environment.
 
-At this point the proc mesh has done its part: it has told every proc in the mesh: "For mesh actor name, please ensure you have one local actor of type `actor_type`, constructed from `params_data`."
+At this point the proc mesh has done its part: it has told every proc in the mesh: "For this mesh actor, please ensure you have one local actor of type `actor_type`, constructed from `params_data`, and carrying this persistent environment."
 
 ### How `ProcAgent` handles `CreateOrUpdate<ActorSpec>`
 
@@ -235,13 +238,16 @@ self.actor_states.insert(
 This is the core of v1 spawning. The agent:
 - unpacks the `ActorSpec` (type name + parameter bytes), and
 - passes those pieces into `remote.gspawn(...)` to construct the local actor.
+- when the create cast carries `CAST_POINT`, replaces that key in the caller's
+  `ActorEnvironment` before construction. Other message headers remain scoped
+  to the delivery and are not stored on the actor.
 - `actor_type: String` – the logical type name registered by `#[spawnable]` or `register_spawnable!(A)`, computed in `ProcMeshRef::spawn_with_name_inner` via `remote.name_of::<A>()`, and used by `Remote::gspawn` on each proc to find the right constructor.
 - `params_data: Data` A raw byte buffer containing serialized `A::Params` (via `bincode::serialize`).
 - `self.remote.gspawn(...)` This method looks up the `SpawnableActor` entry for `actor_type` in the local `Remote` registry then invoks:
 ```rust
 SpawnableActor::spawn(proc, name, params_data)
 ```
-Internally this calls the actor's `RemoteSpawn::new(params).await` construtor registers it under the given name in the proc's runtime, and returns an `ActorId`.
+Internally this calls the actor's `RemoteSpawn::new(params, &environment).await` constructor, registers it under the given name in the proc's runtime, and returns an `ActorId`.
 
 The result -- success or failure -- is recorded in:
 ```rust
@@ -290,13 +296,17 @@ This message is broadcast to the same `ProcAgent` mesh. Each agent replies with 
 - terminated -> `Stopped`/`Failed`,
 - supervision events present -> `Failed`.
 
-The reply port used to collect all `GetRankStatus` responses is opened via:
+The reply port used to collect all `GetRankStatus` responses is opened and then
+converted to an idle-flush port reference:
 ```rust
-let (port, rx) = cx.mailbox().open_accum_port_opts(
+let (port, rx) = cx.mailbox().open_accum_port(
     StatusMesh::from_single(region.clone(), Status::NotExist),
-    Some(ReducerOpts { max_update_interval: Some(Duration::from_millis(50)) }),
 );
+let reply = port.bind().into_idle_flush(IdleFlushReducerOpts {
+    idle_timeout: Duration::from_millis(50),
+    expected_updates_per_destination: NonZeroUsize::MIN,
+});
 ```
 Here, `cx` is the callers context. In tests this is typically `testing::instance()`, a tiny driver actor (`Instance<>()`), so the accumulation port (`port`/`rx`)-and thus all collected replies-live in that test instance's mailbox.
 
-An accumulation port is just a mailbox port that keeps a running aggregate value. Each `GetRankStatus` reply is an overlay, and the mailbox's reducer merges those overlays into a single `StatusMesh`, with one final status per proc/rank.
+An accumulation port is just a mailbox port that keeps a running aggregate value. Each `GetRankStatus` reply is an overlay, and the mailbox's reducer merges those overlays into a single `StatusMesh`, with one final status per proc/rank. The idle-flush policy combines replies within each cast subtree until replies stop briefly. It can then send a partial batch without hiding the ranks that did reply. Late replies form later batches, and the split port closes when every logical destination has replied.

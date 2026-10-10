@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ParentCommand","Role"],"fn":["main","parse_args","parse_joiner_args","parse_parent_args","read_token","run_joiner","run_parent","write_text"],"struct":["ArgParser","DemoChild","JoinerArgs","Parent","ParentArgs"],"type":["DemoToken"]};

@@ -1,9 +1,8 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="./" >
 
   <head>
     <meta charset="utf-8" />
@@ -17,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The Mesh Admin TUI( monarch-tui) is an interactive terminal client for inspecting live Monarch meshes. It connects to the mesh admin HTTP API and renders the full topology — hosts, processes, and a..." />
 
-    <title>Mesh Admin TUI &#8212; Monarch v0.6.0 documentation</title>
+    <title>Mesh Admin TUI &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -37,29 +36,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js"></script>
-    <script src="_static/doctools.js"></script>
-    <script src="_static/sphinx_highlight.js"></script>
-    <script src="_static/design-tabs.js"></script>
+    <script src="_static/documentation_options.js?v=05c9169f"></script>
+    <script src="_static/doctools.js?v=888ff710"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'admin-tui';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/admin-tui.html" />
@@ -67,7 +66,7 @@
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
     <link rel="next" title="Monarch Dashboard" href="monarch-dashboard.html" />
-    <link rel="prev" title="Distributed Telemetry" href="distributed-telemetry.html" />
+    <link rel="prev" title="Metrics" href="metrics.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -85,7 +84,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -199,7 +198,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -564,6 +563,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="#">
                   Mesh Admin TUI
                 </a>
@@ -634,6 +639,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -925,6 +936,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="#">
                   Mesh Admin TUI
                 </a>
@@ -995,6 +1012,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1217,6 +1240,7 @@ document.write(`
   <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
   <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="distributed-telemetry.html">Distributed Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="metrics.html">Metrics</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Mesh Admin TUI</a></li>
 <li class="toctree-l1"><a class="reference internal" href="monarch-dashboard.html">Monarch Dashboard</a></li>
 </ul>
@@ -1322,7 +1346,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="mesh-admin-tui">
-<h1>Mesh Admin TUI<a class="headerlink" href="#mesh-admin-tui" title="Permalink to this heading">#</a></h1>
+<h1>Mesh Admin TUI<a class="headerlink" href="#mesh-admin-tui" title="Link to this heading">#</a></h1>
 <p>The <strong>Mesh Admin TUI</strong> (<code class="docutils literal notranslate"><span class="pre">monarch-tui</span></code>) is an interactive terminal client for
 inspecting live Monarch meshes. It connects to the mesh admin HTTP API and
 renders the full topology — hosts, processes, and actors — as a navigable tree
@@ -1333,7 +1357,7 @@ with a contextual detail pane.</p>
 <p>The TUI is included in the <code class="docutils literal notranslate"><span class="pre">torchmonarch</span></code> PyPI package. After
 <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">torchmonarch</span></code>, the <code class="docutils literal notranslate"><span class="pre">monarch-tui</span></code> command is available on PATH.</p>
 <section id="quick-start">
-<h2>Quick Start<a class="headerlink" href="#quick-start" title="Permalink to this heading">#</a></h2>
+<h2>Quick Start<a class="headerlink" href="#quick-start" title="Link to this heading">#</a></h2>
 <p>Start any Monarch application that spawns a <code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code>. The
 <strong>Dining Philosophers</strong> example is the easiest way to try it — five philosopher
 actors share chopsticks around a table, mediated by a waiter actor that prevents
@@ -1352,7 +1376,7 @@ deadlock.</p>
 </div>
 </section>
 <section id="topology-tree">
-<h2>Topology Tree<a class="headerlink" href="#topology-tree" title="Permalink to this heading">#</a></h2>
+<h2>Topology Tree<a class="headerlink" href="#topology-tree" title="Link to this heading">#</a></h2>
 <p>The main view is a split-pane layout: an expandable <strong>topology tree</strong> on the
 left showing hosts, processes, and actors, and a <strong>detail pane</strong> on the right
 with contextual information for the selected node.</p>
@@ -1361,26 +1385,21 @@ actor shows its status, message count, processing time, last handler, and
 flight recorder events.</p>
 <a class="reference internal image-reference" href="_images/tui-tree.png"><img alt="Mesh Admin TUI showing the topology tree with philosopher actors expanded and actor details on the right" src="_images/tui-tree.png" style="width: 100%;" /></a>
 </section>
-<section id="diagnostics">
-<h2>Diagnostics<a class="headerlink" href="#diagnostics" title="Permalink to this heading">#</a></h2>
-<p>Press <code class="docutils literal notranslate"><span class="pre">d</span></code> to run a full health check across the mesh. The diagnostics overlay
-probes every node in the topology and reports pass/slow/fail for each, separated
-into <strong>Admin Infrastructure</strong> (admin server, host agents, service procs) and
-<strong>Mesh</strong> (user procs and actors). Each probe shows its latency in milliseconds.</p>
-<a class="reference internal image-reference" href="_images/tui-diagnostics.png"><img alt="Diagnostics overlay showing health check results for all nodes in the mesh" src="_images/tui-diagnostics.png" style="width: 100%;" /></a>
-</section>
 <section id="py-spy-stack-traces">
-<h2>Py-spy Stack Traces<a class="headerlink" href="#py-spy-stack-traces" title="Permalink to this heading">#</a></h2>
+<h2>Py-spy Stack Traces<a class="headerlink" href="#py-spy-stack-traces" title="Link to this heading">#</a></h2>
 <p>Press <code class="docutils literal notranslate"><span class="pre">p</span></code> on any proc or actor to capture a live Python stack trace via
 <a class="reference external" href="https://github.com/benfred/py-spy">py-spy</a>. The overlay shows per-thread
 stacks with frame-level detail, GIL ownership, and thread names. Each press
 fetches a fresh trace — useful for diagnosing hangs in C extensions and CUDA
 calls.</p>
-<p><code class="docutils literal notranslate"><span class="pre">py-spy</span></code> is included as a default dependency of <code class="docutils literal notranslate"><span class="pre">torchmonarch</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">py-spy</span></code> is not bundled with <code class="docutils literal notranslate"><span class="pre">torchmonarch</span></code>; it must be resolvable on the
+target host — either on <code class="docutils literal notranslate"><span class="pre">PATH</span></code> or via the <code class="docutils literal notranslate"><span class="pre">PYSPY_BIN</span></code> environment variable. If
+it cannot be found, the stack-trace request reports that py-spy is unavailable
+rather than failing the proc.</p>
 <a class="reference internal image-reference" href="_images/tui-pyspy.png"><img alt="Py-spy overlay showing per-thread Python stack traces with native frames" src="_images/tui-pyspy.png" style="width: 100%;" /></a>
 </section>
 <section id="keybindings">
-<h2>Keybindings<a class="headerlink" href="#keybindings" title="Permalink to this heading">#</a></h2>
+<h2>Keybindings<a class="headerlink" href="#keybindings" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Key</p></th>
@@ -1418,19 +1437,16 @@ calls.</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">h</span></code></p></td>
 <td><p>Toggle stopped actor visibility (failed actors always remain visible)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">d</span></code></p></td>
-<td><p>Run diagnostics overlay</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">p</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">p</span></code></p></td>
 <td><p>Py-spy stack trace for selected proc or actor</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Ctrl+L</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Ctrl+L</span></code></p></td>
 <td><p>Scroll selected item to top of viewport</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Esc</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Esc</span></code></p></td>
 <td><p>Dismiss overlay</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">q</span></code> / <code class="docutils literal notranslate"><span class="pre">Ctrl+C</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">q</span></code> / <code class="docutils literal notranslate"><span class="pre">Ctrl+C</span></code></p></td>
 <td><p>Quit</p></td>
 </tr>
 </tbody>
@@ -1438,7 +1454,7 @@ calls.</p>
 </div>
 </section>
 <section id="cli-options">
-<h2>CLI Options<a class="headerlink" href="#cli-options" title="Permalink to this heading">#</a></h2>
+<h2>CLI Options<a class="headerlink" href="#cli-options" title="Link to this heading">#</a></h2>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>monarch-tui [OPTIONS] --addr &lt;ADDR&gt;
 </pre></div>
 </div>
@@ -1466,36 +1482,24 @@ calls.</p>
 <td><p>Display language: <code class="docutils literal notranslate"><span class="pre">en</span></code> or <code class="docutils literal notranslate"><span class="pre">zh</span></code> (Simplified Chinese)</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">en</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--diagnose</span></code></p></td>
-<td><p>Run diagnostics non-interactively, print JSON, and exit</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--tls-ca</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--tls-ca</span></code></p></td>
 <td><p>Path to PEM CA certificate for TLS</p></td>
 <td><p>auto-detected</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--tls-cert</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--tls-cert</span></code></p></td>
 <td><p>Path to PEM client certificate for mutual TLS</p></td>
 <td><p>auto-detected</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--tls-key</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--tls-key</span></code></p></td>
 <td><p>Path to PEM client key for mutual TLS</p></td>
 <td><p>—</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<section id="non-interactive-diagnostics">
-<h3>Non-interactive diagnostics<a class="headerlink" href="#non-interactive-diagnostics" title="Permalink to this heading">#</a></h3>
-<p>For scripted health checks, use <code class="docutils literal notranslate"><span class="pre">--diagnose</span></code> to get a JSON report on stdout:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>monarch-tui<span class="w"> </span>--addr<span class="w"> </span><span class="m">127</span>.0.0.1:1729<span class="w"> </span>--diagnose
-<span class="c1"># Exits 0 if healthy, 1 if any check failed.</span>
-</pre></div>
-</div>
-</section>
 </section>
 <section id="telemetry-query-proxy">
-<h2>Telemetry Query Proxy<a class="headerlink" href="#telemetry-query-proxy" title="Permalink to this heading">#</a></h2>
+<h2>Telemetry Query Proxy<a class="headerlink" href="#telemetry-query-proxy" title="Link to this heading">#</a></h2>
 <p>When the admin server starts with distributed telemetry, it also exposes:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -1522,7 +1526,7 @@ in <code class="docutils literal notranslate"><span class="pre">pyspy_dumps</spa
 <code class="docutils literal notranslate"><span class="pre">pyspy_local_variables</span></code>.</p>
 </section>
 <section id="source-code">
-<h2>Source Code<a class="headerlink" href="#source-code" title="Permalink to this heading">#</a></h2>
+<h2>Source Code<a class="headerlink" href="#source-code" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Component</p></th>
@@ -1591,12 +1595,12 @@ in <code class="docutils literal notranslate"><span class="pre">pyspy_dumps</spa
 
 <div class="prev-next-area">
     <a class="left-prev"
-       href="distributed-telemetry.html"
+       href="metrics.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Distributed Telemetry</p>
+        <p class="prev-next-title">Metrics</p>
       </div>
     </a>
     <a class="right-next"
@@ -1630,12 +1634,12 @@ in <code class="docutils literal notranslate"><span class="pre">pyspy_dumps</spa
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="distributed-telemetry.html"
+       href="metrics.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Distributed Telemetry</p>
+        <p class="prev-next-title">Metrics</p>
       </div>
     </a>
     <a class="right-next"
@@ -1667,13 +1671,9 @@ in <code class="docutils literal notranslate"><span class="pre">pyspy_dumps</spa
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#quick-start">Quick Start</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#topology-tree">Topology Tree</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#diagnostics">Diagnostics</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#py-spy-stack-traces">Py-spy Stack Traces</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#keybindings">Keybindings</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cli-options">CLI Options</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#non-interactive-diagnostics">Non-interactive diagnostics</a></li>
-</ul>
-</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cli-options">CLI Options</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#telemetry-query-proxy">Telemetry Query Proxy</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#source-code">Source Code</a></li>
 </ul>
@@ -1818,7 +1818,7 @@ in <code class="docutils literal notranslate"><span class="pre">pyspy_dumps</spa
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>
@@ -1847,7 +1847,7 @@ in <code class="docutils literal notranslate"><span class="pre">pyspy_dumps</spa
        "headline": "Mesh Admin TUI",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/admin-tui.html",
-       "articleBody": "Mesh Admin TUI# The Mesh Admin TUI (monarch-tui) is an interactive terminal client for inspecting live Monarch meshes. It connects to the mesh admin HTTP API and renders the full topology \u2014 hosts, processes, and actors \u2014 as a navigable tree with a contextual detail pane. See the observability overview for how the TUI complements distributed telemetry and the Monarch Dashboard. The TUI is included in the torchmonarch PyPI package. After pip install torchmonarch, the monarch-tui command is available on PATH. Quick Start# Start any Monarch application that spawns a MeshAdminAgent. The Dining Philosophers example is the easiest way to try it \u2014 five philosopher actors share chopsticks around a table, mediated by a waiter actor that prevents deadlock. Terminal 1 \u2014 start the example: python python/examples/dining_philosophers.py The example prints the admin server address on startup: Mesh admin server listening on http://127.0.0.1:1729 Terminal 2 \u2014 attach the TUI: monarch-tui --addr 127.0.0.1:1729 Topology Tree# The main view is a split-pane layout: an expandable topology tree on the left showing hosts, processes, and actors, and a detail pane on the right with contextual information for the selected node. Navigate with j/k, expand and collapse nodes with Tab. Selecting an actor shows its status, message count, processing time, last handler, and flight recorder events. Diagnostics# Press d to run a full health check across the mesh. The diagnostics overlay probes every node in the topology and reports pass/slow/fail for each, separated into Admin Infrastructure (admin server, host agents, service procs) and Mesh (user procs and actors). Each probe shows its latency in milliseconds. Py-spy Stack Traces# Press p on any proc or actor to capture a live Python stack trace via py-spy. The overlay shows per-thread stacks with frame-level detail, GIL ownership, and thread names. Each press fetches a fresh trace \u2014 useful for diagnosing hangs in C extensions and CUDA calls. py-spy is included as a default dependency of torchmonarch. Keybindings# Key Action j / \u2193 Move cursor down k / \u2191 Move cursor up g / Home Jump to top G / End Jump to bottom PgDn / Ctrl+D Page down PgUp / Ctrl+U Page up Tab Expand/collapse selected node c Collapse all nodes s Toggle system actor visibility h Toggle stopped actor visibility (failed actors always remain visible) d Run diagnostics overlay p Py-spy stack trace for selected proc or actor Ctrl+L Scroll selected item to top of viewport Esc Dismiss overlay q / Ctrl+C Quit CLI Options# monarch-tui [OPTIONS] --addr \u003cADDR\u003e Flag Description Default --addr, -a Admin server address (host:port or https://host:port) required --refresh-ms Auto-refresh interval in milliseconds 2000 --theme Color theme: nord (dark) or doom-nord-light (light) nord --lang Display language: en or zh (Simplified Chinese) en --diagnose Run diagnostics non-interactively, print JSON, and exit false --tls-ca Path to PEM CA certificate for TLS auto-detected --tls-cert Path to PEM client certificate for mutual TLS auto-detected --tls-key Path to PEM client key for mutual TLS \u2014 Non-interactive diagnostics# For scripted health checks, use --diagnose to get a JSON report on stdout: monarch-tui --addr 127.0.0.1:1729 --diagnose # Exits 0 if healthy, 1 if any check failed. Telemetry Query Proxy# When the admin server starts with distributed telemetry, it also exposes: Endpoint Purpose POST /v1/query Run DataFusion SQL and return {\"rows\": [...]} POST /v1/pyspy_dump/{proc_reference} Capture and persist a py-spy dump in telemetry tables For example, post {\"sql\": \"SELECT * FROM actors LIMIT 10\"} to /v1/query. Discover available tables with SELECT table_name FROM information_schema.tables. The TUI\u2019s p key and GET /v1/pyspy/{proc_reference} perform a one-shot capture. Use the pyspy_dump endpoint when the capture must remain queryable in pyspy_dumps, pyspy_stack_traces, pyspy_frames, and pyspy_local_variables. Source Code# Component Location TUI binary hyperactor_mesh_admin_tui/bin/admin_tui.rs TUI library hyperactor_mesh_admin_tui/src/ Admin HTTP API hyperactor_mesh/src/mesh_admin.rs Dining philosophers example python/examples/dining_philosophers.py",
+       "articleBody": "Mesh Admin TUI# The Mesh Admin TUI (monarch-tui) is an interactive terminal client for inspecting live Monarch meshes. It connects to the mesh admin HTTP API and renders the full topology \u2014 hosts, processes, and actors \u2014 as a navigable tree with a contextual detail pane. See the observability overview for how the TUI complements distributed telemetry and the Monarch Dashboard. The TUI is included in the torchmonarch PyPI package. After pip install torchmonarch, the monarch-tui command is available on PATH. Quick Start# Start any Monarch application that spawns a MeshAdminAgent. The Dining Philosophers example is the easiest way to try it \u2014 five philosopher actors share chopsticks around a table, mediated by a waiter actor that prevents deadlock. Terminal 1 \u2014 start the example: python python/examples/dining_philosophers.py The example prints the admin server address on startup: Mesh admin server listening on http://127.0.0.1:1729 Terminal 2 \u2014 attach the TUI: monarch-tui --addr 127.0.0.1:1729 Topology Tree# The main view is a split-pane layout: an expandable topology tree on the left showing hosts, processes, and actors, and a detail pane on the right with contextual information for the selected node. Navigate with j/k, expand and collapse nodes with Tab. Selecting an actor shows its status, message count, processing time, last handler, and flight recorder events. Py-spy Stack Traces# Press p on any proc or actor to capture a live Python stack trace via py-spy. The overlay shows per-thread stacks with frame-level detail, GIL ownership, and thread names. Each press fetches a fresh trace \u2014 useful for diagnosing hangs in C extensions and CUDA calls. py-spy is not bundled with torchmonarch; it must be resolvable on the target host \u2014 either on PATH or via the PYSPY_BIN environment variable. If it cannot be found, the stack-trace request reports that py-spy is unavailable rather than failing the proc. Keybindings# Key Action j / \u2193 Move cursor down k / \u2191 Move cursor up g / Home Jump to top G / End Jump to bottom PgDn / Ctrl+D Page down PgUp / Ctrl+U Page up Tab Expand/collapse selected node c Collapse all nodes s Toggle system actor visibility h Toggle stopped actor visibility (failed actors always remain visible) p Py-spy stack trace for selected proc or actor Ctrl+L Scroll selected item to top of viewport Esc Dismiss overlay q / Ctrl+C Quit CLI Options# monarch-tui [OPTIONS] --addr \u003cADDR\u003e Flag Description Default --addr, -a Admin server address (host:port or https://host:port) required --refresh-ms Auto-refresh interval in milliseconds 2000 --theme Color theme: nord (dark) or doom-nord-light (light) nord --lang Display language: en or zh (Simplified Chinese) en --tls-ca Path to PEM CA certificate for TLS auto-detected --tls-cert Path to PEM client certificate for mutual TLS auto-detected --tls-key Path to PEM client key for mutual TLS \u2014 Telemetry Query Proxy# When the admin server starts with distributed telemetry, it also exposes: Endpoint Purpose POST /v1/query Run DataFusion SQL and return {\"rows\": [...]} POST /v1/pyspy_dump/{proc_reference} Capture and persist a py-spy dump in telemetry tables For example, post {\"sql\": \"SELECT * FROM actors LIMIT 10\"} to /v1/query. Discover available tables with SELECT table_name FROM information_schema.tables. The TUI\u2019s p key and GET /v1/pyspy/{proc_reference} perform a one-shot capture. Use the pyspy_dump endpoint when the capture must remain queryable in pyspy_dumps, pyspy_stack_traces, pyspy_frames, and pyspy_local_variables. Source Code# Component Location TUI binary hyperactor_mesh_admin_tui/bin/admin_tui.rs TUI library hyperactor_mesh_admin_tui/src/ Admin HTTP API hyperactor_mesh/src/mesh_admin.rs Dining philosophers example python/examples/dining_philosophers.py",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

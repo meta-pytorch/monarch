@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Interactive TUI client for the Monarch mesh admin HTTP API."><title>hyperactor_mesh_admin_tui_lib - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="hyperactor_mesh_admin_tui_lib" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate hyperactor_mesh_admin_tui_lib</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../hyperactor_mesh_admin_tui_lib/index.html">hyperactor_<wbr>mesh_<wbr>admin_<wbr>tui_<wbr>lib</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#design-pillars-algebraic" title="Design Pillars (Algebraic)">Design Pillars (Algebraic)</a></li></ul><h3><a href="#structs">Crate Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>hyperactor_<wbr>mesh_<wbr>admin_<wbr>tui_<wbr>lib</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/hyperactor_mesh_admin_tui_lib/lib.rs.html#9-361">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Interactive TUI client for the Monarch mesh admin HTTP API.</p>
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Interactive TUI client for the Monarch mesh admin HTTP API."><title>hyperactor_mesh_admin_tui_lib - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="hyperactor_mesh_admin_tui_lib" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (c397dae80 2026-07-02)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate hyperactor_mesh_admin_tui_lib</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../hyperactor_mesh_admin_tui_lib/index.html">hyperactor_<wbr>mesh_<wbr>admin_<wbr>tui_<wbr>lib</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#design-pillars-algebraic" title="Design Pillars (Algebraic)">Design Pillars (Algebraic)</a></li></ul><h3><a href="#structs">Crate Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>hyperactor_<wbr>mesh_<wbr>admin_<wbr>tui_<wbr>lib</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/hyperactor_mesh_admin_tui_lib/lib.rs.html#9-345">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Interactive TUI client for the Monarch mesh admin HTTP API.</p>
 <p>Displays the mesh topology as a navigable tree by walking <code>GET /v1/{reference}</code> endpoints. Selecting any node shows contextual
 details on the right pane, including actor flight recorder events
 when an actor is selected.</p>
@@ -10,7 +10,9 @@ invariants to make behavior correct by construction:</p>
 <ol>
 <li><strong>TUI-1 (join-semilattice):</strong> All fetch results merge via
 <code>FetchState::join</code>, guaranteeing commutativity, associativity,
-and idempotence under retries and reordering.</li>
+and idempotence under retries and reordering. <code>Stamp</code> compares
+allocator sequence before wall-clock time, so cloned foreground
+and background allocators agree on result precedence.</li>
 <li><strong>TUI-2 (cursor-bounds):</strong> Selection is managed by <code>Cursor</code>, which
 enforces the invariant <code>pos &lt; len</code> (or <code>pos == 0</code> when empty).</li>
 <li><strong>TUI-3 (tree-recursion):</strong> The mesh topology is stored
@@ -22,10 +24,17 @@ surgery.</li>
 <ul>
 <li><strong>TUI-4 (failed-always-visible):</strong> Failed nodes are always
 visible regardless of the <code>show_stopped</code> toggle.</li>
-<li><strong>TUI-5 (single-fetch-path):</strong> All cache writes go through
-<code>fetch_with_join</code> (no direct inserts).</li>
+<li><strong>TUI-5 (single-cache-owner):</strong> Fetch work returns stamped
+results; <code>App</code> owns the cache and merges every completed write
+through <code>FetchState::join</code>.</li>
 <li><strong>TUI-6 (refresh-staleness):</strong> <code>FetchState::Ready</code> with
-<code>generation &lt; refresh_gen</code> is refetched; errors always retry.</li>
+<code>generation &lt; refresh_gen</code> is revalidated while its payload
+remains displayable; errors always retry. A completed detail
+request accepted for the current selection joins at the current
+generation, including when it spans a topology refresh.
+<code>refresh_gen</code> advances only when a current, successful topology
+snapshot is applied; discarded and failed snapshots leave it
+unchanged.</li>
 <li><strong>TUI-7 (synthetic-root):</strong> The root node is synthetic and
 always expanded; only its children are rendered at depth 0.</li>
 <li><strong>TUI-8 (cycle-safety):</strong> Tree building rejects only true
@@ -36,12 +45,15 @@ cycles (nodes that appear in their own ancestor path).</li>
 abstractions, not bespoke recursion.</li>
 <li><strong>TUI-11 (selection-semantics):</strong> Cursor restoration prefers
 <code>(reference, depth)</code> to disambiguate; falls back to
-reference-only if depth changes.</li>
+reference-only if depth changes. Background snapshot application
+preserves the selection live at application time, not the one
+present when its walk started.</li>
 <li><strong>TUI-12 (serial-topology-fetches):</strong> Topology cache fetches
 (via <code>fetch_with_join</code> / <code>build_tree_node</code>) are serial within
-a refresh cycle; join semantics handle retries and reordering.
-Overlay fetches (py-spy, config, diagnostics) are concurrent
-via <code>tokio::spawn</code> and do not participate in the topology cache.</li>
+a refresh cycle, while one background refresh may overlap detail
+and overlay work. Join semantics handle retries and reordering.
+Detail and refresh results rejoin the topology cache on the event
+loop; overlay results do not participate in that cache.</li>
 <li><strong>TUI-13 (stopped-detection):</strong> <code>is_stopped_node</code> matches
 <code>Actor</code> variants whose <code>actor_status</code> starts with <code>"stopped:"</code>
 or <code>"failed:"</code>. All other variants return false.</li>
@@ -88,6 +100,31 @@ keypresses dismiss it before navigation/action handling; Ctrl-C
 still requests quit. Rendering gives the help overlay precedence
 over <code>app.overlay</code> and node detail, and help never mutates the
 topology or detail cache.</li>
+<li><strong>TUI-23 (nonblocking-network-work):</strong> The input/render loop never
+awaits node-detail or topology-refresh network I/O. Selection and
+refresh requests schedule background work and return immediately.</li>
+<li><strong>TUI-24 (latest-selection-wins):</strong> Only a detail result whose
+reference and request token still match the current selection
+may update the visible pane. A topology refresh preserves an
+active request for the same selected reference unless its cache
+result has already superseded that request.</li>
+<li><strong>TUI-25 (stale-while-revalidate):</strong> Any present detail payload
+is displayed immediately and never regresses to loading while
+its reference is revalidated.</li>
+<li><strong>TUI-26 (snapshot-input-currency):</strong> A topology snapshot is
+installed only while the filter flags and expansion state it was
+built from remain current. Superseded snapshots are cancelled or
+discarded without advancing <code>refresh_gen</code>, and one replacement is
+remembered.</li>
+<li><strong>TUI-27 (refresh-lifecycle):</strong> <code>App</code> owns at most one refresh
+task and cancels it when superseded or dropped. Every terminal
+outcome releases the single-flight slot; only a successful,
+input-current snapshot may replace the tree or advance
+<code>refresh_gen</code>.</li>
+<li><strong>TUI-28 (topology-content-fit):</strong> The topology pane is the
+smaller of its natural content width and the former percentage
+allocation. Its width depends only on the expanded rows, localized
+title, and body area, never on cursor position or scroll offset.</li>
 </ul>
 <p>Py-spy overlay invariants:</p>
 <ul>
@@ -104,13 +141,18 @@ prior overlay content and resets scroll to zero on result
 arrival.</li>
 <li><strong>PY-4 (selection-totality):</strong> <code>p</code> is a no-op on Root/Host;
 targets the proc ref directly on Proc; targets the owning proc
-via <code>detail.parent</code> on Actor.</li>
-<li><strong>PY-5 (overlay-isolation):</strong> Diagnostics and py-spy overlays
-must not write into each other’s display surface. Enforced by
-<code>set_job</code>: <code>RunDiagnostics</code> calls <code>set_job</code> with the
-<code>Diagnostics</code> variant (dropping any live <code>PySpy</code> receiver);
-Esc calls <code>dismiss_job</code>; <code>recv_active_job</code> fires only for the
-variant currently stored.</li>
+from visible-tree ancestry on Actor, independently of detail
+loading.</li>
+<li><strong>PY-5 (overlay-isolation):</strong> Py-spy and config overlays must not
+write into each other’s display surface. Enforced by <code>set_job</code>:
+each variant drops any prior receiver; Esc calls <code>dismiss_job</code>;
+<code>recv_active_job</code> fires only for the variant currently stored.</li>
+<li><strong>PY-6 (warnings-lead):</strong> Non-fatal warnings on an <code>Ok</code> result
+render immediately after the metadata header, before the first
+thread, and are emitted even when there are no stack traces. A
+warning explains the frames beneath it, and the overlay opens at
+scroll 0 while stacks routinely exceed a screen, so a trailing
+warning is unreadable in practice.</li>
 </ul>
 <p>Config overlay invariants:</p>
 <ul>
@@ -127,10 +169,10 @@ prior overlay content and resets scroll to zero on result
 arrival.</li>
 <li><strong>CFG-4 (selection-totality):</strong> <code>C</code> targets the proc ref directly
 on Proc (worker or service); targets the owning proc via
-<code>detail.parent</code> on Actor; no-op on Root/Host. Backend routes to
-ProcAgent or HostAgent per proc type (same as PY-4).</li>
-<li><strong>CFG-5 (overlay-isolation):</strong> Config, Diagnostics, and PySpy
-overlays must not write into each other’s display surface.
+visible-tree ancestry on Actor; no-op on Root/Host. Backend
+routes to ProcAgent or HostAgent per proc type (same as PY-4).</li>
+<li><strong>CFG-5 (overlay-isolation):</strong> Config and PySpy overlays must not
+write into each other’s display surface.
 Enforced by <code>set_job</code>: each variant drops any prior receiver;
 <code>recv_active_job</code> fires only for the variant currently stored.</li>
 </ul>
@@ -147,5 +189,4 @@ index-based manipulation and making the view a pure projection.</li>
 buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_example_dining_philosophers
 
 # Terminal 2: Run this TUI (use the port printed by the application)
-buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr 127.0.0.1:XXXXX</code></pre></div></div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.TuiConfig.html" title="struct hyperactor_mesh_admin_tui_lib::TuiConfig">TuiConfig</a></dt><dd>Configuration for the mesh admin TUI.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.LangName.html" title="enum hyperactor_mesh_admin_tui_lib::LangName">Lang<wbr>Name</a></dt><dd>Selectable display language.</dd><dt><a class="enum" href="enum.ThemeName.html" title="enum hyperactor_mesh_admin_tui_lib::ThemeName">Theme<wbr>Name</a></dt><dd>Selectable color theme.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.run.html" title="fn hyperactor_mesh_admin_tui_lib::run">run</a></dt><dd>Run the mesh admin TUI. Does not return until the user exits
-or diagnostics complete.</dd></dl></section></div></main></body></html>
+buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr 127.0.0.1:XXXXX</code></pre></div></div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.TuiConfig.html" title="struct hyperactor_mesh_admin_tui_lib::TuiConfig">TuiConfig</a></dt><dd>Configuration for the mesh admin TUI.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.LangName.html" title="enum hyperactor_mesh_admin_tui_lib::LangName">Lang<wbr>Name</a></dt><dd>Selectable display language.</dd><dt><a class="enum" href="enum.ThemeName.html" title="enum hyperactor_mesh_admin_tui_lib::ThemeName">Theme<wbr>Name</a></dt><dd>Selectable color theme.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.run.html" title="fn hyperactor_mesh_admin_tui_lib::run">run</a></dt><dd>Run the mesh admin TUI. Does not return until the user exits.</dd></dl></section></div></main></body></html>

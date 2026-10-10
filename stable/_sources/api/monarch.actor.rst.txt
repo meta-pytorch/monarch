@@ -67,13 +67,14 @@ Messaging is done through the "adverbs" defined for each endpoint
    :undoc-members:
    :inherited-members:
    :show-inheritance:
-   :exclude-members: __init__, choose
+   :exclude-members: __init__
 
 .. autoclass:: Future
    :members:
    :undoc-members:
    :inherited-members:
    :show-inheritance:
+   :exclude-members: __init__
 
 .. autoclass:: ValueMesh
    :members:
@@ -129,7 +130,7 @@ Messaging is done through the "adverbs" defined for each endpoint
 
 Context API
 ===========
-Use these functions to look up what actor is running the currently executing code.
+Use these functions to identify the actor associated with the currently executing code. Inside an endpoint, this is the worker actor. In ordinary controller code, it is the controller's root client actor.
 
 .. autofunction:: current_actor_name
 
@@ -138,8 +139,6 @@ Use these functions to look up what actor is running the currently executing cod
 .. autofunction:: current_size
 
 .. autofunction:: context
-
-.. autofunction:: shutdown_context
 
 .. autoclass:: Context
    :members:
@@ -160,6 +159,28 @@ Use these functions to look up what actor is running the currently executing cod
    :inherited-members:
    :show-inheritance:
    :exclude-members: from_bytes, labels, sizes
+
+
+Client Shutdown
+===============
+
+Call ``shutdown_context()`` from the user's Python controller program when it has finished using Monarch. This ends the lifetime of that process's client; the client cannot be restarted in the same process. ``context()`` is not used to select an actor to stop: the target is the process's client. It is not a shutdown callback to run once per host in a HostMesh. Use a mesh's own stop or shutdown method when you want to stop only that mesh and continue using the client.
+
+Monarch registers client shutdown automatically for normal Python interpreter exit. Call it explicitly when you need to wait for shutdown before continuing or exiting:
+
+.. code-block:: python
+
+    from monarch.actor import shutdown_context
+
+    # After the controller has finished all Monarch work:
+    shutdown = shutdown_context()
+    shutdown.get(timeout=30)
+
+An async controller can await the returned Future instead. Keep the Future from the call that starts shutdown: later calls return already-completed Futures and do not wait for an earlier shutdown still in progress. Dropping the first Future does not cancel native shutdown.
+
+This is not enforced by a controller-only caller check. In a worker process without an initialized client, the call does nothing and does not create a client. A worker's actor context is not a client. If a worker separately initializes its own client, ``shutdown_context()`` applies to that client.
+
+.. autofunction:: shutdown_context
 
 
 Supervision

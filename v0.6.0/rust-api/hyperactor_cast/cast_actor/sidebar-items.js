@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CAST_ACTOR_NAME"],"enum":["TilingPolicy"],"static":["CAST_FAILURE_CAST_ACTOR","CAST_FAILURE_ORIGIN","CAST_FAILURE_PHASE","CAST_FAILURE_RETURN_PORT","CAST_ORIGINATING_SENDER","CAST_POINT"],"struct":["CastActor","CastDomainId","CastDomainRef"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["WorkspaceLocation"],"mod":["auto_reload","conda_sync","manager","rsync"]};

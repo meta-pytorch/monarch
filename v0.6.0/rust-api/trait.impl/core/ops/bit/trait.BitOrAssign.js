@@ -1,0 +1,9 @@
+(function() {
+    const implementors = Object.fromEntries([["rdmaxcel_sys",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/bit/trait.BitOrAssign.html\" title=\"trait core::ops::bit::BitOrAssign\">BitOrAssign</a> for <a class=\"struct\" href=\"rdmaxcel_sys/struct.ibv_access_flags.html\" title=\"struct rdmaxcel_sys::ibv_access_flags\">ibv_access_flags</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/bit/trait.BitOrAssign.html\" title=\"trait core::ops::bit::BitOrAssign\">BitOrAssign</a> for <a class=\"struct\" href=\"rdmaxcel_sys/struct.ibv_port_cap_flags.html\" title=\"struct rdmaxcel_sys::ibv_port_cap_flags\">ibv_port_cap_flags</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/bit/trait.BitOrAssign.html\" title=\"trait core::ops::bit::BitOrAssign\">BitOrAssign</a> for <a class=\"struct\" href=\"rdmaxcel_sys/struct.ibv_qp_attr_mask.html\" title=\"struct rdmaxcel_sys::ibv_qp_attr_mask\">ibv_qp_attr_mask</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/bit/trait.BitOrAssign.html\" title=\"trait core::ops::bit::BitOrAssign\">BitOrAssign</a> for <a class=\"struct\" href=\"rdmaxcel_sys/struct.ibv_send_flags.html\" title=\"struct rdmaxcel_sys::ibv_send_flags\">ibv_send_flags</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/bit/trait.BitOrAssign.html\" title=\"trait core::ops::bit::BitOrAssign\">BitOrAssign</a> for <a class=\"struct\" href=\"rdmaxcel_sys/struct.ibv_wc_flags.html\" title=\"struct rdmaxcel_sys::ibv_wc_flags\">ibv_wc_flags</a>",0]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":59,"fragment_lengths":[1571]}

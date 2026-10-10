@@ -1,0 +1,50 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Dial with out-of-order delivery and N parallel streams."><title>dial in hyperactor::channel::unordered - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">dial</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../hyperactor/index.html">hyperactor</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">dial</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#semantics-how-this-differs-from-superdial" title="Semantics (how this differs from `super::dial`)">Semantics (how this differs from <code>super::dial</code>)</a></li><li><a href="#ack-semantics" title="Ack semantics">Ack semantics</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="index.html">In hyperactor::<wbr>channel::<wbr>unordered</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">hyperactor</a>::<wbr><a href="../index.html">channel</a>::<wbr><a href="index.html">unordered</a></div><h1>Function <span class="fn">dial</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/hyperactor/channel.rs.html#1491-1509">Source</a> </span></div><pre class="rust item-decl"><code>pub fn dial&lt;M: <a class="trait" href="../../mailbox/trait.RemoteMessage.html" title="trait hyperactor::mailbox::RemoteMessage">RemoteMessage</a>&gt;(
+    addr: <a class="enum" href="../enum.ChannelAddr.html" title="enum hyperactor::channel::ChannelAddr">ChannelAddr</a>,
+    num_streams: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a>,
+) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="struct" href="../struct.ChannelTx.html" title="struct hyperactor::channel::ChannelTx">ChannelTx</a>&lt;M&gt;, <a class="enum" href="../enum.ChannelError.html" title="enum hyperactor::channel::ChannelError">ChannelError</a>&gt;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Dial with out-of-order delivery and N parallel streams.</p>
+<p>Opens N links sharing a single <code>SessionId</code> (distinct
+<code>stream_id</code> in <code>1..=num_streams</code> so the server routes them
+through the multi-stream receive path). Frames are
+load-balanced across streams via a shared MPMC work queue —
+idle writers pull next.</p>
+<h2 id="semantics-how-this-differs-from-superdial"><a class="doc-anchor" href="#semantics-how-this-differs-from-superdial">§</a>Semantics (how this differs from <a href="../fn.dial.html" title="fn hyperactor::channel::dial"><code>super::dial</code></a>)</h2>
+<p>Multi-stream trades several of <a href="../fn.dial.html" title="fn hyperactor::channel::dial"><code>super::dial</code></a>’s delivery
+guarantees for aggregate bandwidth. Use <a href="../fn.dial.html" title="fn hyperactor::channel::dial"><code>super::dial</code></a> when
+any of these matter:</p>
+<ul>
+<li>
+<p><strong>Ordering.</strong> Messages are delivered to the receiver in
+<em>arrival order across streams</em>, not send order. Two messages
+posted back to back on the sender may reach the receiver out
+of order when they’re carried on different streams.
+<a href="../fn.dial.html" title="fn hyperactor::channel::dial"><code>super::dial</code></a> is strictly in-order.</p>
+</li>
+<li>
+<p><strong>Retransmission on reconnect.</strong> If a writer’s connection
+drops after the bytes of a message have been written but
+before the peer acks, that message is <strong>not retransmitted</strong>
+on the new connection. It may be silently lost.
+<a href="../fn.dial.html" title="fn hyperactor::channel::dial"><code>super::dial</code></a> re-sends all unacked messages on reconnect.</p>
+</li>
+<li>
+<p><strong>Delivery timeouts.</strong> No delivery timeout is enforced. On
+sustained peer outage, writers reconnect indefinitely
+(backoff capped at 5s); senders block in <code>send().await</code> with
+no bound. <a href="../fn.dial.html" title="fn hyperactor::channel::dial"><code>super::dial</code></a> fails unacked sends after
+<code>MESSAGE_DELIVERY_TIMEOUT</code>.</p>
+</li>
+<li>
+<p><strong><code>Tx::send</code> return semantics.</strong> On session shutdown,
+messages still in the unacked buffer have their
+<code>return_channel</code> dropped. Per the <a href="../trait.Tx.html#method.send" title="method hyperactor::channel::Tx::send"><code>Tx::send</code></a> contract,
+this makes <code>send().await</code> return <code>Ok(())</code> for messages that
+may never have been delivered — i.e. a “success” return does
+not actually confirm delivery here. <a href="../fn.dial.html" title="fn hyperactor::channel::dial"><code>super::dial</code></a> delivers
+a structured <code>SendError</code> instead.</p>
+</li>
+</ul>
+<h2 id="ack-semantics"><a class="doc-anchor" href="#ack-semantics">§</a>Ack semantics</h2>
+<p>Receivers ack a cumulative watermark: the highest <code>N</code> such
+that all of <code>0..=N</code> have been observed across all streams.
+Acks may stall behind a single missing seq on a slow stream.</p>
+</div></details></section></div></main></body></html>

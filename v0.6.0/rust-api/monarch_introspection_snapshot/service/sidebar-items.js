@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["CaptureResult","CaptureSnapshot","HttpPublisher","NodeCounts","SnapshotCaptureActor","SnapshotService"]};

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["SliceError"],"macro":["assert_round_trip","assert_structurally_eq","extent","sel_from_shape","select","shape"],"mod":["parse","reshape","selection","shape","strategy","utils","view"],"struct":["DimSliceIterator","Slice","SliceIterator"]};
+window.SIDEBAR_ITEMS = {"enum":["SliceError"],"macro":[["assert_round_trip",1],["assert_structurally_eq",1],["extent",1],["sel_from_shape",1],["select",1],["shape",1]],"mod":["parse","reshape","selection","shape","strategy","utils","view"],"struct":["DimSliceIterator","Slice","SliceIterator"]};

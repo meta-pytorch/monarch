@@ -1,0 +1,36 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="The persistent, language-independent environment carried by an actor `Instance`."><title>hyperactor::environment - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (c397dae80 2026-07-02)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module environment</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../hyperactor/index.html">hyperactor</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module environment</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#aenv-invariant-registry" title="AENV invariant registry">AENV invariant registry</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate hyperactor</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">hyperactor</a></div><h1>Module <span>environment</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/hyperactor/environment.rs.html#9-444">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>The persistent, language-independent environment carried by an actor
+<a href="../proc/struct.Instance.html" title="struct hyperactor::proc::Instance"><code>Instance</code></a>.</p>
+<p>An <a href="struct.ActorEnvironment.html" title="struct hyperactor::environment::ActorEnvironment"><code>ActorEnvironment</code></a> is a small, immutable set of typed attributes fixed
+when the instance is constructed. It is inherited by local children and
+serialized to remote children, giving stable actor context a native home
+that does not depend on the actor’s implementation language.</p>
+<p><code>hyperactor</code> owns how this environment is carried through actor creation,
+while higher-level crates own the values it contains. Those crates declare
+typed <a href="../../hyperactor_config/attrs/struct.Key.html" title="struct hyperactor_config::attrs::Key"><code>Key</code></a> attributes. Putting those values in a fixed struct would move
+higher-level concepts into <code>hyperactor</code> and require core runtime and wire
+changes for each new kind of inherited context. This is not an untyped
+general-purpose map: the API preserves each value’s type, enforces fixed
+bounds, and requires mutable ownership for construction updates.</p>
+<h2 id="aenv-invariant-registry"><a class="doc-anchor" href="#aenv-invariant-registry">§</a>AENV invariant registry</h2>
+<ul>
+<li><strong>AENV-0 (value integrity):</strong> every <code>ActorEnvironment</code> is structurally
+valid, bounded, unique-keyed, and updated atomically.</li>
+<li><strong>AENV-1 (instance ownership):</strong> every <a href="../proc/struct.Instance.html" title="struct hyperactor::proc::Instance"><code>Instance</code></a>
+stores exactly one immutable environment in its type-erased instance cell,
+fixed at construction and exposed read-only.</li>
+<li><strong>AENV-2 (local inheritance):</strong> ordinary local child/client construction
+derives its parent’s exact environment from that cell.</li>
+<li><strong>AENV-3 (remote inheritance):</strong> native remote-spawn adapters transport
+the caller-shaped environment; nested remote spawn derives and transports
+its environment independently.</li>
+<li><strong>AENV-4 (caller shaping):</strong> spawn callers put all construction context in
+one environment. When its create cast carries <code>CAST_POINT</code>, proc-mesh
+construction replaces the environmental value with the point assigned to
+the new actor; ordinary local child construction inherits the parent’s
+exact environment. <a href="../actor/trait.RemoteSpawn.html" title="trait hyperactor::actor::RemoteSpawn"><code>RemoteSpawn::new</code></a> reads
+that environment, and the runtime stores it unchanged.</li>
+<li><strong>AENV-5 (runtime neutrality):</strong> inheritance is implemented by native
+<code>Instance</code>/spawn plumbing and does not depend on the actor implementation
+language.</li>
+</ul>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.ActorEnvironment.html" title="struct hyperactor::environment::ActorEnvironment">Actor<wbr>Environment</a></dt><dd>The persistent environment owned by an actor instance.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.ActorEnvironmentError.html" title="enum hyperactor::environment::ActorEnvironmentError">Actor<wbr>Environment<wbr>Error</a></dt><dd>An error constructing or decoding an <a href="struct.ActorEnvironment.html" title="struct hyperactor::environment::ActorEnvironment"><code>ActorEnvironment</code></a>.</dd></dl></section></div></main></body></html>

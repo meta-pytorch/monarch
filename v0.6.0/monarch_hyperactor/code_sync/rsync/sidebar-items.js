@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ChangeAction","ChangeMessage","ChangeType","FileType"],"fn":["do_rsync","rsync_mesh"],"struct":["Change","RsyncActor","RsyncDaemon","RsyncMessage","RsyncResult"]};

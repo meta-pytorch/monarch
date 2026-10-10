@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["PyHandle","WouldBlockRuntime"]};
+window.SIDEBAR_ITEMS = {"fn":["after_ready","register_python_bindings","to_py_error"],"struct":["PyHandle","WouldBlockRuntime"]};

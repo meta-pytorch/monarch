@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Error"],"fn":["deserialize_bincode","deserialize_part_codec","serialize_bincode","serialize_part_codec"],"macro":["part_codec"],"struct":["Frame","Message","Part"],"trait":["PartCodec"],"type":["Result"]};

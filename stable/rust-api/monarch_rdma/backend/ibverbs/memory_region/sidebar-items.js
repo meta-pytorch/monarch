@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["IbvMemoryRegionView"]};
+window.SIDEBAR_ITEMS = {"struct":["IbvMemoryRegionView","IbvRemoteMemoryRegionView"]};

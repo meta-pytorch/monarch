@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["register_python_bindings"],"static":["SMALL_WRITE_THRESHOLD"],"struct":["Buffer","FrozenBuffer"]};
+window.SIDEBAR_ITEMS = {"fn":["py_bytes_to_bytes","register_python_bindings"],"static":["SMALL_WRITE_THRESHOLD"],"struct":["Buffer","FrozenBuffer"]};

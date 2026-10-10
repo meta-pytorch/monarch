@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Mesh-topology introspection types and attrs."><title>hyperactor_mesh::introspect - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor_mesh" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module introspect</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../hyperactor_mesh/index.html">hyperactor_<wbr>mesh</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module introspect</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#mesh-key-invariants-mk-" title="Mesh key invariants (MK-*)">Mesh key invariants (MK-*)</a></li><li><a href="#proc-debug-stats-invariants-pd-" title="Proc debug stats invariants (PD-*)">Proc debug stats invariants (PD-*)</a></li><li><a href="#http-boundary-invariants-hb-" title="HTTP boundary invariants (HB-*)">HTTP boundary invariants (HB-*)</a></li><li><a href="#attrs-invariants-ia-" title="Attrs invariants (IA-*)">Attrs invariants (IA-*)</a></li><li><a href="#attrs-view-invariants-av-" title="Attrs view invariants (AV-*)">Attrs view invariants (AV-*)</a></li><li><a href="#derive-invariants-dp-" title="Derive invariants (DP-*)">Derive invariants (DP-*)</a></li><li><a href="#execution-presentation-ex-" title="Execution presentation (EX-*)">Execution presentation (EX-*)</a></li><li><a href="#inbound-ordering-presentation-io-" title="Inbound ordering presentation (IO-*)">Inbound ordering presentation (IO-*)</a></li><li><a href="#py-spy-integration-ps-" title="py-spy integration (PS-*)">py-spy integration (PS-*)</a></li><li><a href="#py-spy-profiling-pp-" title="py-spy profiling (PP-*)">py-spy profiling (PP-*)</a></li><li><a href="#mesh-admin-config-ma-" title="Mesh-admin config (MA-*)">Mesh-admin config (MA-*)</a></li></ul><h3><a href="#modules">Module Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#statics" title="Statics">Statics</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate hyperactor_<wbr>mesh</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">hyperactor_mesh</a></div><h1>Module <span>introspect</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/hyperactor_mesh/introspect.rs.html#9-2114">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Mesh-topology introspection types and attrs.</p>
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Mesh-topology introspection types and attrs."><title>hyperactor_mesh::introspect - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor_mesh" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (c397dae80 2026-07-02)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module introspect</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../hyperactor_mesh/index.html">hyperactor_<wbr>mesh</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module introspect</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#mesh-key-invariants-mk-" title="Mesh key invariants (MK-*)">Mesh key invariants (MK-*)</a></li><li><a href="#proc-debug-stats-invariants-pd-" title="Proc debug stats invariants (PD-*)">Proc debug stats invariants (PD-*)</a></li><li><a href="#http-boundary-invariants-hb-" title="HTTP boundary invariants (HB-*)">HTTP boundary invariants (HB-*)</a></li><li><a href="#attrs-invariants-ia-" title="Attrs invariants (IA-*)">Attrs invariants (IA-*)</a></li><li><a href="#attrs-view-invariants-av-" title="Attrs view invariants (AV-*)">Attrs view invariants (AV-*)</a></li><li><a href="#derive-invariants-dp-" title="Derive invariants (DP-*)">Derive invariants (DP-*)</a></li><li><a href="#execution-presentation-ex-" title="Execution presentation (EX-*)">Execution presentation (EX-*)</a></li><li><a href="#inbound-ordering-presentation-io-" title="Inbound ordering presentation (IO-*)">Inbound ordering presentation (IO-*)</a></li><li><a href="#py-spy-integration-ps-" title="py-spy integration (PS-*)">py-spy integration (PS-*)</a></li><li><a href="#py-spy-profiling-pp-" title="py-spy profiling (PP-*)">py-spy profiling (PP-*)</a></li><li><a href="#mesh-admin-config-ma-" title="Mesh-admin config (MA-*)">Mesh-admin config (MA-*)</a></li></ul><h3><a href="#modules">Module Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#statics" title="Statics">Statics</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate hyperactor_<wbr>mesh</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">hyperactor_mesh</a></div><h1>Module <span>introspect</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/hyperactor_mesh/introspect.rs.html#9-2145">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Mesh-topology introspection types and attrs.</p>
 <p>This module owns the typed internal model used by mesh-admin and the
 TUI: mesh-topology attr keys, typed attrs views, <code>NodeRef</code>, and the
 domain <code>NodePayload</code> / <code>NodeProperties</code> / <code>FailureInfo</code> values derived
@@ -157,15 +157,20 @@ relation between <code>queue_depth</code> and reorder-buffer depth) live in
 <ul>
 <li><strong>IO-4 (snapshot_complete derivation):</strong>
 <code>InboundOrdering.snapshot_complete == (skipped_session_count == 0)</code>. Mirrors
-<code>OrderingSnapshot::is_complete()</code> at the presentation layer.</li>
-<li><strong>IO-5 (known_session_count totality):</strong>
-<code>InboundOrdering.known_session_count == sessions.len() + skipped_session_count</code>. The only rollup
-that is a true total across returned and skipped sessions.</li>
-<li><em><em>IO-6 (returned_</em> scope):</em>*
-<code>returned_buffered_session_count</code>,
-<code>returned_buffered_message_count</code>, and
-<code>returned_max_buffered_count</code> are computed over <code>sessions</code>
-only and are LOWER BOUNDS when <code>snapshot_complete == false</code>.</li>
+<code>OrderingSnapshot::is_complete()</code> at the presentation layer. By
+IO-2, the aggregate lock makes this an availability check: <code>true</code>
+means every session was observed and <code>false</code> means none were.</li>
+<li><strong>IO-5 (complete-snapshot exactness):</strong> When
+<code>snapshot_complete == true</code>, <code>known_session_count == sessions.len()</code> and every <code>returned_*</code> rollup is exact over that
+complete session set.</li>
+<li><strong>IO-6 (unavailable-snapshot sentinel):</strong> When
+<code>snapshot_complete == false</code>, the aggregate sequencing lock was
+busy and no session state was observed. The current producer
+returns <code>sessions == []</code>, <code>skipped_session_count == 1</code>, and zero
+<code>returned_*</code> rollups; the legacy presentation derivation therefore
+sets <code>known_session_count == 1</code>. These are fixed unavailability
+sentinel values, not observations of one session with zero stalls.
+Consumers must retry rather than diagnose from them.</li>
 <li><strong>IO-7 (live-actor exposure):</strong> For any actor built through
 <code>Instance::new</code>, <code>/v1/{actor}</code> exposes
 <code>inbound_ordering: Some(...)</code> – never <code>None</code>. <code>None</code>
@@ -188,15 +193,18 @@ env var <code>PYSPY_BIN</code> feeds in through the config layer.
 If the first attempt is not found, the fallback attempt is
 required.</li>
 <li><strong>PS-4 (structured JSON output):</strong> py-spy runs with <code>--json</code>;
-output is parsed into <code>Vec&lt;PySpyStackTrace&gt;</code>. Parse failure
-maps to <code>PySpyResult::Failed</code>.</li>
+output is parsed into <code>Vec&lt;PySpyStackTrace&gt;</code>. A successful result’s
+<code>capture_mode</code> records whether it used <code>native_all</code>, <code>native</code>, or
+<code>python_only</code>. Parse failure maps to <code>PySpyResult::Failed</code>.</li>
 <li><strong>PS-5 (subprocess timeout):</strong> <code>try_exec</code> bounds the py-spy
 subprocess inside the worker to <code>MESH_ADMIN_PYSPY_TIMEOUT</code>
 (default 10s). The budget is sized for <code>--native --native-all</code>
 which unwinds native stacks via libunwind — significantly
-slower than Python-only capture on loaded hosts. On expiry the
-child is killed and reaped, and the worker returns
-<code>Failed { stderr: "…timed out…" }</code>.</li>
+slower than Python-only capture on loaded hosts. Each child
+leads its own process group. On timeout or cancellation the
+group is killed so descendants cannot retain inherited pipes;
+the direct-child reap has its own one-second bound. The worker
+returns <code>Failed { stderr: "…timed out…" }</code> on timeout.</li>
 <li><strong>PS-6 (bridge timeout):</strong> The HTTP bridge uses a separate
 <code>MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT</code> (default 13s), which must
 exceed <code>MESH_ADMIN_PYSPY_TIMEOUT</code> so the subprocess kill/reap
@@ -215,19 +223,25 @@ overlapping dumps on the same proc are allowed. Each worker
 runs independently.</li>
 <li><strong>PS-10 (nonblocking retry):</strong> In nonblocking mode, <code>try_exec</code>
 retries up to 3 times with 100ms backoff on failure, because
-py-spy can segfault reading mutating process memory. All
-attempts share a single deadline bounded by
-<code>MESH_ADMIN_PYSPY_TIMEOUT</code> (PS-5).</li>
+py-spy can segfault reading mutating process memory. Attempts
+and backoff share the <code>MESH_ADMIN_PYSPY_TIMEOUT</code> deadline;
+timeout cleanup has the separate one-second reap bound in PS-5.</li>
 <li><strong>PS-11a (native-all-immediate-downgrade):</strong> If py-spy rejects
 <code>--native-all</code> with the recognized unsupported-flag signature
-(exit code 2, stderr mentions <code>--native-all</code>), <code>try_exec</code>
-retries immediately with <code>native_all = false</code> in the same outer
-attempt.</li>
+(exit code 2, stderr mentions <code>--native-all</code>), <code>try_exec</code> retries
+immediately with <code>native_all = false</code> and <code>native = true</code> in the
+same outer attempt. This also preserves native capture for an
+actor caller that supplied <code>native_all = true, native = false</code>.</li>
 <li><strong>PS-11b (native-all-no-retry-consumption):</strong> That downgrade
 retry does not consume an outer nonblocking retry slot (PS-10)
 and does not incur the 100ms inter-attempt backoff.</li>
 <li><strong>PS-11c (native-all-downgrade-warning):</strong> A successful
-downgraded result includes the warning <code>"--native-all unsupported by this py-spy; fell back to --native"</code>.</li>
+downgraded result includes
+<code>pyspy::native_all_downgrade_warning(label)</code>, which names how
+the py-spy binary was resolved — PS-3 means the caller cannot
+otherwise tell which one ran. The warning survives failed
+downgraded outer retries and is attached to any eventual
+successful result, whose <code>capture_mode</code> is <code>native</code>.</li>
 <li><strong>PS-11d (native-all-failure-passthrough):</strong> If the downgraded
 retry also fails, the failure flows through the normal
 nonblocking retry logic (PS-10) unchanged.</li>
@@ -238,9 +252,9 @@ outer retries. The flag is not re-tested on later attempts.</li>
 <li><strong>PS-12 (universal py-spy):</strong> Worker procs and the service
 proc can handle <code>PySpyDump</code>. Worker procs handle it via
 ProcAgent; the service proc handles it via HostAgent (same
-spawn-worker pattern). <code>pyspy_bridge</code> routes by proc name:
-if <code>proc_id.base_name() == SERVICE_PROC_NAME</code>, the target
-is <code>host_agent</code>; otherwise <code>proc_agent[0]</code>. Procs lacking
+spawn-worker pattern). <code>pyspy_bridge</code> routes to a HostAgent
+only when its exact actor identity is registered with the mesh
+admin; all other procs route to <code>proc_agent[0]</code>. Procs lacking
 either agent (e.g. mesh-admin) fast-fail via PS-13.</li>
 <li><strong>PS-13 (defensive probe):</strong> Before sending <code>PySpyDump</code>,
 <code>pyspy_bridge</code> probes the selected actor with an introspect
@@ -259,6 +273,30 @@ procs require a reachable <code>proc_agent[0]</code>. <code>PySpyWorker</code> i
 transient per-request machinery (spawned on <code>PySpyDump</code>,
 stopped after replying) and is not part of the reachability
 contract.</li>
+<li><strong>PS-15a (native-immediate-downgrade):</strong> Native frames matter —
+a proc stuck in a collective or an allocator shows nothing
+useful without them — but a partial dump beats no dump. If a
+capture that requested <code>--native</code> or <code>--native-all</code> returns
+<code>Failed</code> for any reason other than the PS-11a unsupported-flag
+signature — libunwind rejecting the target with <code>UNW_EINVAL</code>,
+say — <code>try_exec</code> drops both native flags and retries
+Python-only in the same outer attempt, and PS-15c says so in
+the result.</li>
+<li><strong>PS-15b (native-no-retry-consumption):</strong> That downgrade retry
+does not consume an outer nonblocking retry slot (PS-10) and
+does not incur the 100ms inter-attempt backoff.</li>
+<li><strong>PS-15c (native-downgrade-warning):</strong> A successful downgraded
+result has <code>capture_mode = python_only</code> and includes
+<code>pyspy::native_downgrade_warning(label)</code>. The enum provides a
+queryable capture-mode signal, while the warning names both the
+py-spy that fell short and the remedy: point the <code>PYSPY_BIN</code>
+environment variable on the dumped proc at a build that can
+unwind the target. The warning survives failed Python-only outer
+retries and is attached to any eventual successful result.</li>
+<li><strong>PS-15d (native-sticky-downgrade):</strong> Once native capture has
+failed, <code>effective_opts.native</code> and <code>effective_opts.native_all</code>
+remain <code>false</code> for all subsequent outer retries. Native is not
+re-tested on later attempts.</li>
 </ul>
 <p>v1 contract notes:</p>
 <ul>
@@ -291,10 +329,10 @@ Computed per-request from validated opts, not static config.</li>
 <li><strong>PP-3 (temp file lifecycle):</strong> <code>py-spy record</code> writes to a
 temp file; the worker reads it after successful exit and
 deletes via tempfile drop. On failure or timeout, stderr is
-captured. On timeout, the child is explicitly killed and
-reaped via <code>start_kill()</code> + <code>wait().await</code>. If the file is
-missing, empty, or unreadable after successful exit, the
-result is <code>OutputMissing</code>, <code>OutputEmpty</code>, or
+captured. On timeout or cancellation, the child process group
+is killed; the direct-child reap has its own one-second bound.
+If the file is missing, empty, or unreadable after successful
+exit, the result is <code>OutputMissing</code>, <code>OutputEmpty</code>, or
 <code>OutputReadFailure</code>, not <code>Ok</code>.</li>
 <li><strong>PP-4 (target locality):</strong> Inherits PS-1 — always targets
 <code>std::process::id()</code>, never a caller-supplied PID.</li>

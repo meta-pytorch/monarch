@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["copy_marked_flattrs","fnv1a_hash","is_attr_marked_with","lookup_key_info","lookup_key_info_by_name","marked_attr_names","stamp_marked_attrs_into_flattrs"],"macro":["declare_attrs"],"static":["OPERATION_CONTEXT_HEADER"],"struct":["Attrs","Key"],"trait":["AttrValue","ErasedKey"]};

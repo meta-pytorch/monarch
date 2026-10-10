@@ -16,7 +16,7 @@ stream*: Stream*
 
 mesh*: DeviceMesh*
 
-ref*: [int](https://docs.python.org/3/library/functions.html#int) | [None](https://docs.python.org/3/library/constants.html#None)*
+ref*: [int](https://docs.python.org/3/builtins/functions.html#int) | [None](https://docs.python.org/3/builtins/constants.html#None)*
 
 drop()[[source]](../_modules/monarch/common/tensor.html#Tensor.drop)
 
@@ -82,13 +82,13 @@ ok because we eliminated the 'gpu' dim via reduction.
 
 Parameters:
 
-- **dims** (*Dims**|*[*str*](https://docs.python.org/3/library/stdtypes.html#str)) - The dimensions along which to perform the reduction.
+- **dims** (*Dims**|*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - The dimensions along which to perform the reduction.
 - **reduction** (*_valid_reduce*) - The type of reduction to perform. Defaults to "sum".
-- **scatter** ([*bool*](https://docs.python.org/3/library/functions.html#bool)) - If True, the local result tensor will be evenly split across dimensions.
+- **scatter** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - If True, the local result tensor will be evenly split across dimensions.
 Defaults to False.
 - **mesh** (*Optional**[**"DeviceMesh"**]**,**optional*) - The target mesh to move the data to.
 If None, uses self.mesh. Defaults to None.
-- **_inplace** ([*bool*](https://docs.python.org/3/library/functions.html#bool)) - If True, performs the operation in-place. Defaults to False.
+- **_inplace** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - If True, performs the operation in-place. Defaults to False.
 Note that not all the reduction operations support in-place.
 - **out** (*Optional**[**"Tensor"**]*) - The output tensor to store the result. If None, a new tensor
 will be created on the stream where the reduce operation executes. Defaults to None.
@@ -107,7 +107,7 @@ delete_ref(*ref*)[[source]](../_modules/monarch/common/tensor.html#Tensor.delete
 
 *class*monarch.Stream(*name*, *_default=False*)[[source]](../_modules/monarch/common/stream.html#Stream)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 __init__(*name*, *_default=False*)[[source]](../_modules/monarch/common/stream.html#Stream.__init__)
 
@@ -129,9 +129,9 @@ If not mutable both self and t.stream can read from t's storage but neither can 
 
 monarch.remote(*function: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*, ***, *propagate: [Any](https://docs.python.org/3/library/typing.html#typing.Any) = None*) → Remote[P, R][[source]](../_modules/monarch/common/remote.html#remote)
 
-monarch.remote(*function: [str](https://docs.python.org/3/library/stdtypes.html#str)*, ***, *propagate: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['mocked', 'cached', 'inspect'] | [None](https://docs.python.org/3/library/constants.html#None) = None*) → Remote
+monarch.remote(*function: [str](https://docs.python.org/3/builtins/stdtypes.html#str)*, ***, *propagate: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['mocked', 'cached', 'inspect'] | [None](https://docs.python.org/3/builtins/constants.html#None) = None*) → Remote
 
-monarch.remote(*function: [str](https://docs.python.org/3/library/stdtypes.html#str)*, ***, *propagate: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*) → Remote[P, R]
+monarch.remote(*function: [str](https://docs.python.org/3/builtins/stdtypes.html#str)*, ***, *propagate: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*) → Remote[P, R]
 
 monarch.remote(***, *propagate: [Any](https://docs.python.org/3/library/typing.html#typing.Any) = None*) → RemoteIfy
 
@@ -168,7 +168,7 @@ Parameters:
 
 - **mesh** (*Optional**[**"DeviceMesh"**]**,**optional*) - The target mesh to move the data to.
 If None, uses self.mesh. Defaults to None.
-- **_inplace** ([*bool*](https://docs.python.org/3/library/functions.html#bool)) - If True, performs the operation in-place. Defaults to False.
+- **_inplace** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - If True, performs the operation in-place. Defaults to False.
 Note that not all the reduction operations support in-place.
 
 monarch.reduce_(*tensors*, *dims*, *reduction='sum'*, *scatter=False*, *mesh=None*)[[source]](../_modules/monarch/common/tensor.html#reduce_)
@@ -217,7 +217,7 @@ The argument must be an iterable if specified.
 
 *class*monarch.Extent(*labels*, *sizes*)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 *static*from_bytes(*bytes*)
 
@@ -233,7 +233,7 @@ sizes
 
 *class*monarch.Shape(*labels*, *slice*)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 at(*label*, *index*)
 
@@ -259,7 +259,7 @@ select(*label*, *slice*)
 
 *class*monarch.Selection
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 all()
 
@@ -288,7 +288,7 @@ selection algebra surface syntax, such as "(*, 0:4, ?)".
 
 Raises:
 
-- [**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If the input string is not a valid selection
+- [**ValueError**](https://docs.python.org/3/builtins/exceptions.html#ValueError) - If the input string is not a valid selection
 - **expression.** -
 
 Example
@@ -301,7 +301,7 @@ alias of `Slice`
 
 *class*monarch.OpaqueRef(*value=None*)[[source]](../_modules/monarch/common/opaque_ref.html#OpaqueRef)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 OpaqueRef is a reference to an object that is only resolvable on the worker
 This is used to pass objects from the controller to the worker across User Defined Functions

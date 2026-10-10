@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["register_snapshot_schemas","start_periodic_snapshots"]};

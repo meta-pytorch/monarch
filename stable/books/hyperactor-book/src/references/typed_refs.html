@@ -1,9 +1,8 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="../../../../" >
 
   <head>
     <meta charset="utf-8" />
@@ -17,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Typed references are strongly typed wrappers over addresses like ActorAddr and PortAddr. These types are used throughout hyperactor’s APIs: as parameters in messages, return values from bind() meth..." />
 
-    <title>Typed References &#8212; Monarch v0.6.0 documentation</title>
+    <title>Typed References &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -37,29 +36,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
-    <script src="../../../../_static/doctools.js"></script>
-    <script src="../../../../_static/sphinx_highlight.js"></script>
-    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/references/typed_refs';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/references/typed_refs.html" />
@@ -83,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -197,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -562,6 +561,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -632,6 +637,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -925,6 +936,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -995,6 +1012,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1299,21 +1322,22 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="typed-references">
-<h1>Typed References<a class="headerlink" href="#typed-references" title="Permalink to this heading">#</a></h1>
+<h1>Typed References<a class="headerlink" href="#typed-references" title="Link to this heading">#</a></h1>
 <p>Typed references are strongly typed wrappers over addresses like <code class="docutils literal notranslate"><span class="pre">ActorAddr</span></code> and <code class="docutils literal notranslate"><span class="pre">PortAddr</span></code>. These types are used throughout hyperactor’s APIs: as parameters in messages, return values from <code class="docutils literal notranslate"><span class="pre">bind()</span></code> methods, and elements in routing decisions. They make distributed communication safe, expressive, and statically checked.</p>
 <section id="overview">
-<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this heading">#</a></h2>
-<p>There are three main typed reference types:</p>
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<p>There are four main typed reference types:</p>
 <ul class="simple">
 <li><p><a class="reference internal" href="#actorref-a"><code class="docutils literal notranslate"><span class="pre">ActorRef&lt;A&gt;</span></code></a>: A typed reference to an actor implementing the <code class="docutils literal notranslate"><span class="pre">Referable</span></code> trait.</p></li>
 <li><p><a class="reference internal" href="#portref-m"><code class="docutils literal notranslate"><span class="pre">PortRef&lt;M&gt;</span></code></a>: A reference to a reusable mailbox port for messages of type <code class="docutils literal notranslate"><span class="pre">M</span></code> implementing the <code class="docutils literal notranslate"><span class="pre">RemoteMessage</span></code> trait.</p></li>
+<li><p><a class="reference internal" href="#idleflushportref-m"><code class="docutils literal notranslate"><span class="pre">IdleFlushPortRef&lt;M&gt;</span></code></a>: A reusable reply port that applies idle-flush reduction in cast trees.</p></li>
 <li><p><a class="reference internal" href="#onceportref-m"><code class="docutils literal notranslate"><span class="pre">OncePortRef&lt;M&gt;</span></code></a>: A reference to a one-shot port for receiving a single response of type <code class="docutils literal notranslate"><span class="pre">M</span></code> implementing the <code class="docutils literal notranslate"><span class="pre">RemoteMessage</span></code> trait.</p></li>
 </ul>
 <p>These types are used as parameters in messages, return values from bindings, and components of the routing system.</p>
 </section>
 <hr class="docutils" />
 <section id="actorref-a">
-<h2><code class="docutils literal notranslate"><span class="pre">ActorRef&lt;A&gt;</span></code><a class="headerlink" href="#actorref-a" title="Permalink to this heading">#</a></h2>
+<h2><code class="docutils literal notranslate"><span class="pre">ActorRef&lt;A&gt;</span></code><a class="headerlink" href="#actorref-a" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">ActorRef&lt;A&gt;</span></code> is a typed reference to an actor of type <code class="docutils literal notranslate"><span class="pre">A</span></code>. It provides a way to identify and address remote actors that implement <code class="docutils literal notranslate"><span class="pre">Referable</span></code>.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">actor_ref</span><span class="p">:</span><span class="w"> </span><span class="nc">ActorRef</span><span class="o">&lt;</span><span class="n">MyActor</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ActorRef</span><span class="p">::</span><span class="n">attest</span><span class="p">(</span><span class="n">actor_addr</span><span class="p">);</span>
 </pre></div>
@@ -1326,7 +1350,7 @@ document.write(`
 </div></blockquote>
 <p>Unlike <code class="docutils literal notranslate"><span class="pre">ActorHandle&lt;A&gt;</span></code>, an <code class="docutils literal notranslate"><span class="pre">ActorRef</span></code> is just a reference — it doesn’t guarantee that the actor is currently running. It’s primarily used for routing and type-safe messaging across <code class="docutils literal notranslate"><span class="pre">Proc</span></code>s.</p>
 <section id="definition">
-<h3>Definition<a class="headerlink" href="#definition" title="Permalink to this heading">#</a></h3>
+<h3>Definition<a class="headerlink" href="#definition" title="Link to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]</span>
 <span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">ActorRef</span><span class="o">&lt;</span><span class="n">A</span><span class="p">:</span><span class="w"> </span><span class="nc">Referable</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">actor_addr</span><span class="p">:</span><span class="w"> </span><span class="nc">ActorAddr</span><span class="p">,</span>
@@ -1338,7 +1362,7 @@ document.write(`
 </section>
 </section>
 <section id="portref-m">
-<h2><code class="docutils literal notranslate"><span class="pre">PortRef&lt;M&gt;</span></code><a class="headerlink" href="#portref-m" title="Permalink to this heading">#</a></h2>
+<h2><code class="docutils literal notranslate"><span class="pre">PortRef&lt;M&gt;</span></code><a class="headerlink" href="#portref-m" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">PortRef&lt;M&gt;</span></code> refers to a mailbox port for messages of type <code class="docutils literal notranslate"><span class="pre">M</span></code>.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">port</span><span class="p">,</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">receiver</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">actor</span><span class="p">.</span><span class="n">open_port</span><span class="p">::</span><span class="o">&lt;</span><span class="n">MyMessage</span><span class="o">&gt;</span><span class="p">();</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">port_ref</span><span class="p">:</span><span class="w"> </span><span class="nc">PortRef</span><span class="o">&lt;</span><span class="n">MyMessage</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">port</span><span class="p">.</span><span class="n">bind</span><span class="p">();</span>
@@ -1346,7 +1370,7 @@ document.write(`
 </div>
 <p>This allows the port to be sent across the network or passed into other messages. On the receiving end, <code class="docutils literal notranslate"><span class="pre">PortRef</span></code> can be used to deliver messages of the expected type.</p>
 <section id="id1">
-<h3>Definition<a class="headerlink" href="#id1" title="Permalink to this heading">#</a></h3>
+<h3>Definition<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[derive(Debug, PartialEq, Eq, PartialOrd, Hash, Ord, Named)]</span>
 <span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">PortRef</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">port_addr</span><span class="p">:</span><span class="w"> </span><span class="nc">PortAddr</span><span class="p">,</span>
@@ -1361,8 +1385,12 @@ document.write(`
 <p>As with <code class="docutils literal notranslate"><span class="pre">ActorRef</span></code>, this is a typed wrapper around an address (<code class="docutils literal notranslate"><span class="pre">PortAddr</span></code>), carrying a phantom type for safety. It ensures that only messages of type <code class="docutils literal notranslate"><span class="pre">M</span></code> can be sent through this reference.</p>
 </section>
 </section>
+<section id="idleflushportref-m">
+<h2><code class="docutils literal notranslate"><span class="pre">IdleFlushPortRef&lt;M&gt;</span></code><a class="headerlink" href="#idleflushportref-m" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">IdleFlushPortRef&lt;M&gt;</span></code> is a reusable reply port with a distinct serialized representation. Cast splitting recognizes it and installs <code class="docutils literal notranslate"><span class="pre">ReducerMode::IdleFlush</span></code> at each branch. Create one from a bound <code class="docutils literal notranslate"><span class="pre">PortRef</span></code> with <code class="docutils literal notranslate"><span class="pre">PortRef::into_idle_flush</span></code>.</p>
+</section>
 <section id="onceportref-m">
-<h2><code class="docutils literal notranslate"><span class="pre">OncePortRef&lt;M&gt;</span></code><a class="headerlink" href="#onceportref-m" title="Permalink to this heading">#</a></h2>
+<h2><code class="docutils literal notranslate"><span class="pre">OncePortRef&lt;M&gt;</span></code><a class="headerlink" href="#onceportref-m" title="Link to this heading">#</a></h2>
 <p>A <code class="docutils literal notranslate"><span class="pre">OncePortRef&lt;M&gt;</span></code> is like a <code class="docutils literal notranslate"><span class="pre">PortRef</span></code>, but designed for exactly one response. Once used, it cannot be reused or cloned.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">once_port</span><span class="p">,</span><span class="w"> </span><span class="n">receiver</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">actor</span><span class="p">.</span><span class="n">open_once_port</span><span class="p">::</span><span class="o">&lt;</span><span class="n">MyMessage</span><span class="o">&gt;</span><span class="p">();</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">once_ref</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">once_port</span><span class="p">.</span><span class="n">bind</span><span class="p">();</span>
@@ -1370,7 +1398,7 @@ document.write(`
 </div>
 <p>These are commonly used for request/response interactions, where a single reply is expected.</p>
 <section id="id2">
-<h3>Definition<a class="headerlink" href="#id2" title="Permalink to this heading">#</a></h3>
+<h3>Definition<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[derive(Debug, PartialEq)]</span>
 <span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">OncePortRef</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">port_addr</span><span class="p">:</span><span class="w"> </span><span class="nc">PortAddr</span><span class="p">,</span>
@@ -1476,6 +1504,7 @@ document.write(`
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Definition</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#idleflushportref-m"><code class="docutils literal notranslate"><span class="pre">IdleFlushPortRef&lt;M&gt;</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#onceportref-m"><code class="docutils literal notranslate"><span class="pre">OncePortRef&lt;M&gt;</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id2">Definition</a></li>
 </ul>
@@ -1622,7 +1651,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>
@@ -1651,7 +1680,7 @@ document.write(`
        "headline": "Typed References",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/references/typed_refs.html",
-       "articleBody": "Typed References# Typed references are strongly typed wrappers over addresses like ActorAddr and PortAddr. These types are used throughout hyperactor\u2019s APIs: as parameters in messages, return values from bind() methods, and elements in routing decisions. They make distributed communication safe, expressive, and statically checked. Overview# There are three main typed reference types: ActorRef\u003cA\u003e: A typed reference to an actor implementing the Referable trait. PortRef\u003cM\u003e: A reference to a reusable mailbox port for messages of type M implementing the RemoteMessage trait. OncePortRef\u003cM\u003e: A reference to a one-shot port for receiving a single response of type M implementing the RemoteMessage trait. These types are used as parameters in messages, return values from bindings, and components of the routing system. ActorRef\u003cA\u003e# ActorRef\u003cA\u003e is a typed reference to an actor of type A. It provides a way to identify and address remote actors that implement Referable. let actor_ref: ActorRef\u003cMyActor\u003e = ActorRef::attest(actor_addr); Note: While ActorRef::attest can construct a reference from an ActorAddr, prefer the ActorRef returned from ActorHandle::bind(), which guarantees that the actor is running and has bound ports. attest bypasses that guarantee. Note: The Referable trait only requires that A provides a static name via Named. It does not impose Send or Sync bounds\u2014those are added at specific call sites that need them. Unlike ActorHandle\u003cA\u003e, an ActorRef is just a reference \u2014 it doesn\u2019t guarantee that the actor is currently running. It\u2019s primarily used for routing and type-safe messaging across Procs. Definition# #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)] pub struct ActorRef\u003cA: Referable\u003e { actor_addr: ActorAddr, phantom: PhantomData\u003cA\u003e, } This type is a thin wrapper around an ActorAddr, with a phantom type A to track which actor interface it refers to. It ensures you can only send messages supported by the actor\u2019s declared RemoteHandles. PortRef\u003cM\u003e# PortRef\u003cM\u003e refers to a mailbox port for messages of type M. let (port, mut receiver) = actor.open_port::\u003cMyMessage\u003e(); let port_ref: PortRef\u003cMyMessage\u003e = port.bind(); This allows the port to be sent across the network or passed into other messages. On the receiving end, PortRef can be used to deliver messages of the expected type. Definition# #[derive(Debug, PartialEq, Eq, PartialOrd, Hash, Ord, Named)] pub struct PortRef\u003cM\u003e { port_addr: PortAddr, reducer_spec: Option\u003cReducerSpec\u003e, streaming_opts: StreamingReducerOpts, phantom: PhantomData\u003cM\u003e, return_undeliverable: bool, unsplit: bool, } As with ActorRef, this is a typed wrapper around an address (PortAddr), carrying a phantom type for safety. It ensures that only messages of type M can be sent through this reference. OncePortRef\u003cM\u003e# A OncePortRef\u003cM\u003e is like a PortRef, but designed for exactly one response. Once used, it cannot be reused or cloned. let (once_port, receiver) = actor.open_once_port::\u003cMyMessage\u003e(); let once_ref = once_port.bind(); These are commonly used for request/response interactions, where a single reply is expected. Definition# #[derive(Debug, PartialEq)] pub struct OncePortRef\u003cM\u003e { port_addr: PortAddr, reducer_spec: Option\u003cReducerSpec\u003e, return_undeliverable: bool, unsplit: bool, phantom: PhantomData\u003cM\u003e, } This wraps a PortAddr with a phantom message type M for type safety. Internally, the system enforces one-time delivery semantics, ensuring the port is closed after receiving a single message.",
+       "articleBody": "Typed References# Typed references are strongly typed wrappers over addresses like ActorAddr and PortAddr. These types are used throughout hyperactor\u2019s APIs: as parameters in messages, return values from bind() methods, and elements in routing decisions. They make distributed communication safe, expressive, and statically checked. Overview# There are four main typed reference types: ActorRef\u003cA\u003e: A typed reference to an actor implementing the Referable trait. PortRef\u003cM\u003e: A reference to a reusable mailbox port for messages of type M implementing the RemoteMessage trait. IdleFlushPortRef\u003cM\u003e: A reusable reply port that applies idle-flush reduction in cast trees. OncePortRef\u003cM\u003e: A reference to a one-shot port for receiving a single response of type M implementing the RemoteMessage trait. These types are used as parameters in messages, return values from bindings, and components of the routing system. ActorRef\u003cA\u003e# ActorRef\u003cA\u003e is a typed reference to an actor of type A. It provides a way to identify and address remote actors that implement Referable. let actor_ref: ActorRef\u003cMyActor\u003e = ActorRef::attest(actor_addr); Note: While ActorRef::attest can construct a reference from an ActorAddr, prefer the ActorRef returned from ActorHandle::bind(), which guarantees that the actor is running and has bound ports. attest bypasses that guarantee. Note: The Referable trait only requires that A provides a static name via Named. It does not impose Send or Sync bounds\u2014those are added at specific call sites that need them. Unlike ActorHandle\u003cA\u003e, an ActorRef is just a reference \u2014 it doesn\u2019t guarantee that the actor is currently running. It\u2019s primarily used for routing and type-safe messaging across Procs. Definition# #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)] pub struct ActorRef\u003cA: Referable\u003e { actor_addr: ActorAddr, phantom: PhantomData\u003cA\u003e, } This type is a thin wrapper around an ActorAddr, with a phantom type A to track which actor interface it refers to. It ensures you can only send messages supported by the actor\u2019s declared RemoteHandles. PortRef\u003cM\u003e# PortRef\u003cM\u003e refers to a mailbox port for messages of type M. let (port, mut receiver) = actor.open_port::\u003cMyMessage\u003e(); let port_ref: PortRef\u003cMyMessage\u003e = port.bind(); This allows the port to be sent across the network or passed into other messages. On the receiving end, PortRef can be used to deliver messages of the expected type. Definition# #[derive(Debug, PartialEq, Eq, PartialOrd, Hash, Ord, Named)] pub struct PortRef\u003cM\u003e { port_addr: PortAddr, reducer_spec: Option\u003cReducerSpec\u003e, streaming_opts: StreamingReducerOpts, phantom: PhantomData\u003cM\u003e, return_undeliverable: bool, unsplit: bool, } As with ActorRef, this is a typed wrapper around an address (PortAddr), carrying a phantom type for safety. It ensures that only messages of type M can be sent through this reference. IdleFlushPortRef\u003cM\u003e# IdleFlushPortRef\u003cM\u003e is a reusable reply port with a distinct serialized representation. Cast splitting recognizes it and installs ReducerMode::IdleFlush at each branch. Create one from a bound PortRef with PortRef::into_idle_flush. OncePortRef\u003cM\u003e# A OncePortRef\u003cM\u003e is like a PortRef, but designed for exactly one response. Once used, it cannot be reused or cloned. let (once_port, receiver) = actor.open_once_port::\u003cMyMessage\u003e(); let once_ref = once_port.bind(); These are commonly used for request/response interactions, where a single reply is expected. Definition# #[derive(Debug, PartialEq)] pub struct OncePortRef\u003cM\u003e { port_addr: PortAddr, reducer_spec: Option\u003cReducerSpec\u003e, return_undeliverable: bool, unsplit: bool, phantom: PhantomData\u003cM\u003e, } This wraps a PortAddr with a phantom message type M for type safety. Internally, the system enforces one-time delivery semantics, ensuring the port is closed after receiving a single message.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

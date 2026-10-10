@@ -1,9 +1,8 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="./" >
 
   <head>
     <meta charset="utf-8" />
@@ -17,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Monarch is a distributed programming framework for PyTorch based on scalable actor messaging. It provides: Remote actors with scalable messaging: Actors are grouped into collections called meshes a..." />
 
-    <title>Monarch 🦋 &#8212; Monarch v0.6.0 documentation</title>
+    <title>Monarch 🦋 &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -37,29 +36,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js"></script>
-    <script src="_static/doctools.js"></script>
-    <script src="_static/sphinx_highlight.js"></script>
-    <script src="_static/design-tabs.js"></script>
+    <script src="_static/documentation_options.js?v=05c9169f"></script>
+    <script src="_static/doctools.js?v=888ff710"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'index';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/index.html" />
@@ -84,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -563,6 +562,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -633,6 +638,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -926,6 +937,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -996,6 +1013,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1251,7 +1274,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="monarch">
-<h1>Monarch 🦋<a class="headerlink" href="#monarch" title="Permalink to this heading">#</a></h1>
+<h1>Monarch 🦋<a class="headerlink" href="#monarch" title="Link to this heading">#</a></h1>
 <p><strong>Monarch</strong> is a distributed programming framework for PyTorch based on scalable
 actor messaging. It provides:</p>
 <ol class="arabic simple">
@@ -1289,7 +1312,7 @@ actor messaging. It provides:</p>
 <li><p>GPU features require Linux with a supported GPU toolchain</p></li>
 </ul>
 <section id="getting-started">
-<h2>Getting Started<a class="headerlink" href="#getting-started" title="Permalink to this heading">#</a></h2>
+<h2>Getting Started<a class="headerlink" href="#getting-started" title="Link to this heading">#</a></h2>
 <p>Here are some suggested steps to get started with Monarch:</p>
 <ol class="arabic simple">
 <li><p><strong>Installation</strong>: Check out the <a class="reference internal" href="installation.html"><span class="doc std std-doc">Install guide</span></a> for getting monarch installed.</p></li>
@@ -1308,16 +1331,29 @@ actor messaging. It provides:</p>
 <div class="toctree-wrapper compound">
 </div>
 </section>
+<section id="citation">
+<h2>Citation<a class="headerlink" href="#citation" title="Link to this heading">#</a></h2>
+<p>If you use Monarch in your research, please cite it as:</p>
+<div class="highlight-bibtex notranslate"><div class="highlight"><pre><span></span><span class="nc">@software</span><span class="p">{</span><span class="nl">monarch2025</span><span class="p">,</span>
+<span class="w">  </span><span class="na">title</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">{Monarch: A distributed programming framework for PyTorch}</span><span class="p">,</span>
+<span class="w">  </span><span class="na">author</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">{{Monarch maintainers and contributors}}</span><span class="p">,</span>
+<span class="w">  </span><span class="na">url</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">{https://github.com/meta-pytorch/monarch}</span><span class="p">,</span>
+<span class="w">  </span><span class="na">license</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">{BSD-3-Clause}</span><span class="p">,</span>
+<span class="w">  </span><span class="na">year</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">{2025}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
 <section id="license">
-<h2>License<a class="headerlink" href="#license" title="Permalink to this heading">#</a></h2>
+<h2>License<a class="headerlink" href="#license" title="Link to this heading">#</a></h2>
 <p>Monarch is BSD-3 licensed, as found in the <a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/main/LICENSE">LICENSE</a> file.</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">Terms</span> <span class="pre">of</span> <span class="pre">Use</span> <span class="pre">&lt;https://opensource.fb.com/legal/terms&gt;</span></code>_</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">Privacy</span> <span class="pre">Policy</span> <span class="pre">&lt;https://opensource.fb.com/legal/privacy&gt;</span></code>_</p></li>
+<li><p><a class="reference external" href="https://opensource.fb.com/legal/terms">Terms of Use</a></p></li>
+<li><p><a class="reference external" href="https://opensource.fb.com/legal/privacy">Privacy Policy</a></p></li>
 </ul>
 </section>
 <section id="community">
-<h2>Community<a class="headerlink" href="#community" title="Permalink to this heading">#</a></h2>
+<h2>Community<a class="headerlink" href="#community" title="Link to this heading">#</a></h2>
 <p>We welcome contributions from the community! If you’re interested in contributing, please:</p>
 <ol class="arabic simple">
 <li><p>Check the <a class="reference external" href="https://github.com/meta-pytorch/monarch">GitHub repository</a></p></li>
@@ -1327,7 +1363,7 @@ actor messaging. It provides:</p>
 </ol>
 </section>
 <section id="examples-and-blogs">
-<h2>Examples and blogs<a class="headerlink" href="#examples-and-blogs" title="Permalink to this heading">#</a></h2>
+<h2>Examples and blogs<a class="headerlink" href="#examples-and-blogs" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p><a class="reference external" href="https://pytorch.org/blog/introducing-pytorch-monarch/">Pytorch blog</a></p></li>
 <li><p><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/main/examples/presentation/presentation.ipynb">Demo notebook</a></p></li>
@@ -1377,6 +1413,7 @@ actor messaging. It provides:</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#getting-started">Getting Started</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#citation">Citation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#license">License</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#community">Community</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#examples-and-blogs">Examples and blogs</a></li>
@@ -1522,7 +1559,7 @@ actor messaging. It provides:</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>
@@ -1551,7 +1588,7 @@ actor messaging. It provides:</p>
        "headline": "Monarch \ud83e\udd8b",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/index.html",
-       "articleBody": "Monarch \ud83e\udd8b# Monarch is a distributed programming framework for PyTorch based on scalable actor messaging. It provides: Remote actors with scalable messaging: Actors are grouped into collections called meshes and messages can be broadcast to all members. Fault tolerance through supervision trees: Actors and processes form a tree and failures propagate up the tree, providing good default error behavior and enabling fine-grained fault recovery. Point-to-point RDMA transfers: cheap registration of any GPU or CPU memory in a process, with the one-sided transfers based on libibverbs Distributed tensors: actors can work with tensor objects sharded across processes Monarch code imperatively describes how to create processes and actors using a simple python API: from monarch.actor import Actor, endpoint, this_host # spawn 8 trainer processes one for each gpu training_procs = this_host().spawn_procs({\"gpus\": 8}) # define the actor to run on each process class Trainer(Actor): @endpoint def train(self, step: int): ... # create the trainers trainers = training_procs.spawn(\"trainers\", Trainer) # tell all the trainers to take a step fut = trainers.train.call(step=0) # wait for all trainers to complete fut.get() Note: Monarch runs on Linux and macOS. The CPU-only tensor engine works on macOS and on Linux hosts without a GPU GPU features require Linux with a supported GPU toolchain Getting Started# Here are some suggested steps to get started with Monarch: Installation: Check out the Install guide for getting monarch installed. Getting Started: The getting started provides an introduction to Monarch\u2019s core API Observe and Diagnose: Start with the Observability guide, then query Distributed Telemetry, open the Monarch Dashboard, or diagnose a live mesh with the Admin TUI. Explore Examples: Review the Examples to see Monarch in action Cookbook: Browse the Cookbook for short, task-oriented recipes. Dive Deeper: Explore the API Documentation for more detailed information: Python API Rust API Deep Understanding of Actors: Gain comprehensive knowledge of Actors, the foundational building blocks of Monarch. License# Monarch is BSD-3 licensed, as found in the LICENSE file. Terms of Use \u003chttps://opensource.fb.com/legal/terms\u003e_ Privacy Policy \u003chttps://opensource.fb.com/legal/privacy\u003e_ Community# We welcome contributions from the community! If you\u2019re interested in contributing, please: Check the GitHub repository Review existing issues or create a new one Discuss your proposed changes before starting work Submit a pull request with your changes Examples and blogs# Pytorch blog Demo notebook DevX Pytorch tutorial Lightning Monarch blog",
+       "articleBody": "Monarch \ud83e\udd8b# Monarch is a distributed programming framework for PyTorch based on scalable actor messaging. It provides: Remote actors with scalable messaging: Actors are grouped into collections called meshes and messages can be broadcast to all members. Fault tolerance through supervision trees: Actors and processes form a tree and failures propagate up the tree, providing good default error behavior and enabling fine-grained fault recovery. Point-to-point RDMA transfers: cheap registration of any GPU or CPU memory in a process, with the one-sided transfers based on libibverbs Distributed tensors: actors can work with tensor objects sharded across processes Monarch code imperatively describes how to create processes and actors using a simple python API: from monarch.actor import Actor, endpoint, this_host # spawn 8 trainer processes one for each gpu training_procs = this_host().spawn_procs({\"gpus\": 8}) # define the actor to run on each process class Trainer(Actor): @endpoint def train(self, step: int): ... # create the trainers trainers = training_procs.spawn(\"trainers\", Trainer) # tell all the trainers to take a step fut = trainers.train.call(step=0) # wait for all trainers to complete fut.get() Note: Monarch runs on Linux and macOS. The CPU-only tensor engine works on macOS and on Linux hosts without a GPU GPU features require Linux with a supported GPU toolchain Getting Started# Here are some suggested steps to get started with Monarch: Installation: Check out the Install guide for getting monarch installed. Getting Started: The getting started provides an introduction to Monarch\u2019s core API Observe and Diagnose: Start with the Observability guide, then query Distributed Telemetry, open the Monarch Dashboard, or diagnose a live mesh with the Admin TUI. Explore Examples: Review the Examples to see Monarch in action Cookbook: Browse the Cookbook for short, task-oriented recipes. Dive Deeper: Explore the API Documentation for more detailed information: Python API Rust API Deep Understanding of Actors: Gain comprehensive knowledge of Actors, the foundational building blocks of Monarch. Citation# If you use Monarch in your research, please cite it as: @software{monarch2025, title = {Monarch: A distributed programming framework for PyTorch}, author = {{Monarch maintainers and contributors}}, url = {https://github.com/meta-pytorch/monarch}, license = {BSD-3-Clause}, year = {2025} } License# Monarch is BSD-3 licensed, as found in the LICENSE file. Terms of Use Privacy Policy Community# We welcome contributions from the community! If you\u2019re interested in contributing, please: Check the GitHub repository Review existing issues or create a new one Discuss your proposed changes before starting work Submit a pull request with your changes Examples and blogs# Pytorch blog Demo notebook DevX Pytorch tutorial Lightning Monarch blog",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

@@ -1,0 +1,54 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Conversion from typed mesh-admin domain types to relational row definitions."><title>monarch_introspection_snapshot::convert - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_introspection_snapshot" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module convert</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../monarch_introspection_snapshot/index.html">monarch_<wbr>introspection_<wbr>snapshot</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module convert</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#conversion-invariants-cv-" title="Conversion invariants (CV-*)">Conversion invariants (CV-*)</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate monarch_<wbr>introspection_<wbr>snapshot</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">monarch_introspection_snapshot</a></div><h1>Module <span>convert</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/monarch_introspection_snapshot/convert.rs.html#9-1278">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Conversion from typed mesh-admin domain types to relational row
+definitions.</p>
+<p>The entry point is <a href="fn.convert_node.html" title="fn monarch_introspection_snapshot::convert::convert_node"><code>convert_node</code></a>, which takes a single
+<a href="../../hyperactor_mesh/introspect/struct.NodePayload.html" title="struct hyperactor_mesh::introspect::NodePayload"><code>NodePayload</code></a> and produces a <a href="struct.ConvertedNode.html" title="struct monarch_introspection_snapshot::convert::ConvertedNode"><code>ConvertedNode</code></a> — a typed
+per-node projection that the BFS capture layer can fold into a
+full snapshot.</p>
+<h2 id="conversion-invariants-cv-"><a class="doc-anchor" href="#conversion-invariants-cv-">§</a>Conversion invariants (CV-*)</h2>
+<ul>
+<li><strong>CV-1 (exactly one node row):</strong> Each <code>NodePayload</code> converts to
+exactly one <a href="../schema/struct.NodeRow.html" title="struct monarch_introspection_snapshot::schema::NodeRow"><code>NodeRow</code></a>.</li>
+<li><strong>CV-2 (exactly one subtype row):</strong> Each <code>NodePayload</code> converts
+to exactly one <a href="enum.NodeKindRow.html" title="enum monarch_introspection_snapshot::convert::NodeKindRow"><code>NodeKindRow</code></a> variant matching
+<code>NodeRow.node_kind</code>. Enforced by the type system.</li>
+<li><strong>CV-3 (failure iff actor with failure_info):</strong> <code>actor_failure</code>
+is <code>Some</code> iff <code>NodeProperties::Actor { failure_info: Some(_) }</code>.</li>
+<li><strong>CV-4 (child sort key = enumeration order):</strong> <code>ChildRow</code> at
+position <code>i</code> in <code>payload.children</code> has <code>child_sort_key = i</code>.</li>
+<li><strong>CV-5 (child classification from parent sets):</strong> <code>is_system</code>
+and <code>is_stopped</code> are derived solely from the parent’s typed
+<code>system_children</code> / <code>stopped_children</code> sets via <code>HashSet</code>
+lookup.</li>
+<li><strong>CV-6 (canonical boundary crossing):</strong> Typed refs cross the SQL
+boundary only via <code>.to_string()</code>. Times cross only via
+[<code>to_micros</code>]. No ad-hoc formatting.</li>
+<li><strong>CV-7 (parent not materialized):</strong> <code>convert_node</code> does not read
+or persist <code>NodePayload.parent</code>. Parenthood in the snapshot
+schema is represented only through <a href="../schema/struct.ChildRow.html" title="struct monarch_introspection_snapshot::schema::ChildRow"><code>ChildRow</code></a> edges.</li>
+<li><strong>CV-8 (inbound-ordering-conditional-row):</strong>
+<code>ConvertedNode::actor_inbound_ordering</code> is <code>Some</code> iff
+<code>NodeProperties::Actor { inbound_ordering: Some(_) }</code>. Other
+<code>NodeProperties</code> variants always emit <code>None</code>. Mirrors CV-3 for
+failures.</li>
+<li><strong>CV-9 (ordering-sessions-returned-only):</strong>
+<code>ConvertedNode::ordering_sessions</code> contains exactly the
+per-session rows in <code>InboundOrdering.sessions</code> (which the
+upstream filters to RETURNED sessions only — IO-2 / IO-6).
+Skipped sessions are reflected only via
+<code>ActorInboundOrderingRow.skipped_session_count</code>; they are NOT
+enumerated as <code>OrderingSessionRow</code>s.</li>
+<li><strong>CV-10 (execution-conditional-row):</strong>
+<code>ConvertedNode::actor_execution</code> is <code>Some</code> iff
+<code>NodeProperties::Actor { execution: Some(_) }</code>. Other
+<code>NodeProperties</code> variants always emit <code>None</code>. Mirrors CV-8.</li>
+<li><strong>CV-11 (active-handlers detail):</strong>
+<code>ConvertedNode::active_handlers</code> contains exactly the per-handler
+rows in <code>Execution.active_handlers</code> — a prefix of the N oldest when
+the rollup is <code>truncated</code>, empty when <code>complete == false</code>. The
+rollup’s <code>active_count</code> stays the authoritative total. Mirrors CV-9.</li>
+</ul>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.ConvertedNode.html" title="struct monarch_introspection_snapshot::convert::ConvertedNode">Converted<wbr>Node</a></dt><dd>Typed per-node projection. Encodes the exact-one-subtype invariant
+(CV-2) in the type system: <code>kind_row</code> is an enum with one variant
+per node kind, and <code>node.node_kind</code> is derived from the same
+match.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.NodeKindRow.html" title="enum monarch_introspection_snapshot::convert::NodeKindRow">Node<wbr>Kind<wbr>Row</a></dt><dd>Exactly one subtype row per converted node.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.convert_node.html" title="fn monarch_introspection_snapshot::convert::convert_node">convert_<wbr>node</a></dt><dd>Convert a single <a href="../../hyperactor_mesh/introspect/struct.NodePayload.html" title="struct hyperactor_mesh::introspect::NodePayload"><code>NodePayload</code></a> into its relational row
+projection.</dd></dl></section></div></main></body></html>
