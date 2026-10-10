@@ -54,15 +54,16 @@ View Monarch's hosted documentation
 
 Monarch provides pre-built wheels that work regardless of what version of
 PyTorch you have installed.  You can get these with `pip` or `uv`:
+For the pinned nightly examples, replace `YYYYMMDD` with the build date.
 
 - **Using PIP**:
   - stable: `pip install torchmonarch`
   - nightly: `pip install --pre torchmonarch`
-  - specific: `pip install torchmonarch==v0.7.0.dev20260713`
+  - specific: `pip install torchmonarch==0.8.0.devYYYYMMDD`
 - **Using UV** - note, you can also just use `uv pip install ...` and match the above pip commands; but the ones below add monarch to your UV project properly.
   - stable: `uv add torchmonarch`
   - nightly: `uv add --prerelease=allow torchmonarch`
-  - specific: `uv add torchmonarch==v0.7.0.dev20260713`
+  - specific: `uv add torchmonarch==0.8.0.devYYYYMMDD`
 
 ### Build and Install from Source
 
@@ -278,7 +279,7 @@ uv build --no-build-isolation --wheel
 # "monarch-wheels" named build context, which the Dockerfile copies from.
 docker build -f Dockerfile.nightly \
   -t $USER/monarch:local-tag \
-  --build-arg PYTORCH_TAG=2.14.0.dev20260713-cuda13.2-cudnn9-runtime \
+  --build-arg PYTORCH_TAG=2.16.0.dev20261010-cuda13.2-cudnn9-runtime \
   --build-context monarch-wheels=dist \
   .
 
