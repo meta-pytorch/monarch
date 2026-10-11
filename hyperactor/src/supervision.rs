@@ -78,6 +78,11 @@ pub struct ActorSupervisionEvent {
     #[serde(skip, default = "local_fence")]
     #[derivative(PartialEq = "ignore")]
     pub(crate) local_fence: Arc<AtomicBool>,
+    /// Direct child whose ownership edge the receiver must remove. This is
+    /// hop-local bookkeeping and is not part of the propagated event.
+    #[serde(skip)]
+    #[derivative(PartialEq = "ignore")]
+    pub(crate) child_to_unlink: Option<ActorAddr>,
 }
 wirevalue::register_type!(ActorSupervisionEvent);
 
@@ -101,6 +106,7 @@ impl ActorSupervisionEvent {
             message_headers,
             labels: Flattrs::new(),
             local_fence: local_fence(),
+            child_to_unlink: None,
         }
     }
 
@@ -112,6 +118,11 @@ impl ActorSupervisionEvent {
 
     pub(crate) fn with_local_fence(mut self, local_fence: Arc<AtomicBool>) -> Self {
         self.local_fence = local_fence;
+        self
+    }
+
+    pub(crate) fn with_child_to_unlink(mut self, child_to_unlink: ActorAddr) -> Self {
+        self.child_to_unlink = Some(child_to_unlink);
         self
     }
 
