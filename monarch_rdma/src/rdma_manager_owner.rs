@@ -1794,7 +1794,7 @@ mod tests {
     /// and unknown reporters resolve nothing (asserted BEFORE the match, so a
     /// regression cannot hide behind the later resolution). The identical report
     /// through the subscriber route is a late duplicate that cannot rewrite the
-    /// cached error. Finally, killing the already-`Failed` source's real
+    /// cached error. Finally, aborting the already-`Failed` source's real
     /// controller (a `Failed` controller terminal) invalidates the overlapping
     /// pending view by proc-view overlap, with the sibling's own subscription
     /// removed. A dropped waiter's drained reply must not bounce into the owner
@@ -1998,22 +1998,22 @@ mod tests {
         );
 
         let ctrl_a_handle = ctrl_a.downcast_handle(client).expect("local A controller");
-        ctrl_a_handle.kill("test: kill A controller")?;
+        ctrl_a_handle.abort("test: abort A controller")?;
         let b_err = timeout(Duration::from_secs(30), rxb.recv())
             .await
-            .expect("B resolved after A-controller kill")?
+            .expect("B resolved after A-controller abort")?
             .expect_err("B fails via overlap from the Failed source");
         assert!(
             matches!(b_err, RdmaInitError::Supervision(_)),
             "B: {b_err:?}"
         );
-        // A is already a `Failed` source; killing its controller drives the
+        // A is already a `Failed` source; aborting its controller drives the
         // Failed-source + Failed-controller cell of RMO-17. A's controller
         // completes `Failed`.
         let a_status = ctrl_a_handle.await;
         assert!(
             matches!(a_status, ActorStatus::Failed(_)),
-            "A controller failed after kill: {a_status:?}",
+            "A controller failed after abort: {a_status:?}",
         );
         assert_eq!(
             probe(&owner_handle, client, view_c.clone()).await.state,
@@ -2294,7 +2294,7 @@ mod tests {
     /// real cleanup path. Cleanly stopping a `Ready` controller invalidates every
     /// still-`Pending` view sharing one of its per-proc managers, and only those;
     /// sibling subscriptions are removed first so the overlap cannot leak through
-    /// the subscriber stream. Killing a disjoint pending view's controller then
+    /// the subscriber stream. Aborting a disjoint pending view's controller then
     /// proves the error-terminal branch (RMO-14). Every terminal input keeps the
     /// owner alive (RMO-4) and leaves a terminal source and disjoint views
     /// unchanged (RMO-2).
@@ -2481,15 +2481,15 @@ mod tests {
             .await?;
         assert_eq!(ra2rx.recv().await?, Ok(()), "A source stays cached Ready");
 
-        // Self-termination path, error-terminal branch: kill D's own controller
+        // Self-termination path, error-terminal branch: abort D's own controller
         // so it completes as `Failed` (a crash, not a clean stop). The owner gates
         // on `is_terminal()`, so `Failed` drives the same resolution A's clean
         // `Stopped` did; D resolves directly (RMO-14).
         let ctrl_d_handle = ctrl_d.downcast_handle(client).expect("local D controller");
-        ctrl_d_handle.kill("test: kill D controller")?;
+        ctrl_d_handle.abort("test: abort D controller")?;
         let d_err = timeout(Duration::from_secs(30), rxd.recv())
             .await
-            .expect("D resolved after its controller was killed")?
+            .expect("D resolved after its controller was aborted")?
             .expect_err("D fails on its own controller termination");
         assert!(
             matches!(d_err, RdmaInitError::Supervision(_)),
@@ -2499,7 +2499,7 @@ mod tests {
         let d_status = ctrl_d_handle.await;
         assert!(
             matches!(d_status, ActorStatus::Failed(_)),
-            "D controller failed after kill: {d_status:?}",
+            "D controller failed after abort: {d_status:?}",
         );
 
         owner_handle.stop("test complete")?;

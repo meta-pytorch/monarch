@@ -170,12 +170,7 @@ impl Actor for DemoChild {
         if let Some(path) = &self.stopped_file {
             write_text(path, reason).await?;
         }
-        this.close();
-        match mode {
-            StopMode::Stop => this.exit(reason)?,
-            StopMode::DrainAndStop => this.exit_after_drain(reason)?,
-        }
-        Ok(())
+        hyperactor::actor::handle_stop(this, mode, reason)
     }
 }
 

@@ -144,7 +144,7 @@ mod tests {
         async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
             let link = self.link.take().unwrap();
             let handle = link.spawn_worker(this).await?;
-            handle.kill("link failed")?;
+            handle.abort("link failed")?;
             Ok(())
         }
 
