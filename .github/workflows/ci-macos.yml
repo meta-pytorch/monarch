@@ -46,6 +46,25 @@ jobs:
     with:
       runner: macos-latest
 
+  # Publish the macOS suites' JUnit XML as its own check + annotations. Distinct
+  # check_name from the Linux CI workflow avoids collisions on the same commit;
+  # comment-mode off keeps the canonical PR comment owned by Linux CI (macOS is
+  # opt-in via ciflow/macos and runs rarely). Omitted from status-check.needs so
+  # reporting never gates merging.
+  publish-test-results-macos:
+    name: Publish Test Results (macOS)
+    needs: [test-cpu-python-macos, test-cpu-rust-macos]
+    if: always()
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+      issues: read
+    uses: ./.github/workflows/publish-test-results.yml
+    with:
+      check-name: Test Results (macOS)
+      comment-mode: 'off'
+
   status-check:
     name: Status Check
     runs-on: ubuntu-latest
