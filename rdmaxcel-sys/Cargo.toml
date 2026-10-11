@@ -6,6 +6,14 @@ edition = "2021"
 license = "MIT"
 links = "rdmaxcel"
 
+[features]
+# Kernel-launched RDMA: compiles the GPU device code (rdmaxcel.cu kernels) and
+# the GPU-Direct memory-registration path, and links the CUDA/HIP runtime.
+# OFF by default so a plain RDMA build links no libamdhip64 and importing
+# monarch never loads/initializes the hip runtime. CPU-initiated RDMA does not
+# need this (the HIP driver API is dlopen'd at runtime).
+cuda = []
+
 [dependencies]
 cxx = "1.0.119"
 serde = { version = "1.0.185", features = ["derive", "rc"] }

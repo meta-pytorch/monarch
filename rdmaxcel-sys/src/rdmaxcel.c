@@ -404,6 +404,7 @@ int poll_cq_with_cache(poll_context_t* ctx, struct ibv_wc* out_wc) {
 // End of Completion Cache Implementation
 // ============================================================================
 
+#ifdef RDMAXCEL_CUDA /* GPU-Direct MMIO registration (kernel-launched RDMA) */
 cudaError_t register_mmio_to_cuda(void* bf, size_t size) {
   cudaError_t result = cudaHostRegister(
       bf,
@@ -412,6 +413,7 @@ cudaError_t register_mmio_to_cuda(void* bf, size_t size) {
           cudaHostRegisterIoMemory);
   return result;
 }
+#endif /* RDMAXCEL_CUDA */
 
 struct ibv_qp* create_qp(
     struct ibv_context* context,
@@ -607,6 +609,7 @@ struct mlx5dv_cq* create_mlx5dv_recv_cq(struct ibv_qp* qp) {
   return dv_cq;
 }
 
+#ifdef RDMAXCEL_CUDA /* GPU-Direct memory registration (kernel-launched RDMA) */
 cudaError_t register_cuda_memory(
     struct mlx5dv_qp* dv_qp,
     struct mlx5dv_cq* dv_recv_cq,
@@ -668,6 +671,7 @@ cudaError_t register_cuda_memory(
 
   return cudaSuccess;
 }
+#endif /* RDMAXCEL_CUDA */
 
 // ============================================================================
 // EFA device detection
