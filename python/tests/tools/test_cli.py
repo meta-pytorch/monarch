@@ -79,6 +79,64 @@ class TestCli(unittest.TestCase):
         self.assertEqual(args.per_host, "gpu=4")
         self.assertFalse(args.run_all)
 
+    @patch("monarch.tools.cli.exec_on_job", return_value=0)
+    def test_exec_python_executable(self, exec_on_job: MagicMock) -> None:
+        args = get_parser().parse_args(
+            [
+                "exec",
+                "--all",
+                "--per-host",
+                "gpu=4",
+                "--python-executable",
+                "/opt/venv/bin/python",
+                "--workdir",
+                "/workspace",
+                "train.py",
+                "--steps",
+                "10",
+            ]
+        )
+        args.func(args)
+        exec_on_job.assert_called_once_with(
+            ["train.py", "--steps", "10"],
+            run_all=True,
+            mesh_name=None,
+            point_str=None,
+            env=None,
+            workdir="/workspace",
+            kill=False,
+            script=None,
+            per_host={"gpu": 4},
+            python_executable="/opt/venv/bin/python",
+        )
+
+    @patch("monarch.tools.cli.exec_on_job", return_value=0)
+    def test_exec_python_executable_module(self, exec_on_job: MagicMock) -> None:
+        args = get_parser().parse_args(
+            [
+                "exec",
+                "--python-executable",
+                "/opt/venv/bin/python",
+                "-m",
+                "trainer",
+                "--",
+                "--help",
+            ]
+        )
+        args.func(args)
+        self.assertEqual(exec_on_job.call_args.args[0], ["-m", "trainer", "--help"])
+        self.assertEqual(
+            exec_on_job.call_args.kwargs["python_executable"], "/opt/venv/bin/python"
+        )
+
+    def test_exec_python_executable_default(self) -> None:
+        args = get_parser().parse_args(["exec", "train.py"])
+        self.assertIsNone(args.python_executable)
+
+    def test_exec_python_executable_requires_value(self) -> None:
+        with self.assertRaises(SystemExit):
+            get_parser().parse_args(["exec", "--python-executable"])
+
     def test_exec_all_and_mesh_mutually_exclusive(self) -> None:
         parser = get_parser()
         with self.assertRaises(SystemExit):

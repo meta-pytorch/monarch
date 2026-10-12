@@ -18,6 +18,10 @@ Quick start:
   # Spawn 4 GPU processes per host and run on all of them
   monarch exec --all --per-host gpu=4 python train.py
 
+  # Run Python inside Monarch processes using a worker-side environment
+  # (that environment must have Monarch installed)
+  monarch exec --python-executable /opt/venv/bin/python train.py
+
   # Run a bash script
   monarch exec --script run.sh
 
@@ -81,6 +85,11 @@ exec options:
 
   -e KEY=VALUE        Extra environment variable (repeatable)
   --workdir DIR       Working directory on workers
+  --python-executable PATH
+                      Worker-side Python used to spawn Monarch processes;
+                      overrides the job's interpreter. Run FILE.py or -m MODULE
+                      directly for native Admin/PySpy inspection of the workload.
+                      Shell commands still run as subprocesses.
   --script FILE       Read bash script from FILE (use '-' for stdin)
   --kill              Kill the job after the command finishes
 

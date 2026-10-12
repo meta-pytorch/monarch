@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 from unittest import mock
 from unittest.mock import MagicMock
 
@@ -513,6 +514,94 @@ class TestExecOnJobSignature(unittest.TestCase):
         from monarch._src.job.job import BashActor
 
         self.assertTrue(hasattr(BashActor, "run_streaming"))
+
+
+class TestExecPythonExecutable(unittest.TestCase):
+    @mock.patch("monarch._src.job.job.exec_command")
+    @mock.patch("monarch._src.tools.commands.load_current_job")
+    def test_override_applies_to_selected_meshes(
+        self, load_job: MagicMock, execute: MagicMock
+    ) -> None:
+        cases: list[tuple[dict[str, Any], list[str]]] = [
+            ({}, ["workers"]),
+            ({"point_str": "hosts=1"}, ["workers"]),
+            ({"mesh_name": "other"}, ["other"]),
+            ({"run_all": True}, ["workers", "other"]),
+        ]
+        for targeting, selected in cases:
+            with self.subTest(targeting=targeting):
+                execute.reset_mock()
+                hosts = {name: MagicMock() for name in ("workers", "other")}
+                job = load_job.return_value
+                job.state.return_value._hosts = hosts
+                job._components.mounts.python_executable_for_mesh.reset_mock()
+                execute.return_value.get.return_value = 0
+                with mock.patch(
+                    "monarch._src.tools.commands._output_dir_for_job",
+                    return_value=("/tmp/output", "output"),
+                ):
+                    rc = commands.exec_on_job(
+                        ["train.py"],
+                        python_executable="/opt/venv/bin/python",
+                        per_host={"gpu": 4},
+                        env=["PATH=/custom/bin", "FOO=bar"],
+                        workdir="/workspace",
+                        **targeting,
+                    )
+                self.assertEqual(rc, 0)
+                self.assertEqual(execute.call_count, len(selected))
+                for name in hosts:
+                    if name in selected:
+                        hosts[name].with_python_executable.assert_called_once_with(
+                            "/opt/venv/bin/python"
+                        )
+                    else:
+                        hosts[name].with_python_executable.assert_not_called()
+                for call, name in zip(execute.call_args_list, selected):
+                    self.assertIs(
+                        call.args[0], hosts[name].with_python_executable.return_value
+                    )
+                    self.assertEqual(call.args[1], ["train.py"])
+                    self.assertEqual(call.kwargs["per_host"], {"gpu": 4})
+                    self.assertEqual(call.kwargs["workdir"], "/workspace")
+                    self.assertEqual(
+                        call.kwargs["env"],
+                        {"PATH": "/opt/venv/bin:/custom/bin", "FOO": "bar"},
+                    )
+                job._components.mounts.python_executable_for_mesh.assert_not_called()
+
+    @mock.patch("monarch._src.job.job.exec_command")
+    @mock.patch("monarch._src.tools.commands.load_current_job")
+    def test_default_keeps_job_interpreter(
+        self, load_job: MagicMock, execute: MagicMock
+    ) -> None:
+        host = MagicMock()
+        job = load_job.return_value
+        job.state.return_value._hosts = {"workers": host}
+        job._components.mounts.python_executable_for_mesh.return_value = (
+            "/job/venv/bin/python"
+        )
+        execute.return_value.get.return_value = 0
+        self.assertEqual(
+            commands.exec_on_job(["train.py"], env=["PATH=/custom/bin"]), 0
+        )
+        host.with_python_executable.assert_not_called()
+        self.assertIs(execute.call_args.args[0], host)
+        self.assertEqual(
+            execute.call_args.kwargs["env"]["PATH"], "/job/venv/bin:/custom/bin"
+        )
+
+    @mock.patch("monarch._src.job.job.exec_command")
+    @mock.patch("monarch._src.tools.commands.load_current_job")
+    def test_spawn_failure_is_not_hidden(
+        self, load_job: MagicMock, execute: MagicMock
+    ) -> None:
+        host = MagicMock()
+        job = load_job.return_value
+        job.state.return_value._hosts = {"workers": host}
+        execute.return_value.get.side_effect = RuntimeError("Python bootstrap failed")
+        with self.assertRaisesRegex(RuntimeError, "Python bootstrap failed"):
+            commands.exec_on_job(["train.py"], python_executable="/missing/python")
 
 
 class TestShellOnJob(unittest.TestCase):

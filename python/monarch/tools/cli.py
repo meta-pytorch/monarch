@@ -236,6 +236,15 @@ class ExecCmd:
             help="Working directory on workers",
         )
         subparser.add_argument(
+            "--python-executable",
+            type=str,
+            default=None,
+            metavar="PATH",
+            help="Python executable on workers used to spawn Monarch processes. "
+            "Run FILE.py or -m MODULE directly to execute Python in those processes. "
+            "The environment must have Monarch installed; overrides the job's interpreter.",
+        )
+        subparser.add_argument(
             "--kill",
             action="store_true",
             default=False,
@@ -287,6 +296,7 @@ class ExecCmd:
             kill=args.kill,
             script=args.script,
             per_host=per_host,
+            python_executable=args.python_executable,
         )
         if rc != 0:
             sys.exit(rc)

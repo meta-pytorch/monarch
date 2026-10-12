@@ -639,6 +639,7 @@ def exec_on_job(
     kill: bool = False,
     script: Optional[str] = None,
     per_host: Optional[dict[str, int]] = None,
+    python_executable: Optional[str] = None,
 ) -> int:
     """Load the current job and execute a command on its workers.
 
@@ -647,6 +648,12 @@ def exec_on_job(
     - ``mesh_name``: named mesh, all ranks → output redirected to files
     - ``point_str``: ``"dim=N,dim=N"`` coordinate on first mesh → streamed
     - none of the above (``--one``): rank 0 of first mesh → streamed
+
+    ``python_executable`` selects the worker-side interpreter used to spawn
+    Monarch processes, overriding any interpreter configured by the job.
+    Pass a ``.py`` file or ``-m MODULE`` to execute Python in those processes;
+    shell commands still run as subprocesses. The interpreter's environment
+    must have Monarch installed.
 
     Returns the process exit code (max across targeted ranks).
     """
@@ -702,10 +709,14 @@ def exec_on_job(
     # ── Execute ────────────────────────────────────────────────────────────
     max_rc = 0
     for name, host_mesh in target_meshes:
-        # If a python_exe was set for this mesh's remote mount, prepend its
-        # directory to PATH so commands like "python" resolve to the right one.
+        # Use --python-executable if given, else the mesh's configured python_exe.
+        # Prepend its directory to PATH so "python" resolves to the same one.
         mesh_env = dict(env_dict)
-        exe = job._components.mounts.python_executable_for_mesh(name)
+        exe = python_executable
+        if exe is not None:
+            host_mesh = host_mesh.with_python_executable(exe)
+        else:
+            exe = job._components.mounts.python_executable_for_mesh(name)
         if exe is not None:
             bin_dir = os.path.dirname(exe)
             existing_path = mesh_env.get("PATH", os.environ.get("PATH", ""))

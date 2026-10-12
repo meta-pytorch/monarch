@@ -208,6 +208,24 @@ def test_exec_python_script(env):
     assert "hello_from_script" in result.stdout
 
 
+def test_exec_python_executable(env):
+    worker_python = env / "worker-python"
+    worker_python.symlink_to(sys.executable)
+    script = env / "interpreter.py"
+    script.write_text("import sys; print(sys.executable); print(sys.argv[1])\n")
+    _apply(env, "a")
+    result = _cli(
+        env,
+        "exec",
+        "--python-executable",
+        str(worker_python),
+        str(script),
+        "selected_interpreter",
+    )
+    assert str(worker_python) in result.stdout
+    assert "selected_interpreter" in result.stdout
+
+
 def test_exec_python_module(env, tmp_path):
     (tmp_path / "mymod.py").write_text("import sys; print(sys.argv[1])\n")
     _apply(env, "a")
