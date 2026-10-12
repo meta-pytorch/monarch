@@ -34,10 +34,10 @@ Spawn a ProcMesh onto this host mesh.
 
 Parameters:
 
-- **per_host** ([*Dict*](https://docs.python.org/3/library/typing.html#typing.Dict)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*,*[*int*](https://docs.python.org/3/library/functions.html#int)*]**|**None*) - shape of procs per host, e.g. `{"gpus": 4}`.
+- **per_host** ([*Dict*](https://docs.python.org/3/library/typing.html#typing.Dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*int*](https://docs.python.org/3/builtins/functions.html#int)*]**|**None*) - shape of procs per host, e.g. `{"gpus": 4}`.
 - **bootstrap** ([*Callable*](https://docs.python.org/3/library/typing.html#typing.Callable)*[**[**]**,**None**]**|*[*Callable*](https://docs.python.org/3/library/typing.html#typing.Callable)*[**[**]**,*[*Awaitable*](https://docs.python.org/3/library/typing.html#typing.Awaitable)*[**None**]**]**|**None*) - optional setup callable run on each proc.
-- **name** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)*|**None*) - optional name for the proc mesh.
-- **proc_bind** ([*list*](https://docs.python.org/3/library/stdtypes.html#list)*[*[*dict*](https://docs.python.org/3/library/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*]**]**|**None*) - optional per-process CPU/NUMA binding config.
+- **name** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - optional name for the proc mesh.
+- **proc_bind** ([*list*](https://docs.python.org/3/builtins/stdtypes.html#list)*[*[*dict*](https://docs.python.org/3/builtins/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*]**]**|**None*) - optional per-process CPU/NUMA binding config.
 Length must equal `math.prod(per_host.values())`.
 Each dict maps binding keys (`cpunodebind`,
 `membind`, `physcpubind`, `cpus`) to values.
@@ -49,7 +49,7 @@ bootstrap command per coordinate.
 
 *property*region*: Region*
 
-*property*stream_logs*: [bool](https://docs.python.org/3/library/functions.html#bool)*
+*property*stream_logs*: [bool](https://docs.python.org/3/builtins/functions.html#bool)*
 
 with_python_executable(*python_executable*)[[source]](../_modules/monarch/_src/actor/host_mesh.html#HostMesh.with_python_executable)
 
@@ -59,7 +59,7 @@ Python executable when they call `this_host().spawn_procs(...)`.
 
 Parameters:
 
-**python_executable** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Path to the Python executable to use.
+**python_executable** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Path to the Python executable to use.
 
 Returns:
 
@@ -69,7 +69,7 @@ Return type:
 
 *HostMesh*
 
-*property*is_fake_in_process*: [bool](https://docs.python.org/3/library/functions.html#bool)*
+*property*is_fake_in_process*: [bool](https://docs.python.org/3/builtins/functions.html#bool)*
 
 shutdown()[[source]](../_modules/monarch/_src/actor/host_mesh.html#HostMesh.shutdown)
 
@@ -116,8 +116,8 @@ Sync local code changes to the remote hosts.
 Parameters:
 
 - **workspace** (*Workspace*) - The workspace to sync.
-- **conda** ([*bool*](https://docs.python.org/3/library/functions.html#bool)) - If True, also sync the currently activated conda env.
-- **auto_reload** ([*bool*](https://docs.python.org/3/library/functions.html#bool)) - If True, automatically reload the workspace on changes.
+- **conda** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - If True, also sync the currently activated conda env.
+- **auto_reload** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - If True, automatically reload the workspace on changes.
 
 *property*initialized*: Future[[Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]]*
 
@@ -147,7 +147,7 @@ size(*dim=None*)
 Returns the number of elements (total) of the subset of mesh asked for.
 If dims is None, returns the total number of devices in the mesh.
 
-*property*sizes*: [dict](https://docs.python.org/3/library/stdtypes.html#dict)[[str](https://docs.python.org/3/library/stdtypes.html#str), [int](https://docs.python.org/3/library/functions.html#int)]*
+*property*sizes*: [dict](https://docs.python.org/3/builtins/stdtypes.html#dict)[[str](https://docs.python.org/3/builtins/stdtypes.html#str), [int](https://docs.python.org/3/builtins/functions.html#int)]*
 
 slice(***kwargs*)
 
@@ -260,7 +260,7 @@ size(*dim=None*)
 Returns the number of elements (total) of the subset of mesh asked for.
 If dims is None, returns the total number of devices in the mesh.
 
-*property*sizes*: [dict](https://docs.python.org/3/library/stdtypes.html#dict)[[str](https://docs.python.org/3/library/stdtypes.html#str), [int](https://docs.python.org/3/library/functions.html#int)]*
+*property*sizes*: [dict](https://docs.python.org/3/builtins/stdtypes.html#dict)[[str](https://docs.python.org/3/builtins/stdtypes.html#str), [int](https://docs.python.org/3/builtins/functions.html#int)]*
 
 slice(***kwargs*)
 
@@ -286,7 +286,7 @@ existing actor.
 
 Parameters:
 
-- **name** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - The unique name of the actor, used as a key for retrieval.
+- **name** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - The unique name of the actor, used as a key for retrieval.
 - **Class** (*Type*) - The class of the actor to spawn. Must be a subclass of Actor.
 - ***args** (*Any*) - Positional arguments to pass to the actor constructor.
 - ****kwargs** (*Any*) - Keyword arguments to pass to the actor constructor.
@@ -314,9 +314,13 @@ monarch.actor.default_bootstrap_cmd()[[source]](../_modules/monarch/_src/actor/h
 
 Get the default bootstrap command for the current environment.
 
-Returns a BootstrapCommand configured with the current Python executable
-and environment. This can be used as a base for customization with
-`with_env()` or by modifying its attributes directly.
+Returns a BootstrapCommand configured with the current Python executable.
+Spawned procs inherit the environment of the host that spawns them; the
+command does not carry the caller's environment. This can be used as a
+base for customization with `with_env()` or by modifying its attributes
+directly. In `with_env()`, a `None` value removes a variable from the
+inherited environment; set `inherit_env = False` to start from an empty
+environment instead.
 
 Returns:
 
@@ -325,16 +329,6 @@ The default bootstrap command.
 Return type:
 
 BootstrapCommand
-
-monarch.actor.hosts_from_config(*name*)[[source]](../_modules/monarch/_src/actor/host_mesh.html#hosts_from_config)
-
-Get the host mesh 'name' from the monarch configuration for the project.
-
-This config can be modified so that the same code can create meshes from scheduler sources,
-and different sizes etc.
-
-WARNING: This function is a standin so that our getting_started example code works. The real implementation
-needs an RFC design.
 
 monarch.actor.enable_transport(*transport*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#enable_transport)
 
@@ -379,9 +373,17 @@ its public API with `@endpoint`. Actors are spawned onto a `ProcMesh`
 are invoked remotely through the messaging adverbs. Each actor processes its
 messages sequentially and participates in the supervision tree.
 
+An endpoint that calls `os.fork()` must not let the child return or
+await into the copied event loop; the child must end in `os._exit()` or
+`os.exec*()`, and under asyncio's default event-loop policy may run a
+fresh loop with `asyncio.run()` first (WF-3 in
+`monarch/_src/actor/bootstrap.py`).
+
 *property*logger*: [Logger](https://docs.python.org/3/library/logging.html#logging.Logger)*
 
 *property*initialized*: [Any](https://docs.python.org/3/library/typing.html#typing.Any)*
+
+stop(*reason='stopped by client'*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Actor.stop)
 
 *property*extent*: Extent*
 
@@ -405,7 +407,7 @@ size(*dim=None*)
 Returns the number of elements (total) of the subset of mesh asked for.
 If dims is None, returns the total number of devices in the mesh.
 
-*property*sizes*: [dict](https://docs.python.org/3/library/stdtypes.html#dict)[[str](https://docs.python.org/3/library/stdtypes.html#str), [int](https://docs.python.org/3/library/functions.html#int)]*
+*property*sizes*: [dict](https://docs.python.org/3/builtins/stdtypes.html#dict)[[str](https://docs.python.org/3/builtins/stdtypes.html#str), [int](https://docs.python.org/3/builtins/functions.html#int)]*
 
 slice(***kwargs*)
 
@@ -424,17 +426,17 @@ The size of 'pp' is specified and the dimension size is derived from it:
 
 Dimensions not specified will remain unchanged.
 
-monarch.actor.endpoint(*method: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Concatenate](https://docs.python.org/3/library/typing.html#typing.Concatenate)[[Any](https://docs.python.org/3/library/typing.html#typing.Any), P]], [Awaitable](https://docs.python.org/3/library/typing.html#typing.Awaitable)[R]]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R][[source]](../_modules/monarch/_src/actor/endpoint.html#endpoint)
+monarch.actor.endpoint(*method: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Concatenate](https://docs.python.org/3/library/typing.html#typing.Concatenate)[[Any](https://docs.python.org/3/library/typing.html#typing.Any), P]], [Awaitable](https://docs.python.org/3/library/typing.html#typing.Awaitable)[R]]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointProperty[P, R][[source]](../_modules/monarch/_src/actor/endpoint.html#endpoint)
 
-monarch.actor.endpoint(*method: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Concatenate](https://docs.python.org/3/library/typing.html#typing.Concatenate)[[Any](https://docs.python.org/3/library/typing.html#typing.Any), P]], R]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R]
+monarch.actor.endpoint(*method: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Concatenate](https://docs.python.org/3/library/typing.html#typing.Concatenate)[[Any](https://docs.python.org/3/library/typing.html#typing.Any), P]], R]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointProperty[P, R]
 
-monarch.actor.endpoint(***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointIfy
+monarch.actor.endpoint(***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointIfy
 
-monarch.actor.endpoint(*method: Callable[Concatenate[Any, 'Port[R]', P], Awaitable[[None](https://docs.python.org/3/library/constants.html#None)]]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R]
+monarch.actor.endpoint(*method: Callable[Concatenate[Any, 'Port[R]', P], Awaitable[[None](https://docs.python.org/3/builtins/constants.html#None)]]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointProperty[P, R]
 
-monarch.actor.endpoint(*method: Callable[Concatenate[Any, 'Port[R]', P], [None](https://docs.python.org/3/library/constants.html#None)]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R]
+monarch.actor.endpoint(*method: Callable[Concatenate[Any, 'Port[R]', P], [None](https://docs.python.org/3/builtins/constants.html#None)]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointProperty[P, R]
 
-monarch.actor.endpoint(***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → PortedEndpointIfy
+monarch.actor.endpoint(***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → PortedEndpointIfy
 
 Mark an `Actor` method as an endpoint callable from other actors.
 
@@ -498,6 +500,12 @@ methods on the same target actor, the first endpoint body starts before the
 second. This is only a start-order guarantee: the first endpoint runs until
 its first `await`, not to completion, before the second starts.
 
+While an actor has queued messages, it periodically yields to its event
+loop, so queued concurrent calls start without waiting for one another and
+other ready tasks on the loop are not starved. How often it yields is an
+implementation detail and may change. This does not limit how long one
+endpoint body runs before its first `await`.
+
 If you mix `@concurrent_endpoint` with normal `@endpoint` methods, a
 normal endpoint that follows a concurrent endpoint may run before the
 concurrent endpoint body has started.
@@ -535,6 +543,15 @@ adverbs that send a message to the actor(s) and control how responses are
 returned: `call`, `call_one`, `choose`, `stream`, `broadcast`,
 and `rref`.
 
+choose(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.choose)
+
+Sends a message to a randomly selected actor and waits for its result.
+
+Each call independently selects an actor uniformly at random. Selection
+does not account for actor load, so calls are balanced only across many
+calls. Use `call_one` on a slice of the mesh when placement must be
+deterministic.
+
 call_one(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.call_one)
 
 call(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.call)
@@ -556,20 +573,14 @@ delivery of the message.
 
 rref(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.rref)
 
-*class*monarch.actor.Future(***, *coro*)[[source]](../_modules/monarch/_src/actor/future.html#Future)
+*class*monarch.actor.Future[[source]](../_modules/monarch/_src/actor/future.html#Future)
 
 Bases: [`Generic`](https://docs.python.org/3/library/typing.html#typing.Generic)[`R`]
 
-The Future class wraps a PythonTask, which is a handle to a asyncio coroutine running on the Tokio event loop.
-These coroutines do not use asyncio or asyncio.Future; instead, they are executed directly on the Tokio runtime.
-The Future class provides both synchronous (.get()) and asynchronous APIs (await) for interacting with these tasks.
+A result returned by Monarch asynchronous operations.
 
-Parameters:
-
-**coro** (*Coroutine**[**Any**,**Any**,**R**]**|**PythonTask**[**R**]*) - The coroutine or PythonTask representing
-the asynchronous computation.
-
-__init__(***, *coro*)[[source]](../_modules/monarch/_src/actor/future.html#Future.__init__)
+Use `get()` from synchronous code. On an asyncio loop, use `await` or
+`as_asyncio()`. Future objects cannot be constructed directly.
 
 get(*timeout=None*)[[source]](../_modules/monarch/_src/actor/future.html#Future.get)
 
@@ -582,7 +593,12 @@ avoid using this method if possible. Instead, use as_asyncio() (or await). This 
 within an active event loop, it blocks synchronously and does not yield control. That may degrade performance
 by preventing other tasks from running, and can potentially cause deadlocks if this future depends on them.
 
-A timeout never consumes the Future: on TimeoutError the underlying task keeps running, so a later get()/await still observes its result.
+Except for a Future returned by a @returns_future function, a timeout never consumes the Future: on TimeoutError the underlying task keeps running, so a later get()/await still observes its result.
+
+For a Future returned by a @returns_future function, the first get() runs the body on the calling thread's event loop, as asyncio.run does.
+If it times out or is interrupted, the body is cancelled and the Future fails with TimeoutError or CancelledError; nothing resumes it.
+Inside running asyncio code, get() runs the body the same way on a short-lived helper thread and waits for it;
+inside a body that a get() is driving, it raises WouldBlockRuntime.
 
 examples:
 
@@ -630,7 +646,7 @@ exception(*timeout=None*)[[source]](../_modules/monarch/_src/actor/future.html#F
 
 *class*monarch.actor.ValueMesh(*shape*, *values*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#ValueMesh)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 get(*rank*)
 
@@ -642,7 +658,7 @@ Get the value at the given coordinates.
 
 Parameters:
 
-**kwargs** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Coordinates to get the value at.
+**kwargs** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Coordinates to get the value at.
 
 Returns:
 
@@ -650,7 +666,7 @@ Value at the given coordinate.
 
 Raises:
 
-[**KeyError**](https://docs.python.org/3/library/exceptions.html#KeyError) - If invalid coordinates are provided.
+[**KeyError**](https://docs.python.org/3/builtins/exceptions.html#KeyError) - If invalid coordinates are provided.
 
 Return type:
 
@@ -698,7 +714,7 @@ size(*dim=None*)
 Returns the number of elements (total) of the subset of mesh asked for.
 If dims is None, returns the total number of devices in the mesh.
 
-*property*sizes*: [dict](https://docs.python.org/3/library/stdtypes.html#dict)[[str](https://docs.python.org/3/library/stdtypes.html#str), [int](https://docs.python.org/3/library/functions.html#int)]*
+*property*sizes*: [dict](https://docs.python.org/3/builtins/stdtypes.html#dict)[[str](https://docs.python.org/3/builtins/stdtypes.html#str), [int](https://docs.python.org/3/builtins/functions.html#int)]*
 
 slice(***kwargs*)
 
@@ -719,7 +735,7 @@ Dimensions not specified will remain unchanged.
 
 *class*monarch.actor.ActorError(*exception*, *message='A remote actor call has failed.'*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#ActorError)
 
-Bases: [`Exception`](https://docs.python.org/3/library/exceptions.html#Exception)
+Bases: [`Exception`](https://docs.python.org/3/builtins/exceptions.html#Exception)
 
 Deterministic problem with the user's code.
 For example, an OOM resulting in trying to allocate too much GPU memory, or violating
@@ -764,6 +780,19 @@ accumulate(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/actor_m
 
 Accumulate the result of the endpoint invocation.
 
+The endpoint invocation starts when this method is called; a failure to
+start it raises here. The fold remains lazy and begins when the returned
+Future is first observed.
+
+An `await` runs the fold on the awaiting loop. `.get()` runs it on
+a private loop on the calling thread. This keeps a sync actor's endpoint
+and nested Monarch Future work on its driver thread, without creating a
+helper thread. Inside an `@returns_future` body, nested Futures must
+instead be awaited; calling `.get()` raises `WouldBlockRuntime`.
+Other code that calls `.get()` from a thread already running an event
+loop warns and falls back to a short-lived helper thread, while still
+blocking the caller's loop.
+
 Parameters:
 
 - **args** (*~P*) - Arguments to pass to the endpoint.
@@ -791,7 +820,7 @@ Parameters:
 
 - **endpoint** (*Endpoint**[**~P**,**R**]*) - Endpoint to invoke.
 - **args** ([*Tuple*](https://docs.python.org/3/library/typing.html#typing.Tuple)*[*[*Any*](https://docs.python.org/3/library/typing.html#typing.Any)*,**...**]*) - Arguments to pass to the endpoint.
-- **kwargs** ([*Dict*](https://docs.python.org/3/library/typing.html#typing.Dict)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*,*[*Any*](https://docs.python.org/3/library/typing.html#typing.Any)*]*) - Keyword arguments to pass to the endpoint.
+- **kwargs** ([*Dict*](https://docs.python.org/3/library/typing.html#typing.Dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*Any*](https://docs.python.org/3/library/typing.html#typing.Any)*]*) - Keyword arguments to pass to the endpoint.
 - **port** (*Port**|**None*) - Handle to send the response to.
 - **selection** ([*Literal*](https://docs.python.org/3/library/typing.html#typing.Literal)*[**'all'**,**'choose'**]*) - Selection query representing a subset of the mesh.
 
@@ -811,16 +840,12 @@ for sending and receiving messages of type R.
 
 *class*monarch.actor.Port(*port_ref*, *instance*, *rank*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Port)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 A port that sends messages to a remote receiver.
 Wraps an EitherPortRef with the actor instance needed for sending.
 
 send(*obj*)
-
-send_message(*message*)
-
-*async*resolve_and_send(*result*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Port.resolve_and_send)
 
 exception(*e*)
 
@@ -838,16 +863,18 @@ recv()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#PortReceiver.rec
 
 ranked()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#PortReceiver.ranked)
 
-monarch.actor.as_endpoint(*not_an_endpoint: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*) → Endpoint[P, R][[source]](../_modules/monarch/_src/actor/actor_mesh.html#as_endpoint)
+monarch.actor.as_endpoint(*not_an_endpoint: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*) → Endpoint[P, R][[source]](../_modules/monarch/_src/actor/actor_mesh.html#as_endpoint)
 
-monarch.actor.as_endpoint(*not_an_endpoint: Callable[Concatenate['PortProtocol[R]', P], [None](https://docs.python.org/3/library/constants.html#None)]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*) → Endpoint[P, R]
+monarch.actor.as_endpoint(*not_an_endpoint: Callable[Concatenate['PortProtocol[R]', P], [None](https://docs.python.org/3/builtins/constants.html#None)]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*) → Endpoint[P, R]
 
 Treat an actor method that is not an `@endpoint` as one.
 
 Use this to call a plain method of a spawned actor through the messaging
 adverbs when the method was not decorated with `@endpoint`, for example
 `as_endpoint(actor.method).call(...)`. The options match those of
-`endpoint`.
+`endpoint`. On an actor whose endpoints are all `def`, the method must
+be a plain `def` as well: the actor has no event loop, so an `async def`
+method fails with `TypeError`.
 
 Parameters:
 
@@ -863,11 +890,11 @@ An `Endpoint` exposing the messaging adverbs.
 
 Raises:
 
-[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If `not_an_endpoint` is not a method of a spawned actor.
+[**ValueError**](https://docs.python.org/3/builtins/exceptions.html#ValueError) - If `not_an_endpoint` is not a method of a spawned actor.
 
 # Context API
 
-Use these functions to look up what actor is running the currently executing code.
+Use these functions to identify the actor associated with the currently executing code. Inside an endpoint, this is the worker actor. In ordinary controller code, it is the controller's root client actor.
 
 monarch.actor.current_actor_name()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#current_actor_name)
 
@@ -889,29 +916,16 @@ Return the `Context` for the currently executing actor.
 
 Call this from within an endpoint to inspect the running actor and the
 current message's position in the mesh. Outside an actor (on the client) it
-returns the root client context.
+returns the root client context. Raises `WouldBlockRuntime` rather than
+attempting fresh root-client bootstrap from inside a Tokio runtime; an
+already-initialized client can still be reused there.
 
-monarch.actor.shutdown_context()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#shutdown_context)
-
-Shutdown global actor context resources.
-
-Idempotent: subsequent calls return an immediately-resolved future.
-This is safe to call both explicitly and from atexit.
-
-Returns:
-
-A future that completes when shutdown is
-
-finished. Call with .get() to wait for
-completion.
-
-Return type:
-
-Future[None]
+`shutdown_context()` always targets the process's client; it does not
+use this function to select an actor to stop.
 
 *class*monarch.actor.Context[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Context)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 actor_instance
 
@@ -946,7 +960,7 @@ values() → an object providing a view on D's values
 
 *class*monarch.actor.Extent(*labels*, *sizes*)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 keys()
 
@@ -954,13 +968,83 @@ nelements
 
 region
 
+# Client Shutdown
+
+Call `shutdown_context()` from the user's Python controller program when it has finished using Monarch. This ends the lifetime of that process's client; the client cannot be restarted in the same process. `context()` is not used to select an actor to stop: the target is the process's client. It is not a shutdown callback to run once per host in a HostMesh. Use a mesh's own stop or shutdown method when you want to stop only that mesh and continue using the client.
+
+Monarch registers client shutdown automatically for normal Python interpreter exit. Call it explicitly when you need to wait for shutdown before continuing or exiting:
+
+```
+from monarch.actor import shutdown_context
+
+# After the controller has finished all Monarch work:
+shutdown = shutdown_context()
+shutdown.get(timeout=30)
+```
+
+An async controller can await the returned Future instead. Keep the Future from the call that starts shutdown: later calls return already-completed Futures and do not wait for an earlier shutdown still in progress. Dropping the first Future does not cancel native shutdown.
+
+This is not enforced by a controller-only caller check. In a worker process without an initialized client, the call does nothing and does not create a client. A worker's actor context is not a client. If a worker separately initializes its own client, `shutdown_context()` applies to that client.
+
+monarch.actor.shutdown_context(*host_timeout=None*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#shutdown_context)
+
+Shut down this Python process's Monarch client.
+
+Call this from the user's Python controller program when it has finished
+using Monarch, not to stop one actor or mesh. Monarch also calls it
+automatically at normal Python interpreter exit. Once shut down, the
+client cannot be restarted in the same process. This does not exit the
+controller program.
+
+Monarch creates one root client actor for the user's Python controller
+process. The controller's meshes share that root client; it is not created
+once per host or worker. The root client runs on a local Monarch host.
+That host may also have user procs created through
+`this_host().spawn_procs(...)`. This shuts down those procs, then stops
+the root client, attempts its final flush and closes the transports.
+It does not send a shutdown request to each host in an arbitrary HostMesh.
+
+This uses the process's initialized client, not the current actor returned
+by `context()`. There is no controller-only caller check. A worker with
+no initialized client gets an already-completed future without creating
+a client or stopping its current actor. If a worker separately initializes
+its own client, this operation applies to that client. A no-client call
+does not prevent a client created later from being shut down.
+
+With an initialized client, the first call starts shutdown before it
+returns. Keep that returned future and call `.get()` or await it if you
+need to wait for completion. Dropping it does not cancel native shutdown.
+Later calls return already-completed futures, even while the first
+shutdown is still running; calling again is not a way to wait for it.
+
+Parameters:
+
+**host_timeout** ([*float*](https://docs.python.org/3/builtins/functions.html#float)*|**None*) - Timeout in seconds passed to the local host's user-proc
+shutdown. The host and root client's final gateway flushes are
+also capped by this value. Defaults to 10 seconds. This is not an
+overall time limit on waiting for shutdown to finish. A supplied
+timeout must be finite, non-negative and less than 2**64 seconds;
+an invalid timeout does not claim shutdown.
+
+Returns:
+
+Reports completion for the call that starts shutdown.
+
+Already complete if no client exists or shutdown was already
+claimed. Final flushes are best-effort; completion does not
+guarantee that every message was delivered.
+
+Return type:
+
+Future[None]
+
 # Supervision
 
 Types used for error handling and supervision in actor meshes.
 
 *class*monarch.actor.MeshFailure
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 mesh
 
@@ -1004,7 +1088,7 @@ Utilities for tracing actor execution.
 
 monarch.actor.traced(*fn: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]*) → [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R][[source]](../_modules/monarch/_src/actor/telemetry.html#traced)
 
-monarch.actor.traced(***, *name: [str](https://docs.python.org/3/library/stdtypes.html#str)*) → [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]], [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]]
+monarch.actor.traced(***, *name: [str](https://docs.python.org/3/builtins/stdtypes.html#str)*) → [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]], [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]]
 
 Decorator that wraps a function in a telemetry span.
 

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["LocalStateBrokerMessage"],"struct":["BrokerId","LocalState","LocalStateBrokerActor"]};

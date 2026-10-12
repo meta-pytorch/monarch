@@ -51,12 +51,26 @@ Here are some suggested steps to get started with Monarch:
 - [Rust API](rust-api.html)
 7. **Deep Understanding of Actors**: Gain comprehensive knowledge of [Actors](actors.html), the foundational building blocks of Monarch.
 
+## Citation
+
+If you use Monarch in your research, please cite it as:
+
+```
+@software{monarch2025,
+ title = {Monarch: A distributed programming framework for PyTorch},
+ author = {{Monarch maintainers and contributors}},
+ url = {https://github.com/meta-pytorch/monarch},
+ license = {BSD-3-Clause},
+ year = {2025}
+}
+```
+
 ## License
 
 Monarch is BSD-3 licensed, as found in the [LICENSE](https://github.com/meta-pytorch/monarch/blob/main/LICENSE) file.
 
-- `Terms of Use <https://opensource.fb.com/legal/terms>`_
-- `Privacy Policy <https://opensource.fb.com/legal/privacy>`_
+- [Terms of Use](https://opensource.fb.com/legal/terms)
+- [Privacy Policy](https://opensource.fb.com/legal/privacy)
 
 ## Community
 

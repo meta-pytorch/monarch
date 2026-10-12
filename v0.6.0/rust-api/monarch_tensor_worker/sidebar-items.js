@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["AssignRankMessage"],"mod":["device_mesh","stream","test_util"],"struct":["WorkerActor"],"trait":["AssignRankMessageClient","AssignRankMessageHandler"]};

@@ -8,6 +8,7 @@
 - [grpo_actor.py](grpo_actor.html): Implements a distributed PPO-like reinforcement learning algorithm using the Monarch actor framework
 - [grpo_yield.py](grpo_yield.html): Same GRPO task as `grpo_actor.py`, wired with direct port messaging instead of queue actors and `RDMABuffer`; each actor's `run` endpoint is structured like a Python generator that yields values to, and receives values from, the next actor in the ring
 - [kubernetes_grpo.py](grpo/kubernetes_grpo.html): Extends the GRPO example to run on Kubernetes using MonarchMesh CRDs, fine-tuning the open-source Qwen3.5-0.8B model on the GSM8K math dataset
+- [gpu_sharing.py](gpu_sharing.html): Places several roles on the same GPUs, running concurrently or taking turns, with per-process memory caps and co-located actors
 - [distributed_tensors.py](distributed_tensors.html): Shows how to dispatch tensors and tensor level operations to a distributed mesh of workers and GPUs
 - [debugging.py](debugging.html): Shows how to use the Monarch debugger to debug a distributed program
 - [otel_collector.py](otel_collector.html): Exports Monarch metrics and logs to an OpenTelemetry Collector deployed on Kubernetes, with Grafana for visualization

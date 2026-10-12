@@ -1,0 +1,15 @@
+/**
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+/* Increase navbar logo size (default theme sets max-height: 20px) */
+.navbar-header-items__start .navbar-brand .logo__image {
+    max-height: 50px !important;
+}
+.navbar-header-items__mobile-logo .logo__image {
+    max-height: 50px !important;
+}

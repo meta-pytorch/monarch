@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["All","Any","LWW","LatticeMap","Max","Min"],"trait":["AbelianGroup","BoundedJoinSemilattice","CommutativeMonoid","Group","JoinSemilattice","Monoid","MonoidHom","MonoidHomFromTo","Semigroup","SemigroupHom","SemigroupHomFromTo"]};

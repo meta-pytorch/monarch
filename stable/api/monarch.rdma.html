@@ -1,9 +1,8 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="../" >
 
   <head>
     <meta charset="utf-8" />
@@ -17,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The monarch.rdma module provides Remote Direct Memory Access (RDMA) support for high-performance networking and zero-copy data transfers between processes. See the Point-to-Point RDMA guide for an ..." />
 
-    <title>monarch.rdma &#8212; Monarch v0.6.0 documentation</title>
+    <title>monarch.rdma &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -37,29 +36,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="../_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="../" id="documentation_options" src="../_static/documentation_options.js"></script>
-    <script src="../_static/doctools.js"></script>
-    <script src="../_static/sphinx_highlight.js"></script>
-    <script src="../_static/design-tabs.js"></script>
+    <script src="../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../_static/doctools.js?v=888ff710"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'api/monarch.rdma';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/api/monarch.rdma.html" />
@@ -85,7 +84,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -199,7 +198,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -564,6 +563,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -634,6 +639,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -925,6 +936,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -995,6 +1012,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1223,12 +1246,15 @@ document.write(`
 
 
 
+
 <li class="toctree-l1"><a class="reference internal" href="monarch.config.html">monarch.config</a></li>
 
 
 
 
 <li class="toctree-l1"><a class="reference internal" href="monarch.job.html">monarch.job</a></li>
+
+
 
 
 
@@ -1349,65 +1375,62 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="monarch-rdma">
-<h1>monarch.rdma<a class="headerlink" href="#monarch-rdma" title="Permalink to this heading">#</a></h1>
+<h1>monarch.rdma<a class="headerlink" href="#monarch-rdma" title="Link to this heading">#</a></h1>
 <p>The <code class="docutils literal notranslate"><span class="pre">monarch.rdma</span></code> module provides Remote Direct Memory Access (RDMA) support for high-performance networking and zero-copy data transfers between processes. See the <a class="reference external" href="https://meta-pytorch.org/monarch/generated/examples/getting_started.html#point-to-point-rdma">Point-to-Point RDMA guide</a> for an overview.</p>
 </section>
 <section id="rdma-buffer">
-<h1>RDMA Buffer<a class="headerlink" href="#rdma-buffer" title="Permalink to this heading">#</a></h1>
+<h1>RDMA Buffer<a class="headerlink" href="#rdma-buffer" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="monarch.rdma.RDMABuffer">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.rdma.</span></span><span class="sig-name descname"><span class="pre">RDMABuffer</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">data</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMABuffer"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMABuffer" title="Permalink to this definition">#</a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.rdma.</span></span><span class="sig-name descname"><span class="pre">RDMABuffer</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">data</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMABuffer"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMABuffer" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/builtins/functions.html#object" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <dl class="field-list simple">
 </dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.rdma.RDMABuffer.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">data</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMABuffer.__init__" title="Permalink to this definition">#</a></dt>
-<dd><p>RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews.</p>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">data</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMABuffer.__init__" title="Link to this definition">#</a></dt>
+<dd><p>RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews.
+Both CPU and GPU memory are supported.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>data</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="(in PyTorch v2.13)"><em>torch.Tensor</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#memoryview" title="(in Python v3.14)"><em>memoryview</em></a>) – torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous.
+<dd class="field-odd"><p><strong>data</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="(in PyTorch v2.14)"><em>torch.Tensor</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#memoryview" title="(in Python v3.15)"><em>memoryview</em></a>) – torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous.
 If provided, addr and size must not be specified.</p>
 </dd>
 <dt class="field-even">Raises<span class="colon">:</span></dt>
 <dd class="field-even"><ul class="simple">
-<li><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.14)"><strong>ValueError</strong></a> – If data is not 1d contiguous, if size is 0, or if data is a GPU tensor.</p></li>
-<li><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#RuntimeError" title="(in Python v3.14)"><strong>RuntimeError</strong></a> – If no RDMA backend is available on this platform.</p></li>
+<li><p><a class="reference external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError" title="(in Python v3.15)"><strong>ValueError</strong></a> – If data is not 1d contiguous, or if its size is 0.</p></li>
+<li><p><a class="reference external" href="https://docs.python.org/3/builtins/exceptions.html#RuntimeError" title="(in Python v3.15)"><strong>RuntimeError</strong></a> – If no RDMA backend is available on this platform.</p></li>
 </ul>
 </dd>
 </dl>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>Currently only CPU tensors are supported. GPU tensor support will be added in the future.</p>
-</div>
 <p>TODO: Create TensorBuffer, which will be main user API supporting non-contiguous tensors</p>
 </dd></dl>
 
 <dl class="py property">
 <dt class="sig sig-object py" id="monarch.rdma.RDMABuffer.backend">
-<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">backend</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></em><a class="headerlink" href="#monarch.rdma.RDMABuffer.backend" title="Permalink to this definition">#</a></dt>
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">backend</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><span class="pre">str</span></a></em><a class="headerlink" href="#monarch.rdma.RDMABuffer.backend" title="Link to this definition">#</a></dt>
 <dd><p>Return the RDMA backend in use (‘ibverbs’).</p>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.rdma.RDMABuffer.size">
-<span class="sig-name descname"><span class="pre">size</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.size"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMABuffer.size" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">size</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.size"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMABuffer.size" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.rdma.RDMABuffer.read_into">
-<span class="sig-name descname"><span class="pre">read_into</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dst</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">60</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.read_into"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMABuffer.read_into" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">read_into</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dst</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">60</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.read_into"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMABuffer.read_into" title="Link to this definition">#</a></dt>
 <dd><p>Read data from this RDMABuffer into <code class="docutils literal notranslate"><span class="pre">dst</span></code>.</p>
 <p><code class="docutils literal notranslate"><span class="pre">dst</span></code> must be a 1D contiguous tensor or c-contiguous memoryview
 whose byte-size is at least <code class="docutils literal notranslate"><span class="pre">self.size()</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>dst</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="(in PyTorch v2.13)"><em>torch.Tensor</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#memoryview" title="(in Python v3.14)"><em>memoryview</em></a>) – Destination tensor or memoryview to read into.</p>
+<dd class="field-odd"><p><strong>dst</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="(in PyTorch v2.14)"><em>torch.Tensor</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#memoryview" title="(in Python v3.15)"><em>memoryview</em></a>) – Destination tensor or memoryview to read into.</p>
 </dd>
 <dt class="field-even">Keyword Arguments<span class="colon">:</span></dt>
-<dd class="field-even"><p><strong>timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>, </em><em>optional</em>) – Timeout in seconds. Defaults to 60s.</p>
+<dd class="field-even"><p><strong>timeout</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em>, </em><em>optional</em>) – Timeout in seconds. Defaults to 60s.</p>
 </dd>
 <dt class="field-odd">Returns<span class="colon">:</span></dt>
 <dd class="field-odd"><p><dl class="simple">
@@ -1420,24 +1443,24 @@ whose byte-size is at least <code class="docutils literal notranslate"><span cla
 <dd class="field-even"><p><a class="reference internal" href="monarch.html#monarch.Future" title="monarch.Future">Future</a>[None]</p>
 </dd>
 <dt class="field-odd">Raises<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.14)"><strong>ValueError</strong></a> – If <code class="docutils literal notranslate"><span class="pre">dst</span></code> is smaller than the RDMA buffer.</p>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError" title="(in Python v3.15)"><strong>ValueError</strong></a> – If <code class="docutils literal notranslate"><span class="pre">dst</span></code> is smaller than the RDMA buffer.</p>
 </dd>
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.rdma.RDMABuffer.write_from">
-<span class="sig-name descname"><span class="pre">write_from</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">src</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">60</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.write_from"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMABuffer.write_from" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">write_from</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">src</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">60</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.write_from"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMABuffer.write_from" title="Link to this definition">#</a></dt>
 <dd><p>Write data from <code class="docutils literal notranslate"><span class="pre">src</span></code> into this RDMABuffer.</p>
 <p><code class="docutils literal notranslate"><span class="pre">src</span></code> must be a 1D contiguous tensor or c-contiguous memoryview
 whose byte-size is at most <code class="docutils literal notranslate"><span class="pre">self.size()</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>src</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="(in PyTorch v2.13)"><em>torch.Tensor</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#memoryview" title="(in Python v3.14)"><em>memoryview</em></a>) – Source tensor or memoryview containing the bytes to
+<dd class="field-odd"><p><strong>src</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="(in PyTorch v2.14)"><em>torch.Tensor</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#memoryview" title="(in Python v3.15)"><em>memoryview</em></a>) – Source tensor or memoryview containing the bytes to
 write to the RDMA buffer.</p>
 </dd>
 <dt class="field-even">Keyword Arguments<span class="colon">:</span></dt>
-<dd class="field-even"><p><strong>timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>, </em><em>optional</em>) – Timeout in seconds. Defaults to 60s.</p>
+<dd class="field-even"><p><strong>timeout</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em>, </em><em>optional</em>) – Timeout in seconds. Defaults to 60s.</p>
 </dd>
 <dt class="field-odd">Returns<span class="colon">:</span></dt>
 <dd class="field-odd"><p><dl class="simple">
@@ -1450,14 +1473,14 @@ write to the RDMA buffer.</p>
 <dd class="field-even"><p><a class="reference internal" href="monarch.html#monarch.Future" title="monarch.Future">Future</a>[None]</p>
 </dd>
 <dt class="field-odd">Raises<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.14)"><strong>ValueError</strong></a> – If <code class="docutils literal notranslate"><span class="pre">src</span></code> exceeds the RDMA buffer size.</p>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError" title="(in Python v3.15)"><strong>ValueError</strong></a> – If <code class="docutils literal notranslate"><span class="pre">src</span></code> exceeds the RDMA buffer size.</p>
 </dd>
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.rdma.RDMABuffer.drop">
-<span class="sig-name descname"><span class="pre">drop</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.drop"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMABuffer.drop" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">drop</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.drop"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMABuffer.drop" title="Link to this definition">#</a></dt>
 <dd><p>Release the handle on the memory that the src holds to this memory.</p>
 <dl class="field-list simple">
 </dl>
@@ -1465,7 +1488,7 @@ write to the RDMA buffer.</p>
 
 <dl class="py property">
 <dt class="sig sig-object py" id="monarch.rdma.RDMABuffer.owner">
-<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">owner</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></em><a class="headerlink" href="#monarch.rdma.RDMABuffer.owner" title="Permalink to this definition">#</a></dt>
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">owner</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><span class="pre">str</span></a></em><a class="headerlink" href="#monarch.rdma.RDMABuffer.owner" title="Link to this definition">#</a></dt>
 <dd><p>The owner reference (str)</p>
 </dd></dl>
 
@@ -1473,11 +1496,11 @@ write to the RDMA buffer.</p>
 
 </section>
 <section id="rdma-actions">
-<h1>RDMA Actions<a class="headerlink" href="#rdma-actions" title="Permalink to this heading">#</a></h1>
+<h1>RDMA Actions<a class="headerlink" href="#rdma-actions" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="monarch.rdma.RDMAAction">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.rdma.</span></span><span class="sig-name descname"><span class="pre">RDMAAction</span></span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMAAction"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMAAction" title="Permalink to this definition">#</a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.rdma.</span></span><span class="sig-name descname"><span class="pre">RDMAAction</span></span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMAAction"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMAAction" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/builtins/functions.html#object" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Schedule a batch of RDMA operations and submit them as one unit.</p>
 <p>All bookkeeping (per-op validation, intra-batch local-memory race
 detection, backend grouping, parallel dispatch) lives in the Rust
@@ -1486,14 +1509,14 @@ detection, backend grouping, parallel dispatch) lives in the Rust
 </dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.rdma.RDMAAction.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMAAction.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMAAction.__init__" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMAAction.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMAAction.__init__" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.rdma.RDMAAction.read_remote">
-<span class="sig-name descname"><span class="pre">read_remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dst</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">src</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMAAction.read_remote"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMAAction.read_remote" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">read_remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dst</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">src</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMAAction.read_remote"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMAAction.read_remote" title="Link to this definition">#</a></dt>
 <dd><p>Queue a read from RDMA buffer <code class="docutils literal notranslate"><span class="pre">src</span></code> into local memory <code class="docutils literal notranslate"><span class="pre">dst</span></code>.</p>
 <dl class="field-list simple">
 </dl>
@@ -1501,7 +1524,7 @@ detection, backend grouping, parallel dispatch) lives in the Rust
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.rdma.RDMAAction.write_remote">
-<span class="sig-name descname"><span class="pre">write_remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dst</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">src</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMAAction.write_remote"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMAAction.write_remote" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">write_remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dst</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">src</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMAAction.write_remote"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMAAction.write_remote" title="Link to this definition">#</a></dt>
 <dd><p>Queue a write from local memory <code class="docutils literal notranslate"><span class="pre">src</span></code> into RDMA buffer <code class="docutils literal notranslate"><span class="pre">dst</span></code>.</p>
 <dl class="field-list simple">
 </dl>
@@ -1509,21 +1532,21 @@ detection, backend grouping, parallel dispatch) lives in the Rust
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.rdma.RDMAAction.fetch_add">
-<span class="sig-name descname"><span class="pre">fetch_add</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">src</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dst</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">add</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMAAction.fetch_add"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMAAction.fetch_add" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">fetch_add</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">src</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dst</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">add</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMAAction.fetch_add"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMAAction.fetch_add" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.rdma.RDMAAction.compare_and_swap">
-<span class="sig-name descname"><span class="pre">compare_and_swap</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">src</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dst</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">compare</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">swap</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMAAction.compare_and_swap"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMAAction.compare_and_swap" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">compare_and_swap</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">src</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dst</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">compare</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">swap</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMAAction.compare_and_swap"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMAAction.compare_and_swap" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="monarch.rdma.RDMAAction.submit">
-<span class="sig-name descname"><span class="pre">submit</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">60</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMAAction.submit"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMAAction.submit" title="Permalink to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">submit</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">60</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#RDMAAction.submit"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.RDMAAction.submit" title="Link to this definition">#</a></dt>
 <dd><p>Schedule the queued ops. Safe to call multiple times.</p>
 <p>The returned Future does not resolve until every op in the batch
 completes, or until the timeout is reached. If any op fails, the
@@ -1536,10 +1559,10 @@ Future resolves with an exception.</p>
 
 </section>
 <section id="utility-functions">
-<h1>Utility Functions<a class="headerlink" href="#utility-functions" title="Permalink to this heading">#</a></h1>
+<h1>Utility Functions<a class="headerlink" href="#utility-functions" title="Link to this heading">#</a></h1>
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.rdma.is_ibverbs_available">
-<span class="sig-prename descclassname"><span class="pre">monarch.rdma.</span></span><span class="sig-name descname"><span class="pre">is_ibverbs_available</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#is_ibverbs_available"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.is_ibverbs_available" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.rdma.</span></span><span class="sig-name descname"><span class="pre">is_ibverbs_available</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#is_ibverbs_available"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.is_ibverbs_available" title="Link to this definition">#</a></dt>
 <dd><p>Whether ibverbs RDMA hardware is available on this system.</p>
 <dl class="field-list simple">
 </dl>
@@ -1547,7 +1570,7 @@ Future resolves with an exception.</p>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.rdma.is_rdma_available">
-<span class="sig-prename descclassname"><span class="pre">monarch.rdma.</span></span><span class="sig-name descname"><span class="pre">is_rdma_available</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#is_rdma_available"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.is_rdma_available" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.rdma.</span></span><span class="sig-name descname"><span class="pre">is_rdma_available</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#is_rdma_available"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.is_rdma_available" title="Link to this definition">#</a></dt>
 <dd><p>Whether RDMA over ibverbs is available on this system.</p>
 <div class="deprecated">
 <p><span class="versionmodified deprecated">Deprecated since version Monarch: </span>now supports multiple RDMA backends, so <cite>is_rdma_available</cite>
@@ -1560,7 +1583,7 @@ is ambiguous and will be removed in a future release. Use
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.rdma.get_rdma_backend">
-<span class="sig-prename descclassname"><span class="pre">monarch.rdma.</span></span><span class="sig-name descname"><span class="pre">get_rdma_backend</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#get_rdma_backend"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.get_rdma_backend" title="Permalink to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.rdma.</span></span><span class="sig-name descname"><span class="pre">get_rdma_backend</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/rdma/rdma.html#get_rdma_backend"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.rdma.get_rdma_backend" title="Link to this definition">#</a></dt>
 <dd><p>Return available RDMA backend.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Returns<span class="colon">:</span></dt>
@@ -1572,7 +1595,7 @@ is ambiguous and will be removed in a future release. Use
 </p>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)">str</a></p>
+<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)">str</a></p>
 </dd>
 </dl>
 </dd></dl>
@@ -1871,7 +1894,7 @@ is ambiguous and will be removed in a future release. Use
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>
@@ -1900,7 +1923,7 @@ is ambiguous and will be removed in a future release. Use
        "headline": "monarch.rdma",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/api/monarch.rdma.html",
-       "articleBody": "monarch.rdma# The monarch.rdma module provides Remote Direct Memory Access (RDMA) support for high-performance networking and zero-copy data transfers between processes. See the Point-to-Point RDMA guide for an overview. RDMA Buffer# class monarch.rdma.RDMABuffer(data)[source]# Bases: object __init__(data)[source]# RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews. Parameters: data (torch.Tensor | memoryview) \u2013 torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous. If provided, addr and size must not be specified. Raises: ValueError \u2013 If data is not 1d contiguous, if size is 0, or if data is a GPU tensor. RuntimeError \u2013 If no RDMA backend is available on this platform. Note Currently only CPU tensors are supported. GPU tensor support will be added in the future. TODO: Create TensorBuffer, which will be main user API supporting non-contiguous tensors property backend: str# Return the RDMA backend in use (\u2018ibverbs\u2019). size()[source]# read_into(dst, *, timeout=60)[source]# Read data from this RDMABuffer into dst. dst must be a 1D contiguous tensor or c-contiguous memoryview whose byte-size is at least self.size(). Parameters: dst (torch.Tensor | memoryview) \u2013 Destination tensor or memoryview to read into. Keyword Arguments: timeout (int, optional) \u2013 Timeout in seconds. Defaults to 60s. Returns: A Monarch Future that resolves to None whenthe read completes. Return type: Future[None] Raises: ValueError \u2013 If dst is smaller than the RDMA buffer. write_from(src, *, timeout=60)[source]# Write data from src into this RDMABuffer. src must be a 1D contiguous tensor or c-contiguous memoryview whose byte-size is at most self.size(). Parameters: src (torch.Tensor | memoryview) \u2013 Source tensor or memoryview containing the bytes to write to the RDMA buffer. Keyword Arguments: timeout (int, optional) \u2013 Timeout in seconds. Defaults to 60s. Returns: A Monarch Future that resolves to None whenthe write completes. Return type: Future[None] Raises: ValueError \u2013 If src exceeds the RDMA buffer size. drop()[source]# Release the handle on the memory that the src holds to this memory. property owner: str# The owner reference (str) RDMA Actions# class monarch.rdma.RDMAAction[source]# Bases: object Schedule a batch of RDMA operations and submit them as one unit. All bookkeeping (per-op validation, intra-batch local-memory race detection, backend grouping, parallel dispatch) lives in the Rust _RdmaAction; this class is a thin wrapper around it. __init__()[source]# read_remote(dst, src)[source]# Queue a read from RDMA buffer src into local memory dst. write_remote(dst, src)[source]# Queue a write from local memory src into RDMA buffer dst. fetch_add(src, dst, add)[source]# compare_and_swap(src, dst, compare, swap)[source]# submit(*, timeout=60)[source]# Schedule the queued ops. Safe to call multiple times. The returned Future does not resolve until every op in the batch completes, or until the timeout is reached. If any op fails, the Future resolves with an exception. Utility Functions# monarch.rdma.is_ibverbs_available()[source]# Whether ibverbs RDMA hardware is available on this system. monarch.rdma.is_rdma_available()[source]# Whether RDMA over ibverbs is available on this system. Deprecated since version Monarch: now supports multiple RDMA backends, so is_rdma_available is ambiguous and will be removed in a future release. Use is_ibverbs_available() or get_rdma_backend() instead. monarch.rdma.get_rdma_backend()[source]# Return available RDMA backend. Returns: One of \u2018ibverbs\u2019, \u2018tcp\u2019, or \u2018none\u2019 indicating the available backend.Both Mellanox and EFA hardware are accessed through ibverbs. \u2018tcp\u2019 indicates the TCP fallback transport is enabled. Return type: str",
+       "articleBody": "monarch.rdma# The monarch.rdma module provides Remote Direct Memory Access (RDMA) support for high-performance networking and zero-copy data transfers between processes. See the Point-to-Point RDMA guide for an overview. RDMA Buffer# class monarch.rdma.RDMABuffer(data)[source]# Bases: object __init__(data)[source]# RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews. Both CPU and GPU memory are supported. Parameters: data (torch.Tensor | memoryview) \u2013 torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous. If provided, addr and size must not be specified. Raises: ValueError \u2013 If data is not 1d contiguous, or if its size is 0. RuntimeError \u2013 If no RDMA backend is available on this platform. TODO: Create TensorBuffer, which will be main user API supporting non-contiguous tensors property backend: str# Return the RDMA backend in use (\u2018ibverbs\u2019). size()[source]# read_into(dst, *, timeout=60)[source]# Read data from this RDMABuffer into dst. dst must be a 1D contiguous tensor or c-contiguous memoryview whose byte-size is at least self.size(). Parameters: dst (torch.Tensor | memoryview) \u2013 Destination tensor or memoryview to read into. Keyword Arguments: timeout (int, optional) \u2013 Timeout in seconds. Defaults to 60s. Returns: A Monarch Future that resolves to None whenthe read completes. Return type: Future[None] Raises: ValueError \u2013 If dst is smaller than the RDMA buffer. write_from(src, *, timeout=60)[source]# Write data from src into this RDMABuffer. src must be a 1D contiguous tensor or c-contiguous memoryview whose byte-size is at most self.size(). Parameters: src (torch.Tensor | memoryview) \u2013 Source tensor or memoryview containing the bytes to write to the RDMA buffer. Keyword Arguments: timeout (int, optional) \u2013 Timeout in seconds. Defaults to 60s. Returns: A Monarch Future that resolves to None whenthe write completes. Return type: Future[None] Raises: ValueError \u2013 If src exceeds the RDMA buffer size. drop()[source]# Release the handle on the memory that the src holds to this memory. property owner: str# The owner reference (str) RDMA Actions# class monarch.rdma.RDMAAction[source]# Bases: object Schedule a batch of RDMA operations and submit them as one unit. All bookkeeping (per-op validation, intra-batch local-memory race detection, backend grouping, parallel dispatch) lives in the Rust _RdmaAction; this class is a thin wrapper around it. __init__()[source]# read_remote(dst, src)[source]# Queue a read from RDMA buffer src into local memory dst. write_remote(dst, src)[source]# Queue a write from local memory src into RDMA buffer dst. fetch_add(src, dst, add)[source]# compare_and_swap(src, dst, compare, swap)[source]# submit(*, timeout=60)[source]# Schedule the queued ops. Safe to call multiple times. The returned Future does not resolve until every op in the batch completes, or until the timeout is reached. If any op fails, the Future resolves with an exception. Utility Functions# monarch.rdma.is_ibverbs_available()[source]# Whether ibverbs RDMA hardware is available on this system. monarch.rdma.is_rdma_available()[source]# Whether RDMA over ibverbs is available on this system. Deprecated since version Monarch: now supports multiple RDMA backends, so is_rdma_available is ambiguous and will be removed in a future release. Use is_ibverbs_available() or get_rdma_backend() instead. monarch.rdma.get_rdma_backend()[source]# Return available RDMA backend. Returns: One of \u2018ibverbs\u2019, \u2018tcp\u2019, or \u2018none\u2019 indicating the available backend.Both Mellanox and EFA hardware are accessed through ibverbs. \u2018tcp\u2019 indicates the TCP fallback transport is enabled. Return type: str",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

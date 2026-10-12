@@ -1,14 +1,13 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="../../../../" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.job.job_components &#8212; Monarch v0.6.0 documentation</title>
+    <title>monarch._src.job.job_components &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -28,31 +27,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
-    <script src="../../../../_static/doctools.js"></script>
-    <script src="../../../../_static/sphinx_highlight.js"></script>
-    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/job/job_components';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/job/job_components.html" />
@@ -76,7 +75,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -190,7 +189,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -555,6 +554,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -625,6 +630,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -914,6 +925,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -984,6 +1001,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1351,21 +1374,24 @@ document.write(`
 <span class="n">logger</span><span class="p">:</span> <span class="n">logging</span><span class="o">.</span><span class="n">Logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
 
 
-<div class="viewcode-block" id="MeshAdminConfig"><a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.MeshAdminConfig">[docs]</a><span class="nd">@dataclass</span>
+<div class="viewcode-block" id="MeshAdminConfig">
+<a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.MeshAdminConfig">[docs]</a>
+<span class="nd">@dataclass</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">MeshAdminConfig</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Configuration for automatic mesh admin agent startup.</span>
 
-<span class="sd">    When configured via ``JobTrait.enable_admin``, a MeshAdminAgent HTTP</span>
-<span class="sd">    server is spawned when ``state()`` is called. The server aggregates</span>
-<span class="sd">    topology across all host meshes and exposes it via a REST API that the</span>
-<span class="sd">    admin TUI can attach to.</span>
+<span class="sd">    When passed to ``JobTrait.enable_telemetry``, a MeshAdminAgent HTTP server</span>
+<span class="sd">    is spawned when ``state()`` is called. The server aggregates topology</span>
+<span class="sd">    across all host meshes and exposes it via a REST API that the admin TUI</span>
+<span class="sd">    can attach to.</span>
 
 <span class="sd">    Args:</span>
-<span class="sd">        admin_addr: Bind address for the admin HTTP server.  When</span>
-<span class="sd">            ``None`` the server picks an available address automatically.</span>
+<span class="sd">        admin_addr: Bind address for the admin HTTP server. When ``None``, the</span>
+<span class="sd">            server uses the configured ``MESH_ADMIN_ADDR``.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
     <span class="n">admin_addr</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span></div>
+
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">JobComponent</span><span class="p">:</span>
@@ -1375,9 +1401,16 @@ document.write(`
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Run at the start of ``JobTrait._connect``, before raw host meshes exist.&quot;&quot;&quot;</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">connect</span><span class="p">(</span>
-        <span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">host_meshes</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span>
+        <span class="n">host_meshes</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">],</span>
+        <span class="n">via_gateway</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Run during ``JobTrait._connect`` to produce final user-facing meshes.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Run during ``JobTrait._connect`` to produce final user-facing meshes.</span>
+
+<span class="sd">        ``via_gateway`` says the job reaches its workers only through a scheduler gateway.</span>
+<span class="sd">        Resolved by the caller so every component sees the same answer.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">return</span> <span class="n">host_meshes</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">job_state</span><span class="p">:</span> <span class="s2">&quot;JobState&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
@@ -1403,11 +1436,14 @@ document.write(`
         <span class="bp">self</span><span class="o">.</span><span class="n">_default_python_exe</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">connect</span><span class="p">(</span>
-        <span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">host_meshes</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span>
+        <span class="n">host_meshes</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">],</span>
+        <span class="n">via_gateway</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]:</span>
         <span class="n">apply_id</span> <span class="o">=</span> <span class="n">job</span><span class="o">.</span><span class="n">apply_id</span>
         <span class="k">if</span> <span class="n">apply_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_mounts</span><span class="o">.</span><span class="n">ensure_open</span><span class="p">(</span><span class="n">apply_id</span><span class="p">,</span> <span class="n">host_meshes</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_mounts</span><span class="o">.</span><span class="n">ensure_open</span><span class="p">(</span><span class="n">apply_id</span><span class="p">,</span> <span class="n">host_meshes</span><span class="p">,</span> <span class="n">via_gateway</span><span class="p">)</span>
         <span class="n">result</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="k">for</span> <span class="n">mesh_name</span><span class="p">,</span> <span class="n">mesh</span> <span class="ow">in</span> <span class="n">host_meshes</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
             <span class="n">exe</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">python_executable_for_mesh</span><span class="p">(</span><span class="n">mesh_name</span><span class="p">)</span>
@@ -1415,6 +1451,10 @@ document.write(`
                 <span class="n">mesh</span> <span class="o">=</span> <span class="n">mesh</span><span class="o">.</span><span class="n">with_python_executable</span><span class="p">(</span><span class="n">exe</span><span class="p">)</span>
             <span class="n">result</span><span class="p">[</span><span class="n">mesh_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">mesh</span>
         <span class="k">return</span> <span class="n">result</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">needs_sidecar</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Whether configured mounts require the shared job sidecar.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="nb">bool</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_mounts</span><span class="o">.</span><span class="n">_remote_entries</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_mounts</span><span class="o">.</span><span class="n">_gather_entries</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">python_executable_for_mesh</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mesh_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_python_executables</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">mesh_name</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_default_python_exe</span><span class="p">)</span>
@@ -1486,6 +1526,21 @@ document.write(`
         <span class="bp">self</span><span class="o">.</span><span class="n">_dashboard_url</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_query_engine_client</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">QueryEngineClient</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
 
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">telemetry_url</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry_url</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">query_client</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">QueryEngineClient</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Connect to the job&#39;s existing telemetry query endpoint.&quot;&quot;&quot;</span>
+        <span class="n">apply_id</span> <span class="o">=</span> <span class="n">job</span><span class="o">.</span><span class="n">apply_id</span>
+        <span class="k">if</span> <span class="n">apply_id</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;the active job has no apply id&quot;</span><span class="p">)</span>
+        <span class="n">response</span> <span class="o">=</span> <span class="n">Telemetry</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="p">)</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">apply_id</span><span class="p">)</span>
+        <span class="n">telemetry_url</span> <span class="o">=</span> <span class="n">response</span><span class="p">[</span><span class="s2">&quot;telemetry_url&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry_url</span> <span class="o">=</span> <span class="n">telemetry_url</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_query_engine_client</span> <span class="o">=</span> <span class="n">QueryEngineClient</span><span class="p">(</span><span class="n">telemetry_url</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_query_engine_client</span>
+
     <span class="k">def</span><span class="w"> </span><span class="nf">reset_runtime</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_query_engine_client</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry_url</span> <span class="o">=</span> <span class="kc">None</span>
@@ -1516,10 +1571,10 @@ document.write(`
             <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry_url</span> <span class="o">=</span> <span class="n">telemetry_url</span>
             <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">dashboard_url</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">_dashboard_url</span> <span class="o">=</span> <span class="n">dashboard_url</span>
-                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="o">.</span><span class="n">include_dashboard</span><span class="p">:</span>
-                    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Monarch Dashboard: </span><span class="si">{</span><span class="n">dashboard_url</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_query_engine_client</span> <span class="o">=</span> <span class="n">QueryEngineClient</span><span class="p">(</span><span class="n">telemetry_url</span><span class="p">)</span>
             <span class="n">install_sidecar_socket_sink</span><span class="p">(</span><span class="n">socket_path</span><span class="p">)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_dashboard_url</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="o">.</span><span class="n">include_dashboard</span><span class="p">:</span>
+                <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Monarch Dashboard: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_dashboard_url</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
         <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
             <span class="c1"># Reset so a partial bootstrap leaves a clean &quot;disabled&quot; state:</span>
             <span class="c1"># fan-out no-ops and `state` exposes no query client.</span>
@@ -1532,7 +1587,10 @@ document.write(`
             <span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">connect</span><span class="p">(</span>
-        <span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">host_meshes</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span>
+        <span class="n">host_meshes</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">],</span>
+        <span class="n">via_gateway</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]:</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_query_engine_client</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span> <span class="n">host_meshes</span>
@@ -1605,6 +1663,24 @@ document.write(`
                     <span class="n">admin_addr</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="o">.</span><span class="n">admin_addr</span><span class="p">,</span>
                     <span class="n">telemetry_url</span><span class="o">=</span><span class="n">telemetry_url</span><span class="p">,</span>
                 <span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+        <span class="c1"># Push the resolved admin URL into the telemetry sidecar (a separate</span>
+        <span class="c1"># process) so the dashboard&#39;s pyspy client targets the real admin</span>
+        <span class="c1"># endpoint rather than the default https://&lt;fqdn&gt;:1729. Best-effort and</span>
+        <span class="c1"># only when telemetry is live; never fatal to job startup.</span>
+        <span class="k">if</span> <span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+            <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry</span><span class="o">.</span><span class="n">_telemetry_url</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+            <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_admin_url</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+            <span class="ow">and</span> <span class="n">job</span><span class="o">.</span><span class="n">apply_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+        <span class="p">):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">Telemetry</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_telemetry</span><span class="o">.</span><span class="n">_config</span><span class="p">)</span><span class="o">.</span><span class="n">set_admin_url</span><span class="p">(</span>
+                    <span class="n">job</span><span class="o">.</span><span class="n">apply_id</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_admin_url</span>
+                <span class="p">)</span>
+            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                    <span class="s2">&quot;failed to push admin URL to telemetry sidecar&quot;</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="kc">True</span>
+                <span class="p">)</span>
         <span class="n">job_state</span><span class="o">.</span><span class="n">admin_url</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_admin_url</span>
 
 
@@ -1682,6 +1758,10 @@ document.write(`
     <span class="n">admin</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">AdminComponent</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="n">snapshot</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">SnapshotComponent</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
 
+    <span class="k">def</span><span class="w"> </span><span class="nf">needs_sidecar</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Whether telemetry or mounts require the shared job sidecar.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">mounts</span><span class="o">.</span><span class="n">needs_sidecar</span><span class="p">()</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+
     <span class="k">def</span><span class="w"> </span><span class="nf">_ordered</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="n">JobComponent</span><span class="p">]:</span>
         <span class="n">components</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">JobComponent</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">mounts</span><span class="p">]</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
@@ -1697,10 +1777,13 @@ document.write(`
             <span class="n">component</span><span class="o">.</span><span class="n">before_connect</span><span class="p">(</span><span class="n">job</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">connect</span><span class="p">(</span>
-        <span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">host_meshes</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span>
+        <span class="n">host_meshes</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">],</span>
+        <span class="n">via_gateway</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]:</span>
         <span class="k">for</span> <span class="n">component</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ordered</span><span class="p">():</span>
-            <span class="n">host_meshes</span> <span class="o">=</span> <span class="n">component</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">job</span><span class="p">,</span> <span class="n">host_meshes</span><span class="p">)</span>
+            <span class="n">host_meshes</span> <span class="o">=</span> <span class="n">component</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">job</span><span class="p">,</span> <span class="n">host_meshes</span><span class="p">,</span> <span class="n">via_gateway</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">host_meshes</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">job_state</span><span class="p">:</span> <span class="s2">&quot;JobState&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
@@ -1711,35 +1794,50 @@ document.write(`
         <span class="k">for</span> <span class="n">component</span> <span class="ow">in</span> <span class="nb">reversed</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_ordered</span><span class="p">()):</span>
             <span class="n">component</span><span class="o">.</span><span class="n">reset_runtime</span><span class="p">()</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">configure_telemetry</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">TelemetryConfig</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span> <span class="o">=</span> <span class="n">TelemetryComponent</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">configure_telemetry</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">config</span><span class="p">:</span> <span class="n">TelemetryConfig</span><span class="p">,</span>
+        <span class="n">mesh_admin_config</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">MeshAdminConfig</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Configure telemetry and its mesh admin and snapshot dependencies.&quot;&quot;&quot;</span>
+        <span class="n">telemetry</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span>
+        <span class="k">if</span> <span class="n">telemetry</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">telemetry</span> <span class="o">=</span> <span class="n">TelemetryComponent</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span> <span class="o">=</span> <span class="n">telemetry</span>
             <span class="n">telemetry_changed</span> <span class="o">=</span> <span class="kc">True</span>
         <span class="k">else</span><span class="p">:</span>
-            <span class="n">telemetry_changed</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span><span class="o">.</span><span class="n">_config</span> <span class="o">!=</span> <span class="n">config</span>
+            <span class="n">telemetry_changed</span> <span class="o">=</span> <span class="n">telemetry</span><span class="o">.</span><span class="n">_config</span> <span class="o">!=</span> <span class="n">config</span>
             <span class="k">if</span> <span class="n">telemetry_changed</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span><span class="o">.</span><span class="n">reset_runtime</span><span class="p">()</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span><span class="o">.</span><span class="n">_config</span> <span class="o">=</span> <span class="n">config</span>
+                <span class="n">telemetry</span><span class="o">.</span><span class="n">reset_runtime</span><span class="p">()</span>
+            <span class="n">telemetry</span><span class="o">.</span><span class="n">_config</span> <span class="o">=</span> <span class="n">config</span>
         <span class="k">if</span> <span class="n">telemetry_changed</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_warn_if_snapshot_stale</span><span class="p">()</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">admin</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">if</span> <span class="n">telemetry_changed</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">admin</span><span class="o">.</span><span class="n">reset_runtime</span><span class="p">()</span>
-            <span class="c1"># Admin config is unchanged here; only rewire its telemetry handle.</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">admin</span><span class="o">.</span><span class="n">_telemetry</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_configure_snapshot</span><span class="p">()</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">configure_admin</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">MeshAdminConfig</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">admin</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">admin</span> <span class="o">=</span> <span class="n">AdminComponent</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span><span class="p">)</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_set_admin_inputs</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_configure_snapshot</span><span class="p">()</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">_set_admin_inputs</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">MeshAdminConfig</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">admin</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">admin</span>
         <span class="k">if</span> <span class="n">admin</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">return</span>
+            <span class="n">admin</span> <span class="o">=</span> <span class="n">AdminComponent</span><span class="p">(</span>
+                <span class="n">mesh_admin_config</span>
+                <span class="k">if</span> <span class="n">mesh_admin_config</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+                <span class="k">else</span> <span class="n">MeshAdminConfig</span><span class="p">(),</span>
+                <span class="n">telemetry</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">admin</span> <span class="o">=</span> <span class="n">admin</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">telemetry_changed</span><span class="p">:</span>
+                <span class="n">admin</span><span class="o">.</span><span class="n">reset_runtime</span><span class="p">()</span>
+            <span class="n">admin</span><span class="o">.</span><span class="n">_telemetry</span> <span class="o">=</span> <span class="n">telemetry</span>
+            <span class="k">if</span> <span class="n">mesh_admin_config</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_set_admin_inputs</span><span class="p">(</span><span class="n">admin</span><span class="p">,</span> <span class="n">mesh_admin_config</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span> <span class="o">=</span> <span class="n">SnapshotComponent</span><span class="p">(</span><span class="n">telemetry</span><span class="p">,</span> <span class="n">admin</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">configure_admin</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">MeshAdminConfig</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">admin</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">admin</span>
+        <span class="k">if</span> <span class="n">admin</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">admin</span> <span class="o">=</span> <span class="n">AdminComponent</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_set_admin_inputs</span><span class="p">(</span><span class="n">admin</span><span class="p">,</span> <span class="n">config</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_set_admin_inputs</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">admin</span><span class="p">:</span> <span class="n">AdminComponent</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">MeshAdminConfig</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">if</span> <span class="n">admin</span><span class="o">.</span><span class="n">_config</span> <span class="o">!=</span> <span class="n">config</span><span class="p">:</span>
             <span class="n">admin</span><span class="o">.</span><span class="n">reset_runtime</span><span class="p">()</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_warn_if_snapshot_stale</span><span class="p">()</span>
@@ -1762,16 +1860,6 @@ document.write(`
                 <span class="s2">&quot;telemetry or admin config changed while periodic snapshots are running: &quot;</span>
                 <span class="s2">&quot;snapshots stay bound to the original runtime until the job is killed and re-applied&quot;</span>
             <span class="p">)</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">_configure_snapshot</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">admin</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span> <span class="o">=</span> <span class="n">SnapshotComponent</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">admin</span><span class="p">)</span>
-            <span class="k">else</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span><span class="o">.</span><span class="n">_telemetry</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span><span class="o">.</span><span class="n">_admin</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">admin</span>
-        <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span> <span class="o">=</span> <span class="kc">None</span>
 </pre></div>
 
                 </article>
@@ -1924,7 +2012,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>
@@ -1953,7 +2041,7 @@ document.write(`
        "headline": "monarch._src.job.job_components",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/job/job_components.html",
-       "articleBody": "Source code for monarch._src.job.job_components # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict \"\"\"Lifecycle components for ``JobTrait``. ``JobTrait`` owns scheduler state and the current allocation. ``JobComponent`` owns the configuration and live handles for one job-scoped capability: mounts, telemetry, admin, or snapshots. The hooks mirror the job lifecycle after an allocation is selected: - ``before_connect(job)``: before ``JobTrait._connect()`` materializes raw host meshes. - ``connect(job, host_meshes)``: after raw host meshes exist; return the final user-facing meshes. - ``state(job, job_state)``: after final meshes are wrapped in ``JobState``; start services and attach fields to the object returned to the caller. - ``reset_runtime()``: drop local live handles. ``JobComponents`` is a stable typed container. It owns optional component presence, dependency wiring, and phase ordering; ``JobTrait`` owns allocation identity. \"\"\" from __future__ import annotations import logging import os from dataclasses import dataclass, field from typing import Any, Dict, List, Optional, TYPE_CHECKING from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef from monarch._src.actor.host_mesh import _spawn_admin from monarch._src.actor.sync_state import fake_sync_state from monarch._src.job._telemetry_query_client import QueryEngineClient from monarch._src.job.mount_config import Mounts from monarch._src.job.telemetry_config import ( install_sidecar_socket_sink, Telemetry, TelemetryConfig, ) from monarch.actor import HostMesh if TYPE_CHECKING: from monarch._src.job.job import JobState, JobTrait logger: logging.Logger = logging.getLogger(__name__) [docs]@dataclass class MeshAdminConfig: \"\"\"Configuration for automatic mesh admin agent startup. When configured via ``JobTrait.enable_admin``, a MeshAdminAgent HTTP server is spawned when ``state()`` is called. The server aggregates topology across all host meshes and exposes it via a REST API that the admin TUI can attach to. Args: admin_addr: Bind address for the admin HTTP server. When ``None`` the server picks an available address automatically. \"\"\" admin_addr: Optional[str] = None class JobComponent: \"\"\"A job-scoped component driven by ``JobTrait``.\"\"\" def before_connect(self, job: \"JobTrait\") -\u003e None: \"\"\"Run at the start of ``JobTrait._connect``, before raw host meshes exist.\"\"\" def connect( self, job: \"JobTrait\", host_meshes: Dict[str, HostMesh] ) -\u003e Dict[str, HostMesh]: \"\"\"Run during ``JobTrait._connect`` to produce final user-facing meshes.\"\"\" return host_meshes def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: \"\"\"Run during ``JobTrait.state`` to bring services up on final meshes.\"\"\" def reset_runtime(self) -\u003e None: \"\"\"Drop local live handles owned by this component.\"\"\" class MountComponent(JobComponent): \"\"\"Open configured mounts and apply per-mesh python executables. Runs in ``connect`` -- after ``JobTrait._connect`` materializes the raw host meshes and before any service comes up -- so it produces the final meshes that both the caller and the downstream ``state`` services see. Config drift is copied in place; the next ``connect`` lets ``Mounts.ensure_open`` refresh, replace, or clear sidecar mount state. \"\"\" def __init__(self) -\u003e None: self._mounts: Mounts = Mounts() self._python_executables: Dict[str, str] = {} self._default_python_exe: Optional[str] = None def connect( self, job: \"JobTrait\", host_meshes: Dict[str, HostMesh] ) -\u003e Dict[str, HostMesh]: apply_id = job.apply_id if apply_id is not None: self._mounts.ensure_open(apply_id, host_meshes) result: Dict[str, HostMesh] = {} for mesh_name, mesh in host_meshes.items(): exe = self.python_executable_for_mesh(mesh_name) if exe is not None: mesh = mesh.with_python_executable(exe) result[mesh_name] = mesh return result def python_executable_for_mesh(self, mesh_name: str) -\u003e Optional[str]: return self._python_executables.get(mesh_name, self._default_python_exe) def remote_mount( self, source: str, mntpoint: Optional[str] = None, meshes: Optional[List[str]] = None, python_exe: Optional[str] = \".venv/bin/python\", **kwargs: Any, ) -\u003e None: default_exe_path = None mesh_exe_path = None if python_exe is not None: abs_source = os.path.abspath(source) local_exe = os.path.join(abs_source, python_exe) if not os.path.isfile(local_exe): raise ValueError( f\"python_exe \u0027{python_exe}\u0027 not found locally at \u0027{local_exe}\u0027. \" f\"Ensure the virtual environment exists in \u0027{source}\u0027 before calling remote_mount.\" ) abs_mntpoint = ( os.path.abspath(mntpoint) if mntpoint is not None else abs_source ) exe_path = os.path.join(abs_mntpoint, python_exe) if meshes is None: default_exe_path = exe_path else: mesh_exe_path = exe_path self._mounts.remote_mount( source=source, mntpoint=mntpoint, meshes=meshes, **kwargs ) if default_exe_path is not None: self._default_python_exe = default_exe_path elif mesh_exe_path is not None and meshes is not None: for mesh_name in meshes: self._python_executables[mesh_name] = mesh_exe_path def gather_mount( self, remote_mount_point: str, local_mount_point: str, meshes: Optional[List[str]] = None, ) -\u003e None: self._mounts.gather_mount( remote_mount_point=remote_mount_point, local_mount_point=local_mount_point, meshes=meshes, ) class TelemetryComponent(JobComponent): \"\"\"Host telemetry for a job. ``before_connect`` opens the sidecar\u0027s telemetry handle and installs the client-process Unix socket sink *before* raw host meshes are materialized so host-mesh creation events are captured. ``connect`` asks the sidecar to fan worker collectors out across the materialized host meshes. Config drift clears parent-side handles, but the sidecar keeps its in-memory telemetry store for the same ``apply_id``. Telemetry is best-effort: any failure is logged and leaves telemetry disabled for this job rather than failing ``state()``. \"\"\" def __init__(self, config: TelemetryConfig) -\u003e None: self._config = config self._telemetry_url: Optional[str] = None self._dashboard_url: Optional[str] = None self._query_engine_client: Optional[QueryEngineClient] = None def reset_runtime(self) -\u003e None: self._query_engine_client = None self._telemetry_url = None self._dashboard_url = None def __getstate__(self) -\u003e Dict[str, Any]: state = self.__dict__.copy() state[\"_query_engine_client\"] = None state[\"_telemetry_url\"] = None state[\"_dashboard_url\"] = None return state def before_connect(self, job: \"JobTrait\") -\u003e None: if self._query_engine_client is not None: return apply_id = job.apply_id if apply_id is None: return try: response = Telemetry(self._config).ensure_open(apply_id, host_meshes={}) telemetry_url = response.get(\"telemetry_url\") dashboard_url = response.get(\"dashboard_url\") socket_path = response.get(\"socket_path\") if not isinstance(telemetry_url, str) or not isinstance(socket_path, str): raise RuntimeError( f\"invalid job sidecar telemetry response: {response!r}\" ) self._telemetry_url = telemetry_url if isinstance(dashboard_url, str): self._dashboard_url = dashboard_url if self._config.include_dashboard: print(f\"Monarch Dashboard: {dashboard_url}\", flush=True) self._query_engine_client = QueryEngineClient(telemetry_url) install_sidecar_socket_sink(socket_path) except Exception: # Reset so a partial bootstrap leaves a clean \"disabled\" state: # fan-out no-ops and `state` exposes no query client. self._query_engine_client = None self._telemetry_url = None self._dashboard_url = None logger.warning( \"job sidecar telemetry bootstrap failed; telemetry disabled for this job\", exc_info=True, ) def connect( self, job: \"JobTrait\", host_meshes: Dict[str, HostMesh] ) -\u003e Dict[str, HostMesh]: if self._query_engine_client is None: return host_meshes apply_id = job.apply_id if apply_id is None: return host_meshes try: # `_telemetry_url`/`_dashboard_url` are already set by # `before_connect`; this call only triggers worker fan-out, so its # response is intentionally ignored. Telemetry(self._config).ensure_open( apply_id, host_meshes=host_meshes, spawn_worker_collectors=job._should_spawn_telemetry_worker_collector_actors(), ) except Exception: logger.warning( \"job sidecar telemetry worker fan-out failed\", exc_info=True, ) return host_meshes def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: if self._query_engine_client is not None: job_state.query_engine_client = self._query_engine_client job_state.telemetry_url = self._telemetry_url job_state.dashboard_url = self._dashboard_url class AdminComponent(JobComponent): \"\"\"Start the mesh admin agent once per allocation. Owns the admin URL and ref. If telemetry is configured, the admin agent receives the telemetry URL from the active telemetry component. ``JobComponents`` resets this runtime when admin config drifts or telemetry config changes. \"\"\" def __init__( self, config: MeshAdminConfig, telemetry: Optional[TelemetryComponent], ) -\u003e None: self._config = config self._telemetry = telemetry self._admin_url: Optional[str] = None self._admin_ref: Optional[PyMeshAdminRef] = None def reset_runtime(self) -\u003e None: self._admin_url = None self._admin_ref = None def __getstate__(self) -\u003e Dict[str, Any]: state = self.__dict__.copy() state[\"_admin_url\"] = None state[\"_admin_ref\"] = None return state def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: if self._admin_url is None: telemetry_url = ( self._telemetry._telemetry_url if self._telemetry is not None else None ) # state() is a sync API but is commonly called from inside # asyncio.run(...); mask the running loop so the inner .get() does not # trip the Future.get-in-loop check. with fake_sync_state(): self._admin_url, self._admin_ref = _spawn_admin( list(job_state._hosts.values()), admin_addr=self._config.admin_addr, telemetry_url=telemetry_url, ).get() job_state.admin_url = self._admin_url class SnapshotComponent(JobComponent): \"\"\"Start periodic mesh-introspection snapshots once per allocation. Requires both telemetry and admin to have come up, plus a positive ``snapshot_interval_secs``. The snapshot actor is owned by proc lifecycle, so this component has no fine-grained stop handle once started. Because the actor cannot be stopped, ``_started`` stays sticky for the life of the allocation: once running, the snapshot is not restarted even when its telemetry or admin dependencies are reset by config drift. Restarting would spawn a duplicate actor against the new runtime while the original keeps capturing from the old one. ``JobComponents`` warns on such drift; picking up new config requires killing and re-applying the job. \"\"\" def __init__( self, telemetry: TelemetryComponent, admin: AdminComponent, ) -\u003e None: self._telemetry = telemetry self._admin = admin self._started = False def reset_runtime(self) -\u003e None: self._started = False def __getstate__(self) -\u003e Dict[str, Any]: state = self.__dict__.copy() state[\"_started\"] = False return state def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: if self._started: return admin_ref = self._admin._admin_ref if admin_ref is None: return snapshot_interval_secs = self._telemetry._config.snapshot_interval_secs if snapshot_interval_secs \u003c= 0: return from monarch.actor import context instance = context().actor_instance._as_rust() telemetry_url = self._telemetry._telemetry_url if telemetry_url is None: return from monarch._rust_bindings.monarch_extension.snapshot_integration import ( _start_periodic_snapshots_http, ) _start_periodic_snapshots_http( base_url=telemetry_url, admin_ref=admin_ref, instance=instance, interval_secs=snapshot_interval_secs, ) self._started = True @dataclass class JobComponents: \"\"\"Stable component set for one job. Field order is dependency order. Mounts always run first, telemetry feeds admin, and snapshots require both telemetry and admin. \"\"\" mounts: MountComponent = field(default_factory=MountComponent) telemetry: Optional[TelemetryComponent] = None admin: Optional[AdminComponent] = None snapshot: Optional[SnapshotComponent] = None def _ordered(self) -\u003e List[JobComponent]: components: List[JobComponent] = [self.mounts] if self.telemetry is not None: components.append(self.telemetry) if self.admin is not None: components.append(self.admin) if self.snapshot is not None: components.append(self.snapshot) return components def before_connect(self, job: \"JobTrait\") -\u003e None: for component in self._ordered(): component.before_connect(job) def connect( self, job: \"JobTrait\", host_meshes: Dict[str, HostMesh] ) -\u003e Dict[str, HostMesh]: for component in self._ordered(): host_meshes = component.connect(job, host_meshes) return host_meshes def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: for component in self._ordered(): component.state(job, job_state) def reset_runtime(self) -\u003e None: for component in reversed(self._ordered()): component.reset_runtime() def configure_telemetry(self, config: TelemetryConfig) -\u003e None: if self.telemetry is None: self.telemetry = TelemetryComponent(config) telemetry_changed = True else: telemetry_changed = self.telemetry._config != config if telemetry_changed: self.telemetry.reset_runtime() self.telemetry._config = config if telemetry_changed: self._warn_if_snapshot_stale() if self.admin is not None: if telemetry_changed: self.admin.reset_runtime() # Admin config is unchanged here; only rewire its telemetry handle. self.admin._telemetry = self.telemetry self._configure_snapshot() def configure_admin(self, config: MeshAdminConfig) -\u003e None: if self.admin is None: self.admin = AdminComponent(config, self.telemetry) else: self._set_admin_inputs(config) self._configure_snapshot() def _set_admin_inputs(self, config: MeshAdminConfig) -\u003e None: admin = self.admin if admin is None: return if admin._config != config: admin.reset_runtime() self._warn_if_snapshot_stale() admin._config = config admin._telemetry = self.telemetry def _warn_if_snapshot_stale(self) -\u003e None: \"\"\"Warn when a dependency restarts under an already-running snapshot. The snapshot actor is fire-and-forget and cannot be stopped within an allocation, so a restarted telemetry or admin runtime leaves it bound to the old runtime. See :class:`SnapshotComponent`. TODO: give periodic snapshot capture an abort handle so ``SnapshotComponent.reset_runtime`` can stop the old actor; then reset the snapshot in this drift cascade alongside telemetry and admin. \"\"\" if self.snapshot is not None and self.snapshot._started: logger.warning( \"telemetry or admin config changed while periodic snapshots are running: \" \"snapshots stay bound to the original runtime until the job is killed and re-applied\" ) def _configure_snapshot(self) -\u003e None: if self.telemetry is not None and self.admin is not None: if self.snapshot is None: self.snapshot = SnapshotComponent(self.telemetry, self.admin) else: self.snapshot._telemetry = self.telemetry self.snapshot._admin = self.admin elif self.snapshot is not None: self.snapshot = None",
+       "articleBody": "Source code for monarch._src.job.job_components # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict \"\"\"Lifecycle components for ``JobTrait``. ``JobTrait`` owns scheduler state and the current allocation. ``JobComponent`` owns the configuration and live handles for one job-scoped capability: mounts, telemetry, admin, or snapshots. The hooks mirror the job lifecycle after an allocation is selected: - ``before_connect(job)``: before ``JobTrait._connect()`` materializes raw host meshes. - ``connect(job, host_meshes)``: after raw host meshes exist; return the final user-facing meshes. - ``state(job, job_state)``: after final meshes are wrapped in ``JobState``; start services and attach fields to the object returned to the caller. - ``reset_runtime()``: drop local live handles. ``JobComponents`` is a stable typed container. It owns optional component presence, dependency wiring, and phase ordering; ``JobTrait`` owns allocation identity. \"\"\" from __future__ import annotations import logging import os from dataclasses import dataclass, field from typing import Any, Dict, List, Optional, TYPE_CHECKING from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef from monarch._src.actor.host_mesh import _spawn_admin from monarch._src.actor.sync_state import fake_sync_state from monarch._src.job._telemetry_query_client import QueryEngineClient from monarch._src.job.mount_config import Mounts from monarch._src.job.telemetry_config import ( install_sidecar_socket_sink, Telemetry, TelemetryConfig, ) from monarch.actor import HostMesh if TYPE_CHECKING: from monarch._src.job.job import JobState, JobTrait logger: logging.Logger = logging.getLogger(__name__) [docs] @dataclass class MeshAdminConfig: \"\"\"Configuration for automatic mesh admin agent startup. When passed to ``JobTrait.enable_telemetry``, a MeshAdminAgent HTTP server is spawned when ``state()`` is called. The server aggregates topology across all host meshes and exposes it via a REST API that the admin TUI can attach to. Args: admin_addr: Bind address for the admin HTTP server. When ``None``, the server uses the configured ``MESH_ADMIN_ADDR``. \"\"\" admin_addr: Optional[str] = None class JobComponent: \"\"\"A job-scoped component driven by ``JobTrait``.\"\"\" def before_connect(self, job: \"JobTrait\") -\u003e None: \"\"\"Run at the start of ``JobTrait._connect``, before raw host meshes exist.\"\"\" def connect( self, job: \"JobTrait\", host_meshes: Dict[str, HostMesh], via_gateway: bool = False, ) -\u003e Dict[str, HostMesh]: \"\"\"Run during ``JobTrait._connect`` to produce final user-facing meshes. ``via_gateway`` says the job reaches its workers only through a scheduler gateway. Resolved by the caller so every component sees the same answer. \"\"\" return host_meshes def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: \"\"\"Run during ``JobTrait.state`` to bring services up on final meshes.\"\"\" def reset_runtime(self) -\u003e None: \"\"\"Drop local live handles owned by this component.\"\"\" class MountComponent(JobComponent): \"\"\"Open configured mounts and apply per-mesh python executables. Runs in ``connect`` -- after ``JobTrait._connect`` materializes the raw host meshes and before any service comes up -- so it produces the final meshes that both the caller and the downstream ``state`` services see. Config drift is copied in place; the next ``connect`` lets ``Mounts.ensure_open`` refresh, replace, or clear sidecar mount state. \"\"\" def __init__(self) -\u003e None: self._mounts: Mounts = Mounts() self._python_executables: Dict[str, str] = {} self._default_python_exe: Optional[str] = None def connect( self, job: \"JobTrait\", host_meshes: Dict[str, HostMesh], via_gateway: bool = False, ) -\u003e Dict[str, HostMesh]: apply_id = job.apply_id if apply_id is not None: self._mounts.ensure_open(apply_id, host_meshes, via_gateway) result: Dict[str, HostMesh] = {} for mesh_name, mesh in host_meshes.items(): exe = self.python_executable_for_mesh(mesh_name) if exe is not None: mesh = mesh.with_python_executable(exe) result[mesh_name] = mesh return result def needs_sidecar(self) -\u003e bool: \"\"\"Whether configured mounts require the shared job sidecar.\"\"\" return bool(self._mounts._remote_entries or self._mounts._gather_entries) def python_executable_for_mesh(self, mesh_name: str) -\u003e Optional[str]: return self._python_executables.get(mesh_name, self._default_python_exe) def remote_mount( self, source: str, mntpoint: Optional[str] = None, meshes: Optional[List[str]] = None, python_exe: Optional[str] = \".venv/bin/python\", **kwargs: Any, ) -\u003e None: default_exe_path = None mesh_exe_path = None if python_exe is not None: abs_source = os.path.abspath(source) local_exe = os.path.join(abs_source, python_exe) if not os.path.isfile(local_exe): raise ValueError( f\"python_exe \u0027{python_exe}\u0027 not found locally at \u0027{local_exe}\u0027. \" f\"Ensure the virtual environment exists in \u0027{source}\u0027 before calling remote_mount.\" ) abs_mntpoint = ( os.path.abspath(mntpoint) if mntpoint is not None else abs_source ) exe_path = os.path.join(abs_mntpoint, python_exe) if meshes is None: default_exe_path = exe_path else: mesh_exe_path = exe_path self._mounts.remote_mount( source=source, mntpoint=mntpoint, meshes=meshes, **kwargs ) if default_exe_path is not None: self._default_python_exe = default_exe_path elif mesh_exe_path is not None and meshes is not None: for mesh_name in meshes: self._python_executables[mesh_name] = mesh_exe_path def gather_mount( self, remote_mount_point: str, local_mount_point: str, meshes: Optional[List[str]] = None, ) -\u003e None: self._mounts.gather_mount( remote_mount_point=remote_mount_point, local_mount_point=local_mount_point, meshes=meshes, ) class TelemetryComponent(JobComponent): \"\"\"Host telemetry for a job. ``before_connect`` opens the sidecar\u0027s telemetry handle and installs the client-process Unix socket sink *before* raw host meshes are materialized so host-mesh creation events are captured. ``connect`` asks the sidecar to fan worker collectors out across the materialized host meshes. Config drift clears parent-side handles, but the sidecar keeps its in-memory telemetry store for the same ``apply_id``. Telemetry is best-effort: any failure is logged and leaves telemetry disabled for this job rather than failing ``state()``. \"\"\" def __init__(self, config: TelemetryConfig) -\u003e None: self._config = config self._telemetry_url: Optional[str] = None self._dashboard_url: Optional[str] = None self._query_engine_client: Optional[QueryEngineClient] = None @property def telemetry_url(self) -\u003e Optional[str]: return self._telemetry_url def query_client(self, job: \"JobTrait\") -\u003e QueryEngineClient: \"\"\"Connect to the job\u0027s existing telemetry query endpoint.\"\"\" apply_id = job.apply_id if apply_id is None: raise RuntimeError(\"the active job has no apply id\") response = Telemetry(self._config).info(apply_id) telemetry_url = response[\"telemetry_url\"] self._telemetry_url = telemetry_url self._query_engine_client = QueryEngineClient(telemetry_url) return self._query_engine_client def reset_runtime(self) -\u003e None: self._query_engine_client = None self._telemetry_url = None self._dashboard_url = None def __getstate__(self) -\u003e Dict[str, Any]: state = self.__dict__.copy() state[\"_query_engine_client\"] = None state[\"_telemetry_url\"] = None state[\"_dashboard_url\"] = None return state def before_connect(self, job: \"JobTrait\") -\u003e None: if self._query_engine_client is not None: return apply_id = job.apply_id if apply_id is None: return try: response = Telemetry(self._config).ensure_open(apply_id, host_meshes={}) telemetry_url = response.get(\"telemetry_url\") dashboard_url = response.get(\"dashboard_url\") socket_path = response.get(\"socket_path\") if not isinstance(telemetry_url, str) or not isinstance(socket_path, str): raise RuntimeError( f\"invalid job sidecar telemetry response: {response!r}\" ) self._telemetry_url = telemetry_url if isinstance(dashboard_url, str): self._dashboard_url = dashboard_url self._query_engine_client = QueryEngineClient(telemetry_url) install_sidecar_socket_sink(socket_path) if self._dashboard_url is not None and self._config.include_dashboard: print(f\"Monarch Dashboard: {self._dashboard_url}\", flush=True) except Exception: # Reset so a partial bootstrap leaves a clean \"disabled\" state: # fan-out no-ops and `state` exposes no query client. self._query_engine_client = None self._telemetry_url = None self._dashboard_url = None logger.warning( \"job sidecar telemetry bootstrap failed; telemetry disabled for this job\", exc_info=True, ) def connect( self, job: \"JobTrait\", host_meshes: Dict[str, HostMesh], via_gateway: bool = False, ) -\u003e Dict[str, HostMesh]: if self._query_engine_client is None: return host_meshes apply_id = job.apply_id if apply_id is None: return host_meshes try: # `_telemetry_url`/`_dashboard_url` are already set by # `before_connect`; this call only triggers worker fan-out, so its # response is intentionally ignored. Telemetry(self._config).ensure_open( apply_id, host_meshes=host_meshes, spawn_worker_collectors=job._should_spawn_telemetry_worker_collector_actors(), ) except Exception: logger.warning( \"job sidecar telemetry worker fan-out failed\", exc_info=True, ) return host_meshes def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: if self._query_engine_client is not None: job_state.query_engine_client = self._query_engine_client job_state.telemetry_url = self._telemetry_url job_state.dashboard_url = self._dashboard_url class AdminComponent(JobComponent): \"\"\"Start the mesh admin agent once per allocation. Owns the admin URL and ref. If telemetry is configured, the admin agent receives the telemetry URL from the active telemetry component. ``JobComponents`` resets this runtime when admin config drifts or telemetry config changes. \"\"\" def __init__( self, config: MeshAdminConfig, telemetry: Optional[TelemetryComponent], ) -\u003e None: self._config = config self._telemetry = telemetry self._admin_url: Optional[str] = None self._admin_ref: Optional[PyMeshAdminRef] = None def reset_runtime(self) -\u003e None: self._admin_url = None self._admin_ref = None def __getstate__(self) -\u003e Dict[str, Any]: state = self.__dict__.copy() state[\"_admin_url\"] = None state[\"_admin_ref\"] = None return state def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: if self._admin_url is None: telemetry_url = ( self._telemetry._telemetry_url if self._telemetry is not None else None ) # state() is a sync API but is commonly called from inside # asyncio.run(...); mask the running loop so the inner .get() does not # trip the Future.get-in-loop check. with fake_sync_state(): self._admin_url, self._admin_ref = _spawn_admin( list(job_state._hosts.values()), admin_addr=self._config.admin_addr, telemetry_url=telemetry_url, ).get() # Push the resolved admin URL into the telemetry sidecar (a separate # process) so the dashboard\u0027s pyspy client targets the real admin # endpoint rather than the default https://\u003cfqdn\u003e:1729. Best-effort and # only when telemetry is live; never fatal to job startup. if ( self._telemetry is not None and self._telemetry._telemetry_url is not None and self._admin_url is not None and job.apply_id is not None ): try: Telemetry(self._telemetry._config).set_admin_url( job.apply_id, self._admin_url ) except Exception: logger.warning( \"failed to push admin URL to telemetry sidecar\", exc_info=True ) job_state.admin_url = self._admin_url class SnapshotComponent(JobComponent): \"\"\"Start periodic mesh-introspection snapshots once per allocation. Requires both telemetry and admin to have come up, plus a positive ``snapshot_interval_secs``. The snapshot actor is owned by proc lifecycle, so this component has no fine-grained stop handle once started. Because the actor cannot be stopped, ``_started`` stays sticky for the life of the allocation: once running, the snapshot is not restarted even when its telemetry or admin dependencies are reset by config drift. Restarting would spawn a duplicate actor against the new runtime while the original keeps capturing from the old one. ``JobComponents`` warns on such drift; picking up new config requires killing and re-applying the job. \"\"\" def __init__( self, telemetry: TelemetryComponent, admin: AdminComponent, ) -\u003e None: self._telemetry = telemetry self._admin = admin self._started = False def reset_runtime(self) -\u003e None: self._started = False def __getstate__(self) -\u003e Dict[str, Any]: state = self.__dict__.copy() state[\"_started\"] = False return state def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: if self._started: return admin_ref = self._admin._admin_ref if admin_ref is None: return snapshot_interval_secs = self._telemetry._config.snapshot_interval_secs if snapshot_interval_secs \u003c= 0: return from monarch.actor import context instance = context().actor_instance._as_rust() telemetry_url = self._telemetry._telemetry_url if telemetry_url is None: return from monarch._rust_bindings.monarch_extension.snapshot_integration import ( _start_periodic_snapshots_http, ) _start_periodic_snapshots_http( base_url=telemetry_url, admin_ref=admin_ref, instance=instance, interval_secs=snapshot_interval_secs, ) self._started = True @dataclass class JobComponents: \"\"\"Stable component set for one job. Field order is dependency order. Mounts always run first, telemetry feeds admin, and snapshots require both telemetry and admin. \"\"\" mounts: MountComponent = field(default_factory=MountComponent) telemetry: Optional[TelemetryComponent] = None admin: Optional[AdminComponent] = None snapshot: Optional[SnapshotComponent] = None def needs_sidecar(self) -\u003e bool: \"\"\"Whether telemetry or mounts require the shared job sidecar.\"\"\" return self.mounts.needs_sidecar() or self.telemetry is not None def _ordered(self) -\u003e List[JobComponent]: components: List[JobComponent] = [self.mounts] if self.telemetry is not None: components.append(self.telemetry) if self.admin is not None: components.append(self.admin) if self.snapshot is not None: components.append(self.snapshot) return components def before_connect(self, job: \"JobTrait\") -\u003e None: for component in self._ordered(): component.before_connect(job) def connect( self, job: \"JobTrait\", host_meshes: Dict[str, HostMesh], via_gateway: bool = False, ) -\u003e Dict[str, HostMesh]: for component in self._ordered(): host_meshes = component.connect(job, host_meshes, via_gateway) return host_meshes def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: for component in self._ordered(): component.state(job, job_state) def reset_runtime(self) -\u003e None: for component in reversed(self._ordered()): component.reset_runtime() def configure_telemetry( self, config: TelemetryConfig, mesh_admin_config: Optional[MeshAdminConfig] = None, ) -\u003e None: \"\"\"Configure telemetry and its mesh admin and snapshot dependencies.\"\"\" telemetry = self.telemetry if telemetry is None: telemetry = TelemetryComponent(config) self.telemetry = telemetry telemetry_changed = True else: telemetry_changed = telemetry._config != config if telemetry_changed: telemetry.reset_runtime() telemetry._config = config if telemetry_changed: self._warn_if_snapshot_stale() admin = self.admin if admin is None: admin = AdminComponent( mesh_admin_config if mesh_admin_config is not None else MeshAdminConfig(), telemetry, ) self.admin = admin else: if telemetry_changed: admin.reset_runtime() admin._telemetry = telemetry if mesh_admin_config is not None: self._set_admin_inputs(admin, mesh_admin_config) if self.snapshot is None: self.snapshot = SnapshotComponent(telemetry, admin) def configure_admin(self, config: MeshAdminConfig) -\u003e None: admin = self.admin if admin is None: self.admin = AdminComponent(config, self.telemetry) else: self._set_admin_inputs(admin, config) def _set_admin_inputs(self, admin: AdminComponent, config: MeshAdminConfig) -\u003e None: if admin._config != config: admin.reset_runtime() self._warn_if_snapshot_stale() admin._config = config admin._telemetry = self.telemetry def _warn_if_snapshot_stale(self) -\u003e None: \"\"\"Warn when a dependency restarts under an already-running snapshot. The snapshot actor is fire-and-forget and cannot be stopped within an allocation, so a restarted telemetry or admin runtime leaves it bound to the old runtime. See :class:`SnapshotComponent`. TODO: give periodic snapshot capture an abort handle so ``SnapshotComponent.reset_runtime`` can stop the old actor; then reset the snapshot in this drift cascade alongside telemetry and admin. \"\"\" if self.snapshot is not None and self.snapshot._started: logger.warning( \"telemetry or admin config changed while periodic snapshots are running: \" \"snapshots stay bound to the original runtime until the job is killed and re-applied\" )",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["generate_random_selection","generate_random_shape","generate_selection_for_dimensions","main","test_reshape_selection_correctness"],"struct":["BenchmarkStats","Cli","NewOnlyBenchmarkStats"]};

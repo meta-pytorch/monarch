@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["CastError"],"fn":["update_undeliverable_envelope_for_casting"],"static":["CAST_ACTOR_MESH_ID"]};
+window.SIDEBAR_ITEMS = {"enum":["CastError"],"fn":["set_cast_info_on_headers","update_undeliverable_envelope_for_casting"],"static":["CAST_ACTOR_MESH_ID","CAST_ORIGINATING_SENDER","CAST_POINT"],"trait":["CastInfo"]};

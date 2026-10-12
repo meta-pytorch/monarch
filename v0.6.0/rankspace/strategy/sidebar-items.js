@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["gen_extent","gen_rank_rect","gen_rank_rect_and_strided_subrect","gen_rank_rect_strided"]};

@@ -34,6 +34,12 @@ by default and wires up the OTLP log sink.
 Built-in actor system metrics (mailbox posts, messages sent/received, queue
 sizes, etc.) and log events are exported with no code changes.
 
+External OTLP export is independent of distributed telemetry. When a job also
+enables distributed telemetry, the same OTel metric provider feeds a job-local
+Unix-socket exporter and exposes points through the ``metric_gauges``,
+``metric_sums``, and ``metric_histograms`` SQL tables. Metric instrumentation
+does not need to know which readers or exporters are active.
+
 Architecture
 ------------
 
@@ -215,7 +221,7 @@ Configuration
      - (unset)
      - Timeout for OTLP export requests.
 
-.. GENERATED FROM PYTHON SOURCE LINES 209-215
+.. GENERATED FROM PYTHON SOURCE LINES 215-221
 
 Controller Script
 -----------------
@@ -224,7 +230,7 @@ exercises them to generate metrics and log events. Both the controller
 and worker pods have ``OTEL_EXPORTER_OTLP_ENDPOINT`` set, so all telemetry
 is automatically forwarded to the collector.
 
-.. GENERATED FROM PYTHON SOURCE LINES 215-232
+.. GENERATED FROM PYTHON SOURCE LINES 221-238
 
 .. code-block:: default
 
@@ -246,11 +252,11 @@ is automatically forwarded to the collector.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 233-234
+.. GENERATED FROM PYTHON SOURCE LINES 239-240
 
 Define an actor that performs work to generate telemetry.
 
-.. GENERATED FROM PYTHON SOURCE LINES 234-259
+.. GENERATED FROM PYTHON SOURCE LINES 240-265
 
 .. code-block:: default
 
@@ -280,11 +286,11 @@ Define an actor that performs work to generate telemetry.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 260-261
+.. GENERATED FROM PYTHON SOURCE LINES 266-267
 
 Build the worker pod template with OTEL environment variables.
 
-.. GENERATED FROM PYTHON SOURCE LINES 261-294
+.. GENERATED FROM PYTHON SOURCE LINES 267-300
 
 .. code-block:: default
 
@@ -322,12 +328,12 @@ Build the worker pod template with OTEL environment variables.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 295-297
+.. GENERATED FROM PYTHON SOURCE LINES 301-303
 
 The main function provisions workers, spawns actors, and runs several
 rounds of work to produce a stream of metrics and logs.
 
-.. GENERATED FROM PYTHON SOURCE LINES 297-367
+.. GENERATED FROM PYTHON SOURCE LINES 303-373
 
 .. code-block:: default
 

@@ -1,0 +1,55 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="A native, language-independent client-root capability."><title>hyperactor_mesh::client_root - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor_mesh" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (c397dae80 2026-07-02)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module client_root</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../hyperactor_mesh/index.html">hyperactor_<wbr>mesh</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module client_<wbr>root</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#croot-invariant-registry" title="CROOT invariant registry">CROOT invariant registry</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#statics" title="Statics">Statics</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate hyperactor_<wbr>mesh</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">hyperactor_mesh</a></div><h1>Module <span>client_<wbr>root</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/hyperactor_mesh/client_root.rs.html#9-282">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>A native, language-independent client-root capability.</p>
+<p>A Hyperactor mesh program has exactly one root client. Rust and Python are
+alternative bootstrap implementations of that one root, not separate root
+namespaces; worker ProcAgents host actors but never become client roots.</p>
+<p><a href="struct.ClientRootRef.html" title="struct hyperactor_mesh::client_root::ClientRootRef"><code>ClientRootRef</code></a> is an opaque bearer capability to the root, carried in an
+actor’s <a href="../../hyperactor/environment/struct.ActorEnvironment.html" title="struct hyperactor::environment::ActorEnvironment"><code>ActorEnvironment</code></a> and inherited by
+descendants. Its sole authority is to create or reuse a statically declared,
+root-owned service through the root ProcAgent’s [<code>EnsureClientRootService</code>]
+handler.</p>
+<h2 id="croot-invariant-registry"><a class="doc-anchor" href="#croot-invariant-registry">§</a>CROOT invariant registry</h2>
+<ul>
+<li><strong>CROOT-1 (singleton binding):</strong> the active client bootstrap binds
+[<code>ClientRootApi</code>] on the program’s one root ProcAgent and stores that exact
+reference; worker ProcAgents never bind it.</li>
+<li><strong>CROOT-2 (typed API attenuation):</strong> <a href="struct.ClientRootRef.html" title="struct hyperactor_mesh::client_root::ClientRootRef"><code>ClientRootRef</code></a> exposes only typed
+ensure-service authority and no root administration.</li>
+<li><strong>CROOT-3 (single identity):</strong> exact name/type/parameter equality returns
+one cached spawn result; a type or parameter-byte difference for the same
+name conflicts. The service actor is created under a fresh random instance
+id, which avoids the predictable collision a name-derived id would create;
+the create path re-draws the id if it collides with one already present in
+<code>actor_states</code>.</li>
+<li><strong>CROOT-4 (worker rejection):</strong> a worker ProcAgent has no bound client-root
+handler, so a retyped worker reference reaches an unbound port and cannot
+create a service.</li>
+<li><strong>CROOT-5 (root ownership):</strong> service lifetime belongs to the root
+ProcAgent, never the requester; a reused reference to a service that has
+reached a terminal state fails closed rather than returning a dead actor.</li>
+<li><strong>CROOT-6 (validation):</strong> a capability absent from the actor environment
+fails closed — <a href="struct.ClientRootRef.html#method.from_env" title="associated function hyperactor_mesh::client_root::ClientRootRef::from_env"><code>ClientRootRef::from_env</code></a> returns an error rather than a
+silent <code>None</code>, before any request is sent.</li>
+<li><strong>CROOT-7 (continuity):</strong> each created service receives the same
+<a href="struct.ClientRootRef.html" title="struct hyperactor_mesh::client_root::ClientRootRef"><code>ClientRootRef</code></a> in its native environment.</li>
+<li><strong>CROOT-8 (runtime neutrality):</strong> Rust and Python roots store the same
+native capability under the same environment key.</li>
+<li><strong>CROOT-9 (map layering):</strong> a service’s spawn result and lifecycle live
+solely in the ProcAgent <code>actor_states</code> registry; the service-identity table
+records only the (actor type, exact parameter bytes, instance id) a repeat
+ensure must match. Only ensure writes that table, and only alongside the
+<code>actor_states</code> entry, so the two never disagree.</li>
+<li><strong>CROOT-10 (attestation boundary):</strong> the only explicit attestation restores
+<code>ActorRef&lt;A&gt;</code> immediately after the erased spawn reply whose requested and
+recorded actor type was derived from that same <code>A</code>; every other reference is
+bound or deserialized.</li>
+<li><strong>CROOT-11 (handler resilience):</strong> the <code>EnsureClientRootService</code> handler
+disables undeliverable-return on its reply and always returns <code>Ok(())</code>,
+reporting every expected failure through the typed reply; a malformed,
+conflicting, or reply-undeliverable request never faults the root ProcAgent.</li>
+<li><strong>CROOT-12 (crate layering):</strong> every client-root type and policy stays in
+<code>hyperactor_mesh</code> (or a higher composition crate); <code>hyperactor</code> remains a
+generic attribute carrier with no static mesh dependency.</li>
+</ul>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.ClientRootRef.html" title="struct hyperactor_mesh::client_root::ClientRootRef">Client<wbr>Root<wbr>Ref</a></dt><dd>An opaque bearer capability to the program’s one client root.</dd><dt><a class="struct" href="struct.ClientRootService.html" title="struct hyperactor_mesh::client_root::ClientRootService">Client<wbr>Root<wbr>Service</a></dt><dd>A statically declared, root-owned service: a fixed service name plus a
+registered actor type <code>A</code>. Callers supply <code>A::Params</code>; there is no
+caller-supplied runtime actor type or untyped address.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.ClientRootError.html" title="enum hyperactor_mesh::client_root::ClientRootError">Client<wbr>Root<wbr>Error</a></dt><dd>A typed failure from a client-root ensure request.</dd></dl><h2 id="statics" class="section-header">Statics<a href="#statics" class="anchor">§</a></h2><dl class="item-table"><dt><a class="static" href="static.CLIENT_ROOT.html" title="static hyperactor_mesh::client_root::CLIENT_ROOT">CLIENT_<wbr>ROOT</a></dt><dd>The client-root capability carried in an actor’s environment.</dd></dl></section></div></main></body></html>

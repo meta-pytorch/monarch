@@ -176,19 +176,9 @@ import argparse
 import asyncio
 import textwrap
 
-from kubernetes.client import (
- V1Container,
- V1EmptyDirVolumeSource,
- V1EnvVar,
- V1PodSpec,
- V1PodTemplateSpec,
- V1ResourceRequirements,
- V1Volume,
- V1VolumeMount,
-)
-from monarch._src.job.kubernetes import _WORKER_BOOTSTRAP_SCRIPT
 from monarch.config import configure
-from monarch.job.kubernetes import KubernetesJob
+from monarch.job import exec_command
+from monarch.job.kubernetes import ImageSpec, KubernetesJob
 from monarch.spmd import SPMDActor
 from monarch.tools.network import AddrType
 
@@ -197,7 +187,7 @@ configure(enable_log_forwarding=True)
 # Path to train.py on worker pods
 TRAIN_SCRIPT = "/tmp/train.py"
 
-# Training script content -- written to worker pods at startup when provisioning
+# Training script content -- written to worker pods after provisioning
 _TRAIN_SCRIPT_CONTENT = textwrap.dedent("""\
  import os
  import torch
@@ -227,48 +217,6 @@ _TRAIN_SCRIPT_CONTENT = textwrap.dedent("""\
  if __name__ == "__main__":
  main()
 """)
-
-def build_gpu_pod_template(gpus_per_host: int) -> V1PodTemplateSpec:
- """Build a V1PodTemplateSpec with GPU resources and shared memory for NCCL.
-
- The bootstrap command writes train.py to the worker filesystem
- before starting the Monarch worker loop, so the SPMDActor can
- find and execute it.
- """
- # Write train.py then start the worker loop
- bootstrap = (
- "import pathlib\n"
- f"pathlib.Path({TRAIN_SCRIPT!r}).write_text({_TRAIN_SCRIPT_CONTENT!r})\n"
- + _WORKER_BOOTSTRAP_SCRIPT
- )
- gpu_resources = {"nvidia.com/gpu": str(gpus_per_host)}
- return V1PodTemplateSpec(
- spec=V1PodSpec(
- containers=[
- V1Container(
- name="worker",
- image="ghcr.io/meta-pytorch/monarch:latest",
- command=["python", "-u", "-c", bootstrap],
- env=[V1EnvVar(name="MONARCH_PORT", value="26600")],
- resources=V1ResourceRequirements(
- limits=gpu_resources,
- requests=gpu_resources,
- ),
- volume_mounts=[
- V1VolumeMount(name="dshm", mount_path="/dev/shm"),
- ],
- )
- ],
- volumes=[
- V1Volume(
- name="dshm",
- empty_dir=V1EmptyDirVolumeSource(
- medium="Memory", size_limit="16Gi"
- ),
- )
- ],
- ),
- )
 ```
 
 ## Main Function
@@ -302,9 +250,8 @@ async def main(
  # ~~~~~~~~~~~~~~~~~~~~~
  # Create a ``KubernetesJob`` in the ``monarch-tests`` namespace.
  # With ``--provision``, the job creates MonarchMesh CRDs via the K8s API
- # using ``pod_template`` for full control over the pod template (needed for
- # the shared memory volume that NCCL requires). Without ``--provision``,
- # it attaches to pre-provisioned pods.
+ # using ``ImageSpec`` to request GPUs and the shared memory that NCCL needs.
+ # Without ``--provision``, it attaches to pre-provisioned pods.
 
  k8s_job = KubernetesJob(namespace="monarch-tests")
  labels = {"kueue.x-k8s.io/queue-name": queue} if queue else None
@@ -312,7 +259,11 @@ async def main(
  k8s_job.add_mesh(
  mesh_name,
  num_replicas=num_hosts,
- pod_template=build_gpu_pod_template(gpus_per_host),
+ image_spec=ImageSpec(
+ "ghcr.io/meta-pytorch/monarch:latest",
+ resources={"nvidia.com/gpu": gpus_per_host},
+ shared_memory_size="16Gi",
+ ),
  labels=labels,
  )
  else:
@@ -326,6 +277,16 @@ async def main(
 
  job_state = k8s_job.state()
  host_mesh = getattr(job_state, mesh_name)
+ if provision:
+ write_training_script = (
+ "from pathlib import Path; "
+ f"Path({TRAIN_SCRIPT!r}).write_text({_TRAIN_SCRIPT_CONTENT!r})"
+ )
+ return_code = await exec_command(
+ host_mesh, ["python", "-c", write_training_script]
+ )
+ if return_code != 0:
+ raise RuntimeError("failed to write the training script to worker pods")
  proc_mesh = host_mesh.spawn_procs({"gpus": gpus_per_host})
 
  # Stream logs from all processes to the client

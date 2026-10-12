@@ -219,25 +219,26 @@ running the top-level script. For larger jobs, monarch controls many machines. H
 machines are obtained depends on the scheduling system (Slurm, Kubernetes, SkyPilot, etc.),
 but these schedulers are typically encapsulated in a config file.
 
-.. GENERATED FROM PYTHON SOURCE LINES 150-154
+.. GENERATED FROM PYTHON SOURCE LINES 150-155
 
 .. code-block:: default
 
 
-    from monarch.actor import context, HostMesh, hosts_from_config
+    from monarch.actor import context, HostMesh
+    from monarch.job import hosts_from_config
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 155-156
+.. GENERATED FROM PYTHON SOURCE LINES 156-157
 
 We obtain the mesh of hosts for the job by loading that config:
 
-.. GENERATED FROM PYTHON SOURCE LINES 156-164
+.. GENERATED FROM PYTHON SOURCE LINES 157-165
 
 .. code-block:: default
 
 
-    hosts: HostMesh = hosts_from_config("MONARCH_HOSTS")  # NYI: hosts_from_config
+    hosts: HostMesh = hosts_from_config("MONARCH_HOSTS")
     print(hosts.extent)
 
     # An extent is the logical shape of a mesh. It is an ordered map, specifying the size of
@@ -245,11 +246,11 @@ We obtain the mesh of hosts for the job by loading that config:
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 165-166
+.. GENERATED FROM PYTHON SOURCE LINES 166-167
 
 Let's imagine we are writing a trainer across multiple hosts:
 
-.. GENERATED FROM PYTHON SOURCE LINES 166-177
+.. GENERATED FROM PYTHON SOURCE LINES 167-178
 
 .. code-block:: default
 
@@ -265,11 +266,11 @@ Let's imagine we are writing a trainer across multiple hosts:
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 178-179
+.. GENERATED FROM PYTHON SOURCE LINES 179-180
 
 Spawn the trainers
 
-.. GENERATED FROM PYTHON SOURCE LINES 179-182
+.. GENERATED FROM PYTHON SOURCE LINES 180-183
 
 .. code-block:: default
 
@@ -277,11 +278,11 @@ Spawn the trainers
     trainers = trainer_procs.spawn("trainer", Trainer)
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 183-184
+.. GENERATED FROM PYTHON SOURCE LINES 184-185
 
 Do one training step and wait for all to finish it
 
-.. GENERATED FROM PYTHON SOURCE LINES 184-187
+.. GENERATED FROM PYTHON SOURCE LINES 185-188
 
 .. code-block:: default
 
@@ -289,7 +290,7 @@ Do one training step and wait for all to finish it
     print(trainers.step.call().get())
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 188-194
+.. GENERATED FROM PYTHON SOURCE LINES 189-195
 
 Logging
 ---------------------
@@ -298,7 +299,7 @@ User logs from a Monarch job are routed to stdout and stderr of the correspondin
 In distributed runs, you can stream all worker logs to the client and aggregate them to reduce verbosity.
 ``logging_option`` is an async method, so it must be awaited:
 
-.. GENERATED FROM PYTHON SOURCE LINES 194-200
+.. GENERATED FROM PYTHON SOURCE LINES 195-201
 
 .. code-block:: default
 
@@ -309,7 +310,7 @@ In distributed runs, you can stream all worker logs to the client and aggregate 
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 201-207
+.. GENERATED FROM PYTHON SOURCE LINES 202-208
 
 With stream_to_client=True, Monarch forwards logs from all processes (best effort)
 and applies a windowed aggregator that collapses similar lines and emits summaries that allow to get a holistic view of the job.
@@ -318,7 +319,7 @@ If you wish to inspect Monarch system logs, you can find them at ``/tmp/$USER/mo
 You can override the log levels by setting ``MONARCH_FILE_LOG`` (stdout), and ``MONARCH_STDERR_LOG`` (stderr).  Valid values
 include ``["TRACE", "DEBUG", "INFO", "WARN", "ERROR"]``.
 
-.. GENERATED FROM PYTHON SOURCE LINES 209-217
+.. GENERATED FROM PYTHON SOURCE LINES 210-218
 
 Actor and Process References
 ============================
@@ -329,7 +330,7 @@ then pass the dataloaders to the trainers. The nice part of doing it this way in
 the trainers launch the data loaders is that we can relocate the data loader to live on another host
 without the trainer needing to be modified.
 
-.. GENERATED FROM PYTHON SOURCE LINES 217-245
+.. GENERATED FROM PYTHON SOURCE LINES 218-246
 
 .. code-block:: default
 
@@ -362,7 +363,7 @@ without the trainer needing to be modified.
     print(dtrainers.step.call().get())
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 246-255
+.. GENERATED FROM PYTHON SOURCE LINES 247-256
 
 The Supervision Tree
 ====================
@@ -374,7 +375,7 @@ fault tolerance.
 We borrow from Erlang the idea of a tree of supervision. Each process, and each actor
 has a parent that launched it and is responsible for its health.
 
-.. GENERATED FROM PYTHON SOURCE LINES 255-263
+.. GENERATED FROM PYTHON SOURCE LINES 256-264
 
 .. code-block:: default
 
@@ -387,11 +388,11 @@ has a parent that launched it and is responsible for its health.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 264-265
+.. GENERATED FROM PYTHON SOURCE LINES 265-266
 
 If we are calling the endpoint and expecting a response, the error will get routed to the caller:
 
-.. GENERATED FROM PYTHON SOURCE LINES 265-272
+.. GENERATED FROM PYTHON SOURCE LINES 266-273
 
 .. code-block:: default
 
@@ -403,7 +404,7 @@ If we are calling the endpoint and expecting a response, the error will get rout
         print("It didn't say hello")
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 273-278
+.. GENERATED FROM PYTHON SOURCE LINES 274-279
 
 Broadcasting Without Response
 ----------------------------
@@ -411,7 +412,7 @@ We also might call something and provide it no way to respond.
 In this case, the error will not show up as an exception, but will be delivered
 to the owner of "e".
 
-.. GENERATED FROM PYTHON SOURCE LINES 278-283
+.. GENERATED FROM PYTHON SOURCE LINES 279-284
 
 .. code-block:: default
 
@@ -421,14 +422,14 @@ to the owner of "e".
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 284-288
+.. GENERATED FROM PYTHON SOURCE LINES 285-289
 
 The default behavior of the supervision tree means that an error at any level of process
 or actor creation will not go unreported. This can prevent a lot of accidental deadlocks
 compared to the standard unix-style defaults where threads and processes exiting do not
 stop the spawning processes.
 
-.. GENERATED FROM PYTHON SOURCE LINES 290-303
+.. GENERATED FROM PYTHON SOURCE LINES 291-307
 
 Fine-grained Supervision
 ========================
@@ -436,15 +437,18 @@ Sometimes fine-grained recovery is possible. For instance, if a data loader fail
 read a URL, perhaps it would work to just restart it. In these cases, we also offer a
 different API. If an actor defines a `__supervise__` special method, then it will get
 called to handle supervision events for meshes owned by the actor. It may be declared
-with either `def` or `async def`; an `async def` override runs on the actor's asyncio
-event loop and can `await` other endpoints or I/O.
+with either `def` or `async def`, except that an actor whose endpoints are all `def`
+needs a `def` `__supervise__`; an `async def` override runs on the actor's asyncio
+event loop and can `await` other endpoints or I/O. The actor keeps handling messages
+while `__supervise__` is pending, and it may run at any `await` in the actor's
+endpoints, so re-check any state it changes after an `await`.
 If an error happens on an ActorMesh that is a reference, such as a slice, or
 a mesh that is sent to another actor, then the recovery is done on the original
 creator of that mesh, not the holder of the reference. There is currently
 no way to transfer the ownership from the original creator, this way we ensure
 every actor has a single owner to report errors to.
 
-.. GENERATED FROM PYTHON SOURCE LINES 303-328
+.. GENERATED FROM PYTHON SOURCE LINES 307-332
 
 .. code-block:: default
 
@@ -474,14 +478,14 @@ every actor has a single owner to report errors to.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 329-333
+.. GENERATED FROM PYTHON SOURCE LINES 333-337
 
 If a MeshFailure is not handled by any __supervise__ in the supervision tree,
 it will reach the client, where monarch.actor.unhandled_fault_hook will be
 called with the MeshFailure object. By default, this function exits the process
 with a KeyboardInterrupt.
 
-.. GENERATED FROM PYTHON SOURCE LINES 333-351
+.. GENERATED FROM PYTHON SOURCE LINES 337-355
 
 .. code-block:: default
 
@@ -504,7 +508,7 @@ with a KeyboardInterrupt.
     monarch.actor.unhandled_fault_hook = my_unhandled_fault_hook
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 352-364
+.. GENERATED FROM PYTHON SOURCE LINES 356-368
 
 Point-to-Point RDMA
 ====================
@@ -519,7 +523,7 @@ RDMA transfers use libibverbs to transfer data over infiniband or RoCE.
 Unlike traditional NCCL collectives where a send must be matched to a receive,
 once an actor has a handle to a buffer, it can read or write to the buffer without the owner of the buffer.
 
-.. GENERATED FROM PYTHON SOURCE LINES 364-405
+.. GENERATED FROM PYTHON SOURCE LINES 368-409
 
 .. code-block:: default
 
@@ -565,14 +569,14 @@ once an actor has a handle to a buffer, it can read or write to the buffer witho
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 406-410
+.. GENERATED FROM PYTHON SOURCE LINES 410-414
 
 RDMABuffers are intentionally low-level: they do just the data movement when requested. It is up
 to the caller to ensure that the data is not modified until the movement is complete. We intend to
 build higher-level libraries for transferring tensors or implementing collective operations
 on top of these primitives.
 
-.. GENERATED FROM PYTHON SOURCE LINES 413-419
+.. GENERATED FROM PYTHON SOURCE LINES 417-423
 
 Distributed Tensors
 ===================
@@ -581,7 +585,7 @@ This lets a single actor directly compute with tensors distributed across a mesh
 
 We can use distributed features by 'activating' a ProcMesh:
 
-.. GENERATED FROM PYTHON SOURCE LINES 419-425
+.. GENERATED FROM PYTHON SOURCE LINES 423-429
 
 .. code-block:: default
 
@@ -592,12 +596,12 @@ We can use distributed features by 'activating' a ProcMesh:
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 426-428
+.. GENERATED FROM PYTHON SOURCE LINES 430-432
 
 The tensor `t` is now a distributed tensor with a unique value across each process in the mesh.
 we can examine the values on each proc using built in functions:
 
-.. GENERATED FROM PYTHON SOURCE LINES 428-435
+.. GENERATED FROM PYTHON SOURCE LINES 432-439
 
 .. code-block:: default
 
@@ -609,11 +613,11 @@ we can examine the values on each proc using built in functions:
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 436-437
+.. GENERATED FROM PYTHON SOURCE LINES 440-441
 
 and compute with the tensors using any torch function:
 
-.. GENERATED FROM PYTHON SOURCE LINES 437-444
+.. GENERATED FROM PYTHON SOURCE LINES 441-448
 
 .. code-block:: default
 
@@ -625,13 +629,13 @@ and compute with the tensors using any torch function:
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 445-448
+.. GENERATED FROM PYTHON SOURCE LINES 449-452
 
 A distributed tensor can be passed to any mesh of actors that is located on the same mesh
 of processes as the tensors. Each actor will receive the shard of the distributed tensor
 that is on the same process as the actor:
 
-.. GENERATED FROM PYTHON SOURCE LINES 448-452
+.. GENERATED FROM PYTHON SOURCE LINES 452-456
 
 .. code-block:: default
 
@@ -640,11 +644,11 @@ that is on the same process as the actor:
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 453-454
+.. GENERATED FROM PYTHON SOURCE LINES 457-458
 
 And actors themselves can define their own distributed tensors with the `rref` adverb:
 
-.. GENERATED FROM PYTHON SOURCE LINES 454-475
+.. GENERATED FROM PYTHON SOURCE LINES 458-479
 
 .. code-block:: default
 
@@ -670,7 +674,7 @@ And actors themselves can define their own distributed tensors with the `rref` a
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 476-484
+.. GENERATED FROM PYTHON SOURCE LINES 480-488
 
 The ``rref`` adverb invokes the endpoint and then makes the output of the endpoint into a distributed tensor that can be used in
 further distributed computation.
@@ -681,7 +685,7 @@ We eventually want it to be possible for an entirely training framework to be wr
 However, currently the performance of messaging for distributed tensors is not optimized enough to make this practice. They are
 still useful for interactive debugging.
 
-.. GENERATED FROM PYTHON SOURCE LINES 487-501
+.. GENERATED FROM PYTHON SOURCE LINES 491-505
 
 Summary
 =======
@@ -698,7 +702,7 @@ clear semantics for distribution, fault tolerance, and communication patterns.
 The remaining sections fill in more details about how to accomplish common patterns
 with the above features.
 
-.. GENERATED FROM PYTHON SOURCE LINES 503-509
+.. GENERATED FROM PYTHON SOURCE LINES 507-513
 
 Actor Context
 =============
@@ -707,7 +711,7 @@ when initializing torch.distributed, it will need a RANK/WORLD_SIZE. In monarch,
 'what' is always what actor is currently running the code. The 'where' can be
 looked up using the `context()` API:
 
-.. GENERATED FROM PYTHON SOURCE LINES 509-526
+.. GENERATED FROM PYTHON SOURCE LINES 513-530
 
 .. code-block:: default
 
@@ -729,12 +733,12 @@ looked up using the `context()` API:
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 527-529
+.. GENERATED FROM PYTHON SOURCE LINES 531-533
 
 Ranks are always multidimensional and reported as Point objects (dict-like mappings)
 of the dimension names to the index within that dimension.
 
-.. GENERATED FROM PYTHON SOURCE LINES 532-537
+.. GENERATED FROM PYTHON SOURCE LINES 536-541
 
 Free Remote Functions
 ====================
@@ -742,7 +746,7 @@ It is possible to run functions on a process mesh that are not associated with a
 These can be useful to set up state on a process, or perform pre-post processing of
 data before sending it to an actor:
 
-.. GENERATED FROM PYTHON SOURCE LINES 537-551
+.. GENERATED FROM PYTHON SOURCE LINES 541-555
 
 .. code-block:: default
 
@@ -761,7 +765,7 @@ data before sending it to an actor:
         print(check_memory.call().get())
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 552-557
+.. GENERATED FROM PYTHON SOURCE LINES 556-561
 
 Channels and Low-level messaging
 ================================
@@ -769,13 +773,13 @@ It is sometimes useful to establish direct channels between two points,
 or forward the handling of some messages from one actor to another.
 To enable this, all messaging in monarch is built out of port objects.
 
-.. GENERATED FROM PYTHON SOURCE LINES 559-562
+.. GENERATED FROM PYTHON SOURCE LINES 563-566
 
 An actor can create a new channel, which provides a Port for sending and
 a PortReceiver for receiving messages. The Port object can then be sent
 to any endpoint.
 
-.. GENERATED FROM PYTHON SOURCE LINES 562-571
+.. GENERATED FROM PYTHON SOURCE LINES 566-575
 
 .. code-block:: default
 
@@ -789,13 +793,13 @@ to any endpoint.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 572-575
+.. GENERATED FROM PYTHON SOURCE LINES 576-579
 
 Ports can be passed as arguments to actors and sent a response
 remotely. We can also directly ask an endpoint to send its response to a port using
 the  ``send`` messaging primitive.
 
-.. GENERATED FROM PYTHON SOURCE LINES 575-582
+.. GENERATED FROM PYTHON SOURCE LINES 579-586
 
 .. code-block:: default
 
@@ -807,11 +811,11 @@ the  ``send`` messaging primitive.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 583-584
+.. GENERATED FROM PYTHON SOURCE LINES 587-588
 
 The port will receive a response from each actor send the message:
 
-.. GENERATED FROM PYTHON SOURCE LINES 584-589
+.. GENERATED FROM PYTHON SOURCE LINES 588-593
 
 .. code-block:: default
 
@@ -821,12 +825,12 @@ The port will receive a response from each actor send the message:
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 590-592
+.. GENERATED FROM PYTHON SOURCE LINES 594-596
 
 The other adverbs like ``call``, ``stream``, and ``broadcast`` are just
 implemented in terms of ports and send.
 
-.. GENERATED FROM PYTHON SOURCE LINES 595-608
+.. GENERATED FROM PYTHON SOURCE LINES 599-612
 
 Message Ordering
 ======================
@@ -842,7 +846,7 @@ before the next message on the actor is called.
 
 Different actors in the same process handle messages concurrently.
 
-.. GENERATED FROM PYTHON SOURCE LINES 610-622
+.. GENERATED FROM PYTHON SOURCE LINES 614-626
 
 Responding Out of Order
 =============================
@@ -857,7 +861,7 @@ where we use an explicit reponse port for the `infer` endpoint
 so that we can make sure that we always use the most recent version of the weights
 even if update_weights was called after infer:
 
-.. GENERATED FROM PYTHON SOURCE LINES 622-664
+.. GENERATED FROM PYTHON SOURCE LINES 626-668
 
 .. code-block:: default
 

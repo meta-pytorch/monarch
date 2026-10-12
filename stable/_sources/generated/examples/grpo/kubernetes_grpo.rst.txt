@@ -55,9 +55,9 @@ Prerequisites
 - Internet access from worker pods (for downloading Qwen3.5-0.8B-Base and pip
   installing ``transformers``). No HF token is required -- Qwen3.5 is Apache
   2.0 and ungated.
-- The controller pod installs ``datasets`` at startup (see
-  ``manifests/grpo_provision.yaml``); the worker pods do not need it
-  because prompts are loaded in ``main()`` on the controller.
+- The controller environment needs ``datasets`` and access to Hugging Face.
+  ``manifests/grpo_provision.yaml`` installs it in-cluster; the ``uv`` command
+  below supplies it out-of-cluster.
 
 RDMA transport caveat
 ---------------------
@@ -87,6 +87,10 @@ Running the example
     kubectl cp kubernetes_grpo.py monarch-tests/grpo-controller:/tmp/kubernetes_grpo.py
     kubectl exec -it grpo-controller -n monarch-tests -- python /tmp/kubernetes_grpo.py
     kubectl delete -f manifests/grpo_provision.yaml
+
+To run the controller outside the cluster with the default kubeconfig::
+
+    uv run --no-project         --with torchmonarch --with accelerate --with datasets         --with kubernetes --with transformers         python docs/source/examples/grpo/kubernetes_grpo.py         --out_of_cluster         --image ghcr.io/meta-pytorch/monarch:latest
 
 Each step prints one ``[Step NNN] loss=... reward=... gn=...`` line.
 ``reward`` is the mean correctness of the sampled replay-buffer batch;
@@ -147,12 +151,12 @@ Follow the instructions in `Allocate network resources by using GKE managed DRAN
     kubectl delete -f manifests/gke/resource_claim_templates.yaml
     kubectl delete -f manifests/grpo_provision.yaml
 
-.. GENERATED FROM PYTHON SOURCE LINES 142-144
+.. GENERATED FROM PYTHON SOURCE LINES 151-153
 
 Imports
 -------
 
-.. GENERATED FROM PYTHON SOURCE LINES 144-179
+.. GENERATED FROM PYTHON SOURCE LINES 153-195
 
 .. code-block:: default
 
@@ -187,19 +191,26 @@ Imports
         V1VolumeMount,
     )
     from monarch._src.job.kubernetes import _WORKER_BOOTSTRAP_SCRIPT
-    from monarch.actor import Actor, current_rank, current_size, endpoint
-    from monarch.job.kubernetes import KubernetesJob
+    from monarch.actor import (
+        Actor,
+        concurrent_endpoint,
+        current_rank,
+        current_size,
+        endpoint,
+    )
+    from monarch.job import TelemetryConfig
+    from monarch.job.kubernetes import KubeConfig, KubernetesJob
     from monarch.rdma import RDMABuffer
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 180-184
+.. GENERATED FROM PYTHON SOURCE LINES 196-200
 
 Cross-pod RDMABuffer reads use TCP fallback by default on clusters without
 an RDMA CNI. Also extend supervision / spawn-idle timeouts so large model
 loads inside actor __init__ (which block the event loop for tens of
 seconds) don't get killed by the default 60s liveness watchdog.
 
-.. GENERATED FROM PYTHON SOURCE LINES 184-192
+.. GENERATED FROM PYTHON SOURCE LINES 200-208
 
 .. code-block:: default
 
@@ -212,12 +223,12 @@ seconds) don't get killed by the default 60s liveness watchdog.
     )
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 193-195
+.. GENERATED FROM PYTHON SOURCE LINES 209-211
 
 Constants
 ---------
 
-.. GENERATED FROM PYTHON SOURCE LINES 195-203
+.. GENERATED FROM PYTHON SOURCE LINES 211-219
 
 .. code-block:: default
 
@@ -230,7 +241,7 @@ Constants
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 204-212
+.. GENERATED FROM PYTHON SOURCE LINES 220-228
 
 Task-specific: GSM8K reward, prompts, and dataset
 -------------------------------------------------
@@ -241,7 +252,7 @@ helpers, dataset loader, and a class with a ``score`` method matching the
 ``GSM8KScorePolicy.score`` signature. Nothing in the actor topology, RL
 loss, or RDMA weight sync below knows about GSM8K.
 
-.. GENERATED FROM PYTHON SOURCE LINES 212-324
+.. GENERATED FROM PYTHON SOURCE LINES 228-340
 
 .. code-block:: default
 
@@ -358,12 +369,12 @@ loss, or RDMA weight sync below knows about GSM8K.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 325-327
+.. GENERATED FROM PYTHON SOURCE LINES 341-343
 
 Generic helpers
 ---------------
 
-.. GENERATED FROM PYTHON SOURCE LINES 327-356
+.. GENERATED FROM PYTHON SOURCE LINES 343-372
 
 .. code-block:: default
 
@@ -397,12 +408,12 @@ Generic helpers
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 357-359
+.. GENERATED FROM PYTHON SOURCE LINES 373-375
 
 Data structures
 ---------------
 
-.. GENERATED FROM PYTHON SOURCE LINES 359-398
+.. GENERATED FROM PYTHON SOURCE LINES 375-414
 
 .. code-block:: default
 
@@ -446,12 +457,12 @@ Data structures
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 399-401
+.. GENERATED FROM PYTHON SOURCE LINES 415-417
 
 Actors
 ------
 
-.. GENERATED FROM PYTHON SOURCE LINES 401-869
+.. GENERATED FROM PYTHON SOURCE LINES 417-889
 
 .. code-block:: default
 
@@ -527,7 +538,9 @@ Actors
             )
             await self.replay_buffer.put.call(scored)
 
-        @endpoint
+        # Run as a concurrent endpoint so the scorer can queue completions from
+        # the generator mesh while the learner is busy with the previous rollout.
+        @concurrent_endpoint
         async def run(self) -> None:
             if self.running:
                 return
@@ -605,7 +618,9 @@ Actors
             self.cond = asyncio.Condition()
             self.policy_version = 0
 
-        @endpoint
+        # Run concurrently so a rollout can wait for the learner's weight update;
+        # serial endpoint dispatch would leave the update queued behind that wait.
+        @concurrent_endpoint
         async def generate(self, prompt_text: str, ground_truth: str) -> None:
             async with self.cond:
                 await self.cond.wait_for(
@@ -924,12 +939,12 @@ Actors
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 870-872
+.. GENERATED FROM PYTHON SOURCE LINES 890-892
 
 Pod spec
 --------
 
-.. GENERATED FROM PYTHON SOURCE LINES 872-990
+.. GENERATED FROM PYTHON SOURCE LINES 892-1012
 
 .. code-block:: default
 
@@ -953,7 +968,9 @@ Pod spec
 
 
     def build_pod_template(
-        gpus: int, resource_claim_template: Optional[str] = None
+        gpus: int,
+        image: str,
+        resource_claim_template: Optional[str] = None,
     ) -> V1PodTemplateSpec:
         """Shared pod template for learner and generator meshes.
 
@@ -1015,7 +1032,7 @@ Pod spec
                 containers=[
                     V1Container(
                         name="worker",
-                        image=MONARCH_IMAGE,
+                        image=image,
                         command=["python", "-u", "-c", bootstrap],
                         env=env,
                         resources=resources,
@@ -1052,12 +1069,12 @@ Pod spec
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 991-993
+.. GENERATED FROM PYTHON SOURCE LINES 1013-1015
 
 Orchestration
 -------------
 
-.. GENERATED FROM PYTHON SOURCE LINES 993-1169
+.. GENERATED FROM PYTHON SOURCE LINES 1015-1202
 
 .. code-block:: default
 
@@ -1097,6 +1114,9 @@ Orchestration
         dataset_split: str,
         num_prompts: int,
         eval_size: int,
+        out_of_cluster: bool,
+        kubeconfig: str,
+        image: str,
         learner_resource_claim_template: Optional[str] = None,
         generator_resource_claim_template: Optional[str] = None,
     ) -> None:
@@ -1120,7 +1140,12 @@ Orchestration
 
         # 600s timeout lets the meshes finish cold-start pip install + model
         # download before state() gives up.
-        k8s_job = KubernetesJob(namespace=namespace, timeout=600)
+        k8s_job = KubernetesJob(
+            namespace=namespace,
+            timeout=600,
+            kubeconfig=KubeConfig.from_path(kubeconfig) if out_of_cluster else None,
+        )
+        k8s_job.enable_telemetry(TelemetryConfig(include_dashboard=True, dashboard_port=0))
         # Learner pod requests 2 GPUs; ``device_map="auto"`` inside the actor
         # spreads the trainable policy across both. ``spawn_procs({"gpus": 1})``
         # below still spawns a single learner proc that sees both GPUs in its
@@ -1131,7 +1156,9 @@ Orchestration
             "learner",
             num_replicas=1,
             pod_template=build_pod_template(
-                gpus=2, resource_claim_template=learner_resource_claim_template
+                gpus=2,
+                image=image,
+                resource_claim_template=learner_resource_claim_template,
             ),
         )
         k8s_job.add_mesh(
@@ -1139,6 +1166,7 @@ Orchestration
             num_replicas=num_generator_hosts,
             pod_template=build_pod_template(
                 gpus=gpus_per_generator,
+                image=image,
                 resource_claim_template=generator_resource_claim_template,
             ),
         )
@@ -1225,12 +1253,12 @@ Orchestration
             # Best-effort per-mesh cleanup; one failure must not skip the other.
             if learner_mesh is not None:
                 try:
-                    learner_mesh.stop().get()
+                    await learner_mesh.stop()
                 except Exception as e:
                     print(f"[cleanup] learner_mesh.stop() failed: {e}")
             if gen_mesh is not None:
                 try:
-                    gen_mesh.stop().get()
+                    await gen_mesh.stop()
                 except Exception as e:
                     print(f"[cleanup] gen_mesh.stop() failed: {e}")
             # Unconditional so MonarchMesh CRDs and pods are always torn down.
@@ -1238,12 +1266,12 @@ Orchestration
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 1170-1172
+.. GENERATED FROM PYTHON SOURCE LINES 1203-1205
 
 CLI
 ---
 
-.. GENERATED FROM PYTHON SOURCE LINES 1172-1252
+.. GENERATED FROM PYTHON SOURCE LINES 1205-1305
 
 .. code-block:: default
 
@@ -1301,6 +1329,23 @@ CLI
             help="Number of held-out GSM8K test prompts used for eval.",
         )
         parser.add_argument(
+            "--out_of_cluster",
+            action="store_true",
+            help="Use kubeconfig authentication and automatic port forwarding",
+        )
+        parser.add_argument(
+            "--kubeconfig",
+            type=str,
+            default="~/.kube/config",
+            help="Path to kubeconfig file (default: ~/.kube/config)",
+        )
+        parser.add_argument(
+            "--image",
+            type=str,
+            default=MONARCH_IMAGE,
+            help="Container image for learner and generator pods",
+        )
+        parser.add_argument(
             "--learner_resource_claim_template",
             type=str,
             default=None,
@@ -1323,6 +1368,9 @@ CLI
                 dataset_split=args.dataset_split,
                 num_prompts=args.num_prompts,
                 eval_size=args.eval_size,
+                out_of_cluster=args.out_of_cluster,
+                kubeconfig=args.kubeconfig,
+                image=args.image,
                 learner_resource_claim_template=args.learner_resource_claim_template,
                 generator_resource_claim_template=args.generator_resource_claim_template,
             )

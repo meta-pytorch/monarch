@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["NormalizedSelection"],"struct":["AbsorbtionRules","FlatteningRules","IdentityRules"],"trait":["RewriteRule","RewriteRuleExt"]};

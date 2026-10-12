@@ -6,29 +6,26 @@ The `monarch.rdma` module provides Remote Direct Memory Access (RDMA) support fo
 
 *class*monarch.rdma.RDMABuffer(*data*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 __init__(*data*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.__init__)
 
 RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews.
+Both CPU and GPU memory are supported.
 
 Parameters:
 
-**data** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/library/stdtypes.html#memoryview)) - torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous.
+**data** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/builtins/stdtypes.html#memoryview)) - torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous.
 If provided, addr and size must not be specified.
 
 Raises:
 
-- [**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If data is not 1d contiguous, if size is 0, or if data is a GPU tensor.
-- [**RuntimeError**](https://docs.python.org/3/library/exceptions.html#RuntimeError) - If no RDMA backend is available on this platform.
-
-Note
-
-Currently only CPU tensors are supported. GPU tensor support will be added in the future.
+- [**ValueError**](https://docs.python.org/3/builtins/exceptions.html#ValueError) - If data is not 1d contiguous, or if its size is 0.
+- [**RuntimeError**](https://docs.python.org/3/builtins/exceptions.html#RuntimeError) - If no RDMA backend is available on this platform.
 
 TODO: Create TensorBuffer, which will be main user API supporting non-contiguous tensors
 
-*property*backend*: [str](https://docs.python.org/3/library/stdtypes.html#str)*
+*property*backend*: [str](https://docs.python.org/3/builtins/stdtypes.html#str)*
 
 Return the RDMA backend in use ('ibverbs').
 
@@ -43,11 +40,11 @@ whose byte-size is at least `self.size()`.
 
 Parameters:
 
-**dst** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/library/stdtypes.html#memoryview)) - Destination tensor or memoryview to read into.
+**dst** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/builtins/stdtypes.html#memoryview)) - Destination tensor or memoryview to read into.
 
 Keyword Arguments:
 
-**timeout** ([*int*](https://docs.python.org/3/library/functions.html#int)*,**optional*) - Timeout in seconds. Defaults to 60s.
+**timeout** ([*int*](https://docs.python.org/3/builtins/functions.html#int)*,**optional*) - Timeout in seconds. Defaults to 60s.
 
 Returns:
 
@@ -61,7 +58,7 @@ Return type:
 
 Raises:
 
-[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If `dst` is smaller than the RDMA buffer.
+[**ValueError**](https://docs.python.org/3/builtins/exceptions.html#ValueError) - If `dst` is smaller than the RDMA buffer.
 
 write_from(*src*, ***, *timeout=60*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.write_from)
 
@@ -72,12 +69,12 @@ whose byte-size is at most `self.size()`.
 
 Parameters:
 
-**src** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/library/stdtypes.html#memoryview)) - Source tensor or memoryview containing the bytes to
+**src** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/builtins/stdtypes.html#memoryview)) - Source tensor or memoryview containing the bytes to
 write to the RDMA buffer.
 
 Keyword Arguments:
 
-**timeout** ([*int*](https://docs.python.org/3/library/functions.html#int)*,**optional*) - Timeout in seconds. Defaults to 60s.
+**timeout** ([*int*](https://docs.python.org/3/builtins/functions.html#int)*,**optional*) - Timeout in seconds. Defaults to 60s.
 
 Returns:
 
@@ -91,13 +88,13 @@ Return type:
 
 Raises:
 
-[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If `src` exceeds the RDMA buffer size.
+[**ValueError**](https://docs.python.org/3/builtins/exceptions.html#ValueError) - If `src` exceeds the RDMA buffer size.
 
 drop()[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.drop)
 
 Release the handle on the memory that the src holds to this memory.
 
-*property*owner*: [str](https://docs.python.org/3/library/stdtypes.html#str)*
+*property*owner*: [str](https://docs.python.org/3/builtins/stdtypes.html#str)*
 
 The owner reference (str)
 
@@ -105,7 +102,7 @@ The owner reference (str)
 
 *class*monarch.rdma.RDMAAction[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 Schedule a batch of RDMA operations and submit them as one unit.
 
@@ -162,4 +159,4 @@ Both Mellanox and EFA hardware are accessed through ibverbs.
 
 Return type:
 
-[str](https://docs.python.org/3/library/stdtypes.html#str)
+[str](https://docs.python.org/3/builtins/stdtypes.html#str)

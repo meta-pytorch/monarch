@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `monarch_hyperactor/src/mailbox.rs`."><title>mailbox.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">monarch_hyperactor/</div>mailbox.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `monarch_hyperactor/src/mailbox.rs`."><title>mailbox.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (c397dae80 2026-07-02)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">monarch_hyperactor/</div>mailbox.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
 <a href=#2 id=2 data-nosnippet>2</a> * Copyright (c) Meta Platforms, Inc. and affiliates.
 <a href=#3 id=3 data-nosnippet>3</a> * All rights reserved.
 <a href=#4 id=4 data-nosnippet>4</a> *
@@ -658,7 +658,7 @@
 <a href=#658 id=658 data-nosnippet>658</a>            GilSite::Reducer,
 <a href=#659 id=659 data-nosnippet>659</a>            |py: Python&lt;<span class="lifetime">'_</span>&gt;| -&gt; PyResult&lt;PythonMessage&gt; {
 <a href=#660 id=660 data-nosnippet>660</a>                <span class="kw">let </span>result = <span class="self">self</span>.<span class="number">0</span>.call(py, (left, right), <span class="prelude-val">None</span>)<span class="question-mark">?</span>;
-<a href=#661 id=661 data-nosnippet>661</a>                result.extract::&lt;PythonMessage&gt;(py)
+<a href=#661 id=661 data-nosnippet>661</a>                result.extract::&lt;PythonMessage&gt;(py).map_err(Into::into)
 <a href=#662 id=662 data-nosnippet>662</a>            },
 <a href=#663 id=663 data-nosnippet>663</a>        )
 <a href=#664 id=664 data-nosnippet>664</a>        .map_err(Into::into)
@@ -743,4 +743,92 @@
 <a href=#743 id=743 data-nosnippet>743</a>    hyperactor_mod.add_class::&lt;PythonUndeliverableMessageEnvelope&gt;()<span class="question-mark">?</span>;
 <a href=#744 id=744 data-nosnippet>744</a>    <span class="prelude-val">Ok</span>(())
 <a href=#745 id=745 data-nosnippet>745</a>}
+<a href=#746 id=746 data-nosnippet>746</a>
+<a href=#747 id=747 data-nosnippet>747</a><span class="attr">#[cfg(test)]
+<a href=#748 id=748 data-nosnippet>748</a></span><span class="kw">mod </span>tests {
+<a href=#749 id=749 data-nosnippet>749</a>    <span class="kw">use </span>std::time::Duration;
+<a href=#750 id=750 data-nosnippet>750</a>
+<a href=#751 id=751 data-nosnippet>751</a>    <span class="kw">use </span>hyperactor::Proc;
+<a href=#752 id=752 data-nosnippet>752</a>    <span class="kw">use </span>pyo3::PyTypeInfo;
+<a href=#753 id=753 data-nosnippet>753</a>
+<a href=#754 id=754 data-nosnippet>754</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#755 id=755 data-nosnippet>755</a>
+<a href=#756 id=756 data-nosnippet>756</a>    <span class="kw">fn </span>test_message(rank: usize) -&gt; PythonMessage {
+<a href=#757 id=757 data-nosnippet>757</a>        PythonMessage {
+<a href=#758 id=758 data-nosnippet>758</a>            kind: PythonMessageKind::Result { rank: <span class="prelude-val">Some</span>(rank) },
+<a href=#759 id=759 data-nosnippet>759</a>            ..Default::default()
+<a href=#760 id=760 data-nosnippet>760</a>        }
+<a href=#761 id=761 data-nosnippet>761</a>    }
+<a href=#762 id=762 data-nosnippet>762</a>
+<a href=#763 id=763 data-nosnippet>763</a>    <span class="comment">// `recv_task()` takes the native once receiver before it constructs the
+<a href=#764 id=764 data-nosnippet>764</a>    // returned task. Dropping that task cannot put the receiver back.
+<a href=#765 id=765 data-nosnippet>765</a>    </span><span class="attr">#[test]
+<a href=#766 id=766 data-nosnippet>766</a>    </span><span class="kw">fn </span>once_recv_task_consumes_receiver_at_construction() {
+<a href=#767 id=767 data-nosnippet>767</a>        pyo3::Python::initialize();
+<a href=#768 id=768 data-nosnippet>768</a>        <span class="kw">let </span>proc = Proc::isolated();
+<a href=#769 id=769 data-nosnippet>769</a>        <span class="kw">let </span>client = proc.client(<span class="string">"once_recv_task_consumes_receiver_at_construction"</span>);
+<a href=#770 id=770 data-nosnippet>770</a>        <span class="kw">let </span>(handle, receiver) = client.open_once_port::&lt;PythonMessage&gt;();
+<a href=#771 id=771 data-nosnippet>771</a>        handle
+<a href=#772 id=772 data-nosnippet>772</a>            .try_post(<span class="kw-2">&amp;</span>client, test_message(<span class="number">13</span>))
+<a href=#773 id=773 data-nosnippet>773</a>            .expect(<span class="string">"the message should be queued before recv_task is called"</span>);
+<a href=#774 id=774 data-nosnippet>774</a>        <span class="kw">let </span><span class="kw-2">mut </span>receiver = PythonOncePortReceiver {
+<a href=#775 id=775 data-nosnippet>775</a>            inner: Arc::new(std::sync::Mutex::new(<span class="prelude-val">Some</span>(receiver))),
+<a href=#776 id=776 data-nosnippet>776</a>        };
+<a href=#777 id=777 data-nosnippet>777</a>
+<a href=#778 id=778 data-nosnippet>778</a>        <span class="kw">let </span>first = receiver
+<a href=#779 id=779 data-nosnippet>779</a>            .recv_task()
+<a href=#780 id=780 data-nosnippet>780</a>            .expect(<span class="string">"the first recv_task call should construct a task"</span>);
+<a href=#781 id=781 data-nosnippet>781</a>        drop(first);
+<a href=#782 id=782 data-nosnippet>782</a>
+<a href=#783 id=783 data-nosnippet>783</a>        <span class="kw">let </span>error = <span class="kw">match </span>receiver.recv_task() {
+<a href=#784 id=784 data-nosnippet>784</a>            <span class="prelude-val">Ok</span>(<span class="kw">_</span>) =&gt; <span class="macro">panic!</span>(<span class="string">"the second recv_task call should fail"</span>),
+<a href=#785 id=785 data-nosnippet>785</a>            <span class="prelude-val">Err</span>(error) =&gt; error,
+<a href=#786 id=786 data-nosnippet>786</a>        };
+<a href=#787 id=787 data-nosnippet>787</a>        monarch_with_gil_blocking(GilSite::Test, |py| {
+<a href=#788 id=788 data-nosnippet>788</a>            <span class="macro">assert!</span>(error.get_type(py).is(PyValueError::type_object(py)));
+<a href=#789 id=789 data-nosnippet>789</a>            <span class="macro">assert_eq!</span>(error.value(py).to_string(), <span class="string">"OncePort is already used"</span>);
+<a href=#790 id=790 data-nosnippet>790</a>        });
+<a href=#791 id=791 data-nosnippet>791</a>    }
+<a href=#792 id=792 data-nosnippet>792</a>
+<a href=#793 id=793 data-nosnippet>793</a>    <span class="comment">// A regular receiver is only cloned at construction. Even with a message
+<a href=#794 id=794 data-nosnippet>794</a>    // already pending, dropping one task leaves it for the next driven task.
+<a href=#795 id=795 data-nosnippet>795</a>    </span><span class="attr">#[tokio::test]
+<a href=#796 id=796 data-nosnippet>796</a>    </span><span class="kw">async fn </span>port_recv_task_claims_only_when_driven() {
+<a href=#797 id=797 data-nosnippet>797</a>        pyo3::Python::initialize();
+<a href=#798 id=798 data-nosnippet>798</a>        <span class="kw">let </span>proc = Proc::isolated();
+<a href=#799 id=799 data-nosnippet>799</a>        <span class="kw">let </span>client = proc.client(<span class="string">"port_recv_task_claims_only_when_driven"</span>);
+<a href=#800 id=800 data-nosnippet>800</a>        <span class="kw">let </span>(handle, receiver) = client.open_port::&lt;PythonMessage&gt;();
+<a href=#801 id=801 data-nosnippet>801</a>        <span class="kw">let </span>expected = test_message(<span class="number">17</span>);
+<a href=#802 id=802 data-nosnippet>802</a>        handle
+<a href=#803 id=803 data-nosnippet>803</a>            .try_post(<span class="kw-2">&amp;</span>client, expected.clone())
+<a href=#804 id=804 data-nosnippet>804</a>            .expect(<span class="string">"the message should be queued before either task exists"</span>);
+<a href=#805 id=805 data-nosnippet>805</a>        <span class="kw">let </span><span class="kw-2">mut </span>receiver = PythonPortReceiver {
+<a href=#806 id=806 data-nosnippet>806</a>            inner: Arc::new(tokio::sync::Mutex::new(receiver)),
+<a href=#807 id=807 data-nosnippet>807</a>        };
+<a href=#808 id=808 data-nosnippet>808</a>
+<a href=#809 id=809 data-nosnippet>809</a>        <span class="kw">let </span>first = receiver
+<a href=#810 id=810 data-nosnippet>810</a>            .recv_task()
+<a href=#811 id=811 data-nosnippet>811</a>            .expect(<span class="string">"the first recv_task call should construct a task"</span>);
+<a href=#812 id=812 data-nosnippet>812</a>        <span class="kw">let </span><span class="kw-2">mut </span>second = receiver
+<a href=#813 id=813 data-nosnippet>813</a>            .recv_task()
+<a href=#814 id=814 data-nosnippet>814</a>            .expect(<span class="string">"the second recv_task call should also construct a task"</span>);
+<a href=#815 id=815 data-nosnippet>815</a>        drop(first);
+<a href=#816 id=816 data-nosnippet>816</a>
+<a href=#817 id=817 data-nosnippet>817</a>        <span class="kw">let </span>received = tokio::time::timeout(
+<a href=#818 id=818 data-nosnippet>818</a>            Duration::from_secs(<span class="number">30</span>),
+<a href=#819 id=819 data-nosnippet>819</a>            second
+<a href=#820 id=820 data-nosnippet>820</a>                .take_task()
+<a href=#821 id=821 data-nosnippet>821</a>                .expect(<span class="string">"the second receive task should be unconsumed"</span>),
+<a href=#822 id=822 data-nosnippet>822</a>        )
+<a href=#823 id=823 data-nosnippet>823</a>        .<span class="kw">await
+<a href=#824 id=824 data-nosnippet>824</a>        </span>.expect(<span class="string">"timed out driving the second receive task"</span>)
+<a href=#825 id=825 data-nosnippet>825</a>        .expect(<span class="string">"the second receive task should succeed"</span>);
+<a href=#826 id=826 data-nosnippet>826</a>        <span class="kw">let </span>received = monarch_with_gil_blocking(GilSite::Test, |py| {
+<a href=#827 id=827 data-nosnippet>827</a>            received
+<a href=#828 id=828 data-nosnippet>828</a>                .extract::&lt;PythonMessage&gt;(py)
+<a href=#829 id=829 data-nosnippet>829</a>                .expect(<span class="string">"recv_task should return the posted PythonMessage"</span>)
+<a href=#830 id=830 data-nosnippet>830</a>        });
+<a href=#831 id=831 data-nosnippet>831</a>        <span class="macro">assert_eq!</span>(received, expected);
+<a href=#832 id=832 data-nosnippet>832</a>    }
+<a href=#833 id=833 data-nosnippet>833</a>}
 </code></pre></div></section></main></body></html>

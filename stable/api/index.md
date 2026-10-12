@@ -19,7 +19,6 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [`this_host()`](monarch.actor.html#monarch.actor.this_host)
 - [`this_proc()`](monarch.actor.html#monarch.actor.this_proc)
 - [`default_bootstrap_cmd()`](monarch.actor.html#monarch.actor.default_bootstrap_cmd)
-- [`hosts_from_config()`](monarch.actor.html#monarch.actor.hosts_from_config)
 - [`enable_transport()`](monarch.actor.html#monarch.actor.enable_transport)
 - [Defining Actors](monarch.actor.html#defining-actors)
 
@@ -44,10 +43,12 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [`current_rank()`](monarch.actor.html#monarch.actor.current_rank)
 - [`current_size()`](monarch.actor.html#monarch.actor.current_size)
 - [`context()`](monarch.actor.html#monarch.actor.context)
-- [`shutdown_context()`](monarch.actor.html#monarch.actor.shutdown_context)
 - [`Context`](monarch.actor.html#monarch.actor.Context)
 - [`Point`](monarch.actor.html#monarch.actor.Point)
 - [`Extent`](monarch.actor.html#monarch.actor.Extent)
+- [Client Shutdown](monarch.actor.html#client-shutdown)
+
+- [`shutdown_context()`](monarch.actor.html#monarch.actor.shutdown_context)
 - [Supervision](monarch.actor.html#supervision)
 
 - [`MeshFailure`](monarch.actor.html#monarch.actor.MeshFailure)
@@ -72,7 +73,6 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [Message Encoding](monarch.config.html#message-encoding)
 - [Mesh Bootstrap](monarch.config.html#mesh-bootstrap)
 - [Runtime and Buffering](monarch.config.html#runtime-and-buffering)
-- [Actor Configuration](monarch.config.html#actor-configuration)
 - [Mesh Configuration](monarch.config.html#mesh-configuration)
 - [Mesh Admin](monarch.config.html#mesh-admin)
 - [Mesh Attach](monarch.config.html#mesh-attach)
@@ -90,6 +90,12 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [Job State](monarch.job.html#job-state)
 
 - [`JobState`](monarch.job.html#monarch.job.JobState)
+- [Interactive Shell](monarch.job.html#interactive-shell)
+
+- [`shell()`](monarch.job.html#monarch.job.shell)
+- [Port Forwarding](monarch.job.html#port-forwarding)
+
+- [`PortForwarder`](monarch.job.html#monarch.job.PortForwarder)
 - [Job Base Class](monarch.job.html#job-base-class)
 
 - [`JobTrait`](monarch.job.html#monarch.job.JobTrait)

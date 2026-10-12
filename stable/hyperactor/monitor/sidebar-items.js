@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["EndpointId","MonitorFailure","MonitorStatus"],"struct":["ActorMonitor","ActorSupervisor","MonitorActivation","SyntheticSupervision"],"trait":["MonitorableEndpoint"]};

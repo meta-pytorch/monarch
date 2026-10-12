@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["SUITE_SIZES"],"enum":["Message"],"fn":["bench_ping_pong","bench_ping_pong_duplex","main","run_client","run_diff","run_local_duplex","run_local_inprocess","run_local_subprocess","run_server","run_server_loop","run_suite","server_listen_addr"],"struct":["BenchEntry","Cli"]};

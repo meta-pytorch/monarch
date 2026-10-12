@@ -1,0 +1,115 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `monarch_mini/src/inproc_transport.rs`."><title>inproc_transport.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_mini" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (c397dae80 2026-07-02)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">monarch_mini/</div>inproc_transport.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
+<a href=#2 id=2 data-nosnippet>2</a> * Copyright (c) Meta Platforms, Inc. and affiliates.
+<a href=#3 id=3 data-nosnippet>3</a> * All rights reserved.
+<a href=#4 id=4 data-nosnippet>4</a> *
+<a href=#5 id=5 data-nosnippet>5</a> * This source code is licensed under the BSD-style license found in the
+<a href=#6 id=6 data-nosnippet>6</a> * LICENSE file in the root directory of this source tree.
+<a href=#7 id=7 data-nosnippet>7</a> */
+<a href=#8 id=8 data-nosnippet>8</a>
+<a href=#9 id=9 data-nosnippet>9</a></span><span class="doccomment">//! In-process transport: connects two actors living in the same context.
+<a href=#10 id=10 data-nosnippet>10</a>//!
+<a href=#11 id=11 data-nosnippet>11</a>//! The "pipe" is the context's own command channel. A serve and a join on the
+<a href=#12 id=12 data-nosnippet>12</a>//! same url are paired by a [`Matcher`]; on a match each side gets an
+<a href=#13 id=13 data-nosnippet>13</a>//! [`InprocConnectionTransport`] pointed at the other, announced to the command
+<a href=#14 id=14 data-nosnippet>14</a>//! loop via `Command::TransportConnected`. From there establishment is the same
+<a href=#15 id=15 data-nosnippet>15</a>//! generic flow the command loop runs for every transport — the command loop
+<a href=#16 id=16 data-nosnippet>16</a>//! sends each side's `Establish` along its transport, and the peer receives it.
+<a href=#17 id=17 data-nosnippet>17</a>//!
+<a href=#18 id=18 data-nosnippet>18</a>//! There are no coroutines and no extra hops: `send` forwards a command straight
+<a href=#19 id=19 data-nosnippet>19</a>//! to the peer connection through the command loop, and dropping the transport
+<a href=#20 id=20 data-nosnippet>20</a>//! pushes a `Severed` to the peer (the in-process analogue of a socket closing).
+<a href=#21 id=21 data-nosnippet>21</a>
+<a href=#22 id=22 data-nosnippet>22</a></span><span class="kw">use </span>std::collections::HashMap;
+<a href=#23 id=23 data-nosnippet>23</a>
+<a href=#24 id=24 data-nosnippet>24</a><span class="kw">use </span>tokio::sync::mpsc;
+<a href=#25 id=25 data-nosnippet>25</a>
+<a href=#26 id=26 data-nosnippet>26</a><span class="kw">use </span><span class="kw">crate</span>::connection::ConnectionCommand;
+<a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span><span class="kw">crate</span>::connection::ConnectionRef;
+<a href=#28 id=28 data-nosnippet>28</a><span class="kw">use </span><span class="kw">crate</span>::connection::ConnectionTransport;
+<a href=#29 id=29 data-nosnippet>29</a><span class="kw">use </span><span class="kw">crate</span>::ctx::Command;
+<a href=#30 id=30 data-nosnippet>30</a><span class="kw">use </span><span class="kw">crate</span>::matcher::Matcher;
+<a href=#31 id=31 data-nosnippet>31</a><span class="kw">use </span><span class="kw">crate</span>::shm::ShmClientSlot;
+<a href=#32 id=32 data-nosnippet>32</a><span class="kw">use </span><span class="kw">crate</span>::transport::Transport;
+<a href=#33 id=33 data-nosnippet>33</a>
+<a href=#34 id=34 data-nosnippet>34</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span>InprocTransport {
+<a href=#35 id=35 data-nosnippet>35</a>    loop_tx: mpsc::UnboundedSender&lt;Command&gt;,
+<a href=#36 id=36 data-nosnippet>36</a>    matchers: HashMap&lt;String, Matcher&lt;ConnectionRef, ConnectionRef&gt;&gt;,
+<a href=#37 id=37 data-nosnippet>37</a>}
+<a href=#38 id=38 data-nosnippet>38</a>
+<a href=#39 id=39 data-nosnippet>39</a><span class="kw">impl </span>InprocTransport {
+<a href=#40 id=40 data-nosnippet>40</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>new(loop_tx: mpsc::UnboundedSender&lt;Command&gt;) -&gt; <span class="self">Self </span>{
+<a href=#41 id=41 data-nosnippet>41</a>        <span class="self">Self </span>{
+<a href=#42 id=42 data-nosnippet>42</a>            loop_tx,
+<a href=#43 id=43 data-nosnippet>43</a>            matchers: HashMap::new(),
+<a href=#44 id=44 data-nosnippet>44</a>        }
+<a href=#45 id=45 data-nosnippet>45</a>    }
+<a href=#46 id=46 data-nosnippet>46</a>}
+<a href=#47 id=47 data-nosnippet>47</a>
+<a href=#48 id=48 data-nosnippet>48</a><span class="kw">impl </span>Transport <span class="kw">for </span>InprocTransport {
+<a href=#49 id=49 data-nosnippet>49</a>    <span class="kw">fn </span>serve(<span class="kw-2">&amp;mut </span><span class="self">self</span>, url: String, connection: ConnectionRef, _shm_client: ShmClientSlot) {
+<a href=#50 id=50 data-nosnippet>50</a>        <span class="kw">let </span>loop_tx = <span class="self">self</span>.loop_tx.clone();
+<a href=#51 id=51 data-nosnippet>51</a>        <span class="kw">let </span><span class="kw-2">mut </span>matcher = <span class="self">self</span>.matchers.remove(<span class="kw-2">&amp;</span>url).unwrap_or_else(Matcher::new);
+<a href=#52 id=52 data-nosnippet>52</a>        <span class="kw">let _ </span>= matcher.push_left(connection, |serve, join| pair(<span class="kw-2">&amp;</span>loop_tx, serve, join));
+<a href=#53 id=53 data-nosnippet>53</a>        <span class="self">self</span>.matchers.insert(url, matcher);
+<a href=#54 id=54 data-nosnippet>54</a>    }
+<a href=#55 id=55 data-nosnippet>55</a>
+<a href=#56 id=56 data-nosnippet>56</a>    <span class="kw">fn </span>join(<span class="kw-2">&amp;mut </span><span class="self">self</span>, url: String, connection: ConnectionRef, _shm_client: ShmClientSlot) {
+<a href=#57 id=57 data-nosnippet>57</a>        <span class="kw">let </span>loop_tx = <span class="self">self</span>.loop_tx.clone();
+<a href=#58 id=58 data-nosnippet>58</a>        <span class="kw">let </span><span class="kw-2">mut </span>matcher = <span class="self">self</span>.matchers.remove(<span class="kw-2">&amp;</span>url).unwrap_or_else(Matcher::new);
+<a href=#59 id=59 data-nosnippet>59</a>        <span class="kw">let _ </span>= matcher.push_right(connection, |serve, join| pair(<span class="kw-2">&amp;</span>loop_tx, serve, join));
+<a href=#60 id=60 data-nosnippet>60</a>        <span class="self">self</span>.matchers.insert(url, matcher);
+<a href=#61 id=61 data-nosnippet>61</a>    }
+<a href=#62 id=62 data-nosnippet>62</a>}
+<a href=#63 id=63 data-nosnippet>63</a>
+<a href=#64 id=64 data-nosnippet>64</a><span class="doccomment">/// A serve and a join matched: give each side a transport pointed at the other
+<a href=#65 id=65 data-nosnippet>65</a>/// and announce both to the command loop.
+<a href=#66 id=66 data-nosnippet>66</a></span><span class="kw">fn </span>pair(loop_tx: <span class="kw-2">&amp;</span>mpsc::UnboundedSender&lt;Command&gt;, serve: ConnectionRef, join: ConnectionRef) {
+<a href=#67 id=67 data-nosnippet>67</a>    connect(loop_tx, serve, join);
+<a href=#68 id=68 data-nosnippet>68</a>    connect(loop_tx, join, serve);
+<a href=#69 id=69 data-nosnippet>69</a>}
+<a href=#70 id=70 data-nosnippet>70</a>
+<a href=#71 id=71 data-nosnippet>71</a><span class="kw">fn </span>connect(loop_tx: <span class="kw-2">&amp;</span>mpsc::UnboundedSender&lt;Command&gt;, local: ConnectionRef, peer: ConnectionRef) {
+<a href=#72 id=72 data-nosnippet>72</a>    <span class="kw">let </span>transport = Box::new(InprocConnectionTransport {
+<a href=#73 id=73 data-nosnippet>73</a>        tx: loop_tx.clone(),
+<a href=#74 id=74 data-nosnippet>74</a>        peer,
+<a href=#75 id=75 data-nosnippet>75</a>    });
+<a href=#76 id=76 data-nosnippet>76</a>    <span class="kw">let _ </span>= loop_tx.send(Command::TransportConnected {
+<a href=#77 id=77 data-nosnippet>77</a>        connection: local,
+<a href=#78 id=78 data-nosnippet>78</a>        transport,
+<a href=#79 id=79 data-nosnippet>79</a>    });
+<a href=#80 id=80 data-nosnippet>80</a>}
+<a href=#81 id=81 data-nosnippet>81</a>
+<a href=#82 id=82 data-nosnippet>82</a><span class="doccomment">/// Transport for one end of an inproc connection. `send` delivers a command to
+<a href=#83 id=83 data-nosnippet>83</a>/// the peer connection by re-entering the command loop.
+<a href=#84 id=84 data-nosnippet>84</a></span><span class="kw">struct </span>InprocConnectionTransport {
+<a href=#85 id=85 data-nosnippet>85</a>    tx: mpsc::UnboundedSender&lt;Command&gt;,
+<a href=#86 id=86 data-nosnippet>86</a>    peer: ConnectionRef,
+<a href=#87 id=87 data-nosnippet>87</a>}
+<a href=#88 id=88 data-nosnippet>88</a>
+<a href=#89 id=89 data-nosnippet>89</a><span class="kw">impl </span>ConnectionTransport <span class="kw">for </span>InprocConnectionTransport {
+<a href=#90 id=90 data-nosnippet>90</a>    <span class="kw">fn </span>send(<span class="kw-2">&amp;</span><span class="self">self</span>, action: ConnectionCommand) -&gt; bool {
+<a href=#91 id=91 data-nosnippet>91</a>        <span class="comment">// Same process: every command — gateway state (raw fds and all) included —
+<a href=#92 id=92 data-nosnippet>92</a>        // is delivered straight to the peer connection through the command loop.
+<a href=#93 id=93 data-nosnippet>93</a>        </span><span class="self">self</span>.tx
+<a href=#94 id=94 data-nosnippet>94</a>            .send(Command::ConnectionAction {
+<a href=#95 id=95 data-nosnippet>95</a>                connection: <span class="self">self</span>.peer,
+<a href=#96 id=96 data-nosnippet>96</a>                action,
+<a href=#97 id=97 data-nosnippet>97</a>            })
+<a href=#98 id=98 data-nosnippet>98</a>            .is_ok()
+<a href=#99 id=99 data-nosnippet>99</a>    }
+<a href=#100 id=100 data-nosnippet>100</a>}
+<a href=#101 id=101 data-nosnippet>101</a>
+<a href=#102 id=102 data-nosnippet>102</a><span class="kw">impl </span>Drop <span class="kw">for </span>InprocConnectionTransport {
+<a href=#103 id=103 data-nosnippet>103</a>    <span class="kw">fn </span>drop(<span class="kw-2">&amp;mut </span><span class="self">self</span>) {
+<a href=#104 id=104 data-nosnippet>104</a>        <span class="comment">// Dropping the send half is the in-process analogue of a socket closing:
+<a href=#105 id=105 data-nosnippet>105</a>        // tell the peer its side of the pipe is gone. (A no-op if the peer is
+<a href=#106 id=106 data-nosnippet>106</a>        // already failed.)
+<a href=#107 id=107 data-nosnippet>107</a>        </span><span class="kw">let _ </span>= <span class="self">self</span>.tx.send(Command::ConnectionAction {
+<a href=#108 id=108 data-nosnippet>108</a>            connection: <span class="self">self</span>.peer,
+<a href=#109 id=109 data-nosnippet>109</a>            action: ConnectionCommand::Severed {
+<a href=#110 id=110 data-nosnippet>110</a>                reason: <span class="string">b"peer connection closed"</span>.to_vec(),
+<a href=#111 id=111 data-nosnippet>111</a>            },
+<a href=#112 id=112 data-nosnippet>112</a>        });
+<a href=#113 id=113 data-nosnippet>113</a>    }
+<a href=#114 id=114 data-nosnippet>114</a>}
+</code></pre></div></section></main></body></html>

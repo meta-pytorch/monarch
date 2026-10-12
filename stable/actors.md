@@ -219,7 +219,7 @@ class FileWriter(Actor):
 - Actors with sync endpoints require a sync `__cleanup__`
 - Actors with async endpoints require an async `__cleanup__`
 - An `async def` override is awaited on the actor's asyncio event loop, the same loop that runs endpoint coroutines, so it may `await` other endpoints or I/O
-- A sync override runs under `fake_sync_state` and cannot observe a running loop with `asyncio.get_running_loop`
+- In an actor whose endpoints are all `def`, the override runs on the actor's own thread, which has no event loop, after the message in progress; messages still queued behind it are discarded
 
 **Errors in `__cleanup__`:**
 
@@ -341,7 +341,48 @@ print(results) # [15, 15, 15, 15, 15, 15, 15, 15]
  Mesh-->>Client: Future[List[Result]]
  
 
-#### 3. `broadcast()` - Fire and Forget
+#### 3. `choose()` - Random Single Actor
+
+Send to one randomly selected actor and get its response.
+
+```
+workers = procs.spawn("workers", Worker)
+
+result = workers.compute.choose(data).get()
+```
+
+Each call independently selects an actor uniformly at random. Selection does not
+account for actor load, so calls are balanced only across many calls, and
+consecutive calls may hit the same actor.
+
+**Use When:**
+
+- Any one actor can serve the request
+- Actors are interchangeable and hold no per-rank state
+- Approximate spreading over many calls is good enough
+
+**Avoid When:**
+
+- The workload is sensitive to how evenly work is distributed
+- You need a specific rank -- slice the mesh and use `call_one` instead
+
+**Flow Diagram:**
+
+ sequenceDiagram
+ participant Client
+ participant Mesh
+ participant A1 as Actor 1
+ participant A2 as Actor 2
+ participant An as Actor N
+
+ Client->>Mesh: choose(args)
+ Note over Mesh: Pick one rank at random
+ Mesh->>A2: message
+ A2-->>Mesh: result
+ Mesh-->>Client: Future[Result]
+ 
+
+#### 4. `broadcast()` - Fire and Forget
 
 Send to all actors without waiting for responses.
 
@@ -374,7 +415,7 @@ next_operation()
  Note over Actors: Process async
  
 
-#### 4. `rref()` - Distributed Tensor Reference
+#### 5. `rref()` - Distributed Tensor Reference
 
 Return distributed tensor from actor endpoint.
 
@@ -402,7 +443,7 @@ with procs.activate():
 - Need tensor operations across actors
 - Building neural network layers
 
-#### 5. `stream()` - Streaming Responses
+#### 6. `stream()` - Streaming Responses
 
 Stream responses as they arrive.
 
@@ -765,7 +806,7 @@ This is similar to exception handling mechanisms: one can choose to handle excep
 ### Supervision Python API
 
 Actors can handle failures by providing an implementation of the `__supervise__` method.
-It may be declared with either `def` or `async def`:
+It may be declared with either `def` or `async def`, except that an actor whose endpoints are all `def` needs a `def` `__supervise__`:
 
 ```
 class ManagerActor(Actor):
@@ -790,16 +831,37 @@ class ManagerActor(Actor):
 
 An `async def` override is awaited on the actor's asyncio event loop - the same
 loop that runs endpoint coroutines - so it may `await` other endpoints or I/O.
-A sync override runs under `fake_sync_state` and cannot observe a running loop
-with `asyncio.get_running_loop`. Both forms receive the same arguments and obey
-the same truthy/falsey handled/unhandled contract.
+A sync override cannot observe a running loop with `asyncio.get_running_loop`;
+in an actor whose endpoints are all `def`, it runs on the actor's own thread,
+which has no event loop, between messages. Both forms receive the same arguments
+and obey the same truthy/falsey handled/unhandled contract.
 
-`__supervise__` is special: Because it handles "exceptions", we have to be able
-to invoke it at any (safe) point. This is because otherwise we might run into a
-deadlock: for example, an actor might be waiting for a result from a failed actor.
-Thus, we define safe points (e.g., waiting for channel receives) at which we may
-safely invoke the supervision handler. This means that **supervise** handlers have
-to be written carefully: it can potentially change the state of the actor in the middle of handling a message.
+`__supervise__` runs in its own task on the actor's event loop, one failure at a
+time, and the actor keeps handling messages while it is pending. In an actor
+whose endpoints are all `def`, it runs on the actor's own thread instead, before
+the next queued message. In an async actor, running it at any point, rather
+than after the current message, avoids deadlock: for example, an actor might be
+waiting for a result from a failed actor. This has
+consequences for how handlers are written:
+
+- It may run at any `await` that suspends, in any async endpoint, even one
+that does not run concurrently with other endpoints, and even if the `await`
+has nothing to do with the failure (e.g. `asyncio.sleep`, I/O, or a call to
+another actor). The same holds in tasks the actor starts. State that
+`__supervise__` changes may differ after any such `await`.
+- Sync code is never interrupted. A sync endpoint runs to completion before
+`__supervise__` starts, and a sync `__supervise__` runs between endpoints. An
+`async def` `__supervise__` interleaves with endpoints at its own `await`s.
+- In an async actor, messages that arrive after a failure may be handled before
+`__supervise__` runs. In an actor whose endpoints are all `def`, only the
+message in progress precedes it. Either way, the actor only fails once it
+returns a falsey value or raises.
+- An `async def` `__supervise__` may await the actor's own endpoints. Blocking
+calls in either form block endpoints too, since they share the event loop, or
+in an actor whose endpoints are all `def`, its thread.
+- If the actor stops before `__supervise__` finishes, an async actor's pending
+call is cancelled. An actor whose endpoints are all `def` finishes a
+`__supervise__` it has started before cleaning up, and drops one it has not.
 
 If `__supervise__` returns a truthy value, the failure will be considered handled
 and not delivered further up the chain. If it returns a falsey value (including None, if there is no return),
@@ -1103,18 +1165,14 @@ When spawning processes, you can customize the bootstrap command used to launch 
 Pass a `BootstrapCommand` to use the same command for all spawned processes:
 
 ```
-from monarch._rust_bindings.monarch_hyperactor.host_mesh import BootstrapCommand
-from monarch.actor import this_host
+from monarch.actor import default_bootstrap_cmd, this_host
 
 host = this_host()
 
 # Custom BootstrapCommand for all procs
-cmd = BootstrapCommand(
- program="/custom/python",
- arg0=None,
- args=["-m", "monarch._src.actor.bootstrap_main"],
- env={"CUDA_VISIBLE_DEVICES": "0,1,2,3", "MY_VAR": "value"},
-)
+cmd = default_bootstrap_cmd()
+cmd.program = "/custom/python"
+cmd = cmd.with_env({"CUDA_VISIBLE_DEVICES": "0,1,2,3", "MY_VAR": "value"})
 procs = host.spawn_procs(
  per_host={"gpus": 4},
  bootstrap_command=cmd
@@ -1126,19 +1184,14 @@ procs = host.spawn_procs(
 Pass a callable to customize the bootstrap command per process. The callable receives a `Point` representing the combined coordinate across host and per_host dimensions:
 
 ```
-from monarch.actor import this_host
-from monarch._rust_bindings.monarch_hyperactor.host_mesh import BootstrapCommand
+from monarch.actor import default_bootstrap_cmd, this_host
 
 host = this_host()
+base = default_bootstrap_cmd()
 
 # Set CUDA_VISIBLE_DEVICES based on coordinate
 def make_bootstrap(point):
- return BootstrapCommand(
- program="/usr/bin/python3",
- arg0=None,
- args=["-m", "monarch._src.actor.bootstrap_main"],
- env={"CUDA_VISIBLE_DEVICES": str(point["gpus"])},
- )
+ return base.with_env({"CUDA_VISIBLE_DEVICES": str(point["gpus"])})
 
 procs = host.spawn_procs(
  per_host={"gpus": 4},
@@ -1158,7 +1211,7 @@ This is particularly useful for:
 
 ### Using with_env for Ergonomic Customization
 
-The `BootstrapCommand.with_env()` method makes it easy to create modified copies of a base command with additional environment variables. Use `default_bootstrap_cmd()` to get the default command for the current environment:
+The `BootstrapCommand.with_env()` method makes it easy to create modified copies of a base command with additional environment variables (see Proc Environment for how `env` combines with the host's environment). Use `default_bootstrap_cmd()` to get the default command for the current environment:
 
 ```
 from monarch.actor import default_bootstrap_cmd, this_host
@@ -1181,7 +1234,66 @@ procs = host.spawn_procs(
 )
 ```
 
-> **Note:** `default_bootstrap_cmd()` returns the default for the *local* (client) environment. It is not guaranteed to match the bootstrap command that the actual remote hosts would use on their own -- those may differ in program path, args, or env. When you pass the result of `default_bootstrap_cmd().with_env(...)` as `bootstrap_command`, the client-side default is what gets sent to the hosts, replacing whatever default they would have used. In most setups the client and host environments are equivalent, so this is usually what you want; if your hosts run with a different default, supply an explicit `BootstrapCommand` instead of starting from `default_bootstrap_cmd()`.
+> **Note:** `default_bootstrap_cmd()` returns the default program and args for the *local* (client) environment. It is not guaranteed to match the bootstrap command that the actual remote hosts would use on their own -- those may differ in program path or args. When you pass the result of `default_bootstrap_cmd().with_env(...)` as `bootstrap_command`, the client-side program and args are what get sent to the hosts, replacing whatever default they would have used. The client's environment is not sent: each proc inherits its own host's environment, plus the variables in `env`. In most setups the client and host programs are equivalent, so this is usually what you want; if your hosts run with a different default, supply an explicit `BootstrapCommand` instead of starting from `default_bootstrap_cmd()`.
+
+### Proc Environment
+
+A proc's environment is built on the host, when the proc is spawned:
+
+1. If `inherit_env` is true (the default), start from the environment of the host agent that spawns the proc: the process started by `run_worker_loop_forever` or by your job launcher on that host. Otherwise, start from an empty environment.
+2. Remove every variable whose value in `env` is `None`.
+3. Set every other variable in `env`.
+4. Set Monarch's own launch variables: `HYPERACTOR_MESH_BOOTSTRAP_MODE`, `HYPERACTOR_PROCESS_NAME`, and, when log forwarding is configured, `BOOTSTRAP_LOG_CHANNEL`. These are present even with `inherit_env=False`, and removing them has no effect.
+
+The controller's environment is never sent implicitly. Values are literal strings: `"${PATH}:/opt/bin"` is not expanded.
+
+With `inherit_env=False`, Monarch adds no variables beyond `env` and its launch variables, but the process launcher may. In particular, the systemd launcher runs each proc as a systemd service, and systemd adds service metadata such as `INVOCATION_ID` and `SYSTEMD_EXEC_PID`. The systemd launcher does unset the systemd manager's own environment, and removing a variable with `None` also removes it when systemd generates it.
+
+| Goal | Recipe |
+| --- | --- |
+| Keep the host's variables and set or override a few | `cmd.with_env({"X": "value"})` |
+| Unset a variable | `cmd.with_env({"X": None})` |
+| Set a variable to the empty string | `cmd.with_env({"X": ""})`; unlike `None`, the variable exists |
+| Copy selected controller variables | `cmd.with_env({k: os.environ[k] for k in ("HF_HOME", "WANDB_PROJECT") if k in os.environ})` |
+| Use the controller's complete environment | See below |
+| Use an allowlist or minimal environment | `cmd = cmd.with_env({"PATH": "/usr/bin:/bin"}); cmd.inherit_env = False` |
+| Set values per host or proc | Pass a callable as `bootstrap_command` (see above) |
+| Extend the host's own `PATH`, source a setup script, or compute values on the host | Use a host-side wrapper (see below) |
+
+To replace the host's environment with the controller's, keep the default command's own variables (such as `PAR_MAIN_OVERRIDE`, which selects the bootstrap entrypoint in PAR/XAR builds) on top:
+
+```
+import os
+
+from monarch.actor import default_bootstrap_cmd
+
+base = default_bootstrap_cmd()
+cmd = base.with_env(dict(os.environ)).with_env(base.env)
+cmd.inherit_env = False
+```
+
+A host-side wrapper runs on each host before the proc starts, so it can use that host's values. End the wrapper with `exec` so the proc replaces the shell:
+
+```
+from monarch.actor import default_bootstrap_cmd
+
+cmd = default_bootstrap_cmd()
+cmd.args = [
+ "-c",
+ 'export PATH="/opt/tools/bin:$PATH"; . /etc/profile.d/cuda.sh; exec "$0" "$@"',
+ cmd.program,
+ *cmd.args,
+]
+cmd.program = "/bin/sh"
+```
+
+Additional details:
+
+- `cmd.env` returns a copy, so `cmd.env["X"] = "1"` has no effect. Use `cmd = cmd.with_env({"X": "1"})` to merge, or assign `cmd.env = {...}` to replace the whole mapping. `with_env` accepts any mapping, including `os.environ`; later calls override earlier ones, so `cmd.with_env({"X": None}).with_env({"X": "1"})` sets `X`.
+- A per-coordinate callable runs on the controller, so `os.environ` inside it is the controller's environment, not the target host's.
+- The `bootstrap` callable passed to `spawn_procs` runs inside the proc after the interpreter has started. Variables read at startup (for example, `LD_PRELOAD`, `PYTHONPATH`, or `CUDA_VISIBLE_DEVICES` once CUDA is initialized) must be set through `env` or a wrapper instead.
+- `default_bootstrap_cmd()` also sends the controller's program and arguments to every host. There is currently no way to change only the environment while keeping each host's own default program; if your hosts need a different program, construct the command explicitly.
+- Custom proc launchers receive `env`, `inherit_env`, and `env_remove` in `LaunchOptions` and must build the environment as described above.
 
 ### Non-Mutating Behavior
 
@@ -1207,16 +1319,15 @@ procs2 = host.spawn_procs(per_host={"gpus": 2})
 Bootstrap commands work with other HostMesh customization methods:
 
 ```
+from monarch.actor import default_bootstrap_cmd
+
 host = this_host()
 
 # Customize Python executable and bootstrap command
 custom_host = host.with_python_executable("/path/to/python")
-cmd = BootstrapCommand(
- program="/path/to/python",
- arg0=None,
- args=["-m", "monarch._src.actor.bootstrap_main"],
- env={"CUDA_VISIBLE_DEVICES": "0,1,2,3"},
-)
+cmd = default_bootstrap_cmd()
+cmd.program = "/path/to/python"
+cmd = cmd.with_env({"CUDA_VISIBLE_DEVICES": "0,1,2,3"})
 procs = custom_host.spawn_procs(
  per_host={"gpus": 4},
  bootstrap_command=cmd

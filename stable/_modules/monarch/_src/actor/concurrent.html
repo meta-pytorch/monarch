@@ -1,14 +1,13 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="../../../../" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.actor.concurrent &#8212; Monarch v0.6.0 documentation</title>
+    <title>monarch._src.actor.concurrent &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -28,31 +27,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
-    <script src="../../../../_static/doctools.js"></script>
-    <script src="../../../../_static/sphinx_highlight.js"></script>
-    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/actor/concurrent';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/actor/concurrent.html" />
@@ -76,7 +75,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -190,7 +189,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -555,6 +554,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -625,6 +630,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -914,6 +925,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -984,6 +1001,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1577,7 +1600,9 @@ document.write(`
     <span class="k">return</span> <span class="n">_ConcurrentEndpointProperty</span><span class="p">(</span><span class="n">endpoint_property</span><span class="p">)</span>
 
 
-<div class="viewcode-block" id="concurrent_endpoint"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.concurrent_endpoint">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">concurrent_endpoint</span><span class="p">(</span>
+<div class="viewcode-block" id="concurrent_endpoint">
+<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.concurrent_endpoint">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">concurrent_endpoint</span><span class="p">(</span>
     <span class="n">method</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">propagate</span><span class="p">:</span> <span class="n">Propagator</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -1595,6 +1620,12 @@ document.write(`
 <span class="sd">    methods on the same target actor, the first endpoint body starts before the</span>
 <span class="sd">    second. This is only a start-order guarantee: the first endpoint runs until</span>
 <span class="sd">    its first ``await``, not to completion, before the second starts.</span>
+
+<span class="sd">    While an actor has queued messages, it periodically yields to its event</span>
+<span class="sd">    loop, so queued concurrent calls start without waiting for one another and</span>
+<span class="sd">    other ready tasks on the loop are not starved. How often it yields is an</span>
+<span class="sd">    implementation detail and may change. This does not limit how long one</span>
+<span class="sd">    endpoint body runs before its first ``await``.</span>
 
 <span class="sd">    If you mix ``@concurrent_endpoint`` with normal ``@endpoint`` methods, a</span>
 <span class="sd">    normal endpoint that follows a concurrent endpoint may run before the</span>
@@ -1638,6 +1669,7 @@ document.write(`
         <span class="p">),</span>
     <span class="p">)</span>
     <span class="k">return</span> <span class="n">_wrap_endpoint</span><span class="p">(</span><span class="n">endpoint_property</span><span class="p">)</span></div>
+
 </pre></div>
 
                 </article>
@@ -1790,7 +1822,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>
@@ -1819,7 +1851,7 @@ document.write(`
        "headline": "monarch._src.actor.concurrent",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/actor/concurrent.html",
-       "articleBody": "Source code for monarch._src.actor.concurrent # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import asyncio import functools import inspect import weakref from dataclasses import dataclass, field from traceback import TracebackException from typing import Any, Awaitable, Callable, cast from monarch._rust_bindings.monarch_hyperactor.logging import log_endpoint_exception from monarch._src.actor.actor_mesh import ActorError, context from monarch._src.actor.endpoint import endpoint, EndpointProperty, Propagator from monarch._src.actor.telemetry import span _WRAPPER_ATTR = \"_monarch_concurrent_endpoint_wrapper\" _CLEANUP_WRAPPER_ATTR = \"_monarch_concurrent_endpoint_cleanup_wrapper\" @dataclass class _TaskRecord: cancel_for_cleanup: bool = False @dataclass class _ConcurrentState: records: dict[asyncio.Task[None], _TaskRecord] = field(default_factory=dict) _states: weakref.WeakKeyDictionary[Any, _ConcurrentState] = weakref.WeakKeyDictionary() def _state(instance: Any) -\u003e _ConcurrentState: state = _states.get(instance) if state is None: state = _ConcurrentState() _states[instance] = state return state def _send_exception(port: Any, actor_error: ActorError) -\u003e None: try: port.exception(actor_error) except Exception: pass def _cancelled_for_cleanup(record: _TaskRecord | None) -\u003e bool: # True when cleanup cancelled this task because the actor is stopping; # callers skip failing the actor so a graceful stop is not escalated. return record is not None and record.cancel_for_cleanup def _fail_actor(actor_instance: Any, exception: BaseException) -\u003e None: reason = \"\".join(TracebackException.from_exception(exception).format()) try: actor_instance.kill(reason) except Exception: # The actor\u0027s signal channel may already be closed if it has finished # stopping; there is then nothing left to fail. pass async def _run_endpoint( actor_instance: Any, port: Any, call: Callable[[], Awaitable[None]], *, method_name: str, should_instrument: bool, forwards_exception: bool, record: _TaskRecord | None = None, ) -\u003e None: actor_name = actor_instance.name actor_id = actor_instance.actor_id token = actor_instance._execution_start(method_name) try: try: if should_instrument: with span(method_name): await call() else: await call() except asyncio.CancelledError as e: if _cancelled_for_cleanup(record): return if forwards_exception: actor_error = ActorError( e, f\"Actor call {actor_name}.{method_name} failed with BaseException.\", ) _send_exception(port, actor_error) raise except Exception as e: log_endpoint_exception(e, method_name, actor_id) if forwards_exception: actor_error = ActorError( e, f\"Actor call {actor_name}.{method_name} failed.\", ) _send_exception(port, actor_error) elif not _cancelled_for_cleanup(record): _fail_actor(actor_instance, e) except BaseException as e: # noqa: B036 if forwards_exception: actor_error = ActorError( e, f\"Actor call {actor_name}.{method_name} failed with BaseException.\", ) _send_exception(port, actor_error) elif not _cancelled_for_cleanup(record): _fail_actor(actor_instance, e) finally: actor_instance._execution_finish(token) def _spawn_task( instance: Any, port: Any, call: Callable[[], Awaitable[None]], *, method_name: str, should_instrument: bool, forwards_exception: bool, ) -\u003e None: _install_cleanup_wrapper(instance) state = _state(instance) record = _TaskRecord() actor_instance = context().actor_instance task = asyncio.create_task( _run_endpoint( actor_instance, port, call, method_name=method_name, should_instrument=should_instrument, forwards_exception=forwards_exception, record=record, ) ) state.records[task] = record def finish_task(done: asyncio.Task[None]) -\u003e None: state.records.pop(done, None) task.add_done_callback(finish_task) async def _cancel_tasks(instance: Any) -\u003e None: state = _states.get(instance) if state is None: return while state.records: tasks = tuple(state.records) for task in tasks: record = state.records.get(task) if record is not None and not task.done(): record.cancel_for_cleanup = True task.cancel() await asyncio.gather(*tasks, return_exceptions=True) def _has_attr(method: Any, name: str) -\u003e bool: return bool(getattr(method, name, False)) def _install_cleanup_wrapper(instance: Any) -\u003e None: cleanup = getattr(instance, \"__cleanup__\", None) if _has_attr(cleanup, _CLEANUP_WRAPPER_ATTR): return cleanup_fn: Callable[[Exception | None], Awaitable[None]] | None = None if cleanup is not None and inspect.iscoroutinefunction(cleanup): cleanup_fn = cast(Callable[[Exception | None], Awaitable[None]], cleanup) async def cleanup_wrapper(exc: Exception | None) -\u003e None: await _cancel_tasks(instance) if cleanup_fn is not None: await cleanup_fn(exc) setattr(cleanup_wrapper, _CLEANUP_WRAPPER_ATTR, True) instance.__cleanup__ = cleanup_wrapper def _explicit_response_signature( method: Callable[..., Any], *, already_explicit: bool ) -\u003e inspect.Signature: signature = inspect.signature(method) if already_explicit: return signature parameters = list(signature.parameters.values()) if not parameters: return signature name = \"_monarch_response_port\" while name in signature.parameters: name = f\"{name}_\" port_kind = inspect.Parameter.POSITIONAL_OR_KEYWORD if any( parameter.kind is inspect.Parameter.POSITIONAL_ONLY for parameter in parameters[1:] ): port_kind = inspect.Parameter.POSITIONAL_ONLY return signature.replace( parameters=[ parameters[0], inspect.Parameter(name, port_kind), *parameters[1:], ], return_annotation=None, ) class _ConcurrentEndpointProperty(EndpointProperty[Any, Any]): def __init__( self, endpoint_property: EndpointProperty[Any, Any], ) -\u003e None: self._name = endpoint_property._method.__name__ method = endpoint_property._method has_explicit_response_port = endpoint_property._explicit_response_port @functools.wraps(method) async def wrapper( actor_self: Any, port: Any, *args: Any, **kwargs: Any, ) -\u003e None: async def call() -\u003e None: if has_explicit_response_port: await method(actor_self, port, *args, **kwargs) else: port.send(await method(actor_self, *args, **kwargs)) _spawn_task( actor_self, port, call, method_name=self._name, should_instrument=endpoint_property._instrument, forwards_exception=not has_explicit_response_port, ) # pyre-ignore[16]: function attributes are dynamic wrapper.__signature__ = _explicit_response_signature( method, already_explicit=has_explicit_response_port ) setattr(wrapper, _WRAPPER_ATTR, True) super().__init__( wrapper, propagator=endpoint_property._propagator, explicit_response_port=True, instrument=False, ) def __set_name__(self, owner: Any, name: str) -\u003e None: self._name = name def _wrap_endpoint( endpoint_property: EndpointProperty[Any, Any], ) -\u003e EndpointProperty[Any, Any]: method = endpoint_property._method if getattr(method, _WRAPPER_ATTR, False): return endpoint_property if not inspect.iscoroutinefunction(method): raise ValueError(\"concurrent_endpoint can only wrap async endpoints\") return _ConcurrentEndpointProperty(endpoint_property) [docs]def concurrent_endpoint( method: Any = None, *, propagate: Propagator = None, explicit_response_port: bool = False, instrument: bool = True, ) -\u003e Any: \"\"\"Run one async actor endpoint as an ``asyncio`` background task. The decorator accepts the same endpoint options as ``@endpoint``. It rewrites the endpoint to use an explicit response port, schedules the original async body as a task, and returns immediately so that the actor can handle another queued message. If two messages from the same source actor call ``@concurrent_endpoint`` methods on the same target actor, the first endpoint body starts before the second. This is only a start-order guarantee: the first endpoint runs until its first ``await``, not to completion, before the second starts. If you mix ``@concurrent_endpoint`` with normal ``@endpoint`` methods, a normal endpoint that follows a concurrent endpoint may run before the concurrent endpoint body has started. Outstanding tasks created by this decorator are cancelled and awaited before user ``__cleanup__`` runs. This is a cleanup-time guarantee only: meshes owned by the actor may already have been stopped by the core actor lifecycle before these tasks are cancelled. General pending tasks on the actor\u0027s asyncio loop are cancelled later, after user ``__cleanup__`` completes. If the endpoint body raises an exception that it does not forward through its response port, the actor fails with a supervision error, just as an exception escaping an ``@endpoint(explicit_response_port=True)`` method does. This follows the principle of no silent errors. To report an error to the caller without failing the actor, forward it through the port (for example, ``port.exception(e)``); to recover, catch it inside the endpoint. More complex protocols can still use ``@endpoint(explicit_response_port=True)`` and manage response ports manually. \"\"\" if method is None: return functools.partial( concurrent_endpoint, propagate=propagate, explicit_response_port=explicit_response_port, instrument=instrument, ) if isinstance(method, EndpointProperty): raise ValueError( \"concurrent_endpoint does not wrap @endpoint; pass endpoint options to @concurrent_endpoint\" ) endpoint_property = cast( EndpointProperty[Any, Any], endpoint( method, propagate=propagate, explicit_response_port=explicit_response_port, instrument=instrument, ), ) return _wrap_endpoint(endpoint_property)",
+       "articleBody": "Source code for monarch._src.actor.concurrent # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import asyncio import functools import inspect import weakref from dataclasses import dataclass, field from traceback import TracebackException from typing import Any, Awaitable, Callable, cast from monarch._rust_bindings.monarch_hyperactor.logging import log_endpoint_exception from monarch._src.actor.actor_mesh import ActorError, context from monarch._src.actor.endpoint import endpoint, EndpointProperty, Propagator from monarch._src.actor.telemetry import span _WRAPPER_ATTR = \"_monarch_concurrent_endpoint_wrapper\" _CLEANUP_WRAPPER_ATTR = \"_monarch_concurrent_endpoint_cleanup_wrapper\" @dataclass class _TaskRecord: cancel_for_cleanup: bool = False @dataclass class _ConcurrentState: records: dict[asyncio.Task[None], _TaskRecord] = field(default_factory=dict) _states: weakref.WeakKeyDictionary[Any, _ConcurrentState] = weakref.WeakKeyDictionary() def _state(instance: Any) -\u003e _ConcurrentState: state = _states.get(instance) if state is None: state = _ConcurrentState() _states[instance] = state return state def _send_exception(port: Any, actor_error: ActorError) -\u003e None: try: port.exception(actor_error) except Exception: pass def _cancelled_for_cleanup(record: _TaskRecord | None) -\u003e bool: # True when cleanup cancelled this task because the actor is stopping; # callers skip failing the actor so a graceful stop is not escalated. return record is not None and record.cancel_for_cleanup def _fail_actor(actor_instance: Any, exception: BaseException) -\u003e None: reason = \"\".join(TracebackException.from_exception(exception).format()) try: actor_instance.kill(reason) except Exception: # The actor\u0027s signal channel may already be closed if it has finished # stopping; there is then nothing left to fail. pass async def _run_endpoint( actor_instance: Any, port: Any, call: Callable[[], Awaitable[None]], *, method_name: str, should_instrument: bool, forwards_exception: bool, record: _TaskRecord | None = None, ) -\u003e None: actor_name = actor_instance.name actor_id = actor_instance.actor_id token = actor_instance._execution_start(method_name) try: try: if should_instrument: with span(method_name): await call() else: await call() except asyncio.CancelledError as e: if _cancelled_for_cleanup(record): return if forwards_exception: actor_error = ActorError( e, f\"Actor call {actor_name}.{method_name} failed with BaseException.\", ) _send_exception(port, actor_error) raise except Exception as e: log_endpoint_exception(e, method_name, actor_id) if forwards_exception: actor_error = ActorError( e, f\"Actor call {actor_name}.{method_name} failed.\", ) _send_exception(port, actor_error) elif not _cancelled_for_cleanup(record): _fail_actor(actor_instance, e) except BaseException as e: # noqa: B036 if forwards_exception: actor_error = ActorError( e, f\"Actor call {actor_name}.{method_name} failed with BaseException.\", ) _send_exception(port, actor_error) elif not _cancelled_for_cleanup(record): _fail_actor(actor_instance, e) finally: actor_instance._execution_finish(token) def _spawn_task( instance: Any, port: Any, call: Callable[[], Awaitable[None]], *, method_name: str, should_instrument: bool, forwards_exception: bool, ) -\u003e None: _install_cleanup_wrapper(instance) state = _state(instance) record = _TaskRecord() actor_instance = context().actor_instance task = asyncio.create_task( _run_endpoint( actor_instance, port, call, method_name=method_name, should_instrument=should_instrument, forwards_exception=forwards_exception, record=record, ) ) state.records[task] = record def finish_task(done: asyncio.Task[None]) -\u003e None: state.records.pop(done, None) task.add_done_callback(finish_task) async def _cancel_tasks(instance: Any) -\u003e None: state = _states.get(instance) if state is None: return while state.records: tasks = tuple(state.records) for task in tasks: record = state.records.get(task) if record is not None and not task.done(): record.cancel_for_cleanup = True task.cancel() await asyncio.gather(*tasks, return_exceptions=True) def _has_attr(method: Any, name: str) -\u003e bool: return bool(getattr(method, name, False)) def _install_cleanup_wrapper(instance: Any) -\u003e None: cleanup = getattr(instance, \"__cleanup__\", None) if _has_attr(cleanup, _CLEANUP_WRAPPER_ATTR): return cleanup_fn: Callable[[Exception | None], Awaitable[None]] | None = None if cleanup is not None and inspect.iscoroutinefunction(cleanup): cleanup_fn = cast(Callable[[Exception | None], Awaitable[None]], cleanup) async def cleanup_wrapper(exc: Exception | None) -\u003e None: await _cancel_tasks(instance) if cleanup_fn is not None: await cleanup_fn(exc) setattr(cleanup_wrapper, _CLEANUP_WRAPPER_ATTR, True) instance.__cleanup__ = cleanup_wrapper def _explicit_response_signature( method: Callable[..., Any], *, already_explicit: bool ) -\u003e inspect.Signature: signature = inspect.signature(method) if already_explicit: return signature parameters = list(signature.parameters.values()) if not parameters: return signature name = \"_monarch_response_port\" while name in signature.parameters: name = f\"{name}_\" port_kind = inspect.Parameter.POSITIONAL_OR_KEYWORD if any( parameter.kind is inspect.Parameter.POSITIONAL_ONLY for parameter in parameters[1:] ): port_kind = inspect.Parameter.POSITIONAL_ONLY return signature.replace( parameters=[ parameters[0], inspect.Parameter(name, port_kind), *parameters[1:], ], return_annotation=None, ) class _ConcurrentEndpointProperty(EndpointProperty[Any, Any]): def __init__( self, endpoint_property: EndpointProperty[Any, Any], ) -\u003e None: self._name = endpoint_property._method.__name__ method = endpoint_property._method has_explicit_response_port = endpoint_property._explicit_response_port @functools.wraps(method) async def wrapper( actor_self: Any, port: Any, *args: Any, **kwargs: Any, ) -\u003e None: async def call() -\u003e None: if has_explicit_response_port: await method(actor_self, port, *args, **kwargs) else: port.send(await method(actor_self, *args, **kwargs)) _spawn_task( actor_self, port, call, method_name=self._name, should_instrument=endpoint_property._instrument, forwards_exception=not has_explicit_response_port, ) # pyre-ignore[16]: function attributes are dynamic wrapper.__signature__ = _explicit_response_signature( method, already_explicit=has_explicit_response_port ) setattr(wrapper, _WRAPPER_ATTR, True) super().__init__( wrapper, propagator=endpoint_property._propagator, explicit_response_port=True, instrument=False, ) def __set_name__(self, owner: Any, name: str) -\u003e None: self._name = name def _wrap_endpoint( endpoint_property: EndpointProperty[Any, Any], ) -\u003e EndpointProperty[Any, Any]: method = endpoint_property._method if getattr(method, _WRAPPER_ATTR, False): return endpoint_property if not inspect.iscoroutinefunction(method): raise ValueError(\"concurrent_endpoint can only wrap async endpoints\") return _ConcurrentEndpointProperty(endpoint_property) [docs] def concurrent_endpoint( method: Any = None, *, propagate: Propagator = None, explicit_response_port: bool = False, instrument: bool = True, ) -\u003e Any: \"\"\"Run one async actor endpoint as an ``asyncio`` background task. The decorator accepts the same endpoint options as ``@endpoint``. It rewrites the endpoint to use an explicit response port, schedules the original async body as a task, and returns immediately so that the actor can handle another queued message. If two messages from the same source actor call ``@concurrent_endpoint`` methods on the same target actor, the first endpoint body starts before the second. This is only a start-order guarantee: the first endpoint runs until its first ``await``, not to completion, before the second starts. While an actor has queued messages, it periodically yields to its event loop, so queued concurrent calls start without waiting for one another and other ready tasks on the loop are not starved. How often it yields is an implementation detail and may change. This does not limit how long one endpoint body runs before its first ``await``. If you mix ``@concurrent_endpoint`` with normal ``@endpoint`` methods, a normal endpoint that follows a concurrent endpoint may run before the concurrent endpoint body has started. Outstanding tasks created by this decorator are cancelled and awaited before user ``__cleanup__`` runs. This is a cleanup-time guarantee only: meshes owned by the actor may already have been stopped by the core actor lifecycle before these tasks are cancelled. General pending tasks on the actor\u0027s asyncio loop are cancelled later, after user ``__cleanup__`` completes. If the endpoint body raises an exception that it does not forward through its response port, the actor fails with a supervision error, just as an exception escaping an ``@endpoint(explicit_response_port=True)`` method does. This follows the principle of no silent errors. To report an error to the caller without failing the actor, forward it through the port (for example, ``port.exception(e)``); to recover, catch it inside the endpoint. More complex protocols can still use ``@endpoint(explicit_response_port=True)`` and manage response ports manually. \"\"\" if method is None: return functools.partial( concurrent_endpoint, propagate=propagate, explicit_response_port=explicit_response_port, instrument=instrument, ) if isinstance(method, EndpointProperty): raise ValueError( \"concurrent_endpoint does not wrap @endpoint; pass endpoint options to @concurrent_endpoint\" ) endpoint_property = cast( EndpointProperty[Any, Any], endpoint( method, propagate=propagate, explicit_response_port=explicit_response_port, instrument=instrument, ), ) return _wrap_endpoint(endpoint_property)",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

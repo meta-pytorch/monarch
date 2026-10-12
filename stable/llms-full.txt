@@ -226,7 +226,7 @@ class FileWriter(Actor):
 - Actors with sync endpoints require a sync `__cleanup__`
 - Actors with async endpoints require an async `__cleanup__`
 - An `async def` override is awaited on the actor's asyncio event loop, the same loop that runs endpoint coroutines, so it may `await` other endpoints or I/O
-- A sync override runs under `fake_sync_state` and cannot observe a running loop with `asyncio.get_running_loop`
+- In an actor whose endpoints are all `def`, the override runs on the actor's own thread, which has no event loop, after the message in progress; messages still queued behind it are discarded
 
 **Errors in `__cleanup__`:**
 
@@ -348,7 +348,48 @@ print(results) # [15, 15, 15, 15, 15, 15, 15, 15]
  Mesh-->>Client: Future[List[Result]]
  
 
-#### 3. `broadcast()` - Fire and Forget
+#### 3. `choose()` - Random Single Actor
+
+Send to one randomly selected actor and get its response.
+
+```
+workers = procs.spawn("workers", Worker)
+
+result = workers.compute.choose(data).get()
+```
+
+Each call independently selects an actor uniformly at random. Selection does not
+account for actor load, so calls are balanced only across many calls, and
+consecutive calls may hit the same actor.
+
+**Use When:**
+
+- Any one actor can serve the request
+- Actors are interchangeable and hold no per-rank state
+- Approximate spreading over many calls is good enough
+
+**Avoid When:**
+
+- The workload is sensitive to how evenly work is distributed
+- You need a specific rank -- slice the mesh and use `call_one` instead
+
+**Flow Diagram:**
+
+ sequenceDiagram
+ participant Client
+ participant Mesh
+ participant A1 as Actor 1
+ participant A2 as Actor 2
+ participant An as Actor N
+
+ Client->>Mesh: choose(args)
+ Note over Mesh: Pick one rank at random
+ Mesh->>A2: message
+ A2-->>Mesh: result
+ Mesh-->>Client: Future[Result]
+ 
+
+#### 4. `broadcast()` - Fire and Forget
 
 Send to all actors without waiting for responses.
 
@@ -381,7 +422,7 @@ next_operation()
  Note over Actors: Process async
  
 
-#### 4. `rref()` - Distributed Tensor Reference
+#### 5. `rref()` - Distributed Tensor Reference
 
 Return distributed tensor from actor endpoint.
 
@@ -409,7 +450,7 @@ with procs.activate():
 - Need tensor operations across actors
 - Building neural network layers
 
-#### 5. `stream()` - Streaming Responses
+#### 6. `stream()` - Streaming Responses
 
 Stream responses as they arrive.
 
@@ -772,7 +813,7 @@ This is similar to exception handling mechanisms: one can choose to handle excep
 ### Supervision Python API
 
 Actors can handle failures by providing an implementation of the `__supervise__` method.
-It may be declared with either `def` or `async def`:
+It may be declared with either `def` or `async def`, except that an actor whose endpoints are all `def` needs a `def` `__supervise__`:
 
 ```
 class ManagerActor(Actor):
@@ -797,16 +838,37 @@ class ManagerActor(Actor):
 
 An `async def` override is awaited on the actor's asyncio event loop - the same
 loop that runs endpoint coroutines - so it may `await` other endpoints or I/O.
-A sync override runs under `fake_sync_state` and cannot observe a running loop
-with `asyncio.get_running_loop`. Both forms receive the same arguments and obey
-the same truthy/falsey handled/unhandled contract.
+A sync override cannot observe a running loop with `asyncio.get_running_loop`;
+in an actor whose endpoints are all `def`, it runs on the actor's own thread,
+which has no event loop, between messages. Both forms receive the same arguments
+and obey the same truthy/falsey handled/unhandled contract.
 
-`__supervise__` is special: Because it handles "exceptions", we have to be able
-to invoke it at any (safe) point. This is because otherwise we might run into a
-deadlock: for example, an actor might be waiting for a result from a failed actor.
-Thus, we define safe points (e.g., waiting for channel receives) at which we may
-safely invoke the supervision handler. This means that **supervise** handlers have
-to be written carefully: it can potentially change the state of the actor in the middle of handling a message.
+`__supervise__` runs in its own task on the actor's event loop, one failure at a
+time, and the actor keeps handling messages while it is pending. In an actor
+whose endpoints are all `def`, it runs on the actor's own thread instead, before
+the next queued message. In an async actor, running it at any point, rather
+than after the current message, avoids deadlock: for example, an actor might be
+waiting for a result from a failed actor. This has
+consequences for how handlers are written:
+
+- It may run at any `await` that suspends, in any async endpoint, even one
+that does not run concurrently with other endpoints, and even if the `await`
+has nothing to do with the failure (e.g. `asyncio.sleep`, I/O, or a call to
+another actor). The same holds in tasks the actor starts. State that
+`__supervise__` changes may differ after any such `await`.
+- Sync code is never interrupted. A sync endpoint runs to completion before
+`__supervise__` starts, and a sync `__supervise__` runs between endpoints. An
+`async def` `__supervise__` interleaves with endpoints at its own `await`s.
+- In an async actor, messages that arrive after a failure may be handled before
+`__supervise__` runs. In an actor whose endpoints are all `def`, only the
+message in progress precedes it. Either way, the actor only fails once it
+returns a falsey value or raises.
+- An `async def` `__supervise__` may await the actor's own endpoints. Blocking
+calls in either form block endpoints too, since they share the event loop, or
+in an actor whose endpoints are all `def`, its thread.
+- If the actor stops before `__supervise__` finishes, an async actor's pending
+call is cancelled. An actor whose endpoints are all `def` finishes a
+`__supervise__` it has started before cleaning up, and drops one it has not.
 
 If `__supervise__` returns a truthy value, the failure will be considered handled
 and not delivered further up the chain. If it returns a falsey value (including None, if there is no return),
@@ -1110,18 +1172,14 @@ When spawning processes, you can customize the bootstrap command used to launch 
 Pass a `BootstrapCommand` to use the same command for all spawned processes:
 
 ```
-from monarch._rust_bindings.monarch_hyperactor.host_mesh import BootstrapCommand
-from monarch.actor import this_host
+from monarch.actor import default_bootstrap_cmd, this_host
 
 host = this_host()
 
 # Custom BootstrapCommand for all procs
-cmd = BootstrapCommand(
- program="/custom/python",
- arg0=None,
- args=["-m", "monarch._src.actor.bootstrap_main"],
- env={"CUDA_VISIBLE_DEVICES": "0,1,2,3", "MY_VAR": "value"},
-)
+cmd = default_bootstrap_cmd()
+cmd.program = "/custom/python"
+cmd = cmd.with_env({"CUDA_VISIBLE_DEVICES": "0,1,2,3", "MY_VAR": "value"})
 procs = host.spawn_procs(
  per_host={"gpus": 4},
  bootstrap_command=cmd
@@ -1133,19 +1191,14 @@ procs = host.spawn_procs(
 Pass a callable to customize the bootstrap command per process. The callable receives a `Point` representing the combined coordinate across host and per_host dimensions:
 
 ```
-from monarch.actor import this_host
-from monarch._rust_bindings.monarch_hyperactor.host_mesh import BootstrapCommand
+from monarch.actor import default_bootstrap_cmd, this_host
 
 host = this_host()
+base = default_bootstrap_cmd()
 
 # Set CUDA_VISIBLE_DEVICES based on coordinate
 def make_bootstrap(point):
- return BootstrapCommand(
- program="/usr/bin/python3",
- arg0=None,
- args=["-m", "monarch._src.actor.bootstrap_main"],
- env={"CUDA_VISIBLE_DEVICES": str(point["gpus"])},
- )
+ return base.with_env({"CUDA_VISIBLE_DEVICES": str(point["gpus"])})
 
 procs = host.spawn_procs(
  per_host={"gpus": 4},
@@ -1165,7 +1218,7 @@ This is particularly useful for:
 
 ### Using with_env for Ergonomic Customization
 
-The `BootstrapCommand.with_env()` method makes it easy to create modified copies of a base command with additional environment variables. Use `default_bootstrap_cmd()` to get the default command for the current environment:
+The `BootstrapCommand.with_env()` method makes it easy to create modified copies of a base command with additional environment variables (see Proc Environment for how `env` combines with the host's environment). Use `default_bootstrap_cmd()` to get the default command for the current environment:
 
 ```
 from monarch.actor import default_bootstrap_cmd, this_host
@@ -1188,7 +1241,66 @@ procs = host.spawn_procs(
 )
 ```
 
-> **Note:** `default_bootstrap_cmd()` returns the default for the *local* (client) environment. It is not guaranteed to match the bootstrap command that the actual remote hosts would use on their own -- those may differ in program path, args, or env. When you pass the result of `default_bootstrap_cmd().with_env(...)` as `bootstrap_command`, the client-side default is what gets sent to the hosts, replacing whatever default they would have used. In most setups the client and host environments are equivalent, so this is usually what you want; if your hosts run with a different default, supply an explicit `BootstrapCommand` instead of starting from `default_bootstrap_cmd()`.
+> **Note:** `default_bootstrap_cmd()` returns the default program and args for the *local* (client) environment. It is not guaranteed to match the bootstrap command that the actual remote hosts would use on their own -- those may differ in program path or args. When you pass the result of `default_bootstrap_cmd().with_env(...)` as `bootstrap_command`, the client-side program and args are what get sent to the hosts, replacing whatever default they would have used. The client's environment is not sent: each proc inherits its own host's environment, plus the variables in `env`. In most setups the client and host programs are equivalent, so this is usually what you want; if your hosts run with a different default, supply an explicit `BootstrapCommand` instead of starting from `default_bootstrap_cmd()`.
+
+### Proc Environment
+
+A proc's environment is built on the host, when the proc is spawned:
+
+1. If `inherit_env` is true (the default), start from the environment of the host agent that spawns the proc: the process started by `run_worker_loop_forever` or by your job launcher on that host. Otherwise, start from an empty environment.
+2. Remove every variable whose value in `env` is `None`.
+3. Set every other variable in `env`.
+4. Set Monarch's own launch variables: `HYPERACTOR_MESH_BOOTSTRAP_MODE`, `HYPERACTOR_PROCESS_NAME`, and, when log forwarding is configured, `BOOTSTRAP_LOG_CHANNEL`. These are present even with `inherit_env=False`, and removing them has no effect.
+
+The controller's environment is never sent implicitly. Values are literal strings: `"${PATH}:/opt/bin"` is not expanded.
+
+With `inherit_env=False`, Monarch adds no variables beyond `env` and its launch variables, but the process launcher may. In particular, the systemd launcher runs each proc as a systemd service, and systemd adds service metadata such as `INVOCATION_ID` and `SYSTEMD_EXEC_PID`. The systemd launcher does unset the systemd manager's own environment, and removing a variable with `None` also removes it when systemd generates it.
+
+| Goal | Recipe |
+| --- | --- |
+| Keep the host's variables and set or override a few | `cmd.with_env({"X": "value"})` |
+| Unset a variable | `cmd.with_env({"X": None})` |
+| Set a variable to the empty string | `cmd.with_env({"X": ""})`; unlike `None`, the variable exists |
+| Copy selected controller variables | `cmd.with_env({k: os.environ[k] for k in ("HF_HOME", "WANDB_PROJECT") if k in os.environ})` |
+| Use the controller's complete environment | See below |
+| Use an allowlist or minimal environment | `cmd = cmd.with_env({"PATH": "/usr/bin:/bin"}); cmd.inherit_env = False` |
+| Set values per host or proc | Pass a callable as `bootstrap_command` (see above) |
+| Extend the host's own `PATH`, source a setup script, or compute values on the host | Use a host-side wrapper (see below) |
+
+To replace the host's environment with the controller's, keep the default command's own variables (such as `PAR_MAIN_OVERRIDE`, which selects the bootstrap entrypoint in PAR/XAR builds) on top:
+
+```
+import os
+
+from monarch.actor import default_bootstrap_cmd
+
+base = default_bootstrap_cmd()
+cmd = base.with_env(dict(os.environ)).with_env(base.env)
+cmd.inherit_env = False
+```
+
+A host-side wrapper runs on each host before the proc starts, so it can use that host's values. End the wrapper with `exec` so the proc replaces the shell:
+
+```
+from monarch.actor import default_bootstrap_cmd
+
+cmd = default_bootstrap_cmd()
+cmd.args = [
+ "-c",
+ 'export PATH="/opt/tools/bin:$PATH"; . /etc/profile.d/cuda.sh; exec "$0" "$@"',
+ cmd.program,
+ *cmd.args,
+]
+cmd.program = "/bin/sh"
+```
+
+Additional details:
+
+- `cmd.env` returns a copy, so `cmd.env["X"] = "1"` has no effect. Use `cmd = cmd.with_env({"X": "1"})` to merge, or assign `cmd.env = {...}` to replace the whole mapping. `with_env` accepts any mapping, including `os.environ`; later calls override earlier ones, so `cmd.with_env({"X": None}).with_env({"X": "1"})` sets `X`.
+- A per-coordinate callable runs on the controller, so `os.environ` inside it is the controller's environment, not the target host's.
+- The `bootstrap` callable passed to `spawn_procs` runs inside the proc after the interpreter has started. Variables read at startup (for example, `LD_PRELOAD`, `PYTHONPATH`, or `CUDA_VISIBLE_DEVICES` once CUDA is initialized) must be set through `env` or a wrapper instead.
+- `default_bootstrap_cmd()` also sends the controller's program and arguments to every host. There is currently no way to change only the environment while keeping each host's own default program; if your hosts need a different program, construct the command explicitly.
+- Custom proc launchers receive `env`, `inherit_env`, and `env_remove` in `LaunchOptions` and must build the environment as described above.
 
 ### Non-Mutating Behavior
 
@@ -1214,16 +1326,15 @@ procs2 = host.spawn_procs(per_host={"gpus": 2})
 Bootstrap commands work with other HostMesh customization methods:
 
 ```
+from monarch.actor import default_bootstrap_cmd
+
 host = this_host()
 
 # Customize Python executable and bootstrap command
 custom_host = host.with_python_executable("/path/to/python")
-cmd = BootstrapCommand(
- program="/path/to/python",
- arg0=None,
- args=["-m", "monarch._src.actor.bootstrap_main"],
- env={"CUDA_VISIBLE_DEVICES": "0,1,2,3"},
-)
+cmd = default_bootstrap_cmd()
+cmd.program = "/path/to/python"
+cmd = cmd.with_env({"CUDA_VISIBLE_DEVICES": "0,1,2,3"})
 procs = custom_host.spawn_procs(
  per_host={"gpus": 4},
  bootstrap_command=cmd
@@ -1508,15 +1619,6 @@ flight recorder events.
 
 [![Mesh Admin TUI showing the topology tree with philosopher actors expanded and actor details on the right](_images/tui-tree.png)](_images/tui-tree.png)
 
-## Diagnostics
-
-Press `d` to run a full health check across the mesh. The diagnostics overlay
-probes every node in the topology and reports pass/slow/fail for each, separated
-into **Admin Infrastructure** (admin server, host agents, service procs) and
-**Mesh** (user procs and actors). Each probe shows its latency in milliseconds.
-
-[![Diagnostics overlay showing health check results for all nodes in the mesh](_images/tui-diagnostics.png)](_images/tui-diagnostics.png)
-
 ## Py-spy Stack Traces
 
 Press `p` on any proc or actor to capture a live Python stack trace via
@@ -1525,7 +1627,10 @@ stacks with frame-level detail, GIL ownership, and thread names. Each press
 fetches a fresh trace -- useful for diagnosing hangs in C extensions and CUDA
 calls.
 
-`py-spy` is included as a default dependency of `torchmonarch`.
+`py-spy` is not bundled with `torchmonarch`; it must be resolvable on the
+target host -- either on `PATH` or via the `PYSPY_BIN` environment variable. If
+it cannot be found, the stack-trace request reports that py-spy is unavailable
+rather than failing the proc.
 
 [![Py-spy overlay showing per-thread Python stack traces with native frames](_images/tui-pyspy.png)](_images/tui-pyspy.png)
 
@@ -1543,7 +1648,6 @@ calls.
 | `c` | Collapse all nodes |
 | `s` | Toggle system actor visibility |
 | `h` | Toggle stopped actor visibility (failed actors always remain visible) |
-| `d` | Run diagnostics overlay |
 | `p` | Py-spy stack trace for selected proc or actor |
 | `Ctrl+L` | Scroll selected item to top of viewport |
 | `Esc` | Dismiss overlay |
@@ -1561,19 +1665,9 @@ monarch-tui [OPTIONS] --addr <ADDR>
 | `--refresh-ms` | Auto-refresh interval in milliseconds | `2000` |
 | `--theme` | Color theme: `nord` (dark) or `doom-nord-light` (light) | `nord` |
 | `--lang` | Display language: `en` or `zh` (Simplified Chinese) | `en` |
-| `--diagnose` | Run diagnostics non-interactively, print JSON, and exit | `false` |
 | `--tls-ca` | Path to PEM CA certificate for TLS | auto-detected |
 | `--tls-cert` | Path to PEM client certificate for mutual TLS | auto-detected |
 | `--tls-key` | Path to PEM client key for mutual TLS | -- |
-
-### Non-interactive diagnostics
-
-For scripted health checks, use `--diagnose` to get a JSON report on stdout:
-
-```
-monarch-tui --addr 127.0.0.1:1729 --diagnose
-# Exits 0 if healthy, 1 if any check failed.
-```
 
 ## Telemetry Query Proxy
 
@@ -1625,7 +1719,6 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [`this_host()`](monarch.actor.html#monarch.actor.this_host)
 - [`this_proc()`](monarch.actor.html#monarch.actor.this_proc)
 - [`default_bootstrap_cmd()`](monarch.actor.html#monarch.actor.default_bootstrap_cmd)
-- [`hosts_from_config()`](monarch.actor.html#monarch.actor.hosts_from_config)
 - [`enable_transport()`](monarch.actor.html#monarch.actor.enable_transport)
 - [Defining Actors](monarch.actor.html#defining-actors)
 
@@ -1650,10 +1743,12 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [`current_rank()`](monarch.actor.html#monarch.actor.current_rank)
 - [`current_size()`](monarch.actor.html#monarch.actor.current_size)
 - [`context()`](monarch.actor.html#monarch.actor.context)
-- [`shutdown_context()`](monarch.actor.html#monarch.actor.shutdown_context)
 - [`Context`](monarch.actor.html#monarch.actor.Context)
 - [`Point`](monarch.actor.html#monarch.actor.Point)
 - [`Extent`](monarch.actor.html#monarch.actor.Extent)
+- [Client Shutdown](monarch.actor.html#client-shutdown)
+
+- [`shutdown_context()`](monarch.actor.html#monarch.actor.shutdown_context)
 - [Supervision](monarch.actor.html#supervision)
 
 - [`MeshFailure`](monarch.actor.html#monarch.actor.MeshFailure)
@@ -1678,7 +1773,6 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [Message Encoding](monarch.config.html#message-encoding)
 - [Mesh Bootstrap](monarch.config.html#mesh-bootstrap)
 - [Runtime and Buffering](monarch.config.html#runtime-and-buffering)
-- [Actor Configuration](monarch.config.html#actor-configuration)
 - [Mesh Configuration](monarch.config.html#mesh-configuration)
 - [Mesh Admin](monarch.config.html#mesh-admin)
 - [Mesh Attach](monarch.config.html#mesh-attach)
@@ -1696,6 +1790,12 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [Job State](monarch.job.html#job-state)
 
 - [`JobState`](monarch.job.html#monarch.job.JobState)
+- [Interactive Shell](monarch.job.html#interactive-shell)
+
+- [`shell()`](monarch.job.html#monarch.job.shell)
+- [Port Forwarding](monarch.job.html#port-forwarding)
+
+- [`PortForwarder`](monarch.job.html#monarch.job.PortForwarder)
 - [Job Base Class](monarch.job.html#job-base-class)
 
 - [`JobTrait`](monarch.job.html#monarch.job.JobTrait)
@@ -1789,7 +1889,7 @@ stream*: Stream*
 
 mesh*: DeviceMesh*
 
-ref*: [int](https://docs.python.org/3/library/functions.html#int) | [None](https://docs.python.org/3/library/constants.html#None)*
+ref*: [int](https://docs.python.org/3/builtins/functions.html#int) | [None](https://docs.python.org/3/builtins/constants.html#None)*
 
 drop()[[source]](../_modules/monarch/common/tensor.html#Tensor.drop)
 
@@ -1855,13 +1955,13 @@ ok because we eliminated the 'gpu' dim via reduction.
 
 Parameters:
 
-- **dims** (*Dims**|*[*str*](https://docs.python.org/3/library/stdtypes.html#str)) - The dimensions along which to perform the reduction.
+- **dims** (*Dims**|*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - The dimensions along which to perform the reduction.
 - **reduction** (*_valid_reduce*) - The type of reduction to perform. Defaults to "sum".
-- **scatter** ([*bool*](https://docs.python.org/3/library/functions.html#bool)) - If True, the local result tensor will be evenly split across dimensions.
+- **scatter** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - If True, the local result tensor will be evenly split across dimensions.
 Defaults to False.
 - **mesh** (*Optional**[**"DeviceMesh"**]**,**optional*) - The target mesh to move the data to.
 If None, uses self.mesh. Defaults to None.
-- **_inplace** ([*bool*](https://docs.python.org/3/library/functions.html#bool)) - If True, performs the operation in-place. Defaults to False.
+- **_inplace** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - If True, performs the operation in-place. Defaults to False.
 Note that not all the reduction operations support in-place.
 - **out** (*Optional**[**"Tensor"**]*) - The output tensor to store the result. If None, a new tensor
 will be created on the stream where the reduce operation executes. Defaults to None.
@@ -1880,7 +1980,7 @@ delete_ref(*ref*)[[source]](../_modules/monarch/common/tensor.html#Tensor.delete
 
 *class*monarch.Stream(*name*, *_default=False*)[[source]](../_modules/monarch/common/stream.html#Stream)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 __init__(*name*, *_default=False*)[[source]](../_modules/monarch/common/stream.html#Stream.__init__)
 
@@ -1902,9 +2002,9 @@ If not mutable both self and t.stream can read from t's storage but neither can 
 
 monarch.remote(*function: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*, ***, *propagate: [Any](https://docs.python.org/3/library/typing.html#typing.Any) = None*) → Remote[P, R][[source]](../_modules/monarch/common/remote.html#remote)
 
-monarch.remote(*function: [str](https://docs.python.org/3/library/stdtypes.html#str)*, ***, *propagate: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['mocked', 'cached', 'inspect'] | [None](https://docs.python.org/3/library/constants.html#None) = None*) → Remote
+monarch.remote(*function: [str](https://docs.python.org/3/builtins/stdtypes.html#str)*, ***, *propagate: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['mocked', 'cached', 'inspect'] | [None](https://docs.python.org/3/builtins/constants.html#None) = None*) → Remote
 
-monarch.remote(*function: [str](https://docs.python.org/3/library/stdtypes.html#str)*, ***, *propagate: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*) → Remote[P, R]
+monarch.remote(*function: [str](https://docs.python.org/3/builtins/stdtypes.html#str)*, ***, *propagate: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*) → Remote[P, R]
 
 monarch.remote(***, *propagate: [Any](https://docs.python.org/3/library/typing.html#typing.Any) = None*) → RemoteIfy
 
@@ -1941,7 +2041,7 @@ Parameters:
 
 - **mesh** (*Optional**[**"DeviceMesh"**]**,**optional*) - The target mesh to move the data to.
 If None, uses self.mesh. Defaults to None.
-- **_inplace** ([*bool*](https://docs.python.org/3/library/functions.html#bool)) - If True, performs the operation in-place. Defaults to False.
+- **_inplace** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - If True, performs the operation in-place. Defaults to False.
 Note that not all the reduction operations support in-place.
 
 monarch.reduce_(*tensors*, *dims*, *reduction='sum'*, *scatter=False*, *mesh=None*)[[source]](../_modules/monarch/common/tensor.html#reduce_)
@@ -1990,7 +2090,7 @@ The argument must be an iterable if specified.
 
 *class*monarch.Extent(*labels*, *sizes*)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 *static*from_bytes(*bytes*)
 
@@ -2006,7 +2106,7 @@ sizes
 
 *class*monarch.Shape(*labels*, *slice*)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 at(*label*, *index*)
 
@@ -2032,7 +2132,7 @@ select(*label*, *slice*)
 
 *class*monarch.Selection
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 all()
 
@@ -2061,7 +2161,7 @@ selection algebra surface syntax, such as "(*, 0:4, ?)".
 
 Raises:
 
-- [**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If the input string is not a valid selection
+- [**ValueError**](https://docs.python.org/3/builtins/exceptions.html#ValueError) - If the input string is not a valid selection
 - **expression.** -
 
 Example
@@ -2074,7 +2174,7 @@ alias of `Slice`
 
 *class*monarch.OpaqueRef(*value=None*)[[source]](../_modules/monarch/common/opaque_ref.html#OpaqueRef)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 OpaqueRef is a reference to an object that is only resolvable on the worker
 This is used to pass objects from the controller to the worker across User Defined Functions
@@ -2212,10 +2312,10 @@ Spawn a ProcMesh onto this host mesh.
 
 Parameters:
 
-- **per_host** ([*Dict*](https://docs.python.org/3/library/typing.html#typing.Dict)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*,*[*int*](https://docs.python.org/3/library/functions.html#int)*]**|**None*) - shape of procs per host, e.g. `{"gpus": 4}`.
+- **per_host** ([*Dict*](https://docs.python.org/3/library/typing.html#typing.Dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*int*](https://docs.python.org/3/builtins/functions.html#int)*]**|**None*) - shape of procs per host, e.g. `{"gpus": 4}`.
 - **bootstrap** ([*Callable*](https://docs.python.org/3/library/typing.html#typing.Callable)*[**[**]**,**None**]**|*[*Callable*](https://docs.python.org/3/library/typing.html#typing.Callable)*[**[**]**,*[*Awaitable*](https://docs.python.org/3/library/typing.html#typing.Awaitable)*[**None**]**]**|**None*) - optional setup callable run on each proc.
-- **name** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)*|**None*) - optional name for the proc mesh.
-- **proc_bind** ([*list*](https://docs.python.org/3/library/stdtypes.html#list)*[*[*dict*](https://docs.python.org/3/library/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*]**]**|**None*) - optional per-process CPU/NUMA binding config.
+- **name** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - optional name for the proc mesh.
+- **proc_bind** ([*list*](https://docs.python.org/3/builtins/stdtypes.html#list)*[*[*dict*](https://docs.python.org/3/builtins/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*]**]**|**None*) - optional per-process CPU/NUMA binding config.
 Length must equal `math.prod(per_host.values())`.
 Each dict maps binding keys (`cpunodebind`,
 `membind`, `physcpubind`, `cpus`) to values.
@@ -2227,7 +2327,7 @@ bootstrap command per coordinate.
 
 *property*region*: Region*
 
-*property*stream_logs*: [bool](https://docs.python.org/3/library/functions.html#bool)*
+*property*stream_logs*: [bool](https://docs.python.org/3/builtins/functions.html#bool)*
 
 with_python_executable(*python_executable*)[[source]](../_modules/monarch/_src/actor/host_mesh.html#HostMesh.with_python_executable)
 
@@ -2237,7 +2337,7 @@ Python executable when they call `this_host().spawn_procs(...)`.
 
 Parameters:
 
-**python_executable** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Path to the Python executable to use.
+**python_executable** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Path to the Python executable to use.
 
 Returns:
 
@@ -2247,7 +2347,7 @@ Return type:
 
 *HostMesh*
 
-*property*is_fake_in_process*: [bool](https://docs.python.org/3/library/functions.html#bool)*
+*property*is_fake_in_process*: [bool](https://docs.python.org/3/builtins/functions.html#bool)*
 
 shutdown()[[source]](../_modules/monarch/_src/actor/host_mesh.html#HostMesh.shutdown)
 
@@ -2294,8 +2394,8 @@ Sync local code changes to the remote hosts.
 Parameters:
 
 - **workspace** (*Workspace*) - The workspace to sync.
-- **conda** ([*bool*](https://docs.python.org/3/library/functions.html#bool)) - If True, also sync the currently activated conda env.
-- **auto_reload** ([*bool*](https://docs.python.org/3/library/functions.html#bool)) - If True, automatically reload the workspace on changes.
+- **conda** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - If True, also sync the currently activated conda env.
+- **auto_reload** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - If True, automatically reload the workspace on changes.
 
 *property*initialized*: Future[[Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]]*
 
@@ -2325,7 +2425,7 @@ size(*dim=None*)
 Returns the number of elements (total) of the subset of mesh asked for.
 If dims is None, returns the total number of devices in the mesh.
 
-*property*sizes*: [dict](https://docs.python.org/3/library/stdtypes.html#dict)[[str](https://docs.python.org/3/library/stdtypes.html#str), [int](https://docs.python.org/3/library/functions.html#int)]*
+*property*sizes*: [dict](https://docs.python.org/3/builtins/stdtypes.html#dict)[[str](https://docs.python.org/3/builtins/stdtypes.html#str), [int](https://docs.python.org/3/builtins/functions.html#int)]*
 
 slice(***kwargs*)
 
@@ -2438,7 +2538,7 @@ size(*dim=None*)
 Returns the number of elements (total) of the subset of mesh asked for.
 If dims is None, returns the total number of devices in the mesh.
 
-*property*sizes*: [dict](https://docs.python.org/3/library/stdtypes.html#dict)[[str](https://docs.python.org/3/library/stdtypes.html#str), [int](https://docs.python.org/3/library/functions.html#int)]*
+*property*sizes*: [dict](https://docs.python.org/3/builtins/stdtypes.html#dict)[[str](https://docs.python.org/3/builtins/stdtypes.html#str), [int](https://docs.python.org/3/builtins/functions.html#int)]*
 
 slice(***kwargs*)
 
@@ -2464,7 +2564,7 @@ existing actor.
 
 Parameters:
 
-- **name** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - The unique name of the actor, used as a key for retrieval.
+- **name** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - The unique name of the actor, used as a key for retrieval.
 - **Class** (*Type*) - The class of the actor to spawn. Must be a subclass of Actor.
 - ***args** (*Any*) - Positional arguments to pass to the actor constructor.
 - ****kwargs** (*Any*) - Keyword arguments to pass to the actor constructor.
@@ -2492,9 +2592,13 @@ monarch.actor.default_bootstrap_cmd()[[source]](../_modules/monarch/_src/actor/h
 
 Get the default bootstrap command for the current environment.
 
-Returns a BootstrapCommand configured with the current Python executable
-and environment. This can be used as a base for customization with
-`with_env()` or by modifying its attributes directly.
+Returns a BootstrapCommand configured with the current Python executable.
+Spawned procs inherit the environment of the host that spawns them; the
+command does not carry the caller's environment. This can be used as a
+base for customization with `with_env()` or by modifying its attributes
+directly. In `with_env()`, a `None` value removes a variable from the
+inherited environment; set `inherit_env = False` to start from an empty
+environment instead.
 
 Returns:
 
@@ -2503,16 +2607,6 @@ The default bootstrap command.
 Return type:
 
 BootstrapCommand
-
-monarch.actor.hosts_from_config(*name*)[[source]](../_modules/monarch/_src/actor/host_mesh.html#hosts_from_config)
-
-Get the host mesh 'name' from the monarch configuration for the project.
-
-This config can be modified so that the same code can create meshes from scheduler sources,
-and different sizes etc.
-
-WARNING: This function is a standin so that our getting_started example code works. The real implementation
-needs an RFC design.
 
 monarch.actor.enable_transport(*transport*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#enable_transport)
 
@@ -2557,9 +2651,17 @@ its public API with `@endpoint`. Actors are spawned onto a `ProcMesh`
 are invoked remotely through the messaging adverbs. Each actor processes its
 messages sequentially and participates in the supervision tree.
 
+An endpoint that calls `os.fork()` must not let the child return or
+await into the copied event loop; the child must end in `os._exit()` or
+`os.exec*()`, and under asyncio's default event-loop policy may run a
+fresh loop with `asyncio.run()` first (WF-3 in
+`monarch/_src/actor/bootstrap.py`).
+
 *property*logger*: [Logger](https://docs.python.org/3/library/logging.html#logging.Logger)*
 
 *property*initialized*: [Any](https://docs.python.org/3/library/typing.html#typing.Any)*
+
+stop(*reason='stopped by client'*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Actor.stop)
 
 *property*extent*: Extent*
 
@@ -2583,7 +2685,7 @@ size(*dim=None*)
 Returns the number of elements (total) of the subset of mesh asked for.
 If dims is None, returns the total number of devices in the mesh.
 
-*property*sizes*: [dict](https://docs.python.org/3/library/stdtypes.html#dict)[[str](https://docs.python.org/3/library/stdtypes.html#str), [int](https://docs.python.org/3/library/functions.html#int)]*
+*property*sizes*: [dict](https://docs.python.org/3/builtins/stdtypes.html#dict)[[str](https://docs.python.org/3/builtins/stdtypes.html#str), [int](https://docs.python.org/3/builtins/functions.html#int)]*
 
 slice(***kwargs*)
 
@@ -2602,17 +2704,17 @@ The size of 'pp' is specified and the dimension size is derived from it:
 
 Dimensions not specified will remain unchanged.
 
-monarch.actor.endpoint(*method: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Concatenate](https://docs.python.org/3/library/typing.html#typing.Concatenate)[[Any](https://docs.python.org/3/library/typing.html#typing.Any), P]], [Awaitable](https://docs.python.org/3/library/typing.html#typing.Awaitable)[R]]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R][[source]](../_modules/monarch/_src/actor/endpoint.html#endpoint)
+monarch.actor.endpoint(*method: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Concatenate](https://docs.python.org/3/library/typing.html#typing.Concatenate)[[Any](https://docs.python.org/3/library/typing.html#typing.Any), P]], [Awaitable](https://docs.python.org/3/library/typing.html#typing.Awaitable)[R]]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointProperty[P, R][[source]](../_modules/monarch/_src/actor/endpoint.html#endpoint)
 
-monarch.actor.endpoint(*method: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Concatenate](https://docs.python.org/3/library/typing.html#typing.Concatenate)[[Any](https://docs.python.org/3/library/typing.html#typing.Any), P]], R]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R]
+monarch.actor.endpoint(*method: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Concatenate](https://docs.python.org/3/library/typing.html#typing.Concatenate)[[Any](https://docs.python.org/3/library/typing.html#typing.Any), P]], R]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointProperty[P, R]
 
-monarch.actor.endpoint(***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointIfy
+monarch.actor.endpoint(***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointIfy
 
-monarch.actor.endpoint(*method: Callable[Concatenate[Any, 'Port[R]', P], Awaitable[[None](https://docs.python.org/3/library/constants.html#None)]]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R]
+monarch.actor.endpoint(*method: Callable[Concatenate[Any, 'Port[R]', P], Awaitable[[None](https://docs.python.org/3/builtins/constants.html#None)]]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointProperty[P, R]
 
-monarch.actor.endpoint(*method: Callable[Concatenate[Any, 'Port[R]', P], [None](https://docs.python.org/3/library/constants.html#None)]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R]
+monarch.actor.endpoint(*method: Callable[Concatenate[Any, 'Port[R]', P], [None](https://docs.python.org/3/builtins/constants.html#None)]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointProperty[P, R]
 
-monarch.actor.endpoint(***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → PortedEndpointIfy
+monarch.actor.endpoint(***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → PortedEndpointIfy
 
 Mark an `Actor` method as an endpoint callable from other actors.
 
@@ -2676,6 +2778,12 @@ methods on the same target actor, the first endpoint body starts before the
 second. This is only a start-order guarantee: the first endpoint runs until
 its first `await`, not to completion, before the second starts.
 
+While an actor has queued messages, it periodically yields to its event
+loop, so queued concurrent calls start without waiting for one another and
+other ready tasks on the loop are not starved. How often it yields is an
+implementation detail and may change. This does not limit how long one
+endpoint body runs before its first `await`.
+
 If you mix `@concurrent_endpoint` with normal `@endpoint` methods, a
 normal endpoint that follows a concurrent endpoint may run before the
 concurrent endpoint body has started.
@@ -2713,6 +2821,15 @@ adverbs that send a message to the actor(s) and control how responses are
 returned: `call`, `call_one`, `choose`, `stream`, `broadcast`,
 and `rref`.
 
+choose(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.choose)
+
+Sends a message to a randomly selected actor and waits for its result.
+
+Each call independently selects an actor uniformly at random. Selection
+does not account for actor load, so calls are balanced only across many
+calls. Use `call_one` on a slice of the mesh when placement must be
+deterministic.
+
 call_one(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.call_one)
 
 call(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.call)
@@ -2734,20 +2851,14 @@ delivery of the message.
 
 rref(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.rref)
 
-*class*monarch.actor.Future(***, *coro*)[[source]](../_modules/monarch/_src/actor/future.html#Future)
+*class*monarch.actor.Future[[source]](../_modules/monarch/_src/actor/future.html#Future)
 
 Bases: [`Generic`](https://docs.python.org/3/library/typing.html#typing.Generic)[`R`]
 
-The Future class wraps a PythonTask, which is a handle to a asyncio coroutine running on the Tokio event loop.
-These coroutines do not use asyncio or asyncio.Future; instead, they are executed directly on the Tokio runtime.
-The Future class provides both synchronous (.get()) and asynchronous APIs (await) for interacting with these tasks.
+A result returned by Monarch asynchronous operations.
 
-Parameters:
-
-**coro** (*Coroutine**[**Any**,**Any**,**R**]**|**PythonTask**[**R**]*) - The coroutine or PythonTask representing
-the asynchronous computation.
-
-__init__(***, *coro*)[[source]](../_modules/monarch/_src/actor/future.html#Future.__init__)
+Use `get()` from synchronous code. On an asyncio loop, use `await` or
+`as_asyncio()`. Future objects cannot be constructed directly.
 
 get(*timeout=None*)[[source]](../_modules/monarch/_src/actor/future.html#Future.get)
 
@@ -2760,7 +2871,12 @@ avoid using this method if possible. Instead, use as_asyncio() (or await). This 
 within an active event loop, it blocks synchronously and does not yield control. That may degrade performance
 by preventing other tasks from running, and can potentially cause deadlocks if this future depends on them.
 
-A timeout never consumes the Future: on TimeoutError the underlying task keeps running, so a later get()/await still observes its result.
+Except for a Future returned by a @returns_future function, a timeout never consumes the Future: on TimeoutError the underlying task keeps running, so a later get()/await still observes its result.
+
+For a Future returned by a @returns_future function, the first get() runs the body on the calling thread's event loop, as asyncio.run does.
+If it times out or is interrupted, the body is cancelled and the Future fails with TimeoutError or CancelledError; nothing resumes it.
+Inside running asyncio code, get() runs the body the same way on a short-lived helper thread and waits for it;
+inside a body that a get() is driving, it raises WouldBlockRuntime.
 
 examples:
 
@@ -2808,7 +2924,7 @@ exception(*timeout=None*)[[source]](../_modules/monarch/_src/actor/future.html#F
 
 *class*monarch.actor.ValueMesh(*shape*, *values*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#ValueMesh)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 get(*rank*)
 
@@ -2820,7 +2936,7 @@ Get the value at the given coordinates.
 
 Parameters:
 
-**kwargs** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Coordinates to get the value at.
+**kwargs** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Coordinates to get the value at.
 
 Returns:
 
@@ -2828,7 +2944,7 @@ Value at the given coordinate.
 
 Raises:
 
-[**KeyError**](https://docs.python.org/3/library/exceptions.html#KeyError) - If invalid coordinates are provided.
+[**KeyError**](https://docs.python.org/3/builtins/exceptions.html#KeyError) - If invalid coordinates are provided.
 
 Return type:
 
@@ -2876,7 +2992,7 @@ size(*dim=None*)
 Returns the number of elements (total) of the subset of mesh asked for.
 If dims is None, returns the total number of devices in the mesh.
 
-*property*sizes*: [dict](https://docs.python.org/3/library/stdtypes.html#dict)[[str](https://docs.python.org/3/library/stdtypes.html#str), [int](https://docs.python.org/3/library/functions.html#int)]*
+*property*sizes*: [dict](https://docs.python.org/3/builtins/stdtypes.html#dict)[[str](https://docs.python.org/3/builtins/stdtypes.html#str), [int](https://docs.python.org/3/builtins/functions.html#int)]*
 
 slice(***kwargs*)
 
@@ -2897,7 +3013,7 @@ Dimensions not specified will remain unchanged.
 
 *class*monarch.actor.ActorError(*exception*, *message='A remote actor call has failed.'*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#ActorError)
 
-Bases: [`Exception`](https://docs.python.org/3/library/exceptions.html#Exception)
+Bases: [`Exception`](https://docs.python.org/3/builtins/exceptions.html#Exception)
 
 Deterministic problem with the user's code.
 For example, an OOM resulting in trying to allocate too much GPU memory, or violating
@@ -2942,6 +3058,19 @@ accumulate(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/actor_m
 
 Accumulate the result of the endpoint invocation.
 
+The endpoint invocation starts when this method is called; a failure to
+start it raises here. The fold remains lazy and begins when the returned
+Future is first observed.
+
+An `await` runs the fold on the awaiting loop. `.get()` runs it on
+a private loop on the calling thread. This keeps a sync actor's endpoint
+and nested Monarch Future work on its driver thread, without creating a
+helper thread. Inside an `@returns_future` body, nested Futures must
+instead be awaited; calling `.get()` raises `WouldBlockRuntime`.
+Other code that calls `.get()` from a thread already running an event
+loop warns and falls back to a short-lived helper thread, while still
+blocking the caller's loop.
+
 Parameters:
 
 - **args** (*~P*) - Arguments to pass to the endpoint.
@@ -2969,7 +3098,7 @@ Parameters:
 
 - **endpoint** (*Endpoint**[**~P**,**R**]*) - Endpoint to invoke.
 - **args** ([*Tuple*](https://docs.python.org/3/library/typing.html#typing.Tuple)*[*[*Any*](https://docs.python.org/3/library/typing.html#typing.Any)*,**...**]*) - Arguments to pass to the endpoint.
-- **kwargs** ([*Dict*](https://docs.python.org/3/library/typing.html#typing.Dict)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*,*[*Any*](https://docs.python.org/3/library/typing.html#typing.Any)*]*) - Keyword arguments to pass to the endpoint.
+- **kwargs** ([*Dict*](https://docs.python.org/3/library/typing.html#typing.Dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*Any*](https://docs.python.org/3/library/typing.html#typing.Any)*]*) - Keyword arguments to pass to the endpoint.
 - **port** (*Port**|**None*) - Handle to send the response to.
 - **selection** ([*Literal*](https://docs.python.org/3/library/typing.html#typing.Literal)*[**'all'**,**'choose'**]*) - Selection query representing a subset of the mesh.
 
@@ -2989,16 +3118,12 @@ for sending and receiving messages of type R.
 
 *class*monarch.actor.Port(*port_ref*, *instance*, *rank*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Port)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 A port that sends messages to a remote receiver.
 Wraps an EitherPortRef with the actor instance needed for sending.
 
 send(*obj*)
-
-send_message(*message*)
-
-*async*resolve_and_send(*result*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Port.resolve_and_send)
 
 exception(*e*)
 
@@ -3016,16 +3141,18 @@ recv()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#PortReceiver.rec
 
 ranked()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#PortReceiver.ranked)
 
-monarch.actor.as_endpoint(*not_an_endpoint: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*) → Endpoint[P, R][[source]](../_modules/monarch/_src/actor/actor_mesh.html#as_endpoint)
+monarch.actor.as_endpoint(*not_an_endpoint: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*) → Endpoint[P, R][[source]](../_modules/monarch/_src/actor/actor_mesh.html#as_endpoint)
 
-monarch.actor.as_endpoint(*not_an_endpoint: Callable[Concatenate['PortProtocol[R]', P], [None](https://docs.python.org/3/library/constants.html#None)]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*) → Endpoint[P, R]
+monarch.actor.as_endpoint(*not_an_endpoint: Callable[Concatenate['PortProtocol[R]', P], [None](https://docs.python.org/3/builtins/constants.html#None)]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*) → Endpoint[P, R]
 
 Treat an actor method that is not an `@endpoint` as one.
 
 Use this to call a plain method of a spawned actor through the messaging
 adverbs when the method was not decorated with `@endpoint`, for example
 `as_endpoint(actor.method).call(...)`. The options match those of
-`endpoint`.
+`endpoint`. On an actor whose endpoints are all `def`, the method must
+be a plain `def` as well: the actor has no event loop, so an `async def`
+method fails with `TypeError`.
 
 Parameters:
 
@@ -3041,11 +3168,11 @@ An `Endpoint` exposing the messaging adverbs.
 
 Raises:
 
-[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If `not_an_endpoint` is not a method of a spawned actor.
+[**ValueError**](https://docs.python.org/3/builtins/exceptions.html#ValueError) - If `not_an_endpoint` is not a method of a spawned actor.
 
 # Context API
 
-Use these functions to look up what actor is running the currently executing code.
+Use these functions to identify the actor associated with the currently executing code. Inside an endpoint, this is the worker actor. In ordinary controller code, it is the controller's root client actor.
 
 monarch.actor.current_actor_name()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#current_actor_name)
 
@@ -3067,29 +3194,16 @@ Return the `Context` for the currently executing actor.
 
 Call this from within an endpoint to inspect the running actor and the
 current message's position in the mesh. Outside an actor (on the client) it
-returns the root client context.
+returns the root client context. Raises `WouldBlockRuntime` rather than
+attempting fresh root-client bootstrap from inside a Tokio runtime; an
+already-initialized client can still be reused there.
 
-monarch.actor.shutdown_context()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#shutdown_context)
-
-Shutdown global actor context resources.
-
-Idempotent: subsequent calls return an immediately-resolved future.
-This is safe to call both explicitly and from atexit.
-
-Returns:
-
-A future that completes when shutdown is
-
-finished. Call with .get() to wait for
-completion.
-
-Return type:
-
-Future[None]
+`shutdown_context()` always targets the process's client; it does not
+use this function to select an actor to stop.
 
 *class*monarch.actor.Context[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Context)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 actor_instance
 
@@ -3124,7 +3238,7 @@ values() → an object providing a view on D's values
 
 *class*monarch.actor.Extent(*labels*, *sizes*)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 keys()
 
@@ -3132,13 +3246,83 @@ nelements
 
 region
 
+# Client Shutdown
+
+Call `shutdown_context()` from the user's Python controller program when it has finished using Monarch. This ends the lifetime of that process's client; the client cannot be restarted in the same process. `context()` is not used to select an actor to stop: the target is the process's client. It is not a shutdown callback to run once per host in a HostMesh. Use a mesh's own stop or shutdown method when you want to stop only that mesh and continue using the client.
+
+Monarch registers client shutdown automatically for normal Python interpreter exit. Call it explicitly when you need to wait for shutdown before continuing or exiting:
+
+```
+from monarch.actor import shutdown_context
+
+# After the controller has finished all Monarch work:
+shutdown = shutdown_context()
+shutdown.get(timeout=30)
+```
+
+An async controller can await the returned Future instead. Keep the Future from the call that starts shutdown: later calls return already-completed Futures and do not wait for an earlier shutdown still in progress. Dropping the first Future does not cancel native shutdown.
+
+This is not enforced by a controller-only caller check. In a worker process without an initialized client, the call does nothing and does not create a client. A worker's actor context is not a client. If a worker separately initializes its own client, `shutdown_context()` applies to that client.
+
+monarch.actor.shutdown_context(*host_timeout=None*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#shutdown_context)
+
+Shut down this Python process's Monarch client.
+
+Call this from the user's Python controller program when it has finished
+using Monarch, not to stop one actor or mesh. Monarch also calls it
+automatically at normal Python interpreter exit. Once shut down, the
+client cannot be restarted in the same process. This does not exit the
+controller program.
+
+Monarch creates one root client actor for the user's Python controller
+process. The controller's meshes share that root client; it is not created
+once per host or worker. The root client runs on a local Monarch host.
+That host may also have user procs created through
+`this_host().spawn_procs(...)`. This shuts down those procs, then stops
+the root client, attempts its final flush and closes the transports.
+It does not send a shutdown request to each host in an arbitrary HostMesh.
+
+This uses the process's initialized client, not the current actor returned
+by `context()`. There is no controller-only caller check. A worker with
+no initialized client gets an already-completed future without creating
+a client or stopping its current actor. If a worker separately initializes
+its own client, this operation applies to that client. A no-client call
+does not prevent a client created later from being shut down.
+
+With an initialized client, the first call starts shutdown before it
+returns. Keep that returned future and call `.get()` or await it if you
+need to wait for completion. Dropping it does not cancel native shutdown.
+Later calls return already-completed futures, even while the first
+shutdown is still running; calling again is not a way to wait for it.
+
+Parameters:
+
+**host_timeout** ([*float*](https://docs.python.org/3/builtins/functions.html#float)*|**None*) - Timeout in seconds passed to the local host's user-proc
+shutdown. The host and root client's final gateway flushes are
+also capped by this value. Defaults to 10 seconds. This is not an
+overall time limit on waiting for shutdown to finish. A supplied
+timeout must be finite, non-negative and less than 2**64 seconds;
+an invalid timeout does not claim shutdown.
+
+Returns:
+
+Reports completion for the call that starts shutdown.
+
+Already complete if no client exists or shutdown was already
+claimed. Final flushes are best-effort; completion does not
+guarantee that every message was delivered.
+
+Return type:
+
+Future[None]
+
 # Supervision
 
 Types used for error handling and supervision in actor meshes.
 
 *class*monarch.actor.MeshFailure
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 mesh
 
@@ -3182,7 +3366,7 @@ Utilities for tracing actor execution.
 
 monarch.actor.traced(*fn: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]*) → [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R][[source]](../_modules/monarch/_src/actor/telemetry.html#traced)
 
-monarch.actor.traced(***, *name: [str](https://docs.python.org/3/library/stdtypes.html#str)*) → [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]], [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]]
+monarch.actor.traced(***, *name: [str](https://docs.python.org/3/builtins/stdtypes.html#str)*) → [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]], [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]]
 
 Decorator that wraps a function in a telemetry span.
 
@@ -3274,7 +3458,9 @@ tail_log_lines: Number of log lines to retain in memory.
 message_delivery_timeout: Max delivery time (humantime).
 - **timeouts** (*Host mesh*) - host_spawn_ready_timeout: Max host bootstrapping time (humantime).
 mesh_proc_spawn_max_idle: Max idle time while spawning procs (humantime).
-- **handling** (*Hyperactor timeouts and message*) - process_exit_timeout: Timeout for process exit (humantime).
+- **handling** (*Hyperactor timeouts and message*) - 
+
+process_exit_timeout: Timeout for process exit (humantime).
 message_ack_time_interval: Time interval for message acknowledgments (humantime).
 message_ack_every_n_messages: Acknowledge every N messages.
 message_ttl_default: Default message time-to-live.
@@ -3284,6 +3470,13 @@ stop_actor_timeout: Timeout for stopping actors (humantime).
 cleanup_timeout: Timeout for cleanup operations (humantime).
 default_encoding: Default message encoding (Encoding.Bincode, Encoding.Json, or Encoding.Multipart).
 channel_net_rx_buffer_full_check_interval: Network receive buffer check interval (humantime).
+channel_tcp_congestion: TCP congestion control: `"cubic"`, `"reno"`,
+
+> `"bbr"`; empty keeps the host default. Best-effort - a host that will
+> not let this process select the algorithm keeps its own default and the
+> channel layer logs a warning, rather than failing the connection. This
+> value therefore records what was requested, not necessarily what took.
+
 message_latency_sampling_rate: Sampling rate for message latency tracking (0.0 to 1.0).
 enable_dest_actor_reordering_buffer: Enable reordering buffer in dest actor.
 - **configuration** - mesh_bootstrap_enable_pdeathsig: Enable parent-death signal for spawned processes.
@@ -3315,6 +3508,14 @@ mesh_attach_config_timeout: Timeout for the config-push barrier
 
 during `attach_to_workers()` (humantime, default `"10s"`).
 Best-effort: if exceeded, a warning is logged and attach continues.
+- **Diagnostics** - 
+pyspy_bin: Path to the py-spy binary used by the mesh admin
+
+py-spy endpoints. Tried ahead of `py-spy` on `PATH`;
+empty uses `PATH` alone. Resolved in the proc being
+dumped, so it must be set before that proc is spawned.
+The environment variable is `PYSPY_BIN`, not
+`HYPERACTOR_*`.
 - **configuration** - 
 rdma_allow_tcp_fallback: Allow TCP fallback when ibverbs RDMA
 
@@ -3328,6 +3529,45 @@ causing all RDMA operations to use the TCP fallback backend.
 rdma_max_chunk_size_mb: Maximum chunk size in megabytes for RDMA
 
 transfers.
+
+rdma_ibverbs_target: Default ibverbs device target for managers
+
+without an explicit target. Accepts `"cpu:<numa>"`,
+`"gpu:<ordinal>"`, or `"nic:<name>"`. Empty preserves
+automatic selection. Non-empty value syntax is validated when
+the RDMA manager starts.
+
+rdma_peer_device_affinity: Which peer NICs each local NIC may pair
+
+with for a transfer. Accepts `"any"`, `"match_name"`, or
+`"groups:"` followed by any number of `|`-separated groups,
+each naming any number of comma-separated devices, e.g.
+`"groups:mlx5_0,mlx5_1|mlx5_2,mlx5_3|mlx5_4"`. Groups must be
+disjoint. Empty, the default, means `"any"`. Value syntax is
+validated when the RDMA manager starts.
+
+rdma_max_nics_per_buffer: How many NICs a buffer is registered on,
+
+at most; `None`, the default, sets no limit.
+
+rdma_min_stripe_size_kb: Minimum RDMA stripe size in KiB
+
+(default: 512). Transfers use as many compatible NIC pairs as
+this minimum allows.
+
+rdma_qps_per_cq: How many queue pairs share one completion queue
+
+(default 64).
+
+rdma_cq_poller_per_device: Whether each RDMA device gets a separate
+
+completion-queue poller (default `True`).
+
+rdma_runtime_worker_threads: Worker threads for the shared RDMA
+
+data-plane runtime (default 4), which runs RDMA actors and
+queue-pair worker tasks. Latched at the first RDMA use in a
+process; setting it later has no effect.
 - ****kwargs** (*ConfigureKwargsType*) - Reserved for future configuration keys exposed by Rust bindings.
 
 monarch.config.configured(***overrides*)[[source]](../_modules/monarch/config.html#configured)
@@ -3795,19 +4035,6 @@ Threshold below which writes are copied (in bytes).
 Writes smaller than this threshold are copied into a contiguous buffer.
 Writes at or above this size are stored as zero-copy references.
 
-## Actor Configuration
-
-`actor_queue_dispatch`
-
-Enable queue-based dispatch for actor message handling.
-
-- **Type**: `bool`
-- **Default**: `True`
-- **Environment**: `HYPERACTOR_ACTOR_QUEUE_DISPATCH`
-
-When `True`, actor messages are dispatched through a queue rather than
-directly. This can improve throughput in high-message-volume scenarios.
-
 ## Mesh Configuration
 
 `max_cast_dimension_size`
@@ -3832,6 +4059,31 @@ Parsed as a `SocketAddr` (e.g. `"[::]:1729"`, `"0.0.0.0:8080"`).
 Used as the bind address when no explicit address is provided to
 `MeshAdminAgent`, and as the default address assumed by admin
 clients connecting via `mast_conda:///`.
+
+`pyspy_bin`
+
+Path to the py-spy binary used by the mesh admin py-spy endpoints.
+
+- **Type**: `str`
+- **Default**: `""` (empty; `py-spy` on `PATH` is used instead)
+- **Environment**: `PYSPY_BIN`
+
+Tried ahead of `py-spy` on `PATH`. The environment variable is
+`PYSPY_BIN` rather than `HYPERACTOR_*`, for compatibility with
+deployments that already set it.
+
+Resolved in the proc being dumped, not in the client, and read when
+the dump runs - so it has to be in place before that proc is
+spawned. Setting it via `configure()` reaches procs spawned
+afterwards; it does not change procs that are already running.
+
+```
+from monarch.config import configure
+
+# Some py-spy builds cannot unwind native frames on a given
+# target; point at one that can.
+configure(pyspy_bin="/path/to/py-spy")
+```
 
 ## Mesh Attach
 
@@ -4003,7 +4255,7 @@ dataloader_hosts = state.dataloaders
 
 *class*monarch.job.JobState(*hosts*)[[source]](../_modules/monarch/_src/job/job_state.html#JobState)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 Container for the current state of a job.
 
@@ -4019,6 +4271,44 @@ state.dataloaders # HostMesh for the "dataloaders" mesh
 ```
 
 __init__(*hosts*)[[source]](../_modules/monarch/_src/job/job_state.html#JobState.__init__)
+
+# Interactive Shell
+
+Use a singleton slice of a job's host mesh to open an interactive terminal on
+that host.
+
+monarch.job.shell(*host_mesh_singleton*, ***, *env=None*, *workdir=None*)[[source]](../_modules/monarch/_src/job/shell.html#shell)
+
+Run an interactive shell on a singleton host mesh.
+
+The Python actors establish two native Monarch channels, then terminal
+input and output travel directly through their Rust ports.
+
+Parameters:
+
+- **host_mesh_singleton** ([*HostMesh*](monarch.actor.html#monarch.actor.HostMesh)) - A HostMesh containing exactly one host.
+- **env** ([*dict*](https://docs.python.org/3/builtins/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*]**|**None*) - Extra environment variables for the remote shell.
+- **workdir** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - Working directory on the remote host. If omitted, the
+client's working directory is used when it exists remotely.
+
+Returns:
+
+The remote shell's exit status.
+
+Return type:
+
+[int](https://docs.python.org/3/builtins/functions.html#int)
+
+# Port Forwarding
+
+*class*monarch.job.PortForwarder[[source]](../_modules/monarch/_src/job/port_forward.html#PortForwarder)
+
+Local actor that owns point-to-point port forwards.
+
+Spawn one on the local process, call `forward()` for each desired
+forward, and stop the actor to close every forward it started.
+
+forward
 
 # Job Base Class
 
@@ -4064,14 +4354,16 @@ pre-emptively sets `_status = "running"`, the `state()` method
 will skip the cache dump, breaking job persistence. Instead, let
 `apply()` set the status after `_create()` returns.
 
-enable_telemetry(*config=None*, ***kwargs*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.enable_telemetry)
+enable_telemetry(*config=None*, ***, *mesh_admin_config=None*, ***kwargs*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.enable_telemetry)
 
-Configure automatic telemetry startup on the next `state()` call.
+Configure telemetry services on the next `state()` call.
 
 Parameters:
 
-**config** (*TelemetryConfig**|**None*) - A `TelemetryConfig` instance. If omitted, one is
+- **config** (*TelemetryConfig**|**None*) - A `TelemetryConfig` instance. If omitted, one is
 constructed from *kwargs* (forwarded to `TelemetryConfig`).
+- **mesh_admin_config** (*MeshAdminConfig**|**None*) - A `MeshAdminConfig` instance. If omitted,
+the default is configured unless mesh admin was already configured.
 
 Returns:
 
@@ -4080,6 +4372,17 @@ Returns:
 Return type:
 
 [*Self*](https://docs.python.org/3/library/typing.html#typing.Self)
+
+profile(***, *on_trace_ready=None*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.profile)
+
+Profile a block of work using this job's distributed telemetry.
+
+telemetry_query_client()[[source]](../_modules/monarch/_src/job/job.html#JobTrait.telemetry_query_client)
+
+Return a query client for a healthy job's existing telemetry service.
+
+This checks the saved allocation without connecting host meshes or
+starting job services.
 
 enable_admin(*config=None*, ***kwargs*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.enable_admin)
 
@@ -4112,7 +4415,7 @@ that instructs the client to connect to the job that it is running in.
 Then we will schedule the job including that .monarch/job_state.pkl.
 When the client calls .state(), it will find the .monarch/job_state.pkl and connect to it.
 
-*property*apply_id*: [str](https://docs.python.org/3/library/stdtypes.html#str) | [None](https://docs.python.org/3/library/constants.html#None)*
+*property*apply_id*: [str](https://docs.python.org/3/builtins/stdtypes.html#str) | [None](https://docs.python.org/3/builtins/constants.html#None)*
 
 A UUID identifying the current allocation of this job.
 
@@ -4120,7 +4423,7 @@ Generated fresh each time `apply()` creates a new allocation.
 `None` if the job has not been applied yet. When a job is loaded
 from a cached file, the original `apply_id` is preserved.
 
-*property*active*: [bool](https://docs.python.org/3/library/functions.html#bool)*
+*property*active*: [bool](https://docs.python.org/3/builtins/functions.html#bool)*
 
 state(*cached_path='.monarch/job_state.pkl'*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.state)
 
@@ -4148,11 +4451,11 @@ to `state()`.
 
 Parameters:
 
-- **source** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Local directory path to mount.
-- **mntpoint** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)*|**None*) - Mount point on workers. Defaults to `source`.
-- **meshes** ([*List*](https://docs.python.org/3/library/typing.html#typing.List)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*]**|**None*) - Names of meshes to mount on. `None` means all meshes
+- **source** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Local directory path to mount.
+- **mntpoint** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - Mount point on workers. Defaults to `source`.
+- **meshes** ([*List*](https://docs.python.org/3/library/typing.html#typing.List)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*]**|**None*) - Names of meshes to mount on. `None` means all meshes
 returned by `state()`.
-- **python_exe** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)*|**None*) - Path to the Python executable relative to the mount
+- **python_exe** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - Path to the Python executable relative to the mount
 point, used to set `python_executable` on the returned mesh.
 Set to `None` to skip. Defaults to `".venv/bin/python"`.
 - ****kwargs** ([*Any*](https://docs.python.org/3/library/typing.html#typing.Any)) - Forwarded to `remotemount()`.
@@ -4167,12 +4470,12 @@ to `state()`.
 
 Parameters:
 
-- **remote_mount_point** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Path on workers to expose. The token
+- **remote_mount_point** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Path on workers to expose. The token
 `$SUBDIR` is replaced with each host's mesh-coordinate key
 (e.g. `hosts_0`).
-- **local_mount_point** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Local path where the remote directory will be
+- **local_mount_point** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Local path where the remote directory will be
 mounted.
-- **meshes** ([*List*](https://docs.python.org/3/library/typing.html#typing.List)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*]**|**None*) - Names of meshes to gather from. `None` means all meshes
+- **meshes** ([*List*](https://docs.python.org/3/library/typing.html#typing.List)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*]**|**None*) - Names of meshes to gather from. `None` means all meshes
 returned by `state()`.
 
 *abstract*can_run(*spec*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.can_run)
@@ -4187,51 +4490,51 @@ It is also used by the batch run infrastructure to indicate that the batch job c
 See the [Observability](../observability.html) guide for the relationship between distributed
 telemetry, the Monarch Dashboard, and the Mesh Admin TUI.
 
-*class*monarch.job.TelemetryConfig(*retention_secs=600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=0*)[[source]](../_modules/monarch/_src/job/telemetry_config.html#TelemetryConfig)
+*class*monarch.job.TelemetryConfig(*retention_secs=3600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=30.0*)[[source]](../_modules/monarch/_src/job/telemetry_config.html#TelemetryConfig)
 
-Configuration for automatic telemetry startup.
+Configuration for automatic telemetry and snapshot startup.
 
-When configured via `JobTrait.enable_telemetry`, telemetry
-(and optionally a dashboard) is started when `state()` is called.
+When configured via `JobTrait.enable_telemetry`, telemetry, mesh admin,
+and optionally snapshots and a dashboard are started when `state()` is
+called.
 
 Parameters:
 
-- **retention_secs** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Retention window in seconds for message tables.
+- **retention_secs** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Retention window in seconds for message and trace
+history. Trace tables are filtered independently by row timestamp.
 0 disables retention.
-- **include_dashboard** ([*bool*](https://docs.python.org/3/library/functions.html#bool)) - Whether to start the monarch dashboard web server.
-- **dashboard_port** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Preferred port for the dashboard.
-- **snapshot_interval_secs** ([*float*](https://docs.python.org/3/library/functions.html#float)) - Interval in seconds between periodic mesh
+- **include_dashboard** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - Whether to start the monarch dashboard web server.
+- **dashboard_port** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Preferred port for the dashboard.
+- **snapshot_interval_secs** ([*float*](https://docs.python.org/3/builtins/functions.html#float)) - Interval in seconds between periodic mesh
 introspection snapshots. Snapshots capture the mesh topology
-into the telemetry query surface. 0 disables periodic capture
-(default). When `include_dashboard` is True and this is 0,
-it is automatically set to 30s because the dashboard requires
-snapshot data for system actor filtering.
+into the telemetry query surface. The default is 30 seconds;
+0 disables periodic capture.
 
-retention_secs*: [int](https://docs.python.org/3/library/functions.html#int)**= 600*
+retention_secs*: [int](https://docs.python.org/3/builtins/functions.html#int)**= 3600*
 
-include_dashboard*: [bool](https://docs.python.org/3/library/functions.html#bool)**= False*
+include_dashboard*: [bool](https://docs.python.org/3/builtins/functions.html#bool)**= False*
 
-dashboard_port*: [int](https://docs.python.org/3/library/functions.html#int)**= 8265*
+dashboard_port*: [int](https://docs.python.org/3/builtins/functions.html#int)**= 8265*
 
-snapshot_interval_secs*: [float](https://docs.python.org/3/library/functions.html#float)**= 0*
+snapshot_interval_secs*: [float](https://docs.python.org/3/builtins/functions.html#float)**= 30.0*
 
-__init__(*retention_secs=600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=0*)
+__init__(*retention_secs=3600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=30.0*)
 
 *class*monarch.job.MeshAdminConfig(*admin_addr=None*)[[source]](../_modules/monarch/_src/job/job_components.html#MeshAdminConfig)
 
 Configuration for automatic mesh admin agent startup.
 
-When configured via `JobTrait.enable_admin`, a MeshAdminAgent HTTP
-server is spawned when `state()` is called. The server aggregates
-topology across all host meshes and exposes it via a REST API that the
-admin TUI can attach to.
+When passed to `JobTrait.enable_telemetry`, a MeshAdminAgent HTTP server
+is spawned when `state()` is called. The server aggregates topology
+across all host meshes and exposes it via a REST API that the admin TUI
+can attach to.
 
 Parameters:
 
-**admin_addr** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)*|**None*) - Bind address for the admin HTTP server. When
-`None` the server picks an available address automatically.
+**admin_addr** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - Bind address for the admin HTTP server. When `None`, the
+server uses the configured `MESH_ADMIN_ADDR`.
 
-admin_addr*: [str](https://docs.python.org/3/library/stdtypes.html#str) | [None](https://docs.python.org/3/library/constants.html#None)**= None*
+admin_addr*: [str](https://docs.python.org/3/builtins/stdtypes.html#str) | [None](https://docs.python.org/3/builtins/constants.html#None)**= None*
 
 __init__(*admin_addr=None*)
 
@@ -4286,7 +4589,7 @@ It is also used by the batch run infrastructure to indicate that the batch job c
 
 ## SlurmJob
 
-*class*monarch.job.SlurmJob(*meshes*, *python_exe='python'*, *slurm_args=()*, *monarch_port=22222*, *job_name='monarch_job'*, *ntasks_per_node=1*, *time_limit=None*, *partition=None*, *log_dir=None*, *exclusive=True*, *gpus_per_node=None*, *cpus_per_task=None*, *mem=None*, *job_start_timeout=None*)[[source]](../_modules/monarch/_src/job/slurm.html#SlurmJob)
+*class*monarch.job.SlurmJob(*meshes*, *python_exe='python'*, *slurm_args=()*, *monarch_port=22222*, *job_name='monarch_job'*, *ntasks_per_node=1*, *time_limit=None*, *partition=None*, *log_dir=None*, *exclusive=True*, *gpus_per_node=None*, *cpus_per_task=None*, *mem=None*, *job_start_timeout=None*, *account=None*, *qos=None*, *out_of_cluster=False*, *attach_to=None*, *bind_to=None*)[[source]](../_modules/monarch/_src/job/slurm.html#SlurmJob)
 
 Bases: `JobTrait`
 
@@ -4348,31 +4651,31 @@ provision the pods.
 
 Parameters:
 
-- **name** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Name of the mesh. Must follow RFC 1123 DNS label standard and Monarch hostname restriction:
+- **name** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Name of the mesh. Must follow RFC 1123 DNS label standard and Monarch hostname restriction:
 * At most 63 characters
 * only lowercase alphanumeric characters
 * must start with an alphabetic character,
 * and end with an alphanumeric character.
-- **num_replicas** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Number of pod replicas (expects all ranks 0 to num_replicas-1)
-- **label_selector** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)*|**None*) - Custom label selector for pod discovery. Cannot be set when provisioning.
-- **pod_rank_label** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Label key containing the pod rank. Cannot be customized when provisioning.
+- **num_replicas** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Number of pod replicas (expects all ranks 0 to num_replicas-1)
+- **label_selector** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - Custom label selector for pod discovery. Cannot be set when provisioning.
+- **pod_rank_label** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Label key containing the pod rank. Cannot be customized when provisioning.
 - **image_spec** (*ImageSpec**|**None*) - `ImageSpec` with container image and optional resources for simple provisioning.
 Mutually exclusive with `pod_template`.
-- **port** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Monarch worker port (default: 26600).
+- **port** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Monarch worker port (default: 26600).
 - **pod_template** (*V1PodTemplateSpec**|**None*) - `V1PodTemplateSpec` for advanced provisioning (e.g. custom volumes, sidecars,
 pod-level labels/annotations). Mutually exclusive with `image_spec`.
-- **labels** ([*dict*](https://docs.python.org/3/library/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*]**|**None*) - Optional labels to apply to the MonarchMesh CRD metadata.
+- **labels** ([*dict*](https://docs.python.org/3/builtins/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*]**|**None*) - Optional labels to apply to the MonarchMesh CRD metadata.
 Propagated by the operator to the StatefulSet metadata. To set
 labels on the worker pods, use `pod_template.metadata.labels`.
 Only used when provisioning (`image_spec` or `pod_template` supplied).
-- **annotations** ([*dict*](https://docs.python.org/3/library/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*]**|**None*) - Optional annotations to apply to the MonarchMesh CRD metadata.
+- **annotations** ([*dict*](https://docs.python.org/3/builtins/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*]**|**None*) - Optional annotations to apply to the MonarchMesh CRD metadata.
 Propagated by the operator to the StatefulSet metadata. To set
 annotations on the worker pods, use `pod_template.metadata.annotations`.
 Only used when provisioning (`image_spec` or `pod_template` supplied).
 
 Raises:
 
-[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - On invalid name or conflicting parameters.
+[**ValueError**](https://docs.python.org/3/builtins/exceptions.html#ValueError) - On invalid name or conflicting parameters.
 
 can_run(*spec*)[[source]](../_modules/monarch/_src/job/kubernetes.html#KubernetesJob.can_run)
 
@@ -4392,7 +4695,58 @@ True if this job matches the spec and all required pods are available
 
 Return type:
 
-[bool](https://docs.python.org/3/library/functions.html#bool)
+[bool](https://docs.python.org/3/builtins/functions.html#bool)
+
+*class*monarch.job.kubernetes.ImageSpec(*image*, *resources=None*, *enable_fuse=False*, *shared_memory_size=None*)[[source]](../_modules/monarch/_src/job/kubernetes.html#ImageSpec)
+
+Container image specification for provisioning worker pods.
+
+Use this to provision MonarchMesh workers with a specific container
+image and optional K8s resource requests/limits:
+
+```
+# Simple -- image only
+ImageSpec("ghcr.io/meta-pytorch/monarch:latest")
+
+# With GPU resources
+ImageSpec("ghcr.io/meta-pytorch/monarch:latest",
+ resources={"nvidia.com/gpu": 4})
+
+# With the FUSE device required by RemoteMount
+ImageSpec("ghcr.io/meta-pytorch/monarch:latest", enable_fuse=True)
+
+# With memory-backed shared memory for NCCL
+ImageSpec(
+ "ghcr.io/meta-pytorch/monarch:latest",
+ shared_memory_size="16Gi",
+)
+```
+
+Pass the resulting object to `KubernetesJob.add_mesh(image_spec=...)`.
+
+`enable_fuse` runs the worker container in [privileged mode](https://kubernetes.io/docs/concepts/security/linux-kernel-security-constraints/#privileged-containers)
+and mounts the host's `/dev/fuse` device. The cluster's [admission policy](https://kubernetes.io/docs/concepts/security/pod-security-admission/)
+must allow privileged containers in the worker namespace, and its worker
+nodes must provide `/dev/fuse`. The option defaults to `False` and does
+not affect jobs that do not need FUSE.
+
+image*: [str](https://docs.python.org/3/builtins/stdtypes.html#str)*
+
+Required container image to use for worker pods.
+
+resources*: [dict](https://docs.python.org/3/builtins/stdtypes.html#dict)[[str](https://docs.python.org/3/builtins/stdtypes.html#str), [str](https://docs.python.org/3/builtins/stdtypes.html#str) | [int](https://docs.python.org/3/builtins/functions.html#int)] | [None](https://docs.python.org/3/builtins/constants.html#None)**= None*
+
+Optional K8s resource requests/limits (e.g. `{"nvidia.com/gpu": 4}`).
+
+enable_fuse*: [bool](https://docs.python.org/3/builtins/functions.html#bool)**= False*
+
+Whether to configure the worker pod for FUSE-backed mounts.
+
+shared_memory_size*: [str](https://docs.python.org/3/builtins/stdtypes.html#str) | [None](https://docs.python.org/3/builtins/constants.html#None)**= None*
+
+Optional size limit for a memory-backed `/dev/shm` volume.
+
+__init__(*image*, *resources=None*, *enable_fuse=False*, *shared_memory_size=None*)
 
 # Serialization
 
@@ -4404,7 +4758,7 @@ Load a job from a file.
 
 Parameters:
 
-**filename** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Path to the pickled job file, typically from `JobTrait.dump()`.
+**filename** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Path to the pickled job file, typically from `JobTrait.dump()`.
 Defaults to `.monarch/job_state.pkl`.
 
 Returns:
@@ -4421,7 +4775,7 @@ Deserialize a job from bytes.
 
 Parameters:
 
-**data** ([*bytes*](https://docs.python.org/3/library/stdtypes.html#bytes)) - Pickled job bytes, typically from `JobTrait.dumps()`.
+**data** ([*bytes*](https://docs.python.org/3/builtins/stdtypes.html#bytes)) - Pickled job bytes, typically from `JobTrait.dumps()`.
 
 Returns:
 
@@ -4447,29 +4801,26 @@ The `monarch.rdma` module provides Remote Direct Memory Access (RDMA) support fo
 
 *class*monarch.rdma.RDMABuffer(*data*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 __init__(*data*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.__init__)
 
 RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews.
+Both CPU and GPU memory are supported.
 
 Parameters:
 
-**data** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/library/stdtypes.html#memoryview)) - torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous.
+**data** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/builtins/stdtypes.html#memoryview)) - torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous.
 If provided, addr and size must not be specified.
 
 Raises:
 
-- [**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If data is not 1d contiguous, if size is 0, or if data is a GPU tensor.
-- [**RuntimeError**](https://docs.python.org/3/library/exceptions.html#RuntimeError) - If no RDMA backend is available on this platform.
-
-Note
-
-Currently only CPU tensors are supported. GPU tensor support will be added in the future.
+- [**ValueError**](https://docs.python.org/3/builtins/exceptions.html#ValueError) - If data is not 1d contiguous, or if its size is 0.
+- [**RuntimeError**](https://docs.python.org/3/builtins/exceptions.html#RuntimeError) - If no RDMA backend is available on this platform.
 
 TODO: Create TensorBuffer, which will be main user API supporting non-contiguous tensors
 
-*property*backend*: [str](https://docs.python.org/3/library/stdtypes.html#str)*
+*property*backend*: [str](https://docs.python.org/3/builtins/stdtypes.html#str)*
 
 Return the RDMA backend in use ('ibverbs').
 
@@ -4484,11 +4835,11 @@ whose byte-size is at least `self.size()`.
 
 Parameters:
 
-**dst** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/library/stdtypes.html#memoryview)) - Destination tensor or memoryview to read into.
+**dst** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/builtins/stdtypes.html#memoryview)) - Destination tensor or memoryview to read into.
 
 Keyword Arguments:
 
-**timeout** ([*int*](https://docs.python.org/3/library/functions.html#int)*,**optional*) - Timeout in seconds. Defaults to 60s.
+**timeout** ([*int*](https://docs.python.org/3/builtins/functions.html#int)*,**optional*) - Timeout in seconds. Defaults to 60s.
 
 Returns:
 
@@ -4502,7 +4853,7 @@ Return type:
 
 Raises:
 
-[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If `dst` is smaller than the RDMA buffer.
+[**ValueError**](https://docs.python.org/3/builtins/exceptions.html#ValueError) - If `dst` is smaller than the RDMA buffer.
 
 write_from(*src*, ***, *timeout=60*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.write_from)
 
@@ -4513,12 +4864,12 @@ whose byte-size is at most `self.size()`.
 
 Parameters:
 
-**src** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/library/stdtypes.html#memoryview)) - Source tensor or memoryview containing the bytes to
+**src** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/builtins/stdtypes.html#memoryview)) - Source tensor or memoryview containing the bytes to
 write to the RDMA buffer.
 
 Keyword Arguments:
 
-**timeout** ([*int*](https://docs.python.org/3/library/functions.html#int)*,**optional*) - Timeout in seconds. Defaults to 60s.
+**timeout** ([*int*](https://docs.python.org/3/builtins/functions.html#int)*,**optional*) - Timeout in seconds. Defaults to 60s.
 
 Returns:
 
@@ -4532,13 +4883,13 @@ Return type:
 
 Raises:
 
-[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If `src` exceeds the RDMA buffer size.
+[**ValueError**](https://docs.python.org/3/builtins/exceptions.html#ValueError) - If `src` exceeds the RDMA buffer size.
 
 drop()[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.drop)
 
 Release the handle on the memory that the src holds to this memory.
 
-*property*owner*: [str](https://docs.python.org/3/library/stdtypes.html#str)*
+*property*owner*: [str](https://docs.python.org/3/builtins/stdtypes.html#str)*
 
 The owner reference (str)
 
@@ -4546,7 +4897,7 @@ The owner reference (str)
 
 *class*monarch.rdma.RDMAAction[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction)
 
-Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
 
 Schedule a batch of RDMA operations and submit them as one unit.
 
@@ -4603,7 +4954,7 @@ Both Mellanox and EFA hardware are accessed through ibverbs.
 
 Return type:
 
-[str](https://docs.python.org/3/library/stdtypes.html#str)
+[str](https://docs.python.org/3/builtins/stdtypes.html#str)
 
 ---
 
@@ -5535,7 +5886,7 @@ impl Actor for MyActor {}
 impl RemoteSpawn for MyActor {
  type Params = bool;
 
- async fn new(params: bool) -> anyhow::Result<Self> {
+ async fn new(params: bool, _environment: &ActorEnvironment) -> anyhow::Result<Self> {
  if params {
  Ok(MyActor)
  } else {
@@ -5696,6 +6047,7 @@ impl ProcMeshRef {
  spec: mesh_agent::ActorSpec {
  actor_type: actor_type.clone(), // ← string name sent over the wire
  params_data: serialized_params.clone(),
+ actor_environment: cx.instance().actor_environment().clone(),
  },
  },
  )?;
@@ -5731,7 +6083,8 @@ impl Remote {
 In a typical setup, higher-level code in a separate crate starts from a generic `A: RemoteSpawn`, uses `Remote::name_of::<A>()` to obtain the global type name, serializes `A::Params`, and sends a request containing:
 
 - `actor_type`: that global type name, and
-- `params_data`: serialized `A::Params`.
+- `params_data`: serialized `A::Params`, and
+- `actor_environment`: the spawning actor's persistent environment.
 
 On the receiving side, a control-plane or management actor calls:
 
@@ -5746,7 +6099,7 @@ to look up the corresponding `SpawnableActor` by `actor_type` and invoke its `gs
 Remote spawning in hyperactor involves two complementary pieces:
 
 1. **Type-level registration** Each `A: RemoteSpawn` contributes a `SpawnableActor` record when the user writes `#[spawnable]` on a concrete actor declaration or `register_spawnable!(A)` for a concrete instantiation. These records are collected at runtime by `Remote::collect()`.
-2. **Data-level spawn requests** Higher-level code starts from a concrete actor type (e.g. `A: RemoteSpawn`), uses `Remote::name_of::<A>()` to obtain it's global type name, serializes `A::Params`, and sends a request containing those two pieces of data.
+2. **Data-level spawn requests** Higher-level code starts from a concrete actor type (e.g. `A: RemoteSpawn`), uses `Remote::name_of::<A>()` to obtain it's global type name, serializes `A::Params`, and sends those values together with the spawning actor's persistent environment.
 
 On the receiving side, a management component reconstructs the actor by calling:
 
@@ -5757,7 +6110,7 @@ remote.gspawn(&proc, &actor_type, &actor_name, params_data).await
 `Remote::gspawn` uses the global type name to locate the correct `SpawnableActor` and invokes its type-erased `gspawn` function, which:
 
 - deserializes `params_data`,
-- calls `A::new(params).await`, and
+- calls `A::new(params, &environment).await`, and
 - installs the actor into the provided `Proc`.
 
 The `Remote` registry is thus the bridge between:
@@ -5796,8 +6149,11 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
  /// The type of parameters used to instantiate the actor remotely.
  type Params: RemoteMessage;
 
- /// Creates a new actor instance given its instantiation parameters.
- async fn new(params: Self::Params) -> anyhow::Result<Self>;
+ /// Creates a new actor instance from its parameters and construction environment.
+ async fn new(
+ params: Self::Params,
+ environment: &ActorEnvironment,
+ ) -> anyhow::Result<Self>;
 
  fn gspawn(
  proc: &Proc,
@@ -5817,7 +6173,8 @@ The `RemoteSpawn` trait marks an actor type as spawnable across process boundari
 
 - The actor type must also implement `Actor`.
 - Its `Params` type (used in `RemoteSpawn::new`) must implement `RemoteMessage`, so it can be serialized and transmitted over the network.
-- `new` creates a new instance of the actor given its parameters
+- `new` creates a new instance from its parameters and the caller-shaped
+`ActorEnvironment` that the runtime stores on the actor.
 
 ## `gspawn`
 
@@ -8232,6 +8589,7 @@ This page introduces the `MailboxMuxer` and its role in:
 - Aggregating multiple mailbox instances
 - Dispatching incoming messages to the appropriate `MailboxSender`
 - Supporting dynamic binding and unbinding of mailboxes
+- Buffering messages for actors that have not bound yet
 
 Let's begin by looking at the core structure of `MailboxMuxer`:
 
@@ -8306,7 +8664,26 @@ impl MailboxSender for MailboxMuxer {
 }
 ```
 
-This makes `MailboxMuxer` composable: it can be nested within other routers, shared across components, or substituted for a standalone mailbox in generic code. If the destination `ActorId` is found in the internal map, the message is forwarded to the corresponding sender. Otherwise, it is returned with an `InvalidReference` delivery failure.
+This makes `MailboxMuxer` composable: it can be nested within other routers, shared across components, or substituted for a standalone mailbox in generic code. If the destination `ActorId` is found in the internal map, the message is forwarded to the corresponding sender. The snippet above shows the simplest behavior for a miss: return the message with an `InvalidReference` delivery failure.
+
+## Messages for actors that have not bound yet
+
+An `ActorRef` can exist before its actor does. For example, a remote spawn computes the new actor's address locally and returns it right away, while the target proc is still constructing the actor. A message sent through that ref reaches the right proc's muxer, but it can arrive before the actor binds its mailbox.
+
+So on a miss, the muxer does not bounce the message right away. Instead, each entry in `mailboxes` records the state of an actor's mailbox:
+
+```
+enum ActorMailbox {
+ Bound(Arc<dyn MailboxSender + Send + Sync>),
+ Buffering(Vec<PendingMessage>),
+}
+```
+
+A message for an unknown `ActorId` creates a `Buffering` entry that holds the envelope and its return handle. When `bind` later arrives for that id, it delivers the buffered messages to the sender and replaces the entry with `Bound`, all under that entry's lock. A message that arrives meanwhile waits for the lock, then goes straight to the sender. The actor thus sees messages in the order they reached the proc.
+
+Buffering does not wait on user code: the runtime binds an actor's mailbox and handler ports before `Actor::init` runs. Messages then wait in the actor's own work queue until it starts handling them. The remote-spawn path binds the handler ports before it publishes the mailbox, so a buffered message never finds its port missing.
+
+If no actor binds within `PENDING_ACTOR_DELIVERY_TIMEOUT` (30 seconds by default), the buffered messages are returned with `InvalidReferenceReason::ActorNotExist`, exactly as an immediate bounce would. Setting the timeout to zero restores the immediate bounce.
 
 ---
 
@@ -8447,7 +8824,7 @@ impl<M: RemoteMessage> OncePortHandle<M> {
 }
 ```
 
-## `PortRef` and `OncePortRef`
+## `PortRef`, `IdleFlushPortRef`, and `OncePortRef`
 
 A `PortRef<M>` is a cloneable, sendable reference to a bound typed port. These are used to send messages to an actor from outside its mailbox, typically after calling `.bind()` on a `PortHandle<M>`:
 
@@ -8470,6 +8847,15 @@ pub struct PortRef<M> {
 - **`phantom`**: Phantom data to retain the `M` type parameter. This enforces compile-time type safety without storing a value of type `M`.
 - **`return_undeliverable`**: Whether an undeliverable message is returned to the sender (the default) or silently dropped.
 - **`unsplit`**: When set, keeps the port out of cast/comm tree reduction so every destination replies to it directly. Set via `PortRef::unsplit()`.
+
+An `IdleFlushPortRef<M>` wraps a reusable `PortRef<M>` with `IdleFlushReducerOpts`. Its distinct serialized representation tells each cast split to install an idle-flush reducer, in the same way that `OncePortRef<M>` tells each split to install a one-shot reducer.
+
+```
+let reply = port.bind().into_idle_flush(IdleFlushReducerOpts {
+ idle_timeout: Duration::from_millis(50),
+ expected_updates_per_destination: NonZeroUsize::MIN,
+});
+```
 
 A `OncePortRef<M>` is a reference to a one-shot port. Unlike `PortRef`, it allows exactly one message to be sent. These are created by binding a `OncePortHandle<M>`.
 
@@ -9393,12 +9779,11 @@ registered peer sender.
 gateway, so they reach each other--and the host reaches them--through the
 gateway's local `procs` table, with zero dialing.
 
-Their ids are *legacy pseudo-singletons*: literally the names `"service"` and
-`"local"`, identical across every host. A gateway can hold at most one proc per
-id, so a gateway can host at most one `service`/`local` pair--i.e. at most one
-host. `Host::new` uses `Gateway::global()`; callers that need more than one
-host in the same process, or need a pre-attached gateway, must use
-`Host::new_with_gateway`.
+`local_proc` always has a fresh instance id labeled `"local"`. Launchers can
+also give `service_proc` a fresh instance id labeled `"service"` through
+`Host::new_with_gateway`. The default remains the legacy `"service"`
+pseudo-singleton for compatibility. A gateway can contain multiple hosts only
+when each host has a distinct service proc id.
 
 ## Spawned children
 
@@ -9425,8 +9810,14 @@ let backend_addr = gateway.default_location().addr().clone();
 let frontend_handle = gateway.serve_with_listener(addr, listener)?;
 let frontend_addr = gateway.default_location().addr().clone();
 
-let service_proc = Proc::legacy_service_pseudo_singleton_on_gateway(gateway.clone());
-let local_proc = Proc::legacy_local_pseudo_singleton_on_gateway(gateway.clone());
+let service_proc = Proc::builder()
+ .proc_id(service_proc_id)
+ .shared_gateway(gateway.clone())
+ .build()?;
+let local_proc = Proc::builder()
+ .proc_id(ProcId::instance(Label::strip("local")))
+ .shared_gateway(gateway.clone())
+ .build()?;
 ```
 
 The backend address is passed to each child as its fallback route back to the
@@ -9440,9 +9831,9 @@ the frontend serve becomes the default location until a newer serve replaces it.
 
 ## Local proc invariant (LP-1)
 
-The local proc always exists as the singleton proc id `"local"` on the host
-gateway and is forwarded in-process, but it starts with zero actors. A
-`ProcAgent` and root client actor are added only when
+The local proc always exists as an instance proc with the label `"local"` on
+the host gateway and is routed through the gateway's local proc table, but it
+starts with zero actors. A `ProcAgent` and root client actor are added only when
 `HostMeshAgent::handle(GetLocalProc)` is first called.
 
 ## See Also
@@ -9964,10 +10355,11 @@ Typed references are strongly typed wrappers over addresses like `ActorAddr` and
 
 ## Overview
 
-There are three main typed reference types:
+There are four main typed reference types:
 
 - `ActorRef<A>`: A typed reference to an actor implementing the `Referable` trait.
 - `PortRef<M>`: A reference to a reusable mailbox port for messages of type `M` implementing the `RemoteMessage` trait.
+- `IdleFlushPortRef<M>`: A reusable reply port that applies idle-flush reduction in cast trees.
 - `OncePortRef<M>`: A reference to a one-shot port for receiving a single response of type `M` implementing the `RemoteMessage` trait.
 
 These types are used as parameters in messages, return values from bindings, and components of the routing system.
@@ -10026,6 +10418,10 @@ pub struct PortRef<M> {
 ```
 
 As with `ActorRef`, this is a typed wrapper around an address (`PortAddr`), carrying a phantom type for safety. It ensures that only messages of type `M` can be sent through this reference.
+
+## `IdleFlushPortRef<M>`
+
+`IdleFlushPortRef<M>` is a reusable reply port with a distinct serialized representation. Cast splitting recognizes it and installs `ReducerMode::IdleFlush` at each branch. Create one from a bound `PortRef` with `PortRef::into_idle_flush`.
 
 ## `OncePortRef<M>`
 
@@ -11390,9 +11786,9 @@ Spawns:
 
 > **Constraint:** if `aggregate_window_sec` is `Some` while `stream_to_client` is `False`, `set_mode` raises a runtime error (see source).
 
-### `LoggingMeshClient.flush(instance) -> PyPythonTask`
+### `LoggingMeshClient.flush(instance) -> Handle[None]`
 
-Performs a **versioned sync flush** across all forwarders so the caller deterministically waits until "all logs up to now" are delivered.
+Performs a **versioned sync flush** across all forwarders so the caller deterministically waits until "all logs up to now" are delivered. The flush starts during the call; the returned `Handle` completes when it has finished, and dropping the `Handle` does not cancel it.
 See: [Client actor → Barrier protocol](client.html#barrier-protocol-sync-flush) and [Forwarder internals](forwarder.html).
 
 ## Minimal example
@@ -13398,13 +13794,16 @@ There are three layers involved in a normal lookup.
 
 `MeshAdminAgent` owns:
 
-- the map of host address -> `ActorRef<HostAgent>`,
-- the reverse map of `HostAgent ActorId` -> host address,
+- the configured hosts, listed by `HostAgent` identity,
+- an index from channel address to the hosts at that address,
+- a cache of proc -> owning host,
 - the synthetic root node,
 - the `ResolveReferenceMessage` handler,
 - the background Axum server started from `init`.
 
 It does **not** directly know every actor in the mesh. Instead it is the orchestrator that decides which downstream actor to ask next.
+
+A channel address is not a host identity: a client attached through a gateway advertises the gateway host's channel address, so two hosts can share one. A host alone at its address owns the procs there. Where several hosts share an address, the address only selects them as candidates, and the host whose introspection child list includes the exact proc owns it. Resolving a configured host records the procs it lists, so a walk from the root through a host to its procs needs no further ownership queries. If two hosts list one proc, or a candidate fails to answer and no answering host lists the proc, the lookup fails rather than guessing.
 
 The core resolver is:
 
@@ -13762,7 +14161,7 @@ This is similar to exception handling mechanisms: one can choose to handle excep
 ## Supervision Python API
 
 Actors can handle failures by providing an implementation of the `__supervise__` method.
-It may be declared with either `def` or `async def`:
+It may be declared with either `def` or `async def`, except that an actor whose endpoints are all `def` needs a `def` `__supervise__`:
 
 ```
 class ManagerActor(Actor):
@@ -13787,16 +14186,37 @@ class ManagerActor(Actor):
 
 An `async def` override is awaited on the actor's asyncio event loop - the same
 loop that runs endpoint coroutines - so it may `await` other endpoints or I/O.
-A sync override runs under `fake_sync_state` and cannot observe a running loop
-with `asyncio.get_running_loop`. Both forms receive the same arguments and obey
-the same truthy/falsey handled/unhandled contract.
+A sync override cannot observe a running loop with `asyncio.get_running_loop`;
+in an actor whose endpoints are all `def`, it runs on the actor's own thread,
+which has no event loop, between messages. Both forms receive the same arguments
+and obey the same truthy/falsey handled/unhandled contract.
 
-`__supervise__` is special: Because it handles "exceptions", we have to be able
-to invoke it at any (safe) point. This is because otherwise we might run into a
-deadlock: for example, an actor might be waiting for a result from a failed actor.
-Thus, we define safe points (e.g., waiting for channel receives) at which we may
-safely invoke the supervision handler. This means that **supervise** handlers have
-to be written carefully: it can potentially change the state of the actor in the middle of handling a message.
+`__supervise__` runs in its own task on the actor's event loop, one failure at a
+time, and the actor keeps handling messages while it is pending. In an actor
+whose endpoints are all `def`, it runs on the actor's own thread instead, before
+the next queued message. In an async actor, running it at any point, rather
+than after the current message, avoids deadlock: for example, an actor might be
+waiting for a result from a failed actor. This has
+consequences for how handlers are written:
+
+- It may run at any `await` that suspends, in any async endpoint, even one
+that does not run concurrently with other endpoints, and even if the `await`
+has nothing to do with the failure (e.g. `asyncio.sleep`, I/O, or a call to
+another actor). The same holds in tasks the actor starts. State that
+`__supervise__` changes may differ after any such `await`.
+- Sync code is never interrupted. A sync endpoint runs to completion before
+`__supervise__` starts, and a sync `__supervise__` runs between endpoints. An
+`async def` `__supervise__` interleaves with endpoints at its own `await`s.
+- In an async actor, messages that arrive after a failure may be handled before
+`__supervise__` runs. In an actor whose endpoints are all `def`, only the
+message in progress precedes it. Either way, the actor only fails once it
+returns a falsey value or raises.
+- An `async def` `__supervise__` may await the actor's own endpoints. Blocking
+calls in either form block endpoints too, since they share the event loop, or
+in an actor whose endpoints are all `def`, its thread.
+- If the actor stops before `__supervise__` finishes, an async actor's pending
+call is cancelled. An actor whose endpoints are all `def` finishes a
+`__supervise__` it has started before cleaning up, and drops one it has not.
 
 If `__supervise__` returns a truthy value, the failure will be considered handled
 and not delivered further up the chain. If it returns a falsey value (including None, if there is no return),
@@ -14042,6 +14462,7 @@ impl ProcMeshRef {
  spec: mesh_agent::ActorSpec {
  actor_type: actor_type.clone(),
  params_data: serialized_params.clone(),
+ actor_environment: cx.instance().actor_environment().clone(),
  },
  },
  )?;
@@ -14090,6 +14511,7 @@ agent_mesh.cast(
  spec: mesh_agent::ActorSpec {
  actor_type: actor_type.clone(),
  params_data: serialized_params.clone(),
+ actor_environment: cx.instance().actor_environment().clone(),
  },
  },
 )?;
@@ -14101,9 +14523,10 @@ This is where the proc mesh turns a local method call into a **distributed contr
 - `cast` sends the same `CreateOrUpdate<ActorSpec>` to **every** `ProcAgent`,
 - the `name` field is the *mesh-level* actor name ("this actor, on this mesh"),
 - `actor_type` is the *global* type name resolved via `Remote`,
-- `params_data` is the serialized `A::Params`.
+- `params_data` is the serialized `A::Params`,
+- `actor_environment` is the spawning actor's persistent environment.
 
-At this point the proc mesh has done its part: it has told every proc in the mesh: "For mesh actor name, please ensure you have one local actor of type `actor_type`, constructed from `params_data`."
+At this point the proc mesh has done its part: it has told every proc in the mesh: "For this mesh actor, please ensure you have one local actor of type `actor_type`, constructed from `params_data`, and carrying this persistent environment."
 
 ### How `ProcAgent` handles `CreateOrUpdate<ActorSpec>`
 
@@ -14199,6 +14622,9 @@ This is the core of v1 spawning. The agent:
 
 - unpacks the `ActorSpec` (type name + parameter bytes), and
 - passes those pieces into `remote.gspawn(...)` to construct the local actor.
+- when the create cast carries `CAST_POINT`, replaces that key in the caller's
+`ActorEnvironment` before construction. Other message headers remain scoped
+to the delivery and are not stored on the actor.
 - `actor_type: String` - the logical type name registered by `#[spawnable]` or `register_spawnable!(A)`, computed in `ProcMeshRef::spawn_with_name_inner` via `remote.name_of::<A>()`, and used by `Remote::gspawn` on each proc to find the right constructor.
 - `params_data: Data` A raw byte buffer containing serialized `A::Params` (via `bincode::serialize`).
 - `self.remote.gspawn(...)` This method looks up the `SpawnableActor` entry for `actor_type` in the local `Remote` registry then invoks:
@@ -14207,7 +14633,7 @@ This is the core of v1 spawning. The agent:
 SpawnableActor::spawn(proc, name, params_data)
 ```
 
-Internally this calls the actor's `RemoteSpawn::new(params).await` construtor registers it under the given name in the proc's runtime, and returns an `ActorId`.
+Internally this calls the actor's `RemoteSpawn::new(params, &environment).await` constructor, registers it under the given name in the proc's runtime, and returns an `ActorId`.
 
 The result - success or failure - is recorded in:
 
@@ -14265,18 +14691,22 @@ This message is broadcast to the same `ProcAgent` mesh. Each agent replies with 
 - terminated -> `Stopped`/`Failed`,
 - supervision events present -> `Failed`.
 
-The reply port used to collect all `GetRankStatus` responses is opened via:
+The reply port used to collect all `GetRankStatus` responses is opened and then
+converted to an idle-flush port reference:
 
 ```
-let (port, rx) = cx.mailbox().open_accum_port_opts(
+let (port, rx) = cx.mailbox().open_accum_port(
  StatusMesh::from_single(region.clone(), Status::NotExist),
- Some(ReducerOpts { max_update_interval: Some(Duration::from_millis(50)) }),
 );
+let reply = port.bind().into_idle_flush(IdleFlushReducerOpts {
+ idle_timeout: Duration::from_millis(50),
+ expected_updates_per_destination: NonZeroUsize::MIN,
+});
 ```
 
 Here, `cx` is the callers context. In tests this is typically `testing::instance()`, a tiny driver actor (`Instance<>()`), so the accumulation port (`port`/`rx`)-and thus all collected replies-live in that test instance's mailbox.
 
-An accumulation port is just a mailbox port that keeps a running aggregate value. Each `GetRankStatus` reply is an overlay, and the mailbox's reducer merges those overlays into a single `StatusMesh`, with one final status per proc/rank.
+An accumulation port is just a mailbox port that keeps a running aggregate value. Each `GetRankStatus` reply is an overlay, and the mailbox's reducer merges those overlays into a single `StatusMesh`, with one final status per proc/rank. The idle-flush policy combines replies within each cast subtree until replies stop briefly. It can then send a partial batch without hiding the ranks that did reply. Late replies form later batches, and the split port closes when every logical destination has replied.
 
 ---
 
@@ -14443,7 +14873,7 @@ embed the region here with `literalinclude`.
 You often need the rank-0 actor of a mesh, for example to use it as the coordinator
 of the SPMD job running on the mesh. Do:
 
-[View source](https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L48-L49)
+[View source](https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L48-L49)
 
 ```
 rank_0 = counters.flatten("rank").slice(rank=0)
@@ -14467,7 +14897,7 @@ An actor often needs to reach another rank of its own mesh -- for example, a
 coordinator at rank 0. Give each actor a handle to its mesh after spawning, then
 slice that handle to the target rank inside an endpoint:
 
-[View source](https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L77-L78)
+[View source](https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L77-L78)
 
 ```
 coordinator = self.mesh.flatten("rank").slice(rank=0)
@@ -14486,7 +14916,7 @@ back the endpoint's return value inline. A port is the asynchronous counterpart.
 The coordinator opens a `Channel` and `broadcast`s the sending half (a `Port`) to
 the other ranks, which send or stream results back to it whenever they are ready:
 
-[View source](https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L109-L113)
+[View source](https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L109-L113)
 
 ```
 port, receiver = Channel[int].open()
@@ -14499,7 +14929,7 @@ return sorted([await receiver.recv() for _ in range(expected)])
 Each rank's `produce` endpoint launches a background task and returns
 immediately; the task sends its values to the port over time:
 
-[View source](https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L119-L125)
+[View source](https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L119-L125)
 
 ```
 rank = context().actor_instance.rank["gpus"]
@@ -14515,8 +14945,8 @@ self.task = asyncio.create_task(stream())
 
 # Distributed Telemetry
 
-Monarch distributed telemetry collects actor-system events on each host and
-makes them queryable as one logical database. It uses
+Monarch distributed telemetry collects actor-system events and OpenTelemetry
+metrics on each host and makes them queryable as one logical database. It uses
 [Apache DataFusion](https://github.com/apache/datafusion), an extensible SQL
 query engine built on [Apache Arrow](https://arrow.apache.org/). Distributed
 telemetry is the query layer behind the [Monarch Dashboard](monarch-dashboard.html)
@@ -14533,7 +14963,7 @@ Enable telemetry before obtaining job state:
 from monarch.job import ProcessJob, TelemetryConfig
 
 job = ProcessJob({"workers": 2}).enable_telemetry(
- TelemetryConfig(retention_secs=600)
+ TelemetryConfig(retention_secs=3600)
 )
 state = job.state(cached_path=None)
 
@@ -14567,6 +14997,9 @@ meaning from their numeric values.
 | `actors` | Actor identity, rank, mesh, and creation time |
 | `events` | Structured tracing events and log fields |
 | `meshes` | Mesh creation, shape, class, name, and parent view |
+| `metric_gauges` | Gauge points with typed `value_f64`, `value_i64`, or `value_u64` values |
+| `metric_histograms` | Explicit histogram counts, typed summaries, bounds, and bucket counts |
+| `metric_sums` | Counter and up-down-counter points with typed sums and sum semantics |
 | `message_status_events` | Message delivery status transitions |
 | `messages` | Individual sender-to-receiver message deliveries |
 | `sent_messages` | One-to-many send operations and destination views |
@@ -14586,6 +15019,19 @@ SELECT table_name
 FROM information_schema.tables
 ORDER BY table_name
 ```
+
+### Metric tables
+
+Metrics are split by OTel aggregation rather than numeric type. Query
+`metric_gauges`, `metric_sums`, or `metric_histograms` based on the instrument
+aggregation. Each table preserves `f64`, `i64`, and `u64` in separate nullable
+columns so large integers do not lose precision.
+
+All metric rows include the instrument name, scope, unit, timestamps, point
+attributes, and resource attributes. Sum rows also include temporality and
+monotonicity. Histogram rows retain the count, typed sum, optional typed minimum
+and maximum, explicit bounds, and bucket counts. Bounds and bucket counts are
+JSON arrays in `bounds_json` and `bucket_counts_json`.
 
 ## Query examples
 
@@ -14618,9 +15064,23 @@ GROUP BY status
 ORDER BY count DESC
 ```
 
+Sum delta counter points within the retention window:
+
+```
+SELECT scope_name, SUM(sum_u64) AS mailbox_posts
+FROM metric_sums
+WHERE name = 'mailbox.posts'
+ AND temporality = 'delta'
+ AND sum_u64 IS NOT NULL
+GROUP BY scope_name
+ORDER BY mailbox_posts DESC
+```
+
 ## Architecture
 
-Each producer writes framed Arrow IPC batches to a host-local Unix socket. A
+Each producer writes framed Arrow IPC batches to a host-local Unix socket.
+Trace and entity dispatchers write their corresponding tables, while an OTel
+UDS metric exporter writes one frame for each non-empty aggregation buffer. A
 host-local `TelemetryActor` owns the socket, a Rust `DatabaseScanner`, and the
 in-memory tables. The root query engine plans SQL with DataFusion, pushes table
 scans to active collectors, and merges their Arrow results.
@@ -14636,17 +15096,21 @@ continue operating.
 
 ## Retention and snapshots
 
-`TelemetryConfig.retention_secs` applies to `sent_messages`, `messages`, and
-`message_status_events`. The default is 600 seconds. Set it to `0` to disable
-automatic retention. Retention runs every 30 seconds, so expired rows can
-remain visible until the next sweep. Other core tables have no automatic
-retention window.
+`TelemetryConfig.retention_secs` applies to `sent_messages`, `messages`,
+`message_status_events`, `metric_gauges`, `metric_sums`, and
+`metric_histograms`, `spans`, `span_events`, and `events`. Trace tables are
+filtered independently by row timestamp, with spans filtered before dependent
+trace rows. A recent trace row is not displayed by span-joined views if its span
+has already expired. The default is 3600 seconds. Set it to `0` to disable
+automatic retention. Periodic maintenance runs approximately once per tenth of
+the retention window, bounded between 30 seconds and 5 minutes and never longer
+than the retention window. Queries do not run retention, so expired rows can
+remain visible until the next periodic sweep. Other core tables have no
+automatic retention window.
 
 `TelemetryConfig.snapshot_interval_secs` controls periodic Mesh Admin topology
-snapshots. The default is `0` (disabled). When `include_dashboard=True`, a value
-of `0` is automatically changed to 30 seconds because the dashboard requires
-snapshot data. Snapshots and event telemetry describe different views of the
-same job:
+snapshots. The default is 30 seconds; set it to `0` to disable them. Snapshots
+and event telemetry describe different views of the same job:
 
 - Event tables record changes such as actor creation, status transitions, and
 message delivery.
@@ -14659,13 +15123,13 @@ a point in time.
 the parent-process logs for `job sidecar telemetry bootstrap failed`.
 - If a query is empty immediately after work runs, retry briefly; ingestion and
 collector flushes are asynchronous.
-- If rows from one host are missing, inspect collector warnings and use the
-[Mesh Admin TUI diagnostics](admin-tui.html) to check that host.
+- If rows from one host are missing, inspect collector warnings and use the [Mesh Admin TUI](admin-tui.html) to inspect that host.
 - If a SQL request fails, the raised HTTP error includes the DataFusion parse or
 planning detail returned by the query service.
 
 ## Related documentation
 
+- [Metrics](metrics.html)
 - [Observability overview](observability.html)
 - [Monarch Dashboard](monarch-dashboard.html)
 - [Mesh Admin TUI](admin-tui.html)
@@ -14684,6 +15148,7 @@ planning detail returned by the query service.
 - [grpo_actor.py](../generated/examples/grpo_actor.html): Implements a distributed PPO-like reinforcement learning algorithm using the Monarch actor framework
 - [grpo_yield.py](../generated/examples/grpo_yield.html): Same GRPO task as `grpo_actor.py`, wired with direct port messaging instead of queue actors and `RDMABuffer`; each actor's `run` endpoint is structured like a Python generator that yields values to, and receives values from, the next actor in the ring
 - [kubernetes_grpo.py](../generated/examples/grpo/kubernetes_grpo.html): Extends the GRPO example to run on Kubernetes using MonarchMesh CRDs, fine-tuning the open-source Qwen3.5-0.8B model on the GSM8K math dataset
+- [gpu_sharing.py](../generated/examples/gpu_sharing.html): Places several roles on the same GPUs, running concurrently or taking turns, with per-process memory caps and co-located actors
 - [distributed_tensors.py](../generated/examples/distributed_tensors.html): Shows how to dispatch tensors and tensor level operations to a distributed mesh of workers and GPUs
 - [debugging.py](../generated/examples/debugging.html): Shows how to use the Monarch debugger to debug a distributed program
 - [otel_collector.py](../generated/examples/otel_collector.html): Exports Monarch metrics and logs to an OpenTelemetry Collector deployed on Kubernetes, with Grafana for visualization
@@ -15109,19 +15574,9 @@ import argparse
 import asyncio
 import textwrap
 
-from kubernetes.client import (
- V1Container,
- V1EmptyDirVolumeSource,
- V1EnvVar,
- V1PodSpec,
- V1PodTemplateSpec,
- V1ResourceRequirements,
- V1Volume,
- V1VolumeMount,
-)
-from monarch._src.job.kubernetes import _WORKER_BOOTSTRAP_SCRIPT
 from monarch.config import configure
-from monarch.job.kubernetes import KubernetesJob
+from monarch.job import exec_command
+from monarch.job.kubernetes import ImageSpec, KubernetesJob
 from monarch.spmd import SPMDActor
 from monarch.tools.network import AddrType
 
@@ -15130,7 +15585,7 @@ configure(enable_log_forwarding=True)
 # Path to train.py on worker pods
 TRAIN_SCRIPT = "/tmp/train.py"
 
-# Training script content -- written to worker pods at startup when provisioning
+# Training script content -- written to worker pods after provisioning
 _TRAIN_SCRIPT_CONTENT = textwrap.dedent("""\
  import os
  import torch
@@ -15160,48 +15615,6 @@ _TRAIN_SCRIPT_CONTENT = textwrap.dedent("""\
  if __name__ == "__main__":
  main()
 """)
-
-def build_gpu_pod_template(gpus_per_host: int) -> V1PodTemplateSpec:
- """Build a V1PodTemplateSpec with GPU resources and shared memory for NCCL.
-
- The bootstrap command writes train.py to the worker filesystem
- before starting the Monarch worker loop, so the SPMDActor can
- find and execute it.
- """
- # Write train.py then start the worker loop
- bootstrap = (
- "import pathlib\n"
- f"pathlib.Path({TRAIN_SCRIPT!r}).write_text({_TRAIN_SCRIPT_CONTENT!r})\n"
- + _WORKER_BOOTSTRAP_SCRIPT
- )
- gpu_resources = {"nvidia.com/gpu": str(gpus_per_host)}
- return V1PodTemplateSpec(
- spec=V1PodSpec(
- containers=[
- V1Container(
- name="worker",
- image="ghcr.io/meta-pytorch/monarch:latest",
- command=["python", "-u", "-c", bootstrap],
- env=[V1EnvVar(name="MONARCH_PORT", value="26600")],
- resources=V1ResourceRequirements(
- limits=gpu_resources,
- requests=gpu_resources,
- ),
- volume_mounts=[
- V1VolumeMount(name="dshm", mount_path="/dev/shm"),
- ],
- )
- ],
- volumes=[
- V1Volume(
- name="dshm",
- empty_dir=V1EmptyDirVolumeSource(
- medium="Memory", size_limit="16Gi"
- ),
- )
- ],
- ),
- )
 ```
 
 ## Main Function
@@ -15235,9 +15648,8 @@ async def main(
  # ~~~~~~~~~~~~~~~~~~~~~
  # Create a ``KubernetesJob`` in the ``monarch-tests`` namespace.
  # With ``--provision``, the job creates MonarchMesh CRDs via the K8s API
- # using ``pod_template`` for full control over the pod template (needed for
- # the shared memory volume that NCCL requires). Without ``--provision``,
- # it attaches to pre-provisioned pods.
+ # using ``ImageSpec`` to request GPUs and the shared memory that NCCL needs.
+ # Without ``--provision``, it attaches to pre-provisioned pods.
 
  k8s_job = KubernetesJob(namespace="monarch-tests")
  labels = {"kueue.x-k8s.io/queue-name": queue} if queue else None
@@ -15245,7 +15657,11 @@ async def main(
  k8s_job.add_mesh(
  mesh_name,
  num_replicas=num_hosts,
- pod_template=build_gpu_pod_template(gpus_per_host),
+ image_spec=ImageSpec(
+ "ghcr.io/meta-pytorch/monarch:latest",
+ resources={"nvidia.com/gpu": gpus_per_host},
+ shared_memory_size="16Gi",
+ ),
  labels=labels,
  )
  else:
@@ -15259,6 +15675,16 @@ async def main(
 
  job_state = k8s_job.state()
  host_mesh = getattr(job_state, mesh_name)
+ if provision:
+ write_training_script = (
+ "from pathlib import Path; "
+ f"Path({TRAIN_SCRIPT!r}).write_text({_TRAIN_SCRIPT_CONTENT!r})"
+ )
+ return_code = await exec_command(
+ host_mesh, ["python", "-c", write_training_script]
+ )
+ if return_code != 0:
+ raise RuntimeError("failed to write the training script to worker pods")
  proc_mesh = host_mesh.spawn_procs({"gpus": gpus_per_host})
 
  # Stream logs from all processes to the client
@@ -16426,13 +16852,14 @@ machines are obtained depends on the scheduling system (Slurm, Kubernetes, SkyPi
 but these schedulers are typically encapsulated in a config file.
 
 ```
-from monarch.actor import context, HostMesh, hosts_from_config
+from monarch.actor import context, HostMesh
+from monarch.job import hosts_from_config
 ```
 
 We obtain the mesh of hosts for the job by loading that config:
 
 ```
-hosts: HostMesh = hosts_from_config("MONARCH_HOSTS") # NYI: hosts_from_config
+hosts: HostMesh = hosts_from_config("MONARCH_HOSTS")
 print(hosts.extent)
 
 # An extent is the logical shape of a mesh. It is an ordered map, specifying the size of
@@ -16568,8 +16995,11 @@ Sometimes fine-grained recovery is possible. For instance, if a data loader fail
 read a URL, perhaps it would work to just restart it. In these cases, we also offer a
 different API. If an actor defines a __supervise__ special method, then it will get
 called to handle supervision events for meshes owned by the actor. It may be declared
-with either def or async def; an async def override runs on the actor's asyncio
-event loop and can await other endpoints or I/O.
+with either def or async def, except that an actor whose endpoints are all def
+needs a def __supervise__; an async def override runs on the actor's asyncio
+event loop and can await other endpoints or I/O. The actor keeps handling messages
+while __supervise__ is pending, and it may run at any await in the actor's
+endpoints, so re-check any state it changes after an await.
 If an error happens on an ActorMesh that is a reference, such as a slice, or
 a mesh that is sent to another actor, then the recovery is done on the original
 creator of that mesh, not the holder of the reference. There is currently
@@ -16926,6 +17356,181 @@ print(second.get()) # still uses newest weights
 
 ---
 
+Note
+
+Go to the end
+to download the full example code
+
+# Sharing GPUs Between Actors
+
+Monarch's actor API does not assign GPUs to procs. A proc sees the devices that
+its `CUDA_VISIBLE_DEVICES` exposes, and nothing in Monarch reserves a device for
+one proc mesh. Placement is a choice of each proc's environment, made with
+`bootstrap_command`, so two roles can share a GPU as easily as they can split a
+host. This example covers:
+
+- Pinning proc meshes to GPUs
+- Two roles sharing GPUs, concurrently or taking turns
+- Co-locating actors in one proc
+
+The example runs one proc per GPU in `DEVICE_IDS`, which is `[0, 1]` by default.
+List any GPUs on your host, even just one.
+
+## Pinning procs to GPUs
+
+`bootstrap_command` accepts a callable that builds each proc's launch command from
+its coordinate. `on_gpus(device_ids)` maps coordinate `gpus=i` to GPU
+`device_ids[i]`, so each proc sees exactly one device as `cuda`. The callable
+runs where `spawn_procs` is called, not on the host, so it takes GPUs from the list
+it is given rather than from its own environment.
+
+Two meshes with different lists, such as `on_gpus([0, 1])` and `on_gpus([4, 5])`,
+run on disjoint GPUs. Two meshes with the same list run on the same GPUs.
+
+```
+import os
+from functools import partial
+
+import torch
+from monarch.actor import Actor, default_bootstrap_cmd, endpoint, this_host
+
+DEVICE_IDS = [0, 1]
+HIDDEN = 1024
+BATCH = 64
+
+if max(DEVICE_IDS) >= torch.cuda.device_count():
+ raise SystemExit(f"this host has no GPU {max(DEVICE_IDS)}; edit DEVICE_IDS")
+
+def on_gpus(device_ids):
+ base = default_bootstrap_cmd()
+
+ def command(point):
+ return base.with_env({"CUDA_VISIBLE_DEVICES": str(device_ids[point["gpus"]])})
+
+ return command
+```
+
+## Roles
+
+A policy that generates and a trainer that updates its weights. Both report their
+device and memory use; PyTorch's memory counters are per process.
+
+```
+class GpuActor(Actor):
+ @endpoint
+ def memory(self):
+ return {
+ "gpu": os.environ["CUDA_VISIBLE_DEVICES"],
+ "allocated": torch.cuda.memory_allocated(),
+ "reserved": torch.cuda.memory_reserved(),
+ }
+
+class Policy(GpuActor):
+ def __init__(self):
+ self.model = torch.nn.Linear(HIDDEN, HIDDEN, device="cuda")
+
+ @endpoint
+ def generate(self):
+ with torch.no_grad():
+ return self.model(torch.randn(BATCH, HIDDEN, device="cuda")).norm().item()
+
+class Trainer(GpuActor):
+ def __init__(self):
+ self.model = torch.nn.Linear(HIDDEN, HIDDEN, device="cuda")
+ self.optim = torch.optim.SGD(self.model.parameters(), lr=1e-3, foreach=True)
+
+ @endpoint
+ def train_step(self):
+ loss = self.model(torch.randn(BATCH, HIDDEN, device="cuda")).pow(2).mean()
+ loss.backward()
+ self.optim.step()
+ self.optim.zero_grad()
+ return loss.item()
+```
+
+## Concurrent sharing
+
+Both meshes get the same list, so policy proc `i` and trainer proc `i` share
+GPU `DEVICE_IDS[i]`. Each proc has its own CUDA context, and the driver
+time-slices between them. This requires the GPUs' compute mode to be `Default`
+rather than `Exclusive_Process`.
+
+`bootstrap` runs in each proc before any actor is spawned. Here it caps each
+process's PyTorch allocator at a fraction of GPU memory, so a role that outgrows its
+share fails with an out-of-memory error in its own process instead of starving the
+other.
+
+```
+policy_procs = this_host().spawn_procs(
+ per_host={"gpus": len(DEVICE_IDS)},
+ bootstrap_command=on_gpus(DEVICE_IDS),
+ bootstrap=partial(torch.cuda.set_per_process_memory_fraction, 0.3),
+)
+trainer_procs = this_host().spawn_procs(
+ per_host={"gpus": len(DEVICE_IDS)},
+ bootstrap_command=on_gpus(DEVICE_IDS),
+ bootstrap=partial(torch.cuda.set_per_process_memory_fraction, 0.6),
+)
+policy = policy_procs.spawn("policy", Policy)
+trainer = trainer_procs.spawn("trainer", Trainer)
+
+generated = policy.generate.call()
+losses = trainer.train_step.call()
+print("generated:", generated.get().item(gpus=0), "loss:", losses.get().item(gpus=0))
+```
+
+## Taking turns
+
+When generation and training alternate within a step, the controller orders them by
+waiting for each call before issuing the next, so only one role computes at a time.
+Both models stay resident. Taking turns avoids contention for compute, not memory:
+the caps above still apply, and each process's PyTorch allocator keeps its cached
+blocks between turns.
+
+```
+for step in range(3):
+ policy.generate.call().get()
+ loss = trainer.train_step.call().get().item(gpus=0)
+ print(f"step {step}: loss={loss:.4f}")
+```
+
+## Co-locating actors in one proc
+
+A proc mesh can host several actors. A frozen reference model spawned on the
+trainer's procs shares the trainer's process, CUDA context, and memory cap, so it
+adds no context of its own. Actors in one proc share its fate: if the proc dies,
+both go with it.
+
+Because PyTorch's memory counters are per process, the reference's allocations
+appear in the trainer's report rather than in one of their own.
+
+```
+def report(label, role):
+ for usage in role.memory.call().get().values():
+ print(label, usage)
+
+report("policy", policy)
+report("trainer", trainer)
+
+reference = trainer_procs.spawn("reference", Policy)
+reference.generate.call().get()
+report("trainer + reference", trainer)
+
+policy_procs.stop().get()
+trainer_procs.stop().get()
+print("Example completed successfully!")
+```
+
+**Total running time of the script:** (0 minutes 0.000 seconds)
+
+[`Download Python source code: gpu_sharing.py`](../../_downloads/ccb22b19282b0e3def66b5ccf46894e3/gpu_sharing.py)
+
+[`Download Jupyter notebook: gpu_sharing.ipynb`](../../_downloads/9da5e1f98c97b0ea20d285e3c2bc597c/gpu_sharing.ipynb)
+
+[Gallery generated by Sphinx-Gallery](https://sphinx-gallery.github.io)
+
+---
+
 # GRPO Examples
 
 Examples demonstrating Group Relative Policy Optimization (GRPO) training with Monarch.
@@ -16978,9 +17583,9 @@ KL-anchored production GRPO see the grpo_actor sibling example.
 - Internet access from worker pods (for downloading Qwen3.5-0.8B-Base and pip
 installing `transformers`). No HF token is required - Qwen3.5 is Apache
 2.0 and ungated.
-- The controller pod installs `datasets` at startup (see
-`manifests/grpo_provision.yaml`); the worker pods do not need it
-because prompts are loaded in `main()` on the controller.
+- The controller environment needs `datasets` and access to Hugging Face.
+`manifests/grpo_provision.yaml` installs it in-cluster; the `uv` command
+below supplies it out-of-cluster.
 
 ## RDMA transport caveat
 
@@ -17006,6 +17611,12 @@ kubectl wait --for=condition=Ready pod/grpo-controller -n monarch-tests
 kubectl cp kubernetes_grpo.py monarch-tests/grpo-controller:/tmp/kubernetes_grpo.py
 kubectl exec -it grpo-controller -n monarch-tests -- python /tmp/kubernetes_grpo.py
 kubectl delete -f manifests/grpo_provision.yaml
+```
+
+To run the controller outside the cluster with the default kubeconfig:
+
+```
+uv run --no-project --with torchmonarch --with accelerate --with datasets --with kubernetes --with transformers python docs/source/examples/grpo/kubernetes_grpo.py --out_of_cluster --image ghcr.io/meta-pytorch/monarch:latest
 ```
 
 Each step prints one `[Step NNN] loss=... reward=... gn=...` line.
@@ -17100,8 +17711,15 @@ from kubernetes.client import (
  V1VolumeMount,
 )
 from monarch._src.job.kubernetes import _WORKER_BOOTSTRAP_SCRIPT
-from monarch.actor import Actor, current_rank, current_size, endpoint
-from monarch.job.kubernetes import KubernetesJob
+from monarch.actor import (
+ Actor,
+ concurrent_endpoint,
+ current_rank,
+ current_size,
+ endpoint,
+)
+from monarch.job import TelemetryConfig
+from monarch.job.kubernetes import KubeConfig, KubernetesJob
 from monarch.rdma import RDMABuffer
 ```
 
@@ -17383,7 +18001,9 @@ class Scorer(Actor):
  )
  await self.replay_buffer.put.call(scored)
 
- @endpoint
+ # Run as a concurrent endpoint so the scorer can queue completions from
+ # the generator mesh while the learner is busy with the previous rollout.
+ @concurrent_endpoint
  async def run(self) -> None:
  if self.running:
  return
@@ -17459,7 +18079,9 @@ class Generator(Actor):
  self.cond = asyncio.Condition()
  self.policy_version = 0
 
- @endpoint
+ # Run concurrently so a rollout can wait for the learner's weight update;
+ # serial endpoint dispatch would leave the update queued behind that wait.
+ @concurrent_endpoint
  async def generate(self, prompt_text: str, ground_truth: str) -> None:
  async with self.cond:
  await self.cond.wait_for(
@@ -17797,7 +18419,9 @@ PIP_INSTALL = textwrap.dedent("""\
 """)
 
 def build_pod_template(
- gpus: int, resource_claim_template: Optional[str] = None
+ gpus: int,
+ image: str,
+ resource_claim_template: Optional[str] = None,
 ) -> V1PodTemplateSpec:
  """Shared pod template for learner and generator meshes.
 
@@ -17859,7 +18483,7 @@ def build_pod_template(
  containers=[
  V1Container(
  name="worker",
- image=MONARCH_IMAGE,
+ image=image,
  command=["python", "-u", "-c", bootstrap],
  env=env,
  resources=resources,
@@ -17931,6 +18555,9 @@ async def main(
  dataset_split: str,
  num_prompts: int,
  eval_size: int,
+ out_of_cluster: bool,
+ kubeconfig: str,
+ image: str,
  learner_resource_claim_template: Optional[str] = None,
  generator_resource_claim_template: Optional[str] = None,
 ) -> None:
@@ -17954,7 +18581,12 @@ async def main(
 
  # 600s timeout lets the meshes finish cold-start pip install + model
  # download before state() gives up.
- k8s_job = KubernetesJob(namespace=namespace, timeout=600)
+ k8s_job = KubernetesJob(
+ namespace=namespace,
+ timeout=600,
+ kubeconfig=KubeConfig.from_path(kubeconfig) if out_of_cluster else None,
+ )
+ k8s_job.enable_telemetry(TelemetryConfig(include_dashboard=True, dashboard_port=0))
  # Learner pod requests 2 GPUs; ``device_map="auto"`` inside the actor
  # spreads the trainable policy across both. ``spawn_procs({"gpus": 1})``
  # below still spawns a single learner proc that sees both GPUs in its
@@ -17965,7 +18597,9 @@ async def main(
  "learner",
  num_replicas=1,
  pod_template=build_pod_template(
- gpus=2, resource_claim_template=learner_resource_claim_template
+ gpus=2,
+ image=image,
+ resource_claim_template=learner_resource_claim_template,
  ),
  )
  k8s_job.add_mesh(
@@ -17973,6 +18607,7 @@ async def main(
  num_replicas=num_generator_hosts,
  pod_template=build_pod_template(
  gpus=gpus_per_generator,
+ image=image,
  resource_claim_template=generator_resource_claim_template,
  ),
  )
@@ -18059,12 +18694,12 @@ async def main(
  # Best-effort per-mesh cleanup; one failure must not skip the other.
  if learner_mesh is not None:
  try:
- learner_mesh.stop().get()
+ await learner_mesh.stop()
  except Exception as e:
  print(f"[cleanup] learner_mesh.stop() failed: {e}")
  if gen_mesh is not None:
  try:
- gen_mesh.stop().get()
+ await gen_mesh.stop()
  except Exception as e:
  print(f"[cleanup] gen_mesh.stop() failed: {e}")
  # Unconditional so MonarchMesh CRDs and pods are always torn down.
@@ -18127,6 +18762,23 @@ if __name__ == "__main__":
  help="Number of held-out GSM8K test prompts used for eval.",
  )
  parser.add_argument(
+ "--out_of_cluster",
+ action="store_true",
+ help="Use kubeconfig authentication and automatic port forwarding",
+ )
+ parser.add_argument(
+ "--kubeconfig",
+ type=str,
+ default="~/.kube/config",
+ help="Path to kubeconfig file (default: ~/.kube/config)",
+ )
+ parser.add_argument(
+ "--image",
+ type=str,
+ default=MONARCH_IMAGE,
+ help="Container image for learner and generator pods",
+ )
+ parser.add_argument(
  "--learner_resource_claim_template",
  type=str,
  default=None,
@@ -18149,6 +18801,9 @@ if __name__ == "__main__":
  dataset_split=args.dataset_split,
  num_prompts=args.num_prompts,
  eval_size=args.eval_size,
+ out_of_cluster=args.out_of_cluster,
+ kubeconfig=args.kubeconfig,
+ image=args.image,
  learner_resource_claim_template=args.learner_resource_claim_template,
  generator_resource_claim_template=args.generator_resource_claim_template,
  )
@@ -19485,9 +20140,10 @@ Generator x4 ─┐
 The only hop that is *not* a port send is the weight update. The
 `Trainer` uses `send(gen_mesh.update_weights, ..., selection="choose")`
 to dispatch each fresh `state_dict` to exactly one of the four
-generators, fire-and-forget. This pattern load-balances weight transfer
-across the pool and mirrors how real asynchronous RL systems drift
-generator and trainer replicas in and out of lock-step.
+generators, fire-and-forget. The generator is selected uniformly at
+random on each call, spreading weight transfer across the pool over many
+steps, and mirrors how real asynchronous RL systems drift generator and
+trainer replicas in and out of lock-step.
 
 ## Coroutine analogy
 
@@ -19543,9 +20199,9 @@ endpoints.
 `grpo_actor.py` funnels data through dedicated queue actors
 (`TrajectoryQueue`, `ReplayBuffer`) and copies weights via
 `RDMABuffer`. Here we use neither -- only `Channel.open()`,
-`Port.send(...)`, and one `send(..., selection="choose")` call for
-load-balanced weight dispatch. The code is shorter, and the data-flow
-graph is visible at a glance in `main`.
+`Port.send(...)`, and one `send(..., selection="choose")` call to
+dispatch weights to a randomly selected generator. The code is shorter,
+and the data-flow graph is visible at a glance in `main`.
 
 ## Ports and RDMA are compatible
 
@@ -19831,7 +20487,7 @@ class RefModel(Actor):
 
 Runs GRPO: PPO-clip on group-normalised advantages plus a KL penalty
 against the reference model. On each step it dispatches a fresh
-`state_dict` to one of the generators via
+`state_dict` to a randomly selected generator via
 `send(..., selection="choose")` -- fire-and-forget. After
 `MAX_STEPS` updates it broadcasts `stop` to the generator pool and
 fires the one-shot done port.
@@ -19898,9 +20554,9 @@ class Trainer(Actor):
  f"kl={kl.item():+.3f}"
  )
 
- # Fire-and-forget weight dispatch. ``selection="choose"``
- # load-balances across the generator pool; ``port=None``
- # means no response is collected.
+ # Fire-and-forget weight dispatch. ``selection="choose"`` picks
+ # one generator uniformly at random; ``port=None`` means no
+ # response is collected.
  new_sd = copy.deepcopy(self.model.state_dict())
  send(
  gen_mesh.update_weights,
@@ -20008,6 +20664,7 @@ if __name__ == "__main__":
 - [grpo_actor.py](grpo_actor.html): Implements a distributed PPO-like reinforcement learning algorithm using the Monarch actor framework
 - [grpo_yield.py](grpo_yield.html): Same GRPO task as `grpo_actor.py`, wired with direct port messaging instead of queue actors and `RDMABuffer`; each actor's `run` endpoint is structured like a Python generator that yields values to, and receives values from, the next actor in the ring
 - [kubernetes_grpo.py](grpo/kubernetes_grpo.html): Extends the GRPO example to run on Kubernetes using MonarchMesh CRDs, fine-tuning the open-source Qwen3.5-0.8B model on the GSM8K math dataset
+- [gpu_sharing.py](gpu_sharing.html): Places several roles on the same GPUs, running concurrently or taking turns, with per-process memory caps and co-located actors
 - [distributed_tensors.py](distributed_tensors.html): Shows how to dispatch tensors and tensor level operations to a distributed mesh of workers and GPUs
 - [debugging.py](debugging.html): Shows how to use the Monarch debugger to debug a distributed program
 - [otel_collector.py](otel_collector.html): Exports Monarch metrics and logs to an OpenTelemetry Collector deployed on Kubernetes, with Grafana for visualization
@@ -20035,6 +20692,12 @@ automatically. Log export uses the unified tracing layer, which is enabled
 by default and wires up the OTLP log sink.
 Built-in actor system metrics (mailbox posts, messages sent/received, queue
 sizes, etc.) and log events are exported with no code changes.
+
+External OTLP export is independent of distributed telemetry. When a job also
+enables distributed telemetry, the same OTel metric provider feeds a job-local
+Unix-socket exporter and exposes points through the `metric_gauges`,
+`metric_sums`, and `metric_histograms` SQL tables. Metric instrumentation
+does not need to know which readers or exporters are active.
 
 ## Architecture
 
@@ -20560,12 +21223,26 @@ Here are some suggested steps to get started with Monarch:
 - [Rust API](rust-api.html)
 7. **Deep Understanding of Actors**: Gain comprehensive knowledge of [Actors](actors.html), the foundational building blocks of Monarch.
 
+## Citation
+
+If you use Monarch in your research, please cite it as:
+
+```
+@software{monarch2025,
+ title = {Monarch: A distributed programming framework for PyTorch},
+ author = {{Monarch maintainers and contributors}},
+ url = {https://github.com/meta-pytorch/monarch},
+ license = {BSD-3-Clause},
+ year = {2025}
+}
+```
+
 ## License
 
 Monarch is BSD-3 licensed, as found in the [LICENSE](https://github.com/meta-pytorch/monarch/blob/main/LICENSE) file.
 
-- `Terms of Use <https://opensource.fb.com/legal/terms>`_
-- `Privacy Policy <https://opensource.fb.com/legal/privacy>`_
+- [Terms of Use](https://opensource.fb.com/legal/terms)
+- [Privacy Policy](https://opensource.fb.com/legal/privacy)
 
 ## Community
 
@@ -20620,13 +21297,175 @@ If you encounter issues:
 
 ---
 
+# Metrics
+
+Monarch records built-in counters, gauges, and histograms with OpenTelemetry
+(OTel). The same instruments can feed job-local distributed telemetry, an
+external OpenTelemetry Protocol (OTLP) endpoint, or both. Start with the
+[observability overview](observability.html) if you are choosing among Monarch's
+diagnostic surfaces.
+
+## Recording model
+
+One process-global OTel meter provider owns metric instruments and their
+readers. Libraries request a meter and record values without knowing which
+backends are active. Threads and libraries in the same Rust process share this
+provider. A different process, binary, or language runtime has its own provider
+and exports independently.
+
+Each instrument has a name, scope, unit, and type. The instrumentation code
+that records a point also selects its attribute set. OTel aggregates points by
+their complete identity, including attributes, so high-cardinality attributes
+create more time series and more rows at each collection interval.
+
+Independent periodic readers collect the same instruments for each enabled
+export path. `OTEL_METRIC_EXPORT_INTERVAL` controls their interval and defaults
+to one second. This provides low-latency visibility for short-lived jobs but
+produces more export traffic than typical monitoring intervals. Increase the
+interval for long-running jobs or high-cardinality instruments to reduce
+application and backend load. A slow or unavailable destination does not
+require different instrumentation for the other destinations.
+
+## Record custom metrics
+
+Use Monarch's process-global meter to create OpenTelemetry instruments. The
+same instrument feeds every enabled export path:
+
+```
+from monarch.actor import get_meter
+
+requests = get_meter().create_counter("example.requests")
+requests.add(1, {"operation": "predict", "outcome": "success"})
+```
+
+Create instruments once and reuse them. Use attributes only for bounded
+dimensions such as operation and outcome; request IDs and other unbounded
+values create a new time series for each value.
+
+## Metric identity and context
+
+An exported metric point combines context from several levels. Distributed
+telemetry preserves those levels separately:
+
+| OTel concept | Set by | Meaning | Distributed telemetry representation |
+| --- | --- | --- | --- |
+| Resource attributes | Meter-provider initialization | Process-wide service and runtime identity shared by every metric, such as `service.name` | `resource_attributes_json` |
+| Instrumentation scope | The library requesting a meter | The library or module that owns the instrument | `scope_name` |
+| Instrument | The instrument builder | The metric name, unit, and aggregation type | `name`, `unit`, and the selected metric table |
+| Point attributes | Each record operation | Dimensions for one measurement, such as operation or outcome | `attributes_json` |
+
+Point attributes are part of a metric series identity. Monarch's built-in
+instrumentation selects these attributes. If instrumentation code records
+the same instrument with `{"outcome": "success"}` and `{"outcome": "failure"}`,
+OTel creates two independently aggregated series and therefore up to two rows
+per collection interval. Instrumentation authors should use attributes for
+bounded dimensions, not request IDs, timestamps, or other values that grow
+without limit.
+
+Resource attributes describe the process rather than an individual
+measurement. Startup configuration selects supported values such as
+`service.name` before the process-global provider is built. These attributes
+are then copied into every distributed metric row and cannot change per
+measurement. Instrumentation scope is also separate from point attributes: it
+identifies the library that created the instrument and disambiguates
+same-named instruments from different libraries. When grouping or joining
+metric rows, treat resource attributes, scope, instrument metadata, and point
+attributes as the complete context.
+
+Distributed telemetry currently stores only the instrumentation scope name.
+OTel scope version, schema URL, and scope attributes are not included in the
+metric tables.
+
+## Choose an export path
+
+| Path | Enablement | Destination | Primary use |
+| --- | --- | --- | --- |
+| Distributed telemetry | `job.enable_telemetry(...)` | Job-local SQL tables | Debugging and analysis within the current job |
+| OTLP | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry Collector over OTLP/HTTP | External aggregation, monitoring, and visualization |
+
+You can enable both paths. They share instruments and resource attributes but
+collect and export independently.
+
+## Distributed telemetry path
+
+```
+OTel instruments
+ └─> periodic reader
+ └─> Unix Domain Socket (UDS) metric exporter
+ └─> host-local telemetry sidecar
+ └─> DataFusion SQL tables
+```
+
+Calling `job.enable_telemetry(...)` activates the process-global Unix-socket
+sink. On each collection, the UDS exporter encodes non-empty aggregation
+buffers as Arrow batches and sends them to the host-local telemetry sidecar.
+The sidecar exposes three physical tables:
+
+| Table | Aggregation |
+| --- | --- |
+| `metric_gauges` | Gauge points |
+| `metric_sums` | Counter and up-down-counter points |
+| `metric_histograms` | Explicit histogram points and buckets |
+
+The UDS exporter uses delta temporality, so each row describes one collection
+interval. Each unique metric name, scope, and attribute set produces its own
+row. Numeric values remain in separate `f64`, `i64`, and `u64` columns rather
+than being converted to one common type.
+
+This path is job-local, in memory, and best-effort. Empty aggregation buffers
+produce no frame. A full producer queue, serialization failure, oversized
+frame, or socket failure drops the affected frame rather than blocking the
+application. Activating the socket starts delivery for future intervals; it
+does not replay metrics collected while the sink was inactive. Metric tables
+follow `TelemetryConfig.retention_secs`.
+
+See [Distributed Telemetry](distributed-telemetry.html) for complete table contents
+and SQL examples.
+
+## OTLP path
+
+```
+OTel instruments
+ └─> periodic reader
+ └─> OTLP metric exporter
+ └─> OpenTelemetry Collector
+ └─> external metrics backend
+```
+
+In a build with OTLP support, setting `OTEL_EXPORTER_OTLP_ENDPOINT` enables an
+independent metric reader. It sends collections to the configured OpenTelemetry
+Collector over OTLP/HTTP. The collector controls routing, processing, and
+delivery to external metrics systems.
+
+See [OpenTelemetry and Grafana](generated/examples/otel_collector.html) for a
+Kubernetes collector, Prometheus, and Grafana example.
+
+## Configuration
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `ENABLE_OTEL_METRICS` | `true` | Enables Monarch OTel metric collection |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `1s` | Sets the periodic reader interval |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Unset | Enables OTLP metric export when configured |
+| `OTEL_SERVICE_NAME` | `unknown_service` | Sets the service name resource attribute |
+| `TelemetryConfig.retention_secs` | `3600` | Retains distributed metric rows for this many seconds; `0` disables retention |
+
+## Related documentation
+
+- [Observability overview](observability.html)
+- [Distributed Telemetry](distributed-telemetry.html)
+- [OpenTelemetry and Grafana](generated/examples/otel_collector.html)
+
+---
+
 # Monarch Dashboard
 
 The **Monarch Dashboard** is a web-based GUI for monitoring Monarch actor systems
 in real time. It connects to the distributed telemetry system and renders the
-full mesh topology -- hosts, processes, actor meshes, and individual actors -- as
-interactive views with live-updating metrics, message traffic analysis, and a
-full DAG visualization.
+full mesh topology -- hosts, processes, actor meshes, and individual actors --
+across three tabs: **Overview** for live metrics and message traffic,
+**Topology** for an interactive job graph, and **Explorer** for drilling into a
+single entity.
 
 See the [observability overview](observability.html) for how the dashboard uses
 [distributed telemetry](distributed-telemetry.html) and complements the
@@ -20642,9 +21481,14 @@ its URL.
 
 ## Quick Start
 
-Start any Monarch application that enables telemetry. The **Dining Philosophers**
+Start any Monarch application that enables telemetry. The
+[**Dining Philosophers**](https://github.com/meta-pytorch/monarch/blob/main/python/examples/dining_philosophers.py)
 example is the easiest way to try it -- five philosopher actors share chopsticks
-around a table, mediated by a waiter actor that prevents deadlock.
+around a table, mediated by a waiter actor that prevents deadlock. The
+[**Airport Turnaround**](https://github.com/meta-pytorch/monarch/blob/main/python/examples/airport_turnaround_demo.py)
+example is a busier alternative -- a fleet of flights cycles through turnaround
+phases while contending for a small pool of gates, runways, fuel trucks, and
+baggage crews. Both accept `--dashboard`.
 
 **Terminal 1** -- start the example with the dashboard enabled:
 
@@ -20660,95 +21504,133 @@ Monarch Dashboard: http://localhost:8265
 
 Open [http://localhost:8265](http://localhost:8265) in your browser.
 
-## Summary View
+## Overview
 
-The default view provides at-a-glance metrics for the entire mesh.
+The default tab summarizes the whole job. The header persists across tabs,
+carrying the tab switcher, a freshness indicator for the live poll, and an
+overall health chip.
 
-[![Dashboard summary view showing overview cards, session timeline, status breakdown, error panel, and message traffic](_images/dashboard-summary.png)](_images/dashboard-summary.png)
+[![Overview tab showing metric cards, a health gauge, message activity, actor status, message traffic by endpoint, the actor fleet, and a topology breakdown](_images/dashboard-summary.png)](_images/dashboard-summary.png)
 
-The summary is organized into sections:
+The tab is organized into panels:
 
-- **Overview cards** -- host mesh count, proc mesh count, total actors (with
-status count), and total messages (with delivery rate percentage).
-- **Session timeline** -- a horizontal bar spanning the session lifetime with
-error notches marking when actors failed or stopped.
-- **Actor status breakdown** -- a segmented bar and legend showing how many
-actors are in each state (Running, Idle, Failed, Stopped, etc.).
-- **Errors & failures** -- failed actors, stopped actors, and undelivered
-messages, each with the actor name, failure reason, and timestamp.
-- **Message traffic** -- delivery rate bar segmented by message status, plus
-a ranked bar chart of messages by endpoint name.
-- **Hierarchy breakdown** -- chip counts of host meshes, proc meshes, and
-actor meshes.
+- **Metric cards** -- host meshes, proc meshes, actors (split into workload and
+system), messages over the retention window, handler success rate, and the
+health score.
+- **System Health** -- a gauge scoring the workload actors. System actors are
+excluded, and the caption reports how many.
+- **Message Activity** -- throughput across the retention window, annotated with
+the sampled time range. Viewing the dashboard itself adds a little `scan`
+traffic, which the panel notes.
+- **Actor Status** -- a donut of the current state of every actor, with a legend
+per status.
+- **Errors & Failures** -- failed and stopped actors with their reasons, or a
+clean bill of health.
+- **Message Traffic** -- the handler lifecycle (queued → active →
+completed / failed) and a ranked list of message volume by endpoint. These
+are handler states, not delivery kinds.
+- **Actor Fleet** -- one chip per workload actor showing its role, proc, and
+live status; click a chip to inspect it. Toggle **Show System** to include
+system actors.
+- **Topology Breakdown** -- counts and proportions of host, proc, and actor
+meshes.
 
-## Hierarchy View
+## Topology
 
-The hierarchy view lets you drill down through the full Monarch mesh tree one
-level at a time. Click any row to navigate deeper; use the breadcrumb bar at
-the top to jump back to a parent level.
+The Topology tab renders the job as an interactive directed graph. Solid edges
+are the mesh hierarchy; dashed edges are message flow between actors, rolled up
+to whichever nodes are currently visible.
 
-[![Dashboard hierarchy view showing a breadcrumb bar and a table of actors with name, rank, and status columns](_images/dashboard-hierarchy.png)](_images/dashboard-hierarchy.png)
+Two view modes trade detail against legibility. Switch between them with the
+leftmost toolbar button.
 
-The navigation levels are:
+### Actors view
 
-```
-Host Meshes
- └─ Host Units (individual hosts)
- └─ Proc Meshes
- └─ Proc Units (individual processes)
- └─ Actor Meshes
- └─ Actors
- └─ Actor Detail
-```
-
-### Actor Detail
-
-Selecting an individual actor opens its detail page with three sections:
-
-- **Actor info** -- full name, ID, rank, mesh ID, current status, and
-creation timestamp.
-- **Status timeline** -- chronological list of every status transition with
-timestamp and reason.
-- **Messages** -- incoming and outgoing message tables showing sender/receiver,
-endpoint name, delivery status, and timestamp. Click any message to expand
-its full status event history (e.g. Sent → Delivered).
-
-## DAG View
-
-The DAG view renders the entire job as an interactive directed graph, helping you to understand your job better. It also shows message flows between your user actors.
+One node per entity -- host, proc, and actor -- each tagged with its mesh. Use
+this to follow individual actors and see which of them talk to each other.
 
 ```
 Host → Proc → Actor
 ```
 
-[![DAG view showing the full mesh topology as an interactive directed graph with color-coded nodes](_images/dashboard-dag.png)](_images/dashboard-dag.png)
+[![Topology tab in Actors view, fully expanded, showing a host and a controller above six procs and their philosopher and waiter actors, with dashed message edges](_images/dashboard-dag.png)](_images/dashboard-dag.png)
 
-- **Nodes** are color-coded by status (green = healthy, red = failed,
-gray = stopped).
-- **Edges** show parent-child relationships in the mesh hierarchy.
-- **Pan** by dragging the canvas; **zoom** with the scroll wheel.
-- **Hover** any node for a tooltip with its name, type, and status, and mesh.
-- **Click** a node to open its detail panel on the right.
+### Meshes view
 
-### Programmatic Usage
+Each host, proc, and actor mesh collapses to a single node carrying its member
+count. This keeps larger and more complex jobs clear: rather than hundreds of
+individual actors, the graph shows only the meshes and the relationships
+between them.
+
+[![Topology tab in Meshes view, fully expanded, showing two host meshes above two proc meshes and two actor meshes, each labeled with its member count](_images/dashboard-dag-meshes.png)](_images/dashboard-dag-meshes.png)
+
+Both modes share the same controls:
+
+- **Expand All** and **Collapse** open or close every level. A collapsed node
+reports how many descendants it hides.
+- **Show System** brings in the system actors, which are hidden by default.
+- **Top-Down** and **Left-Right** flip the layout direction; **Fit** frames the
+graph. **Auto-fit** re-frames on a structural change but never on a live
+refresh, so it leaves a manual zoom alone.
+- **Pan** by dragging the canvas, and **zoom** with the scroll wheel, the zoom
+buttons, or the minimap.
+- **Hover** a node for its name, type, status, mesh, and reference. **Click** an
+actor to open its detail drawer; clicking a node that has children expands or
+collapses it instead.
+- Nodes are colored by status. The legend keys those colors, the mesh colors,
+and the two kinds of edge.
+
+## Explorer
+
+The Explorer pairs a hierarchy tree with a detail pane. Filter the tree by
+name, expand or collapse every level, and toggle **Show System** to include
+system actors.
+
+[![Explorer tab showing the hierarchy tree on the left and an actor detail pane on the right with a breadcrumb, actor info, and a status timeline](_images/dashboard-hierarchy.png)](_images/dashboard-hierarchy.png)
+
+```
+Controller (the client host)
+Host
+ └─ Proc
+ └─ Actor
+```
+
+Every row is tagged with its mesh and carries a status dot. Hosts and procs
+also report how many actors sit below them.
+
+### Entity detail
+
+Selecting a host or proc reports its name, mesh, status, direct child count,
+the number of actors below it, and its reference, followed by a rollup of the
+statuses below it and a list of its children.
+
+### Actor detail
+
+Selecting an actor shows a breadcrumb of its ancestors and four sections:
+
+- **Py-spy** -- capture a live stack trace. Sampling is proc-level, so a dump
+covers every actor sharing that Python process.
+- **Actor info** -- full name, ID, rank, mesh, current status, and creation
+timestamp.
+- **Status timeline** -- the most recent status transitions, with timestamps.
+- **Messages** -- incoming and outgoing messages with peer, endpoint, and
+status. Click a row to expand its status event history.
+
+## Programmatic Usage
 
 Here is an example of how to enable the dashboard on your job via the [Jobs API](api/monarch.job.html).
 
 ```
 from monarch.job import ProcessJob, TelemetryConfig
 
-job = (
- ProcessJob({"workers": 2})
- .enable_admin()
- .enable_telemetry(
+job = ProcessJob({"workers": 2}).enable_telemetry(
  TelemetryConfig(include_dashboard=True, dashboard_port=8265)
- )
 )
 state = job.state(cached_path=None)
 print(state.dashboard_url)
 ```
 
-With both services enabled, the dashboard receives periodic mesh-admin
+`enable_telemetry()` also starts mesh admin and periodic introspection
 snapshots. Use `state.query_engine_client` to query the same data directly; see
 [Distributed Telemetry](distributed-telemetry.html).
 
@@ -20756,17 +21638,18 @@ snapshots. Use `state.query_engine_client` to query the same data directly; see
 
 # Observability
 
-Monarch provides three complementary job-local observability surfaces:
-distributed telemetry for SQL analysis, the Monarch Dashboard for visual
-monitoring, and the Mesh Admin TUI for live diagnostics. Configure telemetry
-and mesh admin together to connect all three data paths. OpenTelemetry provides
-a separate export path for external backends.
+Monarch provides one observability setup with three complementary job-local
+surfaces: distributed telemetry for SQL analysis, the Monarch Dashboard for
+visual monitoring, and the Mesh Admin TUI for live diagnostics. Enable
+telemetry on a job to start all three data paths consistently. OpenTelemetry
+supplies metrics to distributed telemetry and can independently export metrics
+and logs to external backends.
 
 ## Choose a surface
 
 | Use case | Surface | What it provides |
 | --- | --- | --- |
-| Query actor, mesh, message, and trace history | [Distributed telemetry](distributed-telemetry.html) | DataFusion SQL across host-local collectors |
+| Query actor, mesh, message, trace, and metric history | [Distributed telemetry](distributed-telemetry.html) | DataFusion SQL across host-local collectors |
 | Monitor topology, status, failures, and traffic in a browser | [Monarch Dashboard](monarch-dashboard.html) | Live summaries, hierarchy views, and a job DAG |
 | Diagnose a running mesh from a terminal | [Mesh Admin TUI](admin-tui.html) | Live topology, health checks, and py-spy stack traces |
 | Export metrics and logs to an external backend | [OpenTelemetry and Grafana](generated/examples/otel_collector.html) | OTLP export to systems such as Prometheus and Loki |
@@ -20776,8 +21659,7 @@ Periodic mesh-admin snapshots also flow into telemetry so the dashboard can
 show the live administrative topology.
 
 Distributed telemetry is a job-scoped, in-memory query system. OpenTelemetry
-export is the external aggregation path for metrics and logs. You can use both
-on the same job.
+export to an external backend can run alongside it on the same job.
 
 ## Enable observability
 
@@ -20786,26 +21668,20 @@ Configure observability before calling `state()`:
 ```
 from monarch.job import ProcessJob, TelemetryConfig
 
-job = (
- ProcessJob({"workers": 2})
- .enable_admin()
- .enable_telemetry(
+job = ProcessJob({"workers": 2}).enable_telemetry(
  TelemetryConfig(
- retention_secs=600,
+ retention_secs=3600,
  include_dashboard=True,
  dashboard_port=8265,
  snapshot_interval_secs=30,
- )
  )
 )
 state = job.state(cached_path=None)
 ```
 
-`enable_telemetry()` starts distributed telemetry and the optional dashboard;
-`enable_admin()` starts the API used by the TUI. Configuring both also enables
-periodic introspection snapshots when `snapshot_interval_secs` is positive.
-Adapt the example to your existing `LocalJob`, `ProcessJob`, `SlurmJob`, or
-`KubernetesJob` rather than creating a second job.
+`enable_telemetry()` also enables mesh admin and periodic introspection
+snapshots. Adapt the example to your existing `LocalJob`, `ProcessJob`,
+`SlurmJob`, or `KubernetesJob` rather than creating a second job.
 
 The returned state exposes each surface:
 
@@ -20827,12 +21703,31 @@ print(result["rows"])
 Use `state.dashboard_url` in a browser. Pass `state.admin_url` to
 `monarch-tui --addr`.
 
+## Metrics
+
+Monarch records its built-in metrics through one process-global OpenTelemetry
+meter provider. Libraries record counters, gauges, and histograms without
+choosing a destination. Independent readers can send the same instruments to
+job-local distributed telemetry, an external OTLP endpoint, or both.
+
+| Path | Enablement | Destination | Primary use |
+| --- | --- | --- | --- |
+| Distributed telemetry | `job.enable_telemetry(...)` | Job-local SQL tables | Debugging and analysis within the current job |
+| OTLP | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry Collector over OTLP/HTTP | External aggregation, monitoring, and visualization |
+
+See [Metrics](metrics.html) for provider scope, collection and flushing behavior,
+configuration, and both export paths.
+
 ## Data flow
 
 ```
 actor and proc events ──> host-local collectors ──> distributed query engine
  ├─> SQL query client
  └─> Monarch Dashboard
+
+OTel instruments ──> process-global meter provider ──┬─> UDS metric exporter
+ │ └─> host-local collectors
+ └─> external metric exporter
 
 live mesh ──> Mesh Admin API ──────────────────────────────> Mesh Admin TUI
  └──────> periodic snapshots ──> distributed telemetry ─> Dashboard DAG
@@ -20847,16 +21742,17 @@ are not a durable event archive.
 
 | `TelemetryConfig` field | Default | Effect |
 | --- | --- | --- |
-| `retention_secs` | `600` | Retention window for message tables; `0` disables retention |
+| `retention_secs` | `3600` | Retention window for message, trace, and metric tables; `0` disables retention |
 | `include_dashboard` | `False` | Advertise the browser dashboard |
 | `dashboard_port` | `8265` | Preferred dashboard port; use `0` for an ephemeral port |
-| `snapshot_interval_secs` | `0` | Mesh-introspection snapshot interval; `0` disables periodic snapshots. Enabling the dashboard changes `0` to `30` seconds. |
+| `snapshot_interval_secs` | `30` | Mesh-introspection snapshot interval; `0` disables periodic snapshots |
 
 For an admin server without distributed telemetry, call `job.enable_admin()`.
 That supports the TUI, but it does not provide the dashboard or SQL history.
 
 ## Next steps
 
+- [Understand metric collection and export](metrics.html)
 - [Query distributed telemetry](distributed-telemetry.html)
 - [Use the Monarch Dashboard](monarch-dashboard.html)
 - [Diagnose a mesh with the Admin TUI](admin-tui.html)

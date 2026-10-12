@@ -8,6 +8,7 @@ This page introduces the `MailboxMuxer` and its role in:
 - Aggregating multiple mailbox instances
 - Dispatching incoming messages to the appropriate `MailboxSender`
 - Supporting dynamic binding and unbinding of mailboxes
+- Buffering messages for actors that have not bound yet
 
 Let's begin by looking at the core structure of `MailboxMuxer`:
 ```rust
@@ -73,4 +74,21 @@ impl MailboxSender for MailboxMuxer {
     }
 }
 ```
-This makes `MailboxMuxer` composable: it can be nested within other routers, shared across components, or substituted for a standalone mailbox in generic code. If the destination `ActorId` is found in the internal map, the message is forwarded to the corresponding sender. Otherwise, it is returned with an `InvalidReference` delivery failure.
+This makes `MailboxMuxer` composable: it can be nested within other routers, shared across components, or substituted for a standalone mailbox in generic code. If the destination `ActorId` is found in the internal map, the message is forwarded to the corresponding sender. The snippet above shows the simplest behavior for a miss: return the message with an `InvalidReference` delivery failure.
+
+## Messages for actors that have not bound yet
+
+An `ActorRef` can exist before its actor does. For example, a remote spawn computes the new actor's address locally and returns it right away, while the target proc is still constructing the actor. A message sent through that ref reaches the right proc's muxer, but it can arrive before the actor binds its mailbox.
+
+So on a miss, the muxer does not bounce the message right away. Instead, each entry in `mailboxes` records the state of an actor's mailbox:
+```rust
+enum ActorMailbox {
+    Bound(Arc<dyn MailboxSender + Send + Sync>),
+    Buffering(Vec<PendingMessage>),
+}
+```
+A message for an unknown `ActorId` creates a `Buffering` entry that holds the envelope and its return handle. When `bind` later arrives for that id, it delivers the buffered messages to the sender and replaces the entry with `Bound`, all under that entry's lock. A message that arrives meanwhile waits for the lock, then goes straight to the sender. The actor thus sees messages in the order they reached the proc.
+
+Buffering does not wait on user code: the runtime binds an actor's mailbox and handler ports before `Actor::init` runs. Messages then wait in the actor's own work queue until it starts handling them. The remote-spawn path binds the handler ports before it publishes the mailbox, so a buffered message never finds its port missing.
+
+If no actor binds within `PENDING_ACTOR_DELIVERY_TIMEOUT` (30 seconds by default), the buffered messages are returned with `InvalidReferenceReason::ActorNotExist`, exactly as an immediate bounce would. Setting the timeout to zero restores the immediate bounce.

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["TryTakeError"],"struct":["EmptyCellError","SharedCell","SharedCellPool","SharedCellRef"],"trait":["SharedCellDiscard"]};

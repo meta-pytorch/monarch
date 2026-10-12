@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["register_python_bindings"],"struct":["PyTestStruct"]};
+window.SIDEBAR_ITEMS = {"fn":["register_python_bindings"],"struct":["PyHandleProbe","PyTestStruct"]};

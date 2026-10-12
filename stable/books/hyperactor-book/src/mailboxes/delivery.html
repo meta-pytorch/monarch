@@ -1,9 +1,8 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="../../../../" >
 
   <head>
     <meta charset="utf-8" />
@@ -17,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="This page describes how mailbox delivery succeeds, fails, and reports failure. Message envelopes: MessageEnvelope is the unit routed through MailboxSender s. It carries an addressed, serialized mes..." />
 
-    <title>Delivery Semantics &#8212; Monarch v0.6.0 documentation</title>
+    <title>Delivery Semantics &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -37,29 +36,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
-    <script src="../../../../_static/doctools.js"></script>
-    <script src="../../../../_static/sphinx_highlight.js"></script>
-    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/mailboxes/delivery';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/mailboxes/delivery.html" />
@@ -83,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -197,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -562,6 +561,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -632,6 +637,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -925,6 +936,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -995,6 +1012,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1299,10 +1322,10 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="delivery-semantics">
-<h1>Delivery Semantics<a class="headerlink" href="#delivery-semantics" title="Permalink to this heading">#</a></h1>
+<h1>Delivery Semantics<a class="headerlink" href="#delivery-semantics" title="Link to this heading">#</a></h1>
 <p>This page describes how mailbox delivery succeeds, fails, and reports failure.</p>
 <section id="message-envelopes">
-<h2>Message envelopes<a class="headerlink" href="#message-envelopes" title="Permalink to this heading">#</a></h2>
+<h2>Message envelopes<a class="headerlink" href="#message-envelopes" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">MessageEnvelope</span></code> is the unit routed through <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code>s. It carries an addressed, serialized message:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">MessageEnvelope</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">sender</span><span class="p">:</span><span class="w"> </span><span class="nc">ActorAddr</span><span class="p">,</span>
@@ -1338,7 +1361,7 @@ document.write(`
 <p>Each <code class="docutils literal notranslate"><span class="pre">MailboxSender::post</span></code> decrements <code class="docutils literal notranslate"><span class="pre">ttl</span></code> before calling <code class="docutils literal notranslate"><span class="pre">post_unchecked</span></code>. When the TTL reaches zero, the envelope is returned as an expired delivery instead of being routed further.</p>
 </section>
 <section id="structured-failures">
-<h2>Structured failures<a class="headerlink" href="#structured-failures" title="Permalink to this heading">#</a></h2>
+<h2>Structured failures<a class="headerlink" href="#structured-failures" title="Link to this heading">#</a></h2>
 <p>Delivery failures are structured and accumulate in the envelope’s <code class="docutils literal notranslate"><span class="pre">delivery_failures</span></code> vector. Each entry is a <code class="docutils literal notranslate"><span class="pre">DeliveryFailure</span></code>: a <code class="docutils literal notranslate"><span class="pre">kind</span></code> plus attributes.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">DeliveryFailure</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">kind</span><span class="p">:</span><span class="w"> </span><span class="nc">DeliveryFailureKind</span><span class="p">,</span>
@@ -1362,7 +1385,7 @@ document.write(`
 </ul>
 </section>
 <section id="returning-undeliverables">
-<h2>Returning undeliverables<a class="headerlink" href="#returning-undeliverables" title="Permalink to this heading">#</a></h2>
+<h2>Returning undeliverables<a class="headerlink" href="#returning-undeliverables" title="Link to this heading">#</a></h2>
 <p>When delivery fails, code calls:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">envelope</span><span class="p">.</span><span class="n">undeliverable</span><span class="p">(</span><span class="n">failure</span><span class="p">,</span><span class="w"> </span><span class="n">return_handle</span><span class="p">);</span>
 </pre></div>
@@ -1371,7 +1394,7 @@ document.write(`
 <p>Actors normally receive returned failures on their <code class="docutils literal notranslate"><span class="pre">Undeliverable&lt;MessageEnvelope&gt;</span></code> handler port. The default actor behavior treats invalid references and ordinary undeliverables as actor errors unless the actor overrides the corresponding handler.</p>
 </section>
 <section id="mailbox-delivery">
-<h2>Mailbox delivery<a class="headerlink" href="#mailbox-delivery" title="Permalink to this heading">#</a></h2>
+<h2>Mailbox delivery<a class="headerlink" href="#mailbox-delivery" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">Mailbox::post_unchecked</span></code> performs local delivery only for its owning actor address:</p>
 <ol class="arabic simple">
 <li><p>Reject envelopes whose destination actor is not the mailbox owner with <code class="docutils literal notranslate"><span class="pre">InvalidReferenceReason::WrongMailboxOwner</span></code>.</p></li>
@@ -1611,7 +1634,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>

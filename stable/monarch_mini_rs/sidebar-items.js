@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Role"],"struct":["Actor","Context","Error","MonitorHandle","Part","Poller"],"type":["Result"]};

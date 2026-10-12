@@ -68,7 +68,9 @@ tail_log_lines: Number of log lines to retain in memory.
 message_delivery_timeout: Max delivery time (humantime).
 - **timeouts** (*Host mesh*) - host_spawn_ready_timeout: Max host bootstrapping time (humantime).
 mesh_proc_spawn_max_idle: Max idle time while spawning procs (humantime).
-- **handling** (*Hyperactor timeouts and message*) - process_exit_timeout: Timeout for process exit (humantime).
+- **handling** (*Hyperactor timeouts and message*) - 
+
+process_exit_timeout: Timeout for process exit (humantime).
 message_ack_time_interval: Time interval for message acknowledgments (humantime).
 message_ack_every_n_messages: Acknowledge every N messages.
 message_ttl_default: Default message time-to-live.
@@ -78,6 +80,13 @@ stop_actor_timeout: Timeout for stopping actors (humantime).
 cleanup_timeout: Timeout for cleanup operations (humantime).
 default_encoding: Default message encoding (Encoding.Bincode, Encoding.Json, or Encoding.Multipart).
 channel_net_rx_buffer_full_check_interval: Network receive buffer check interval (humantime).
+channel_tcp_congestion: TCP congestion control: `"cubic"`, `"reno"`,
+
+> `"bbr"`; empty keeps the host default. Best-effort - a host that will
+> not let this process select the algorithm keeps its own default and the
+> channel layer logs a warning, rather than failing the connection. This
+> value therefore records what was requested, not necessarily what took.
+
 message_latency_sampling_rate: Sampling rate for message latency tracking (0.0 to 1.0).
 enable_dest_actor_reordering_buffer: Enable reordering buffer in dest actor.
 - **configuration** - mesh_bootstrap_enable_pdeathsig: Enable parent-death signal for spawned processes.
@@ -109,6 +118,14 @@ mesh_attach_config_timeout: Timeout for the config-push barrier
 
 during `attach_to_workers()` (humantime, default `"10s"`).
 Best-effort: if exceeded, a warning is logged and attach continues.
+- **Diagnostics** - 
+pyspy_bin: Path to the py-spy binary used by the mesh admin
+
+py-spy endpoints. Tried ahead of `py-spy` on `PATH`;
+empty uses `PATH` alone. Resolved in the proc being
+dumped, so it must be set before that proc is spawned.
+The environment variable is `PYSPY_BIN`, not
+`HYPERACTOR_*`.
 - **configuration** - 
 rdma_allow_tcp_fallback: Allow TCP fallback when ibverbs RDMA
 
@@ -122,6 +139,45 @@ causing all RDMA operations to use the TCP fallback backend.
 rdma_max_chunk_size_mb: Maximum chunk size in megabytes for RDMA
 
 transfers.
+
+rdma_ibverbs_target: Default ibverbs device target for managers
+
+without an explicit target. Accepts `"cpu:<numa>"`,
+`"gpu:<ordinal>"`, or `"nic:<name>"`. Empty preserves
+automatic selection. Non-empty value syntax is validated when
+the RDMA manager starts.
+
+rdma_peer_device_affinity: Which peer NICs each local NIC may pair
+
+with for a transfer. Accepts `"any"`, `"match_name"`, or
+`"groups:"` followed by any number of `|`-separated groups,
+each naming any number of comma-separated devices, e.g.
+`"groups:mlx5_0,mlx5_1|mlx5_2,mlx5_3|mlx5_4"`. Groups must be
+disjoint. Empty, the default, means `"any"`. Value syntax is
+validated when the RDMA manager starts.
+
+rdma_max_nics_per_buffer: How many NICs a buffer is registered on,
+
+at most; `None`, the default, sets no limit.
+
+rdma_min_stripe_size_kb: Minimum RDMA stripe size in KiB
+
+(default: 512). Transfers use as many compatible NIC pairs as
+this minimum allows.
+
+rdma_qps_per_cq: How many queue pairs share one completion queue
+
+(default 64).
+
+rdma_cq_poller_per_device: Whether each RDMA device gets a separate
+
+completion-queue poller (default `True`).
+
+rdma_runtime_worker_threads: Worker threads for the shared RDMA
+
+data-plane runtime (default 4), which runs RDMA actors and
+queue-pair worker tasks. Latched at the first RDMA use in a
+process; setting it later has no effect.
 - ****kwargs** (*ConfigureKwargsType*) - Reserved for future configuration keys exposed by Rust bindings.
 
 monarch.config.configured(***overrides*)[[source]](../_modules/monarch/config.html#configured)
@@ -589,19 +645,6 @@ Threshold below which writes are copied (in bytes).
 Writes smaller than this threshold are copied into a contiguous buffer.
 Writes at or above this size are stored as zero-copy references.
 
-## Actor Configuration
-
-`actor_queue_dispatch`
-
-Enable queue-based dispatch for actor message handling.
-
-- **Type**: `bool`
-- **Default**: `True`
-- **Environment**: `HYPERACTOR_ACTOR_QUEUE_DISPATCH`
-
-When `True`, actor messages are dispatched through a queue rather than
-directly. This can improve throughput in high-message-volume scenarios.
-
 ## Mesh Configuration
 
 `max_cast_dimension_size`
@@ -626,6 +669,31 @@ Parsed as a `SocketAddr` (e.g. `"[::]:1729"`, `"0.0.0.0:8080"`).
 Used as the bind address when no explicit address is provided to
 `MeshAdminAgent`, and as the default address assumed by admin
 clients connecting via `mast_conda:///`.
+
+`pyspy_bin`
+
+Path to the py-spy binary used by the mesh admin py-spy endpoints.
+
+- **Type**: `str`
+- **Default**: `""` (empty; `py-spy` on `PATH` is used instead)
+- **Environment**: `PYSPY_BIN`
+
+Tried ahead of `py-spy` on `PATH`. The environment variable is
+`PYSPY_BIN` rather than `HYPERACTOR_*`, for compatibility with
+deployments that already set it.
+
+Resolved in the proc being dumped, not in the client, and read when
+the dump runs - so it has to be in place before that proc is
+spawned. Setting it via `configure()` reaches procs spawned
+afterwards; it does not change procs that are already running.
+
+```
+from monarch.config import configure
+
+# Some py-spy builds cannot unwind native frames on a given
+# target; point at one that can.
+configure(pyspy_bin="/path/to/py-spy")
+```
 
 ## Mesh Attach
 

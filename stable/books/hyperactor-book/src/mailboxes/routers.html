@@ -1,9 +1,8 @@
 
-
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="" >
+<html lang="en" data-content_root="../../../../" >
 
   <head>
     <meta charset="utf-8" />
@@ -17,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="While a muxer dispatches messages to exact ActorId matches, a router generalizes this by routing messages to the nearest matching address prefix. This enables hierarchical, prefix-based routing acr..." />
 
-    <title>Routers &#8212; Monarch v0.6.0 documentation</title>
+    <title>Routers &#8212; Monarch v0.7.0 documentation</title>
   
   
   
@@ -37,29 +36,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
-    <script src="../../../../_static/doctools.js"></script>
-    <script src="../../../../_static/sphinx_highlight.js"></script>
-    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/mailboxes/routers';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/mailboxes/routers.html" />
@@ -83,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.6.0">
+<meta name="llm:version" content="v0.7.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -197,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.6.0');
+  document.documentElement.setAttribute('data-version', 'v0.7.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -562,6 +561,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -632,6 +637,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -925,6 +936,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
+                  Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
                   Mesh Admin TUI
                 </a>
@@ -995,6 +1012,12 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
                   GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/gpu_sharing.html">
+                  Sharing GPUs Between Actors
                 </a>
               </li>
             
@@ -1299,7 +1322,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="routers">
-<h1>Routers<a class="headerlink" href="#routers" title="Permalink to this heading">#</a></h1>
+<h1>Routers<a class="headerlink" href="#routers" title="Link to this heading">#</a></h1>
 <p>While a muxer dispatches messages to exact <code class="docutils literal notranslate"><span class="pre">ActorId</span></code> matches, a <strong>router</strong> generalizes this by routing messages to the nearest matching address prefix. This enables hierarchical, prefix-based routing across clusters of actors and procs.</p>
 <p>Routers extend the ideas of the muxer with:</p>
 <ul class="simple">
@@ -1324,7 +1347,7 @@ document.write(`
 </div>
 <p>An <code class="docutils literal notranslate"><span class="pre">Addr</span></code> encodes a path through the logical structure of the system, spanning from procs to fine-grained targets like actors or ports. It has a concrete string syntax, such as <code class="docutils literal notranslate"><span class="pre">trainer.service&#64;tcp://[::1]:1234</span></code> or <code class="docutils literal notranslate"><span class="pre">trainer.service:42&#64;tcp://[::1]:1234</span></code>, and can be parsed from user input or configuration via <code class="docutils literal notranslate"><span class="pre">FromStr</span></code>.</p>
 <section id="total-ordering-and-prefix-routing">
-<h2>Total Ordering and Prefix Routing<a class="headerlink" href="#total-ordering-and-prefix-routing" title="Permalink to this heading">#</a></h2>
+<h2>Total Ordering and Prefix Routing<a class="headerlink" href="#total-ordering-and-prefix-routing" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">Addr</span></code> implements a total order via a lexicographic comparison of its internal components:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="nb">PartialOrd</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">Addr</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">partial_cmp</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">other</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="n">Ordering</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
@@ -1355,7 +1378,7 @@ document.write(`
 <p>Semantically, an <code class="docutils literal notranslate"><span class="pre">Addr::Proc(p)</span></code> is considered a prefix of any <code class="docutils literal notranslate"><span class="pre">Actor</span></code> or <code class="docutils literal notranslate"><span class="pre">Port</span></code> address that shares the same proc address.</p>
 <p>Because this order is total and consistent with prefix semantics, it enables efficient prefix-based routing using <code class="docutils literal notranslate"><span class="pre">BTreeMap&lt;Addr,</span> <span class="pre">...&gt;</span></code>. When routing a message, the destination <code class="docutils literal notranslate"><span class="pre">ActorAddr</span></code> is converted into an <code class="docutils literal notranslate"><span class="pre">Addr</span></code>, and the router performs a longest-prefix match by locating the nearest entry that is a prefix of the destination.</p>
 <section id="mailboxrouter">
-<h3><code class="docutils literal notranslate"><span class="pre">MailboxRouter</span></code><a class="headerlink" href="#mailboxrouter" title="Permalink to this heading">#</a></h3>
+<h3><code class="docutils literal notranslate"><span class="pre">MailboxRouter</span></code><a class="headerlink" href="#mailboxrouter" title="Link to this heading">#</a></h3>
 <p>With this structure in place, we can now define the core router:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">MailboxRouter</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">entries</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="n">RwLock</span><span class="o">&lt;</span><span class="n">BTreeMap</span><span class="o">&lt;</span><span class="n">Addr</span><span class="p">,</span><span class="w"> </span><span class="n">Arc</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="o">&gt;&gt;&gt;&gt;</span><span class="p">,</span>
@@ -1366,7 +1389,7 @@ document.write(`
 <p>When a message is routed, its destination <code class="docutils literal notranslate"><span class="pre">ActorAddr</span></code> is converted into an <code class="docutils literal notranslate"><span class="pre">Addr</span></code>. The router performs a longest-prefix match against the table to find the nearest registered handler.</p>
 </section>
 <section id="binding-and-downgrading">
-<h3>Binding and Downgrading<a class="headerlink" href="#binding-and-downgrading" title="Permalink to this heading">#</a></h3>
+<h3>Binding and Downgrading<a class="headerlink" href="#binding-and-downgrading" title="Link to this heading">#</a></h3>
 <p>To register a new routing entry, the router provides a <code class="docutils literal notranslate"><span class="pre">bind</span></code> method:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">MailboxRouter</span><span class="w"> </span><span class="p">{</span>
 <span class="w">     </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">dest</span><span class="p">:</span><span class="w"> </span><span class="nc">Addr</span><span class="p">,</span><span class="w"> </span><span class="n">sender</span><span class="p">:</span><span class="w"> </span><span class="nc">impl</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="o">&#39;</span><span class="nb">static</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
@@ -1395,7 +1418,7 @@ document.write(`
 <p>A <code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code> can be upgraded back into a strong <code class="docutils literal notranslate"><span class="pre">MailboxRouter</span></code> (if the underlying state is still alive) or used to fail gracefully when routing is unavailable.</p>
 </section>
 <section id="routing-via-mailboxsender">
-<h3>Routing via <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code><a class="headerlink" href="#routing-via-mailboxsender" title="Permalink to this heading">#</a></h3>
+<h3>Routing via <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code><a class="headerlink" href="#routing-via-mailboxsender" title="Link to this heading">#</a></h3>
 <p>To participate in message delivery, <code class="docutils literal notranslate"><span class="pre">MailboxRouter</span></code> implements the <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> trait:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">MailboxRouter</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">post</span><span class="p">(</span>
@@ -1447,7 +1470,7 @@ document.write(`
 </ol>
 </section>
 <section id="weakmailboxrouter">
-<h3><code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code><a class="headerlink" href="#weakmailboxrouter" title="Permalink to this heading">#</a></h3>
+<h3><code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code><a class="headerlink" href="#weakmailboxrouter" title="Link to this heading">#</a></h3>
 <p>A <code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code> is a downgradeable, non-owning reference to a router’s internal state. It allows optional or ephemeral routing participation-for example, when holding a fallback route without keeping the full routing table alive.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">WeakMailboxRouter</span><span class="p">(</span>
 <span class="w">    </span><span class="n">Weak</span><span class="o">&lt;</span><span class="n">RwLock</span><span class="o">&lt;</span><span class="n">BTreeMap</span><span class="o">&lt;</span><span class="n">Addr</span><span class="p">,</span><span class="w"> </span><span class="n">Arc</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="o">&gt;&gt;&gt;&gt;</span><span class="p">,</span>
@@ -1480,7 +1503,7 @@ document.write(`
 <p>If the router has already been dropped, <code class="docutils literal notranslate"><span class="pre">post</span></code> fails gracefully by returning the message to the sender with a <code class="docutils literal notranslate"><span class="pre">BrokenLink</span></code> error. This makes <code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code> useful in dynamic topologies or teardown-sensitive control paths, where a full routing table may not be guaranteed to exist at the time of message delivery.</p>
 </section>
 <section id="dialmailboxrouter-remote-and-serializable-routing">
-<h3><code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code>: Remote and Serializable Routing<a class="headerlink" href="#dialmailboxrouter-remote-and-serializable-routing" title="Permalink to this heading">#</a></h3>
+<h3><code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code>: Remote and Serializable Routing<a class="headerlink" href="#dialmailboxrouter-remote-and-serializable-routing" title="Link to this heading">#</a></h3>
 <p>While <code class="docutils literal notranslate"><span class="pre">MailboxRouter</span></code> supports prefix-based routing, it relies on explicitly registered <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code>s. In contrast, <code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code> enables <strong>remote routing</strong> through a dynamic address book and connection cache. It can forward messages to remote actors by establishing outbound connections on demand.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">DialMailboxRouter</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">address_book</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="n">RwLock</span><span class="o">&lt;</span><span class="n">BTreeMap</span><span class="o">&lt;</span><span class="n">Addr</span><span class="p">,</span><span class="w"> </span><span class="n">ChannelAddr</span><span class="o">&gt;&gt;&gt;</span><span class="p">,</span>
@@ -1490,21 +1513,21 @@ document.write(`
 </pre></div>
 </div>
 <section id="address-book">
-<h4>Address Book<a class="headerlink" href="#address-book" title="Permalink to this heading">#</a></h4>
+<h4>Address Book<a class="headerlink" href="#address-book" title="Link to this heading">#</a></h4>
 <p>The <code class="docutils literal notranslate"><span class="pre">address_book</span></code> maps <code class="docutils literal notranslate"><span class="pre">Addr</span></code> prefixes to <code class="docutils literal notranslate"><span class="pre">ChannelAddr</span></code>s representing remote destinations.</p>
 </section>
 <section id="sender-cache">
-<h4>Sender Cache<a class="headerlink" href="#sender-cache" title="Permalink to this heading">#</a></h4>
+<h4>Sender Cache<a class="headerlink" href="#sender-cache" title="Link to this heading">#</a></h4>
 <p>The <code class="docutils literal notranslate"><span class="pre">sender_cache</span></code> holds active <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> connections keyed by address. When a message arrives, the router looks up the target in the address book and either reuses an existing sender or dials a new one.</p>
 </section>
 <section id="default-route">
-<h4>Default Route<a class="headerlink" href="#default-route" title="Permalink to this heading">#</a></h4>
+<h4>Default Route<a class="headerlink" href="#default-route" title="Link to this heading">#</a></h4>
 <p>If no matching reference is found, the message is forwarded to a <code class="docutils literal notranslate"><span class="pre">default</span></code> sender—useful as a catch-all route or failover handler.</p>
 <p>This structure enables adaptive, connection-aware routing across distributed systems. Next, we’ll walk through constructing and populating a <code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code> using <code class="docutils literal notranslate"><span class="pre">new()</span></code> and <code class="docutils literal notranslate"><span class="pre">bind()</span></code>.</p>
 </section>
 </section>
 <section id="managing-routes-bind-and-unbind">
-<h3>Managing Routes: <code class="docutils literal notranslate"><span class="pre">bind</span></code> and <code class="docutils literal notranslate"><span class="pre">unbind</span></code><a class="headerlink" href="#managing-routes-bind-and-unbind" title="Permalink to this heading">#</a></h3>
+<h3>Managing Routes: <code class="docutils literal notranslate"><span class="pre">bind</span></code> and <code class="docutils literal notranslate"><span class="pre">unbind</span></code><a class="headerlink" href="#managing-routes-bind-and-unbind" title="Link to this heading">#</a></h3>
 <p>To populate the router, use <code class="docutils literal notranslate"><span class="pre">bind</span></code> to associate an <code class="docutils literal notranslate"><span class="pre">Addr</span></code> with a <code class="docutils literal notranslate"><span class="pre">ChannelAddr</span></code>. This replaces any existing mapping for the same address prefix and evicts any cached sender tied to the old address:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">router</span><span class="p">.</span><span class="n">bind</span><span class="p">(</span><span class="n">addr</span><span class="p">,</span><span class="w"> </span><span class="n">remote_addr</span><span class="p">);</span>
 </pre></div>
@@ -1516,10 +1539,10 @@ document.write(`
 <p>This allows the router to adapt dynamically to process exits, topology changes, or application-level reconfiguration. The use of <code class="docutils literal notranslate"><span class="pre">is_prefix_of</span></code> during unbinding ensures that hierarchical references can be removed in bulk-e.g., removing a <code class="docutils literal notranslate"><span class="pre">Proc</span></code>-level entry will also remove all associated <code class="docutils literal notranslate"><span class="pre">Actor</span></code> routes.</p>
 </section>
 <section id="lookup-and-dialing">
-<h3>Lookup and Dialing<a class="headerlink" href="#lookup-and-dialing" title="Permalink to this heading">#</a></h3>
+<h3>Lookup and Dialing<a class="headerlink" href="#lookup-and-dialing" title="Link to this heading">#</a></h3>
 <p>Once the router has been populated using <code class="docutils literal notranslate"><span class="pre">bind</span></code>, message delivery proceeds in two phases: <strong>lookup</strong> followed by <strong>dialing</strong>, if needed.</p>
 <section id="address-lookup">
-<h4>Address Lookup<a class="headerlink" href="#address-lookup" title="Permalink to this heading">#</a></h4>
+<h4>Address Lookup<a class="headerlink" href="#address-lookup" title="Link to this heading">#</a></h4>
 <p>When a message arrives, the router first attempts to locate a destination using <code class="docutils literal notranslate"><span class="pre">lookup_addr</span></code>. This method:</p>
 <ul class="simple">
 <li><p>Converts the message’s <code class="docutils literal notranslate"><span class="pre">ActorAddr</span></code> into an <code class="docutils literal notranslate"><span class="pre">Addr</span></code></p></li>
@@ -1529,7 +1552,7 @@ document.write(`
 <p>This allows the router to resolve addresses at varying levels of granularity-e.g., by process or actor.</p>
 </section>
 <section id="dialing">
-<h4>Dialing<a class="headerlink" href="#dialing" title="Permalink to this heading">#</a></h4>
+<h4>Dialing<a class="headerlink" href="#dialing" title="Link to this heading">#</a></h4>
 <p>If a matching address is found and no cached connection exists, the router attempts to establish one using <code class="docutils literal notranslate"><span class="pre">channel::dial</span></code>. The resulting connection is wrapped in a <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> and inserted into the sender cache for future use.</p>
 <p>If the address is already cached, the router reuses the existing sender to avoid redundant connections.</p>
 <p>The result of this lookup-and-dial process is an <code class="docutils literal notranslate"><span class="pre">Arc&lt;MailboxClient&gt;</span></code>—a runtime-capable <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> for remote delivery.</p>
@@ -1537,7 +1560,7 @@ document.write(`
 </section>
 </section>
 <section id="integration-with-mailboxsender">
-<h3>Integration with <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code><a class="headerlink" href="#integration-with-mailboxsender" title="Permalink to this heading">#</a></h3>
+<h3>Integration with <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code><a class="headerlink" href="#integration-with-mailboxsender" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code> implements the <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> trait, enabling it to forward messages to remote actors by resolving and caching connections dynamically:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">DialMailboxRouter</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">post</span><span class="p">(</span>
@@ -1840,7 +1863,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
     <br/>
   </p>
 </div>

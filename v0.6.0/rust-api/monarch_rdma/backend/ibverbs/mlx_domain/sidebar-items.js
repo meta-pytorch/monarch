@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["register_cuda_segment_scanner"],"struct":["MlxDomain","ScannedSegment"],"type":["CudaSegmentScanner"]};

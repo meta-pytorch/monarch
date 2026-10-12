@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["main","something_an_actor_would_do"],"static":["MEMORY_USAGE","REQUEST_COUNT","REQUEST_DURATION"]};

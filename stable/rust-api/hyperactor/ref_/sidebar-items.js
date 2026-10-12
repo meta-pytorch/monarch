@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ActorRef","OncePortRef","PortRef"]};
+window.SIDEBAR_ITEMS = {"struct":["ActorRef","IdleFlushPortRef","OncePortRef","PortRef"]};

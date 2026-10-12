@@ -20,8 +20,8 @@ Spawns:
 
 > **Constraint:** if `aggregate_window_sec` is `Some` while `stream_to_client` is `False`, `set_mode` raises a runtime error (see source).
 
-### `LoggingMeshClient.flush(instance) -> PyPythonTask`
-Performs a **versioned sync flush** across all forwarders so the caller deterministically waits until "all logs up to now" are delivered.
+### `LoggingMeshClient.flush(instance) -> Handle[None]`
+Performs a **versioned sync flush** across all forwarders so the caller deterministically waits until "all logs up to now" are delivered. The flush starts during the call; the returned `Handle` completes when it has finished, and dropping the `Handle` does not cancel it.
 See: [Client actor → Barrier protocol](client.md#barrier-protocol-sync-flush) and [Forwarder internals](forwarder.md).
 
 ## Minimal example

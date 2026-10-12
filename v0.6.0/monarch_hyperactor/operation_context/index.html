@@ -1,0 +1,28 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Operation-context carrier for the Python endpoint machinery."><title>monarch_hyperactor::operation_context - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module operation_context</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../monarch_hyperactor/index.html">monarch_<wbr>hyperactor</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module operation_<wbr>context</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#operation-context-invariants-oc-" title="Operation-context invariants (OC-*)">Operation-context invariants (OC-*)</a></li></ul><h3><a href="#functions">Module Items</a></h3><ul class="block"><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate monarch_<wbr>hyperactor</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">monarch_hyperactor</a></div><h1>Module <span>operation_<wbr>context</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/monarch_hyperactor/operation_context.rs.html#9-150">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Operation-context carrier for the Python endpoint machinery.</p>
+<p>Stamps <code>OPERATION_ENDPOINT</code> / <code>OPERATION_ADVERB</code> on outgoing
+requests so failure surfaces (mailbox log, undeliverable
+formatter) can name the operation.</p>
+<h3 id="operation-context-invariants-oc-"><a class="doc-anchor" href="#operation-context-invariants-oc-">§</a>Operation-context invariants (OC-*)</h3>
+<ul>
+<li>
+<p><strong>OC-1 (request-originated).</strong> Stamped at the caller’s
+request-send site. Only the caller knows the qualified
+endpoint and adverb.</p>
+</li>
+<li>
+<p><strong>OC-2 (filtered carry).</strong> Only keys marked
+<code>@meta(OPERATION_CONTEXT_HEADER = true)</code> ride this path.
+Adding another <code>OPERATION_*</code> key joins the vocabulary by
+declaration alone.</p>
+</li>
+<li>
+<p><strong>OC-3 (carry continuity).</strong> Captured headers are preserved
+onto the reply envelope at the <code>Port</code> capture site via
+<code>send_with_headers</code>.</p>
+</li>
+</ul>
+</div></details><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.build_operation_context_attrs.html" title="fn monarch_hyperactor::operation_context::build_operation_context_attrs">build_<wbr>operation_<wbr>context_<wbr>attrs</a></dt><dd>Build an <code>Attrs</code> carrier populated with the operation-context keys
+an endpoint-send site wants to stamp onto its outgoing request.</dd><dt><a class="fn" href="fn.stamp_operation_context.html" title="fn monarch_hyperactor::operation_context::stamp_operation_context">stamp_<wbr>operation_<wbr>context</a></dt><dd>Stamp the operation-context subset of <code>attrs</code> onto <code>headers</code> using
+the shared marker-driven mechanism. Only entries whose declared
+key carries <code>@meta(OPERATION_CONTEXT_HEADER = true)</code> are written;
+anything else in <code>attrs</code> is silently skipped (OC-2).</dd></dl></section></div></main></body></html>

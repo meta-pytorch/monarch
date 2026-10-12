@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["default_trace_root","execution_dir","get_latest_execution_id","list_executions","merge_to_file","merge_traces_from_dir","trace_dir"],"struct":["Collector"]};
