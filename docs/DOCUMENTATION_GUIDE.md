@@ -279,7 +279,7 @@ Key configuration sections:
 - Theme packages
 - MyST parser for Markdown
 - Sphinx Gallery for examples
-- Build tools and NumPy for the Monarch build used by docs CI
+- Build tools, NumPy, and PyTorch for the Monarch build used by docs CI
 
 **System dependencies**:
 - Rust toolchain (for `cargo doc`)

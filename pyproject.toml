@@ -139,6 +139,10 @@ docs = [
     "setuptools-rust",
     "wheel",
     "numpy>=1.26",
+    # setup.py requires torch at build time; docs CI builds Monarch with
+    # USE_TENSOR_ENGINE=1 via --no-build-isolation, so torch must come from
+    # this locked group (see [build-system] and [tool.uv.sources]).
+    "torch>=2.9.1",
     "sphinx>=7.2.6",
     "pytorch-sphinx-theme2>=0.4.13",
     "sphinxcontrib.katex>=0.9.11",

@@ -2462,6 +2462,9 @@ docs = [
     { name = "sphinxcontrib-katex" },
     { name = "sphinxcontrib-mermaid" },
     { name = "sphinxext-opengraph" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(python_full_version < '3.12' and sys_platform == 'darwin') or (platform_python_implementation != 'PyPy' and sys_platform == 'darwin')" },
+    { name = "torch", version = "2.14.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "python_full_version >= '3.12' and platform_python_implementation == 'PyPy' and sys_platform == 'darwin'" },
+    { name = "torch", version = "2.14.1+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "sys_platform != 'darwin'" },
     { name = "wheel" },
 ]
 test = [
@@ -2529,6 +2532,8 @@ docs = [
     { name = "sphinxcontrib-katex", specifier = ">=0.9.11" },
     { name = "sphinxcontrib-mermaid", specifier = ">=2.1.1" },
     { name = "sphinxext-opengraph", specifier = ">=0.13.0" },
+    { name = "torch", marker = "sys_platform != 'darwin'", specifier = ">=2.9.1", index = "https://download.pytorch.org/whl/cu132" },
+    { name = "torch", marker = "sys_platform == 'darwin'", specifier = ">=2.9.1", index = "https://download.pytorch.org/whl/cpu" },
     { name = "wheel" },
 ]
 test = [
