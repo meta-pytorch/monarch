@@ -30,10 +30,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    #[clap(about = r#"Show the state of a resource"#)]
+    #[clap(about = "Show a host, proc, or actor via the mesh admin server")]
     Show(ShowCommand),
 
-    #[clap(about = r#"List available resources"#)]
+    #[clap(about = "List the children of a mesh admin node")]
     List(ListCommand),
 
     #[clap(about = "Resolve a MAST job handle to a mesh admin URL")]
@@ -53,21 +53,9 @@ async fn main() -> Result<(), anyhow::Error> {
 }
 
 async fn run() -> Result<(), anyhow::Error> {
-    let args = Cli::parse();
-    hyperactor::initialize_with_current_runtime();
-
-    let result = match args.command {
+    match Cli::parse().command {
         Command::Show(command) => command.run().await,
         Command::List(command) => command.run().await,
         Command::Resolve(command) => command.run().await,
-    };
-
-    // Allow the channel layer to flush pending acks before exit.
-    // Without this, the remote host's MailboxClient observes a
-    // broken link (30 s ack timeout) and the resulting undeliverable
-    // message crashes the HostAgent, tearing down the entire
-    // mesh.  The ack interval is 500 ms, so 1 s is sufficient.
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-    result
+    }
 }

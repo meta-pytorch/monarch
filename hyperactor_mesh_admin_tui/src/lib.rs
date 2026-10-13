@@ -93,7 +93,8 @@
 //!
 //! TLS and transport invariants:
 //!
-//! - **TUI-T1 (tls-auto-detect):** `client::build_client` selects the
+//! - **TUI-T1 (tls-auto-detect):** `client::build_client` delegates to
+//!   `hyperactor_mesh::mesh_admin_client::build_client`, which selects the
 //!   transport in priority order: `--plaintext` (force plain HTTP) →
 //!   explicit CLI paths → `try_tls_pem_bundle` → plain HTTP fallback.
 //! - **TUI-T2 (prebuilt-client):** `App::new` receives a pre-built

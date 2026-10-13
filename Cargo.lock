@@ -3339,10 +3339,10 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
- "hyperactor",
  "hyperactor_mesh",
  "serde_json",
  "tokio",
+ "urlencoding",
 ]
 
 [[package]]
