@@ -44,24 +44,21 @@ use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
 use crate::handle::PyHandle;
+use crate::handle::WouldBlockRuntime;
+use crate::pickle::PendingMeshFill;
 use crate::pickle::PendingMessage;
 use crate::proc::PyActorAddr;
-use crate::pytokio::PyPythonTask;
 use crate::runtime::GilSite;
 use crate::runtime::get_tokio_runtime;
+use crate::runtime::is_in_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
+use crate::runtime::signal_safe_block_on;
 use crate::shape::PyRegion;
 use crate::supervision::Supervisable;
 use crate::supervision::SupervisionError;
 
 py_global!(_pickle, "monarch._src.actor.actor_mesh", "_pickle");
-
-py_global!(
-    shared_class,
-    "monarch._rust_bindings.monarch_hyperactor.pytokio",
-    "Shared"
-);
 
 /// Closed actor-mesh selection surface used by public send APIs.
 ///
@@ -302,7 +299,12 @@ impl Clone for ClonePyErr {
 }
 
 type ActorMeshResult = Result<Arc<dyn SupervisableActorMesh>, ClonePyErr>;
-type ActorMeshFut = Shared<Pin<Box<dyn Future<Output = ActorMeshResult> + Send + 'static>>>;
+/// Shared completion of actor-mesh creation.
+///
+/// The mesh and its observers hold clones of the same future, so creation
+/// runs once and each observer receives the same result.
+pub(crate) type ActorMeshFut =
+    Shared<Pin<Box<dyn Future<Output = ActorMeshResult> + Send + 'static>>>;
 
 pub(crate) struct AsyncActorMesh {
     mesh: ActorMeshFut,
@@ -479,24 +481,23 @@ impl ActorMeshProtocol for AsyncActorMesh {
         match fut.peek().cloned() {
             Some(mesh) => mesh?.__reduce__(py),
             None => {
-                let observer = async move { Ok(PythonActorMesh::from_impl(fut.await?)) };
-                // Test-only: consumes a caller-thread probe, if one is armed, and
-                // moves it into the spawned observer. Adds no field, branch,
-                // callback or synchronization point to the production build.
-                #[cfg(test)]
-                let observer = tests::probe_reduction_observer(observer);
-                let shared = PyPythonTask::new(observer)?.spawn_abortable()?;
-                let shared = Py::new(py, shared)?;
-                if crate::pickle::reserve_mesh_reference_if_active(shared.clone_ref(py)) {
+                if crate::pickle::reserve_mesh_reference_if_active(PendingMeshFill::Actor(
+                    fut.clone(),
+                )) {
                     let pop_fn = py
                         .import("monarch._rust_bindings.monarch_hyperactor.pickle")?
                         .getattr("pop_mesh_reference")?;
                     return Ok((pop_fn, PyTuple::empty(py).into_any()));
                 }
-                // Get Shared.block_on as an unbound method
-                let block_on = shared_class(py).getattr("block_on")?;
-                let args = PyTuple::new(py, [shared])?;
-                Ok((block_on, args.into_any()))
+                // Bare pickling must wait before returning bytes; it cannot
+                // hand an unresolved mesh to the eventual unpickler.
+                if is_in_tokio_runtime() {
+                    return Err(WouldBlockRuntime::new_err(
+                        "cannot pickle a pending actor mesh from a Tokio runtime",
+                    ));
+                }
+                let mesh = signal_safe_block_on(py, fut)??;
+                mesh.__reduce__(py)
             }
         }
     }
@@ -949,14 +950,11 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
     use std::sync::atomic::AtomicU8;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use std::sync::mpsc::Receiver;
     use std::sync::mpsc::SyncSender;
-    use std::task::Context;
-    use std::task::Poll;
     use std::time::Duration;
 
     use hyperactor::ActorRef;
@@ -971,9 +969,13 @@ mod tests {
     use hyperactor_mesh::mesh_id::HostMeshId;
     use ndslice::extent;
     use pyo3::PyTypeInfo;
+    use pyo3::types::PyDict;
     use tokio::sync::watch;
 
     use super::*;
+    use crate::actor::MeshRef;
+    use crate::pickle::PendingMessage;
+    use crate::pickle::PicklingState;
 
     /// A mesh id no implementation could return by accident: `instance` draws a
     /// fresh uid, so a hard-coded name cannot match it.
@@ -1133,20 +1135,9 @@ mod tests {
     // No production caller reaches this default today. Normal `PythonActorMesh`
     // construction and reconstruction use `AsyncActorMesh`, which overrides it.
     //
-    // One alternate route exists. When the mesh is still pending, and only on
-    // the non-reserved branch, `AsyncActorMesh::__reduce__` returns
-    // `(Shared.block_on, (shared,))` over an observer that builds a wrapper
-    // directly around the resolved implementation. Ordinary pickle reduces that
-    // value again into an async-wrapped reference, but a caller that invokes
-    // `Shared.block_on` itself can retain the bare wrapper and make
-    // `PythonActorMesh::initialized` dispatch here. Under active Monarch
-    // pickling the callable is `pop_mesh_reference` instead, which reconstructs
-    // async-wrapped, so that branch cannot expose the wrapper at all.
-    //
-    // The route is source-grounded rather than exercised below, and it does not
-    // depend on which arm resolved: neither `PythonActorMeshImpl` nor
-    // `ActorMeshRef` overrides `initialized`. Both inheriting implementors are
-    // exercised directly because no production caller was found.
+    // Neither `PythonActorMeshImpl` nor `ActorMeshRef` overrides `initialized`.
+    // Both inheriting implementors are exercised directly because no
+    // production caller was found.
     #[test]
     fn default_initialized_wrappers_return_none_and_leave_mesh_usable() {
         pyo3::Python::initialize();
@@ -1193,105 +1184,6 @@ mod tests {
     /// round trip; `py_identity` could not, since its declared module is not
     /// installed in a Rust unit binary.
     const CONTROLLED_MARKER: &str = "controlled-actor-mesh-reconstructed";
-
-    /// Signals for one reduction observer: the future built inside
-    /// `AsyncActorMesh::__reduce__`.
-    struct ReductionProbe {
-        entered: SyncSender<()>,
-        dropped: SyncSender<()>,
-    }
-
-    thread_local! {
-        /// Armed by a test immediately before it calls `__reduce__`, and
-        /// consumed there. Caller-thread scoped: a process-global slot would be
-        /// unusable in a binary that runs tests in parallel.
-        static REDUCTION_PROBE: RefCell<Option<ReductionProbe>> = const { RefCell::new(None) };
-    }
-
-    /// Restores the previous probe when dropped, so a run that takes the ready
-    /// branch -- or fails before `__reduce__` -- cannot leak an armed probe into
-    /// the next test on this thread. Serial test mode puts every test on the
-    /// main thread, so the leak is reachable without the guard.
-    struct ArmedProbe {
-        previous: Option<ReductionProbe>,
-    }
-
-    impl Drop for ArmedProbe {
-        fn drop(&mut self) {
-            let previous = self.previous.take();
-            REDUCTION_PROBE.with(|slot| *slot.borrow_mut() = previous);
-        }
-    }
-
-    #[must_use]
-    fn arm_reduction_probe(probe: ReductionProbe) -> ArmedProbe {
-        let previous = REDUCTION_PROBE.with(|slot| slot.borrow_mut().replace(probe));
-        ArmedProbe { previous }
-    }
-
-    /// Wraps the reduction observer, reporting its first poll and its
-    /// destruction. With no probe armed it is a transparent pass-through.
-    pub(super) struct ProbedObserver {
-        inner: Option<Pin<Box<dyn Future<Output = PyResult<PythonActorMesh>> + Send>>>,
-        probe: Option<ReductionProbe>,
-        entered: bool,
-        completed: bool,
-    }
-
-    pub(super) fn probe_reduction_observer<F>(inner: F) -> ProbedObserver
-    where
-        F: Future<Output = PyResult<PythonActorMesh>> + Send + 'static,
-    {
-        ProbedObserver {
-            inner: Some(Box::pin(inner)),
-            probe: REDUCTION_PROBE.with(|slot| slot.borrow_mut().take()),
-            entered: false,
-            completed: false,
-        }
-    }
-
-    impl Future for ProbedObserver {
-        type Output = PyResult<PythonActorMesh>;
-
-        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            let this = self.get_mut();
-            let polled = match this.inner.as_mut() {
-                Some(inner) => inner.as_mut().poll(cx),
-                None => Poll::Pending,
-            };
-            if polled.is_ready() {
-                this.completed = true;
-            }
-            // Signalled after the inner poll returns, so the entry signal
-            // witnesses an actual poll of the observer rather than mere entry
-            // into this wrapper.
-            if !this.entered {
-                this.entered = true;
-                if let Some(probe) = &this.probe {
-                    let _ = probe.entered.try_send(());
-                }
-            }
-            polled
-        }
-    }
-
-    impl Drop for ProbedObserver {
-        fn drop(&mut self) {
-            // Destroy the wrapped future -- and with it the `Shared` clone it
-            // captured -- before acknowledging. `Drop::drop` runs ahead of field
-            // destruction, so signalling here without the explicit take would
-            // leave open the cancellation race this probe exists to close.
-            drop(self.inner.take());
-            // Only a destruction while still pending is cancellation. Firing on
-            // normal completion too would let an observer that simply finished
-            // satisfy an assertion about abandonment.
-            if let Some(probe) = self.probe.take()
-                && !self.completed
-            {
-                let _ = probe.dropped.try_send(());
-            }
-        }
-    }
 
     /// Release gate for a controlled root initialization.
     struct Gate {
@@ -1423,9 +1315,8 @@ mod tests {
             &self,
             py: Python<'py>,
         ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-            // Reached by the bare-pickle test: `reduce_shared` resolves the
-            // observer to a `PythonActorMesh` over this implementation and
-            // pickle then recurses into it. Deliberately not production's
+            // Reached by the bare-pickle test after the native blocking wait
+            // resolves to this implementation. Deliberately not production's
             // `self.mesh_ref().__reduce__(py)`, which would need a managed ref
             // and exercise bincode to no purpose here.
             let ctor = py.get_type::<pyo3::types::PyString>().into_any();
@@ -1685,28 +1576,21 @@ mod tests {
     // Ordinary bare pickle of a pending mesh blocks until initialization
     // resolves.
     //
-    // The release is driven by an acknowledgement emitted inside
-    // `PyShared::block_on` once it has committed to blocking, not by the
-    // controlled future's first poll: `__reduce__` calls `spawn_abortable()`
-    // before returning, so that first poll happens while pickle is still on the
-    // outer reducer, and releasing there would let the producer resolve in time
-    // for `reduce_shared`'s ready fast path -- passing this test without ever
-    // blocking.
+    // Nothing polls the controlled root before the reducer commits to its
+    // blocking wait, so the root's first poll is the helper thread's signal to
+    // release creation. Returning the pickle before that release fails.
     //
-    // A plain `#[test]`: `PyShared::block_on` enters `signal_safe_block_on` for
+    // A plain `#[test]`: the reducer enters `signal_safe_block_on` for
     // a pending value, and calling that from inside a Tokio runtime
     // characterizes nested-runtime failure instead of bare-pickle behavior.
     #[test]
     fn pending_bare_actor_mesh_pickle_waits_for_release() {
         pyo3::Python::initialize();
-        monarch_with_gil_blocking(GilSite::Test, |py| {
-            PyPythonTask::install_test_module(py).expect("the pytokio module should install")
-        });
 
         let (entered_tx, entered_rx) = signal();
         let (gate, release) = Gate::new(entered_tx);
         let (queue, driver) = test_queue();
-        // No init item is pushed: the reduction observer is the only driver.
+        // No init item is pushed: the reducer's blocking wait is the only driver.
         let mesh = AsyncActorMesh::new(
             queue,
             true,
@@ -1721,16 +1605,14 @@ mod tests {
         // A CAS rather than a sampled flag: exactly one of "release was
         // permitted" and "dumps returned" claims the phase, so a return racing
         // the read cannot satisfy the assertion below. This guards that `dumps`
-        // did not return before release permission; it does not show where the
-        // acknowledgement hook sits. That the hook fires after `block_on`'s own
-        // pending poll and before `signal_safe_block_on` is source-grounded,
-        // not established here.
+        // did not return before release permission. That the root's first poll
+        // happens inside `signal_safe_block_on` is source-grounded, not
+        // established here.
         let phase = Arc::new(AtomicU8::new(PHASE_RUNNING));
-        let (ack_tx, ack_rx) = signal();
         let helper_gate = gate.clone();
         let helper_phase = phase.clone();
         let helper = std::thread::spawn(move || {
-            let acknowledged = ack_rx.recv_timeout(WAIT).is_ok();
+            let acknowledged = entered_rx.recv_timeout(WAIT).is_ok();
             let release_won = helper_phase
                 .compare_exchange(
                     PHASE_RUNNING,
@@ -1746,7 +1628,6 @@ mod tests {
         });
 
         let blob = monarch_with_gil_blocking(GilSite::Test, |py| {
-            let _routing = PyPythonTask::route_pending_block_on(ack_tx);
             let pickle = py.import("pickle").expect("pickle should import");
             let blob = pickle
                 .call_method1("dumps", (mesh.clone_ref(py),))
@@ -1783,12 +1664,8 @@ mod tests {
         let joined = teardown.join();
 
         assert!(
-            awaited(&entered_rx),
-            "the controlled root must have been polled by the reduction observer"
-        );
-        assert!(
             acknowledged,
-            "pickling must reach the pending branch of PyShared::block_on"
+            "the reducer's blocking wait must poll the controlled root"
         );
         assert!(
             release_won,
@@ -1796,7 +1673,7 @@ mod tests {
         );
         assert_eq!(
             restored, CONTROLLED_MARKER,
-            "the recursive controlled reducer must have run after the blocking branch"
+            "the resolved controlled reducer must have run after the blocking branch"
         );
         assert!(
             joined,
@@ -1804,32 +1681,160 @@ mod tests {
         );
     }
 
-    /// Call the pending reducer and prove the pending branch exactly: the real
-    /// `Shared.block_on` descriptor plus exactly one real `Shared` argument.
-    fn pending_reduce(py: Python<'_>, mesh: &dyn ActorMeshProtocol) -> Py<PyAny> {
-        let (callable, args) = mesh.__reduce__(py).expect("__reduce__ should succeed");
-        let expected = shared_class(py)
-            .getattr("block_on")
-            .expect("Shared.block_on should resolve");
+    /// Install the real pickle bindings in the native test binary without
+    /// replacing any modules an earlier test installed.
+    fn install_pickle_test_module(py: Python<'_>) -> PyResult<()> {
+        let modules = py
+            .import("sys")?
+            .getattr("modules")?
+            .cast_into::<PyDict>()?;
+        let mut path = String::new();
+        let mut parent: Option<Bound<'_, PyModule>> = None;
+        for part in "monarch._rust_bindings.monarch_hyperactor.pickle".split('.') {
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(part);
+            let module = match modules.get_item(&path)? {
+                Some(existing) => existing.cast_into::<PyModule>()?,
+                None => {
+                    let module = PyModule::new(py, &path)?;
+                    modules.set_item(&path, &module)?;
+                    module
+                }
+            };
+            if let Some(parent) = &parent
+                && parent.getattr(part).is_err()
+            {
+                parent.setattr(part, &module)?;
+            }
+            parent = Some(module);
+        }
+        let module = parent.expect("the module path has components");
+        if module.getattr("pop_mesh_reference").is_err() {
+            crate::pickle::register_python_bindings(&module)?;
+        }
+        Ok(())
+    }
+
+    /// Reserve through the real pending reducer and retain its fill for a
+    /// directly driven resolve. The tuple must contain the slot-pop sentinel,
+    /// with no pytokio observer hidden in its arguments.
+    fn pending_reduce(py: Python<'_>, mesh: &dyn ActorMeshProtocol) -> PicklingState {
+        install_pickle_test_module(py).expect("the pickle bindings should install");
+        let (state, (callable, args)) = PicklingState::collect_mesh_references_for_test(|| {
+            mesh.__reduce__(py).expect("__reduce__ should succeed")
+        });
+        let expected = py
+            .import("monarch._rust_bindings.monarch_hyperactor.pickle")
+            .expect("the pickle module should import")
+            .getattr("pop_mesh_reference")
+            .expect("the slot-pop sentinel should resolve");
         assert!(
             callable.is(&expected),
-            "a pending mesh must reduce through the real Shared.block_on descriptor"
+            "a reserved pending mesh must reduce through the real slot-pop sentinel"
         );
         let args = args
             .cast_into::<PyTuple>()
             .expect("the reducer arguments should be a tuple");
-        assert_eq!(args.len(), 1, "exactly one observer argument is expected");
-        let observer = args.get_item(0).expect("the tuple has one item");
-        assert!(
-            observer
-                .is_instance(&shared_class(py))
-                .expect("instance check should succeed"),
-            "the reducer argument must be a real Shared"
-        );
-        args.into_any().unbind()
+        assert!(args.is_empty(), "a slot pop takes no observer argument");
+        state
     }
 
-    // Dropping a transient reduction observer does not cancel initialization.
+    // Refusal must happen before the blocking helper or any poll of creation,
+    // rather than panic inside a nested Runtime::block_on.
+    #[tokio::test]
+    async fn pending_bare_actor_mesh_pickle_refuses_on_tokio_before_polling() {
+        pyo3::Python::initialize();
+        let (mesh, _gate, entered, mut teardown) =
+            controlled_fixture(ControlledOps::default(), &[]);
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let error = mesh
+                .__reduce__(py)
+                .expect_err("pending bare pickle must refuse on Tokio");
+            assert!(error.is_instance_of::<WouldBlockRuntime>(py));
+        });
+        let undriven = matches!(
+            entered.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        drop(mesh);
+        let joined = teardown.join_async().await;
+        assert!(undriven, "refusal must not poll the mesh creation future");
+        assert!(joined, "the unused queue driver must exit");
+    }
+
+    // The first creation cannot finish until the second is polled. A serial
+    // fill driver would time out, not merely return a different slot order.
+    #[tokio::test]
+    async fn reserved_actor_fills_are_polled_concurrently_and_keep_their_slots() {
+        pyo3::Python::initialize();
+        let first_ref = managed_mesh_ref(&fixture_mesh_id());
+        let second_ref = data_mesh_ref(&fixture_mesh_id());
+        let (release, waiting) = tokio::sync::oneshot::channel();
+        let first_result = first_ref.clone();
+        let second_result = second_ref.clone();
+        let (queue, driver) = test_queue();
+        let (unused_entered, _) = signal();
+        let (gate, _) = Gate::new(unused_entered);
+        let mut teardown = Teardown::new(gate, driver);
+        let first = AsyncActorMesh::new(
+            queue.clone(),
+            true,
+            async move {
+                waiting
+                    .await
+                    .expect("the second fill must release the first");
+                Ok::<Arc<dyn SupervisableActorMesh>, ClonePyErr>(Arc::new(
+                    PythonActorMeshImpl::new_ref(first_result),
+                ))
+            }
+            .boxed()
+            .shared(),
+        );
+        let second = AsyncActorMesh::new(
+            queue,
+            true,
+            async move {
+                release.send(()).expect("the first fill is still waiting");
+                Ok::<Arc<dyn SupervisableActorMesh>, ClonePyErr>(Arc::new(
+                    PythonActorMeshImpl::new_ref(second_result),
+                ))
+            }
+            .boxed()
+            .shared(),
+        );
+        let state = monarch_with_gil_blocking(GilSite::Test, |py| {
+            install_pickle_test_module(py).expect("the pickle bindings should install");
+            PicklingState::collect_mesh_references_for_test(|| {
+                first
+                    .__reduce__(py)
+                    .expect("the first mesh should reserve a slot");
+                second
+                    .__reduce__(py)
+                    .expect("the second mesh should reserve a slot");
+            })
+            .0
+        });
+        let message = PendingMessage::new(PythonMessageKind::Result { rank: None }, state);
+        let resolved = tokio::time::timeout(WAIT, message.resolve()).await;
+        drop(first);
+        drop(second);
+        let joined = teardown.join_async().await;
+        let resolved = resolved
+            .expect("both fills must be polled concurrently")
+            .expect("both actor fills should resolve");
+        assert_eq!(
+            resolved.refs,
+            vec![
+                MeshRef::Actor(Box::new(first_ref)),
+                MeshRef::Actor(Box::new(second_ref)),
+            ]
+        );
+        assert!(joined, "the queue driver must exit");
+    }
+
+    // Dropping a pending fill's resolution does not cancel initialization.
     // The root keeps its own queued initializer, so
     // it completes on its own and stays usable.
     //
@@ -1840,9 +1845,6 @@ mod tests {
     #[test]
     fn dropped_root_observers_do_not_cancel_initialization() {
         pyo3::Python::initialize();
-        monarch_with_gil_blocking(GilSite::Test, |py| {
-            PyPythonTask::install_test_module(py).expect("the pytokio module should install")
-        });
 
         let (entered_tx, _entered_rx) = signal();
         let (gate, release) = Gate::new(entered_tx);
@@ -1870,21 +1872,15 @@ mod tests {
             let _ = completed_tx.try_send(());
         });
 
-        let (probe_entered_tx, probe_entered_rx) = signal();
-        let (probe_dropped_tx, probe_dropped_rx) = signal();
-        let _probe = arm_reduction_probe(ReductionProbe {
-            entered: probe_entered_tx,
-            dropped: probe_dropped_tx,
-        });
-        let tuple = monarch_with_gil_blocking(GilSite::Test, |py| pending_reduce(py, &mesh));
-
-        let observed = awaited(&probe_entered_rx);
-        // Dropped with the GIL held. Releasing a `Py<_>` without it only queues
-        // the decref, so the tuple's `Shared` would not be freed, its
-        // abort-on-drop would not fire, and the acknowledgement below would wait
-        // on a future that is still alive.
-        monarch_with_gil_blocking(GilSite::Test, move |_py| drop(tuple));
-        let acknowledged = awaited(&probe_dropped_rx);
+        let state = monarch_with_gil_blocking(GilSite::Test, |py| pending_reduce(py, &mesh));
+        let mut resolve = Box::pin(state.resolve());
+        // The first poll of `resolve` polls every fill, so a pending result
+        // means the actor fill has started waiting on creation.
+        let pending = get_tokio_runtime()
+            .block_on(async { futures::poll!(&mut resolve) })
+            .is_pending();
+        // Destroys the actor fill here, before the creation gate opens.
+        drop(resolve);
 
         gate.open();
         let completed = awaited(&completed_rx);
@@ -1899,14 +1895,7 @@ mod tests {
         drop(mesh);
         let joined = teardown.join();
 
-        assert!(
-            observed,
-            "the reduction observer must be polled before it is dropped"
-        );
-        assert!(
-            acknowledged,
-            "the reduction observer must be destroyed while still pending"
-        );
+        assert!(pending, "resolution must still be pending when dropped");
         assert!(
             completed,
             "the queue-held root initializer must complete on its own after release"
@@ -1939,9 +1928,6 @@ mod tests {
     #[test]
     fn dropped_slice_observers_leave_the_slice_reobservable() {
         pyo3::Python::initialize();
-        monarch_with_gil_blocking(GilSite::Test, |py| {
-            PyPythonTask::install_test_module(py).expect("the pytokio module should install")
-        });
 
         let slices = Arc::new(AtomicUsize::new(0));
         let (entered_tx, _entered_rx) = signal();
@@ -1980,18 +1966,13 @@ mod tests {
             .new_with_region(&region)
             .expect("slicing a pending mesh should succeed");
 
-        let (probe_entered_tx, probe_entered_rx) = signal();
-        let (probe_dropped_tx, probe_dropped_rx) = signal();
-        let _probe = arm_reduction_probe(ReductionProbe {
-            entered: probe_entered_tx,
-            dropped: probe_dropped_tx,
-        });
-        let tuple =
+        let state =
             monarch_with_gil_blocking(GilSite::Test, |py| pending_reduce(py, slice.as_ref()));
-
-        let observed = awaited(&probe_entered_rx);
-        monarch_with_gil_blocking(GilSite::Test, move |_py| drop(tuple));
-        let acknowledged = awaited(&probe_dropped_rx);
+        let mut resolve = Box::pin(state.resolve());
+        let pending = get_tokio_runtime()
+            .block_on(async { futures::poll!(&mut resolve) })
+            .is_pending();
+        drop(resolve);
 
         gate.open();
         let completed = awaited(&completed_rx);
@@ -2006,12 +1987,8 @@ mod tests {
         let joined = teardown.join();
 
         assert!(
-            observed,
-            "the slice reduction observer must be polled before it is dropped"
-        );
-        assert!(
-            acknowledged,
-            "the slice reduction observer must be destroyed while still pending"
+            pending,
+            "slice resolution must still be pending when dropped"
         );
         assert!(completed, "the root must complete on its own after release");
         assert_eq!(

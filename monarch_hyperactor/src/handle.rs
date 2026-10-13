@@ -43,11 +43,9 @@
 //!   Enforced by construction: no read path moves the value.
 //! - **HDL-4 (drop does not cancel; drop never panics).** Dropping a `Handle`
 //!   never cancels its producer; a `Handle` observes, it does not own the
-//!   producer's lifecycle. Enforced by construction: a `Handle`'s core has
-//!   `abort_on_drop: None`, and `HandleCore::Drop` aborts only when
-//!   `abort_on_drop` is set. The abort is wrapped in `catch_unwind`, so an
-//!   `abort()` that panics at interpreter shutdown (the Tokio runtime already
-//!   gone) cannot escape `Drop` and abort the process.
+//!   producer's lifecycle. Enforced by construction: the core holds only a
+//!   result receiver and optional traceback, with no producer task handle or
+//!   abort-on-drop implementation.
 //! - **HDL-5 (GIL discipline).** No Python object is touched without the GIL,
 //!   and every acquisition goes through `monarch_with_gil{,_blocking}`. Enforced
 //!   by the crate's `#![deny(clippy::disallowed_methods)]` ban on raw
@@ -124,7 +122,8 @@
 //!   `PyPythonTask`: it spawns one producer that converts the terminal value to
 //!   `Py<PyAny>` under `monarch_with_gil` and publishes it once through the shared
 //!   `send_result` helper (same one-shot core and unobserved-error policy as
-//!   pytokio's producers, HDL-1/HDL-2), with `abort_on_drop: None` (HDL-4).
+//!   pytokio's producers, HDL-1/HDL-2). Dropping the result receiver does not
+//!   cancel the producer (HDL-4).
 //!   [`PyHandle::wait_completion`] is the matching observer: it projects the
 //!   terminal value to `PyResult<()>`, touching neither the GIL nor the Python
 //!   value on the ready-success fast path (a discriminant-only read, HDL-3) and
@@ -215,7 +214,6 @@ use pyo3::types::PyCFunction;
 use pyo3::types::PyString;
 use pyo3::types::PyType;
 use tokio::sync::watch;
-use tokio::task::AbortHandle;
 
 use crate::handle_wake::LoopWake;
 use crate::runtime::GilSite;
@@ -309,12 +307,6 @@ pub(crate) struct HandleCore {
     /// One-shot result channel. `None` until the producer completes.
     rx: watch::Receiver<Option<PyResult<Py<PyAny>>>>,
 
-    /// When `Some`, dropping the core aborts the producing Tokio task through
-    /// this handle; `None` leaves the producer running (a detached producer, or
-    /// a core built from a ready value). The task's result is observed only via
-    /// `rx`, so only the `AbortHandle` is kept, never the `JoinHandle`.
-    abort_on_drop: Option<AbortHandle>,
-
     /// Optional creation-site traceback, used when logging un-awaited errors.
     traceback: Option<Py<PyAny>>,
 }
@@ -323,14 +315,9 @@ impl HandleCore {
     /// Construct a core from its parts.
     pub(crate) fn new(
         rx: watch::Receiver<Option<PyResult<Py<PyAny>>>>,
-        abort_on_drop: Option<AbortHandle>,
         traceback: Option<Py<PyAny>>,
     ) -> Self {
-        Self {
-            rx,
-            abort_on_drop,
-            traceback,
-        }
+        Self { rx, traceback }
     }
 
     /// Construct a core that is already resolved with `value`.
@@ -342,7 +329,6 @@ impl HandleCore {
         tx.send(Some(Ok(value))).map_err(to_py_error)?;
         Ok(Self {
             rx,
-            abort_on_drop: None,
             traceback: None,
         })
     }
@@ -453,25 +439,6 @@ impl HandleCore {
     }
 }
 
-/// Abort the producing Tokio task on drop when `abort_on_drop` is set.
-///
-/// This stops abandoned background work when no observers remain, guarded against
-/// panics during interpreter shutdown when the Tokio runtime may already be gone.
-/// A `Handle`'s core has `abort_on_drop: None` (HDL-4), so this aborts only for
-/// pytokio's `spawn_abortable`, never for a `Handle`.
-impl Drop for HandleCore {
-    fn drop(&mut self) {
-        if let Some(abort_handle) = self.abort_on_drop.as_ref() {
-            // HDL-4: catch_unwind so an abort() that panics at interpreter
-            // shutdown (the runtime already gone) cannot escape Drop and abort
-            // the process.
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                abort_handle.abort();
-            }));
-        }
-    }
-}
-
 /// Private one-shot producer paired with a Python-visible `Handle`.
 ///
 /// The class has no Python constructor. `_new_handle_pair()` creates it with
@@ -537,7 +504,7 @@ pub struct PyHandle {
 fn _new_handle_pair() -> (PyHandle, PyHandleCompleter) {
     let (tx, rx) = watch::channel(None);
     (
-        PyHandle::from_core(HandleCore::new(rx, None, None)),
+        PyHandle::from_core(HandleCore::new(rx, None)),
         PyHandleCompleter { tx: Some(tx) },
     )
 }
@@ -560,6 +527,24 @@ pub(crate) fn handle_pair() -> (PyHandle, PyHandleCompleter) {
 }
 
 impl PyHandle {
+    /// Return an owned Rust Handle observing the same completion as this one.
+    ///
+    /// Pending mesh serialization uses this to retain an observer after the
+    /// binding call returns, when its borrow of the original Handle has ended.
+    ///
+    /// Clone the channel receiver and, if present, the reference to the Python
+    /// traceback object. Cloning that Python reference requires the GIL.
+    /// No Python Handle object is allocated and no producer is started.
+    pub(crate) fn clone_ref(&self, py: Python<'_>) -> Self {
+        Self::from_core(HandleCore::new(
+            self.core.rx.clone(),
+            self.core
+                .traceback
+                .as_ref()
+                .map(|trace| trace.clone_ref(py)),
+        ))
+    }
+
     /// Wrap an already-built `HandleCore` in a `PyHandle`.
     ///
     /// Native producers build the core and hand back an observe-only `Handle`
@@ -605,8 +590,8 @@ impl PyHandle {
     /// `Handle` observes already-running work rather than starting it lazily on
     /// first observation. On completion the terminal `PyResult<T>` is converted
     /// to `Py<PyAny>` under `monarch_with_gil` and published exactly once through
-    /// the shared `send_result` helper (HDL-1/HDL-2). The core carries
-    /// `abort_on_drop: None`, so dropping the `Handle` never cancels the producer
+    /// the shared `send_result` helper (HDL-1/HDL-2). The core keeps no producer
+    /// task handle, so dropping the `Handle` never cancels the producer
     /// (HDL-4). Rust-only and outside `#[pymethods]`, so Python still cannot mint
     /// a core (HDL-11).
     pub fn spawn<F, T>(fut: F) -> Self
@@ -628,7 +613,7 @@ impl PyHandle {
             send_result(tx, result, None);
         });
         // HDL-4: a `Handle`'s core never aborts its producer on drop.
-        PyHandle::from_core(HandleCore::new(rx, None, None))
+        PyHandle::from_core(HandleCore::new(rx, None))
     }
 
     /// Observe whether this handle completed successfully, projecting the terminal
@@ -691,6 +676,43 @@ where
 {
     ready.await?;
     operation().await
+}
+
+/// Return a new Handle that reports `result`'s value after all prerequisites
+/// succeed. Proc initialization uses this to wait for logging and setup before
+/// making the proc mesh available.
+///
+/// Await the Handles in `ready` in list order. If one fails, observing the
+/// returned Handle raises that error without waiting for later prerequisites
+/// or `result`. Otherwise, report `result`'s value or error.
+///
+/// The input operations may already be running: this orders observation, not
+/// their start. The new waiting task starts immediately; dropping its Handle
+/// does not cancel it or the input operations.
+#[pyfunction]
+fn _after(ready: Vec<PyRef<'_, PyHandle>>, result: &PyHandle) -> PyHandle {
+    // Capture owned observer futures so the task retains no Python borrows.
+    // Prerequisites need only succeed; their values are not read.
+    let ready: Vec<_> = ready
+        .iter()
+        .map(|handle| handle.wait_completion())
+        .collect();
+    // Retain an observer of the value to return after the prerequisites succeed.
+    let result = result.wait_future();
+    // Run the waits on Tokio. `after_ready` observes `result` only if this
+    // prerequisite future completes successfully.
+    PyHandle::spawn(after_ready(
+        async move {
+            for completion in ready {
+                // An error ends this future here and becomes the new Handle's
+                // error, even if `result` has already failed differently.
+                completion.await?;
+            }
+            Ok(())
+        },
+        // Give `after_ready` the result observer when it reaches that step.
+        move || result,
+    ))
 }
 
 #[cfg(test)]
@@ -1053,6 +1075,7 @@ pub fn register_python_bindings(handle_mod: &Bound<'_, PyModule>) -> PyResult<()
     handle_mod.add_class::<PyHandle>()?;
     handle_mod.add_class::<PyHandleCompleter>()?;
     handle_mod.add_function(wrap_pyfunction!(_new_handle_pair, handle_mod)?)?;
+    handle_mod.add_function(wrap_pyfunction!(_after, handle_mod)?)?;
     let would_block = handle_mod.py().get_type::<WouldBlockRuntime>();
     would_block.setattr(
         "__module__",
@@ -1082,7 +1105,7 @@ mod tests {
     fn pending_handle() -> (watch::Sender<Option<PyResult<Py<PyAny>>>>, PyHandle) {
         let (tx, rx) = watch::channel(None);
         let handle = PyHandle {
-            core: HandleCore::new(rx, None, None),
+            core: HandleCore::new(rx, None),
         };
         (tx, handle)
     }
@@ -1277,7 +1300,7 @@ def ready_await_order(h):
     fn poll_transitions_pending_to_ready() {
         ensure_python();
         let (tx, rx) = watch::channel(None);
-        let core = HandleCore::new(rx, None, None);
+        let core = HandleCore::new(rx, None);
         assert!(
             core.poll().unwrap().is_none(),
             "poll() should be None while pending"
@@ -1319,7 +1342,7 @@ def ready_await_order(h):
     fn multiple_observers_resolve() {
         ensure_python();
         let (tx, rx) = watch::channel(None);
-        let core = HandleCore::new(rx, None, None);
+        let core = HandleCore::new(rx, None);
         let f1 = core.wait_future();
         let f2 = core.wait_future();
         let value = monarch_with_gil_blocking(GilSite::Test, |py| 3i64.into_py_any(py).unwrap());
@@ -1645,7 +1668,7 @@ def ready_await_order(h):
         let (tx, rx) = watch::channel(None);
         tx.send(Some(Err(err))).unwrap();
         PyHandle {
-            core: HandleCore::new(rx, None, None),
+            core: HandleCore::new(rx, None),
         }
     }
 
@@ -2253,36 +2276,6 @@ class MyStop(StopIteration):
         });
     }
 
-    // Dropping a core aborts its producing task only when `abort_on_drop` is set:
-    // spawn_abortable's core aborts abandoned work, while a Handle's core
-    // (abort_on_drop = None, HDL-4) leaves the producer running.
-    // Attests HDL-4.
-    #[test]
-    fn drop_aborts_producer_only_when_abort_set() {
-        use std::sync::Arc;
-        use std::sync::atomic::AtomicBool;
-        use std::sync::atomic::Ordering;
-        use std::time::Duration;
-
-        for (abort, expect_completed) in [(true, false), (false, true)] {
-            let completed = Arc::new(AtomicBool::new(false));
-            let completed_in_task = Arc::clone(&completed);
-            let (_tx, rx) = watch::channel::<Option<PyResult<Py<PyAny>>>>(None);
-            let jh = get_tokio_runtime().spawn(async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                completed_in_task.store(true, Ordering::SeqCst);
-            });
-            let core = HandleCore::new(rx, abort.then(|| jh.abort_handle()), None);
-            drop(core);
-            std::thread::sleep(Duration::from_millis(250));
-            assert_eq!(
-                completed.load(Ordering::SeqCst),
-                expect_completed,
-                "abort={abort}: producer completion after drop should be {expect_completed}"
-            );
-        }
-    }
-
     // Neither side of the private completion pair can be constructed directly
     // from Python -- both pyclasses have no #[new].
     // Attests HDL-11.
@@ -2458,7 +2451,7 @@ class MyStop(StopIteration):
     }
 
     // Dropping the returned Handle before the producer completes does not cancel
-    // it (HDL-4: a spawn()-produced core has abort_on_drop = None).
+    // it (HDL-4: the core has no producer task handle to abort).
     // Attests HDL-4, HDL-13.
     #[test]
     fn rust_spawn_survives_handle_drop() {

@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
-
 from traceback import FrameSummary
 from typing import List, NamedTuple, Sequence, Tuple, Union
 
@@ -17,7 +15,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.shape import Slice as NDSlice
 
 class _Controller:
-    def __new__(self, proc_mesh: ProcMesh) -> None: ...
+    def __new__(cls, client: Instance, proc_mesh: ProcMesh) -> _Controller: ...
     def _node(
         self,
         instance: Instance,

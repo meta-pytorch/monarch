@@ -4,10 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
 import asyncio
-from typing import Any, Generator, Generic, Optional, TypeVar
+from typing import Any, Generator, Generic, Optional, Sequence, TypeVar
 
 T = TypeVar("T")
 
@@ -64,6 +62,10 @@ class Handle(Generic[T]):
 
 def _new_handle_pair() -> tuple[Handle[T], _HandleCompleter[T]]:
     """Create a pending ``Handle`` and its sole completion endpoint."""
+    ...
+
+def _after(ready: Sequence[Handle[Any]], result: Handle[T]) -> Handle[T]:
+    """Observe result after the prerequisites succeed, in their given order."""
     ...
 
 class WouldBlockRuntime(RuntimeError):

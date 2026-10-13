@@ -43,6 +43,7 @@ use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::transport::default_bind_spec;
 use hyperactor_telemetry::hash_to_u64;
 use ndslice::View;
+use ndslice::view::Extent;
 use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
@@ -58,12 +59,10 @@ use crate::context::PyInstance;
 use crate::context::stop_instance_and_wait;
 use crate::handle::PyHandle;
 use crate::proc_mesh::PyProcMesh;
-use crate::pytokio::PyPythonTask;
 use crate::runtime::GilSite;
 use crate::runtime::monarch_with_gil;
-use crate::runtime::monarch_with_gil_blocking;
+use crate::runtime::signal_safe_block_on;
 use crate::shape::PyExtent;
-use crate::shape::PyPoint;
 use crate::shape::PyRegion;
 
 /// The command used to start a proc.
@@ -168,6 +167,15 @@ impl PyBootstrapCommand {
     }
 }
 
+/// A uniform launch command or a list of commands, one per proc.
+#[derive(FromPyObject)]
+enum BootstrapCommands {
+    /// Use the same command for every proc in this spawn.
+    Uniform(PyBootstrapCommand),
+    /// Commands in rank order over the combined host and per-host extent.
+    PerRank(Vec<PyBootstrapCommand>),
+}
+
 impl PyBootstrapCommand {
     pub fn to_rust(&self) -> BootstrapCommand {
         BootstrapCommand {
@@ -218,47 +226,121 @@ impl PyHostMesh {
             PyHostMesh::Ref(inner) => Ok(inner.0.clone()),
         }
     }
+
+    /// Set the launch command used by later proc spawns on this host mesh.
+    ///
+    /// For an owned mesh, update it in place and return a value sharing that mesh.
+    /// For a mesh reference, return a new reference with the command override;
+    /// leave the original reference unchanged. Existing procs are unaffected.
+    fn with_bootstrap_command(&self, command: BootstrapCommand) -> PyResult<Self> {
+        match self {
+            PyHostMesh::Owned(inner) => {
+                // Change the launch command on the shared owned mesh.
+                inner
+                    .0
+                    .try_with_mut(|mesh| mesh.set_bootstrap(command))
+                    .map_err(|e| PyException::new_err(e.to_string()))?;
+
+                // Return another wrapper sharing ownership of that same mesh.
+                Ok(Self::Owned(inner.clone()))
+            }
+            PyHostMesh::Ref(_) => {
+                // Clone the reference and replace its launch command.
+                // The hosts are unchanged, and the original reference keeps its command.
+                let mesh_ref = self.mesh_ref()?.with_bootstrap(command);
+                Ok(Self::new_ref(mesh_ref))
+            }
+        }
+    }
 }
 
 #[pymethods]
 impl PyHostMesh {
-    #[pyo3(signature = (instance, name, per_host, proc_bind = None, per_rank_bootstrap = None))]
+    /// Spawn a proc mesh on the supplied host mesh without blocking the caller.
+    /// Return a Handle that resolves to the resulting `PyProcMesh`.
+    ///
+    /// The producer waits for `host_mesh` to supply a `PyHostMesh`, then spawns
+    /// the procs specified by `per_host` on each host. The caller's actor instance
+    /// and launch commands are captured here; Rust does not call Python to obtain
+    /// them later.
+    ///
+    /// Completion covers native proc creation. The Python caller arranges logging
+    /// installation and setup separately.
+    #[staticmethod]
+    #[pyo3(signature = (host_mesh, instance, name, per_host, proc_bind = None, per_rank_bootstrap = None))]
     fn spawn_nonblocking(
-        &self,
-        _py: Python<'_>,
+        host_mesh: &PyHandle,
         instance: &PyInstance,
         name: String,
         per_host: &PyExtent,
         proc_bind: Option<Vec<HashMap<String, String>>>,
-        per_rank_bootstrap: Option<Py<PyAny>>,
-    ) -> PyResult<PyPythonTask> {
-        let host_mesh = self.mesh_ref()?.clone();
-        let per_rank_bootstrap: Option<Box<PerRankBootstrapFn>> = per_rank_bootstrap
-            .map(|callable| -> PyResult<Box<PerRankBootstrapFn>> {
-                Ok(Box::new(move |point| {
-                    monarch_with_gil_blocking(GilSite::Bootstrap, |py| {
-                        let result =
-                            callable
-                                .bind(py)
-                                .call1((PyPoint::from(point),))
-                                .map_err(|e| {
-                                    anyhow::anyhow!("per-rank bootstrap callable raised: {}", e)
-                                })?;
-                        let cmd: PyBootstrapCommand = result.extract().map_err(|e| {
-                            anyhow::anyhow!(
-                                "per-rank bootstrap callable did not return BootstrapCommand: {}",
-                                e
-                            )
-                        })?;
-                        Ok(cmd.to_rust())
-                    })
-                }))
-            })
-            .transpose()?;
+        per_rank_bootstrap: Option<BootstrapCommands>,
+    ) -> PyHandle {
+        // Create an owned Rust observer; the producer will await it below.
+        let host_mesh = host_mesh.wait_future();
+
+        // Copy the per-host proc extent into its native representation.
+        let per_host: Extent = per_host.clone().into();
+
+        // Keep the command count before moving the commands into the closure.
+        // Once the host mesh resolves, check it against the total number of procs.
+        let per_rank_count = match &per_rank_bootstrap {
+            Some(BootstrapCommands::PerRank(commands)) => Some(commands.len()),
+            _ => None,
+        };
+
+        // The native spawn API accepts a function that supplies a command for each rank.
+        // Convert the commands now, so that function needs no Python calls.
+        let per_rank_bootstrap: Option<Box<PerRankBootstrapFn>> =
+            per_rank_bootstrap.map(|commands| -> Box<PerRankBootstrapFn> {
+                match commands {
+                    BootstrapCommands::Uniform(command) => {
+                        // Every proc gets a copy of the same native launch command.
+                        let command = command.to_rust();
+                        Box::new(move |_| Ok(command.clone()))
+                    }
+                    BootstrapCommands::PerRank(commands) => {
+                        // Commands are in proc-rank order. The count check below ensures
+                        // there is one command for every proc before spawning begins.
+                        let commands: Vec<_> =
+                            commands.iter().map(PyBootstrapCommand::to_rust).collect();
+                        Box::new(move |point| Ok(commands[point.rank()].clone()))
+                    }
+                }
+            });
+        // Retain the caller's actor instance for the asynchronous spawn.
         let instance = instance.clone();
-        let per_host = per_host.clone().into();
+
+        // Convert the optional CPU/NUMA placement dictionaries into native ProcBind values.
         let proc_bind = proc_bind.map(|v| v.into_iter().map(ProcBind::from).collect());
-        let mesh_impl = async move {
+
+        PyHandle::spawn(async move {
+            // Wait until the host mesh is available.
+            let host_mesh = host_mesh.await?;
+
+            // Extract a native HostMeshRef from the Python-facing PyHostMesh.
+            // Only this conversion needs the GIL; spawning happens outside it.
+            let host_mesh = monarch_with_gil(GilSite::Convert, |py| {
+                Ok::<_, PyErr>(
+                    host_mesh
+                        .bind(py)
+                        .extract::<PyRef<'_, PyHostMesh>>()?
+                        .mesh_ref()?,
+                )
+            })
+            .await?;
+
+            // The host count is now known. Validate the number of per-rank commands
+            // before the spawn can index that list.
+            let num_procs = host_mesh.region().num_ranks() * per_host.num_ranks();
+            if let Some(count) = per_rank_count
+                && count != num_procs
+            {
+                return Err(PyValueError::new_err(format!(
+                    "per_rank_bootstrap length ({count}) must equal proc count ({num_procs})",
+                )));
+            }
+            // Ask the host agents to start the procs and wait for native spawn completion.
             let proc_mesh = host_mesh
                 .spawn(
                     instance.deref(),
@@ -269,25 +351,70 @@ impl PyHostMesh {
                 )
                 .await
                 .map_err(to_py_error)?;
+
+            // This PyProcMesh becomes the returned Handle's result.
             Ok(PyProcMesh::new_owned(proc_mesh))
-        };
-        PyPythonTask::new(mesh_impl)
+        })
+    }
+
+    /// Return a Handle that resolves to a `PyHostMesh` containing a non-owning view
+    /// of the hosts selected by `region`.
+    ///
+    /// Wait for the input host mesh to become available, then select those hosts.
+    /// The view does not create hosts or take ownership of them.
+    ///
+    /// If the input Handle or slicing returns an error, `.get()`, `poll()` and
+    /// `await` on the returned Handle raise it.
+    #[staticmethod]
+    fn sliced_handle(host_mesh: &PyHandle, region: &PyRegion) -> PyHandle {
+        // Capture an owned observer and region; the task retains no argument borrows.
+        let host_mesh = host_mesh.wait_future();
+        let region = region.clone();
+        PyHandle::spawn(async move {
+            // Wait for the original host mesh; an error propagates to this Handle.
+            let host_mesh = host_mesh.await?;
+
+            // Access the Python-facing mesh under the GIL. `sliced` returns
+            // PyHostMesh::Ref: a non-owning view of the selected existing hosts.
+            monarch_with_gil(GilSite::Convert, |py| {
+                host_mesh
+                    .bind(py)
+                    .extract::<PyRef<'_, PyHostMesh>>()?
+                    .sliced(&region)
+            })
+            .await
+        })
+    }
+
+    /// Set the launch command for later proc spawns once the host mesh is available.
+    /// Return a Handle that resolves to the resulting `PyHostMesh`.
+    ///
+    /// An owned mesh is updated in place. A non-owning view is copied with the
+    /// command override. Existing procs are unaffected.
+    #[staticmethod]
+    fn with_bootstrap_handle(host_mesh: &PyHandle, command: &PyBootstrapCommand) -> PyHandle {
+        // Capture an owned host observer and convert the command to native data
+        // before starting the task.
+        let host_mesh = host_mesh.wait_future();
+        let command = command.to_rust();
+        PyHandle::spawn(async move {
+            // Wait for the host mesh before changing its launch command.
+            let host_mesh = host_mesh.await?;
+
+            // Access the Python-facing mesh under the GIL. The shared helper
+            // updates an owned mesh or returns a new view with the override.
+            monarch_with_gil(GilSite::Convert, |py| {
+                host_mesh
+                    .bind(py)
+                    .extract::<PyRef<'_, PyHostMesh>>()?
+                    .with_bootstrap_command(command)
+            })
+            .await
+        })
     }
 
     fn with_bootstrap(&self, bootstrap_command: &PyBootstrapCommand) -> PyResult<Self> {
-        match self {
-            PyHostMesh::Owned(inner) => {
-                let cmd = bootstrap_command.to_rust();
-                inner
-                    .0
-                    .try_with_mut(|mesh| mesh.set_bootstrap(cmd))
-                    .map_err(|e| PyException::new_err(e.to_string()))?;
-                Ok(Self::Owned(inner.clone()))
-            }
-            PyHostMesh::Ref(_) => Ok(Self::new_ref(
-                self.mesh_ref()?.with_bootstrap(bootstrap_command.to_rust()),
-            )),
-        }
+        self.with_bootstrap_command(bootstrap_command.to_rust())
     }
 
     fn sliced(&self, region: &PyRegion) -> PyResult<Self> {
@@ -444,13 +571,16 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
 /// hosts.
 ///
 /// This should be called only once, at process initialization.
+/// It waits for initialization with the GIL released and returns the tuple
+/// directly; a Python signal can interrupt the wait.
 #[pyfunction]
 #[pyo3(signature = (bootstrap_cmd, via=None, bind_addr=None))]
 fn bootstrap_host(
+    py: Python<'_>,
     bootstrap_cmd: Option<PyBootstrapCommand>,
     via: Option<&str>,
     bind_addr: Option<&str>,
-) -> PyResult<PyPythonTask> {
+) -> PyResult<(PyHostMesh, PyProcMesh, PyInstance)> {
     let bootstrap_cmd = match bootstrap_cmd {
         Some(cmd) => cmd.to_rust(),
         None => BootstrapCommand::current().map_err(|e| PyException::new_err(e.to_string()))?,
@@ -469,7 +599,7 @@ fn bootstrap_host(
         .transpose()?
         .unwrap_or_else(|| default_bind_spec().binding_addr());
 
-    PyPythonTask::new(async move {
+    signal_safe_block_on(py, async move {
         // Pass the via address into `host` so the gateway's `serve_via`
         // attach runs *after* the host's own frontend serve but *before*
         // any proc or actor ref is minted. That ordering makes the via
@@ -648,7 +778,7 @@ fn bootstrap_host(
             PyProcMesh::new_ref(proc_mesh),
             PyInstance::from(instance),
         ))
-    })
+    })?
 }
 
 /// The Python-bootstrapped client root: the root client instance plus the
@@ -828,21 +958,33 @@ impl PyMeshAdminRef {
     }
 }
 
-/// `MESH_ADMIN_ADDR` config.
+/// Start a mesh admin agent and return a Handle whose result is
+/// `(String, PyMeshAdminRef)`: the server URL and the agent's reference.
 ///
-/// Python-facing wrapper around
-/// [`hyperactor_mesh::host_mesh::spawn_admin`].
+/// The agent exposes the supplied host meshes through its web API.
+/// The agent runs on the caller's local proc, not on a host selected from a mesh.
+///
+/// Wait for the supplied host-mesh Handles, then start the agent. `PyMeshAdminRef`
+/// is an opaque token that lets Python pass the agent's reference back to native bindings.
+///
+/// An empty mesh list or invalid explicit `admin_addr` is rejected before work
+/// starts. If `admin_addr` is omitted, the agent uses `MESH_ADMIN_ADDR` config.
+/// Host resolution, agent startup and URL lookup errors are raised when the
+/// returned Handle is observed. Dropping that Handle does not cancel the work.
 #[pyfunction]
 fn _spawn_admin(
-    host_meshes: Vec<PyRef<'_, PyHostMesh>>,
+    host_meshes: Vec<PyRef<'_, PyHandle>>,
     instance: &PyInstance,
     admin_addr: Option<String>,
     telemetry_url: Option<String>,
-) -> PyResult<PyPythonTask> {
+) -> PyResult<PyHandle> {
+    // Reject an empty input before starting the admin agent.
     if host_meshes.is_empty() {
         return Err(PyException::new_err("at least one mesh is required"));
     }
 
+    // Parse an explicit IP address and port for the admin server to bind to.
+    // If omitted, the agent reads MESH_ADMIN_ADDR during initialization.
     let admin_addr = admin_addr
         .map(|s| {
             s.parse::<std::net::SocketAddr>()
@@ -850,25 +992,44 @@ fn _spawn_admin(
         })
         .transpose()?;
 
-    let mesh_refs = host_meshes
-        .iter()
-        .map(|m| -> PyResult<HostMeshRef> { Ok(m.mesh_ref()?.clone()) })
-        .collect::<PyResult<Vec<HostMeshRef>>>()?;
-
+    // Retain owned observers of the host meshes and the caller's actor instance;
+    // the task must not borrow this call's arguments.
+    let host_mesh_futures: Vec<_> = host_meshes.iter().map(|mesh| mesh.wait_future()).collect();
     let instance = instance.clone();
-    PyPythonTask::new(async move {
+    Ok(PyHandle::spawn(async move {
+        let mut mesh_refs = Vec::with_capacity(host_mesh_futures.len());
+        // Await each host mesh in input order. Access its Python-facing wrapper
+        // under the GIL to obtain a native HostMeshRef.
+        for host_mesh_future in host_mesh_futures {
+            let host_mesh = host_mesh_future.await?;
+            mesh_refs.push(
+                monarch_with_gil(GilSite::Convert, |py| {
+                    Ok::<_, PyErr>(
+                        host_mesh
+                            .bind(py)
+                            .extract::<PyRef<'_, PyHostMesh>>()?
+                            .mesh_ref()?,
+                    )
+                })
+                .await?,
+            );
+        }
+        // The native helper aggregates the hosts and starts the admin agent on
+        // the caller's local proc.
         let admin_ref =
             host_mesh::spawn_admin(&mesh_refs, instance.deref(), admin_addr, telemetry_url)
                 .await
                 .map_err(|e| PyException::new_err(e.to_string()))?;
+        // Ask the agent for its server URL; reject a reply without a URL.
         let admin_url = admin_ref
             .get_admin_addr(instance.deref())
             .await
             .map_err(|e| PyException::new_err(e.to_string()))?
             .addr
             .ok_or_else(|| PyException::new_err("mesh admin agent did not report an address"))?;
+        // Complete the Handle with the URL and the opaque native-agent reference.
         Ok((admin_url, PyMeshAdminRef(admin_ref)))
-    })
+    }))
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {

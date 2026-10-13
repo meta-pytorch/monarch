@@ -4,38 +4,60 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
-from typing import Any, Callable, final, Mapping
+from typing import Any, final, Mapping
 
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.handle import Handle
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
-from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Point, Region
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
 
 @final
 class HostMesh:
+    @staticmethod
     def spawn_nonblocking(
-        self,
+        host_mesh: Handle[HostMesh],
         instance: Instance,
         name: str,
         per_host: Extent,
         proc_bind: list[dict[str, str]] | None = None,
-        per_rank_bootstrap: Callable[[Point], BootstrapCommand] | None = None,
-    ) -> PythonTask[ProcMesh]:
+        per_rank_bootstrap: BootstrapCommand | list[BootstrapCommand] | None = None,
+    ) -> Handle[ProcMesh]:
         """
-        Spawn a new actor on this mesh.
+        Spawn a proc mesh on these hosts.
 
         Arguments:
         - `instance`: The instance to use to spawn the mesh.
         - `name`: Name of the proc mesh
         - `per_host`: Extent describing the shape of the proc mesh on each host.
         - `proc_bind`: Optional per-process CPU/NUMA binding config.
-        - `per_rank_bootstrap`: Optional callable invoked once per proc with
-          that proc's ``Point`` over the combined ``host ⊕ per_host``
-          extent; its returned ``BootstrapCommand`` is used for that proc.
-          Scoped to this spawn; the mesh itself is not mutated.
+        - `per_rank_bootstrap`: A uniform command, or a list of commands in
+          rank order over the combined host and per-host extent. The list must
+          have one command per proc. None keeps the mesh's configured command
+          or the host agent's default. Scoped to this spawn; the mesh itself
+          is not mutated.
+        """
+        ...
+
+    @staticmethod
+    def sliced_handle(host_mesh: Handle[HostMesh], region: Region) -> Handle[HostMesh]:
+        """Return a Handle for a non-owning view of the hosts selected by region.
+
+        Wait for the input host mesh if it is still pending, then select those
+        hosts. The view neither creates hosts nor takes ownership of them.
+        Input or slicing errors are raised when the returned Handle is observed.
+        """
+        ...
+
+    @staticmethod
+    def with_bootstrap_handle(
+        host_mesh: Handle[HostMesh], command: BootstrapCommand
+    ) -> Handle[HostMesh]:
+        """Set the launch command for later proc spawns once the host mesh is ready.
+
+        Return a Handle supplying the resulting native HostMesh. An owned mesh
+        is updated in place; a non-owning view is copied with the command
+        override, leaving the original view unchanged. Existing procs are
+        unaffected.
         """
         ...
 
@@ -138,10 +160,11 @@ def bootstrap_host(
     bootstrap_cmd: BootstrapCommand | None,
     via: str | None = None,
     bind_addr: str | None = None,
-) -> PythonTask[tuple[HostMesh, ProcMesh, Instance]]:
+) -> tuple[HostMesh, ProcMesh, Instance]:
     """
-    Bootstrap a host mesh in this process, returning the host mesh,
-    proc mesh, and client instance.
+    Bootstrap a host mesh in this process, waiting for initialization before
+    returning the host mesh, proc mesh, and client instance. The wait releases
+    the GIL and can be interrupted by a Python signal.
 
     Arguments:
     - `bootstrap_cmd`: The bootstrap command to use to bootstrap the host.
@@ -184,11 +207,11 @@ class PyMeshAdminRef:
     ...
 
 def _spawn_admin(
-    host_meshes: list[HostMesh],
+    host_meshes: list[Handle[HostMesh]],
     instance: Instance,
     admin_addr: str | None = None,
     telemetry_url: str | None = None,
-) -> PythonTask[tuple[str, PyMeshAdminRef]]:
+) -> Handle[tuple[str, PyMeshAdminRef]]:
     """
     Spawn a MeshAdminAgent aggregating topology across one or more meshes.
 

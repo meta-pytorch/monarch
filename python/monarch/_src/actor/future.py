@@ -22,7 +22,11 @@ from typing import (
     TypeVar,
 )
 
-from monarch._rust_bindings.monarch_hyperactor.handle import Handle, WouldBlockRuntime
+from monarch._rust_bindings.monarch_hyperactor.handle import (
+    _new_handle_pair,
+    Handle,
+    WouldBlockRuntime,
+)
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.runtime import _is_in_tokio_runtime
 from monarch._src.actor.telemetry import log_with_tracing
@@ -34,6 +38,14 @@ if TYPE_CHECKING:
     from monarch._src.actor.returns_future import _BodyCell
 
 R = TypeVar("R")
+
+
+def _ready_handle(value: R) -> Handle[R]:
+    """Put an existing value in a Handle without starting any work."""
+    handle, completer = _new_handle_pair()
+    completer.set_result(value)
+    return handle
+
 
 # Shared by the Python-implemented `Future.get()` paths when a running asyncio
 # loop is detected. Handle-backed Futures enforce the same policy in native

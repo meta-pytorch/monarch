@@ -4,14 +4,11 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
 import pickle
 from typing import (
     Any,
     Callable,
     cast,
-    Coroutine,
     final,
     Generic,
     Iterable,
@@ -28,13 +25,13 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
 )
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.handle import Handle
+from monarch._rust_bindings.monarch_hyperactor.host_mesh import HostMesh as HyHostMesh
 from monarch._rust_bindings.monarch_hyperactor.pickle import (
     PendingMessage,
     pickle as monarch_pickle,
 )
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
-from monarch._src.actor.host_mesh import HostMesh, this_host
+from monarch._src.actor.host_mesh import this_host
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PortProtocol
@@ -112,37 +109,15 @@ class Accumulator(Generic[S, U]):
         return self._reducer
 
 
-def allocate() -> Shared[ProcMesh]:
-    host_mesh: HostMesh = this_host()
-
-    async def task() -> ProcMesh:
-        hy_host_mesh = await host_mesh._hy_host_mesh
-        return await hy_host_mesh.spawn_nonblocking(
-            context().actor_instance._as_rust(),
-            "test",
-            Extent(["replicas"], [1]),
-        )
-
-    return PythonTask.from_coroutine(task()).spawn()
+def allocate() -> Handle[ProcMesh]:
+    return HyHostMesh.spawn_nonblocking(
+        this_host()._hy_host_mesh,
+        context().actor_instance._as_rust(),
+        "test",
+        Extent(["replicas"], [1]),
+    )
 
 
-def _python_task_test(
-    fn: Callable[[], Coroutine[Any, Any, Handle[None] | None]],
-) -> Callable[[], None]:
-    """
-    Wrapper for tests that use the internal tokio event loop
-    APIs and need to run on that event loop.
-    """
-
-    def run() -> None:
-        result = PythonTask.from_coroutine(fn()).block_on()
-        if result is not None:
-            result.get()
-
-    return run
-
-
-@_python_task_test
 async def test_accumulator() -> None:
     ins: Instance = context().actor_instance
     mailbox: Mailbox = ins._mailbox
@@ -171,7 +146,7 @@ async def test_accumulator() -> None:
         )
 
     async def recv_message() -> str:
-        messge = await receiver.recv_task().with_timeout(seconds=5)
+        messge = await receiver.recv_task().with_timeout(seconds=5).spawn_handle()
         value = messge.decode()
         return cast(str, value)
 
@@ -211,8 +186,7 @@ class MyActor:
                     response_port.send(f"msg{i}")
 
 
-@_python_task_test
-async def test_reducer() -> Handle[None]:
+async def test_reducer() -> None:
     proc_mesh_task = allocate()
 
     # Create an explicit init message
@@ -262,10 +236,10 @@ async def test_reducer() -> Handle[None]:
         ins._as_rust(),
     )
 
-    m = await receiver.recv_task().with_timeout(seconds=5)
+    m = await receiver.recv_task().with_timeout(seconds=5).spawn_handle()
     value = m.decode()
     assert "[reduced](start+msg0)" in value
 
     #  Note: occasionally test would hang without this stop
     proc_mesh = await proc_mesh_task
-    return proc_mesh.stop_nonblocking(ins._as_rust(), "test cleanup")
+    await proc_mesh.stop_nonblocking(ins._as_rust(), "test cleanup")

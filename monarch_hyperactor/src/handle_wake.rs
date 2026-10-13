@@ -785,7 +785,7 @@ def base_done(fut):
 
     fn pending_handle(py: Python<'_>) -> (Sender, Py<PyHandle>) {
         let (tx, rx) = watch::channel(None);
-        let handle = Py::new(py, PyHandle::from_core(HandleCore::new(rx, None, None))).unwrap();
+        let handle = Py::new(py, PyHandle::from_core(HandleCore::new(rx, None))).unwrap();
         (tx, handle)
     }
 

@@ -13,7 +13,6 @@
 use std::collections::HashMap;
 use std::io;
 use std::net::TcpListener as StdTcpListener;
-use std::pin::Pin;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::sync::Arc;
@@ -22,10 +21,9 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
-use futures::Future;
 use monarch_gil::GilSite;
 use monarch_gil::monarch_with_gil_blocking;
-use monarch_hyperactor::pytokio::PyPythonTask;
+use monarch_hyperactor::endpoint::ActorEndpoint;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use tokio::io::AsyncReadExt;
@@ -274,29 +272,26 @@ impl NfsServer {
     }
 
     async fn call(&self, query: ActorQuery<'_>) -> Result<Py<PyAny>, u32> {
-        // The GIL must be released before awaiting the actor's Python task.
-        let future: Pin<Box<dyn Future<Output = PyResult<Py<PyAny>>> + Send>> =
-            monarch_with_gil_blocking(GilSite::EndpointDispatch, |py| {
-                let actor = self.actor.bind(py);
-                let call = match query {
-                    ActorQuery::Getattr(path) => actor
-                        .getattr("getattr_path")?
-                        .call_method1("call_one", (path,))?,
-                    ActorQuery::Readdir(path) => actor
-                        .getattr("readdir_path")?
-                        .call_method1("call_one", (path,))?,
-                    ActorQuery::Read(path, count, offset) => actor
-                        .getattr("read_path")?
-                        .call_method1("call_one", (path, count, offset))?,
-                };
-                let task: Bound<'_, PyPythonTask> =
-                    call.call_method0("_take_inner")?.cast_into()?;
-                task.borrow_mut().take_task()
-            })
-            .map_err(|e| {
-                tracing::warn!("NFS actor call: {e}");
-                NFS_ERR_IO
-            })?;
+        // Send under the GIL, then release it before awaiting the native reply.
+        let future = monarch_with_gil_blocking(GilSite::EndpointDispatch, |py| {
+            let actor = self.actor.bind(py);
+            let (endpoint, args) = match query {
+                ActorQuery::Getattr(path) => ("getattr_path", (path,).into_pyobject(py)?),
+                ActorQuery::Readdir(path) => ("readdir_path", (path,).into_pyobject(py)?),
+                ActorQuery::Read(path, count, offset) => {
+                    ("read_path", (path, count, offset).into_pyobject(py)?)
+                }
+            };
+            actor
+                .getattr(endpoint)?
+                .cast_into::<ActorEndpoint>()?
+                .borrow()
+                .call_one_future(py, &args, None)
+        })
+        .map_err(|e| {
+            tracing::warn!("NFS actor call: {e}");
+            NFS_ERR_IO
+        })?;
         future.await.map_err(|e| {
             tracing::warn!("NFS actor reply: {e}");
             NFS_ERR_IO

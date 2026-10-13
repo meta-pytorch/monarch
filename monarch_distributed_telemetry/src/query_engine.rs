@@ -45,8 +45,9 @@ use monarch_gil::GilSite;
 use monarch_gil::monarch_with_gil_blocking;
 use monarch_hyperactor::actor::PythonActor;
 use monarch_hyperactor::context::PyInstance;
+use monarch_hyperactor::endpoint::ActorEndpoint;
+use monarch_hyperactor::endpoint::ReplyFuture;
 use monarch_hyperactor::mailbox::PyPortId;
-use monarch_hyperactor::pytokio::PyPythonTask;
 use monarch_hyperactor::runtime::get_tokio_runtime;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -399,35 +400,26 @@ impl ExecutionPlan for DistributedExec {
         // Start the distributed scan
         let completion_future = monarch_with_gil_blocking(
             GilSite::EndpointDispatch,
-            |py| -> anyhow::Result<
-                std::pin::Pin<
-                    Box<dyn std::future::Future<Output = PyResult<Py<PyAny>>> + Send + 'static>,
-                >,
-            > {
+            |py| -> anyhow::Result<ReplyFuture> {
                 let dest_port_id: PyPortId = dest_port_ref.port_addr().clone().into();
 
-                // Call actor.scan.call(dest, table, proj, limit, filter) to get a Future
-                let scan = self.actor.getattr(py, "scan")?;
-                let future_obj = scan.call_method1(
-                    py,
-                    "call",
-                    (
-                        dest_port_id,
-                        self.table_name.clone(),
-                        self.projection.clone(),
-                        self.limit,
-                        self.where_clause.clone(),
-                    ),
-                )?;
-
-                // Surrender the underlying PythonTask via Future._take_inner(),
-                // then consume it to get the raw completion future.
-                let python_task_obj = future_obj.call_method0(py, "_take_inner")?;
-                let mut python_task: PyRefMut<'_, PyPythonTask> =
-                    python_task_obj.extract(py).map_err(Into::<PyErr>::into)?;
-                let completion_future = python_task.take_task()?;
-
-                Ok(completion_future)
+                // Send to every scan actor now. The existing draining task below
+                // owns the native reply collector, alongside the batch receiver.
+                let scan = self
+                    .actor
+                    .bind(py)
+                    .getattr("scan")?
+                    .cast_into::<ActorEndpoint>()
+                    .map_err(PyErr::from)?;
+                let args = (
+                    dest_port_id,
+                    self.table_name.clone(),
+                    self.projection.clone(),
+                    self.limit,
+                    self.where_clause.clone(),
+                )
+                    .into_pyobject(py)?;
+                Ok(scan.borrow().call_future(py, &args, None)?)
             },
         )
         .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;

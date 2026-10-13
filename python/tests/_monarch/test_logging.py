@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
 import asyncio
 import logging
 import threading
@@ -16,6 +14,7 @@ from unittest.mock import call, Mock, patch
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.handle import _new_handle_pair, Handle
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
+from monarch._src.actor.future import _ready_handle
 from monarch._src.actor.logging import flush_all_proc_mesh_logs, LoggingManager
 
 
@@ -170,7 +169,7 @@ class LoggingManagerTest(TestCase):
         mock_client = Mock()
         mock_handle = Mock()
         mock_client.flush.return_value = mock_handle
-        self.logging_manager._logging_mesh_client = mock_client
+        self.logging_manager._logging_mesh_client_handle = _ready_handle(mock_client)
 
         # Execute: flush logs
         result = self.logging_manager.flush()
@@ -190,7 +189,7 @@ class LoggingManagerTest(TestCase):
         mock_handle = Mock()
         mock_client.flush.return_value = mock_handle
         mock_handle.get.side_effect = Exception("Test exception")
-        self.logging_manager._logging_mesh_client = mock_client
+        self.logging_manager._logging_mesh_client_handle = _ready_handle(mock_client)
 
         # Execute: flush logs (should not raise exception)
         result = self.logging_manager.flush()
@@ -209,7 +208,7 @@ class LoggingManagerTest(TestCase):
         self.assertIs(type(no_client_error.exception), AssertionError)
         no_client_handle.assert_not_called()
 
-        self.logging_manager._logging_mesh_client = Mock()
+        self.logging_manager._logging_mesh_client_handle = _ready_handle(Mock())
         with patch.object(
             self.logging_manager,
             "_new_flush_handle",
@@ -263,7 +262,7 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
         ready = asyncio.get_running_loop().create_future()
         ready.set_result(None)
         handle = _AwaitTracker(ready)
-        self.logging_manager._logging_mesh_client = Mock()
+        self.logging_manager._logging_mesh_client_handle = _ready_handle(Mock())
 
         with patch.object(
             self.logging_manager, "_new_flush_handle", return_value=handle
@@ -276,7 +275,7 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
         self.assertFalse(handle.get_called)
 
     async def test_flush_async_suppresses_ordinary_error(self) -> None:
-        self.logging_manager._logging_mesh_client = Mock()
+        self.logging_manager._logging_mesh_client_handle = _ready_handle(Mock())
         with patch.object(
             self.logging_manager,
             "_new_flush_handle",
@@ -299,7 +298,7 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
         self.assertIsNone(result)
         no_client_handle.assert_not_called()
 
-        self.logging_manager._logging_mesh_client = Mock()
+        self.logging_manager._logging_mesh_client_handle = _ready_handle(Mock())
         with patch.object(
             self.logging_manager,
             "_new_flush_handle",
@@ -336,7 +335,7 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
         producer.start()
         observer: asyncio.Task[None] | None = None
         completed_after_cancel = False
-        self.logging_manager._logging_mesh_client = Mock()
+        self.logging_manager._logging_mesh_client_handle = _ready_handle(Mock())
         try:
             with patch.object(
                 self.logging_manager, "_new_flush_handle", side_effect=request
@@ -380,7 +379,7 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
         mock_client = Mock()
         mock_client.flush.side_effect = controlled_handle
         mock_instance = Mock()
-        self.logging_manager._logging_mesh_client = mock_client
+        self.logging_manager._logging_mesh_client_handle = _ready_handle(mock_client)
         with patch("monarch._src.actor.logging.context") as mock_context:
             mock_context.return_value.actor_instance._as_rust.return_value = (
                 mock_instance
@@ -402,48 +401,33 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
         )
 
     @patch("monarch._src.actor.logging.LoggingMeshClient")
-    @patch("monarch._src.actor.logging.context")
-    async def test_init_with_hyprocmesh_creates_logging_mesh_client(
-        self, mock_context: Mock, mock_logging_client: Mock
+    async def test_start_captures_inputs_and_publishes_the_client(
+        self, mock_logging_client: Mock
     ) -> None:
-        # Setup: mock the context and LoggingMeshClient
         mock_instance = Mock()
-        mock_context.return_value.actor_instance._as_rust.return_value = mock_instance
-        mock_proc_mesh = Mock(spec=HyProcMesh)
+        raw = _ready_handle(Mock(spec=HyProcMesh))
+        mock_client = Mock()
+        handle = _ready_handle(mock_client)
+        mock_logging_client.spawn.return_value = handle
 
-        mock_client: Mock = Mock()
-
-        # Make spawn return a coroutine that resolves to mock_client
-        async def mock_spawn(*args: Any, **kwargs: Any) -> Mock:
-            return mock_client
-
-        mock_logging_client.spawn = mock_spawn
-
-        # Execute: initialize the logging manager with HyProcMesh
-        await self.logging_manager.init(mock_proc_mesh, stream_to_client=True)
-
-        # Assert: set_mode was called with correct parameters
-        mock_client.set_mode.assert_called_once_with(
+        self.assertIs(self.logging_manager.start(mock_instance, raw, True), handle)
+        mock_logging_client.spawn.assert_called_once_with(
             mock_instance,
+            raw,
             stream_to_client=True,
             aggregate_window_sec=3,
             level=logging.INFO,
         )
-        self.assertEqual(self.logging_manager._logging_mesh_client, mock_client)
+        self.assertIs(self.logging_manager._logging_mesh_client, mock_client)
 
-    async def test_init_returns_early_if_already_initialized(self) -> None:
-        # Setup: set _logging_mesh_client to a mock value
-        mock_client = Mock()
-        self.logging_manager._logging_mesh_client = mock_client
-
-        with patch(
-            "monarch._src.actor.logging.LoggingMeshClient"
-        ) as mock_logging_client:
-            # Execute: try to initialize again
-            await self.logging_manager.init(Mock(), stream_to_client=True)
-
-            # Assert: LoggingMeshClient.spawn was not called
-            mock_logging_client.spawn.assert_not_called()
+    async def test_start_returns_the_existing_logging_handle(self) -> None:
+        handle = _ready_handle(Mock())
+        self.logging_manager._logging_mesh_client_handle = handle
+        with patch("monarch._src.actor.logging.LoggingMeshClient") as mock_client:
+            self.assertIs(
+                self.logging_manager.start(Mock(), _ready_handle(Mock()), True), handle
+            )
+            mock_client.spawn.assert_not_called()
 
     @patch("monarch._src.actor.logging.context")
     async def test_logging_option_sets_mode_with_valid_parameters(
@@ -453,7 +437,7 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
         mock_instance = Mock()
         mock_context.return_value.actor_instance._as_rust.return_value = mock_instance
         mock_client = Mock()
-        self.logging_manager._logging_mesh_client = mock_client
+        self.logging_manager._logging_mesh_client_handle = _ready_handle(mock_client)
 
         with (
             patch.object(

@@ -4,19 +4,15 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
-
 """Characterize host draining while proc-mesh logging is still initializing."""
 
 import asyncio
-import threading
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch._rust_bindings.monarch_hyperactor.handle import Handle
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+from monarch._rust_bindings.monarch_hyperactor.handle import _new_handle_pair, Handle
 from monarch._src.actor.logging import LoggingManager
 from monarch._src.job.process import ProcessJob
 from scoped_state import scoped_state
@@ -25,38 +21,26 @@ from scoped_state import scoped_state
 @pytest.mark.timeout(90)
 @isolate_in_subprocess
 def test_drain_pending_spawns_does_not_await_logging_init() -> None:
-    init_entered = threading.Event()
-    release_init = threading.Event()
-    real_init = LoggingManager.init
+    pending, completer = _new_handle_pair()
+    real_start = LoggingManager.start
+    captured: list[tuple[Any, Any, bool]] = []
 
-    async def gated_init(
-        manager: LoggingManager,
-        proc_mesh: Any,
-        stream_to_client: bool,
-    ) -> None:
-        # ProcMesh calls init only after the native proc spawn resolves. Holding
-        # this method therefore exposes the real interval in which the proc
-        # exists but its logging client has not been installed.
-        init_entered.set()
-        released = await PythonTask.spawn_blocking(
-            lambda: release_init.wait(timeout=30)
-        )
-        if not released:
-            raise TimeoutError("logging initialization release was not published")
-        await real_init(manager, proc_mesh, stream_to_client)
+    def gated_start(
+        manager: LoggingManager, instance: Any, raw: Any, stream: bool
+    ) -> Any:
+        captured.append((instance, raw, stream))
+        manager._logging_mesh_client_handle = pending
+        return pending
 
     proc_mesh = None
     with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
         host = state.hosts
         try:
-            with patch.object(LoggingManager, "init", gated_init):
+            with patch.object(LoggingManager, "start", gated_start):
                 proc_mesh = host.spawn_procs(name="logging_init_gate")
-                assert init_entered.wait(timeout=30), (
-                    "logging initialization did not reach the gate"
-                )
-
                 native_spawn = host._pending_spawns[-1]
-                assert native_spawn.poll() is not None
+                # The raw procs exist; only logging readiness is held at the gate.
+                assert native_spawn.get(timeout=30) is not None
                 assert proc_mesh._logging_manager._logging_mesh_client is None
                 assert proc_mesh._proc_mesh.poll() is None
 
@@ -78,9 +62,7 @@ def test_drain_pending_spawns_does_not_await_logging_init() -> None:
 
                 with (
                     patch.object(
-                        proc_mesh._logging_manager,
-                        "flush_async",
-                        record_flush_async,
+                        proc_mesh._logging_manager, "flush_async", record_flush_async
                     ),
                     patch.object(
                         proc_mesh._logging_manager,
@@ -97,9 +79,16 @@ def test_drain_pending_spawns_does_not_await_logging_init() -> None:
                 assert host._pending_spawns == []
                 assert proc_mesh._proc_mesh.poll() is None
         finally:
-            release_init.set()
             if proc_mesh is not None:
-                assert (
-                    proc_mesh._proc_mesh.task().with_timeout(30).block_on() is not None
-                )
-                assert proc_mesh._logging_manager._logging_mesh_client is not None
+                manager = proc_mesh._logging_manager
+                manager._logging_mesh_client_handle = None
+                instance, raw, stream = captured[0]
+                try:
+                    client = real_start(manager, instance, raw, stream).get(timeout=30)
+                except Exception as error:
+                    completer.set_exception(error)
+                    raise
+                else:
+                    completer.set_result(client)
+                assert proc_mesh._proc_mesh.get(timeout=30) is not None
+                assert manager._logging_mesh_client is not None

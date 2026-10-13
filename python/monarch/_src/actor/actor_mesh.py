@@ -4,7 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
 from __future__ import annotations
 
 import abc
@@ -505,14 +504,25 @@ class _Lazy(Generic[T]):
 
 def _init_client_context(via: Optional[str] = None) -> Context:
     """
-    Create a client context that bootstraps an actor instance running on a real
-    local proc mesh on a real local host mesh.
+    Start this Python process's Monarch client and return the context of its
+    root client actor.
 
-    Fresh bootstrap ends in ``block_on()``, which panics on a Tokio runtime
-    worker. Reject it from every Tokio runtime context, including the blocking
-    pool, so this synchronous API does not depend on which Tokio-managed thread
-    invoked it. An already-initialized client bypasses this function and can
-    still be reused.
+    Monarch creates one root client actor for the user's Python controller
+    process. This builds it in-process: it starts a local Monarch host,
+    creates the client's proc on that host, creates the root client actor
+    there, and returns a ``Context`` holding that actor. ``context()``
+    returns this ``Context`` when called outside an actor, and the meshes the
+    controller creates belong to this client. It runs once per process, the
+    first time a client is needed (``context()``, ``this_host()``,
+    ``this_proc()`` or ``attach()``); ``shutdown_context()`` stops what it
+    starts.
+
+    Starting the client blocks the calling thread until native start-up
+    finishes, and releases the GIL while it waits. So start it before entering
+    Tokio: called from any Tokio thread, including the blocking pool, this
+    raises ``WouldBlockRuntime`` rather than block a runtime thread. Code
+    running on Tokio can still use a client that already exists; it just
+    cannot start the first one.
 
     When ``via`` is a non-empty ZMQ-style address, the local client's
     gateway is connected to the gateway serving that address: outbound
@@ -545,7 +555,7 @@ def _init_client_context(via: Optional[str] = None) -> Context:
     )
     hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_host(
         default_bootstrap_cmd(), via=via, bind_addr=bind_addr
-    ).block_on()
+    )
 
     ctx = Context._from_instance(cast(Instance, hy_instance))  # type: ignore
     # Set the context here to avoid recursive context creation:

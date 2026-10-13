@@ -225,7 +225,7 @@ fn delayed_handle(delay: Duration, value: Py<PyAny>) -> PyHandle {
         }
         send_result(tx, Ok(value), None);
     });
-    PyHandle::from_core(HandleCore::new(rx, None, None))
+    PyHandle::from_core(HandleCore::new(rx, None))
 }
 
 /// Build a `Handle` that publishes `None` no sooner than `delay` seconds after

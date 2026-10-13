@@ -271,10 +271,7 @@ defining_module_exempt = [
 ]
 symbol_capture_operations = [
   "take_inner_retire",
-  "mesh_reserve_fill",
-  "mesh_state_resolve",
   "shared_reconstruction",
-  "reserve_binding",
   "would_block_surface",
   "helper_symbol",
   "helper_definition",
@@ -296,8 +293,6 @@ per_file_operations = ["pytokio_module_ref"]
 take_inner_retire = ["fbcode/monarch/python/monarch/_src/actor/future.py"]
 bootstrap_storage_spawn = ["fbcode/monarch/python/monarch/_src/actor/bootstrap.py"]
 caller_free_primitive = ["fbcode/monarch/monarch_hyperactor/src/pytokio.rs"]
-mesh_state_resolve = ["fbcode/monarch/monarch_hyperactor/src/pickle.rs"]
-reserve_binding = ["fbcode/monarch/monarch_hyperactor/src/pickle.rs"]
 would_block_surface = [
   "fbcode/monarch/monarch_hyperactor/src/pytokio.rs",
 ]
@@ -315,9 +310,6 @@ binding_stub_symbol = [
 py_python_task_new = "\\bPyPythonTask::new\\b"
 raw_python_task_new = "(?<!Py)\\bPythonTask::new\\b"
 spawn_abortable = "\\.spawn_abortable\\(\\)"
-mesh_reserve_fill = "\\b(reserve_mesh_reference_if_active|push_mesh_reference_if_active|pop_mesh_reference)\\b"
-mesh_state_resolve = "pub async fn (resolve)\\b"
-reserve_binding = "fn (reserve_mesh_reference)\\b|wrap_pyfunction!\\((reserve_mesh_reference)\\b"
 would_block_surface = "pyo3::create_exception!\\s*\\(\\s*\\w+,\\s*(WouldBlockRuntime)|get_type::<crate::handle::(WouldBlockRuntime)>|add\\(\"(WouldBlockRuntime)\""
 shared_reconstruction = "shared_class\\(py\\)\\.getattr\\(\"(block_on|from_value)\"\\)"
 rust_take_inner = "\"_take_inner\""
@@ -334,14 +326,13 @@ take_inner = "_take_inner"
 shared_from_value = "Shared.from_value"
 mesh_storage_spawn = "PythonTask.from_coroutine().spawn"
 bootstrap_storage_spawn = "host_mesh.spawn"
-py_mesh_reserve = "reserve_mesh_reference"
 py_is_tokio_thread = "is_tokio_thread"
 
 [config.patterns.python_defs]
 take_inner_retire = "^    def (_take_inner)\\b|^class (_Taken)\\b"
 
 [config.patterns.python_stub]
-binding_stub_symbol = "^class (PythonTask|Shared|WouldBlockRuntime)\\b|^def (is_tokio_thread)\\b|^def (reserve_mesh_reference)\\b"
+binding_stub_symbol = "^class (PythonTask|Shared|WouldBlockRuntime)\\b|^def (is_tokio_thread)\\b"
 
 [config.patterns.python_modules]
 pytokio_import = "monarch._rust_bindings.monarch_hyperactor.pytokio"
@@ -350,32 +341,28 @@ pytokio_import = "monarch._rust_bindings.monarch_hyperactor.pytokio"
 doc_legacy_surface = "PythonTask|PyShared|pytokio"
 
 [totals]
-py_python_task_new = 6
+py_python_task_new = 0
 raw_python_task_new = 5
-from_coro = 5
+from_coro = 1
 rust_from_coro = 2
-from_coroutine = 7
-take_inner = 2
-rust_take_inner = 3
+from_coroutine = 1
+take_inner = 0
+rust_take_inner = 0
 take_inner_retire = 2
 caller_free_primitive = 4
-shared_from_value = 4
-spawn_abortable = 1
-mesh_storage_spawn = 5
-bootstrap_storage_spawn = 1
-mesh_reserve_fill = 10
-mesh_state_resolve = 1
-shared_reconstruction = 2
-reserve_binding = 1
-py_mesh_reserve = 2
+shared_from_value = 0
+spawn_abortable = 0
+mesh_storage_spawn = 0
+bootstrap_storage_spawn = 0
+shared_reconstruction = 0
 py_is_tokio_thread = 0
-pytokio_import = 26
-pytokio_module_ref = 15
-helper_symbol = 16
+pytokio_import = 12
+pytokio_module_ref = 5
+helper_symbol = 6
 helper_definition = 1
 would_block_surface = 0
-binding_stub_symbol = 3
-doc_legacy_surface = 4
+binding_stub_symbol = 2
+doc_legacy_surface = 2
 
 # Imports are counted by file; each row also pins its exact member set, so a
 # net-zero member swap fails.
@@ -631,6 +618,7 @@ owns = [
 id = "6.3c"
 allowed_states = ["migrated", "removed_upstream"]
 owns = [
+  "ms.pickle.from_value",
   "im.actor_mesh.module",
   "dr.bootstrap._as_python_task[PythonTask.from_coroutinejust]",
   "dr.host_mesh.HostMesh._new_with_shape[PythonTask.from_coroutinetask]",
@@ -670,7 +658,6 @@ owns = [
   "ms.host_mesh.HostMesh._new_with_shape[Shared.from_valuehm.slicedshape.region]",
   "ms.host_mesh.HostMesh._spawn_nonblocking[PythonTask.from_coroutinetask.spawn]",
   "ms.host_mesh.HostMesh.with_python_executable[PythonTask.from_coroutinetask.spawn]",
-  "ms.pickle.from_value",
   "ms.proc_mesh.ProcMesh._from_initialized_hy_proc_mesh[Shared.from_valuehy_proc_mesh]",
   "ms.proc_mesh.ProcMesh._new_with_shape[PythonTask.from_coroutinetask.spawn]",
   "ms.proc_mesh.ProcMesh._new_with_shape[Shared.from_valuepm.slicedshape.region]",
@@ -833,7 +820,8 @@ path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/pickle.p
 symbol = "reserve_mesh_reference"
 operation = "binding_stub_symbol"
 scope = "stub"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -890,7 +878,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/bootstrap.py"
 symbol = "attach_to_workers[host_mesh.spawn]"
 operation = "bootstrap_storage_spawn"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -956,7 +945,8 @@ path = "fbcode/monarch/docs/source/books/hyperactor-mesh-book/src/logging/overvi
 symbol = "<document>"
 operation = "doc_legacy_surface"
 scope = "doc"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.8"
 
 [[site]]
@@ -967,7 +957,8 @@ path = "fbcode/monarch/docs/source/books/hyperactor-mesh-book/src/logging/python
 symbol = "<document>"
 operation = "doc_legacy_surface"
 scope = "doc"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.8"
 
 [[site]]
@@ -1030,7 +1021,7 @@ symbol = "ActorMesh._name[Future._from_coro(self._inner.name())]"
 operation = "from_coro"
 scope = "production"
 state = "migrated"
-transition_revision = "self"
+transition_revision = "D124433129"
 transition = "6.3c"
 
 [[site]]
@@ -1042,7 +1033,7 @@ symbol = "ActorMesh.initialized[Future._from_coro(self._inner.initialized())]"
 operation = "from_coro"
 scope = "production"
 state = "migrated"
-transition_revision = "self"
+transition_revision = "D124433129"
 transition = "6.3c"
 
 [[site]]
@@ -1054,7 +1045,7 @@ symbol = "ActorMesh.stop[Future._from_coro(self._inner.stop(instance, reason))]"
 operation = "from_coro"
 scope = "production"
 state = "migrated"
-transition_revision = "self"
+transition_revision = "D124433129"
 transition = "6.3c"
 
 [[site]]
@@ -1148,7 +1139,7 @@ operation = "from_coro"
 scope = "production"
 state = "migrated"
 transition = "6.3b"
-transition_revision = "self"
+transition_revision = "D124184395"
 public_operation = "monarch.actor.shutdown_context()"
 caller_contexts = "sync and asyncio"
 return_surface = "Future[None] from Future._from_handle around the shutdown_local_host_mesh Handle"
@@ -1174,7 +1165,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
 symbol = "HostMesh.initialized[Future._from_coro(task())]"
 operation = "from_coro"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 public_operation = "HostMesh.initialized"
 caller_contexts = "sync and asyncio"
@@ -1187,7 +1179,7 @@ eager_effect = "would begin observing the retained running or resolved Shared du
 drop_behavior = "does not affect host initialization; a fresh initialized Future can observe the same True result or the same retained failure"
 first_side_effect = "none; the property access only raises if the mesh is already shut down"
 unobserved_error = "a pre-drive drop never observes the Shared's terminal error and can emit Python's ordinary never-awaited-coroutine warning. Source-grounded: if a started observer later sees failure after its receiver is dropped, send_result logs the receiverless background error. The retained Shared independently stores the exact failure, and fresh initialized Futures replay its type and message"
-disposition = "preserve timing"
+disposition = "intentionally become eager"
 semantic_class = "already_started_lazy_observer"
 oracle = [
   "fbcode//monarch/python/tests:test_host_mesh::test_attach_starts_before_readiness_observation_and_survives_a_dropped_observer",
@@ -1262,7 +1254,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
 symbol = "_spawn_admin[Future._from_coro(task())]"
 operation = "from_coro"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 public_operation = "host mesh admin spawn"
 caller_contexts = "sync and asyncio"
@@ -1289,7 +1282,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
 symbol = "ProcMesh._proc_mesh_for_asyncio_fixme[Future._from_coro(self._proc_mesh.task())]"
 operation = "from_coro"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1300,7 +1294,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
 symbol = "ProcMesh.initialized[Future._from_coro(task())]"
 operation = "from_coro"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 public_operation = "ProcMesh.initialized"
 caller_contexts = "sync and asyncio"
@@ -1313,7 +1308,7 @@ eager_effect = "would begin observing the retained running or resolved Shared du
 drop_behavior = "does not affect proc initialization; a fresh initialized Future can observe the same True result or replay the same retained failure"
 first_side_effect = "none"
 unobserved_error = "a pre-drive drop never observes the Shared's terminal error and can emit Python's ordinary never-awaited-coroutine warning. Source-grounded: if a started observer later sees failure after its receiver is dropped, send_result logs the receiverless background error. The retained Shared independently stores the exact failure, and fresh initialized Futures replay its type and message"
-disposition = "preserve timing"
+disposition = "intentionally become eager"
 semantic_class = "already_started_lazy_observer"
 oracle = [
   "fbcode//monarch/python/tests:test_proc_mesh::test_proc_mesh_readiness_replays_success_after_discarded_observer",
@@ -1438,7 +1433,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/bootstrap.py"
 symbol = "_as_python_task[PythonTask.from_coroutine(just())]"
 operation = "from_coroutine"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1460,7 +1456,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
 symbol = "HostMesh._new_with_shape[PythonTask.from_coroutine(task())]"
 operation = "from_coroutine"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1471,7 +1468,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
 symbol = "HostMesh._spawn_nonblocking[PythonTask.from_coroutine(task())]"
 operation = "from_coroutine"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1482,7 +1480,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
 symbol = "HostMesh.with_python_executable[PythonTask.from_coroutine(task())]"
 operation = "from_coroutine"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1493,7 +1492,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
 symbol = "ProcMesh._new_with_shape[PythonTask.from_coroutine(task())]"
 operation = "from_coroutine"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1504,7 +1504,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
 symbol = "ProcMesh.from_host_mesh[PythonTask.from_coroutine(task(pm, hy_proc_mesh, setup_actor, host_mesh.stream_logs))]"
 operation = "from_coroutine"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1597,8 +1598,9 @@ path = "fbcode/monarch/monarch_distributed_telemetry/src/query_engine.rs"
 symbol = "PyPythonTask"
 operation = "helper_symbol"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.4c"
+transition_revision = "self"
 
 [[site]]
 id = "hs.lib.register_python_bindings"
@@ -1619,8 +1621,9 @@ path = "fbcode/monarch/monarch_extension/src/readonly_fuse.rs"
 symbol = "PyPythonTask"
 operation = "helper_symbol"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.4c"
+transition_revision = "self"
 
 [[site]]
 id = "hs.readonly_nfs.PyPythonTask"
@@ -1630,8 +1633,9 @@ path = "fbcode/monarch/monarch_extension/src/readonly_nfs.rs"
 symbol = "PyPythonTask"
 operation = "helper_symbol"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.4c"
+transition_revision = "self"
 
 [[site]]
 id = "hs.actor.PyPythonTask"
@@ -1665,8 +1669,9 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "PyPythonTask"
 operation = "helper_symbol"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.3c"
+transition_revision = "D124433129"
 
 [[site]]
 id = "hs.actor_mesh.ensure_python"
@@ -1688,7 +1693,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/bootstrap.rs"
 symbol = "PyPythonTask"
 operation = "helper_symbol"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1701,7 +1707,7 @@ operation = "helper_symbol"
 scope = "production"
 state = "migrated"
 transition = "6.3b"
-transition_revision = "self"
+transition_revision = "D124184395"
 
 [[site]]
 id = "hs.endpoint.PyPythonTask"
@@ -1781,7 +1787,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
 symbol = "PyPythonTask"
 operation = "helper_symbol"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1794,7 +1801,7 @@ operation = "helper_symbol"
 scope = "production"
 state = "migrated"
 transition = "6.3b"
-transition_revision = "self"
+transition_revision = "D124115966"
 
 [[site]]
 id = "hs.logging.PyPythonTask"
@@ -1804,7 +1811,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/logging.rs"
 symbol = "PyPythonTask"
 operation = "helper_symbol"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1817,7 +1825,7 @@ operation = "helper_symbol"
 scope = "production"
 state = "migrated"
 transition = "6.3b"
-transition_revision = "self"
+transition_revision = "D124115966"
 
 [[site]]
 id = "hs.mailbox.PyPythonTask"
@@ -1861,7 +1869,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
 symbol = "PyShared"
 operation = "helper_symbol"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1896,7 +1905,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/proc_mesh.rs"
 symbol = "PyShared"
 operation = "helper_symbol"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1919,7 +1929,8 @@ path = "fbcode/monarch/monarch_rdma/extension/lib.rs"
 symbol = "PyShared"
 operation = "helper_symbol"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -1930,7 +1941,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "pop_mesh_reference"
 operation = "mesh_reserve_fill"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -1941,7 +1953,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "push_mesh_reference_if_active"
 operation = "mesh_reserve_fill"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -1952,7 +1965,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "reserve_mesh_reference_if_active"
 operation = "mesh_reserve_fill"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -1963,7 +1977,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
 symbol = "pop_mesh_reference"
 operation = "mesh_reserve_fill"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -1974,7 +1989,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
 symbol = "push_mesh_reference_if_active"
 operation = "mesh_reserve_fill"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -1985,7 +2001,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
 symbol = "pop_mesh_reference"
 operation = "mesh_reserve_fill"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -1996,7 +2013,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
 symbol = "push_mesh_reference_if_active"
 operation = "mesh_reserve_fill"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -2007,7 +2025,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
 symbol = "reserve_mesh_reference_if_active"
 operation = "mesh_reserve_fill"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -2018,7 +2037,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/proc_mesh.rs"
 symbol = "pop_mesh_reference"
 operation = "mesh_reserve_fill"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -2029,7 +2049,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/proc_mesh.rs"
 symbol = "push_mesh_reference_if_active"
 operation = "mesh_reserve_fill"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -2040,7 +2061,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
 symbol = "resolve"
 operation = "mesh_state_resolve"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -2051,7 +2073,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
 symbol = "HostMesh._new_with_shape[PythonTask.from_coroutine(task()).spawn]"
 operation = "mesh_storage_spawn"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -2062,7 +2085,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
 symbol = "HostMesh._spawn_nonblocking[PythonTask.from_coroutine(task()).spawn]"
 operation = "mesh_storage_spawn"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -2073,7 +2097,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
 symbol = "HostMesh.with_python_executable[PythonTask.from_coroutine(task()).spawn]"
 operation = "mesh_storage_spawn"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -2084,7 +2109,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
 symbol = "ProcMesh._new_with_shape[PythonTask.from_coroutine(task()).spawn]"
 operation = "mesh_storage_spawn"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -2095,7 +2121,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
 symbol = "ProcMesh.from_host_mesh[PythonTask.from_coroutine(task(pm, hy_proc_mesh, setup_actor, host_mesh.stream_logs)).spawn]"
 operation = "mesh_storage_spawn"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -2142,7 +2169,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
 symbol = "HostMesh.__reduce_ex__[reserve_mesh_reference(self._hy_host_mesh)]"
 operation = "py_mesh_reserve"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -2153,7 +2181,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
 symbol = "ProcMesh.__reduce_ex__[reserve_mesh_reference(self._proc_mesh)]"
 operation = "py_mesh_reserve"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -2219,7 +2248,7 @@ symbol = "<ActorMeshRef<PythonActor> as ActorMeshProtocol>::name"
 operation = "py_python_task_new"
 scope = "production"
 state = "migrated"
-transition_revision = "self"
+transition_revision = "D124433129"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <ActorMeshRef<PythonActor> as ActorMeshProtocol>::name"
@@ -2238,6 +2267,10 @@ oracle = [
 ]
 
 [[site]]
+# Replacement: a reserved actor fill polls the mesh's Rust creation future
+# inline; dropping the resolve drops that clone. Bare pickle waits through the
+# existing signal-safe helper before reducing the resolved mesh, and refuses
+# on Tokio. The behavior fields below describe the retired producer.
 id = "np.actor_mesh.AsyncActorMesh_as_ActorMeshProtocol.__reduce__"
 category = "native_producer"
 language = "rust"
@@ -2245,8 +2278,9 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "<AsyncActorMesh as ActorMeshProtocol>::__reduce__"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.3c"
+transition_revision = "self"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::__reduce__"
 consumer = "under active Monarch pickling, reserve_mesh_reference_if_active takes the observer into the out-of-band refs table and the reducer becomes pop_mesh_reference; under ordinary bare pickle no slot is reserved, the reducer is Shared.block_on over the observer, and pickle then blocks in reduce_shared until initialization resolves"
@@ -2256,13 +2290,17 @@ abandonment = "possible; the pickler may drop the reduction observer before it r
 eager_effect = "mixed, and the two cases differ. For a root the observer only watches already-running queue-driven work. For an otherwise idle slice, spawn_abortable is what begins the retained derived-region computation, which no queue item would otherwise start"
 drop_behavior = "aborts the transient waiter only. It cancels neither a root's initialization, which its own queued item drives independently, nor a slice's retained derived Shared, which stays re-observable. Evidence boundary: the in-crate tests prove abandonment does not cancel an already-enqueued equivalent initializer, since they enqueue that item themselves in order to retain and join the driver; that production new_queue supplies it is source-grounded rather than pinned"
 unobserved_error = "send_result logs an unobserved error"
-disposition = "require a binding-specific design"
+disposition = "replace with the bridge future directly"
 semantic_class = "abortable_observer"
 oracle = [
   "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::pending_bare_actor_mesh_pickle_waits_for_release",
   "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::dropped_root_observers_do_not_cancel_initialization",
   "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::dropped_slice_observers_leave_the_slice_reobservable",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::pending_bare_actor_mesh_pickle_refuses_on_tokio_before_polling",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::actor_mesh::tests::reserved_actor_fills_are_polled_concurrently_and_keep_their_slots",
   "fbcode//monarch/python/tests:test_deferred_pickle_characterization::test_pending_mesh_sent_as_endpoint_argument_resolves_on_receiver",
+  "fbcode//monarch/python/tests:test_deferred_pickle_characterization::test_pending_mesh_returned_from_endpoint_resolves_on_caller",
+  "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::pickle::tests::resolve_fills_nonadjacent_slots_in_place_without_touching_the_payload",
 ]
 
 [[site]]
@@ -2274,7 +2312,7 @@ symbol = "<AsyncActorMesh as ActorMeshProtocol>::initialized"
 operation = "py_python_task_new"
 scope = "production"
 state = "migrated"
-transition_revision = "self"
+transition_revision = "D124433129"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::initialized"
@@ -2302,7 +2340,7 @@ symbol = "<AsyncActorMesh as ActorMeshProtocol>::name"
 operation = "py_python_task_new"
 scope = "production"
 state = "migrated"
-transition_revision = "self"
+transition_revision = "D124433129"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::name"
@@ -2328,7 +2366,7 @@ symbol = "<AsyncActorMesh as ActorMeshProtocol>::stop"
 operation = "py_python_task_new"
 scope = "production"
 state = "migrated"
-transition_revision = "self"
+transition_revision = "D124433129"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <AsyncActorMesh as ActorMeshProtocol>::stop"
@@ -2355,7 +2393,7 @@ symbol = "<ControlledActorMesh as ActorMeshProtocol>::name"
 operation = "py_python_task_new"
 scope = "test"
 state = "migrated"
-transition_revision = "self"
+transition_revision = "D124433129"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from the characterization fixture's name implementation"
@@ -2383,7 +2421,7 @@ symbol = "<ControlledActorMesh as ActorMeshProtocol>::stop"
 operation = "py_python_task_new"
 scope = "test"
 state = "migrated"
-transition_revision = "self"
+transition_revision = "D124433129"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from the characterization fixture's stop implementation"
@@ -2436,7 +2474,7 @@ symbol = "<PythonActorMeshImpl as ActorMeshProtocol>::stop"
 operation = "py_python_task_new"
 scope = "production"
 state = "migrated"
-transition_revision = "self"
+transition_revision = "D124433129"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from <PythonActorMeshImpl as ActorMeshProtocol>::stop"
@@ -2463,7 +2501,7 @@ symbol = "ActorMeshProtocol::initialized"
 operation = "py_python_task_new"
 scope = "production"
 state = "migrated"
-transition_revision = "self"
+transition_revision = "D124433129"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from initialized"
@@ -2488,7 +2526,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/bootstrap.rs"
 symbol = "attach_to_workers"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from attach_to_workers"
@@ -2546,7 +2585,7 @@ operation = "py_python_task_new"
 scope = "production"
 state = "migrated"
 transition = "6.3b"
-transition_revision = "self"
+transition_revision = "D124184395"
 constructor = "PyPythonTask"
 return_surface = "deleted: PyInstance::stop_and_wait no longer exists"
 consumer = "none: its only production caller, shutdown_context's no-host fallback, was removed as unreachable"
@@ -2598,7 +2637,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
 symbol = "PyHostMesh::spawn_nonblocking"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from PyHostMesh::spawn_nonblocking"
@@ -2651,7 +2691,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
 symbol = "_spawn_admin"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from _spawn_admin"
@@ -2676,18 +2717,19 @@ path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
 symbol = "bootstrap_host"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.3c"
+transition_revision = "self"
 constructor = "PyPythonTask"
-return_surface = "PyPythonTask returned from bootstrap_host"
-consumer = "_init_client_context immediately calls block_on; a direct binding caller can retain or discard the raw task"
-driver = "_init_client_context immediately consumes it with PyPythonTask.block_on; the Rust integration test exercises that same block_on path after discarding the first raw task"
-start_point = "bootstrap-command conversion and via-address parsing happen during the call; host creation and global registration begin only when the returned task is driven"
-abandonment = "tested through the direct binding: dropping a valid raw task leaves the observable client-root and host-agent registrations absent. Production normally block_on drives immediately; source-grounded, a Python main-thread signal can return from block_on while the spawned bootstrap task continues detached"
-eager_effect = "would begin host creation and permanent global registration during the binding call"
-drop_behavior = "dropping a valid raw task undriven performs no observable bootstrap, and a later fresh task can perform the one allowed bootstrap"
-unobserved_error = "an invalid via raises exact PyValueError before a task exists; bootstrap failures after construction surface when driven. Source-grounded, the main-thread signal branch can report an error while already-started bootstrap continues"
-disposition = "intentionally become eager"
+return_surface = "direct tuple of HostMesh, ProcMesh and Instance after native initialization"
+consumer = "_init_client_context and the client_root integration test use the returned tuple directly"
+driver = "signal_safe_block_on drives the native bootstrap on the shared Tokio runtime with the calling thread's GIL released"
+start_point = "bootstrap-command conversion and address validation happen during the call, then the binding waits for host creation and global registration"
+abandonment = "there is no returned observer to abandon; a Python main-thread signal may interrupt the wait while the native bootstrap continues"
+eager_effect = "host creation and global registration begin in the binding call"
+drop_behavior = "dropping the returned tuple does not undo the process-global bootstrap"
+unobserved_error = "invalid addresses raise ValueError before bootstrap; initialization errors raise from the binding, and a main-thread signal can interrupt the wait without stopping already-started bootstrap"
+disposition = "replace with a direct blocking binding"
 semantic_class = "deferred_side_effect"
 oracle = [
   "fbcode//monarch/monarch_hyperactor:test_monarch_hyperactor::client_root::python_bootstrap_seeds_client_root_on_local_proc_agent",
@@ -2703,7 +2745,7 @@ operation = "py_python_task_new"
 scope = "production"
 state = "migrated"
 transition = "6.3b"
-transition_revision = "self"
+transition_revision = "D124184395"
 constructor = "PyPythonTask"
 return_surface = "Handle[None] returned from shutdown_local_host_mesh"
 consumer = "shutdown_context after its locked one-shot commitment; the Rust characterization calls the binding directly"
@@ -2731,7 +2773,7 @@ operation = "py_python_task_new"
 scope = "production"
 state = "migrated"
 transition = "6.3b"
-transition_revision = "self"
+transition_revision = "D124115966"
 constructor = "PyPythonTask"
 return_surface = "Handle[None] returned from LoggingMeshClient::flush"
 consumer = "LoggingManager._new_flush_handle, reached by flush and flush_async"
@@ -2766,7 +2808,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/logging.rs"
 symbol = "LoggingMeshClient::spawn"
 operation = "py_python_task_new"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 constructor = "PyPythonTask"
 return_surface = "PyPythonTask returned from LoggingMeshClient::spawn"
@@ -2777,7 +2820,7 @@ abandonment = "a direct binding caller can drop the raw task before drive, which
 eager_effect = "an eager conversion would begin spawning the local log client and remote logging actors during the binding call; today construction performs no domain work"
 drop_behavior = "dropping an undriven raw task is inert, and a fresh task can still create exactly one local LogClientActor"
 unobserved_error = "source-grounded: LoggingManager.init does not catch a spawn failure; _proc_mesh retains it and a later observer receives it unchanged. If nobody observes _proc_mesh, _drain_pending_spawns does not await it, so host drain does not itself report the failure"
-disposition = "preserve timing"
+disposition = "intentionally become eager"
 semantic_class = "deferred_side_effect"
 oracle = [
   "fbcode//monarch/monarch_hyperactor:monarch_hyperactor-unittest::logging::tests::discarded_spawn_task_creates_no_log_client_actor",
@@ -2946,7 +2989,8 @@ path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/bootstra
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "stub"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.8"
 members = ["PythonTask"]
 
@@ -2960,7 +3004,7 @@ operation = "pytokio_import"
 scope = "stub"
 state = "migrated"
 transition = "6.8"
-transition_revision = "self"
+transition_revision = "D124184395"
 members = ["PythonTask"]
 
 [[site]]
@@ -2983,7 +3027,8 @@ path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/host_mes
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "stub"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.8"
 members = ["PythonTask"]
 
@@ -2995,7 +3040,8 @@ path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/logging.
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "stub"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.8"
 members = ["PythonTask"]
 
@@ -3019,7 +3065,8 @@ path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/pickle.p
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "stub"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.8"
 members = ["Shared"]
 
@@ -3044,7 +3091,8 @@ path = "fbcode/monarch/python/monarch/_rust_bindings/monarch_hyperactor/proc_mes
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "stub"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.8"
 members = ["Shared"]
 
@@ -3094,7 +3142,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/bootstrap.py"
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 members = ["PythonTask"]
 
@@ -3118,7 +3167,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 members = ["PythonTask", "Shared"]
 
@@ -3132,7 +3182,7 @@ operation = "pytokio_import"
 scope = "production"
 state = "migrated"
 transition = "6.3b"
-transition_revision = "self"
+transition_revision = "D124115966"
 members = ["PythonTask"]
 
 [[site]]
@@ -3143,7 +3193,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 members = ["PythonTask", "Shared"]
 
@@ -3180,7 +3231,8 @@ path = "fbcode/monarch/python/tests/_monarch/test_actor_mesh.py"
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "test"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.8"
 members = ["PythonTask", "Shared"]
 
@@ -3192,7 +3244,8 @@ path = "fbcode/monarch/python/tests/_monarch/test_hyperactor.py"
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "test"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.8"
 members = ["PythonTask", "Shared"]
 
@@ -3206,7 +3259,7 @@ operation = "pytokio_import"
 scope = "test"
 state = "migrated"
 transition = "6.8"
-transition_revision = "self"
+transition_revision = "D124115966"
 members = ["PythonTask"]
 
 [[site]]
@@ -3217,7 +3270,8 @@ path = "fbcode/monarch/python/tests/_monarch/test_mailbox.py"
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "test"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.8"
 members = ["PythonTask", "Shared"]
 
@@ -3241,7 +3295,8 @@ path = "fbcode/monarch/python/tests/test_admin_spawn_characterization.py"
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "test"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.8"
 members = ["PythonTask"]
 
@@ -3279,7 +3334,7 @@ operation = "pytokio_import"
 scope = "test"
 state = "legacy"
 transition = "6.8"
-members = ["PythonTask", "Shared"]
+members = ["PythonTask"]
 
 [[site]]
 id = "im.test_job.module"
@@ -3301,7 +3356,8 @@ path = "fbcode/monarch/python/tests/test_logging_initialization_characterization
 symbol = "<module>"
 operation = "pytokio_import"
 scope = "test"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.8"
 members = ["PythonTask"]
 
@@ -3328,7 +3384,7 @@ operation = "pytokio_import"
 scope = "test"
 state = "legacy"
 transition = "6.8"
-members = ["PythonTask", "Shared"]
+members = ["PythonTask"]
 
 [[site]]
 id = "im.test_python_actors.module"
@@ -3340,7 +3396,7 @@ operation = "pytokio_import"
 scope = "test"
 state = "legacy"
 transition = "6.8"
-members = ["PythonTask", "Shared"]
+members = ["PythonTask"]
 
 [[site]]
 id = "im.test_rdma_readiness_and_operations.test_ensure_init_observes_its_supplied_shared"
@@ -3350,7 +3406,8 @@ path = "fbcode/monarch/python/tests/test_rdma_readiness_and_operations.py"
 symbol = "test_ensure_init_observes_its_supplied_shared"
 operation = "pytokio_import"
 scope = "test"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.8"
 members = ["Shared"]
 
@@ -3386,8 +3443,9 @@ path = "fbcode/monarch/monarch_distributed_telemetry/src/query_engine.rs"
 symbol = "<file>"
 operation = "pytokio_module_ref"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.4c"
+transition_revision = "self"
 
 [[site]]
 id = "mr.lib.file"
@@ -3408,8 +3466,9 @@ path = "fbcode/monarch/monarch_extension/src/readonly_fuse.rs"
 symbol = "<file>"
 operation = "pytokio_module_ref"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.4c"
+transition_revision = "self"
 
 [[site]]
 id = "mr.readonly_nfs.file"
@@ -3419,8 +3478,9 @@ path = "fbcode/monarch/monarch_extension/src/readonly_nfs.rs"
 symbol = "<file>"
 operation = "pytokio_module_ref"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.4c"
+transition_revision = "self"
 
 [[site]]
 id = "mr.actor.file"
@@ -3442,8 +3502,9 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "<file>"
 operation = "pytokio_module_ref"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.3c"
+transition_revision = "D124454386"
 
 [[site]]
 id = "mr.bootstrap.file"
@@ -3453,7 +3514,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/bootstrap.rs"
 symbol = "<file>"
 operation = "pytokio_module_ref"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -3466,7 +3528,7 @@ operation = "pytokio_module_ref"
 scope = "production"
 state = "migrated"
 transition = "6.3b"
-transition_revision = "self"
+transition_revision = "D124184395"
 
 [[site]]
 id = "mr.endpoint.file"
@@ -3499,7 +3561,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/host_mesh.rs"
 symbol = "<file>"
 operation = "pytokio_module_ref"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -3521,7 +3584,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/logging.rs"
 symbol = "<file>"
 operation = "pytokio_module_ref"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -3543,7 +3607,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
 symbol = "<file>"
 operation = "pytokio_module_ref"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -3566,7 +3631,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/proc_mesh.rs"
 symbol = "<file>"
 operation = "pytokio_module_ref"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -3577,7 +3643,8 @@ path = "fbcode/monarch/monarch_rdma/extension/lib.rs"
 symbol = "<file>"
 operation = "pytokio_module_ref"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -3669,11 +3736,11 @@ constructor = "raw PythonTask"
 return_surface = "raw PythonTask immediately wrapped by call_one or choose"
 consumer = "the public Future built by make_future for call_one and choose"
 driver = "awaited by the caller through Future.get or as_asyncio"
-start_point = "the caller has already submitted the request; value_collector moves the sole response receiver into a task, while receive and conversion wait for the public observer"
+start_point = "the caller has already submitted the request; value_collector wraps an already-built future that owns the sole response receiver, while receive and conversion wait for the public observer"
 abandonment = "possible after successful construction; dropping the public Future drops the task and its sole response receiver"
 eager_effect = "an eager replacement would begin reply collection immediately; it would not resubmit the request"
 drop_behavior = "the response receiver closes, any queued reply is discarded, and later posts are undeliverable"
-unobserved_error = "PythonTask::new can fail after taking ownership of the receiver, closing it with no task; after successful construction, receive, conversion and supervision failures surface only when driven"
+unobserved_error = "PythonTask::new can fail after taking ownership of the collector future, dropping it and closing its receiver with no task; after successful construction, receive, conversion and supervision failures surface only when driven"
 disposition = "preserve timing"
 semantic_class = "already_started_lazy_observer"
 oracle = [
@@ -3738,7 +3805,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
 symbol = "reserve_mesh_reference"
 operation = "reserve_binding"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3a"
 
 [[site]]
@@ -3771,8 +3839,9 @@ path = "fbcode/monarch/monarch_distributed_telemetry/src/query_engine.rs"
 symbol = "<DistributedExec as ExecutionPlan>::execute"
 operation = "rust_take_inner"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.4c"
+transition_revision = "self"
 
 [[site]]
 id = "ot.readonly_fuse.take_actor_future"
@@ -3782,8 +3851,9 @@ path = "fbcode/monarch/monarch_extension/src/readonly_fuse.rs"
 symbol = "take_actor_future"
 operation = "rust_take_inner"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.4c"
+transition_revision = "self"
 
 [[site]]
 id = "ot.readonly_nfs.NfsServer.call"
@@ -3793,8 +3863,9 @@ path = "fbcode/monarch/monarch_extension/src/readonly_nfs.rs"
 symbol = "NfsServer::call"
 operation = "rust_take_inner"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.4c"
+transition_revision = "self"
 
 [[site]]
 id = "ms.host_mesh.HostMesh._from_initialized_hy_host_mesh[Shared.from_valuehy_host_mesh]"
@@ -3804,7 +3875,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
 symbol = "HostMesh._from_initialized_hy_host_mesh[Shared.from_value(hy_host_mesh)]"
 operation = "shared_from_value"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -3815,7 +3887,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/host_mesh.py"
 symbol = "HostMesh._new_with_shape[Shared.from_value(hm.sliced(shape.region))]"
 operation = "shared_from_value"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -3826,7 +3899,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
 symbol = "ProcMesh._from_initialized_hy_proc_mesh[Shared.from_value(hy_proc_mesh)]"
 operation = "shared_from_value"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -3837,7 +3911,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
 symbol = "ProcMesh._new_with_shape[Shared.from_value(pm.sliced(shape.region))]"
 operation = "shared_from_value"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -3848,8 +3923,9 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "block_on"
 operation = "shared_reconstruction"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.3c"
+transition_revision = "self"
 
 [[site]]
 id = "ms.pickle.from_value"
@@ -3859,7 +3935,8 @@ path = "fbcode/monarch/monarch_hyperactor/src/pickle.rs"
 symbol = "from_value"
 operation = "shared_reconstruction"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -3870,8 +3947,9 @@ path = "fbcode/monarch/monarch_hyperactor/src/actor_mesh.rs"
 symbol = "<AsyncActorMesh as ActorMeshProtocol>::__reduce__"
 operation = "spawn_abortable"
 scope = "production"
-state = "legacy"
+state = "migrated"
 transition = "6.3c"
+transition_revision = "self"
 
 [[site]]
 id = "ot.actor_mesh.Accumulator.accumulate.impl[x._take_inner]"
@@ -3893,7 +3971,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/bootstrap.py"
 symbol = "_as_python_task[s._take_inner]"
 operation = "take_inner"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]
@@ -3916,7 +3995,8 @@ path = "fbcode/monarch/python/monarch/_src/actor/proc_mesh.py"
 symbol = "ProcMesh.from_host_mesh.task[setup_actor.setup.call()._take_inner]"
 operation = "take_inner"
 scope = "production"
-state = "legacy"
+state = "migrated"
+transition_revision = "self"
 transition = "6.3c"
 
 [[site]]

@@ -64,8 +64,8 @@ const WAIT: Duration = Duration::from_secs(30);
 fn python_bootstrap_seeds_client_root_on_local_proc_agent() -> Result<()> {
     pyo3::Python::initialize();
 
-    let test_result = assert_bootstrap_is_lazy_and_rejects_invalid_via()
-        .and_then(|()| exercise_python_bootstrap_contract());
+    let test_result =
+        assert_bootstrap_rejects_invalid_via().and_then(|()| exercise_python_bootstrap_contract());
     let shutdown_result = shutdown_python_host_if_present();
 
     match (test_result, shutdown_result) {
@@ -79,7 +79,7 @@ fn python_bootstrap_seeds_client_root_on_local_proc_agent() -> Result<()> {
     }
 }
 
-fn assert_bootstrap_is_lazy_and_rejects_invalid_via() -> Result<()> {
+fn assert_bootstrap_rejects_invalid_via() -> Result<()> {
     anyhow::ensure!(
         python_client_root()?.is_none(),
         "the Python client root must be absent before bootstrap",
@@ -92,16 +92,11 @@ fn assert_bootstrap_is_lazy_and_rejects_invalid_via() -> Result<()> {
         let host_mesh_src = py.import("monarch._src.actor.host_mesh")?;
         let cmd = host_mesh_src.getattr("default_bootstrap_cmd")?.call0()?;
 
-        // Constructing and dropping the raw task must not publish the
-        // observable client-root or host-agent registrations.
-        let discarded = host_mesh_mod.getattr("bootstrap_host")?.call1((&cmd,))?;
-        drop(discarded);
-
         let error = match host_mesh_mod
             .getattr("bootstrap_host")?
             .call1((&cmd, "invalid://scheme"))
         {
-            Ok(_) => anyhow::bail!("an invalid via address returned a task"),
+            Ok(_) => anyhow::bail!("an invalid via address bootstrapped a host"),
             Err(error) => error,
         };
         anyhow::ensure!(
@@ -120,7 +115,7 @@ fn assert_bootstrap_is_lazy_and_rejects_invalid_via() -> Result<()> {
 
     anyhow::ensure!(
         python_client_root()?.is_none(),
-        "discarded and rejected bootstrap calls must not register a client root",
+        "a rejected bootstrap call must not register a client root",
     );
     assert_shutdown_without_host_is_runtime_error()
 }
@@ -162,14 +157,9 @@ fn exercise_python_bootstrap_contract() -> Result<()> {
             let host_mesh_src = py.import("monarch._src.actor.host_mesh")?;
             let cmd = host_mesh_src.getattr("default_bootstrap_cmd")?.call0()?;
 
-            // The native binding returns a PyPythonTask holding the Rust
-            // bootstrap future. block_on consumes it and drives it on Monarch's
-            // embedded Tokio runtime, producing
-            // (host_mesh, proc_mesh, root_actor_instance).
-            let bootstrap_result = host_mesh_mod
-                .getattr("bootstrap_host")?
-                .call1((cmd,))?
-                .call_method0("block_on")?;
+            // The native binding waits for bootstrap and returns
+            // (host_mesh, proc_mesh, root_actor_instance) directly.
+            let bootstrap_result = host_mesh_mod.getattr("bootstrap_host")?.call1((cmd,))?;
             let bootstrap_result = bootstrap_result.cast::<PyTuple>()?;
             let root_actor_obj = bootstrap_result.get_item(2)?;
             let root_actor = root_actor_obj.cast::<PyInstance>()?.borrow();

@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
 
 from pathlib import Path
 from typing import Literal, Optional, Sequence, Union
@@ -15,9 +13,8 @@ from monarch._rust_bindings.monarch_hyperactor.bootstrap import (
     start_worker_loop_forever as _native_start_worker_loop_forever,
     start_worker_loop_until_shutdown as _native_start_worker_loop_until_shutdown,
 )
-from monarch._rust_bindings.monarch_hyperactor.handle import WouldBlockRuntime
+from monarch._rust_bindings.monarch_hyperactor.handle import Handle, WouldBlockRuntime
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import HostMesh as HyHostMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.runtime import _is_in_tokio_runtime
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._src.actor.actor_mesh import _Lazy
@@ -26,18 +23,6 @@ from monarch._src.actor.host_mesh import HostMesh
 
 PrivateKey = Union[bytes, Path, None]
 CA = Union[bytes, Path, Literal["trust_all_connections"]]
-
-
-def _as_python_task(s: str | Future[str]) -> "PythonTask[str]":
-    if isinstance(s, str):
-        s_str: str = s
-
-        async def just() -> str:
-            return s_str
-
-        return PythonTask.from_coroutine(just())
-    else:
-        return s._take_inner()
 
 
 # Worker-process fork invariants:
@@ -253,19 +238,19 @@ def attach_to_workers(
     if private_key is not None or ca != "trust_all_connections":
         raise NotImplementedError("TLS security plumbing")
 
-    workers_tasks = [_as_python_task(w) for w in workers]
+    worker_handles = [w if isinstance(w, str) else w._as_handle() for w in workers]
 
     # Pass the ambient actor instance so the Rust side can push
     # client config to host agents during attach.
     from monarch._src.actor.actor_mesh import context
 
     instance = context().actor_instance._as_rust()
-    host_mesh: PythonTask[HyHostMesh] = _attach_to_workers(
-        instance, workers_tasks, name=name
+    host_mesh: Handle[HyHostMesh] = _attach_to_workers(
+        instance, worker_handles, name=name
     )
     extent = Extent(["hosts"], [len(workers)])
     hm = HostMesh(
-        host_mesh.spawn(),
+        host_mesh,
         extent.region,
         stream_logs=False,
         is_fake_in_process=False,

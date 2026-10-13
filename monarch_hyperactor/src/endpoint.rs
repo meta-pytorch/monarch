@@ -8,6 +8,8 @@
 
 use std::cell::Cell;
 use std::collections::VecDeque;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -503,7 +505,9 @@ async fn collect_valuemesh(
     }
 }
 
-fn value_collector(
+/// Collect one reply, retaining its response port and caller span until completion
+/// or drop. Collection metrics start when the future is first polled.
+async fn value_collector_future(
     mut receiver: PortReceiver<PythonMessage>,
     attrs: Arc<EndpointAttrs>,
     supervision_monitor: Option<Arc<dyn Supervisable>>,
@@ -511,35 +515,37 @@ fn value_collector(
     qualified_endpoint_name: Option<String>,
     adverb: EndpointAdverb,
     span_guard: SpanGuard,
-) -> PyResult<PyPythonTask> {
-    Ok(PythonTask::new(async move {
-        let _span_guard = span_guard;
-        let start = tokio::time::Instant::now();
+) -> PyResult<Py<PyAny>> {
+    let _span_guard = span_guard;
+    let start = tokio::time::Instant::now();
 
-        let record_guard = RecordEndpointGuard::new(start, attrs, adverb);
+    let record_guard = RecordEndpointGuard::new(start, attrs, adverb);
 
-        match collect_value(
-            &mut receiver,
-            &supervision_monitor,
-            &instance,
-            &qualified_endpoint_name,
-        )
-        .await
-        {
-            Ok((message, refs, _)) => monarch_with_gil_blocking(GilSite::ReplyConvert, |py| {
-                let mesh_references: VecDeque<Option<MeshRef>> =
-                    refs.into_iter().map(Some).collect();
-                let mut state =
-                    PicklingState::from_parts(message, VecDeque::new(), mesh_references);
-                state.unpickle_with_receiver(py, &instance)
-            }),
-            Err(e) => {
-                record_guard.mark_error();
-                Err(e)
-            }
+    match collect_value(
+        &mut receiver,
+        &supervision_monitor,
+        &instance,
+        &qualified_endpoint_name,
+    )
+    .await
+    {
+        Ok((message, refs, _)) => monarch_with_gil_blocking(GilSite::ReplyConvert, |py| {
+            let mesh_references: VecDeque<Option<MeshRef>> = refs.into_iter().map(Some).collect();
+            let mut state = PicklingState::from_parts(message, VecDeque::new(), mesh_references);
+            state.unpickle_with_receiver(py, &instance)
+        }),
+        Err(e) => {
+            record_guard.mark_error();
+            Err(e)
         }
-    })?
-    .into())
+    }
+}
+
+/// Wrap a single-reply collector for the Python endpoint adverbs.
+fn value_collector(
+    future: impl Future<Output = PyResult<Py<PyAny>>> + Send + 'static,
+) -> PyResult<PyPythonTask> {
+    Ok(PythonTask::new(future)?.into())
 }
 
 /// A streaming iterator that yields futures for each response from actors.
@@ -737,14 +743,14 @@ pub(crate) trait Endpoint {
     // HOT PATH: Be mindful of performance when making changes here.
     // To test how performance is affected by a change, run the RPC benchmarks in
     // `monarch/python/benches/`.
-    /// Call the endpoint on all actors and collect all responses into a ValueMesh.
-    #[tracing::instrument(level = "debug", skip_all)]
-    fn call<'py>(
+    /// Send the call to all actors now and return its owned reply collector.
+    #[tracing::instrument(name = "call", level = "debug", skip_all)]
+    fn call_future<'py>(
         &self,
         py: Python<'py>,
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
-    ) -> PyResult<Py<PyAny>> {
+    ) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send + 'static + use<Self>> {
         let instance = self.get_current_instance(py)?;
         let correlation_id: u64 = fastrand::u64(..);
         let span_guard =
@@ -770,7 +776,7 @@ pub(crate) trait Endpoint {
         )?;
 
         let instance_for_task = instance.clone_for_py();
-        let task: PyPythonTask = PythonTask::new(async move {
+        Ok(async move {
             let _span_guard = span_guard;
             collect_valuemesh(
                 extent,
@@ -781,9 +787,17 @@ pub(crate) trait Endpoint {
                 qualified_endpoint_name,
             )
             .await
-        })?
-        .into();
+        })
+    }
 
+    /// Call the endpoint on all actors and collect all responses into a ValueMesh.
+    fn call<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        let task: PyPythonTask = PythonTask::new(self.call_future(py, args, kwargs)?)?.into();
         wrap_in_future(py, task)
     }
 
@@ -816,7 +830,7 @@ pub(crate) trait Endpoint {
             Some(correlation_id),
         )?;
 
-        let task = value_collector(
+        let task = value_collector(value_collector_future(
             receiver,
             self.metric_attrs().clone(),
             self.get_supervision_monitor(),
@@ -824,18 +838,18 @@ pub(crate) trait Endpoint {
             self.get_qualified_name(),
             EndpointAdverb::Choose,
             span_guard,
-        )?;
+        ))?;
 
         wrap_in_future(py, task)
     }
 
-    /// Call the endpoint on exactly one actor (the mesh must have exactly one actor).
-    fn call_one<'py>(
+    /// Require exactly one actor, send the call now and return its owned reply collector.
+    fn call_one_future<'py>(
         &self,
         py: Python<'py>,
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
-    ) -> PyResult<Py<PyAny>> {
+    ) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send + 'static + use<Self>> {
         let extent = self.get_extent(py)?;
 
         if extent.num_ranks() != 1 {
@@ -866,7 +880,7 @@ pub(crate) trait Endpoint {
             Some(correlation_id),
         )?;
 
-        let task = value_collector(
+        Ok(value_collector_future(
             receiver,
             self.metric_attrs().clone(),
             self.get_supervision_monitor(),
@@ -874,8 +888,17 @@ pub(crate) trait Endpoint {
             self.get_qualified_name(),
             EndpointAdverb::CallOne,
             span_guard,
-        )?;
+        ))
+    }
 
+    /// Call the endpoint on exactly one actor (the mesh must have exactly one actor).
+    fn call_one<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        let task = value_collector(self.call_one_future(py, args, kwargs)?)?;
         wrap_in_future(py, task)
     }
 
@@ -984,7 +1007,35 @@ pub struct ActorEndpoint {
     attrs: Arc<EndpointAttrs>,
 }
 
+/// An owned endpoint reply collector that Rust can await without a Python Future
+/// or PythonTask wrapper. Dropping it closes its reply port, not the remote call.
+pub type ReplyFuture = Pin<Box<dyn Future<Output = PyResult<Py<PyAny>>> + Send + 'static>>;
+
 impl ActorEndpoint {
+    /// Send to exactly one actor and return a native future for its reply.
+    /// Argument validation and sending happen before this returns. The future owns
+    /// the response port; dropping it does not cancel the already-sent call.
+    pub fn call_one_future<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<ReplyFuture> {
+        Ok(Box::pin(Endpoint::call_one_future(self, py, args, kwargs)?))
+    }
+
+    /// Send to all actors and return a native future for their ValueMesh of replies.
+    /// Argument validation and sending happen before this returns. The future owns
+    /// the response port; dropping it does not cancel the already-sent call.
+    pub fn call_future<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<ReplyFuture> {
+        Ok(Box::pin(Endpoint::call_future(self, py, args, kwargs)?))
+    }
+
     // HOT PATH: Be mindful of performance when making changes here.
     // To test how performance is affected by a change, run the RPC benchmarks in
     // `monarch/python/benches/`.
@@ -1644,6 +1695,7 @@ mod tests {
     use std::time::Duration;
 
     use hyperactor::ActorAddr;
+    use hyperactor::Endpoint as _;
     use hyperactor::OncePortRef;
     use hyperactor::Proc;
     use hyperactor::mailbox::MessageEnvelope;
@@ -1907,7 +1959,7 @@ mod tests {
             .try_post(&instance, result_message(None))
             .expect("the positive-control reply should be queued");
 
-        let task = value_collector(
+        let task = value_collector(value_collector_future(
             receiver,
             Arc::new(EndpointAttrs::new("ownership_test", None)),
             None,
@@ -1915,7 +1967,7 @@ mod tests {
             None,
             EndpointAdverb::Choose,
             test_span(&instance, EndpointAdverb::Choose),
-        )
+        ))
         .expect("value_collector should return a task");
         drop(task);
 
@@ -1991,7 +2043,7 @@ mod tests {
         instance: Instance<PythonActor>,
         attrs: Arc<EndpointAttrs>,
         submissions: AtomicUsize,
-        response_ports: Mutex<Vec<OncePortRef<PythonMessage>>>,
+        response_ports: Mutex<Vec<EitherPortRef>>,
     }
 
     impl RecordingCallEndpoint {
@@ -2005,6 +2057,15 @@ mod tests {
         }
 
         fn take_response_port(&self) -> OncePortRef<PythonMessage> {
+            let EitherPortRef::Once(PythonOncePortRef { inner: Some(port) }) =
+                self.take_recorded_port()
+            else {
+                panic!("call should supply a reducible response port");
+            };
+            port
+        }
+
+        fn take_recorded_port(&self) -> EitherPortRef {
             self.response_ports
                 .lock()
                 .expect("the response-port recorder should not be poisoned")
@@ -2036,10 +2097,7 @@ mod tests {
             _instance: &Instance<PythonActor>,
             _correlation_id: Option<u64>,
         ) -> PyResult<()> {
-            let Some(EitherPortRef::Once(PythonOncePortRef { inner: Some(port) })) = port_ref
-            else {
-                panic!("call should submit one reducible response port");
-            };
+            let port = port_ref.expect("call and call_one should supply a response port");
             self.response_ports
                 .lock()
                 .expect("the response-port recorder should not be poisoned")
@@ -2085,6 +2143,113 @@ mod tests {
                 .map_err(Into::<PyErr>::into)
         })
         .expect("call should return an observer")
+    }
+
+    /// Exercise the shared construction used by the native methods, without the
+    /// Python wrapper. This fixture records sending rather than running an actor.
+    fn native_collector(endpoint: &RecordingCallEndpoint, adverb: EndpointAdverb) -> ReplyFuture {
+        monarch_with_gil_blocking(GilSite::Test, |py| -> PyResult<ReplyFuture> {
+            let args = PyTuple::empty(py);
+            match adverb {
+                EndpointAdverb::Call => {
+                    Ok(Box::pin(Endpoint::call_future(endpoint, py, &args, None)?))
+                }
+                EndpointAdverb::CallOne => Ok(Box::pin(Endpoint::call_one_future(
+                    endpoint, py, &args, None,
+                )?)),
+                _ => unreachable!("this witness covers call and call_one"),
+            }
+        })
+        .expect("native construction should send and return its collector")
+    }
+
+    /// Both collectors own their reply port before the first poll. Successful
+    /// delivery is the positive control for the later dropped-port assertion.
+    async fn assert_native_collector_ownership(adverb: EndpointAdverb) {
+        pyo3::Python::initialize();
+        let instance = test_instance(adverb.as_str());
+        let endpoint = RecordingCallEndpoint::new(instance.clone_for_py());
+        let retained = native_collector(&endpoint, adverb);
+        assert_eq!(endpoint.submissions.load(Ordering::SeqCst), 1);
+        let retained_port = endpoint.take_recorded_port();
+        match retained_port {
+            EitherPortRef::Once(PythonOncePortRef { inner: Some(port) }) => {
+                let (return_handle, _return_receiver) = instance
+                    .mailbox_for_py()
+                    .open_port::<Undeliverable<MessageEnvelope>>();
+                instance
+                    .mailbox_for_py()
+                    .serialize_and_send_once(port, result_message(Some(0)), return_handle)
+                    .expect("the retained call reply should serialize");
+                let collected = tokio::time::timeout(WAIT, retained)
+                    .await
+                    .expect("the retained call should finish")
+                    .expect("the retained call should collect its reply");
+                monarch_with_gil_blocking(GilSite::Test, |py| {
+                    collected
+                        .extract::<Py<PyValueMesh>>(py)
+                        .expect("call should return a ValueMesh");
+                });
+            }
+            EitherPortRef::Unbounded(port) => {
+                // An unexpected message produces a specific error before unpickling.
+                // That exact error proves this reply reached the retained collector.
+                let (reply, expected_error) = unexpected_message("native call_one reply");
+                port.inner.post(&instance, reply);
+                let error = tokio::time::timeout(WAIT, retained)
+                    .await
+                    .expect("the retained call_one should finish")
+                    .expect_err("the unexpected reply kind should fail collection");
+                assert_message_error(error, &expected_error);
+            }
+            _ => panic!("the recorded response port should be populated"),
+        }
+
+        let discarded = native_collector(&endpoint, adverb);
+        assert_eq!(endpoint.submissions.load(Ordering::SeqCst), 2);
+        let dropped_port = endpoint.take_recorded_port();
+        drop(discarded);
+        let (return_handle, mut return_receiver) = instance
+            .mailbox_for_py()
+            .open_port::<Undeliverable<MessageEnvelope>>();
+        let dropped_destination = match dropped_port {
+            EitherPortRef::Once(PythonOncePortRef { inner: Some(port) }) => {
+                let destination = port.port_addr().clone();
+                instance
+                    .mailbox_for_py()
+                    .serialize_and_send_once(port, result_message(Some(0)), return_handle)
+                    .expect("the discarded call reply should serialize");
+                destination
+            }
+            EitherPortRef::Unbounded(port) => {
+                let destination = port.inner.port_addr().clone();
+                instance
+                    .mailbox_for_py()
+                    .serialize_and_send(&port.inner, result_message(None), return_handle)
+                    .expect("the discarded call_one reply should serialize");
+                destination
+            }
+            _ => panic!("the recorded response port should be populated"),
+        };
+        let undeliverable = tokio::time::timeout(WAIT, return_receiver.recv())
+            .await
+            .expect("the dropped port must report delivery failure within the deadline")
+            .expect("the return port should receive the delivery failure");
+        let Undeliverable::Returned(envelope) = undeliverable else {
+            panic!("the failed response should retain its envelope");
+        };
+        assert_eq!(envelope.dest(), &dropped_destination);
+        assert_eq!(endpoint.submissions.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn native_call_sends_before_poll_and_drop_closes_response_port() {
+        assert_native_collector_ownership(EndpointAdverb::Call).await;
+    }
+
+    #[tokio::test]
+    async fn native_call_one_sends_before_poll_and_drop_closes_response_port() {
+        assert_native_collector_ownership(EndpointAdverb::CallOne).await;
     }
 
     #[tokio::test]

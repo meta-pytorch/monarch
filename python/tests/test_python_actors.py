@@ -42,10 +42,9 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._src.actor import actor_mesh
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
-from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import _spawn_admin, HostMesh, this_host, this_proc
 from monarch._src.actor.logging import _pending_flush_tasks
 from monarch._src.actor.proc_mesh import get_or_spawn_controller, HyProcMesh
@@ -1781,7 +1780,7 @@ def test_this_host() -> None:
         host = state.hosts
         hosts_by_rank = [host.slice(hosts=i) for i in range(6)]
         for r, h in enumerate(hosts_by_rank):
-            hy_host = h._hy_host_mesh.block_on()  # type: ignore
+            hy_host = h._hy_host_mesh.get()
             assert hy_host.region.slice().offset == r
             assert len(hy_host.region.slice()) == 1
 
@@ -2182,14 +2181,14 @@ async def test_run_forever_on_init():
 
 @pytest.mark.timeout(60)
 def test_raw_actor_mesh_pickle_blocks_on_proc_mesh_init() -> None:
-    async def sleep_then_mesh(pm: Shared[HyProcMesh]) -> HyProcMesh:
+    async def sleep_then_mesh(pm: HyProcMesh) -> HyProcMesh:
         time.sleep(15)
-        return await pm
+        return pm
 
     proc_mesh = this_host().spawn_procs(name="test_proc")
     proc_mesh._proc_mesh = PythonTask.from_coroutine(
-        sleep_then_mesh(proc_mesh._proc_mesh)
-    ).spawn()
+        sleep_then_mesh(proc_mesh._proc_mesh.get(timeout=30))
+    ).spawn_handle()
     actor_mesh = proc_mesh.spawn("test", Hello)
     assert proc_mesh._proc_mesh.poll() is None
     cloudpickle.dumps(actor_mesh)

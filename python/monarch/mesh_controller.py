@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
-
 import atexit
 import bdb
 import io
@@ -408,8 +406,10 @@ def spawn_tensor_engine(proc_mesh: "ProcMesh") -> DeviceMesh:
     gpus = proc_mesh.sizes.get("gpus", 1)
 
     # we currently block on the creation of the proc mesh, but conceivably we could init concurrently here.
-    # pyrefly: ignore [bad-argument-count, bad-argument-type]
-    backend_ctrl = Controller(context().actor_instance, proc_mesh._proc_mesh.block_on())
+    backend_ctrl = Controller(
+        context().actor_instance._as_rust(),
+        proc_mesh._proc_mesh.poll() or proc_mesh._proc_mesh.get(),
+    )
     client = MeshClient(cast("TController", backend_ctrl), proc_mesh.size(), gpus)
     dm = DeviceMesh(
         client,

@@ -35,7 +35,7 @@
 ///   running under `PythonTask.from_coroutine(...)`. Awaiting
 ///   arbitrary Python awaitables (e.g. `asyncio` futures) is an
 ///   error.
-/// - Calling `task.spawn()` / `spawn_abortable()` returns a `Shared`
+/// - Calling `task.spawn()` returns a `Shared`
 ///   (`PyShared`), which yields the result of the background Tokio
 ///   task running the original `PythonTask`.
 ///
@@ -85,9 +85,6 @@
 /// result = shared.block_on()            # blocks the calling Python thread
 /// ```
 ///
-/// If `spawn_abortable()` is used, dropping the returned `Shared`
-/// aborts the underlying Tokio task.
-///
 /// ## Context propagation
 ///
 /// `from_coroutine` preserves Monarch’s `context()` across Tokio
@@ -116,12 +113,43 @@ use tokio::sync::watch;
 use crate::handle::HandleCore;
 use crate::handle::PyHandle;
 use crate::handle::send_result;
-use crate::pickle::reduce_shared;
 use crate::runtime::GilSite;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
 use crate::runtime::signal_safe_block_on;
+
+// Shared class for pickling PyShared values
+py_global!(
+    shared_class,
+    "monarch._rust_bindings.monarch_hyperactor.pytokio",
+    "Shared"
+);
+
+/// Reduce a PyShared for pickling.
+///
+/// This function implements the pickle protocol for PyShared:
+/// 1. If the shared is already finished, return (Shared.from_value, (value,))
+/// 2. Otherwise, block on the shared and return (Shared.from_value, (value,))
+pub fn reduce_shared<'py>(
+    py: Python<'py>,
+    py_shared: &Bound<'py, PyShared>,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+    // First, check if the shared is already finished
+    if let Some(value) = py_shared.borrow().poll()? {
+        let from_value = shared_class(py).getattr("from_value")?;
+        let args = PyTuple::new(py, [value])?;
+        return Ok((from_value, args));
+    }
+
+    // Pending: block on the shared. Meshes ride the out-of-band table via their
+    // own type-specific reducers; this generic path is the fallback for any
+    // other pending `PyShared`.
+    let value = PyShared::block_on(py_shared.borrow(), py)?;
+    let from_value = shared_class(py).getattr("from_value")?;
+    let args = PyTuple::new(py, [value])?;
+    Ok((from_value, args))
+}
 
 declare_attrs! {
     /// If true, capture a Python stack trace at `PythonTask` creation
@@ -245,8 +273,7 @@ impl std::fmt::Debug for PythonTask {
 /// Exposed to Python as
 /// `monarch._rust_bindings.monarch_hyperactor.pytokio.PythonTask`.
 /// This object owns the underlying Rust task and is *consumed* when
-/// it is run (e.g. via `spawn()`, `spawn_abortable()`, or
-/// `block_on()`), hence `inner: Option<_>`.
+/// it is run (e.g. via `spawn()` or `block_on()`), hence `inner: Option<_>`.
 #[pyclass(
     name = "PythonTask",
     module = "monarch._rust_bindings.monarch_hyperactor.pytokio"
@@ -377,33 +404,12 @@ impl PyPythonTask {
         }
     }
 
-    /// Spawn this task onto the Tokio runtime and return a `Shared`
-    /// handle that *aborts on drop*.
-    ///
-    /// Use this when the underlying future is *abort-safe*
-    /// (cancellation-safe): dropping the returned `Shared` will call
-    /// `JoinHandle::abort()`, preventing the background task from
-    /// running forever.
-    ///
-    /// This is especially useful for long-lived or periodic tasks
-    /// (e.g. timers) where "nobody is awaiting the result anymore"
-    /// should stop the work.
-    ///
-    /// Like `spawn()`, this consumes the `PyPythonTask` (it can only
-    /// be spawned once).
-    pub(crate) fn spawn_abortable(&mut self) -> PyResult<PyShared> {
-        Ok(PyShared {
-            core: self.spawn_core(true)?,
-        })
-    }
-
     /// Spawn this task onto the Tokio runtime and return the shared
     /// `HandleCore` that observes its completion via the `watch` channel.
     ///
-    /// `abort` decides whether dropping the core aborts the producing task
-    /// (`spawn_abortable`) or leaves it running (`spawn`/`spawn_handle`).
-    /// Consumes the task. Shared by `spawn`/`spawn_abortable`/`spawn_handle`.
-    fn spawn_core(&mut self, abort: bool) -> PyResult<HandleCore> {
+    /// Consumes the task. Shared by `spawn`/`spawn_handle`; losing every
+    /// observer does not cancel the producer.
+    fn spawn_core(&mut self) -> PyResult<HandleCore> {
         let (tx, rx) = watch::channel(None);
         let traceback = self.traceback()?;
         // Clone the second owned copy under the same (single) GIL section, and
@@ -413,14 +419,10 @@ impl PyPythonTask {
             .as_ref()
             .map(|t| monarch_with_gil_blocking(GilSite::Traceback, |py| t.clone_ref(py)));
         let task = self.take_task()?;
-        let handle = get_tokio_runtime().spawn(async move {
+        get_tokio_runtime().spawn(async move {
             send_result(tx, task.await, traceback1);
         });
-        Ok(HandleCore::new(
-            rx,
-            abort.then(|| handle.abort_handle()),
-            traceback,
-        ))
+        Ok(HandleCore::new(rx, traceback))
     }
 }
 
@@ -451,7 +453,7 @@ impl PyPythonTask {
     /// `Shared.block_on()`. Consumes the task.
     pub(crate) fn spawn(&mut self) -> PyResult<PyShared> {
         Ok(PyShared {
-            core: self.spawn_core(false)?,
+            core: self.spawn_core()?,
         })
     }
 
@@ -462,7 +464,7 @@ impl PyPythonTask {
     /// `as_asyncio`/`await`) rather than `Shared`; non-abortable on drop.
     /// Consumes the task.
     pub(crate) fn spawn_handle(&mut self) -> PyResult<PyHandle> {
-        Ok(PyHandle::from_core(self.spawn_core(false)?))
+        Ok(PyHandle::from_core(self.spawn_core()?))
     }
 
     /// Implement Python's `await` protocol for `PythonTask`.
@@ -633,7 +635,7 @@ impl PyPythonTask {
             send_result(tx, result, traceback1);
         });
         Ok(PyShared {
-            core: HandleCore::new(rx, None, traceback),
+            core: HandleCore::new(rx, traceback),
         })
     }
 
@@ -679,8 +681,7 @@ impl PyPythonTask {
 
 /// Awaitable handle to a spawned background Tokio task.
 ///
-/// `Shared` is returned by `PythonTask.spawn()` /
-/// `spawn_abortable()`. It carries a `watch` receiver that is
+/// `Shared` is returned by `PythonTask.spawn()`. It carries a `watch` receiver that is
 /// fulfilled exactly once with the task's `PyResult<Py<PyAny>>`.
 ///
 /// Usage:
@@ -688,8 +689,7 @@ impl PyPythonTask {
 ///     world, or
 ///   - `shared.block_on()` to wait synchronously.
 ///
-/// If `abort` is true (from `spawn_abortable()`), dropping this
-/// object aborts the underlying Tokio task via its `JoinHandle`.
+/// Dropping this object does not cancel the underlying Tokio task.
 #[pyclass(
     name = "Shared",
     module = "monarch._rust_bindings.monarch_hyperactor.pytokio"
@@ -708,27 +708,6 @@ impl PyShared {
     /// without a pickle round-trip or a blocking `block_on`.
     pub fn wait_future(&self) -> impl Future<Output = PyResult<Py<PyAny>>> + Send + 'static {
         self.core.wait_future()
-    }
-}
-
-#[cfg(test)]
-impl PyShared {
-    /// A `Shared` that stays pending until the returned sender publishes.
-    ///
-    /// Handing back the sender lets a test both control completion and read
-    /// `receiver_count()`. `task()` and `wait_future()` clone the receiver
-    /// eagerly and hold it for the life of the waiter, so the count witnesses
-    /// waiter retention specifically. It is not a witness for observation in
-    /// general: `poll()` reads the watch value through a borrow and clones
-    /// nothing, so it leaves the count unmoved.
-    pub(crate) fn pending() -> (watch::Sender<Option<PyResult<Py<PyAny>>>>, Self) {
-        let (tx, rx) = watch::channel(None);
-        (
-            tx,
-            Self {
-                core: HandleCore::new(rx, None, None),
-            },
-        )
     }
 }
 
@@ -782,23 +761,10 @@ impl PyShared {
             return Ok(value);
         }
 
-        // Unlike `Handle::get()`, block_on() deliberately does NOT raise
-        // WouldBlockRuntime for a still-pending value inside a Tokio runtime.
-        // Blocking there panics the runtime loudly, which is preferable to a
-        // silent deadlock for the pending mesh bare-pickle path that relies on
-        // this (`reduce_shared` blocks a pending `Shared` during pickling), and
-        // the common multiprocessing case is unaffected. This trade was
-        // deliberately chosen; do not change it to raise.
         let wait = slf.core.wait_future();
         // Explicitly drop the reference so that if another thread attempts to borrow
         // this object mutably during signal_safe_block_on, it won't throw an exception.
         drop(slf);
-        // The pending branch is now committed: `poll()` above returned `None` and the
-        // next statement blocks. A characterization test releases its producer here so
-        // that it cannot resolve early and let the ready fast path stand in for a
-        // genuine block.
-        #[cfg(test)]
-        notify_pending_block_on();
         signal_safe_block_on(py, wait)?
     }
 
@@ -886,132 +852,5 @@ mod tests {
                 );
             }
         });
-    }
-}
-
-/// Test-only support that must live in this module.
-///
-/// These are associated functions on a type callers already import, so no call
-/// site needs a `crate::pytokio::` path. That is an ergonomic choice, not a
-/// census one: `collapse()` keys `helper_symbol` on (path, captured symbol,
-/// operation), and `actor_mesh.rs` already claims the `PyPythonTask` capture
-/// through its `use`, so a qualified spelling would add no hit either way.
-/// Task *construction* is a counted operation and belongs at its real call
-/// site, not behind a forwarder here.
-#[cfg(test)]
-mod test_support {
-    use std::cell::RefCell;
-    use std::sync::mpsc::SyncSender;
-
-    thread_local! {
-        /// Where the next `PyShared::block_on` pending acknowledgement on this
-        /// thread should go. Caller-thread scoped rather than process-global so
-        /// parallel tests in one binary cannot observe each other's signal.
-        static PENDING_BLOCK_ON: RefCell<Option<SyncSender<()>>> =
-            const { RefCell::new(None) };
-    }
-
-    /// Restores the previous routing when dropped, so a test scope cannot leak
-    /// its sender into an unrelated test that reuses the thread.
-    pub(crate) struct PendingBlockOnGuard {
-        previous: Option<SyncSender<()>>,
-    }
-
-    impl Drop for PendingBlockOnGuard {
-        fn drop(&mut self) {
-            let previous = self.previous.take();
-            PENDING_BLOCK_ON.with(|slot| *slot.borrow_mut() = previous);
-        }
-    }
-
-    pub(crate) fn route_pending_block_on(tx: SyncSender<()>) -> PendingBlockOnGuard {
-        let previous = PENDING_BLOCK_ON.with(|slot| slot.borrow_mut().replace(tx));
-        PendingBlockOnGuard { previous }
-    }
-
-    pub(crate) fn notify_pending_block_on() {
-        PENDING_BLOCK_ON.with(|slot| {
-            if let Some(tx) = slot.borrow().as_ref() {
-                // A full or closed channel means the test is no longer waiting.
-                let _ = tx.try_send(());
-            }
-        });
-    }
-}
-
-#[cfg(test)]
-use test_support::notify_pending_block_on;
-
-#[cfg(test)]
-impl PyPythonTask {
-    /// Route the next pending-`block_on` acknowledgement on this thread to `tx`.
-    ///
-    /// Dropping the returned guard restores the previous routing.
-    pub(crate) fn route_pending_block_on(
-        tx: std::sync::mpsc::SyncSender<()>,
-    ) -> test_support::PendingBlockOnGuard {
-        test_support::route_pending_block_on(tx)
-    }
-
-    /// Make `monarch._rust_bindings.monarch_hyperactor.pytokio.Shared` resolvable
-    /// from `sys.modules` in a Rust unit binary, where the extension module is
-    /// not loaded.
-    ///
-    /// `shared_class()` resolves through `PyOnceLock::import(..).unwrap()`, so a
-    /// missing module aborts the frame rather than raising. Both `shared_class`
-    /// sites cache independently but read the same `sys.modules`, so one install
-    /// serves both.
-    ///
-    /// Conservative by construction: existing parents are reused, only missing
-    /// children are created, nothing already present is replaced, and the
-    /// hierarchy stays resident. The GIL held for the whole walk is what makes
-    /// it atomic against other tests in the same binary.
-    pub(crate) fn install_test_module(py: Python<'_>) -> PyResult<()> {
-        use pyo3::types::PyDict;
-
-        let sys_modules = py
-            .import("sys")?
-            .getattr("modules")?
-            .cast_into::<PyDict>()
-            .map_err(PyErr::from)?;
-
-        let mut path = String::new();
-        let mut parent: Option<Bound<'_, PyModule>> = None;
-        for part in "monarch._rust_bindings.monarch_hyperactor.pytokio".split('.') {
-            if !path.is_empty() {
-                path.push('.');
-            }
-            path.push_str(part);
-
-            let module = match sys_modules.get_item(&path)? {
-                Some(existing) => existing.cast_into::<PyModule>().map_err(PyErr::from)?,
-                None => {
-                    let created = PyModule::new(py, &path)?;
-                    sys_modules.set_item(&path, &created)?;
-                    created
-                }
-            };
-            if let Some(parent) = &parent
-                && parent.getattr(part).is_err()
-            {
-                parent.setattr(part, &module)?;
-            }
-            parent = Some(module);
-        }
-
-        let leaf = parent.expect("the dotted module path is not empty");
-        let ours = py.get_type::<PyShared>();
-        match leaf.getattr("Shared") {
-            Ok(existing) => {
-                if !existing.is(&ours) {
-                    return Err(PyRuntimeError::new_err(
-                        "sys.modules already exposes a different Shared class; this binary's \
-                         PyShared instances would be rejected by it",
-                    ));
-                }
-            }
-            Err(_) => leaf.setattr("Shared", &ours)?,
-        }
-        Ok(())
     }
 }
