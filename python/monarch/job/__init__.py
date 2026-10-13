@@ -32,6 +32,7 @@ from monarch._src.job.service_identity import (
     SERVICE_PROC_RANK_ENV,
 )
 from monarch._src.job.shell import shell
+from monarch._src.job.pbs import PBSJob
 from monarch._src.job.slurm import SlurmJob
 
 # Define exports
@@ -58,6 +59,7 @@ __all__ = [
     "SERVICE_PROC_RANK_ENV",
     "set_current_job",
     "shell",
+    "PBSJob",
     "SlurmJob",
     "TelemetryConfig",
 ]
