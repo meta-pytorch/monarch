@@ -23,6 +23,17 @@ use super::queue_pair::RCQueuePair;
 /// ibverbs, and the default host (`ibv_reg_mr`) / device-memory
 /// (`ibv_reg_dmabuf_mr`) MR registration; ionic has no device-specific
 /// memory-key binding to add (unlike mlx5dv indirect mkeys).
+// TODO(ionic): bring-up runs with PyTorch expandable_segments:False. With it
+// True, GPU tensors come from HIP's VMM allocator and registering them for RDMA
+// currently fails:
+//   * [fixed on ROCm >= 10.0] HIP returned a cached, HIP-owned dmabuf fd per
+//     allocation; monarch closed it, so the next export returned a dead fd
+//     (EBADF).
+//   * [still open] a VMM export spanning >1 chunk ignores the requested size
+//     and covers only the first chunk, so tensors larger than a chunk (~20 MiB)
+//     fail ibv_reg_dmabuf_mr with EINVAL (ROCm/clr rocmemory.cpp).
+// Enabling True needs the multi-mapping case handled (fail-loud or per-mapping
+// registration). Downstream PR.
 #[derive(Debug)]
 pub struct IonicDomain;
 
