@@ -95,9 +95,12 @@ class ActorAddr:
     A python wrapper around hyperactor ActorAddr. It represents a unique reference
     for an actor.
 
+    Construction allocates a fresh proc instance. Use `from_string` to preserve
+    an existing actor's identity.
+
     Arguments:
     - `addr`: The channel address of the proc containing the actor.
-    - `proc_name`: The name of the proc containing the actor.
+    - `proc_name`: Display label for the fresh proc instance.
     - `actor_name`: Resource name of the actor.
     """
 

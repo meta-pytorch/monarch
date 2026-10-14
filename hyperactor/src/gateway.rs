@@ -230,7 +230,7 @@ where
     T: serde::Serialize + typeuri::Named,
 {
     let signal_actor_id = crate::ActorAddr::root(
-        ProcAddr::singleton(
+        ProcAddr::instance(
             ChannelAddr::any(channel::ChannelTransport::Local),
             ATTACH_CONTROL_LABEL,
         ),

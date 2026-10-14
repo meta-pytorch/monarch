@@ -24,7 +24,7 @@ from monarch._rust_bindings.monarch_hyperactor.pickle import (
     PendingMessage,
     pickle as monarch_pickle,
 )
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr, ProcId
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
@@ -80,10 +80,13 @@ def test_actor_id() -> None:
     assert actor_id.pid == actor_id.uid
     assert actor_id.label == "actor"
     assert actor_id.proc_label == "test"
-    assert actor_id.proc_id == "test@inproc://0"
+    assert ProcId.from_string(actor_id.proc_id.split("@", 1)[0]).uid.is_instance
+    assert actor_id.addr == "local:0"
     assert actor_id.is_root is True
-    assert str(actor_id) == "actor.test@inproc://0"
+    assert str(actor_id) == f"actor.{actor_id.proc_id}"
     assert ActorAddr.from_string(str(actor_id)) == actor_id
+    other = ActorAddr(addr="local:0", proc_name="test", actor_name="actor")
+    assert other.proc_id != actor_id.proc_id
 
 
 def test_no_hang_on_shutdown() -> None:

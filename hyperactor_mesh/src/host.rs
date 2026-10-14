@@ -2573,7 +2573,7 @@ mod tests {
         );
         let client_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
-        let client_proc_id = ResourceId::proc_addr_from_name(client_listen_addr, "client");
+        let client_proc_id = ProcAddr::instance(client_listen_addr, "client");
         let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
         let _client_handle = client_proc.clone().serve(client_rx);
 
@@ -2676,7 +2676,7 @@ mod tests {
                 let client_addr = ChannelAddr::any(ChannelTransport::Unix);
                 let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
                 let client_proc_id =
-                    ResourceId::proc_addr_from_name(client_listen_addr, format!("client-{}", ci));
+                    ProcAddr::instance(client_listen_addr, format!("client-{}", ci));
                 let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
                 let _client_handle = client_proc.clone().serve(client_rx);
 
@@ -2741,7 +2741,7 @@ mod tests {
             host.addr().clone(),
         );
         let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
-        let client_proc_id = ResourceId::proc_addr_from_name(client_listen_addr, "external-client");
+        let client_proc_id = ProcAddr::instance(client_listen_addr, "external-client");
         let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
         let _client_handle = client_proc.clone().serve(client_rx);
 
