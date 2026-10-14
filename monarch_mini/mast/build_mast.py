@@ -56,10 +56,10 @@ _MAST_PACKAGE_PYTHON = "/usr/local/fbcode/platform010/bin/python3"
 _FBPKG_NAME = "monarch_additional_packages"
 _DEFAULT_PORT = 26600
 
-# SMC tier of the MAST ResourceLocatorService (maps a cluster -> its scheduler
-# frontend's write tier). Used to submit directly via thrift, since `mast schedule`
+# Resolves a cluster to its scheduler frontend's write tier through the shared
+# scheduler router. Used to submit directly via thrift, since `mast schedule`
 # routes writes only to the GenAI/MSL frontend.
-_RESOURCE_LOCATOR_TIER = "mast.lookup.prod"
+_LOCATE_WRITE_TIER_TARGET = "fbcode//monarch/monarch_mini/mast:locate_write_tier"
 
 # Known entitlement -> tenantPath. monarch_cicd is authorized only on
 # MastGenAICluster; monarch_training is also authorized on the classic-MAST
@@ -301,25 +301,18 @@ def make_jobspec(
 
 
 def locate_write_tier(cluster: str) -> str:
-    """Resolve a cluster's scheduler write tier via MAST's ResourceLocatorService.
+    """Resolve a cluster's scheduler write tier via the shared scheduler router.
 
     `mast schedule` only ever hits the GenAI/MSL frontend, so it can't create jobs
-    on the classic-MAST clusters. We instead ask the locator which frontend serves
+    on the classic-MAST clusters. We instead ask the router which frontend serves
     the cluster and submit straight to that write tier (see `submit_via_thrift`).
     """
     out = subprocess.check_output(
-        [
-            "thriftdbg",
-            "sendRequest",
-            "locateHpcCluster",
-            json.dumps({"request": {"hpcClusterUuid": cluster}}),
-            "--tier",
-            _RESOURCE_LOCATOR_TIER,
-        ],
+        ["buck2", "run", _LOCATE_WRITE_TIER_TARGET, "--", cluster],
+        cwd=_HERE,
         text=True,
     )
-    line = [ln for ln in out.strip().splitlines() if ln.strip()][-1]
-    return json.loads(line)["smcTiers"]["writeTier"]
+    return [ln for ln in out.strip().splitlines() if ln.strip()][-1]
 
 
 def submit_via_thrift(spec: dict) -> None:
