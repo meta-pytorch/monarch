@@ -35,6 +35,14 @@ if TYPE_CHECKING:
 
 R = TypeVar("R")
 
+# Raised by every blocking `Future.get()` path on a Tokio thread. Handle-backed
+# Futures raise it too, rather than `Handle.get()`'s message, which suggests a
+# `poll()` that `Future` does not have.
+_GET_ON_TOKIO_REFUSAL = (
+    "Future.get() cannot block from within a Tokio runtime; "
+    "observe the Future from a synchronous or asyncio context."
+)
+
 # Shared by the Python-implemented `Future.get()` paths when a running asyncio
 # loop is detected. Handle-backed Futures enforce the same policy in native
 # `Handle.get()`.
@@ -237,10 +245,7 @@ class Future(Generic[R]):
                     # from a valid context still drives the Future. (Otherwise the
                     # no-timeout path's block_on() takes the task then panics, and
                     # the timeout path spawns a Handle then raises -- both mutate.)
-                    raise WouldBlockRuntime(
-                        "Future.get() cannot block from within a Tokio runtime; "
-                        "observe the Future from a synchronous or asyncio context."
-                    )
+                    raise WouldBlockRuntime(_GET_ON_TOKIO_REFUSAL)
                 if timeout is not None:
                     # Validate the timeout BEFORE spawning: an invalid value must
                     # not start work or flip state to _Handle. Handle.get()
@@ -264,10 +269,12 @@ class Future(Generic[R]):
                     self._status = _Exception(e)
                     raise e from None
             case _Handle(handle=handle):
-                # Observe the shared Handle. `Handle.get()` applies its own
-                # context policy (warn on a live loop, `WouldBlockRuntime` in a
-                # Tokio runtime context, block on a sync thread) and emits the
-                # Python warning itself, so we do not warn again here.
+                if in_tokio:
+                    raise WouldBlockRuntime(_GET_ON_TOKIO_REFUSAL)
+                # Observe the shared Handle. `Handle.get()` applies the rest of
+                # its context policy (warn on a live loop, block on a sync
+                # thread) and emits the Python warning itself, so we do not warn
+                # again here.
                 return cast("R", handle.get(timeout))
             case _Complete(value=value):
                 return cast("R", value)
@@ -278,10 +285,7 @@ class Future(Generic[R]):
             case _Body(body=body):
                 # Refuse before binding, leaving the body unstarted.
                 if in_tokio:
-                    raise WouldBlockRuntime(
-                        "Future.get() cannot block from within a Tokio runtime; "
-                        "observe the Future from a synchronous or asyncio context."
-                    )
+                    raise WouldBlockRuntime(_GET_ON_TOKIO_REFUSAL)
                 _validate_timeout(timeout)
                 return cast("R", body.get(timeout))
             case _:

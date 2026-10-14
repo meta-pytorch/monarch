@@ -1172,7 +1172,7 @@ def _assert_tokio_await_raises_native(make_observable):
     assert ok.get() == _PROBE_SUCCESS_VALUE  # refusal consumed nothing
 
 
-def _assert_ready_get_on_tokio_refuses(make_observable):
+def _assert_ready_get_on_tokio_refuses(make_observable, message):
     from monarch._src.actor.actor_mesh import _client_context
 
     ok = make_observable("success")
@@ -1185,12 +1185,10 @@ def _assert_ready_get_on_tokio_refuses(make_observable):
             ok.get()
         return str(caught.value)
 
-    # The Handle-specific message identifies the observer. A Handle-backed
-    # facade delegates to the same observer, so it carries the same message.
-    assert _run_in_tokio(attempt()) == (
-        "get() cannot be called from a Tokio runtime context; "
-        "use poll() or as_asyncio()"
-    )
+    # Each API refuses with its own message, which also tells it apart from
+    # the bootstrap guard. A Handle-backed Future must not suggest poll(),
+    # which Future does not have.
+    assert _run_in_tokio(attempt()) == message
 
 
 async def _assert_ready_get_on_loop_warns(make_observable):
@@ -1204,6 +1202,8 @@ async def _assert_ready_get_on_loop_warns(make_observable):
         if issubclass(w.category, UserWarning) and "event loop" in str(w.message)
     ]
     assert len(matching) == 1
+    # Attributed to the caller's line, not to Monarch's own get() wrapper.
+    assert matching[0].filename == __file__
 
 
 def _assert_timeout_then_success(make_gated):
@@ -1411,11 +1411,27 @@ def test_fm_ready_get_on_tokio_refuses_current_cached_returns_and_reraises():
     assert _run_in_tokio(attempt()) == (5, "boom")
 
 
-@pytest.mark.parametrize("make_observable", TARGET_ONLY)
-def test_fm_ready_get_on_tokio_refuses_when_ready(make_observable):
+@pytest.mark.parametrize(
+    ("make_observable", "message"),
+    [
+        pytest.param(
+            _handle_observable,
+            "get() cannot be called from a Tokio runtime context; "
+            "use poll() or as_asyncio()",
+            id="raw_handle",
+        ),
+        pytest.param(
+            _handle_future_observable,
+            "Future.get() cannot block from within a Tokio runtime; "
+            "observe the Future from a synchronous or asyncio context.",
+            id="handle_backed_future",
+        ),
+    ],
+)
+def test_fm_ready_get_on_tokio_refuses_when_ready(make_observable, message):
     """Target behavior: get() refuses on Tokio unconditionally, even ready. The
     observable is driven to ready *before* entering the worker."""
-    _assert_ready_get_on_tokio_refuses(make_observable)
+    _assert_ready_get_on_tokio_refuses(make_observable, message)
 
 
 # -- fm.invalid_timeout_on_ready ---------------------------------------------

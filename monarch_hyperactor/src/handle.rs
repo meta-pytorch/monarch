@@ -811,7 +811,9 @@ impl PyHandle {
                 py,
                 &category,
                 c"Blocking get() was called from a running asyncio event loop. It is a synchronous, blocking call that can freeze the loop and deadlock; use as_asyncio() (or await) instead.",
-                1,
+                // Python code reaches get() through a wrapper such as
+                // `Future.get()`; level 2 names the wrapper's caller.
+                2,
             )?;
         }
 
