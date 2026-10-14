@@ -17,7 +17,6 @@ Build a proc with the builder, choosing how it attaches to a gateway:
 
 ```rust
 // Default: attach to the process-wide `Gateway::global()`.
-// (Legacy pseudo-singleton ids are reserved for host-scoped construction.)
 let proc = Proc::builder().proc_id(id).build()?;
 
 // Attach to a caller-provided gateway — e.g. a host wiring its procs

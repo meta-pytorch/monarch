@@ -84,7 +84,6 @@ use crate::host::SingleTerminate;
 use crate::host::TerminateError;
 use crate::host::TerminateSummary;
 use crate::host::WaitError;
-use crate::host::legacy_service_proc_id;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::logging::OutputTarget;
@@ -408,8 +407,8 @@ pub enum Bootstrap {
     /// Bootstrap as a "v1" host bootstrap. This sets up a new `Host`,
     /// managed by a [`crate::host_mesh::host_agent::HostAgent`].
     Host {
-        /// The address on which to serve the host.
-        addr: ChannelAddr,
+        /// The service identity and address on which to serve the host.
+        addr: ProcAddr,
         /// Callback used to publish host readiness after the [`HostAgent`] and
         /// cast actor are bound.
         callback_addr: ChannelAddr,
@@ -642,7 +641,7 @@ impl Bootstrap {
                 exit_on_shutdown,
             } => {
                 let (_agent_handle, shutdown) = host(
-                    ProcAddr::new(legacy_service_proc_id(), addr.into()),
+                    addr,
                     command,
                     config,
                     exit_on_shutdown,
@@ -2549,6 +2548,7 @@ mod tests {
     use timed_test::async_timed_test;
 
     use super::*;
+    use crate::host::service_proc_id;
 
     #[derive(Clone, Copy)]
     enum CleanupLaunchBehavior {
@@ -2971,7 +2971,10 @@ mod tests {
     #[test]
     fn test_bootstrap_mode_env_string_none_config_host() {
         let value = Bootstrap::Host {
-            addr: ChannelAddr::any(ChannelTransport::Unix),
+            addr: ProcAddr::instance(
+                ChannelAddr::any(ChannelTransport::Unix),
+                crate::host::SERVICE_PROC_NAME,
+            ),
             callback_addr: ChannelAddr::any(ChannelTransport::Unix),
             command: None,
             config: None,
@@ -3031,7 +3034,10 @@ mod tests {
         // Host case
         {
             let original = Bootstrap::Host {
-                addr: ChannelAddr::any(ChannelTransport::Unix),
+                addr: ProcAddr::instance(
+                    ChannelAddr::any(ChannelTransport::Unix),
+                    crate::host::SERVICE_PROC_NAME,
+                ),
                 callback_addr: ChannelAddr::any(ChannelTransport::Unix),
                 command: None,
                 config: Some(attrs.clone()),
@@ -3741,7 +3747,7 @@ mod tests {
 
         let handle = host(
             ProcAddr::new(
-                legacy_service_proc_id(),
+                service_proc_id(),
                 ChannelAddr::any(ChannelTransport::Unix).into(),
             ),
             Some(BootstrapCommand::test()),

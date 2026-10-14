@@ -306,12 +306,15 @@ pub async fn host_mesh(n: usize) -> HostMeshShutdownGuard {
 
     let mut host_addrs = vec![];
     for _ in 0..n {
-        host_addrs.push(ChannelTransport::Unix.any());
+        host_addrs.push(hyperactor::ProcAddr::instance(
+            ChannelTransport::Unix.any(),
+            "service",
+        ));
     }
 
     let mut ready = Vec::with_capacity(n);
     for host in host_addrs.iter() {
-        let callback = HostBootstrapReady::new(host.clone()).unwrap();
+        let callback = HostBootstrapReady::new(host.addr().clone()).unwrap();
         let mut cmd = Command::new(program.clone());
         let boot = Bootstrap::Host {
             addr: host.clone(),

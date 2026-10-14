@@ -29,6 +29,12 @@ from pathlib import Path
 from subprocess import check_output
 from typing import Optional
 
+from monarch._src.job.service_identity import (
+    allocate_service_proc_ids,
+    serialize_service_proc_ids,
+    SERVICE_PROC_IDS_ENV,
+)
+
 _WORKER_PORT = 26600
 _DEFAULT_CACHE_DIR = Path(f"/tmp/monarch_bootstrap_{os.environ['USER']}")
 # Python used to create the worker venv on the devvm (platform010 is present on
@@ -65,8 +71,10 @@ _CPU_CPUS = 15
 # hung worker dumps tracebacks on SIGABRT.
 _BOOTSTRAP_CODE = (
     "import socket; "
+    "from monarch._src.job.service_identity import ranked_service_proc_id_from_env, service_proc_addr; "
     "from monarch.actor import run_worker_loop_forever; "
-    f'run_worker_loop_forever(address=f"metatls://{{socket.getfqdn()}}:{_WORKER_PORT}", '
+    f'run_worker_loop_forever(address=service_proc_addr(f"metatls://{{socket.getfqdn()}}:{_WORKER_PORT}", '
+    'ranked_service_proc_id_from_env(rank_env="TW_TASK_ID")), '
     'ca="trust_all_connections")'
 )
 
@@ -287,6 +295,11 @@ def launch_mast(
     single-region ``eag`` locality -- useful when a large host count won't fit
     in one region. All are read here so no caller change is needed.
     """
+    env = dict(env or {})
+    if SERVICE_PROC_IDS_ENV not in env:
+        env[SERVICE_PROC_IDS_ENV] = serialize_service_proc_ids(
+            allocate_service_proc_ids(hosts)
+        )
     regions_env = os.environ.get("TITAN_LOCALITY_REGIONS")
     if regions_env is not None:
         stripped = regions_env.strip().lower()

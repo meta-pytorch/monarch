@@ -118,10 +118,9 @@ def start_worker_loop_forever(
 
     ``address`` accepts either of these string formats:
 
-    - A ZMQ-style channel URL. This uses the legacy ``service`` proc identity.
+    - A ZMQ-style channel URL. This allocates a fresh service proc identity.
     - A ProcAddr in ``<proc-id>@<channel-url>`` form. This uses the embedded
-      proc identity. An explicit legacy address such as
-      ``service@tcp://host:4444`` is equivalent to the bare channel URL.
+      proc identity. Use this form to share the identity with a client.
 
     Channel URL examples:
 
@@ -230,13 +229,9 @@ def attach_to_workers(
     used to decide if we have successfully connected to all hosts. Workers may
     be strings or monarch.actor.Future objects that resolve to strings.
 
-    Each worker string accepts either of these formats:
-
-    - A ZMQ-style channel URL such as ``tcp://worker-fqdn:4444``. This uses the
-      legacy ``service`` proc identity.
-    - A ProcAddr in ``<proc-id>@<location>`` form, such as
-      ``service<2MuAHeDjLCEd>@tcp://worker-fqdn:4444``. This preserves the
-      embedded service proc identity and full location.
+    Each worker string must be a ProcAddr in ``<proc-id>@<location>`` form,
+    such as ``service<2MuAHeDjLCEd>@tcp://worker-fqdn:4444``. The proc identity
+    must match the identity used when starting the worker.
 
     If a worker string uses the alias form ``dial_to@bind_to``,
     ``attach_to_workers`` treats it as a reference to an already-serving

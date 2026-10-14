@@ -108,10 +108,10 @@ use crate::mesh_id::ResourceId;
 /// Name of the system service proc on a host.
 ///
 /// Hosts the admin actor layer: HostMeshAgent, MeshAdminAgent, and bridge.
-pub const SERVICE_PROC_NAME: &str = hyperactor::proc::LEGACY_SERVICE_PROC_NAME;
+pub const SERVICE_PROC_NAME: &str = "service";
 
-pub(crate) fn legacy_service_proc_id() -> ProcId {
-    ProcId::singleton(Label::strip(SERVICE_PROC_NAME))
+pub(crate) fn service_proc_id() -> ProcId {
+    ProcId::instance(Label::strip(SERVICE_PROC_NAME))
 }
 
 /// Name of the local client proc on a host.
@@ -320,7 +320,7 @@ impl<M: ProcManager> Host<M> {
         // it externally and pass it to [`new_with_gateway`].
         Self::new_with_gateway(
             manager,
-            ProcAddr::new(legacy_service_proc_id(), addr.into()),
+            ProcAddr::new(service_proc_id(), addr.into()),
             listener,
             Gateway::global().clone(),
             None,
@@ -353,6 +353,10 @@ impl<M: ProcManager> Host<M> {
         gateway: Gateway,
         via: Option<ChannelAddr>,
     ) -> Result<Self, HostError> {
+        assert!(
+            addr.uid().is_instance(),
+            "host service proc must have an instance id"
+        );
         let service_proc_id = addr.id().clone();
         let addr = match addr.location() {
             Location::Addr(addr) => addr.clone(),
@@ -2010,12 +2014,6 @@ mod tests {
 
     #[tokio::test]
     #[cfg(fbcode_build)]
-    async fn test_bootstrap_child_round_trip_with_legacy_service_proc() {
-        assert_bootstrap_child_round_trip(legacy_service_proc_id()).await;
-    }
-
-    #[tokio::test]
-    #[cfg(fbcode_build)]
     async fn test_bootstrap_child_round_trip_with_instance_service_proc() {
         let service_proc_id = ProcId::new(
             Uid::Instance(0x5e12_71ce, Some(Label::strip(SERVICE_PROC_NAME))),
@@ -2804,7 +2802,7 @@ mod tests {
         });
         let location = Location::from(ChannelAddr::any(ChannelTransport::Unix))
             .with_via(Uid::instance(Label::strip("remote")));
-        let service_proc_addr = ProcAddr::new(legacy_service_proc_id(), location.clone());
+        let service_proc_addr = ProcAddr::new(service_proc_id(), location.clone());
 
         let result =
             Host::new_with_gateway(proc_manager, service_proc_addr, None, Gateway::new(), None)
@@ -2860,7 +2858,7 @@ mod tests {
         let host = Host::new_with_gateway(
             proc_manager,
             ProcAddr::new(
-                legacy_service_proc_id(),
+                service_proc_id(),
                 ChannelAddr::any(ChannelTransport::Unix).into(),
             ),
             None,
@@ -2890,7 +2888,7 @@ mod tests {
         let host = Host::new_with_gateway(
             proc_manager,
             ProcAddr::new(
-                legacy_service_proc_id(),
+                service_proc_id(),
                 ChannelAddr::any(ChannelTransport::Unix).into(),
             ),
             None,
@@ -2944,7 +2942,7 @@ mod tests {
         let mut host = Host::new_with_gateway(
             proc_manager,
             ProcAddr::new(
-                legacy_service_proc_id(),
+                service_proc_id(),
                 ChannelAddr::any(ChannelTransport::Unix).into(),
             ),
             None,

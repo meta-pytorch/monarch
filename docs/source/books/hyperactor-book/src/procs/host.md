@@ -47,11 +47,10 @@ registered peer sender.
 gateway, so they reach each other—and the host reaches them—through the
 gateway's local `procs` table, with zero dialing.
 
-`local_proc` always has a fresh instance id labeled `"local"`. Launchers can
-also give `service_proc` a fresh instance id labeled `"service"` through
-`Host::new_with_gateway`. The default remains the legacy `"service"`
-pseudo-singleton for compatibility. A gateway can contain multiple hosts only
-when each host has a distinct service proc id.
+`local_proc` and `service_proc` have fresh instance ids labeled `"local"` and
+`"service"`. Launchers pass the service proc's identity through bootstrap and
+retain its `ProcAddr` for attaching to the host. Multiple hosts can share a
+gateway because their service proc ids are distinct.
 
 ## Spawned children
 

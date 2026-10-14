@@ -408,7 +408,7 @@ class MessageActivityRoutesTest(_RouteTestBase):
 class DagRoutesTest(_RouteTestBase):
     def test_empty_partial_snapshot_is_not_reported_as_pending(self):
         root = "root"
-        failed_host = "host:host_agent.service@tcp://host:1"
+        failed_host = "host:host_agent.service<2>@tcp://host:1"
 
         def query(sql: str, _params=()):
             if " FROM nodes " in sql:

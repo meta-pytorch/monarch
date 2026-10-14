@@ -355,7 +355,7 @@ struct RoutingState {
 }
 
 /// Routing state for a gateway. Holds original inputs plus derived fields
-/// (`default_location`, `local_delivery_locations`, and `forwarder`) behind one
+/// (`default_location` and `forwarder`) behind one
 /// lock so advertised reachability and outbound routing stay synchronized.
 struct Routing {
     state: RoutingState,
@@ -363,9 +363,6 @@ struct Routing {
     /// The advertised location for newly bound refs. The newest active
     /// normal serve or [`Gateway::serve_via`] session takes precedence.
     default_location: Location,
-
-    /// Cached locations that may receive local delivery for attached procs.
-    local_delivery_locations: Arc<[Location]>,
 
     /// Sender used to forward messages whose destination is neither
     /// an attached proc nor matched by [`peers`]. The newest active
@@ -382,8 +379,7 @@ impl Routing {
                 base_forwarder: base_forwarder.clone(),
                 active_serves: Vec::new(),
             },
-            default_location: fallback_location.clone(),
-            local_delivery_locations: vec![fallback_location].into(),
+            default_location: fallback_location,
             forwarder: base_forwarder,
         }
     }
@@ -400,16 +396,6 @@ impl Routing {
             .last()
             .map(|serve| serve.location.clone())
             .unwrap_or_else(|| self.state.fallback_location.clone());
-        self.local_delivery_locations = if self.state.active_serves.is_empty() {
-            vec![self.default_location.clone()].into()
-        } else {
-            self.state
-                .active_serves
-                .iter()
-                .map(|serve| serve.location.clone())
-                .collect::<Vec<_>>()
-                .into()
-        };
         self.forwarder = self
             .state
             .active_serves
@@ -546,10 +532,9 @@ impl Gateway {
     /// traffic directly to the proc's muxer, and the proc routes its
     /// egress through the gateway.
     ///
-    /// The gateway delivers messages addressed to this id directly to
-    /// the muxer when [`Proc::is_local_delivery_target`] holds;
-    /// otherwise routing continues to the appropriate peer or
-    /// forwarder.
+    /// The gateway delivers messages addressed to this proc id
+    /// directly to the muxer; other destinations continue to the
+    /// appropriate peer or forwarder.
     ///
     /// Internal-only: only [`Proc`] construction calls this, and the
     /// resulting [`AttachedProcGuard`] is held inside the proc itself
@@ -929,10 +914,6 @@ impl Gateway {
                 routing.active_serves.remove(index);
             }
         });
-    }
-
-    fn local_delivery_locations(&self) -> Arc<[Location]> {
-        Arc::clone(&self.inner.routing.read().unwrap().local_delivery_locations)
     }
 
     fn envelope_with_next_hop_location(
@@ -1445,20 +1426,16 @@ impl Gateway {
         // routing hop, it is the named leaf and a miss is undeliverable rather
         // than a fallback forward. A dead entry is left in place —
         // `AttachedProcGuard::drop` is the sole remover.
-        let dest_proc = envelope.dest().actor_addr().proc_addr();
         let local = self
             .inner
             .procs
             .read()
             .unwrap()
-            .get(dest_proc.id())
+            .get(envelope.dest().proc_id())
             .and_then(WeakProc::upgrade);
         if let Some(proc) = local {
-            let local_locations = self.local_delivery_locations();
-            if proc.is_local_delivery_target_at(&dest_proc, &local_locations) {
-                proc.muxer().post(envelope, return_handle);
-                return;
-            }
+            proc.muxer().post(envelope, return_handle);
+            return;
         }
 
         if envelope.has_next_hop() {
@@ -2459,7 +2436,11 @@ mod tests {
         let via1_default = client_gw.default_location();
         assert_eq!(via1_default.addr(), &server1_addr);
 
-        let client_proc = Proc::legacy_service_pseudo_singleton_on_gateway(client_gw.clone());
+        let client_proc = Proc::builder()
+            .proc_id(ProcId::instance(Label::strip("service")))
+            .shared_gateway(client_gw.clone())
+            .build()
+            .unwrap();
         let client = client_proc.client("recv");
         let (client_port, mut client_rx) = client.bind_handler_port::<u64>();
         let PortLocation::Bound(old_client_dest) = client_port.location() else {
@@ -2534,7 +2515,11 @@ mod tests {
             .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
             .unwrap();
         let server_addr = server_gw.default_location().addr().clone();
-        let _server_proc = Proc::legacy_service_pseudo_singleton_on_gateway(server_gw.clone());
+        let _server_proc = Proc::builder()
+            .proc_id(ProcId::instance(Label::strip("service")))
+            .shared_gateway(server_gw.clone())
+            .build()
+            .unwrap();
 
         let client_gw = Gateway::new();
         let pre_default = client_gw.default_location();
@@ -2622,13 +2607,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gateway_serve_via_does_not_shadow_peer_legacy_proc() {
+    async fn test_gateway_serve_via_does_not_shadow_peer_proc() {
         let server_gw = Gateway::new();
         let mut accept_handle = server_gw
             .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
             .unwrap();
         let server_addr = server_gw.default_location().addr().clone();
-        let server_proc = Proc::legacy_service_pseudo_singleton_on_gateway(server_gw.clone());
+        let server_proc = Proc::builder()
+            .proc_id(ProcId::instance(Label::strip("service")))
+            .shared_gateway(server_gw.clone())
+            .build()
+            .unwrap();
         let server = server_proc.client("recv");
         let (server_port, mut server_rx) = server.bind_handler_port::<u64>();
         let PortLocation::Bound(server_dest) = server_port.location() else {
@@ -2637,7 +2626,11 @@ mod tests {
 
         let client_gw = Gateway::new();
         let mut serve_via = client_gw.serve_via(server_addr).await.unwrap();
-        let client_proc = Proc::legacy_service_pseudo_singleton_on_gateway(client_gw.clone());
+        let client_proc = Proc::builder()
+            .proc_id(ProcId::instance(Label::strip("service")))
+            .shared_gateway(client_gw.clone())
+            .build()
+            .unwrap();
         let (client_shadow_tx, mut client_shadow_rx) = mpsc::unbounded_channel();
         assert!(
             client_proc.muxer().bind(
@@ -2665,7 +2658,7 @@ mod tests {
         assert_eq!(received, 7);
         time::timeout(Duration::from_millis(200), client_shadow_rx.recv())
             .await
-            .expect_err("peer legacy proc location must not deliver to the attached client proc");
+            .expect_err("peer proc identity must not deliver to the attached client proc");
 
         serve_via.stop("test cleanup");
         serve_via.join().await.unwrap();

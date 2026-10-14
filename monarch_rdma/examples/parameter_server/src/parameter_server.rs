@@ -512,8 +512,8 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     let mut command = Command::new(
         buck_resources::get("monarch/monarch_rdma/examples/parameter_server/bootstrap").unwrap(),
     );
-    let host_addr = ChannelTransport::Unix.any();
-    let callback = HostBootstrapReady::new(host_addr.clone())?;
+    let host_addr = hyperactor::ProcAddr::instance(ChannelTransport::Unix.any(), "service");
+    let callback = HostBootstrapReady::new(host_addr.addr().clone())?;
     let boot = Bootstrap::Host {
         addr: host_addr.clone(),
         callback_addr: callback.callback_addr(),

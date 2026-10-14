@@ -225,12 +225,6 @@ tokio::task_local! {
     static CURRENT_TASK_PROC: Proc;
 }
 
-/// Legacy singleton proc name used for host system actors.
-///
-/// This is not a true singleton: every host may have a `service` proc, so
-/// local delivery must compare both proc id and location for this id.
-pub const LEGACY_SERVICE_PROC_NAME: &str = "service";
-
 /// Returns current epoch-millis from wall clock. Used by
 /// `ProcQueueStats` for timestamp recording. In tests, override
 /// via `ProcQueueStats::with_clock` to get deterministic behavior.
@@ -447,8 +441,7 @@ impl fmt::Debug for Proc {
 }
 
 struct ProcState {
-    /// The proc's runtime identity. This should be globally unique,
-    /// but is not (yet) for local-only procs.
+    /// The proc's runtime identity.
     proc_id: ProcId,
 
     /// Shared ingress, egress, and advertised reachability state.
@@ -777,26 +770,8 @@ impl Builder<GlobalGateway> {
     }
 
     /// Build the proc.
-    ///
-    /// Procs built on the global gateway must not use legacy
-    /// pseudo-singleton ids — those ids are reserved for in-host
-    /// service/local procs whose location is bound to the host's
-    /// frontend address. Use [`Builder::shared_gateway`] (passing the
-    /// host's gateway) to construct legacy-id procs.
     pub fn build(self) -> Result<Proc, anyhow::Error> {
-        let proc_id = self
-            .proc_id
-            .unwrap_or_else(|| ProcId::new(Uid::anonymous(), None));
-        if is_legacy_pseudo_singleton_proc_id(&proc_id) {
-            anyhow::bail!(
-                "legacy pseudo-singleton proc id '{}' is reserved for host-scoped construction; use Builder::shared_gateway",
-                proc_id
-            );
-        }
-        Ok(Proc::from_parts_unchecked(
-            proc_id,
-            Gateway::global().clone(),
-        ))
+        Self::build_proc(self.proc_id, Gateway::global().clone())
     }
 }
 
@@ -809,14 +784,12 @@ impl<State> Builder<State> {
 
     fn build_proc(proc_id: Option<ProcId>, gateway: Gateway) -> Result<Proc, anyhow::Error> {
         let proc_id = proc_id.unwrap_or_else(ProcId::anonymous);
-        Ok(Proc::from_parts_unchecked(proc_id, gateway))
+        Ok(Proc::from_parts(proc_id, gateway))
     }
 }
 
 impl Builder<SharedGateway> {
-    /// Build the proc. Accepts any proc id, including legacy
-    /// pseudo-singleton ids, because the caller has explicit control
-    /// over the gateway's default location.
+    /// Build the proc.
     pub fn build(self) -> Result<Proc, anyhow::Error> {
         let Builder {
             proc_id,
@@ -839,7 +812,7 @@ impl Builder<PrivateGateway> {
 }
 
 impl Proc {
-    fn from_parts_unchecked(proc_id: ProcId, gateway: Gateway) -> Self {
+    fn from_parts(proc_id: ProcId, gateway: Gateway) -> Self {
         let proc_addr = ProcAddr::new(proc_id.clone(), gateway.default_location());
         tracing::info!(
             subject = %proc_addr.subject(),
@@ -1062,34 +1035,6 @@ impl Proc {
             .map_or(0, |cell| cell.terminal_status_subscriber_count())
     }
 
-    fn from_parts(proc_id: ProcId, gateway: Gateway) -> Self {
-        assert_not_legacy_pseudo_singleton_proc_id(&proc_id);
-        Self::from_parts_unchecked(proc_id, gateway)
-    }
-
-    /// Create the legacy host system proc pseudo-singleton on a
-    /// fresh gateway whose forwarder is `forwarder`.
-    pub fn legacy_service_pseudo_singleton(
-        addr: ChannelAddr,
-        forwarder: BoxedMailboxSender,
-    ) -> Self {
-        Self::legacy_service_pseudo_singleton_on_gateway(Gateway::configured(
-            addr.into(),
-            forwarder,
-        ))
-    }
-
-    /// Create the legacy host system proc pseudo-singleton on the
-    /// provided shared gateway.
-    pub fn legacy_service_pseudo_singleton_on_gateway(gateway: Gateway) -> Self {
-        Self::legacy_pseudo_singleton_on_gateway(LEGACY_SERVICE_PROC_NAME, gateway)
-    }
-
-    fn legacy_pseudo_singleton_on_gateway(name: &'static str, gateway: Gateway) -> Self {
-        let proc_id = ProcId::singleton(Label::strip(name));
-        Self::from_parts_unchecked(proc_id, gateway)
-    }
-
     /// Create a proc with an anonymous instance id on the default gateway.
     pub fn anonymous() -> Self {
         Self::builder()
@@ -1103,14 +1048,6 @@ impl Proc {
             .proc_id(ProcId::instance(Label::strip(label.as_ref())))
             .build()
             .expect("instance proc builder is valid")
-    }
-
-    /// Create a proc with a singleton id on the default gateway.
-    pub fn singleton(name: impl AsRef<str>) -> Self {
-        Self::builder()
-            .proc_id(ProcId::singleton(Label::strip(name.as_ref())))
-            .build()
-            .expect("singleton proc builder is valid")
     }
 
     /// Create a proc with a random id on a fresh local-only gateway.
@@ -2044,30 +1981,6 @@ impl Proc {
             let _ = handle.await;
         }
     }
-
-    pub(crate) fn is_local_delivery_target(&self, dest_proc: &ProcAddr) -> bool {
-        self.is_local_delivery_target_at(dest_proc, &[self.default_location()])
-    }
-
-    pub(crate) fn is_local_delivery_target_at(
-        &self,
-        dest_proc: &ProcAddr,
-        local_locations: &[Location],
-    ) -> bool {
-        dest_proc.id() == self.proc_id()
-            && (!requires_location_for_local_delivery_identity(dest_proc.id())
-                || local_locations
-                    .iter()
-                    .any(|location| dest_proc.location() == location))
-    }
-}
-
-fn requires_location_for_local_delivery_identity(proc_id: &ProcId) -> bool {
-    // Temporary hyperactor_mesh compatibility hack: host bootstrap
-    // still creates a `service` proc in every host process, so that proc id
-    // is not globally unique. Until all construction paths assign it an
-    // instance id, local delivery also compares the terminal channel address.
-    is_legacy_pseudo_singleton_proc_id(proc_id)
 }
 
 fn default_actor_label<A>() -> Label {
@@ -2090,26 +2003,6 @@ fn global_proc_label_from(hostname: &str, pid: u32) -> Label {
     Label::strip(&format!("{}-{}", short_hostname, pid))
 }
 
-fn assert_not_legacy_pseudo_singleton_proc_id(proc_id: &ProcId) {
-    if is_legacy_pseudo_singleton_proc_id(proc_id) {
-        panic!(
-            "legacy pseudo-singleton proc id '{}' must be constructed with a dedicated Proc constructor",
-            proc_id
-        );
-    }
-}
-
-fn is_legacy_pseudo_singleton_proc_id(proc_id: &ProcId) -> bool {
-    matches!(
-        proc_id.uid(),
-        Uid::Singleton(label) if is_legacy_pseudo_singleton_label(label)
-    )
-}
-
-fn is_legacy_pseudo_singleton_label(label: &Label) -> bool {
-    label.as_str() == LEGACY_SERVICE_PROC_NAME
-}
-
 #[async_trait]
 impl MailboxSender for Proc {
     fn post_unchecked(
@@ -2117,8 +2010,7 @@ impl MailboxSender for Proc {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let dest_proc = envelope.dest().actor_addr().proc_addr();
-        if self.is_local_delivery_target(&dest_proc) {
+        if envelope.dest().proc_id() == self.proc_id() {
             self.state().proc_muxer.post(envelope, return_handle);
             return;
         }
@@ -5428,7 +5320,6 @@ mod tests {
     use crate::mailbox::DeliveryFailureKind;
     use crate::mailbox::InvalidReferenceReason;
     use crate::mailbox::MailboxClient;
-    use crate::mailbox::PanickingMailboxSender;
     use crate::port::Port;
     use crate::testing::ids::test_actor_id;
     use crate::testing::proc_supervison::ProcSupervisionCoordinator;
@@ -6235,19 +6126,6 @@ mod tests {
             instance.proc_id().label().map(|label| label.as_str()),
             Some("worker")
         );
-
-        let singleton = Proc::singleton("controller");
-        assert!(
-            matches!(
-                singleton.proc_id().uid(),
-                crate::id::Uid::Singleton(label) if label.as_str() == "controller"
-            ),
-            "singleton proc must have a singleton id"
-        );
-        assert_eq!(
-            singleton.proc_id().label().map(|label| label.as_str()),
-            Some("controller")
-        );
     }
 
     #[test]
@@ -6884,58 +6762,6 @@ mod tests {
             captured[0].headers().get(SENDER_ACTOR_ID),
             Some(client_addr),
             "MailboxExt::post must stamp SENDER_ACTOR_ID with the client's actor_addr"
-        );
-    }
-
-    #[test]
-    fn test_local_delivery_legacy_service_compares_full_proc_addr() {
-        let local = ProcAddr::singleton(ChannelAddr::Local(1), LEGACY_SERVICE_PROC_NAME);
-        let same_id_other_location =
-            ProcAddr::singleton(ChannelAddr::Local(2), LEGACY_SERVICE_PROC_NAME);
-        let proc = Proc::legacy_service_pseudo_singleton(
-            ChannelAddr::Local(1),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
-
-        assert_eq!(local.id(), same_id_other_location.id());
-        assert!(proc.is_local_delivery_target(&local));
-        assert!(!proc.is_local_delivery_target(&same_id_other_location));
-
-        let shared = ProcAddr::singleton(ChannelAddr::Local(1), "shared");
-        let shared_other_location = ProcAddr::singleton(ChannelAddr::Local(2), "shared");
-        let proc = Proc::configured(
-            shared.clone(),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
-        assert!(proc.is_local_delivery_target(&shared_other_location));
-
-        let service_instance = ProcAddr::instance(ChannelAddr::Local(1), "service");
-        let service_instance_other_location =
-            ProcAddr::new(service_instance.id().clone(), ChannelAddr::Local(2).into());
-        let proc = Proc::configured(
-            service_instance,
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
-        assert!(proc.is_local_delivery_target(&service_instance_other_location));
-    }
-
-    #[test]
-    fn test_legacy_service_pseudo_singleton_uses_dedicated_constructor() {
-        let result = std::panic::catch_unwind(|| {
-            Proc::configured(
-                ProcAddr::singleton(ChannelAddr::Local(1), LEGACY_SERVICE_PROC_NAME),
-                BoxedMailboxSender::new(PanickingMailboxSender),
-            );
-        });
-        assert!(result.is_err());
-
-        let service = Proc::legacy_service_pseudo_singleton(
-            ChannelAddr::Local(1),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
-        assert_eq!(
-            service.proc_addr().id().uid().to_string(),
-            LEGACY_SERVICE_PROC_NAME
         );
     }
 

@@ -20,6 +20,11 @@ import time
 from typing import Dict, List, Optional, TYPE_CHECKING
 
 from monarch._src.job.job import JobState, JobTrait
+from monarch._src.job.service_identity import (
+    allocate_service_proc_ids,
+    serialize_service_proc_ids,
+    service_proc_addrs,
+)
 
 # If running inside a SkyPilot cluster, unset the in-cluster context variable
 # to allow launching new clusters on the same Kubernetes cluster.
@@ -157,6 +162,7 @@ class SkyPilotJob(JobTrait):
         super().__init__()
 
         self._meshes = meshes
+        self._service_proc_ids = allocate_service_proc_ids(sum(meshes.values()))
         self._resources = resources
         self._cluster_name = cluster_name
         self._port = monarch_port
@@ -316,13 +322,17 @@ class SkyPilotJob(JobTrait):
 import socket
 import logging
 import sys
+import os
+from monarch._src.job.service_identity import deserialize_service_proc_ids, service_proc_addr
+service_proc_ids = deserialize_service_proc_ids({serialize_service_proc_ids(self._service_proc_ids)!r})
+service_proc_id = service_proc_ids[int(os.environ["SKYPILOT_NODE_RANK"])]
 
 # Enable verbose logging
 logging.basicConfig(level=logging.DEBUG, stream=sys.stdout, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 hostname = socket.gethostname()
 ip_addr = socket.gethostbyname(hostname)
-address = f"tcp://{{ip_addr}}:{self._port}"
+address = service_proc_addr(f"tcp://{{ip_addr}}:{self._port}", service_proc_id)
 print(f"Starting Monarch worker at {{address}} (hostname={{hostname}})", flush=True)
 sys.stdout.flush()
 
@@ -425,9 +435,12 @@ except Exception as e:
 
         for mesh_name, num_nodes in self._meshes.items():
             mesh_ips = self._node_ips[ip_idx : ip_idx + num_nodes]
+            service_proc_ids = self._service_proc_ids[ip_idx : ip_idx + num_nodes]
             ip_idx += num_nodes
 
-            workers = [f"tcp://{ip}:{self._port}" for ip in mesh_ips]
+            workers = service_proc_addrs(
+                [f"tcp://{ip}:{self._port}" for ip in mesh_ips], service_proc_ids
+            )
             logger.info(f"Connecting to workers for mesh '{mesh_name}': {workers}")
 
             host_mesh = _attach_to_workers_wrapper(

@@ -257,14 +257,14 @@
 //!
 //! Let **A** denote the aggregated host set (the union of hosts
 //! from all meshes passed to [`host_mesh::spawn_admin`],
-//! deduplicated by `HostAgent` `ActorAddr` — see SA-3), and let
+//! deduplicated by `HostAgent` `ActorId` — see SA-3), and let
 //! **C** denote the process-global singleton client host mesh in
 //! the caller process (whose local proc hosts the root client
 //! actor).
 //!
 //! - **CH-1 (deduplication):** When C ∈ A, the client host appears
 //!   exactly once in the admin host list (deduplicated by `HostAgent`
-//!   `ActorAddr` identity). When C ∉ A, `spawn_admin` includes C
+//!   `ActorId` identity). When C ∉ A, `spawn_admin` includes C
 //!   alongside A's hosts so the admin introspects C as a normal host
 //!   subtree, not as a standalone proc.
 //!
@@ -291,7 +291,7 @@
 //! **Mechanism:** [`host_mesh::spawn_admin`] aggregates hosts from
 //! all input meshes (SA-3), reads C from the caller process (via
 //! `try_this_host()`), merges it with the aggregated set (SA-6),
-//! deduplicates by `HostAgent` `ActorAddr`, and spawns the
+//! deduplicates by `HostAgent` `ActorId`, and spawns the
 //! `MeshAdminAgent` on the caller's local proc via
 //! `cx.instance().proc().spawn(...)`. Placement now follows the
 //! caller context rather than mesh topology.
@@ -307,7 +307,7 @@
 //!   least one host.
 //! - **SA-3 (host-agent identity dedup):** The admin host set is
 //!   the ordered union of host agents from all input meshes,
-//!   deduplicated by `HostAgent` `ActorAddr` in first-seen order.
+//!   deduplicated by `HostAgent` `ActorId` in first-seen order.
 //! - **SA-4 (single-mesh degeneracy):** `spawn_admin([mesh], ...)`
 //!   is behaviorally equivalent to the former `mesh.spawn_admin(...)`.
 //!   Established by existing single-mesh integration tests (e.g.
@@ -322,10 +322,7 @@
 //!
 //! ## Host identity and proc ownership
 //!
-//! The root lists hosts by `HostAgent` identity (`HostAgentKey`): the
-//! agent's `ActorId`, which is unique, except for the legacy
-//! `service` pseudo-singleton, whose `ActorId` every such host
-//! shares, so its full `ActorAddr` tells them apart. A channel
+//! The root lists hosts by the `HostAgent`'s unique `ActorId`. A channel
 //! address is not a host identity: a client attached through a
 //! gateway advertises the gateway host's channel address, so two
 //! hosts can share one.
@@ -380,6 +377,7 @@ use axum::routing::post;
 use futures::StreamExt;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -406,7 +404,6 @@ use typeuri::Named;
 
 use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
-use crate::host_mesh::HostAgentKey;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::introspect::NodePayload;
@@ -727,19 +724,19 @@ pub struct MeshAdminAgent {
     /// that actor as a *Host* node (via `resolve_host_node`) rather
     /// than a generic *Actor* node, avoiding cycles / dropped nodes
     /// in clients like the TUI.
-    hosts_by_identity: HashMap<HostAgentKey, ActorRef<HostAgent>>,
+    hosts_by_identity: HashMap<ActorId, ActorRef<HostAgent>>,
 
     /// Terminal channel address → the configured hosts at that
     /// address. A channel address is not a host identity: a client
     /// attached through a gateway (`attach(...)`) advertises the
     /// gateway host's channel address, so both hosts appear here
     /// under one key. See [`Self::owning_host`].
-    host_candidates_by_addr: HashMap<ChannelAddr, Vec<HostAgentKey>>,
+    host_candidates_by_addr: HashMap<ChannelAddr, Vec<ActorId>>,
 
     /// Proc → owning host, learned from successful host snapshots.
     /// Every value is a key of `hosts_by_identity`. See
     /// [`Self::apply_host_snapshots`].
-    proc_owners: HashMap<ProcAddr, HostAgentKey>,
+    proc_owners: HashMap<ProcAddr, ActorId>,
 
     /// `ActorAddr` of the process-global root client (`client[0]` on
     /// the singleton Host's `local_proc`), exposed as a first-class
@@ -814,10 +811,10 @@ impl MeshAdminAgent {
         telemetry_url: Option<String>,
     ) -> Self {
         let mut hosts_by_identity = HashMap::new();
-        let mut host_candidates_by_addr: HashMap<ChannelAddr, Vec<HostAgentKey>> = HashMap::new();
+        let mut host_candidates_by_addr: HashMap<ChannelAddr, Vec<ActorId>> = HashMap::new();
         let mut ordered = Vec::with_capacity(hosts.len());
         for (_, agent_ref) in hosts {
-            let key = HostAgentKey::new(agent_ref.actor_addr());
+            let key = agent_ref.actor_addr().id().clone();
             assert!(
                 hosts_by_identity
                     .insert(key.clone(), agent_ref.clone())
@@ -924,7 +921,7 @@ struct BridgeState {
     /// reference resolution.
     admin_ref: ActorRef<MeshAdminAgent>,
     /// Exact actor identities of the HostAgents managed by this admin.
-    host_agents: HashSet<HostAgentKey>,
+    host_agents: HashSet<ActorId>,
     /// Dedicated client mailbox on system_proc for HTTP bridge reply
     /// ports. Using a separate `Instance<()>` avoids sharing the
     /// actor's own mailbox with the HTTP bridge and ensures the
@@ -1417,7 +1414,7 @@ impl MeshAdminAgent {
         let Some(candidates) = self.host_candidates_by_addr.get(proc_id.addr()) else {
             return Ok(None);
         };
-        let candidates: Vec<(HostAgentKey, ActorRef<HostAgent>)> = candidates
+        let candidates: Vec<(ActorId, ActorRef<HostAgent>)> = candidates
             .iter()
             .map(|key| (key.clone(), self.configured_host(key).clone()))
             .collect();
@@ -1464,7 +1461,7 @@ impl MeshAdminAgent {
     }
 
     /// The configured host with identity `key`.
-    fn configured_host(&self, key: &HostAgentKey) -> &ActorRef<HostAgent> {
+    fn configured_host(&self, key: &ActorId) -> &ActorRef<HostAgent> {
         self.hosts_by_identity
             .get(key)
             .expect("ownership refers only to configured hosts")
@@ -1481,9 +1478,9 @@ impl MeshAdminAgent {
     /// no longer lists.
     fn apply_host_snapshots(
         &mut self,
-        snapshots: Vec<(HostAgentKey, HashSet<ProcAddr>)>,
+        snapshots: Vec<(ActorId, HashSet<ProcAddr>)>,
     ) -> Result<(), anyhow::Error> {
-        let mut claims: HashMap<&ProcAddr, &HostAgentKey> = HashMap::new();
+        let mut claims: HashMap<&ProcAddr, &ActorId> = HashMap::new();
         for (host, procs) in &snapshots {
             anyhow::ensure!(
                 self.hosts_by_identity.contains_key(host),
@@ -1532,7 +1529,7 @@ impl MeshAdminAgent {
                 hyperactor_config::global::get(crate::config::MESH_ADMIN_SINGLE_HOST_TIMEOUT),
             )
             .await?;
-        let key = HostAgentKey::new(actor_id);
+        let key = actor_id.id().clone();
         if self.hosts_by_identity.contains_key(&key)
             && let Ok(procs) = host_snapshot(&payload)
         {
@@ -2534,12 +2531,12 @@ impl ResolvedProcHandler {
 /// minting point. Used by `config_bridge` which intentionally skips
 /// the probe (CFG-4).
 fn route_proc_handler(
-    host_agents: &HashSet<HostAgentKey>,
+    host_agents: &HashSet<ActorId>,
     raw_proc_reference: &str,
 ) -> Result<ResolvedProcHandler, ApiError> {
     let (_proc_reference, proc_id) = parse_proc_reference(raw_proc_reference)?;
     let host_agent_id = proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME);
-    if host_agents.contains(&HostAgentKey::new(&host_agent_id)) {
+    if host_agents.contains(host_agent_id.id()) {
         return Ok(ResolvedProcHandler::Host(ActorRef::attest(host_agent_id)));
     }
 
@@ -3725,8 +3722,8 @@ mod tests {
         (addr, a, b)
     }
 
-    fn host_key(host: &ActorRef<HostAgent>) -> HostAgentKey {
-        HostAgentKey::new(host.actor_addr())
+    fn host_key(host: &ActorRef<HostAgent>) -> ActorId {
+        host.actor_addr().id().clone()
     }
 
     fn procs_at(addr: &ChannelAddr, names: &[&str]) -> HashSet<ProcAddr> {
@@ -5232,19 +5229,26 @@ mod tests {
         assert_eq!(parsed, proc_id);
     }
 
-    /// PS-12: a registered legacy service proc routes to HostAgent.
+    /// PS-12: a registered service proc routes to HostAgent.
     #[test]
     fn route_proc_handler_service_proc_yields_host() {
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
-        let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Tcp(addr), SERVICE_PROC_NAME);
-        let host_agents = HashSet::from([HostAgentKey::new(
-            &proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME),
-        )]);
-        let handler = route_proc_handler(&host_agents, &proc_id.to_string()).unwrap();
-        assert!(
-            matches!(handler, ResolvedProcHandler::Host(_)),
-            "a registered legacy service proc should resolve to Host"
-        );
+        let proc_id = ProcAddr::instance(ChannelAddr::Tcp(addr), SERVICE_PROC_NAME);
+        let host_agents =
+            HashSet::from([proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME).id().clone()]);
+        for addr in ["tcp:127.0.0.1:9000", "tcp:[::1]:9000"] {
+            let proc_addr = ProcAddr::new(
+                proc_id.id().clone(),
+                addr.parse::<ChannelAddr>().unwrap().into(),
+            );
+            let handler = route_proc_handler(&host_agents, &proc_addr.to_string()).unwrap();
+            match handler {
+                ResolvedProcHandler::Host(host) => {
+                    assert_eq!(host.actor_addr().proc_addr(), proc_addr);
+                }
+                ResolvedProcHandler::Proc(_) => panic!("registered service proc resolved to Proc"),
+            }
+        }
     }
 
     /// PS-12: an unregistered worker proc routes to ProcAgent.
@@ -5267,9 +5271,8 @@ mod tests {
             ProcId::instance(Label::strip("host-control")),
             ChannelAddr::Tcp(addr).into(),
         );
-        let host_agents = HashSet::from([HostAgentKey::new(
-            &proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME),
-        )]);
+        let host_agents =
+            HashSet::from([proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME).id().clone()]);
         let handler = route_proc_handler(&host_agents, &proc_id.to_string()).unwrap();
         assert!(
             matches!(handler, ResolvedProcHandler::Host(_)),

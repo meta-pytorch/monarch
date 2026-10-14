@@ -331,14 +331,7 @@ def serve(
     original_roles = []
     service_proc_ids_by_role: dict[str, list[ProcId]] = {}
     scheme = "metatls" if scheduler.startswith("mast") else "tcp"
-    if len(appdef.roles) > 1:
-        warnings.warn(
-            "SPMDJob currently only uses service proc IDs for the first role; "
-            f"got {len(appdef.roles)} roles, only {appdef.roles[0].name!r} will be "
-            "given coordinated identities. Other roles will use legacy fallback.",
-            stacklevel=2,
-        )
-    for idx, role in enumerate(appdef.roles):
+    for role in appdef.roles:
         original_roles.append(
             {
                 "entrypoint": role.entrypoint,
@@ -346,16 +339,10 @@ def serve(
             }
         )
 
-        # Only the first role is used by SPMDJob._state (which inspects
-        # status.roles[0]). Generating IDs for other roles would leave workers
-        # with fixed identities that the client never uses, so restrict to idx==0.
-        if idx == 0:
-            service_proc_ids = SPMDJob._allocate_service_proc_ids(role.num_replicas)
-            service_proc_ids_by_role[role.name] = service_proc_ids
-            role.env[SERVICE_PROC_IDS_ENV] = serialize_service_proc_ids(
-                service_proc_ids
-            )
-            role.env[SERVICE_PROC_RANK_ENV] = specs.macros.replica_id
+        service_proc_ids = SPMDJob._allocate_service_proc_ids(role.num_replicas)
+        service_proc_ids_by_role[role.name] = service_proc_ids
+        role.env[SERVICE_PROC_IDS_ENV] = serialize_service_proc_ids(service_proc_ids)
+        role.env[SERVICE_PROC_RANK_ENV] = specs.macros.replica_id
 
         role.args = [
             "python",
@@ -367,7 +354,7 @@ def serve(
             "from monarch.actor import run_worker_loop_forever; "
             f'run_worker_loop_forever(ca="trust_all_connections", address=service_proc_addr('
             f'f"{scheme}://{{socket.getfqdn()}}:26600", '
-            f"ranked_service_proc_id_from_env() if {SERVICE_PROC_IDS_ENV!r} in os.environ else None))",
+            "ranked_service_proc_id_from_env()))",
         ]
 
     # Fall back to cwd if no workspace defined in appdef
@@ -395,7 +382,7 @@ def serve(
         workspace=workspace,
         original_roles=original_roles,
         service_proc_ids=(
-            service_proc_ids_by_role[appdef.roles[0].name] if appdef.roles else None
+            service_proc_ids_by_role[appdef.roles[0].name] if appdef.roles else []
         ),
     )
 
@@ -497,9 +484,9 @@ class SPMDJob(JobTrait):
         self,
         handle: str,
         scheduler: str,
+        service_proc_ids: list[ProcId],
         workspace: Optional[str] = None,
         original_roles: Optional[List[Dict[str, Any]]] = None,
-        service_proc_ids: list[ProcId] | None = None,
     ):
         super().__init__()
         self._app_handle = handle
@@ -595,11 +582,7 @@ class SPMDJob(JobTrait):
 
         configure(default_transport=_get_channel_transport(self._scheduler))
         worker_addrs = [_get_worker_addr(self._scheduler, h) for h in hostnames]
-        service_proc_ids = (
-            [self._service_proc_ids[replica.id] for replica in replicas]
-            if self._service_proc_ids is not None
-            else None
-        )
+        service_proc_ids = [self._service_proc_ids[replica.id] for replica in replicas]
         workers = attach_to_workers(
             ca="trust_all_connections",
             workers=service_proc_addrs(worker_addrs, service_proc_ids),

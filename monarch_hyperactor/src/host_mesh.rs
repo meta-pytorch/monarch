@@ -493,7 +493,7 @@ fn bootstrap_host(
         // handle and tears it down on drop.
         let gateway = Gateway::global().clone();
         let service_proc_addr = ProcAddr::new(
-            ProcId::singleton(Label::strip(hyperactor::proc::LEGACY_SERVICE_PROC_NAME)),
+            ProcId::instance(Label::strip(hyperactor_mesh::host::SERVICE_PROC_NAME)),
             bind_addr.into(),
         );
 

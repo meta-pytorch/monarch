@@ -36,10 +36,11 @@ configure(enable_log_forwarding=True, message_delivery_timeout="2m")
 _WORKER_BOOTSTRAP_SCRIPT: str = textwrap.dedent("""\
     import os
     import socket
+    from monarch._src.job.service_identity import service_proc_addr, service_proc_id_from_uuid
     from monarch.actor import run_worker_loop_forever
     port = os.environ.get("MONARCH_PORT", "26600")
     hostname = socket.getfqdn()
-    address = f"tcp://{hostname}:{port}"
+    address = service_proc_addr(f"tcp://{hostname}:{port}", service_proc_id_from_uuid(os.environ["MONARCH_POD_UID"]))
     run_worker_loop_forever(address=address, ca="trust_all_connections")
 """)
 

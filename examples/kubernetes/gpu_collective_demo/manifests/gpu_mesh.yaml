@@ -13,7 +13,11 @@ spec:
       - name: worker
         # We use a public image and inline the python commands below.
         image: ghcr.io/meta-pytorch/monarch:latest
-
+        env:
+          - name: MONARCH_POD_UID
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.uid
         # Ensure we always try to pull (helpful during development)
         imagePullPolicy: Always
 
@@ -32,6 +36,7 @@ spec:
             import os
             import socket
             import logging
+            from monarch._src.job.service_identity import service_proc_addr, service_proc_id_from_uuid
             from monarch.actor import run_worker_loop_forever
             logging.basicConfig(level=logging.INFO)
             logger = logging.getLogger("monarch-worker")
@@ -42,4 +47,4 @@ spec:
             logger.info(f"--- Starting Monarch Worker ---")
             logger.info(f"Identity: {hostname}")
             logger.info(f"Listening on: {address}")
-            run_worker_loop_forever(address=address, ca="trust_all_connections")
+            run_worker_loop_forever(address=service_proc_addr(address, service_proc_id_from_uuid(os.environ["MONARCH_POD_UID"])), ca="trust_all_connections")

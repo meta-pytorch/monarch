@@ -32,6 +32,7 @@ Env transport:
 import json
 import os
 import secrets
+import uuid
 from collections.abc import Sequence
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId, Uid
@@ -55,6 +56,13 @@ def new_service_proc_id() -> ProcId:
     return ProcId(Uid.instance("service"))
 
 
+def service_proc_id_from_uuid(value: str) -> ProcId:
+    """Derive a service instance identity from a launcher's UUID."""
+    return ProcId(
+        Uid.instance_from_value(uuid.UUID(value).int & ((1 << 64) - 1), "service")
+    )
+
+
 def allocate_service_proc_ids(count: int) -> list[ProcId]:
     """Return related, distinct service ProcIds for a ranked worker group."""
     namespace = secrets.randbits(64)
@@ -74,17 +82,15 @@ def deserialize_service_proc_ids(serialized: str) -> list[ProcId]:
     return [ProcId.from_string(proc_id) for proc_id in json.loads(serialized)]
 
 
-def service_proc_addr(address: str, proc_id: ProcId | None) -> str:
-    """Combine a channel URL with its service identity when one is available."""
-    return address if proc_id is None else f"{proc_id}@{address}"
+def service_proc_addr(address: str, proc_id: ProcId) -> str:
+    """Combine a channel URL with its service identity."""
+    return f"{proc_id}@{address}"
 
 
 def service_proc_addrs(
-    addresses: Sequence[str], proc_ids: Sequence[ProcId] | None
+    addresses: Sequence[str], proc_ids: Sequence[ProcId]
 ) -> list[str]:
     """Combine corresponding channel URLs and service identities."""
-    if proc_ids is None:
-        return list(addresses)
     if len(addresses) != len(proc_ids):
         raise ValueError(
             f"got {len(addresses)} worker addresses and {len(proc_ids)} service ProcIds"
@@ -95,20 +101,8 @@ def service_proc_addrs(
     ]
 
 
-def ranked_service_proc_id_from_env(
-    *, rank_env: str = SERVICE_PROC_RANK_ENV
-) -> ProcId | None:
-    """Select a service ProcId from a ranked launcher environment.
-
-    Returns None if the env var is not set, allowing callers to fall back
-    to legacy address-based routing.
-    """
-    serialized = os.environ.get(SERVICE_PROC_IDS_ENV)
-    if serialized is None:
-        return None
-    proc_ids = deserialize_service_proc_ids(serialized)
-    rank_str = os.environ.get(rank_env)
-    if rank_str is None:
-        return None
-    rank = int(rank_str)
+def ranked_service_proc_id_from_env(*, rank_env: str = SERVICE_PROC_RANK_ENV) -> ProcId:
+    """Select a service ProcId from a ranked launcher environment."""
+    proc_ids = deserialize_service_proc_ids(os.environ[SERVICE_PROC_IDS_ENV])
+    rank = int(os.environ[rank_env])
     return proc_ids[rank]

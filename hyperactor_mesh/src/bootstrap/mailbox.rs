@@ -66,7 +66,7 @@ impl LocalProcDialer {
         let failure = DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
             destination.clone(),
             TransportFailureReason::DialFailed {
-                addr: destination.actor_addr().proc_addr().addr().clone(),
+                addr: destination.location().addr().clone(),
                 error: error.to_string(),
             },
         )));
@@ -82,14 +82,9 @@ impl MailboxSender for LocalProcDialer {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         let proc_ref = envelope.dest().actor_addr().proc_addr();
-        if proc_ref.uid().is_singleton() {
-            self.backend_sender.post_unchecked(envelope, return_handle);
-            return;
-        }
-
         let addr = proc_ref.addr();
         if addr == &self.local_addr {
-            let key = proc_ref.id().pseudo_uid();
+            let key = proc_ref.uid().clone();
             {
                 let senders = self.local_senders.read().unwrap();
                 if let Some(sender) = senders.get(&key) {
@@ -145,7 +140,6 @@ mod tests {
     use super::*;
     use crate::bootstrap::local_proc_addr;
     use crate::host::SERVICE_PROC_NAME;
-    use crate::host::legacy_service_proc_id;
     use crate::mesh_id::ResourceId;
 
     fn recording_dialer(
@@ -205,7 +199,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proc_dialer_routes_both_service_id_forms_through_backend() {
+    async fn test_proc_dialer_routes_service_proc_through_backend() {
         let dir = tempfile::tempdir().unwrap();
         let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
         let sender = hyperactor::ProcAddr::instance(local_addr.clone(), "sender");
@@ -214,38 +208,31 @@ mod tests {
         let (return_handle, _return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
             .open_port::<Undeliverable<MessageEnvelope>>();
 
-        let service_proc_ids = [
-            legacy_service_proc_id(),
-            hyperactor::ProcId::instance(Label::strip(SERVICE_PROC_NAME)),
-        ];
-        for service_proc_id in service_proc_ids {
-            let service_proc =
-                hyperactor::ProcAddr::new(service_proc_id, local_addr.clone().into());
+        let service_proc_id = hyperactor::ProcId::instance(Label::strip(SERVICE_PROC_NAME));
+        let service_proc = hyperactor::ProcAddr::new(service_proc_id, local_addr.clone().into());
 
-            let envelope = MessageEnvelope::new(
-                sender.actor_addr("actor"),
-                service_proc.actor_addr("actor").port_addr(0.into()),
-                wirevalue::Any::serialize(&()).unwrap(),
-                Flattrs::new(),
-            );
-            proc_dialer.post(envelope, return_handle.clone());
+        let envelope = MessageEnvelope::new(
+            sender.actor_addr("actor"),
+            service_proc.actor_addr("actor").port_addr(0.into()),
+            wirevalue::Any::serialize(&()).unwrap(),
+            Flattrs::new(),
+        );
+        proc_dialer.post(envelope, return_handle.clone());
 
-            let forwarded = backend_rx.recv().await.unwrap();
-            assert_eq!(forwarded.dest().actor_addr().proc_addr(), service_proc);
-        }
+        let forwarded = backend_rx.recv().await.unwrap();
+        assert_eq!(forwarded.dest().actor_addr().proc_addr(), service_proc);
     }
 
     #[tokio::test]
-    async fn test_proc_dialer_routes_singletons_through_backend_when_socket_exists() {
+    async fn test_proc_dialer_dials_singleton_named_local_proc_socket() {
         let dir = tempfile::tempdir().unwrap();
         let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
         let sender = hyperactor::ProcAddr::instance(local_addr.clone(), "sender");
-        let singleton =
-            hyperactor::ProcAddr::new(legacy_service_proc_id(), local_addr.clone().into());
+        let singleton = hyperactor::ProcAddr::singleton(local_addr.clone(), "singleton");
         let (singleton_addr, _) = local_proc_addr(dir.path(), singleton.id()).unwrap();
-        let (_singleton_addr, _singleton_rx) =
+        let (_singleton_addr, mut singleton_rx) =
             channel::serve::<MessageEnvelope>(singleton_addr).unwrap();
-        let (proc_dialer, mut backend_rx) = recording_dialer(local_addr, dir.path().to_owned());
+        let (proc_dialer, _backend_rx) = recording_dialer(local_addr, dir.path().to_owned());
         let (return_handle, _return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
             .open_port::<Undeliverable<MessageEnvelope>>();
 
@@ -257,8 +244,8 @@ mod tests {
         );
         proc_dialer.post(envelope, return_handle);
 
-        let forwarded = backend_rx.recv().await.unwrap();
-        assert_eq!(forwarded.dest().actor_addr().proc_addr(), singleton);
+        let delivered = singleton_rx.recv().await.unwrap();
+        assert_eq!(delivered.dest().actor_addr().proc_addr(), singleton);
     }
 
     #[tokio::test]

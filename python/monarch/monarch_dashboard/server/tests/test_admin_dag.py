@@ -15,7 +15,7 @@ from monarch.monarch_dashboard.server import admin_dag
 class AdminDagTest(unittest.TestCase):
     def test_resolution_error_node_does_not_hide_live_sibling(self) -> None:
         root = "root"
-        host = "host:host_agent.service@tcp://host:1"
+        host = "host:host_agent.service<2>@tcp://host:1"
         live_proc = "worker<live>@worker<live>.tcp://host:1"
         stale_proc = "anon<stale>@anon<stale>.tcp://host:1"
         actor = "trainer<actor>.worker<live>@worker<live>.tcp://host:1"

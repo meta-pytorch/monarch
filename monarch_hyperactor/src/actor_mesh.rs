@@ -1009,7 +1009,10 @@ mod tests {
     fn managed_mesh_ref(id: &ActorMeshId) -> ActorMeshRef<PythonActor> {
         let host_mesh = HostMeshRef::from_hosts(
             HostMeshId::singleton(Label::strip("managed_name_fixture")),
-            vec![ChannelAddr::Local(1)],
+            vec![hyperactor::ProcAddr::instance(
+                ChannelAddr::Local(1),
+                "service",
+            )],
         );
         let mut wire = serde_json::to_value(&host_mesh).expect("HostMeshRef should serialize");
         let payload = wire

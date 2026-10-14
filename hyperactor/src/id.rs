@@ -524,39 +524,21 @@ impl ProcId {
     /// Returns a unique path for this proc in the given directory. This is stable
     /// over the lifetime of the ProcId.
     ///
-    /// The basename is `proc_id.pseudo_uid()` rendered in base58, which keeps the
-    /// path short and host-unique. Both ends of a local link compute the same
-    /// pseudo uid, so the path is consistent without coordination. The
-    /// returned [`PathBuf`] is the on-disk socket path, which callers may use to
-    /// pre-flight existence before dialing.
+    /// The basename is the proc's uid value rendered in base58, which keeps the
+    /// path short and host-unique. Singleton names are hashed to a `u64` first.
+    /// Both ends of a local link compute the same value, so the path is
+    /// consistent without coordination. The returned [`PathBuf`] is the on-disk
+    /// socket path, which callers may use to pre-flight existence before dialing.
     pub fn to_path_elem(&self, base_dir: &Path) -> PathBuf {
-        let pseudo_id = self.pseudo_uid();
-        let tag = match pseudo_id {
-            Uid::Singleton(label) => {
-                panic!("pseudo uid should never be a singleton, but got: {}", label)
-            }
-            Uid::Instance(uid, _) => encode_base58_uid(uid).to_string(),
-        };
-        base_dir.join(tag)
-    }
-
-    /// A `Uid` suitable as a short, host-unique identifier — for example,
-    /// as a basename in a filesystem path.
-    ///
-    /// For an instance proc, this is the proc's actual uid. For a singleton,
-    /// it is `Uid::Instance(hash(label))`, a stable value derived from the
-    /// singleton's name. Singletons are host-unique by name, so this remains
-    /// host-unique. We call it "pseudo" because in the singleton case it does
-    /// not match the proc's true uid.
-    pub fn pseudo_uid(&self) -> Uid {
-        match &self.uid {
-            Uid::Instance(_, _) => self.uid.clone(),
+        let value = match &self.uid {
+            Uid::Instance(uid, _) => *uid,
             Uid::Singleton(label) => {
                 let mut h = DefaultHasher::new();
                 label.hash(&mut h);
-                Uid::Instance(h.finish(), None)
+                h.finish()
             }
-        }
+        };
+        base_dir.join(&encode_base58_uid(value))
     }
 }
 
@@ -1351,39 +1333,39 @@ mod tests {
     }
 
     #[test]
-    fn test_proc_id_pseudo_uid_instance_returns_real_uid() {
+    fn test_proc_id_to_path_elem_instance_uses_uid_value() {
         let uid = Uid::Instance(0xd5d54d7201103869, None);
-        let pid = ProcId::new(uid.clone(), Some(Label::new("my-proc").unwrap()));
-        assert_eq!(pid.pseudo_uid(), uid);
+        let pid = ProcId::new(uid, Some(Label::new("my-proc").unwrap()));
+        let path = pid.to_path_elem(Path::new("/tmp/socks"));
+        assert_eq!(
+            path,
+            Path::new("/tmp/socks").join(&encode_base58_uid(0xd5d54d7201103869))
+        );
     }
 
     #[test]
-    fn test_proc_id_pseudo_uid_singleton_is_instance_form() {
-        let pid = ProcId::singleton(Label::new("my-proc").unwrap());
-        assert!(matches!(pid.pseudo_uid(), Uid::Instance(_, _)));
-    }
-
-    #[test]
-    fn test_proc_id_pseudo_uid_singleton_is_deterministic() {
+    fn test_proc_id_to_path_elem_singleton_is_deterministic() {
         let a = ProcId::singleton(Label::new("my-proc").unwrap());
         let b = ProcId::singleton(Label::new("my-proc").unwrap());
-        assert_eq!(a.pseudo_uid(), b.pseudo_uid());
+        let base = Path::new("/tmp/socks");
+        assert_eq!(a.to_path_elem(base), b.to_path_elem(base));
     }
 
     #[test]
-    fn test_proc_id_pseudo_uid_singleton_distinct_labels_differ() {
+    fn test_proc_id_to_path_elem_singleton_distinct_labels_differ() {
         let a = ProcId::singleton(Label::new("alpha").unwrap());
         let b = ProcId::singleton(Label::new("beta").unwrap());
-        assert_ne!(a.pseudo_uid(), b.pseudo_uid());
+        let base = Path::new("/tmp/socks");
+        assert_ne!(a.to_path_elem(base), b.to_path_elem(base));
     }
 
     #[test]
-    fn test_proc_id_pseudo_uid_displays_as_short_base58() {
+    fn test_proc_id_to_path_elem_is_short_base58() {
         let pid = ProcId::singleton(Label::new("my-proc").unwrap());
-        let s = pid.pseudo_uid().to_string();
-        assert!(s.starts_with('<') && s.ends_with('>'), "got: {s}");
-        // base58 of u64 fits in 11 chars, plus the two delimiters.
-        assert!(s.len() <= 13, "expected short base58 form, got: {s}");
+        let path = pid.to_path_elem(Path::new("/tmp/socks"));
+        let tag = path.file_name().unwrap().to_str().unwrap();
+        // base58 of u64 fits in 11 chars.
+        assert!(tag.len() <= 11, "expected short base58 form, got: {tag}");
     }
 
     #[test]

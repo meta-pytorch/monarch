@@ -567,10 +567,10 @@ mod tests {
 
     #[test]
     fn test_resource_id_fromstr_base58_like_singleton() {
-        let parsed: ResourceId = "service".parse().unwrap();
+        let parsed: ResourceId = "controller".parse().unwrap();
         assert_eq!(
             *parsed.uid(),
-            Uid::Singleton(Label::new("service").unwrap())
+            Uid::Singleton(Label::new("controller").unwrap())
         );
         assert_eq!(parsed.label(), None);
     }

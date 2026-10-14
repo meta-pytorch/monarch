@@ -28,6 +28,12 @@ import monarch.actor
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job.job import JobState, JobTrait
+from monarch._src.job.service_identity import (
+    allocate_service_proc_ids,
+    serialize_service_proc_ids,
+    service_proc_addrs,
+    SERVICE_PROC_IDS_ENV,
+)
 from monarch.config import configure
 from simple_mast_job.build_bootstrap import build_bootstrap, launch_mast
 
@@ -62,6 +68,7 @@ class SimpleMastJob(JobTrait):
     ) -> None:
         super().__init__()
         self._num_hosts = hosts
+        self._service_proc_ids = allocate_service_proc_ids(hosts)
         self._env = dict(env or {})
         self._mast_job_name: Optional[str] = None
         self._package_version: Optional[str] = None
@@ -167,7 +174,12 @@ class SimpleMastJob(JobTrait):
             package_name=package_name,
             package_version=self._package_version,
             hosts=self._num_hosts,
-            env=self._env,
+            env={
+                **self._env,
+                SERVICE_PROC_IDS_ENV: serialize_service_proc_ids(
+                    self._service_proc_ids
+                ),
+            },
         )
         # Block until every task is RUNNING and capture hostnames once.
         self._hostnames = self._wait_for_hostnames()
@@ -205,7 +217,7 @@ class SimpleMastJob(JobTrait):
                 "workers": attach_to_workers(
                     name="workers",
                     ca="trust_all_connections",
-                    workers=workers,
+                    workers=service_proc_addrs(workers, self._service_proc_ids),
                 )
             }
         )

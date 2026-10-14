@@ -91,7 +91,7 @@ export function leafName(name: string | null | undefined): string {
 /**
  * Actor role/type — the leading token of a Monarch actor full_name.
  *   "trainer<o7B>.anon-0<dqZ>@…ipc://…/hosts_0" -> "trainer"
- *   "host_agent.service@ipc://…"                    -> "host_agent"
+ *   "host_agent.service<2>@ipc://…"                    -> "host_agent"
  *   "proc_agent.anon-3<iBh>@…"                       -> "proc_agent"
  */
 export function actorRole(fullName: string | null | undefined): string {
@@ -104,7 +104,7 @@ export function actorRole(fullName: string | null | undefined): string {
 /**
  * Instance token that differentiates same-role actors (the proc segment).
  *   "trainer<o7B>.anon-0<dqZ>@…" -> "anon-0"
- *   "host_agent.service@…"            -> "service"
+ *   "host_agent.service<2>@…"            -> "service"
  */
 export function actorInstance(fullName: string | null | undefined): string | null {
   if (!fullName) return null;

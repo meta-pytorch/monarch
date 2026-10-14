@@ -72,10 +72,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hyperactor::ActorAddr;
 use hyperactor::ActorId;
+use hyperactor::Location;
 use hyperactor::ProcAddr;
-use hyperactor::ProcId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
 use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
@@ -102,7 +101,7 @@ use crate::bootstrap::ProcBind;
 use crate::host::Host;
 use crate::host::LocalProcManager;
 use crate::host::SERVICE_PROC_NAME;
-use crate::host::legacy_service_proc_id;
+use crate::host::service_proc_id;
 pub use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::ProcManagerSpawnFn;
 use crate::host_mesh::host_agent::ProcState;
@@ -149,16 +148,23 @@ declare_attrs! {
     pub attr GET_PROC_STATE_MAX_IDLE: Duration = Duration::from_mins(1);
 }
 
-fn legacy_service_proc_addr(host_addr: ChannelAddr) -> ProcAddr {
-    ProcAddr::new(legacy_service_proc_id(), host_addr.into_dial_addr().into())
+fn into_dial_location(location: Location) -> Location {
+    match location {
+        Location::Addr(addr) => addr.into_dial_addr().into(),
+        Location::Via(uid, inner) => into_dial_location(*inner).with_via(uid),
+    }
 }
 
 pub(crate) fn host_agent_ref(service_proc: ProcAddr) -> ActorRef<HostAgent> {
+    assert!(
+        service_proc.uid().is_instance(),
+        "host service proc must have an instance id"
+    );
+    let service_proc = ProcAddr::new(
+        service_proc.id().clone(),
+        into_dial_location(service_proc.location().clone()),
+    );
     ActorRef::attest(service_proc.actor_addr(host_agent::HOST_MESH_AGENT_ACTOR_NAME))
-}
-
-pub(crate) fn legacy_host_agent_ref(host_addr: ChannelAddr) -> ActorRef<HostAgent> {
-    host_agent_ref(legacy_service_proc_addr(host_addr))
 }
 
 fn named_proc_on_host(agent: &ActorRef<HostAgent>, id: &ResourceId) -> ProcAddr {
@@ -344,19 +350,15 @@ impl HostMesh {
         let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).binding_addr();
 
         let manager = BootstrapProcManager::new(bootstrap_cmd)?;
-        // Use a dedicated gateway, not the process-wide global one. This
-        // host coexists with the global-context singleton host (see
-        // `global_context`), which owns the global gateway; sharing it
-        // would collide on the legacy `service` pseudo-singleton proc id.
         let host = Host::new_with_gateway(
             manager,
-            ProcAddr::new(legacy_service_proc_id(), addr.into()),
+            ProcAddr::new(service_proc_id(), addr.into()),
             None,
             Gateway::new(),
             None,
         )
         .await?;
-        let addr = host.addr().clone();
+        let addr = host.system_proc().proc_addr();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
             .spawn_bound_with_uid(
@@ -418,24 +420,20 @@ impl HostMesh {
     }
 
     /// Create a single in-process host at the given address, returning
-    /// its channel address.
-    async fn create_in_process_host(addr: ChannelAddr) -> crate::Result<ChannelAddr> {
+    /// its service proc address.
+    async fn create_in_process_host(addr: ChannelAddr) -> crate::Result<ProcAddr> {
         let spawn: ProcManagerSpawnFn =
             Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager = LocalProcManager::new(spawn);
-        // Each in-process host gets its own gateway, not the
-        // process-wide global one. Several hosts coexist in one process
-        // here, and the legacy `service` pseudo-singleton proc id would
-        // collide if they all attached to the same gateway.
         let host = Host::new_with_gateway(
             manager,
-            ProcAddr::new(legacy_service_proc_id(), addr.into()),
+            ProcAddr::new(service_proc_id(), addr.into()),
             None,
             Gateway::new(),
             None,
         )
         .await?;
-        let addr = host.addr().clone();
+        let addr = host.system_proc().proc_addr();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
             .spawn_bound_with_uid(
@@ -478,8 +476,8 @@ impl HostMesh {
         let mut host_addrs = Vec::with_capacity(extent.num_ranks());
         let mut ready = Vec::with_capacity(extent.num_ranks());
         for _ in 0..extent.num_ranks() {
-            let addr = bind_spec.binding_addr();
-            let callback = HostBootstrapReady::new(addr.clone())?;
+            let addr = ProcAddr::instance(bind_spec.binding_addr(), SERVICE_PROC_NAME);
+            let callback = HostBootstrapReady::new(addr.addr().clone())?;
             let bootstrap = Bootstrap::Host {
                 addr: addr.clone(),
                 callback_addr: callback.callback_addr(),
@@ -539,22 +537,9 @@ impl HostMesh {
     pub async fn attach(
         cx: &impl context::Actor,
         id: HostMeshId,
-        addresses: Vec<ChannelAddr>,
+        addresses: Vec<ProcAddr>,
     ) -> crate::Result<Self> {
         let mesh_ref = HostMeshRef::from_hosts(id, addresses);
-        let config = hyperactor_config::global::propagatable_attrs();
-        mesh_ref.push_config(cx, config).await?;
-        Ok(Self::take(mesh_ref))
-    }
-
-    /// Attach to workers using explicit service proc addresses.
-    pub async fn attach_with_service_procs(
-        cx: &impl context::Actor,
-        id: HostMeshId,
-        service_procs: Vec<ProcAddr>,
-    ) -> crate::Result<Self> {
-        let agents = service_procs.into_iter().map(host_agent_ref).collect();
-        let mesh_ref = HostMeshRef::from_host_agents(id, agents)?;
         let config = hyperactor_config::global::propagatable_attrs();
         mesh_ref.push_config(cx, config).await?;
         Ok(Self::take(mesh_ref))
@@ -881,7 +866,7 @@ impl HostMeshRef {
     /// Create a new (raw) HostMeshRef from the provided region and associated
     /// ranks, which must match in cardinality.
     #[allow(clippy::result_large_err)]
-    fn new(id: HostMeshId, region: Region, host_addrs: Vec<ChannelAddr>) -> crate::Result<Self> {
+    fn new(id: HostMeshId, region: Region, host_addrs: Vec<ProcAddr>) -> crate::Result<Self> {
         if region.num_ranks() != host_addrs.len() {
             return Err(crate::Error::InvalidRankCardinality {
                 expected: region.num_ranks(),
@@ -898,7 +883,7 @@ impl HostMeshRef {
 
     /// Create a new HostMeshRef from an arbitrary set of hosts. This is meant to
     /// enable extrinsic bootstrapping.
-    pub fn from_hosts(id: HostMeshId, host_addrs: Vec<ChannelAddr>) -> Self {
+    pub fn from_hosts(id: HostMeshId, host_addrs: Vec<ProcAddr>) -> Self {
         let region = extent!(hosts = host_addrs.len()).into();
         let host_agent_mesh = Self::host_agent_mesh_ref_from_addrs(&region, host_addrs)
             .expect("host rank cardinality must match generated region");
@@ -939,9 +924,9 @@ impl HostMeshRef {
 
     fn host_agent_mesh_ref_from_addrs(
         region: &Region,
-        host_addrs: Vec<ChannelAddr>,
+        host_addrs: Vec<ProcAddr>,
     ) -> crate::Result<ActorMeshRef<HostAgent>> {
-        let agents = host_addrs.into_iter().map(legacy_host_agent_ref).collect();
+        let agents = host_addrs.into_iter().map(host_agent_ref).collect();
         Self::host_agent_mesh_ref_from_agents(region, agents)
     }
 
@@ -1742,29 +1727,6 @@ impl HostMeshRef {
     }
 }
 
-/// A key that identifies a host agent independently of its advertised location.
-///
-/// Legacy service pseudo-singletons still require their location because their
-/// actor IDs are shared by every host.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum HostAgentKey {
-    /// A host agent with a globally unique actor ID.
-    Id(ActorId),
-    /// A legacy host agent whose location disambiguates its singleton ID.
-    Legacy(ActorAddr),
-}
-
-impl HostAgentKey {
-    /// Construct the identity key for a host-agent address.
-    pub(crate) fn new(addr: &ActorAddr) -> Self {
-        if addr.proc_id() == &legacy_service_proc_id() {
-            Self::Legacy(addr.clone())
-        } else {
-            Self::Id(addr.id().clone())
-        }
-    }
-}
-
 /// An ordered set of host entries, deduplicated by host-agent identity in
 /// first-seen order.
 ///
@@ -1773,7 +1735,7 @@ impl HostAgentKey {
 /// First-seen order is preserved: the first occurrence of a given
 /// identity wins; subsequent duplicates are silently dropped.
 struct HostSet {
-    seen: HashSet<HostAgentKey>,
+    seen: HashSet<ActorId>,
     entries: Vec<(String, ActorRef<HostAgent>)>,
 }
 
@@ -1788,7 +1750,7 @@ impl HostSet {
     /// Insert a host entry. No-op if its identity is already present (SA-3).
     /// First-seen order is preserved.
     fn insert(&mut self, addr: String, agent_ref: ActorRef<HostAgent>) {
-        if self.seen.insert(HostAgentKey::new(agent_ref.actor_addr())) {
+        if self.seen.insert(agent_ref.actor_addr().id().clone()) {
             self.entries.push((addr, agent_ref));
         }
     }
@@ -1906,18 +1868,13 @@ impl view::RankedSliceable for HostMeshRef {
 
 impl std::fmt::Display for HostMeshRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let legacy_service_proc_id = ResourceId::from_name(SERVICE_PROC_NAME).proc_id();
         write!(f, "{}:", self.id)?;
         for (rank, agent) in self.host_agent_mesh.values().enumerate() {
             if rank > 0 {
                 write!(f, ",")?;
             }
             let proc_addr = agent.actor_addr().proc_addr();
-            if proc_addr.id() == &legacy_service_proc_id {
-                write!(f, "{}", proc_addr.addr())?;
-            } else {
-                write!(f, "{}", proc_addr)?;
-            }
+            write!(f, "{}", proc_addr)?;
         }
         write!(f, "@{}", self.region())
     }
@@ -1952,15 +1909,7 @@ impl From<crate::Error> for HostMeshRefParseError {
 }
 
 fn parse_host_agent_ref(host_ref: &str) -> anyhow::Result<ActorRef<HostAgent>> {
-    if let Some((proc_id, host_addr)) = host_ref.split_once('@')
-        && let Ok(proc_id) = ProcId::from_str(proc_id)
-    {
-        let location = hyperactor::Location::from_str(host_addr)?;
-        return Ok(host_agent_ref(ProcAddr::new(proc_id, location)));
-    }
-
-    let host_addr = ChannelAddr::from_str(host_ref)?;
-    Ok(legacy_host_agent_ref(host_addr))
+    Ok(host_agent_ref(ProcAddr::from_str(host_ref)?))
 }
 
 impl FromStr for HostMeshRef {
@@ -1998,6 +1947,7 @@ mod tests {
     #[cfg(fbcode_build)]
     use std::assert_matches;
 
+    use hyperactor::ProcId;
     #[cfg(fbcode_build)]
     use hyperactor_config::attrs::Attrs;
     use ndslice::ViewExt;
@@ -2028,12 +1978,12 @@ mod tests {
 
     #[test]
     fn test_host_mesh_subset() {
-        let hosts: HostMeshRef = "test:local:1,local:2,local:3,local:4@replica=2/2,host=2/1"
+        let hosts: HostMeshRef = "test:service<2>@inproc://1,service<3>@inproc://2,service<4>@inproc://3,service<5>@inproc://4@replica=2/2,host=2/1"
             .parse()
             .unwrap();
         assert_eq!(
             hosts.range("replica", 1).unwrap().to_string(),
-            "test:local:3,local:4@2+replica=1/2,host=2/1"
+            "test:service<4>@inproc://3,service<5>@inproc://4@2+replica=1/2,host=2/1"
         );
     }
 
@@ -2043,10 +1993,10 @@ mod tests {
             HostMeshId::singleton(Label::new("test").unwrap()),
             extent!(replica = 2, host = 2).into(),
             vec![
-                "tcp:127.0.0.1:123".parse().unwrap(),
-                "tcp:127.0.0.1:123".parse().unwrap(),
-                "tcp:127.0.0.1:123".parse().unwrap(),
-                "tcp:127.0.0.1:123".parse().unwrap(),
+                ProcAddr::instance("tcp:127.0.0.1:123".parse().unwrap(), SERVICE_PROC_NAME),
+                ProcAddr::instance("tcp:127.0.0.1:123".parse().unwrap(), SERVICE_PROC_NAME),
+                ProcAddr::instance("tcp:127.0.0.1:123".parse().unwrap(), SERVICE_PROC_NAME),
+                ProcAddr::instance("tcp:127.0.0.1:123".parse().unwrap(), SERVICE_PROC_NAME),
             ],
         )
         .unwrap();
@@ -2074,12 +2024,15 @@ mod tests {
 
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
 
-        let hosts = vec![free_localhost_addr(), free_localhost_addr()];
+        let hosts = vec![
+            ProcAddr::instance(free_localhost_addr(), SERVICE_PROC_NAME),
+            ProcAddr::instance(free_localhost_addr(), SERVICE_PROC_NAME),
+        ];
 
         let mut children = Vec::new();
         let mut ready = Vec::new();
         for host in hosts.iter() {
-            let callback = HostBootstrapReady::new(host.clone()).unwrap();
+            let callback = HostBootstrapReady::new(host.addr().clone()).unwrap();
             let mut cmd = Command::new(program.clone());
             let boot = Bootstrap::Host {
                 addr: host.clone(),
@@ -2155,12 +2108,15 @@ mod tests {
 
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
 
-        let hosts = vec![free_localhost_addr(), free_localhost_addr()];
+        let hosts = vec![
+            ProcAddr::instance(free_localhost_addr(), SERVICE_PROC_NAME),
+            ProcAddr::instance(free_localhost_addr(), SERVICE_PROC_NAME),
+        ];
 
         let mut children = Vec::new();
         let mut ready = Vec::new();
         for host in hosts.iter() {
-            let callback = HostBootstrapReady::new(host.clone()).unwrap();
+            let callback = HostBootstrapReady::new(host.addr().clone()).unwrap();
             let mut cmd = Command::new(program.clone());
             let boot = Bootstrap::Host {
                 addr: host.clone(),
@@ -2203,13 +2159,16 @@ mod tests {
 
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
 
-        let hosts = vec![free_localhost_addr(), free_localhost_addr()];
+        let hosts = vec![
+            ProcAddr::instance(free_localhost_addr(), SERVICE_PROC_NAME),
+            ProcAddr::instance(free_localhost_addr(), SERVICE_PROC_NAME),
+        ];
 
         let mut children = Vec::new();
         let mut ready = Vec::new();
 
         for (index, host) in hosts.iter().enumerate() {
-            let callback = HostBootstrapReady::new(host.clone()).unwrap();
+            let callback = HostBootstrapReady::new(host.addr().clone()).unwrap();
             let mut cmd = Command::new(program.clone());
             let command = if index == 0 {
                 let mut command = BootstrapCommand::from("sleep");
@@ -2390,7 +2349,12 @@ mod tests {
         let unreachable = free_localhost_addr();
 
         let id = HostMeshId::instance(Label::new("hm_test").unwrap());
-        let result = HostMesh::attach(instance, id, vec![unreachable.clone()]).await;
+        let result = HostMesh::attach(
+            instance,
+            id,
+            vec![ProcAddr::instance(unreachable.clone(), SERVICE_PROC_NAME)],
+        )
+        .await;
 
         // HM-2: attach returns Err on any failed config push.
         let err = match result {
@@ -2429,7 +2393,7 @@ mod tests {
 
         let mesh = HostMeshRef::from_hosts(
             HostMeshId::singleton(Label::new("alias").unwrap()),
-            vec![alias],
+            vec![ProcAddr::instance(alias, SERVICE_PROC_NAME)],
         );
 
         assert_eq!(mesh.host_addrs(), vec![dial_to.clone()]);
@@ -2567,8 +2531,12 @@ mod tests {
     fn test_host_mesh_ref_string_parses_unix_abstract_addresses() {
         let dial_addr: ChannelAddr = "unix:@host-agent".parse().unwrap();
         let service_proc_id: ProcId = "service<2>".parse().unwrap();
+        let first_service_proc_id = ProcId::instance(Label::strip(SERVICE_PROC_NAME));
         let agents = vec![
-            legacy_host_agent_ref(dial_addr.clone()),
+            host_agent_ref(ProcAddr::new(
+                first_service_proc_id.clone(),
+                dial_addr.clone().into(),
+            )),
             host_agent_ref(ProcAddr::new(
                 service_proc_id.clone(),
                 dial_addr.clone().into(),
@@ -2589,10 +2557,7 @@ mod tests {
 
         assert_eq!(
             round_trip_proc_ids,
-            vec![
-                ResourceId::from_name(SERVICE_PROC_NAME).proc_id(),
-                service_proc_id,
-            ]
+            vec![first_service_proc_id, service_proc_id,]
         );
         assert_eq!(round_trip.host_addrs(), vec![dial_addr.clone(), dial_addr]);
     }
@@ -2621,17 +2586,20 @@ mod tests {
     /// not an invariant on `aggregate_hosts` control flow.
     #[test]
     fn test_sa3_host_set_insert_idempotent() {
-        let addr_a: ChannelAddr = "tcp:127.0.0.1:2001".parse().unwrap();
-        let addr_b: ChannelAddr = "tcp:127.0.0.1:2002".parse().unwrap();
+        let addr_a = ProcAddr::instance("tcp:127.0.0.1:2001".parse().unwrap(), SERVICE_PROC_NAME);
+        let addr_b = ProcAddr::instance("tcp:127.0.0.1:2002".parse().unwrap(), SERVICE_PROC_NAME);
 
-        let ref_a = legacy_host_agent_ref(addr_a.clone());
-        let ref_b = legacy_host_agent_ref(addr_b.clone());
+        let ref_a = host_agent_ref(addr_a.clone());
+        let ref_b = host_agent_ref(addr_b.clone());
 
         let mut set = HostSet::new();
-        set.insert(addr_a.to_string(), ref_a.clone());
-        set.insert(addr_b.to_string(), ref_b.clone());
-        // Insert ref_a again — should be a no-op (SA-3).
-        set.insert("duplicate_addr".to_string(), ref_a.clone());
+        set.insert(addr_a.addr().to_string(), ref_a.clone());
+        set.insert(addr_b.addr().to_string(), ref_b.clone());
+        let ipv6_addr = ProcAddr::new(
+            addr_a.id().clone(),
+            "tcp:[::1]:2001".parse::<ChannelAddr>().unwrap().into(),
+        );
+        set.insert(ipv6_addr.addr().to_string(), host_agent_ref(ipv6_addr));
 
         let result = set.into_vec();
         assert_eq!(
@@ -2639,23 +2607,24 @@ mod tests {
             2,
             "SA-3: duplicate host identity must not add entry"
         );
+        assert_eq!(result[0].1, ref_a);
         assert_eq!(
             result[0].0,
-            addr_a.to_string(),
+            addr_a.addr().to_string(),
             "SA-3: first-seen order preserved"
         );
         assert_eq!(
             result[1].0,
-            addr_b.to_string(),
+            addr_b.addr().to_string(),
             "SA-3: first-seen order preserved"
         );
     }
 
     #[test]
     fn test_sa3_aggregate_hosts_dedup() {
-        let addr_a: ChannelAddr = "tcp:127.0.0.1:1001".parse().unwrap();
-        let addr_b: ChannelAddr = "tcp:127.0.0.1:1002".parse().unwrap();
-        let addr_c: ChannelAddr = "tcp:127.0.0.1:1003".parse().unwrap();
+        let addr_a = ProcAddr::instance("tcp:127.0.0.1:1001".parse().unwrap(), SERVICE_PROC_NAME);
+        let addr_b = ProcAddr::instance("tcp:127.0.0.1:1002".parse().unwrap(), SERVICE_PROC_NAME);
+        let addr_c = ProcAddr::instance("tcp:127.0.0.1:1003".parse().unwrap(), SERVICE_PROC_NAME);
 
         // mesh_a: hosts a, b
         let mesh_a = HostMeshRef::from_hosts(
@@ -2675,17 +2644,17 @@ mod tests {
 
         // First-seen order: a (mesh_a[0]), b (mesh_a[1]), c (mesh_b[1]).
         let addrs: Vec<String> = result.iter().map(|(a, _)| a.clone()).collect();
-        assert_eq!(addrs[0], addr_a.to_string());
-        assert_eq!(addrs[1], addr_b.to_string());
-        assert_eq!(addrs[2], addr_c.to_string());
+        assert_eq!(addrs[0], addr_a.addr().to_string());
+        assert_eq!(addrs[1], addr_b.addr().to_string());
+        assert_eq!(addrs[2], addr_c.addr().to_string());
     }
 
     /// SA-6 / CH-1: client host entries are deduplicated against the
     /// already-aggregated mesh host set.
     #[test]
     fn test_sa6_ch1_client_host_dedup() {
-        let addr_a: ChannelAddr = "tcp:127.0.0.1:1001".parse().unwrap();
-        let addr_b: ChannelAddr = "tcp:127.0.0.1:1002".parse().unwrap();
+        let addr_a = ProcAddr::instance("tcp:127.0.0.1:1001".parse().unwrap(), SERVICE_PROC_NAME);
+        let addr_b = ProcAddr::instance("tcp:127.0.0.1:1002".parse().unwrap(), SERVICE_PROC_NAME);
 
         let mesh = HostMeshRef::from_hosts(
             HostMeshId::singleton(Label::new("mesh").unwrap()),
@@ -2693,7 +2662,7 @@ mod tests {
         );
 
         // Client host entry overlaps with addr_a.
-        let client_ref = legacy_host_agent_ref(addr_a.clone());
+        let client_ref = host_agent_ref(addr_a.clone());
         let client_entries = vec![("client_addr".to_string(), client_ref)];
 
         let result = aggregate_hosts(&[&mesh], Some(client_entries));
@@ -2701,7 +2670,7 @@ mod tests {
         // addr_a already in mesh — client entry is deduplicated.
         assert_eq!(result.len(), 2, "expected 2 hosts, got {:?}", result);
         let addrs: Vec<String> = result.iter().map(|(a, _)| a.clone()).collect();
-        assert_eq!(addrs[0], addr_a.to_string());
-        assert_eq!(addrs[1], addr_b.to_string());
+        assert_eq!(addrs[0], addr_a.addr().to_string());
+        assert_eq!(addrs[1], addr_b.addr().to_string());
     }
 }

@@ -34,6 +34,7 @@ from kubernetes.client import (
     V1PodTemplateSpec,
 )
 from kubernetes.client.rest import ApiException
+from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.job._kubernetes_port_forward import (
     _serve,
     allocation_port_forward_lock_path,
@@ -58,9 +59,13 @@ from monarch._src.job.kubernetes import (
 )
 from monarch._src.job.service_identity import (
     serialize_service_proc_ids,
+    service_proc_id_from_uuid,
     SERVICE_PROC_IDS_ENV,
     SERVICE_PROC_RANK_ENV,
 )
+
+
+_TEST_SERVICE_PROC_IDS = KubernetesJob._allocate_service_proc_ids(10)
 
 
 def _make_pod(
@@ -70,9 +75,17 @@ def _make_pod(
     ip: str = "10.0.0.1",
     rank_label: str = "apps.kubernetes.io/pod-index",
     monarch_port: int | None = None,
+    service_proc_ids: list[ProcId] | None = None,
 ) -> V1Pod:
     """Build a minimal V1Pod for testing."""
-    env = []
+    env = [
+        V1EnvVar(
+            name=SERVICE_PROC_IDS_ENV,
+            value=serialize_service_proc_ids(
+                service_proc_ids or _TEST_SERVICE_PROC_IDS
+            ),
+        )
+    ]
     if monarch_port is not None:
         env.append(V1EnvVar(name="MONARCH_PORT", value=str(monarch_port)))
 
@@ -1016,7 +1029,14 @@ class TestSerialization(unittest.TestCase):
         job._status = "running"
         job._service_proc_ids["workers"] = KubernetesJob._allocate_service_proc_ids(1)
         job._prepared_mesh_pods = {
-            "workers": [_MonarchMeshPod(name="workers-0", ip="10.0.0.1", port=26600)]
+            "workers": [
+                _MonarchMeshPod(
+                    name="workers-0",
+                    ip="10.0.0.1",
+                    port=26600,
+                    service_proc_id=_TEST_SERVICE_PROC_IDS[0],
+                )
+            ]
         }
         job._gateway_address = "tcp://127.0.0.1:45678"
 
@@ -1225,6 +1245,16 @@ class TestDiscoverMonarchPort(unittest.TestCase):
 class TestWaitForReadyPods(unittest.TestCase):
     """Tests for KubernetesJob._wait_for_ready_pods using mocked Watch."""
 
+    def test_service_identity_from_pod_uuid(self) -> None:
+        job = self._make_job()
+        pod = _make_pod("w-0", 0, True)
+        pod.metadata.uid = "76d38cab-4891-437d-af4c-23955e542012"
+        pod.spec.containers[0].env = [V1EnvVar(name="MONARCH_POD_UID")]
+        identity = job._discover_service_proc_id(pod, 0)
+        self.assertEqual(identity, service_proc_id_from_uuid(pod.metadata.uid))
+        self.assertTrue(identity.uid.is_instance)
+        self.assertEqual(job._discover_service_proc_id(pod, 1), identity)
+
     @patch("monarch._src.job.kubernetes.configure")
     def _make_job(self, mock_configure: MagicMock) -> KubernetesJob:
         return KubernetesJob(namespace="test-ns")
@@ -1256,8 +1286,18 @@ class TestWaitForReadyPods(unittest.TestCase):
         self.assertEqual(
             result,
             [
-                _MonarchMeshPod(name="w-0", ip="10.0.0.1", port=26600),
-                _MonarchMeshPod(name="w-1", ip="10.0.0.2", port=26600),
+                _MonarchMeshPod(
+                    name="w-0",
+                    ip="10.0.0.1",
+                    port=26600,
+                    service_proc_id=_TEST_SERVICE_PROC_IDS[0],
+                ),
+                _MonarchMeshPod(
+                    name="w-1",
+                    ip="10.0.0.2",
+                    port=26600,
+                    service_proc_id=_TEST_SERVICE_PROC_IDS[1],
+                ),
             ],
         )
         mock_watch.stop.assert_called_once()
@@ -1293,8 +1333,18 @@ class TestWaitForReadyPods(unittest.TestCase):
         self.assertEqual(
             result,
             [
-                _MonarchMeshPod(name="w-0", ip="10.0.0.1", port=26600),
-                _MonarchMeshPod(name="w-1", ip="10.0.0.2", port=26600),
+                _MonarchMeshPod(
+                    name="w-0",
+                    ip="10.0.0.1",
+                    port=26600,
+                    service_proc_id=_TEST_SERVICE_PROC_IDS[0],
+                ),
+                _MonarchMeshPod(
+                    name="w-1",
+                    ip="10.0.0.2",
+                    port=26600,
+                    service_proc_id=_TEST_SERVICE_PROC_IDS[1],
+                ),
             ],
         )
 
@@ -1413,7 +1463,14 @@ class TestWaitForReadyPods(unittest.TestCase):
 
         self.assertEqual(
             result,
-            [_MonarchMeshPod(name="w-0", ip="10.0.0.1", port=26600)],
+            [
+                _MonarchMeshPod(
+                    name="w-0",
+                    ip="10.0.0.1",
+                    port=26600,
+                    service_proc_id=_TEST_SERVICE_PROC_IDS[0],
+                )
+            ],
         )
 
     @patch(
@@ -1457,7 +1514,14 @@ class TestWaitForReadyPods(unittest.TestCase):
 
         self.assertEqual(
             result,
-            [_MonarchMeshPod(name="w-0", ip="10.0.0.1", port=9999)],
+            [
+                _MonarchMeshPod(
+                    name="w-0",
+                    ip="10.0.0.1",
+                    port=9999,
+                    service_proc_id=_TEST_SERVICE_PROC_IDS[0],
+                )
+            ],
         )
 
 
@@ -1893,7 +1957,12 @@ class TestAllocationPortForward(unittest.TestCase):
 class TestAllocationGateway(unittest.TestCase):
     """Tests for how KubernetesJob hands each kubeconfig form to the gateway."""
 
-    POD = _MonarchMeshPod(name="mesh1-0", ip="10.0.0.1", port=26600)
+    POD = _MonarchMeshPod(
+        name="mesh1-0",
+        ip="10.0.0.1",
+        port=26600,
+        service_proc_id=_TEST_SERVICE_PROC_IDS[0],
+    )
 
     @patch("monarch._src.job.kubernetes.configure")
     def _make_job(
@@ -2039,8 +2108,20 @@ class TestStateOutOfCluster(unittest.TestCase):
             mock_watch_cls,
             [
                 [
-                    _make_pod("mesh1-0", 0, True, ip="10.0.0.1"),
-                    _make_pod("mesh1-1", 1, True, ip="10.0.0.2"),
+                    _make_pod(
+                        "mesh1-0",
+                        0,
+                        True,
+                        ip="10.0.0.1",
+                        service_proc_ids=service_proc_ids,
+                    ),
+                    _make_pod(
+                        "mesh1-1",
+                        1,
+                        True,
+                        ip="10.0.0.2",
+                        service_proc_ids=service_proc_ids,
+                    ),
                 ],
             ],
         )
@@ -2109,7 +2190,12 @@ class TestStateOutOfCluster(unittest.TestCase):
         job = self._make_job()
         job.add_mesh("mesh1", 1)
         mock_wait_for_ready_pods.return_value = [
-            _MonarchMeshPod(name="mesh1-0", ip="10.0.0.1", port=26600)
+            _MonarchMeshPod(
+                name="mesh1-0",
+                ip="10.0.0.1",
+                port=26600,
+                service_proc_id=_TEST_SERVICE_PROC_IDS[0],
+            )
         ]
         mock_gateway.return_value = "tcp://127.0.0.1:45678"
 
@@ -2144,7 +2230,12 @@ class TestStateOutOfCluster(unittest.TestCase):
         job = self._make_job()
         job.add_mesh("mesh1", 1)
         mock_wait_for_ready_pods.return_value = [
-            _MonarchMeshPod(name="mesh1-0", ip="10.0.0.1", port=26600)
+            _MonarchMeshPod(
+                name="mesh1-0",
+                ip="10.0.0.1",
+                port=26600,
+                service_proc_id=_TEST_SERVICE_PROC_IDS[0],
+            )
         ]
         mock_gateway.return_value = "tcp://127.0.0.1:45678"
 
@@ -2200,7 +2291,12 @@ class TestStateOutOfCluster(unittest.TestCase):
         job._apply_id = "apply"
         job.add_mesh("mesh1", 1)
         mock_wait_for_ready_pods.return_value = [
-            _MonarchMeshPod(name="mesh1-0", ip="10.0.0.1", port=26600)
+            _MonarchMeshPod(
+                name="mesh1-0",
+                ip="10.0.0.1",
+                port=26600,
+                service_proc_id=_TEST_SERVICE_PROC_IDS[0],
+            )
         ]
 
         job._state()

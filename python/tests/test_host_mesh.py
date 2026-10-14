@@ -797,19 +797,20 @@ def test_alias_bootstrap() -> None:
         # dial_to advertises a reachable address; bind_to listens on the
         # wildcard interface.
         addr = f"tcp://127.0.0.1:{port}@tcp://0.0.0.0:{port}"
+        proc_addr = service_proc_addr(addr, new_service_proc_id())
         proc = subprocess.Popen(
             [
                 sys.executable,
                 "-c",
                 "import sys; from monarch.actor import run_worker_loop_forever; "
-                f'run_worker_loop_forever(address={addr!r}, ca="trust_all_connections")',
+                f'run_worker_loop_forever(address={proc_addr!r}, ca="trust_all_connections")',
             ],
             env=env,
         )
         procs.append(proc)
         # Pass the full alias through attach_to_workers. The attach path must
         # canonicalize this to dial_to before using it as host identity.
-        workers.append(addr)
+        workers.append(proc_addr)
 
     try:
         # pyrefly: ignore [bad-argument-type]
@@ -849,18 +850,19 @@ def test_attach_to_workers_accepts_future_addresses() -> None:
             env["PYTHONPATH"] = ":".join(sys.path)
 
         addr = f"tcp://127.0.0.1:{port}"
+        proc_addr = service_proc_addr(addr, new_service_proc_id())
         proc = subprocess.Popen(
             [
                 sys.executable,
                 "-c",
                 "import sys; from monarch.actor import run_worker_loop_forever; "
-                f'run_worker_loop_forever(address={addr!r}, ca="trust_all_connections")',
+                f'run_worker_loop_forever(address={proc_addr!r}, ca="trust_all_connections")',
             ],
             env=env,
         )
         procs.append(proc)
         # Wrap the address in a Future[str] so attach goes through _take_inner.
-        fut: Future[str] = Future._from_coro(_resolve(addr))
+        fut: Future[str] = Future._from_coro(_resolve(proc_addr))
         workers.append(fut)
 
     try:
@@ -1469,19 +1471,20 @@ def test_spawn_procs_bootstrap_command_uses_remote_host_environment() -> None:
     port = sock.getsockname()[1]
     sock.close()
     addr = f"tcp://127.0.0.1:{port}"
+    proc_addr = service_proc_addr(addr, new_service_proc_id())
     worker = subprocess.Popen(
         [
             sys.executable,
             "-c",
             "from monarch.actor import run_worker_loop_forever; "
-            f'run_worker_loop_forever(address={addr!r}, ca="trust_all_connections")',
+            f'run_worker_loop_forever(address={proc_addr!r}, ca="trust_all_connections")',
         ],
         env=worker_env,
     )
 
     try:
         # pyrefly: ignore [bad-argument-type]
-        hosts = attach_to_workers(ca="trust_all_connections", workers=[addr])
+        hosts = attach_to_workers(ca="trust_all_connections", workers=[proc_addr])
         cmd = default_bootstrap_cmd().with_env(
             {"MONARCH_ENV_REMOVED": None, "MONARCH_ENV_SET": "command"}
         )
@@ -1753,29 +1756,6 @@ def test_client_attach_addr_this_host_and_this_proc() -> None:
         am = proc.spawn("echo2", EchoActor)
         result = am.echo.call_one("ping").get()
         assert result == "ping"
-
-
-@pytest.mark.timeout(120)
-@isolate_in_subprocess
-def test_client_attach_service_singleton_spawns_on_client_host() -> None:
-    worker_marker = "MONARCH_TEST_ATTACHED_WORKER"
-    assert worker_marker not in os.environ
-    job = DuplexProcessJob(
-        env={worker_marker: "1"},
-        service_proc_id=ProcId.from_string("service"),
-    )
-    job.apply()
-    attach(job.duplex_addr)
-    with scoped_state(job, cached_path=None):
-        context()
-
-        actor = (
-            this_host()
-            .spawn_procs(per_host={"local": 1})
-            .spawn("local_origin", EchoActor)
-        )
-
-        assert actor.getenv.call_one(worker_marker).get() is None
 
 
 def _admin_get(base: str, ref: str) -> Dict[str, Any]:

@@ -39,6 +39,7 @@ from monarch._src.job.service_identity import (
     deserialize_service_proc_ids,
     serialize_service_proc_ids,
     service_proc_addrs,
+    service_proc_id_from_uuid,
     SERVICE_PROC_IDS_ENV,
     SERVICE_PROC_RANK_ENV,
 )
@@ -228,6 +229,7 @@ class _MonarchMeshPod:
     name: str
     ip: str
     port: int
+    service_proc_id: ProcId
 
 
 class _MeshConfigRequired(TypedDict):
@@ -445,6 +447,8 @@ class KubernetesJob(JobTrait):
             port: Monarch worker port (default: 26600).
             pod_template: ``V1PodTemplateSpec`` for advanced provisioning (e.g. custom volumes, sidecars,
                           pod-level labels/annotations). Mutually exclusive with ``image_spec``.
+                          The worker uses ``service_proc_id_from_uuid(os.environ["MONARCH_POD_UID"])``
+                          as its service identity; the launcher supplies ``MONARCH_POD_UID``.
             labels: Optional labels to apply to the MonarchMesh CRD metadata.
                     Propagated by the operator to the StatefulSet metadata. To set
                     labels on the worker pods, use ``pod_template.metadata.labels``.
@@ -588,6 +592,22 @@ class KubernetesJob(JobTrait):
                     image_spec, mesh_config["port"], service_proc_ids
                 )
             assert pod_template is not None
+            if image_spec is None:
+                container = pod_template.spec.containers[0]
+                container.env = [
+                    var
+                    for var in (container.env or [])
+                    if var.name != "MONARCH_POD_UID"
+                ] + [
+                    client.V1EnvVar(
+                        name="MONARCH_POD_UID",
+                        value_from=client.V1EnvVarSource(
+                            field_ref=client.V1ObjectFieldSelector(
+                                field_path="metadata.uid"
+                            )
+                        ),
+                    )
+                ]
             pod_template_dict = api_client.sanitize_for_serialization(pod_template)
             metadata: dict[str, Any] = {
                 "name": mesh_name,
@@ -846,6 +866,7 @@ class KubernetesJob(JobTrait):
                         name=pod.metadata.name,
                         ip=pod.status.pod_ip,
                         port=self._discover_monarch_port(pod),
+                        service_proc_id=self._discover_service_proc_id(pod, pod_rank),
                     )
 
                     # Check if we have all required ranks (0 to num_replicas-1)
@@ -867,6 +888,19 @@ class KubernetesJob(JobTrait):
             raise RuntimeError(f"Failed to watch pods: {e}") from e
         finally:
             w.stop()
+
+    def _discover_service_proc_id(self, pod: client.V1Pod, rank: int) -> ProcId:
+        env = {
+            var.name: var
+            for container in pod.spec.containers
+            for var in (container.env or [])
+        }
+        if SERVICE_PROC_IDS_ENV in env:
+            return deserialize_service_proc_ids(env[SERVICE_PROC_IDS_ENV].value)[rank]
+        assert "MONARCH_POD_UID" in env, (
+            "worker must publish its service identity policy"
+        )
+        return service_proc_id_from_uuid(pod.metadata.uid)
 
     # TODO: Consider using named port instead of env var for monarch port
     def _discover_monarch_port(self, pod: client.V1Pod) -> int:
@@ -915,7 +949,7 @@ class KubernetesJob(JobTrait):
         for mesh_name, pods in all_mesh_pods.items():
             # Create worker addresses using discovered IPs and ports
             workers = [f"tcp://{pod.ip}:{pod.port}" for pod in pods]
-            service_proc_ids = self._service_proc_ids.get(mesh_name)
+            service_proc_ids = [pod.service_proc_id for pod in pods]
             # Create host mesh by attaching to workers
             host_mesh = attach_to_workers(
                 name=mesh_name,

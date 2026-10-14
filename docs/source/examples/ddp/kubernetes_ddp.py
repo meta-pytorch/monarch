@@ -87,14 +87,23 @@ Alternatively, you can pre-provision workers with YAML manifests::
                 nvidia.com/gpu: 4
               requests:
                 nvidia.com/gpu: 4
+            env:
+              - name: MONARCH_POD_UID
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.uid
             command:
               - python
               - -u
               - -c
               - |
                 from monarch.actor import run_worker_loop_forever
-                import socket
-                address = f"tcp://{socket.getfqdn()}:26600"
+                import os, socket
+                from monarch._src.job.service_identity import service_proc_addr, service_proc_id_from_uuid
+                address = service_proc_addr(
+                    f"tcp://{socket.getfqdn()}:26600",
+                    service_proc_id_from_uuid(os.environ["MONARCH_POD_UID"]),
+                )
                 run_worker_loop_forever(address=address, ca="trust_all_connections")
 
 Deploy with::

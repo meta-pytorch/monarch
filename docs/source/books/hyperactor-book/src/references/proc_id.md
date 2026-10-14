@@ -24,7 +24,7 @@ use hyperactor::{Label, ProcId};
 
 let anonymous = ProcId::anonymous();
 let worker = ProcId::instance(Label::new("worker").unwrap());
-let service = ProcId::singleton(Label::new("service").unwrap());
+let service = ProcId::instance(Label::new("service").unwrap());
 ```
 
 Use `ProcAddr` when you need a reachable proc reference; it pairs a `ProcId` with a `Location`. See [Host](../procs/host.md) for how proc addresses are used in the host architecture.
@@ -35,12 +35,12 @@ Use `ProcAddr` when you need a reachable proc reference; it pairs a `ProcId` wit
 impl ProcId {
     pub fn uid(&self) -> &Uid;
     pub fn label(&self) -> Option<&Label>;
-    pub fn pseudo_uid(&self) -> Uid;
+    pub fn to_path_elem(&self, base_dir: &Path) -> PathBuf;
 }
 ```
 - `.uid()` returns the identity uid.
 - `.label()` returns display metadata for instance ids, or the singleton name for singleton ids.
-- `.pseudo_uid()` returns a stable instance-shaped uid for contexts that need a short local path component.
+- `.to_path_elem()` returns a stable, short socket path for local links.
 
 ## Traits
 

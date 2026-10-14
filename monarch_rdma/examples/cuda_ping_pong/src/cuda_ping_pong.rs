@@ -877,11 +877,14 @@ pub async fn run() -> Result<(), anyhow::Error> {
     let program =
         buck_resources::get("monarch/monarch_rdma/examples/cuda_ping_pong/bootstrap").unwrap();
 
-    let host_addrs = [free_localhost_addr(), free_localhost_addr()];
+    let host_addrs = [
+        hyperactor::ProcAddr::instance(free_localhost_addr(), "service"),
+        hyperactor::ProcAddr::instance(free_localhost_addr(), "service"),
+    ];
     let mut children = Vec::new();
     let mut ready = Vec::new();
     for host in host_addrs.iter() {
-        let callback = HostBootstrapReady::new(host.clone())?;
+        let callback = HostBootstrapReady::new(host.addr().clone())?;
         let mut cmd = Command::new(program.clone());
         let boot = Bootstrap::Host {
             addr: host.clone(),

@@ -29,9 +29,7 @@ import sys
 _CHILD_DEADLINE_SECONDS: int = 180
 _CHILD_CLEANUP_SECONDS: int = 10
 
-# An instance-form service proc id. The bare word "service" also parses, but
-# only as the legacy singleton the fallback already produces, so it would not
-# show that the "proc_id@location" split was taken.
+# An instance-form service proc id for the worker.
 #
 # The uid is a known-valid literal so the child fixture remains deterministic.
 # It is not the value from the binding's address-format help: that example is a

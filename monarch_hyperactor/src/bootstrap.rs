@@ -40,11 +40,8 @@ use crate::pytokio::PyPythonTask;
 use crate::runtime::GilSite;
 use crate::runtime::monarch_with_gil;
 
-const SERVICE_ADDRESS_FORMAT: &str = "expected a channel URL such as 'tcp://host:4444' or a ProcAddr such as 'service<2MuAHeDjLCEd>@tcp://host:4444'";
-
-fn legacy_service_proc_id() -> ProcId {
-    ProcId::singleton(Label::strip(hyperactor::proc::LEGACY_SERVICE_PROC_NAME))
-}
+const SERVICE_ADDRESS_FORMAT: &str =
+    "expected a service ProcAddr such as 'service<2MuAHeDjLCEd>@tcp://host:4444'";
 
 fn service_address_parse_error(address: &str, error: impl std::fmt::Display) -> anyhow::Error {
     anyhow::anyhow!("invalid worker address {address:?}: {error}; {SERVICE_ADDRESS_FORMAT}")
@@ -59,7 +56,10 @@ fn service_proc_id_and_location(address: &str) -> (ProcId, &str) {
         return (proc_id, location);
     }
 
-    (legacy_service_proc_id(), address)
+    (
+        ProcId::instance(Label::strip(hyperactor_mesh::host::SERVICE_PROC_NAME)),
+        address,
+    )
 }
 
 fn into_dial_location(location: Location) -> Location {
@@ -70,14 +70,14 @@ fn into_dial_location(location: Location) -> Location {
 }
 
 fn parse_service_proc_addr(address: &str) -> anyhow::Result<ProcAddr> {
-    let proc_addr = match address.parse::<ProcAddr>() {
-        Ok(proc_addr) => proc_addr,
-        Err(_) => address
-            .parse::<Location>()
-            .map(|location| ProcAddr::new(legacy_service_proc_id(), location))
-            .map_err(|error| service_address_parse_error(address, error))?,
-    };
+    let proc_addr = address
+        .parse::<ProcAddr>()
+        .map_err(|error| service_address_parse_error(address, error))?;
 
+    anyhow::ensure!(
+        proc_addr.uid().is_instance(),
+        "service proc must have an instance id"
+    );
     Ok(ProcAddr::new(
         proc_addr.id().clone(),
         into_dial_location(proc_addr.location().clone()),
@@ -95,6 +95,10 @@ fn parse_service_proc_addr_for_serve(
     address: &str,
 ) -> anyhow::Result<(ProcAddr, Option<std::net::TcpListener>)> {
     let (proc_id, location) = service_proc_id_and_location(address);
+    anyhow::ensure!(
+        proc_id.uid().is_instance(),
+        "service proc must have an instance id"
+    );
     let (addr, listener) = ChannelAddr::from_zmq_url_with_listener(location)
         .map_err(|error| service_address_parse_error(address, error))?;
     Ok((ProcAddr::new(proc_id, addr.into()), listener))
@@ -247,7 +251,7 @@ pub fn attach_to_workers(
             .await;
         let service_procs = service_procs?;
 
-        let host_mesh = HostMesh::attach_with_service_procs(&*instance, name, service_procs)
+        let host_mesh = HostMesh::attach(&*instance, name, service_procs)
             .await
             .map_err(|e| anyhow::anyhow!("attach failed: {}", e))?;
         Ok(PyHostMesh::new_owned(host_mesh))
@@ -313,11 +317,10 @@ mod tests {
     use crate::runtime::monarch_with_gil_blocking;
 
     #[test]
-    fn test_bare_worker_address_uses_legacy_service_proc() {
-        let service_proc = parse_service_proc_addr("tcp://127.0.0.1:1234").unwrap();
-
-        assert_eq!(service_proc.id(), &legacy_service_proc_id());
-        assert_eq!(service_proc.location().to_string(), "tcp://127.0.0.1:1234");
+    fn test_attach_requires_service_proc_identity() {
+        assert!(parse_service_proc_addr("tcp://127.0.0.1:1234").is_err());
+        assert!(parse_service_proc_addr("service@tcp://127.0.0.1:1234").is_err());
+        assert!(parse_service_proc_addr_for_serve("service@tcp://127.0.0.1:1234").is_err());
     }
 
     #[test]
@@ -339,9 +342,7 @@ mod tests {
     fn test_worker_address_disambiguates_proc_addr_from_channel_alias() {
         let alias = "tcp://127.0.0.1:1234@tcp://0.0.0.0:1234";
         let dial_addr = ChannelAddr::from_zmq_url("tcp://127.0.0.1:1234").unwrap();
-        let legacy = parse_service_proc_addr(alias).unwrap();
-        assert_eq!(legacy.id(), &legacy_service_proc_id());
-        assert_eq!(legacy.addr(), &dial_addr);
+        assert!(parse_service_proc_addr(alias).is_err());
 
         let service_proc_id = ProcId::instance(Label::strip("service"));
         let proc_address = format!("{service_proc_id}@{alias}");
@@ -369,19 +370,13 @@ mod tests {
     }
 
     #[test]
-    fn test_explicit_singleton_service_proc_is_accepted() {
-        let service_proc = parse_service_proc_addr("service@tcp://127.0.0.1:1234").unwrap();
-
-        assert_eq!(service_proc.id(), &legacy_service_proc_id());
-        assert_eq!(service_proc.location().to_string(), "tcp://127.0.0.1:1234");
-    }
-
-    #[test]
-    fn test_serve_worker_address_accepts_explicit_singleton() {
+    fn test_serve_worker_address_preserves_service_identity() {
+        let service_proc_id = ProcId::instance(Label::strip("service"));
         let (service_proc, listener) =
-            parse_service_proc_addr_for_serve("service@tcp://127.0.0.1:1234").unwrap();
+            parse_service_proc_addr_for_serve(&format!("{service_proc_id}@tcp://127.0.0.1:1234"))
+                .unwrap();
 
-        assert_eq!(service_proc.id(), &legacy_service_proc_id());
+        assert_eq!(service_proc.id(), &service_proc_id);
         assert_eq!(service_proc.location().to_string(), "tcp://127.0.0.1:1234");
         assert!(listener.is_none());
     }
@@ -421,7 +416,7 @@ mod tests {
     /// the worker-loop future is prepared, and that future holds the listener.
     ///
     /// The test exercises two spellings of this same path, each with its own
-    /// freshly bound socket: a bare channel URL using the legacy service proc id
+    /// freshly bound socket: a bare channel URL using a fresh instance id
     /// and an explicit `ProcId@location` using a generated instance id. The tls,
     /// metatls, quic, and metaquic schemes use the same `host:fdN` parser but are
     /// not exercised here. A TCP alias is different: its nested listener is
@@ -595,7 +590,6 @@ mod tests {
         let error = parse_service_proc_addr("not an address").unwrap_err();
         let message = error.to_string();
         assert!(message.contains("invalid worker address \"not an address\""));
-        assert!(message.contains("tcp://host:4444"));
         assert!(message.contains("service<2MuAHeDjLCEd>@tcp://host:4444"));
     }
 }

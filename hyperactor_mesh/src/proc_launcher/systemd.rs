@@ -1423,7 +1423,7 @@ mod tests {
         let proc_id = ResourceId::proc_addr_from_name(any_unix_addr(), "env-vars");
         // The bootstrap payload content doesn't matter for this test.
         let bootstrap = Bootstrap::Host {
-            addr: any_unix_addr(),
+            addr: hyperactor::ProcAddr::instance(any_unix_addr(), crate::host::SERVICE_PROC_NAME),
             callback_addr: any_unix_addr(),
             command: None,
             config: None,
@@ -1525,7 +1525,7 @@ mod tests {
 
         // The bootstrap payload content doesn't matter for this test.
         let bootstrap = Bootstrap::Host {
-            addr: any_unix_addr(),
+            addr: hyperactor::ProcAddr::instance(any_unix_addr(), crate::host::SERVICE_PROC_NAME),
             callback_addr: any_unix_addr(),
             command: None,
             config: None,
@@ -1573,7 +1573,7 @@ mod tests {
 
         // The bootstrap payload content doesn't matter for this test.
         let bootstrap = Bootstrap::Host {
-            addr: any_unix_addr(),
+            addr: hyperactor::ProcAddr::instance(any_unix_addr(), crate::host::SERVICE_PROC_NAME),
             callback_addr: any_unix_addr(),
             command: None,
             config: None,
@@ -1641,7 +1641,7 @@ mod tests {
 
         // The bootstrap payload content doesn't matter for this test.
         let bootstrap = Bootstrap::Host {
-            addr: any_unix_addr(),
+            addr: hyperactor::ProcAddr::instance(any_unix_addr(), crate::host::SERVICE_PROC_NAME),
             callback_addr: any_unix_addr(),
             command: None,
             config: None,
@@ -1817,7 +1817,7 @@ mod tests {
 
         // The bootstrap payload content doesn't matter for this test.
         let bootstrap = Bootstrap::Host {
-            addr: any_unix_addr(),
+            addr: hyperactor::ProcAddr::instance(any_unix_addr(), crate::host::SERVICE_PROC_NAME),
             callback_addr: any_unix_addr(),
             command: None,
             config: None,
@@ -1925,7 +1925,7 @@ mod tests {
         let proc_id = ResourceId::proc_addr_from_name(any_unix_addr(), "long-running");
         // The bootstrap payload content doesn't matter for this test.
         let bootstrap = Bootstrap::Host {
-            addr: any_unix_addr(),
+            addr: hyperactor::ProcAddr::instance(any_unix_addr(), crate::host::SERVICE_PROC_NAME),
             callback_addr: any_unix_addr(),
             command: None,
             config: None,

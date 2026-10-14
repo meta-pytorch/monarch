@@ -2023,11 +2023,14 @@ mod tests {
         let mut children = Vec::new();
         let mut ready = Vec::new();
         for _ in 0..n {
-            host_addrs.push(ChannelTransport::Unix.any());
+            host_addrs.push(hyperactor::ProcAddr::instance(
+                ChannelTransport::Unix.any(),
+                "service",
+            ));
         }
 
         for host in host_addrs.iter() {
-            let callback = crate::bootstrap::HostBootstrapReady::new(host.clone()).unwrap();
+            let callback = crate::bootstrap::HostBootstrapReady::new(host.addr().clone()).unwrap();
             let mut cmd = Command::new(program.clone());
             let boot = crate::Bootstrap::Host {
                 addr: host.clone(),

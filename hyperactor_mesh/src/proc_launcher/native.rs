@@ -735,7 +735,10 @@ mod tests {
         runtime.block_on(async {
             let launcher = NativeProcLauncher::new();
             let bootstrap = Bootstrap::Host {
-                addr: any_unix_addr(),
+                addr: hyperactor::ProcAddr::instance(
+                    any_unix_addr(),
+                    crate::host::SERVICE_PROC_NAME,
+                ),
                 callback_addr: any_unix_addr(),
                 command: None,
                 config: None,
@@ -812,7 +815,7 @@ mod tests {
 
         // The bootstrap payload content doesn't matter for this test.
         let bootstrap = Bootstrap::Host {
-            addr: any_unix_addr(),
+            addr: hyperactor::ProcAddr::instance(any_unix_addr(), crate::host::SERVICE_PROC_NAME),
             callback_addr: any_unix_addr(),
             command: None,
             config: None,
@@ -905,7 +908,10 @@ mod tests {
             let launcher = NativeProcLauncher::new();
             // The bootstrap payload content doesn't matter for this test.
             let bootstrap = Bootstrap::Host {
-                addr: any_unix_addr(),
+                addr: hyperactor::ProcAddr::instance(
+                    any_unix_addr(),
+                    crate::host::SERVICE_PROC_NAME,
+                ),
                 callback_addr: any_unix_addr(),
                 command: None,
                 config: None,
@@ -945,7 +951,10 @@ mod tests {
             let launcher = NativeProcLauncher::new();
             // The bootstrap payload content doesn't matter for this test.
             let bootstrap = Bootstrap::Host {
-                addr: any_unix_addr(),
+                addr: hyperactor::ProcAddr::instance(
+                    any_unix_addr(),
+                    crate::host::SERVICE_PROC_NAME,
+                ),
                 callback_addr: any_unix_addr(),
                 command: None,
                 config: None,
@@ -989,7 +998,7 @@ mod tests {
         let launcher = NativeProcLauncher::new();
         // The bootstrap payload content doesn't matter for this test.
         let bootstrap = Bootstrap::Host {
-            addr: any_unix_addr(),
+            addr: hyperactor::ProcAddr::instance(any_unix_addr(), crate::host::SERVICE_PROC_NAME),
             callback_addr: any_unix_addr(),
             command: None,
             config: None,
@@ -1034,7 +1043,7 @@ mod tests {
         let launcher = NativeProcLauncher::new();
         // The bootstrap payload content doesn't matter for this test.
         let bootstrap = Bootstrap::Host {
-            addr: any_unix_addr(),
+            addr: hyperactor::ProcAddr::instance(any_unix_addr(), crate::host::SERVICE_PROC_NAME),
             callback_addr: any_unix_addr(),
             command: None,
             config: None,
@@ -1112,7 +1121,7 @@ mod tests {
 
         // The bootstrap payload content doesn't matter for this test.
         let bootstrap = Bootstrap::Host {
-            addr: any_unix_addr(),
+            addr: hyperactor::ProcAddr::instance(any_unix_addr(), crate::host::SERVICE_PROC_NAME),
             callback_addr: any_unix_addr(),
             command: None,
             config: None,
@@ -1206,7 +1215,7 @@ while True:
 
         // The bootstrap payload content doesn't matter for this test.
         let bootstrap = Bootstrap::Host {
-            addr: any_unix_addr(),
+            addr: hyperactor::ProcAddr::instance(any_unix_addr(), crate::host::SERVICE_PROC_NAME),
             callback_addr: any_unix_addr(),
             command: None,
             config: None,
