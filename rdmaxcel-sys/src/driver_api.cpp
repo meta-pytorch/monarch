@@ -18,6 +18,17 @@
 #define STRINGIFY_HELPER(x) #x
 #define STRINGIFY(x) STRINGIFY_HELPER(x)
 
+// Streams `msg` to stderr at most once per call site for the lifetime of the
+// process, so a failure hit on every call is reported without flooding the
+// output, while distinct failure sites are each still reported.
+#define RDMAXCEL_LOG_ONCE(msg)                               \
+  do {                                                       \
+    static std::atomic<bool> logged{false};                  \
+    if (!logged.exchange(true, std::memory_order_relaxed)) { \
+      std::cerr << msg << std::endl;                         \
+    }                                                        \
+  } while (0)
+
 // Symbol name macros - platform-specific function names for dlsym lookup
 #ifdef USE_ROCM
 #define SYM_MEM_GET_HANDLE_FOR_ADDRESS_RANGE hipMemGetHandleForAddressRange
@@ -194,11 +205,9 @@ struct HandleGuard {
 DriverAPI create_driver_api() {
   void* handle = dlopen(RDMAXCEL_DRIVER_LIB, RTLD_LAZY | RTLD_NOLOAD);
   if (!handle) {
-    static std::atomic<bool> logged{false};
-    if (!logged.exchange(true, std::memory_order_relaxed)) {
-      std::cerr << "[RdmaXcel] Can't open " RDMAXCEL_DRIVER_LIB ": "
-                << dlerror_or("library not loaded") << std::endl;
-    }
+    RDMAXCEL_LOG_ONCE(
+        "[RdmaXcel] Can't open " RDMAXCEL_DRIVER_LIB ": "
+        << dlerror_or("library not loaded"));
     throw DriverLoadError{};
   }
 
@@ -214,11 +223,9 @@ DriverAPI create_driver_api() {
   r.name##_.fn =                                                       \
       reinterpret_cast<decltype(&sym)>(dlsym(handle, STRINGIFY(sym))); \
   if (!r.name##_.fn) {                                                 \
-    static std::atomic<bool> logged{false};                            \
-    if (!logged.exchange(true, std::memory_order_relaxed)) {           \
-      std::cerr << "[RdmaXcel] Can't find " STRINGIFY(sym) ": "        \
-                << dlerror_or("symbol not found") << std::endl;        \
-    }                                                                  \
+    RDMAXCEL_LOG_ONCE(                                                 \
+        "[RdmaXcel] Can't find " STRINGIFY(sym) ": "                   \
+        << dlerror_or("symbol not found"));                            \
     throw DriverLoadError{};                                           \
   }
 
@@ -237,7 +244,9 @@ DriverAPI create_driver_api() {
 // intentionally never released, mirroring the CUDA runtime's primary-context
 // lifecycle (held for the lifetime of the process). On success, sets
 // `*out_api` to the driver table and returns CUDA_SUCCESS once a context is
-// current; otherwise returns an error to propagate to the caller.
+// current; otherwise returns an error to propagate to the caller. Failures
+// that recur on every call while CUDA is not set up are logged once per
+// process.
 CUresult ensure_active_context(DriverAPI** out_api) {
   DriverAPI* api = DriverAPI::get();
   if (api == nullptr) {
@@ -248,7 +257,7 @@ CUresult ensure_active_context(DriverAPI** out_api) {
   CUcontext ctx = nullptr;
   CUresult rc = api->ctxGetCurrent_(&ctx);
   if (rc != CUDA_SUCCESS) {
-    std::cerr << "[RdmaXcel] Failed to get current CUDA context." << std::endl;
+    RDMAXCEL_LOG_ONCE("[RdmaXcel] Failed to get current CUDA context.");
     return rc;
   }
   if (ctx != nullptr) {
@@ -305,12 +314,11 @@ CUresult ensure_active_context(DriverAPI** out_api) {
     return CUDA_SUCCESS;
   }
 
-  std::cerr
-      << "[RdmaXcel] No CUDA context is active on the calling thread and no "
-         "device primary context could be adopted. Initialize CUDA and ensure "
-         "either that a CUDA context is active on the calling thread or that a "
-         "device primary context exists."
-      << std::endl;
+  RDMAXCEL_LOG_ONCE(
+      "[RdmaXcel] No CUDA context is active on the calling thread and no "
+      "device primary context could be adopted. Initialize CUDA and ensure "
+      "either that a CUDA context is active on the calling thread or that a "
+      "device primary context exists.");
   return last_error;
 }
 
