@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weightbridge"
+version = "0.1.0"
+description = "WeightBridge"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "packaging",
+    "pyzmq",
+    "torch",
+]
+
+[project.optional-dependencies]
+cuda = [
+    "cuda-python>=12.6",
+]
+mooncake = [
+    "mooncake-transfer-engine>=0.3.12.post1,<0.4",
+]
+ray = [
+    "nvidia-ml-py",
+    "ray",
+]
+checkpoints = [
+    "safetensors",
+]
+examples = [
+    "cuda-python>=12.6",
+    "mooncake-transfer-engine>=0.3.12.post1,<0.4",
+    "nvidia-ml-py",
+    "ray",
+    "triton",
+]
+test = [
+    "pytest",
+]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["wbridge*"]
