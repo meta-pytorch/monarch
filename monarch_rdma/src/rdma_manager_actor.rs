@@ -40,6 +40,7 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::OnceLock;
 use std::sync::RwLock;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -47,20 +48,25 @@ use hyperactor::ActorEnvironment;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::OncePortRef;
+use hyperactor::PortHandle;
 use hyperactor::ProcAddr;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::context;
+use hyperactor::context::Actor as _;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::OnceCell;
 use typeuri::Named;
 
+use crate::RdmaOp;
+use crate::RdmaOpType;
 use crate::backend::RdmaBackendHandle;
 use crate::backend::RdmaBackends;
 use crate::backend::RdmaConfig;
@@ -136,12 +142,38 @@ pub struct GetTcpActorRef {
 }
 wirevalue::register_type!(GetTcpActorRef);
 
+/// Serializable request, sent to a buffer's owner, to RDMA WRITE the owner's
+/// buffer `remote_buf_id` into `dest`. A NIC backend that cannot place an RDMA
+/// READ into GPU memory sends this in place of the READ (see
+/// [`IbvDeviceImpl::supports_read_into_gpu`](crate::backend::ibverbs::device::IbvDeviceImpl::supports_read_into_gpu)).
+///
+/// `reply` receives the outcome once the WRITE has completed, so the requester
+/// can treat it as the completion of its read.
+#[derive(Debug, Serialize, Deserialize, Named)]
+pub struct WriteBufferInto {
+    pub remote_buf_id: usize,
+    pub dest: RdmaRemoteBuffer,
+    pub timeout: Duration,
+    pub reply: OncePortRef<Result<(), String>>,
+}
+wirevalue::register_type!(WriteBufferInto);
+
+/// Carries the outcome of a [`WriteBufferInto`] from the task that ran the
+/// WRITE back to the actor, which forwards it to the requester under its own
+/// context (see `SendTransferResult` in the TCP backend for why).
+#[derive(Debug, Serialize, Deserialize, Named)]
+struct WriteBufferIntoDone {
+    reply: OncePortRef<Result<(), String>>,
+    result: Result<(), String>,
+}
+
 #[derive(Debug)]
 #[hyperactor::export(
     handlers = [
         GetTcpActorRef,
         ReleaseBuffer,
         RdmaManagerReady,
+        WriteBufferInto,
     ],
 )]
 #[hyperactor::spawnable]
@@ -284,6 +316,88 @@ impl ReleaseBufferHandler for RdmaManagerActor {
             .expect("backends set in init")
             .release_all(cx, id)
             .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<WriteBufferInto> for RdmaManagerActor {
+    /// Starts the WRITE and returns without waiting for it, so the manager
+    /// keeps serving other requests (including the requester's own
+    /// registration traffic) while the data moves.
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: WriteBufferInto,
+    ) -> Result<(), anyhow::Error> {
+        let WriteBufferInto {
+            remote_buf_id,
+            dest,
+            timeout,
+            reply,
+        } = msg;
+        let Some(local) = self.buffers.get(&remote_buf_id).cloned() else {
+            reply.post(
+                cx,
+                Err(format!("no registered buffer with id {remote_buf_id}")),
+            );
+            return Ok(());
+        };
+        if local.size() > dest.size {
+            reply.post(
+                cx,
+                Err(format!(
+                    "buffer {remote_buf_id} ({} bytes) does not fit the destination ({} bytes)",
+                    local.size(),
+                    dest.size,
+                )),
+            );
+            return Ok(());
+        }
+        let Some(handle) = self
+            .backends
+            .get()
+            .expect("backends set in init")
+            .handles()
+            .into_iter()
+            .find(|handle| dest.is_compatible_with(handle))
+        else {
+            reply.post(
+                cx,
+                Err(format!("no compatible RDMA backend for buffer: {dest:?}")),
+            );
+            return Ok(());
+        };
+        let done: PortHandle<WriteBufferIntoDone> = cx.port();
+        let proc = cx.instance().proc().clone();
+        tokio::spawn(async move {
+            let client = proc.client(&format!(
+                "rdma_write_buffer_into_{}",
+                hyperactor_mesh::shortuuid::ShortUuid::generate()
+            ));
+            let op = RdmaOp {
+                op_type: RdmaOpType::WriteFromLocal,
+                local,
+                remote: dest,
+            };
+            let result = handle
+                .submit(&client, vec![op], timeout)
+                .await
+                .map_err(|e| format!("({}) {e:#}", handle.backend_name()));
+            done.post(&client, WriteBufferIntoDone { reply, result });
+        });
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<WriteBufferIntoDone> for RdmaManagerActor {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: WriteBufferIntoDone,
+    ) -> Result<(), anyhow::Error> {
+        msg.reply.post(cx, msg.result);
         Ok(())
     }
 }

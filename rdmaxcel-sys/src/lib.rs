@@ -85,6 +85,26 @@ mod inner {
             hipMemAccessFlagsProtReadWrite;
     }
 
+    /// Set the handle types a `cuMemCreate` allocation may be exported as.
+    /// HIP declares `requestedHandleTypes` inside an anonymous union, which
+    /// bindgen exposes as `__bindgen_anon_1`.
+    #[cfg(use_rocm)]
+    pub fn set_requested_handle_types(
+        prop: &mut CUmemAllocationProp,
+        handle_types: hipMemAllocationHandleType,
+    ) {
+        prop.__bindgen_anon_1.requestedHandleTypes = handle_types;
+    }
+
+    /// Set the handle types a `cuMemCreate` allocation may be exported as.
+    #[cfg(not(use_rocm))]
+    pub fn set_requested_handle_types(
+        prop: &mut CUmemAllocationProp,
+        handle_types: CUmemAllocationHandleType,
+    ) {
+        prop.requestedHandleTypes = handle_types;
+    }
+
     #[repr(C, packed(1))]
     #[derive(Debug, Default, Clone, Copy)]
     pub struct mlx5_wqe_ctrl_seg {

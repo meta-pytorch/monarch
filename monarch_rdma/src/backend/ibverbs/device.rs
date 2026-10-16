@@ -63,6 +63,14 @@ pub trait IbvDeviceImpl: Named + std::fmt::Debug + Send + Sync + 'static {
     /// Seeds an [`IbvConfig`] with backend-appropriate defaults
     /// (e.g., EFA caps `max_send_sge` at 1).
     fn apply_config_defaults(config: &mut IbvConfig);
+
+    /// Whether the NIC places the data of an RDMA READ into GPU memory. When it
+    /// does not, [`IbvBackend`](super::manager_actor::IbvBackend) sends each
+    /// read into GPU memory to the buffer's owner, which RDMA WRITEs the data
+    /// instead.
+    fn supports_read_into_gpu() -> bool {
+        true
+    }
 }
 
 /// Inventory entry submitted by [`register_ibv_device_impl!`] for
@@ -423,6 +431,28 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
             .map(|backend| backend.devices.clone())
             .unwrap_or_default()
     }
+}
+
+/// Open the first RDMA device on this host, through whichever backend
+/// claims it, for tests that need a live `ibv_context` but no particular
+/// vendor. The returned context stays open for as long as it is held.
+#[cfg(test)]
+pub(crate) fn open_any_device_for_test() -> (Arc<IbvContext>, IbvDeviceInfo) {
+    use super::efa_device::EfaDevice;
+    use super::ionic_device::IonicDevice;
+    use super::mlx_device::MlxDevice;
+
+    fn open_first<I: IbvDeviceImpl>() -> Option<(Arc<IbvContext>, IbvDeviceInfo)> {
+        let info = IbvDevice::<I>::list().into_iter().next()?;
+        let device = IbvDevice::<I>::try_open(info.name(), IbvConfig::default())
+            .expect("a listed device should open");
+        Some((device.context(), device.device_info().clone()))
+    }
+
+    open_first::<MlxDevice>()
+        .or_else(open_first::<IonicDevice>)
+        .or_else(open_first::<EfaDevice>)
+        .expect("test runs on machines with RDMA devices")
 }
 
 /// All RDMA devices on this host, across every registered backend

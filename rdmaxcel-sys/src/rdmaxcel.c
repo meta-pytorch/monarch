@@ -27,6 +27,21 @@ int rdmaxcel_advise_mr_write_async(
 }
 
 // ============================================================================
+// IONIC static rdma-core provider
+// ============================================================================
+
+// A static rdma-core provider registers itself from a constructor in its
+// provider object (PROVIDER_DRIVER). The linker only pulls that object out of
+// the provider archive if something references it. mlx5 and efa are pulled in
+// by the mlx5dv_*/efadv_* calls in this file. Nothing references ionic, so
+// reference its verbs_device_ops here. `used` stops the compiler from dropping
+// the otherwise unreferenced pointer.
+struct verbs_device_ops;
+extern const struct verbs_device_ops verbs_provider_ionic;
+__attribute__((used)) static const struct verbs_device_ops* const
+    rdmaxcel_force_link_ionic = &verbs_provider_ionic;
+
+// ============================================================================
 // RDMAXCEL QP Wrapper Implementation
 // ============================================================================
 

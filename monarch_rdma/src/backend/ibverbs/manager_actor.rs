@@ -48,13 +48,16 @@ use super::IbvOp;
 use super::cq_actor::CompletionQueueActor;
 use super::device::IbvDevice;
 use super::device::IbvDeviceImpl;
+use super::device_selection::IbvDeviceTarget;
 use super::device_selection::PeerDeviceAffinityPolicy;
+use super::device_selection::best_ibv_path;
 use super::device_selection::configured_peer_device_affinity;
 use super::device_selection::resolve_target;
 use super::device_selection::select_optimal_ibv_devices;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::efa_device::EfaDevice;
+use super::ionic_device::IonicDevice;
 use super::memory_region::IbvMemoryRegionView;
 use super::memory_region::IbvRemoteMemoryRegionView;
 use super::mlx_device::MlxDevice;
@@ -71,15 +74,20 @@ use super::queue_pair::QueuePairOp;
 use super::queue_pair::StripeId;
 use super::queue_pair::StripeResult;
 use super::queue_pair::legacy;
+use crate::RdmaManagerMessageClient;
 use crate::RdmaOp;
 use crate::RdmaOpType;
 use crate::RdmaTransportLevel;
+use crate::ReleaseBufferClient;
 use crate::backend::RdmaBackend;
 use crate::backend::RdmaConfig;
 use crate::backend::ResolveRemoteBackendContext;
+use crate::device_selection::MemoryLocation;
+use crate::device_selection::PciPath;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::rdma_components::RdmaRemoteBuffer;
 use crate::rdma_manager_actor::RdmaManagerActor;
+use crate::rdma_manager_actor::WriteBufferInto;
 use crate::validate_execution_context;
 
 const KIB: usize = 1024;
@@ -119,6 +127,7 @@ pub(super) struct CreatePeerQueuePair<M: Referable> {
 }
 wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<MlxDevice>>);
 wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<EfaDevice>>);
+wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<IonicDevice>>);
 
 /// Local-only message: submit a batch of RDMA ops for end-to-end
 /// execution. The manager iterates the batch, resolves each op's
@@ -941,6 +950,9 @@ impl<I: IbvDeviceImpl> Handler<IbvManagerLocalMessage> for IbvManagerActor<I> {
 pub struct IbvBackend<I: IbvDeviceImpl> {
     manager: ActorHandle<IbvManagerActor<I>>,
     queue_pair_router: Arc<QueuePairRouter>,
+    /// The manager's explicit device target, if any, so
+    /// [`RdmaBackend::path_to`] ranks the NIC the manager will actually use.
+    target: Option<IbvDeviceTarget>,
 }
 
 impl<I: IbvDeviceImpl> Clone for IbvBackend<I> {
@@ -948,6 +960,7 @@ impl<I: IbvDeviceImpl> Clone for IbvBackend<I> {
         Self {
             manager: self.manager.clone(),
             queue_pair_router: Arc::clone(&self.queue_pair_router),
+            target: self.target.clone(),
         }
     }
 }
@@ -1020,15 +1033,32 @@ where
         None
     }
 
+    /// The path to the NIC [`IbvManagerActor::resolve_local_mrs`] would pick:
+    /// the configured target, else the best NIC for `location`. A location that
+    /// cannot be ranked (e.g. CUDA not initialized) leaves this backend unranked,
+    /// so it registers as it would on its own and reports its own error.
+    fn path_to(&self, location: MemoryLocation) -> Option<PciPath> {
+        best_ibv_path::<I>(location, self.target.as_ref())
+            .inspect_err(|error| {
+                tracing::debug!(
+                    "cannot rank {} NICs for {location:?}: {error:#}",
+                    I::backend_name()
+                )
+            })
+            .ok()
+    }
+
     async fn spawn(
         cx: &(impl hyperactor::context::Actor + Send + Sync),
         config: &RdmaConfig,
     ) -> Result<Self> {
         let actor = IbvManagerActor::<I>::new(config.ibv.clone()).await?;
         let queue_pair_router = actor.queue_pair_router();
+        let target = actor.config.target.clone();
         Ok(Self {
             manager: cx.spawn(actor),
             queue_pair_router,
+            target,
         })
     }
 
@@ -1062,6 +1092,53 @@ where
 
     /// Submit a batch of RDMA operations.
     ///
+    /// Reads into GPU memory over a NIC that cannot place READ data there (see
+    /// [`IbvDeviceImpl::supports_read_into_gpu`]) are sent to the remote
+    /// buffer's owner as WRITEs ([`read_via_owner_write`]); every other op is
+    /// posted here ([`Self::submit_direct`]). Both groups run concurrently and
+    /// every failure is reported.
+    async fn submit(
+        &self,
+        cx: &(impl hyperactor::context::Actor + Send + Sync),
+        ops: Vec<RdmaOp>,
+        timeout: Duration,
+    ) -> Result<(), anyhow::Error> {
+        let (via_owner, direct): (Vec<_>, Vec<_>) = ops.into_iter().partition(|op| {
+            !I::supports_read_into_gpu()
+                && op.op_type == RdmaOpType::ReadIntoLocal
+                && matches!(op.local.location(), MemoryLocation::Gpu(_))
+        });
+        if via_owner.is_empty() {
+            return self.submit_direct(cx, direct, timeout).await;
+        }
+        let (direct, via_owner) = futures::join!(
+            self.submit_direct(cx, direct, timeout),
+            futures::future::join_all(
+                via_owner
+                    .into_iter()
+                    .map(|op| read_via_owner_write(cx, op, timeout)),
+            ),
+        );
+        let errors: Vec<String> = std::iter::once(direct)
+            .chain(via_owner)
+            .filter_map(|result| result.err().map(|e| format!("{e:#}")))
+            .collect();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(errors.join("\n"))
+        }
+    }
+}
+
+// Same bound as the `RdmaBackend` impl above; `submit_direct` is private.
+#[allow(private_bounds)]
+impl<I: IbvDeviceImpl> IbvBackend<I>
+where
+    RdmaRemoteBuffer: ResolveRemoteBackendContext<IbvBackend<I>>,
+{
+    /// Submit a batch of RDMA operations, each posted on this proc's queue pairs.
+    ///
     /// Translates each op to an `IbvOp`, then forwards them directly to the
     /// relevant queue-pairs when possible; any ops that cannot be forwarded
     /// directly (memory registration needed, QPs don't exist yet) are shipped to
@@ -1070,7 +1147,7 @@ where
     ///
     /// Waits for every stripe of every operation. Every stripe failure is
     /// collected into a single error, grouped by operation.
-    async fn submit(
+    async fn submit_direct(
         &self,
         cx: &(impl hyperactor::context::Actor + Send + Sync),
         ops: Vec<RdmaOp>,
@@ -1181,6 +1258,58 @@ where
     }
 }
 
+/// Read `op.remote` into `op.local` by asking the remote buffer's owner to
+/// RDMA WRITE it there, for NICs where a READ into `op.local` would not land.
+///
+/// `op.local` is registered with this proc's [`RdmaManagerActor`] for the
+/// duration of the request, so the owner can address it like any other buffer,
+/// and released afterwards. The owner's reply arrives after its WRITE has
+/// completed. The WRITE is unordered with respect to other ops in the same
+/// batch, as the READ would have been.
+async fn read_via_owner_write(
+    cx: &(impl hyperactor::context::Actor + Send + Sync),
+    op: RdmaOp,
+    timeout: Duration,
+) -> Result<(), anyhow::Error> {
+    let manager = RdmaManagerActor::local_handle(cx);
+    let dest = manager.request_buffer(cx, op.local.clone()).await?;
+    let (reply, rx) = cx.mailbox().open_once_port::<Result<(), String>>();
+    op.remote.owner.post(
+        cx,
+        WriteBufferInto {
+            remote_buf_id: op.remote.id,
+            dest: dest.clone(),
+            timeout,
+            reply: reply.bind(),
+        },
+    );
+    let result = match tokio::time::timeout(timeout, rx.recv()).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(e))) => Err(anyhow::anyhow!(
+            "owner failed to write buffer {}: {e}",
+            op.remote.id
+        )),
+        Ok(Err(e)) => Err(anyhow::anyhow!(
+            "no reply from the owner of buffer {}: {e}",
+            op.remote.id
+        )),
+        Err(_) => Err(anyhow::anyhow!(
+            "owner write of buffer {} timed out after {timeout:?}",
+            op.remote.id
+        )),
+    };
+    // On timeout the owner's WRITE may still land later; `op.local` stays
+    // registered on its NICs (registrations live on the memory handle) and only
+    // the buffer id is dropped here.
+    if let Err(e) = manager.release_buffer(cx, dest.id).await {
+        tracing::warn!(
+            "failed to release temporary read destination {}: {e:#}",
+            dest.id
+        );
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     //! End-to-end coverage of the [`SubmitOps`] → [`ProcessOps`] →
@@ -1238,18 +1367,27 @@ mod tests {
     use crate::RdmaOpType;
     use crate::RdmaRemoteBuffer;
     use crate::backend::RdmaBackendHandle;
+    use crate::backend::ResolveRemoteBackendContext;
     use crate::backend::cuda_test_utils::CudaAllocation;
     use crate::backend::cuda_test_utils::CudaAllocator;
+    use crate::backend::ibverbs::device::IbvDevice;
+    use crate::backend::ibverbs::device::IbvDeviceImpl;
     use crate::backend::ibverbs::device::list_all_devices;
     use crate::backend::ibverbs::device_selection::IbvDeviceTarget;
     use crate::backend::ibverbs::device_selection::PeerDeviceAffinityPolicy;
+    use crate::backend::ibverbs::device_selection::best_ibv_path;
     use crate::backend::ibverbs::device_selection::resolve_target;
     use crate::backend::ibverbs::device_selection::select_optimal_ibv_devices;
+    use crate::backend::ibverbs::efa_device::EfaDevice;
+    use crate::backend::ibverbs::ionic_device::IonicDevice;
     use crate::backend::ibverbs::memory_region::IbvMemoryRegionView;
     use crate::backend::ibverbs::memory_region::IbvRemoteMemoryRegionView;
     use crate::backend::ibverbs::mlx_device::MlxDevice;
+    use crate::backend::ibverbs::primitives::GidScope;
+    use crate::backend::ibverbs::primitives::IbvDeviceInfo;
     use crate::backend::ibverbs::primitives::IbvQpType;
     use crate::device_selection::MemoryLocation;
+    use crate::device_selection::PciPath;
     use crate::local_memory::KeepaliveLocalMemory;
 
     // ====================================================================
@@ -1442,12 +1580,17 @@ mod tests {
                     remote: op.remote_buf,
                 });
             }
+            // Route like `RdmaAction::submit`, minus its TCP fallback: take
+            // the first NIC backend that every op's remote buffer advertises.
+            // On a host with more than one NIC backend a buffer is registered
+            // only on the backends closest to it.
             let nic = RdmaManagerActor::local_handle(cx)
                 .get_backend_handles(cx)
                 .await?
                 .into_iter()
-                .find(|h| !matches!(h, RdmaBackendHandle::Tcp(_)))
-                .ok_or_else(|| anyhow::anyhow!("no NIC backend on this proc"))?;
+                .filter(|h| !matches!(h, RdmaBackendHandle::Tcp(_)))
+                .find(|h| rdma_ops.iter().all(|op| op.remote.is_compatible_with(h)))
+                .ok_or_else(|| anyhow::anyhow!("no NIC backend serves every op's remote buffer"))?;
             let result = nic
                 .submit(cx, rdma_ops, Duration::from_secs(timeout_secs))
                 .await;
@@ -1832,6 +1975,88 @@ mod tests {
         }
     }
 
+    /// An ibverbs backend, named for [`on_host_memory_backend!`].
+    #[derive(Debug, Clone, Copy)]
+    enum NicBackend {
+        Mlx,
+        Efa,
+        Ionic,
+    }
+
+    /// The NIC backend that registers host memory on this host (optionally
+    /// pinned to `target`): the one with the best path to it, the first
+    /// listed on a tie, as `serving_backends` decides.
+    fn host_memory_backend(target: Option<&IbvDeviceTarget>) -> NicBackend {
+        fn path<I: IbvDeviceImpl>(target: Option<&IbvDeviceTarget>) -> Option<PciPath> {
+            if !IbvDevice::<I>::available() {
+                return None;
+            }
+            best_ibv_path::<I>(MemoryLocation::Cpu(None), target).ok()
+        }
+        let candidates = [
+            (NicBackend::Mlx, path::<MlxDevice>(target)),
+            (NicBackend::Efa, path::<EfaDevice>(target)),
+            (NicBackend::Ionic, path::<IonicDevice>(target)),
+        ];
+        let mut best: Option<(NicBackend, PciPath)> = None;
+        for (backend, path) in candidates {
+            let Some(path) = path else { continue };
+            if best.is_none_or(|(_, best_path)| path.is_better_than(&best_path)) {
+                best = Some((backend, path));
+            }
+        }
+        best.expect("some NIC backend reaches host memory").0
+    }
+
+    /// Await the generic test body `$body::<I>(args)` for the
+    /// [`host_memory_backend`], so tests about where a host buffer lands
+    /// exercise whichever NIC vendor this host uses.
+    macro_rules! on_host_memory_backend {
+        ($target:expr, $body:ident($($arg:expr),* $(,)?)) => {
+            match host_memory_backend($target) {
+                NicBackend::Mlx => $body::<MlxDevice>($($arg),*).await,
+                NicBackend::Efa => $body::<EfaDevice>($($arg),*).await,
+                NicBackend::Ionic => $body::<IonicDevice>($($arg),*).await,
+            }
+        };
+    }
+
+    /// The subnet of `nic`'s port 1: its first global GID's prefix, else its
+    /// first GID's. Two NICs can reach each other only within one subnet;
+    /// fabrics with one subnet per NIC ("rails", e.g. AMD AINIC) have none.
+    fn subnet_of(nic: &IbvDeviceInfo) -> Option<u64> {
+        nic.select_gid(1, Some(GidScope::Global), None)
+            .or_else(|_| nic.select_gid(1, None, None))
+            .ok()
+            .map(|gid| gid.subnet_prefix())
+    }
+
+    /// Two distinct NICs of backend `I` in one subnet, so traffic between
+    /// them can flow, if this host has any.
+    fn two_nics_in_one_subnet<I: IbvDeviceImpl>() -> Option<(String, String)> {
+        let nics = IbvDevice::<I>::list();
+        nics.iter().enumerate().find_map(|(i, a)| {
+            let subnet = subnet_of(a)?;
+            nics[i + 1..]
+                .iter()
+                .find(|b| subnet_of(b) == Some(subnet))
+                .map(|b| (a.name().clone(), b.name().clone()))
+        })
+    }
+
+    /// The NICs backend `I` registered `buffer` on.
+    fn served_by<I: IbvDeviceImpl>(buffer: &RdmaRemoteBuffer) -> Vec<String>
+    where
+        RdmaRemoteBuffer: ResolveRemoteBackendContext<super::IbvBackend<I>>,
+    {
+        ResolveRemoteBackendContext::<super::IbvBackend<I>>::resolve(buffer)
+            .unwrap_or_else(|| panic!("the buffer is registered on a {} NIC", I::backend_name()))
+            .buffers
+            .iter()
+            .map(|mr| mr.device_name.clone())
+            .collect()
+    }
+
     fn make_plan_op(size: usize, pair_count: usize) -> IbvOp<IbvManagerActor<MlxDevice>> {
         let allocation: Box<[u8]> = vec![0; size.max(1)].into_boxed_slice();
         let local_memory =
@@ -2130,7 +2355,16 @@ mod tests {
         let lock = hyperactor_config::global::lock();
         let _guard = lock.override_key(crate::config::RDMA_HOST_ODP, false);
         let target = IbvDeviceTarget::cpu(0);
-        let device = resolve_target::<MlxDevice>(&target)?
+        on_host_memory_backend!(
+            Some(&target),
+            register_remote_buffer_records_its_registration(target.clone())
+        )
+    }
+
+    async fn register_remote_buffer_records_its_registration<I: IbvDeviceImpl>(
+        target: IbvDeviceTarget,
+    ) -> Result<(), anyhow::Error> {
+        let device = resolve_target::<I>(&target)?
             .expect("cpu:0 should resolve to a NIC")
             .name()
             .clone();
@@ -2138,14 +2372,14 @@ mod tests {
         let buf: Box<[u8]> = vec![0u8; 1024].into_boxed_slice();
         let local = KeepaliveLocalMemory::try_new(Arc::new(buf))?;
         assert!(
-            local.registered_mr::<MlxDevice>(&device)?.is_none(),
+            local.registered_mr::<I>(&device)?.is_none(),
             "the region should have no registration before it is registered",
         );
         RdmaManagerActor::local_handle(&env.client)
             .request_buffer(&env.client, local.clone())
             .await?;
         let first = local
-            .registered_mr::<MlxDevice>(&device)?
+            .registered_mr::<I>(&device)?
             .expect("registration should be recorded under the pinned device");
 
         let second_buf: Box<[u8]> = vec![0u8; 1024].into_boxed_slice();
@@ -2154,7 +2388,7 @@ mod tests {
             .request_buffer(&env.client, second_local.clone())
             .await?;
         let second = second_local
-            .registered_mr::<MlxDevice>(&device)?
+            .registered_mr::<I>(&device)?
             .expect("second registration should be recorded under the pinned device");
         assert_ne!(
             (first.lkey, first.rkey),
@@ -2228,6 +2462,13 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 120)]
     async fn test_match_name_nic_selection() -> Result<(), anyhow::Error> {
         require_rdma();
+        on_host_memory_backend!(None, match_name_nic_selection())
+    }
+
+    async fn match_name_nic_selection<I: IbvDeviceImpl>() -> Result<(), anyhow::Error>
+    where
+        RdmaRemoteBuffer: ResolveRemoteBackendContext<super::IbvBackend<I>>,
+    {
         const MAX_NICS: usize = 4;
         let lock = hyperactor_config::global::lock();
         let _max_guard = lock.override_key(
@@ -2239,7 +2480,7 @@ mod tests {
             "match_name".to_string(),
         );
         let expected: BTreeSet<String> =
-            select_optimal_ibv_devices::<MlxDevice>(MemoryLocation::Cpu(None))?
+            select_optimal_ibv_devices::<I>(MemoryLocation::Cpu(None))?
                 .iter()
                 .take(MAX_NICS)
                 .map(|nic| nic.name().clone())
@@ -2250,13 +2491,7 @@ mod tests {
             .helper_a
             .allocate(&env.client, 32, BufferDevice::Cpu, 0)
             .await?;
-        let served_by: BTreeSet<String> = buffer
-            .resolve_mlx()
-            .expect("the buffer is registered on a Mellanox NIC")
-            .buffers
-            .iter()
-            .map(|mr| mr.device_name.clone())
-            .collect();
+        let served_by: BTreeSet<String> = served_by::<I>(&buffer).into_iter().collect();
         assert_eq!(served_by, expected);
 
         for pattern in 0..2 * MAX_NICS as u8 {
@@ -2269,11 +2504,15 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 120)]
     async fn test_striped_transfers_land_every_byte() -> Result<(), anyhow::Error> {
         require_rdma();
+        on_host_memory_backend!(None, striped_transfers_land_every_byte())
+    }
+
+    async fn striped_transfers_land_every_byte<I: IbvDeviceImpl>() -> Result<(), anyhow::Error> {
         const MAX_NICS: usize = 4;
         const MIN_STRIPE_KB: usize = 512;
         // The extra 17 bytes make the size prime, so the stripes split unevenly.
         const SIZE: usize = MAX_NICS * MIN_STRIPE_KB * KIB + 17;
-        let tied = select_optimal_ibv_devices::<MlxDevice>(MemoryLocation::Cpu(None))?.len();
+        let tied = select_optimal_ibv_devices::<I>(MemoryLocation::Cpu(None))?.len();
         if tied < 2 {
             panic!("SKIPPED: this host has fewer than two NICs tied for host memory");
         }
@@ -2287,8 +2526,12 @@ mod tests {
             crate::config::RDMA_MIN_STRIPE_SIZE_KB,
             hyperactor_config::NonZeroUsize::new(MIN_STRIPE_KB).expect("MIN_STRIPE_KB is non-zero"),
         );
-        let _policy_guard =
-            lock.override_key(crate::config::RDMA_PEER_DEVICE_AFFINITY, "any".to_string());
+        // `match_name` pairs each stripe's NICs by name, which every fabric can
+        // route; `any` could pair NICs in different subnets.
+        let _policy_guard = lock.override_key(
+            crate::config::RDMA_PEER_DEVICE_AFFINITY,
+            "match_name".to_string(),
+        );
 
         let env = TestEnv::same_config(IbvConfig::default()).await?;
         run_positional_write_and_read(&env, SIZE, 20).await?;
@@ -2325,6 +2568,13 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_any_nic_selection() -> Result<(), anyhow::Error> {
         require_rdma();
+        on_host_memory_backend!(None, any_nic_selection())
+    }
+
+    async fn any_nic_selection<I: IbvDeviceImpl>() -> Result<(), anyhow::Error>
+    where
+        RdmaRemoteBuffer: ResolveRemoteBackendContext<super::IbvBackend<I>>,
+    {
         let lock = hyperactor_config::global::lock();
         let _max_guard = lock.override_key(
             crate::config::RDMA_MAX_NICS_PER_BUFFER,
@@ -2332,30 +2582,27 @@ mod tests {
         );
         let _policy_guard =
             lock.override_key(crate::config::RDMA_PEER_DEVICE_AFFINITY, "any".to_string());
-        let tied = select_optimal_ibv_devices::<MlxDevice>(MemoryLocation::Cpu(None))?.len();
+        let tied = select_optimal_ibv_devices::<I>(MemoryLocation::Cpu(None))?.len();
 
         let env = TestEnv::same_config(IbvConfig::default()).await?;
-        let mut served_by: BTreeSet<String> = BTreeSet::new();
+        let mut served_by_nics: BTreeSet<String> = BTreeSet::new();
         for _ in 0..16 {
             let buffer = env
                 .helper_a
                 .allocate(&env.client, 32, BufferDevice::Cpu, 0)
                 .await?;
-            let registrations = buffer
-                .resolve_mlx()
-                .expect("the buffer is registered on a Mellanox NIC")
-                .buffers;
-            let [mr] = registrations.as_slice() else {
-                panic!("one NIC serves a buffer here, got {registrations:?}");
+            let nics = served_by::<I>(&buffer);
+            let [nic] = nics.as_slice() else {
+                panic!("one NIC serves a buffer here, got {nics:?}");
             };
-            served_by.insert(mr.device_name.clone());
+            served_by_nics.insert(nic.clone());
         }
         // Sixteen buffers all drawing the same one of several NICs would be a
         // one-in-billions coincidence.
         assert_eq!(
-            served_by.len() > 1,
+            served_by_nics.len() > 1,
             tied > 1,
-            "{tied} NICs tie for host memory, but the buffers landed on {served_by:?}",
+            "{tied} NICs tie for host memory, but the buffers landed on {served_by_nics:?}",
         );
         env.shutdown().await
     }
@@ -2397,11 +2644,11 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_cross_device_write() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::new(
-            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
-            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
-        )
-        .await?;
+        on_host_memory_backend!(None, cross_device_write())
+    }
+
+    async fn cross_device_write<I: IbvDeviceImpl>() -> Result<(), anyhow::Error> {
+        let env = cross_device_env::<I>().await?;
         run_cross_actor_write(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0x77, 5).await?;
         env.shutdown().await
     }
@@ -2410,13 +2657,26 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_cross_device_read() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::new(
-            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
-            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
-        )
-        .await?;
+        on_host_memory_backend!(None, cross_device_read())
+    }
+
+    async fn cross_device_read<I: IbvDeviceImpl>() -> Result<(), anyhow::Error> {
+        let env = cross_device_env::<I>().await?;
         run_cross_actor_read(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0x88, 5).await?;
         env.shutdown().await
+    }
+
+    /// A [`TestEnv`] whose two sides use two different NICs that can reach
+    /// each other. Skips the test on a host with no such pair.
+    async fn cross_device_env<I: IbvDeviceImpl>() -> Result<TestEnv, anyhow::Error> {
+        let Some((nic_a, nic_b)) = two_nics_in_one_subnet::<I>() else {
+            panic!("SKIPPED: no two {} NICs share a subnet", I::backend_name());
+        };
+        TestEnv::new(
+            IbvConfig::targeting(IbvDeviceTarget::nic(nic_a)),
+            IbvConfig::targeting(IbvDeviceTarget::nic(nic_b)),
+        )
+        .await
     }
 
     /// One write + one read in a single `IbvBackend::submit` batch.
@@ -2455,7 +2715,9 @@ mod tests {
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
             IbvConfig::targeting(IbvDeviceTarget::gpu(0)),
-            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
+            // The GPU's NUMA node, so both sides land on NICs that can reach
+            // each other on fabrics with one subnet per NIC.
+            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
         )
         .await?;
         run_cross_actor_write(
@@ -2524,7 +2786,9 @@ mod tests {
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
             IbvConfig::targeting(IbvDeviceTarget::gpu(0)),
-            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
+            // The GPU's NUMA node, so both sides land on NICs that can reach
+            // each other on fabrics with one subnet per NIC.
+            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
         )
         .await?;
         run_cross_actor_read(
@@ -2858,6 +3122,11 @@ mod tests {
             bogus_remote
                 .backends
                 .efa
+                .as_mut()
+                .map(|ctx| &mut ctx.buffers),
+            bogus_remote
+                .backends
+                .ionic
                 .as_mut()
                 .map(|ctx| &mut ctx.buffers),
         ];
