@@ -34,26 +34,30 @@ from monarch._src.job.service_identity import (
     SERVICE_PROC_IDS_ENV,
 )
 
-# Bootstraps one Monarch worker that advertises this node's short hostname, the
-# form read from $PBS_NODEFILE. The launcher's PMI_/PALS_ variables are dropped
-# after the rank is read: procs the worker spawns are not ranks of that launch.
-_WORKER_BOOTSTRAP: str = (
-    "import os, socket; from monarch.actor import run_worker_loop_forever; "
-    "from monarch._src.job.service_identity import service_proc_addr, ranked_service_proc_id_from_env; "
-    "proc_id = ranked_service_proc_id_from_env(rank_env=%r); "
-    "[os.environ.pop(k) for k in list(os.environ) if k.startswith(('PMI_', 'PALS_'))]; "
-    'run_worker_loop_forever(address=service_proc_addr(f"%s", proc_id), '
-    'ca="trust_all_connections")'
-)
-
 
 def _worker_bootstrap(port: int, bind_to: Optional[str], rank_env: str) -> str:
+    """Python source that starts one Monarch worker on this node.
+
+    The worker advertises the node's short hostname, the form the client reads from
+    qstat's ``exec_host`` and ``$PBS_NODEFILE``, so both sides name a node the same way
+    even where ``gethostname()`` returns a fully qualified name. The launcher's
+    PMI_/PALS_ variables are dropped after the rank is read: procs the worker spawns
+    are not ranks of that launch.
+    """
     address = f"tcp://{{socket.gethostname().split('.')[0]}}:{port}"
     if bind_to is not None:
         bind_ip = ipaddress.ip_address(bind_to)
+        # A URL needs an IPv6 address in brackets; str(ip) has none.
         bind_host = f"[{bind_ip}]" if bind_ip.version == 6 else str(bind_ip)
         address += f"@tcp://{bind_host}:{port}"
-    return _WORKER_BOOTSTRAP % (rank_env, address)
+    return f"""import os, socket
+from monarch.actor import run_worker_loop_forever
+from monarch._src.job.service_identity import service_proc_addr, ranked_service_proc_id_from_env
+proc_id = ranked_service_proc_id_from_env(rank_env={rank_env!r})
+for k in [k for k in os.environ if k.startswith(("PMI_", "PALS_"))]:
+    os.environ.pop(k)
+run_worker_loop_forever(address=service_proc_addr(f"{address}", proc_id), ca="trust_all_connections")
+"""
 
 
 def read_nodefile(path: Optional[str] = None) -> List[str]:
@@ -61,8 +65,14 @@ def read_nodefile(path: Optional[str] = None) -> List[str]:
     path = path or os.environ.get("PBS_NODEFILE")
     if not path:
         raise RuntimeError("PBS_NODEFILE is not set: not inside a PBS allocation")
+    if not os.path.isfile(path):
+        raise RuntimeError(f"PBS_NODEFILE={path!r} is not a readable file")
     with open(path) as nodefile:
         names = [line.strip().split(".")[0] for line in nodefile if line.strip()]
+    if not names:
+        raise RuntimeError(f"PBS_NODEFILE={path!r} lists no hosts")
+    # The nodefile repeats a host once per MPI slot; keep the first occurrence of each,
+    # in file order (node 0 is the first host), not sorted.
     return list(dict.fromkeys(names))
 
 

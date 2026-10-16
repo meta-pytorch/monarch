@@ -74,7 +74,7 @@ def nodefile(tmp_path, monkeypatch):
 
 def test_batch_mode_invokes_in_allocation_runner(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    client = "/venv/bin/python -m my.train --config foo"
+    client = "python -m my.train --config foo"
     with patch("monarch._src.job.pbs.subprocess.run", side_effect=_fake_qsub) as mock:
         job = _make_job()
         job.apply(client_script=client)
@@ -247,6 +247,21 @@ def test_can_run_compares_launcher_options():
 
 def test_read_nodefile_short_names_in_order(nodefile):
     assert _pbs_batch.read_nodefile() == ["host-a", "host-b"]
+
+
+def test_read_nodefile_rejects_a_missing_or_empty_file(tmp_path):
+    with pytest.raises(RuntimeError, match="not a readable file"):
+        _pbs_batch.read_nodefile(str(tmp_path / "missing"))
+    empty = tmp_path / "empty"
+    empty.write_text("\n")
+    with pytest.raises(RuntimeError, match="lists no hosts"):
+        _pbs_batch.read_nodefile(str(empty))
+
+
+def test_service_proc_ids_must_cover_every_node():
+    job = _make_job()
+    with pytest.raises(ValueError, match="need 2 nodes, not 3"):
+        job._ensure_service_proc_ids(3)
 
 
 def test_worker_bootstrap_uses_rank_env_and_drops_launcher_env(monkeypatch):
