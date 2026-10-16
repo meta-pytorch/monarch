@@ -53,11 +53,9 @@ class PBSJob(JobTrait):
 
     Two launch modes are supported:
     - External controller (default): ``apply()`` submits the workers; a separate
-      controller process gets their host meshes with ``state()`` (it connects to the
-      workers with ``attach_to_workers``; this is not ``monarch.actor.attach``).
+      controller process gets their host meshes with ``state()``.
     - Batch (``apply(client_script=...)``): one allocation runs both the workers
-      and the client, as ``SlurmJob`` does; ``apply`` caches a ``BatchJob`` wrapper
-      for the in-allocation client, and the allocation is released when the client exits. A
+      and the client (a ``BatchJob`` wrapper); the allocation is released when the client exits. A
       hand-written PBS script can run the same in-allocation runner
       (``python -m monarch._src.job._pbs_batch``); its client then gets the job
       with ``state()`` on a ``PBSJob`` with the same meshes.
@@ -250,7 +248,6 @@ class PBSJob(JobTrait):
         return job_id
 
     def _ensure_service_proc_ids(self, num_nodes: int) -> None:
-        # One allocation pass, not a retry loop; callers pass the meshes' total.
         if len(self._service_proc_ids) != num_nodes:
             self._service_proc_ids = [
                 proc_id

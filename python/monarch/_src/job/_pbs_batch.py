@@ -36,18 +36,10 @@ from monarch._src.job.service_identity import (
 
 
 def _worker_bootstrap(port: int, bind_to: Optional[str], rank_env: str) -> str:
-    """Python source that starts one Monarch worker on this node.
-
-    The worker advertises the node's short hostname, the form the client reads from
-    qstat's ``exec_host`` and ``$PBS_NODEFILE``, so both sides name a node the same way
-    even where ``gethostname()`` returns a fully qualified name. The launcher's
-    PMI_/PALS_ variables are dropped after the rank is read: procs the worker spawns
-    are not ranks of that launch.
-    """
+    """Source of one Monarch worker; it advertises the short hostname the client reads from PBS."""
     address = f"tcp://{{socket.gethostname().split('.')[0]}}:{port}"
     if bind_to is not None:
         bind_ip = ipaddress.ip_address(bind_to)
-        # A URL needs an IPv6 address in brackets; str(ip) has none.
         bind_host = f"[{bind_ip}]" if bind_ip.version == 6 else str(bind_ip)
         address += f"@tcp://{bind_host}:{port}"
     return f"""import os, socket
@@ -71,8 +63,7 @@ def read_nodefile(path: Optional[str] = None) -> List[str]:
         names = [line.strip().split(".")[0] for line in nodefile if line.strip()]
     if not names:
         raise RuntimeError(f"PBS_NODEFILE={path!r} lists no hosts")
-    # The nodefile repeats a host once per MPI slot; keep the first occurrence of each,
-    # in file order (node 0 is the first host), not sorted.
+    # One line per MPI slot: de-duplicate, keeping node order.
     return list(dict.fromkeys(names))
 
 
