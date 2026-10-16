@@ -1172,6 +1172,18 @@ pub struct UndeliverableMailboxSender;
 
 #[async_trait]
 impl MailboxSender for UndeliverableMailboxSender {
+    /// This is the terminal sink, so it records without hop semantics. The
+    /// default `post` would treat an expired TTL as undeliverable and route
+    /// the message back here through `return_undeliverable`, recursing until
+    /// the stack overflows when the return path is also gone.
+    fn post(
+        &self,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        self.post_unchecked(envelope, return_handle);
+    }
+
     fn post_unchecked(
         &self,
         envelope: MessageEnvelope,
@@ -1355,7 +1367,11 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
         // senders.
         let (return_handle, mut undeliverable_rx) = undeliverable::new_undeliverable_port();
         tokio::task::spawn(async move {
-            let client = crate::client("undeliverable_supervisor");
+            // Returns go back to the original sender. If one is undeliverable
+            // too (the sender already stopped, such as during shutdown), log
+            // and drop it rather than crash the process.
+            let client = crate::proc::Proc::current()
+                .client_dropping_undeliverable("undeliverable_supervisor");
             while let Ok(undeliverable) = undeliverable_rx.recv().await {
                 match undeliverable {
                     Undeliverable::Returned(mut envelope) => {
@@ -2149,6 +2165,21 @@ impl Mailbox {
             panic!("mailbox with owner {} already closed", self.actor_addr());
         }
         let _ = closed.insert(status);
+        drop(closed);
+        self.inner.closed_notify.notify_waiters();
+    }
+
+    /// Wake pending receivers when their owner terminates, even when retained
+    /// handles keep the mailbox and its channel senders alive.
+    async fn wait_closed(&self) -> ActorStatus {
+        let notified = self.inner.closed_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if let Some(status) = &*self.inner.closed.read().unwrap() {
+            return status.clone();
+        }
+        notified.await;
+        self.inner.closed.read().unwrap().as_ref().unwrap().clone()
     }
 
     /// Start draining handler ingress for this mailbox.
@@ -2911,7 +2942,16 @@ impl<M> PortReceiver<M> {
     /// Receive the next message from the port corresponding with this
     /// receiver.
     pub async fn recv(&mut self) -> Result<M, MailboxError> {
-        let mut next = self.receiver.recv().await;
+        let mut next = tokio::select! {
+            // Preserve replies already queued before the owner stopped.
+            biased;
+            next = self.receiver.recv() => next,
+            status = self.mailbox.wait_closed() => {
+                return Err(MailboxError::new(
+                    self.actor_addr(), MailboxErrorKind::OwnerTerminated(status),
+                ));
+            }
+        };
         // To coalesce, get the last message from the queue if there are
         // more on the mspc queue.
         if self.coalesce
@@ -2982,15 +3022,19 @@ impl<M> OncePortReceiver<M> {
     /// receiver.  Recv consumes the receiver: it is no longer valid
     /// after this call.
     pub async fn recv(mut self) -> Result<M, MailboxError> {
-        std::mem::take(&mut self.receiver)
-            .unwrap()
-            .await
-            .map_err(|err| {
+        let receiver = std::mem::take(&mut self.receiver).unwrap();
+        tokio::select! {
+            biased;
+            result = receiver => result.map_err(|err| {
                 MailboxError::new(
                     self.actor_addr().clone(),
                     MailboxErrorKind::Recv(self.port_id.clone(), err.into()),
                 )
-            })
+            }),
+            status = self.mailbox.wait_closed() => Err(MailboxError::new(
+                self.actor_addr(), MailboxErrorKind::OwnerTerminated(status),
+            )),
+        }
     }
 
     fn port(&self) -> Port {
@@ -3444,6 +3488,9 @@ struct State {
     /// status, and any subsequent `Mailbox::post_unchecked` calls will fail.
     closed: RwLock<Option<ActorStatus>>,
 
+    /// One-time terminal notification for receivers retained by callers.
+    closed_notify: tokio::sync::Notify,
+
     /// Gate that closes and drains runtime-dispatched handler ingress.
     handler_ingress: Arc<HandlerIngressGate>,
 
@@ -3463,6 +3510,7 @@ impl State {
             ordering_snapshots: DashMap::new(),
             next_ephemeral_port: AtomicU64::new(0),
             closed: RwLock::new(None),
+            closed_notify: tokio::sync::Notify::new(),
             handler_ingress: Arc::new(HandlerIngressGate::new()),
             return_handler_init: Once::new(),
             return_handler_hook: OnceLock::new(),
@@ -5469,6 +5517,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_undeliverable_sink_records_expired_message_with_dead_return_path() {
+        let (return_handle, return_receiver) =
+            crate::mailbox::undeliverable::new_undeliverable_port();
+        // The sender is gone, so returning the message fails too.
+        drop(return_receiver);
+        let envelope = MessageEnvelope::new(
+            test_actor_id("foo_0", "bar"),
+            test_port_id("baz_0", "corge", 9999),
+            wirevalue::Any::serialize(&1u64).unwrap(),
+            Flattrs::new(),
+        )
+        .set_ttl(0);
+        // Previously recursed until the stack overflowed; now it just records.
+        UndeliverableMailboxSender.post(envelope, return_handle);
+    }
+
+    #[tokio::test]
     async fn test_detached_return_handle() {
         let (return_handle, mut return_receiver) =
             crate::mailbox::undeliverable::new_undeliverable_port();
@@ -6534,6 +6599,67 @@ mod tests {
         assert_matches!(handle.location(), PortLocation::Bound(port) if port.index() == handle.inner.bind_target.ephemeral_index());
         // Rebinding the same handle to a different port should panic.
         handle.bind_handler_port();
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_close_wakes_pending_receivers_with_retained_handles() {
+        let mailbox = Mailbox::new(test_actor_id("0", "retained_receivers"));
+        let (_handle, mut receiver) = mailbox.open_port::<u64>();
+        let (_once_handle, once_receiver) = mailbox.open_once_port::<u64>();
+        let receive = receiver.recv();
+        let receive_once = once_receiver.recv();
+        tokio::pin!(receive, receive_once);
+        assert!(futures::poll!(&mut receive).is_pending());
+        assert!(futures::poll!(&mut receive_once).is_pending());
+
+        mailbox.close(ActorStatus::Stopped("owner stopped".into()));
+        for result in [
+            tokio::time::timeout(Duration::from_secs(1), receive)
+                .await
+                .unwrap(),
+            tokio::time::timeout(Duration::from_secs(1), receive_once)
+                .await
+                .unwrap(),
+        ] {
+            assert_matches!(result.unwrap_err().kind(),
+                MailboxErrorKind::OwnerTerminated(ActorStatus::Stopped(reason))
+                    if reason == "owner stopped");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_close_before_receive_is_observed() {
+        let mailbox = Mailbox::new(test_actor_id("0", "closed_receivers"));
+        let (_handle, mut receiver) = mailbox.open_port::<u64>();
+        let (_once_handle, once_receiver) = mailbox.open_once_port::<u64>();
+        mailbox.close(ActorStatus::Stopped("owner stopped".into()));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), once_receiver.recv())
+                .await
+                .unwrap()
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_close_preserves_queued_replies() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let mailbox = Mailbox::new(test_actor_id("0", "queued_receivers"));
+        let (handle, mut receiver) = mailbox.open_port::<u64>();
+        let (once_handle, once_receiver) = mailbox.open_once_port::<u64>();
+        handle.try_post(&client, 41).unwrap();
+        once_handle.try_post(&client, 42).unwrap();
+        mailbox.close(ActorStatus::Stopped("owner stopped".into()));
+        assert_eq!(receiver.recv().await.unwrap(), 41);
+        assert_eq!(once_receiver.recv().await.unwrap(), 42);
+        assert!(receiver.recv().await.is_err());
     }
 
     #[tokio::test]

@@ -1390,6 +1390,21 @@ impl Proc {
         Client::new(instance)
     }
 
+    /// Like [`Self::client`], but undeliverable messages sent back to this
+    /// client are logged and dropped instead of crashing the process.
+    pub(crate) fn client_dropping_undeliverable(&self, label: &str) -> Client {
+        let actor_id = self.allocate_client_id(label);
+        let (instance, _receivers) = Instance::<ClientActor>::new(
+            self.clone(),
+            actor_id,
+            false,
+            None,
+            ActorEnvironment::default(),
+        );
+        instance.change_status(ActorStatus::Client);
+        Client::new_dropping_undeliverable(instance)
+    }
+
     /// Create a lightweight client instance that handles
     /// [`IntrospectMessage`].
     ///
@@ -2988,7 +3003,47 @@ impl<A: Actor> Instance<A> {
         self.inner.cell.status().clone()
     }
 
-    pub(crate) fn close_client(&self, reason: &str) {
+    /// Stop owned children and wait for their actor-tree cleanup to finish.
+    /// Custom serving loops must call this after they stop accepting work and
+    /// before publishing a terminal parent status or tearing down transports.
+    /// Each child gets up to `STOP_ACTOR_TIMEOUT`; one that has not stopped by
+    /// then is unlinked, as in ordinary actor-tree teardown.
+    pub async fn stop_children(&self, reason: &str) {
+        let timeout = hyperactor_config::global::get(config::STOP_ACTOR_TIMEOUT);
+        let cell = &self.inner.cell;
+        let children: Vec<_> = cell
+            .child_iter()
+            .map(|child| child.value().clone())
+            .collect();
+        let waits = children.into_iter().filter_map(|child| {
+            if let Err(error) = child.signal(Signal::Stop(reason.to_string())) {
+                // Detached client instances have no serving loop. As in
+                // ordinary actor-tree teardown, unlink an unsignalable child
+                // rather than waiting for a status it cannot publish.
+                tracing::warn!(parent = %self.self_addr(), child = %child.actor_addr(), %error,
+                    "failed to stop owned child");
+                self.inner.cell.unlink(&child);
+                return None;
+            }
+            let mut status = child.status().clone();
+            Some(async move {
+                let stopped =
+                    tokio::time::timeout(timeout, status.wait_for(|status| status.is_terminal()))
+                        .await
+                        .is_ok();
+                if !stopped {
+                    tracing::warn!(parent = %self.self_addr(), child = %child.actor_addr(),
+                        ?timeout, "timed out waiting for owned child to stop; unlinking");
+                    cell.unlink(&child);
+                }
+            })
+        });
+        futures::future::join_all(waits).await;
+    }
+
+    /// Publish client termination and wake outstanding mailbox receivers.
+    /// A custom client serving loop must first finish child cleanup.
+    pub fn close_client(&self, reason: &str) {
         let status = ActorStatus::Stopped(reason.to_string());
         self.inner.mailbox.close(status.clone());
         self.change_status(status);
@@ -6344,6 +6399,100 @@ mod tests {
 
         handle.drain_and_stop("test").unwrap();
         handle.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn custom_client_stop_waits_for_owned_children_cleanup() {
+        use crate::context::Actor as _;
+
+        #[derive(Debug)]
+        struct CleanupProbe {
+            started: Arc<AtomicUsize>,
+            cleaned: Arc<AtomicUsize>,
+            depth: usize,
+        }
+
+        #[async_trait]
+        impl Actor for CleanupProbe {
+            async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+                if self.depth > 0 {
+                    this.spawn(Self {
+                        started: self.started.clone(),
+                        cleaned: self.cleaned.clone(),
+                        depth: self.depth - 1,
+                    });
+                }
+                self.started.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+
+            async fn cleanup(
+                &mut self,
+                _this: &Instance<Self>,
+                _error: Option<&ActorError>,
+            ) -> anyhow::Result<()> {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                self.cleaned.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let proc = Proc::isolated();
+        let client = proc.client("custom_client");
+        let started = Arc::new(AtomicUsize::new(0));
+        let cleaned = Arc::new(AtomicUsize::new(0));
+        for depth in [0, 1] {
+            client.spawn(CleanupProbe {
+                started: started.clone(),
+                cleaned: cleaned.clone(),
+                depth,
+            });
+        }
+        while started.load(Ordering::SeqCst) != 3 {
+            tokio::task::yield_now().await;
+        }
+        client.instance().stop_children("test shutdown").await;
+        assert_eq!(cleaned.load(Ordering::SeqCst), 3);
+        assert_eq!(client.instance().inner.cell.child_count(), 0);
+        // Repeated cleanup is harmless.
+        client.instance().stop_children("test shutdown").await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn custom_client_stop_does_not_wait_forever_for_stuck_child() {
+        use crate::context::Actor as _;
+
+        #[derive(Debug)]
+        struct StuckCleanup;
+
+        #[async_trait]
+        impl Actor for StuckCleanup {
+            async fn cleanup(
+                &mut self,
+                _this: &Instance<Self>,
+                _error: Option<&ActorError>,
+            ) -> anyhow::Result<()> {
+                std::future::pending::<()>().await;
+                Ok(())
+            }
+        }
+
+        let config = hyperactor_config::global::lock();
+        let _stop_guard = config.override_key(
+            crate::config::STOP_ACTOR_TIMEOUT,
+            Duration::from_millis(200),
+        );
+        // Keep the child's own cleanup timeout above the parent's bound so
+        // only stop_children's timeout can end the wait.
+        let _cleanup_guard =
+            config.override_key(crate::config::CLEANUP_TIMEOUT, Duration::from_secs(60));
+        let proc = Proc::isolated();
+        let client = proc.client("custom_client");
+        client.spawn(StuckCleanup);
+        let started = tokio::time::Instant::now();
+        client.instance().stop_children("test shutdown").await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(client.instance().inner.cell.child_count(), 0);
     }
 
     #[async_timed_test(timeout_secs = 30)]

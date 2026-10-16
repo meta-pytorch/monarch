@@ -745,8 +745,10 @@ def main(argv: list[str] = sys.argv[1:]) -> None:
     if not hasattr(args, "func"):
         parser.print_help()
         sys.exit(1)
-    args.func(args)
-    shutdown_context().get()
+    try:
+        args.func(args)
+    finally:
+        shutdown_context().get()
 
 
 if __name__ == "__main__":

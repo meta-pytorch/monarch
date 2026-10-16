@@ -1412,6 +1412,11 @@ impl PythonActor {
                 }
                 tracing::debug!(actor_id = %instance.self_addr(), "client drained {} messages before stopping", n);
             }
+            // Unlike ordinary actors, the root client has a custom serving
+            // loop. Keep its transports alive until owned mesh controllers
+            // have stopped their remote resources and completed cleanup.
+            instance.change_status(ActorStatus::stopping());
+            instance.stop_children("client stopping").await;
             if let Some(err) = err {
                 let event = actor_error_to_event(instance, &actor, err);
                 // The proc supervision handler will send to ProcAgent, which
@@ -1448,7 +1453,7 @@ impl PythonActor {
                 });
             } else {
                 tracing::info!(actor_id = %instance.self_addr(), "client stopped");
-                instance.change_status(hyperactor::actor::ActorStatus::Stopped("client stopped".into()));
+                instance.close_client("client stopped");
             }
         });
 

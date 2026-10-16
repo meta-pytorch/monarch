@@ -87,7 +87,27 @@ impl Client {
             );
             std::process::exit(1);
         });
+        Self::from_instance(instance)
+    }
 
+    /// A client whose own undeliverable messages are logged and dropped
+    /// instead of crashing the process. For internal clients that return
+    /// undeliverable messages to their senders: if that return fails too,
+    /// the original sender is gone and nothing is left to notify.
+    pub(crate) fn new_dropping_undeliverable(instance: Instance<ClientActor>) -> Self {
+        let actor_id = instance.self_addr().clone();
+        instance.bind_handler_enqueue_port::<Undeliverable<MessageEnvelope>>(move |_, message| {
+            tracing::error!(
+                actor_id = %actor_id,
+                undeliverable = ?message,
+                "returned message was undeliverable; dropping it"
+            );
+            Ok(())
+        });
+        Self::from_instance(instance)
+    }
+
+    fn from_instance(instance: Instance<ClientActor>) -> Self {
         Self {
             lifecycle: Arc::new(ClientLifecycle {
                 instance: instance.clone_for_py(),
