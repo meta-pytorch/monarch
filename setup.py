@@ -283,20 +283,6 @@ elif build_rocm:
     _rocm_devlib = os.path.join(rocm_home, "lib", "llvm", "amdgcn", "bitcode")
     if os.path.isdir(_rocm_devlib):
         env_vars["HIP_DEVICE_LIB_PATH"] = _rocm_devlib
-        # rocm-sdk / TheRock ships only versioned runtime libs (libX.so.N) and
-        # omits the unversioned dev symlinks the linker needs to resolve `-lX`
-        # (e.g. rdmaxcel-sys emits `-lamdhip64`, so it needs libamdhip64.so).
-        # Create the missing symlinks in the SDK lib dir. Only runs for the pip
-        # layout (guarded by the bitcode dir above); a classic /opt/rocm install
-        # already provides these via its -devel packages.
-        _rocm_lib = os.path.join(rocm_home, "lib")
-        for _vso in glob.glob(os.path.join(_rocm_lib, "lib*.so.*")):
-            _unversioned = _vso[: _vso.index(".so.")] + ".so"
-            if not os.path.exists(_unversioned):
-                try:
-                    os.symlink(os.path.basename(_vso), _unversioned)
-                except OSError:
-                    pass
 
 os.environ.update(env_vars)
 

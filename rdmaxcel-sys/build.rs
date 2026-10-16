@@ -86,8 +86,11 @@ fn main() {
     // Platform-specific GPU runtime linking
     if is_rocm {
         // ROCm: Link dynamically to HIP runtime
-        // Note: Driver API functions (hipMemCreate, etc.) are loaded via dlopen in driver_api.cpp
-        println!("cargo:rustc-link-lib=amdhip64");
+        // Note: Driver API functions (hipMemCreate, etc.) are loaded via dlopen in driver_api.cpp.
+        // The pip rocm-sdk (TheRock) layout ships only the versioned libamdhip64.so.N (no
+        // unversioned dev symlink), so link the versioned file directly via the `verbatim`
+        // modifier -- mirrors libcuda.so.1 on the CUDA side.
+        println!("cargo:rustc-link-lib=dylib:+verbatim=libamdhip64.so.7");
         println!("cargo:rustc-link-search=native={}/lib", compute_home);
     } else {
         // CUDA: Link statically to CUDA runtime

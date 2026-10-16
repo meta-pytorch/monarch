@@ -186,8 +186,9 @@ fn main() {
     // We no longer link against nccl/rccl directly since we dlopen it
     // But we do link against the compute runtime
     if is_rocm {
-        // ROCm: Link dynamically to HIP runtime
-        println!("cargo::rustc-link-lib=amdhip64");
+        // ROCm: Link dynamically to the versioned HIP runtime. The pip rocm-sdk (TheRock)
+        // layout ships only libamdhip64.so.N, so link it directly via `verbatim`.
+        println!("cargo::rustc-link-lib=dylib:+verbatim=libamdhip64.so.7");
         println!("cargo::rustc-link-search=native={}/lib", compute_home);
         println!("cargo::rustc-link-lib=dl");
     } else {
