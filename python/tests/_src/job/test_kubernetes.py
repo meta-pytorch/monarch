@@ -7,7 +7,9 @@
 # pyre-strict
 
 import copy
+import io
 import json
+import logging
 import os
 import pickle
 import socket
@@ -36,6 +38,7 @@ from kubernetes.client import (
 from kubernetes.client.rest import ApiException
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.job._kubernetes_port_forward import (
+    _drain,
     _serve,
     allocation_port_forward_lock_path,
     ensure_allocation_port_forward,
@@ -1758,7 +1761,31 @@ class TestPortForwardProcess(unittest.TestCase):
             ],
         )
         # stdout and stderr are both drained so kubectl never blocks on a pipe.
-        self.assertEqual(mock_thread.call_count, 2)
+        # Errors (stderr) are logged as warnings; per-connection chatter as debug.
+        self.assertEqual(
+            [c.kwargs["args"] for c in mock_thread.call_args_list],
+            [
+                (mock_process.stdout, "mesh1-0", logging.DEBUG),
+                (mock_process.stderr, "mesh1-0", logging.WARNING),
+            ],
+        )
+
+    def test_drain_logs_kubectl_output(self) -> None:
+        output = io.StringIO(
+            "\nE1016 13:21:37 portforward.go:391] error copying from remote stream\n"
+        )
+        with self.assertLogs(
+            "monarch._src.job._kubernetes_port_forward", level="WARNING"
+        ) as logs:
+            _drain(output, "mesh1-0", logging.WARNING)
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:monarch._src.job._kubernetes_port_forward:kubectl "
+                "port-forward to pod mesh1-0: E1016 13:21:37 portforward.go:391] "
+                "error copying from remote stream"
+            ],
+        )
 
     @patch(
         "monarch._src.job._kubernetes_port_forward.select.select",
@@ -1946,9 +1973,16 @@ class TestAllocationPortForward(unittest.TestCase):
             self.assertIn("error", cast(dict[str, str], reply))
 
             # kubectl exiting (e.g. the pod is gone) ends the gateway, so the
-            # next client starts a fresh one.
-            process.poll.return_value = 1
-            server.join(timeout=10)
+            # next client starts a fresh one. The exit is logged with its code.
+            with self.assertLogs(
+                "monarch._src.job._kubernetes_port_forward", level="WARNING"
+            ) as logs:
+                process.returncode = 1
+                process.poll.return_value = 1
+                server.join(timeout=10)
+            self.assertIn(
+                "kubectl port-forward to pod mesh1-0 exited with code 1", logs.output[0]
+            )
 
             self.assertFalse(server.is_alive())
             self.assertFalse(os.path.exists(socket_path))

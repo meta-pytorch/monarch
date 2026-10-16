@@ -170,10 +170,18 @@ def start_port_forward(spec: PortForwardSpec) -> KubectlPortForward:
             f"{spec.pod_name}: {first_line}"
         )
 
-    # kubectl keeps logging per connection; keep the pipes from filling up.
-    for stream in (process.stdout, process.stderr):
-        threading.Thread(target=_drain, args=(stream,), daemon=True).start()
-    return KubectlPortForward(process, f"tcp://127.0.0.1:{int(match.group(1))}")
+    address = f"tcp://127.0.0.1:{int(match.group(1))}"
+    logger.info("kubectl port-forward to pod %s ready at %s", spec.pod_name, address)
+    # Keep the pipes from filling up. kubectl logs each connection on stdout and
+    # its errors on stderr; the errors explain why a forward broke.
+    for stream, level in (
+        (process.stdout, logging.DEBUG),
+        (process.stderr, logging.WARNING),
+    ):
+        threading.Thread(
+            target=_drain, args=(stream, spec.pod_name, level), daemon=True
+        ).start()
+    return KubectlPortForward(process, address)
 
 
 def allocation_port_forward_lock_path(apply_id: str) -> str:
@@ -212,9 +220,11 @@ def stop_allocation_port_forward(apply_id: str) -> None:
         daemon.shutdown()
 
 
-def _drain(stream: TextIO) -> None:
-    for _line in stream:
-        pass
+def _drain(stream: TextIO, pod_name: str, level: int) -> None:
+    for line in stream:
+        line = line.rstrip()
+        if line:
+            logger.log(level, "kubectl port-forward to pod %s: %s", pod_name, line)
 
 
 def _serve(spec: PortForwardSpec, socket_path: str) -> None:
@@ -255,6 +265,12 @@ def _serve(spec: PortForwardSpec, socket_path: str) -> None:
                         conn.sendall(pickle.dumps(response))
                     except OSError:
                         continue  # The client left before reading its reply.
+            logger.warning(
+                "kubectl port-forward to pod %s exited with code %s; "
+                "clients using it lose their connection",
+                spec.pod_name,
+                forward.process.returncode,
+            )
         finally:
             server.close()
             try:
@@ -297,6 +313,10 @@ def main() -> None:
         "(supplied by OnceDaemon).",
     )
     args = parser.parse_args()
+    # This daemon's output goes to its log file; timestamp it for diagnosis.
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
     _serve(
         PortForwardSpec(
             namespace=args.namespace,
