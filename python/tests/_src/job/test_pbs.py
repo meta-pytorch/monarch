@@ -335,3 +335,10 @@ def test_runner_seeds_workers_with_mpiexec_then_runs_the_client(nodefile, monkey
     assert client_env["MONARCH_BATCH_JOB"] == "1"
     assert client_env[SERVICE_PROC_IDS_ENV] == worker_env[SERVICE_PROC_IDS_ENV]
     assert calls["terminated"]
+
+
+def test_worker_bootstrap_stops_when_the_rank_variable_is_missing(monkeypatch):
+    monkeypatch.delenv("PALS_RANKID", raising=False)
+    source = _pbs_batch._worker_bootstrap(22222, None, "PALS_RANKID")
+    with pytest.raises(SystemExit, match="PALS_RANKID is not set"):
+        exec(source, {})

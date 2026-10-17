@@ -45,6 +45,8 @@ def _worker_bootstrap(port: int, bind_to: Optional[str], rank_env: str) -> str:
     return f"""import os, socket
 from monarch.actor import run_worker_loop_forever
 from monarch._src.job.service_identity import service_proc_addr, ranked_service_proc_id_from_env
+if {rank_env!r} not in os.environ:
+    raise SystemExit("monarch PBS worker: {rank_env} is not set by the launcher; pass rank_env= (PALS_RANKID for Cray PALS)")
 proc_id = ranked_service_proc_id_from_env(rank_env={rank_env!r})
 for k in [k for k in os.environ if k.startswith(("PMI_", "PALS_"))]:
     os.environ.pop(k)

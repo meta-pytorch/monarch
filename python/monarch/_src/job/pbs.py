@@ -95,7 +95,7 @@ class PBSJob(JobTrait):
             mpiexec: MPI launcher that starts one worker per node (``-n N --ppn 1 --hosts ...``)
             mpiexec_args: Extra launcher flags (e.g. ``["--cpu-bind=none"]`` for Cray PALS)
             rank_env: Variable holding each worker's rank in that launch
-                      (``PMI_RANK`` for MPICH and Cray PALS)
+                      (``PMI_RANK`` for MPICH, ``PALS_RANKID`` for Cray PALS)
             bind_to: Optional IP address on which workers listen, without a port.
                       When set, workers advertise their hostname while binding
                       this address through the ``dial_to@bind_to`` alias format.
