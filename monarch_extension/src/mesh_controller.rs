@@ -29,11 +29,11 @@ use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
-use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor::supervision::PropagateSupervisionEvent;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::ProcMeshRef;
@@ -1060,14 +1060,7 @@ impl Handler<MeshFailure> for MeshControllerActor {
     async fn handle(&mut self, this: &Context<Self>, message: MeshFailure) -> anyhow::Result<()> {
         // If an actor spawned by this one fails, we can't handle it. We fail
         // ourselves with a chained error and bubble up to the next owner.
-        let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(ActorSupervisionEvent::new(
-            this.self_addr().clone(),
-            None,
-            ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(
-                message.event.clone(),
-            ))),
-            None,
-        )));
-        Err(anyhow::Error::new(err))
+        let event = ActorSupervisionEvent::unhandled(this.self_addr().clone(), None, message.event);
+        Err(PropagateSupervisionEvent(event).into())
     }
 }

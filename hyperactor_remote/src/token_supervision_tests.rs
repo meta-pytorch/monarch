@@ -260,6 +260,7 @@ struct Harness {
     observer: hyperactor::Client,
     parent_root: hyperactor::ActorHandle<ParentRoot>,
     worker_root: hyperactor::ActorHandle<WorkerRoot>,
+    child_addr: ActorAddr,
     child_stopped_rx: PortReceiver<String>,
     parent_events_rx: PortReceiver<ActorSupervisionEvent>,
 }
@@ -315,13 +316,14 @@ impl Harness {
             }
         }
         let _worker_addr = recv(&mut parent_linked_rx).await?;
-        let _child_addr = recv(&mut child_ready_rx).await?;
+        let child_addr = recv(&mut child_ready_rx).await?;
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         Ok(Self {
             observer,
             parent_root,
             worker_root,
+            child_addr,
             child_stopped_rx,
             parent_events_rx,
         })
@@ -449,6 +451,8 @@ async fn test_token_join_worker_kill_notifies_parent() -> anyhow::Result<()> {
     harness.worker_root.post(&harness.observer, WorkerControl);
 
     let event = recv(&mut harness.parent_events_rx).await?;
+    // The event is attributed to the remote child, not to the Supervisor.
+    assert_eq!(event.actor_id, harness.child_addr);
     assert!(matches!(event.actor_status, ActorStatus::Failed(_)));
     assert!(
         event.to_string().contains("supervision liveness failed"),

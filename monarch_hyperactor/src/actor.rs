@@ -45,6 +45,7 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor::supervision::PropagateSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::actor_mesh::ACTOR_MESH_ID;
@@ -1466,18 +1467,7 @@ fn actor_error_to_event(
     actor: &PythonActor,
     err: ActorError,
 ) -> ActorSupervisionEvent {
-    match *err.kind {
-        ActorErrorKind::UnhandledSupervisionEvent(event) => *event,
-        _ => {
-            let status = ActorStatus::generic_failure(err.kind.to_string());
-            ActorSupervisionEvent::new(
-                instance.self_addr().clone(),
-                actor.display_name(),
-                status,
-                None,
-            )
-        }
-    }
+    (*err.kind).into_supervision_event(instance.self_addr(), || actor.display_name())
 }
 
 pub(crate) fn root_client_actor(py: Python<'_>) -> &'static Instance<PythonActor> {
@@ -2144,9 +2134,8 @@ impl Handler<SupervisionOutcome> for PythonActor {
                 return Ok(());
             }
             // We propagate the event to the next owning actor by failing
-            // with a new event that names this actor as its creator. This
-            // does not set the causal chain for ActorSupervisionEvent, so
-            // the original event is included in the error.
+            // with a new event that names this actor, caused by the child's
+            // event.
             SupervisionVerdict::Unhandled => (
                 "SupervisionError::Unhandled",
                 "did not handle a supervision event, reporting to the next owner",
@@ -2181,14 +2170,13 @@ impl Handler<SupervisionOutcome> for PythonActor {
                 description,
             );
         }
-        Err(anyhow::Error::new(
-            ActorErrorKind::UnhandledSupervisionEvent(Box::new(ActorSupervisionEvent::new(
-                cx.self_addr().clone(),
-                display_name,
-                ActorStatus::Failed(cause),
-                None,
-            ))),
+        Err(PropagateSupervisionEvent(ActorSupervisionEvent::new(
+            cx.self_addr().clone(),
+            display_name,
+            ActorStatus::Failed(cause),
+            None,
         ))
+        .into())
     }
 }
 

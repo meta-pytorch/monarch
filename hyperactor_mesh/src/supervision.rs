@@ -48,10 +48,9 @@
 //!   controller attribution.
 
 use hyperactor::ActorId;
-use hyperactor::actor::ActorErrorKind;
-use hyperactor::actor::ActorStatus;
 use hyperactor::context;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor::supervision::PropagateSupervisionEvent;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -87,8 +86,7 @@ impl MeshFailure {
         self.crashed_ranks.is_empty() || self.crashed_ranks.contains(&rank)
     }
 
-    /// Helper function to handle a message to an actor that just wants to forward
-    /// it to the next owner.
+    /// Fail this actor because it cannot handle the mesh failure.
     pub fn default_handler(&self, cx: &impl context::Actor) -> Result<(), anyhow::Error> {
         // If an actor spawned by this one fails, we can't handle it. We fail
         // ourselves with a chained error and bubble up to the next owner. This
@@ -97,15 +95,12 @@ impl MeshFailure {
         // `reporting_controller`) are dropped and the next controller
         // re-attributes (MFCA-1). Only a direct clone/re-post of a `MeshFailure`
         // preserves `reporting_controller`; this conversion is not one.
-        let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(ActorSupervisionEvent::new(
+        let event = ActorSupervisionEvent::unhandled(
             cx.instance().self_addr().clone(),
             None,
-            ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(
-                self.event.clone(),
-            ))),
-            None,
-        )));
-        Err(anyhow::Error::new(err))
+            self.event.clone(),
+        );
+        Err(PropagateSupervisionEvent(event).into())
     }
 }
 

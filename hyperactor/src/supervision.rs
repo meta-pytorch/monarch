@@ -104,6 +104,38 @@ impl ActorSupervisionEvent {
         }
     }
 
+    /// The event for an actor that fails because it did not handle `cause`.
+    pub fn unhandled(
+        actor_id: impl Into<ActorAddr>,
+        display_name: Option<String>,
+        cause: ActorSupervisionEvent,
+    ) -> Self {
+        Self::new(
+            actor_id,
+            display_name,
+            ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(cause))),
+            None,
+        )
+    }
+
+    /// The event for an actor that fails with `message` while handling `cause`.
+    pub fn error_during_handling(
+        actor_id: impl Into<ActorAddr>,
+        display_name: Option<String>,
+        message: String,
+        cause: ActorSupervisionEvent,
+    ) -> Self {
+        Self::new(
+            actor_id,
+            display_name,
+            ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(
+                message,
+                Box::new(cause),
+            )),
+            None,
+        )
+    }
+
     /// Replace the event's labels.
     pub fn with_labels(mut self, labels: Flattrs) -> Self {
         self.labels = labels;
@@ -204,10 +236,11 @@ impl ActorSupervisionEvent {
         match &current.actor_status {
             ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(msg, child)) => {
                 writeln!(indented(f).with_str("  "), "{}", msg.trim_end())?;
-                writeln!(f, "This error occurred while handling another failure:")?;
-                let child_report = child
-                    .failure_report()
-                    .expect("child of ErrorDuringHandlingSupervision is always a failure");
+                let (description, child_report) = match child.failure_report() {
+                    Some(report) => ("another failure", report),
+                    None => ("a supervision event", child.to_string()),
+                };
+                writeln!(f, "This error occurred while handling {}:", description)?;
                 write!(indented(f).with_str("  "), "{}", child_report)
             }
             ActorStatus::Failed(err) => write!(indented(f).with_str("  "), "{}", err),
@@ -269,6 +302,19 @@ impl fmt::Display for ActorSupervisionEvent {
         }
     }
 }
+
+/// A handler error that stops the actor and reports the enclosed terminal
+/// supervision event unchanged. Return it through [`anyhow::Error`] from a
+/// message handler or from
+/// [`Actor::handle_supervision_event`](crate::Actor::handle_supervision_event);
+/// the runtime recovers it even when wrapped with [`anyhow::Context`]. Proxies
+/// use it to report their logical child's event as their own.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct PropagateSupervisionEvent(
+    /// The terminal event to report unchanged.
+    pub ActorSupervisionEvent,
+);
 
 #[cfg(test)]
 mod tests {
