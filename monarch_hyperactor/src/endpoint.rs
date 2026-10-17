@@ -8,7 +8,10 @@
 
 use std::cell::Cell;
 use std::collections::VecDeque;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -26,6 +29,7 @@ use hyperactor_mesh::value_mesh::rle;
 use monarch_types::py_global;
 use ndslice::Extent;
 use ndslice::Shape;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pyo3::types::PyTuple;
@@ -43,6 +47,7 @@ use crate::actor_mesh::PythonActorMesh;
 use crate::actor_mesh::SupervisableActorMesh;
 use crate::actor_mesh::to_all_or_choose;
 use crate::context::PyInstance;
+use crate::handle::PyHandle;
 use crate::mailbox::EitherPortRef;
 use crate::mailbox::PythonOncePortRef;
 use crate::mailbox::PythonPortRef;
@@ -65,10 +70,11 @@ use crate::metrics::EndpointAttrs;
 use crate::metrics::UNKNOWN;
 use crate::pickle::PendingMessage;
 use crate::pickle::PicklingState;
-use crate::pytokio::PyPythonTask;
-use crate::pytokio::PythonTask;
+use crate::pytokio::current_traceback;
 use crate::runtime::GilSite;
+use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
+use crate::runtime::signal_safe_block_on;
 use crate::shape::PyExtent;
 use crate::shape::PyShape;
 use crate::supervision::Supervisable;
@@ -280,11 +286,31 @@ impl Drop for SpanGuard {
     }
 }
 
-fn supervision_error_to_pyerr(err: PyErr, qualified_endpoint_name: &Option<String>) -> PyErr {
+/// Identify which endpoint call failed when supervision reports an actor failure.
+///
+/// `call()`, `call_one()` and `choose()` start reply collectors (Rust tasks that
+/// wait for replies and produce the returned Future's result). A supervision
+/// failure can end that wait before a reply arrives. This helper adds the called
+/// endpoint's name to the Python exception so the caller can see which call
+/// failed. If no name is available, or `err` is not a `SupervisionError`, return
+/// the original error unchanged.
+///
+/// This is async so the collector can wait its turn to acquire the GIL through
+/// `monarch_with_gil`. Inspecting and annotating the Python exception needs the
+/// GIL; using `monarch_with_gil_blocking` would let every waiting collector block
+/// a Tokio worker. `monarch_with_gil` queues those collectors asynchronously,
+/// leaving their workers available for other work. The collector at the front
+/// can still block acquiring the GIL; annotation runs without an `await` once
+/// the GIL is held. This helper does not spawn a task.
+async fn supervision_error_to_pyerr(err: PyErr, qualified_endpoint_name: &Option<String>) -> PyErr {
     match qualified_endpoint_name {
-        Some(endpoint) => monarch_with_gil_blocking(GilSite::Supervise, |py| {
-            SupervisionError::set_endpoint_on_err(py, err, endpoint.clone())
-        }),
+        Some(endpoint) => {
+            let endpoint = endpoint.clone();
+            monarch_with_gil(GilSite::Supervise, move |py| {
+                SupervisionError::set_endpoint_on_err(py, err, endpoint)
+            })
+            .await
+        }
         None => err,
     }
 }
@@ -340,7 +366,7 @@ async fn collect_value(
             match kind {
                 PythonMessageKind::Result { rank, .. } => Ok((message, refs, rank)),
                 PythonMessageKind::Exception { .. } => {
-                    monarch_with_gil_blocking(GilSite::Traceback, |py| {
+                    monarch_with_gil(GilSite::Traceback, move |py| {
                         let mesh_references: VecDeque<Option<MeshRef>> =
                             refs.into_iter().map(Some).collect();
                         let mut state =
@@ -349,6 +375,7 @@ async fn collect_value(
                             state.unpickle_with_receiver(py, instance)?.into_bound(py),
                         ))
                     })
+                    .await
                 }
                 other => Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "unexpected message kind {:?}",
@@ -361,7 +388,7 @@ async fn collect_value(
             e
         ))),
         RaceResult::SupervisionError(err) => {
-            Err(supervision_error_to_pyerr(err, qualified_endpoint_name))
+            Err(supervision_error_to_pyerr(err, qualified_endpoint_name).await)
         }
     }
 }
@@ -424,7 +451,8 @@ async fn collect_valuemesh(
                     "failed to extract overlay from collected responses: {e}"
                 ))
             })?;
-            monarch_with_gil_blocking(GilSite::ReplyConvert, |py| {
+            // Move `record_guard` into the Send closure: the guard's `Cell<bool>` is not Sync.
+            monarch_with_gil(GilSite::ReplyConvert, move |py| {
                 // Out-of-band mesh refs reunite only while the `PicklingState` is
                 // live, i.e. during decode, so a ref-carrying response must be
                 // decoded here (eagerly, at accumulation): a lazy decode on access
@@ -488,6 +516,7 @@ async fn collect_valuemesh(
                     .into_any()
                     .unbind())
             })
+            .await
         }
         RaceResult::RecvError(e) => {
             record_guard.mark_error();
@@ -498,12 +527,14 @@ async fn collect_valuemesh(
         }
         RaceResult::SupervisionError(err) => {
             record_guard.mark_error();
-            Err(supervision_error_to_pyerr(err, &qualified_endpoint_name))
+            Err(supervision_error_to_pyerr(err, &qualified_endpoint_name).await)
         }
     }
 }
 
-fn value_collector(
+/// Collect one reply, retaining its response port and caller span until completion
+/// or drop. Collection metrics start when the future is first polled.
+async fn value_collector_future(
     mut receiver: PortReceiver<PythonMessage>,
     attrs: Arc<EndpointAttrs>,
     supervision_monitor: Option<Arc<dyn Supervisable>>,
@@ -511,35 +542,187 @@ fn value_collector(
     qualified_endpoint_name: Option<String>,
     adverb: EndpointAdverb,
     span_guard: SpanGuard,
-) -> PyResult<PyPythonTask> {
-    Ok(PythonTask::new(async move {
-        let _span_guard = span_guard;
-        let start = tokio::time::Instant::now();
+) -> PyResult<Py<PyAny>> {
+    let _span_guard = span_guard;
+    let start = tokio::time::Instant::now();
 
-        let record_guard = RecordEndpointGuard::new(start, attrs, adverb);
+    let record_guard = RecordEndpointGuard::new(start, attrs, adverb);
 
-        match collect_value(
-            &mut receiver,
-            &supervision_monitor,
-            &instance,
-            &qualified_endpoint_name,
-        )
-        .await
-        {
-            Ok((message, refs, _)) => monarch_with_gil_blocking(GilSite::ReplyConvert, |py| {
+    match collect_value(
+        &mut receiver,
+        &supervision_monitor,
+        &instance,
+        &qualified_endpoint_name,
+    )
+    .await
+    {
+        Ok((message, refs, _)) => {
+            monarch_with_gil(GilSite::ReplyConvert, move |py| {
                 let mesh_references: VecDeque<Option<MeshRef>> =
                     refs.into_iter().map(Some).collect();
                 let mut state =
                     PicklingState::from_parts(message, VecDeque::new(), mesh_references);
                 state.unpickle_with_receiver(py, &instance)
-            }),
-            Err(e) => {
-                record_guard.mark_error();
-                Err(e)
-            }
+            })
+            .await
         }
-    })?
-    .into())
+        Err(e) => {
+            record_guard.mark_error();
+            Err(e)
+        }
+    }
+}
+
+/// Defers a stream reply's conversion, or a port receive, until the item is
+/// observed.
+///
+/// Replies arrive in the stream's shared queue independently of observation.
+/// First observation begins polling the stored Rust future. It takes the
+/// next reply, waiting if necessary, and unpickles it into a Python value.
+/// An unobserved item leaves the queue untouched.
+///
+/// A port receive is held the same way: first observation takes the next
+/// message from the port and unpickles it, and an unobserved receive takes
+/// nothing. When observation spawns a receive, the task stops once nobody can
+/// observe it (HDL-23), so an abandoned receive releases its port receiver.
+///
+/// `await`, `as_asyncio()` and timed `get()` spawn a Tokio task whose worker
+/// polls the future. Untimed `get()` called from Python's main thread also
+/// spawns a Tokio task, while the main thread waits and checks for signals.
+///
+/// Untimed `get()` called from another Python thread, such as a sync actor's
+/// driver, uses Tokio's `runtime.block_on` to poll the future on that calling
+/// thread. It does not spawn a Tokio task for the future. The GIL is released
+/// while waiting and reacquired on the calling thread for unpickling.
+///
+/// Transitional (SF, 2026-10-14): T292850732 will let ordinary Handles hold
+/// undecoded replies.
+#[pyclass(
+    name = "PendingReply",
+    module = "monarch._rust_bindings.monarch_hyperactor.endpoint"
+)]
+pub(crate) struct PyPendingReply {
+    /// The unstarted Rust future and the item's optional creation traceback.
+    /// The first observer takes both. This mutex protects that one-time
+    /// transfer, not the reply queue, and is released before the future runs.
+    collector: Mutex<Option<(ReplyFuture, Option<Py<PyAny>>)>>,
+    /// Whether a spawned collector stops once nobody can observe it. Port
+    /// receives set it; stream items do not.
+    stop_when_unobserved: bool,
+    /// The `ValueError` text for a second take, naming the kind of item.
+    taken_message: &'static str,
+}
+
+const STREAM_ITEM_TAKEN: &str = "this stream item was already taken by an earlier get(); if that get() was interrupted, it will never produce a result";
+const PORT_RECEIVE_TAKEN: &str = "this receive was already taken by an earlier get(); if that get() was interrupted, it will never produce a result";
+
+impl PyPendingReply {
+    /// Store a stream item's unstarted collector and the optional stack
+    /// captured at creation.
+    fn for_stream_item(
+        collector: impl Future<Output = PyResult<Py<PyAny>>> + Send + 'static,
+        traceback: Option<Py<PyAny>>,
+    ) -> Self {
+        Self {
+            collector: Mutex::new(Some((Box::pin(collector), traceback))),
+            stop_when_unobserved: false,
+            taken_message: STREAM_ITEM_TAKEN,
+        }
+    }
+
+    /// Store a port receive's unstarted future and the optional stack
+    /// captured at creation. A spawned receive stops once nobody can
+    /// observe it.
+    pub(crate) fn for_port_receive(
+        receive: impl Future<Output = PyResult<Py<PyAny>>> + Send + 'static,
+        traceback: Option<Py<PyAny>>,
+    ) -> Self {
+        Self {
+            collector: Mutex::new(Some((Box::pin(receive), traceback))),
+            stop_when_unobserved: true,
+            taken_message: PORT_RECEIVE_TAKEN,
+        }
+    }
+
+    /// Give the first observer ownership of the collector and its traceback.
+    ///
+    /// Only the collector moves here. Its result becomes shared, through a Handle,
+    /// only when the first observer goes through `spawn_handle()` (`await`,
+    /// `as_asyncio()`, `get(timeout=…)`). An untimed `get()` instead hands the
+    /// collector to `block_on()`, which runs it without a Handle: inline on the
+    /// calling thread, or, on Python's main thread, on Tokio while the caller
+    /// waits and checks for signals. The `Future` records the result only after
+    /// `block_on()` returns. Until then no shared result exists, so:
+    ///
+    /// - another observer of the same item, for example on another thread, finds
+    ///   the collector already taken and gets this error, even though the first
+    ///   `get()` will still return the value;
+    /// - if the first `get()` is interrupted, its result is discarded, and later
+    ///   observers get this error. An interrupted `get()` is an error, not
+    ///   something to resume.
+    ///
+    /// An observer can also land here in the brief interval between
+    /// `spawn_handle()` returning and the returned Handle being stored in
+    /// `Future._status`.
+    ///
+    /// This window belongs to lazy items, not to this type: any holder that runs
+    /// the collector without first publishing a Handle has it. T292877484
+    /// tracks closing it by giving each item a Handle core on first observation.
+    /// T292850732 removes it altogether: once Handles can hold undecoded replies,
+    /// stream items and port receives become ordinary Handles, and every observer
+    /// shares one result.
+    fn take(&self) -> PyResult<(ReplyFuture, Option<Py<PyAny>>)> {
+        self.collector
+            .lock()
+            .expect("the collector lock is held only while taking its value")
+            .take()
+            .ok_or_else(|| PyValueError::new_err(self.taken_message))
+    }
+}
+
+#[pymethods]
+impl PyPendingReply {
+    /// Spawn the item's stored Rust future as a Tokio task and return a Handle
+    /// for its result. The future takes the next reply from the stream's queue,
+    /// or the next message from the port, waiting if necessary, and unpickles it
+    /// into a Python value.
+    ///
+    /// Handle observers share the same value or error. If the task fails after
+    /// every observer has gone, its optional creation traceback is included in
+    /// the error log. A port receive's task instead stops once nobody can
+    /// observe it (HDL-23).
+    ///
+    /// Raises `ValueError` if the item's future has already been taken.
+    pub(crate) fn spawn_handle(&self) -> PyResult<PyHandle> {
+        let (collector, traceback) = self.take()?;
+        if self.stop_when_unobserved {
+            return Ok(PyHandle::spawn_pyobject_while_observed(
+                collector, traceback,
+            ));
+        }
+        Ok(PyHandle::spawn_pyobject_with_traceback(
+            collector, traceback,
+        ))
+    }
+
+    /// Return one item's Python value synchronously, without a Handle.
+    /// Used by untimed `Future.get()`.
+    ///
+    /// On Python's main thread, spawn the stored future as a Tokio task while
+    /// the caller waits and checks for signals. On other Python threads,
+    /// Tokio's `block_on` polls it on the calling thread without spawning a task.
+    /// Release the GIL while waiting; unpickling reacquires it.
+    ///
+    /// The Python `Future` stores the result only after this call returns.
+    /// Until then, another observer gets the consumed-item error. An interrupted
+    /// call discards its result; see `Self::take` for these observation windows.
+    pub(crate) fn block_on(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let (collector, _traceback) = slf.take()?;
+        // Release the PyO3 borrow before the wait releases the GIL.
+        // The extracted future is now owned by this call.
+        drop(slf);
+        signal_safe_block_on(py, collector)?
+    }
 }
 
 /// A streaming iterator that yields futures for each response from actors.
@@ -573,6 +756,14 @@ impl PyValueStream {
         if remaining == 0 {
             return Ok(None);
         }
+        // Reserve this item's slot now. The item takes a reply from the queue
+        // only when its Future is first observed, so an item dropped without
+        // being observed still uses up its slot: once `remaining` reaches zero
+        // the stream ends, and one reply stays in the queue, unread, until the
+        // stream is dropped. The user docs for `stream()` and `ValueStream`
+        // warn about this. It belongs to lazy stream items, not to this
+        // carrier: T292850732 makes items take their replies eagerly, which
+        // removes it.
         self.remaining.store(remaining - 1, Ordering::Relaxed);
 
         let receiver = self.receiver.clone();
@@ -582,7 +773,10 @@ impl PyValueStream {
         let start = self.start;
         let attrs = self.attrs.clone();
 
-        let task: PyPythonTask = PythonTask::new(async move {
+        // Construct a future without executing its body or spawning a task.
+        // When the item is first observed, the body takes the next reply from
+        // the stream's queue, waiting if necessary, and unpickles it.
+        let collector = async move {
             let record_guard = RecordEndpointGuard::new(start, attrs, EndpointAdverb::Stream);
 
             let mut rx_guard = receiver.lock().await;
@@ -607,16 +801,30 @@ impl PyValueStream {
                     Err(e)
                 }
             }
-        })?
-        .into();
+        };
+        // Keep the unstarted future and its optional creation traceback together.
+        // Capture the stack here, where the item is created, not when it is observed.
+        let reply = PyPendingReply::for_stream_item(collector, current_traceback()?);
 
-        let future = self.future_class.call_method1(py, "_from_coro", (task,))?;
+        let future = self
+            .future_class
+            .call_method1(py, "_from_pending", (reply,))?;
         Ok(Some(future))
     }
 }
 
-fn wrap_in_future(py: Python<'_>, task: PyPythonTask) -> PyResult<Py<PyAny>> {
-    let future = make_future(py).call_method1("_from_coro", (task,))?;
+/// Give Python callers a public `Future` for an endpoint call's result.
+///
+/// `call()`, `call_one()` and `choose()` have already sent the request and
+/// scheduled a Rust future to collect replies on Tokio. The input Handle
+/// observes that future's result. `Future._from_handle` stores the Handle in a
+/// Python `Future`, giving callers `.get()` and `await`.
+///
+/// Return the Python `Future` as `Py<PyAny>`, or propagate a Python error if
+/// wrapping fails. Dropping the Future, or failing to construct it, does not
+/// cancel the running reply collection.
+fn wrap_in_future(py: Python<'_>, handle: PyHandle) -> PyResult<Py<PyAny>> {
+    let future = make_future(py).call_method1("_from_handle", (handle,))?;
     Ok(future.unbind())
 }
 
@@ -737,14 +945,14 @@ pub(crate) trait Endpoint {
     // HOT PATH: Be mindful of performance when making changes here.
     // To test how performance is affected by a change, run the RPC benchmarks in
     // `monarch/python/benches/`.
-    /// Call the endpoint on all actors and collect all responses into a ValueMesh.
-    #[tracing::instrument(level = "debug", skip_all)]
-    fn call<'py>(
+    /// Send the call to all actors now and return its owned reply collector.
+    #[tracing::instrument(name = "call", level = "debug", skip_all)]
+    fn call_future<'py>(
         &self,
         py: Python<'py>,
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
-    ) -> PyResult<Py<PyAny>> {
+    ) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send + 'static + use<Self>> {
         let instance = self.get_current_instance(py)?;
         let correlation_id: u64 = fastrand::u64(..);
         let span_guard =
@@ -770,7 +978,7 @@ pub(crate) trait Endpoint {
         )?;
 
         let instance_for_task = instance.clone_for_py();
-        let task: PyPythonTask = PythonTask::new(async move {
+        Ok(async move {
             let _span_guard = span_guard;
             collect_valuemesh(
                 extent,
@@ -781,23 +989,41 @@ pub(crate) trait Endpoint {
                 qualified_endpoint_name,
             )
             .await
-        })?
-        .into();
-
-        wrap_in_future(py, task)
+        })
     }
 
-    /// Sends a message to a randomly selected actor and waits for its result.
+    /// Send this endpoint call to every actor in the mesh and start collecting
+    /// replies before returning.
     ///
-    /// Each call independently selects an actor uniformly at random. Selection does
-    /// not account for actor load, so calls are balanced only across many calls. Use
-    /// `call_one` on a slice of the mesh when placement must be deterministic.
-    fn choose<'py>(
+    /// Return a Python Future whose result is a ValueMesh of the actors' return
+    /// values. Dropping the Future does not cancel the call or stop collection.
+    fn call<'py>(
         &self,
         py: Python<'py>,
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
+        let handle = PyHandle::spawn_pyobject_with_traceback(
+            self.call_future(py, args, kwargs)?,
+            current_traceback()?,
+        );
+        wrap_in_future(py, handle)
+    }
+
+    /// Send `choose()`'s request and return the Rust future for its result.
+    ///
+    /// Send the supplied arguments to one actor selected uniformly at random from
+    /// the mesh. The future waits for a reply or a supervision failure. Reply
+    /// decoding uses the calling actor's instance, captured here.
+    ///
+    /// `choose()` runs this future on Tokio and returns a Python Future backed by
+    /// a Handle observing its result.
+    fn choose_future<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send + 'static + use<Self>> {
         let instance = self.get_current_instance(py)?;
         let correlation_id: u64 = fastrand::u64(..);
         let span_guard =
@@ -816,7 +1042,7 @@ pub(crate) trait Endpoint {
             Some(correlation_id),
         )?;
 
-        let task = value_collector(
+        Ok(value_collector_future(
             receiver,
             self.metric_attrs().clone(),
             self.get_supervision_monitor(),
@@ -824,18 +1050,37 @@ pub(crate) trait Endpoint {
             self.get_qualified_name(),
             EndpointAdverb::Choose,
             span_guard,
-        )?;
-
-        wrap_in_future(py, task)
+        ))
     }
 
-    /// Call the endpoint on exactly one actor (the mesh must have exactly one actor).
-    fn call_one<'py>(
+    /// Send this endpoint call to one actor chosen uniformly at random from the
+    /// mesh, and start collecting its reply before returning.
+    ///
+    /// Return a Python Future whose result is that actor's return value.
+    /// Dropping the Future does not cancel the call or stop collection.
+    ///
+    /// Selection is independent for each call and does not account for actor load.
+    /// Use `call_one()` on a single-actor slice when placement must be deterministic.
+    fn choose<'py>(
         &self,
         py: Python<'py>,
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
+        let handle = PyHandle::spawn_pyobject_with_traceback(
+            self.choose_future(py, args, kwargs)?,
+            current_traceback()?,
+        );
+        wrap_in_future(py, handle)
+    }
+
+    /// Require exactly one actor, send the call now and return its owned reply collector.
+    fn call_one_future<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send + 'static + use<Self>> {
         let extent = self.get_extent(py)?;
 
         if extent.num_ranks() != 1 {
@@ -866,7 +1111,7 @@ pub(crate) trait Endpoint {
             Some(correlation_id),
         )?;
 
-        let task = value_collector(
+        Ok(value_collector_future(
             receiver,
             self.metric_attrs().clone(),
             self.get_supervision_monitor(),
@@ -874,9 +1119,22 @@ pub(crate) trait Endpoint {
             self.get_qualified_name(),
             EndpointAdverb::CallOne,
             span_guard,
-        )?;
+        ))
+    }
 
-        wrap_in_future(py, task)
+    /// Require exactly one actor, send now and start collecting its reply.
+    /// The returned Future observes completion; dropping it does not stop collection.
+    fn call_one<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        let handle = PyHandle::spawn_pyobject_with_traceback(
+            self.call_one_future(py, args, kwargs)?,
+            current_traceback()?,
+        );
+        wrap_in_future(py, handle)
     }
 
     /// Call the endpoint on all actors and return an iterator of Futures.
@@ -984,7 +1242,44 @@ pub struct ActorEndpoint {
     attrs: Arc<EndpointAttrs>,
 }
 
+/// A Rust future that waits for endpoint replies and converts them into a
+/// Python value, or returns a Python error. Rust callers can await it directly
+/// without constructing a Python `Future`.
+///
+/// For `call`, `call_one` and `choose`, this future owns the reply receiver.
+/// Dropping the Rust future closes its reply port; it does not cancel the
+/// already-sent request.
+///
+/// Stream items share the stream's receiver. Dropping an unobserved item
+/// leaves queued replies untouched. The reply port closes only when the last
+/// owner of that shared receiver drops it.
+pub type ReplyFuture = Pin<Box<dyn Future<Output = PyResult<Py<PyAny>>> + Send + 'static>>;
+
 impl ActorEndpoint {
+    /// Send to exactly one actor and return a native future for its reply.
+    /// Argument validation and sending happen before this returns. The future owns
+    /// the response port; dropping it does not cancel the already-sent call.
+    pub fn call_one_future<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<ReplyFuture> {
+        Ok(Box::pin(Endpoint::call_one_future(self, py, args, kwargs)?))
+    }
+
+    /// Send to all actors and return a native future for their ValueMesh of replies.
+    /// Argument validation and sending happen before this returns. The future owns
+    /// the response port; dropping it does not cancel the already-sent call.
+    pub fn call_future<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<ReplyFuture> {
+        Ok(Box::pin(Endpoint::call_future(self, py, args, kwargs)?))
+    }
+
     // HOT PATH: Be mindful of performance when making changes here.
     // To test how performance is affected by a change, run the RPC benchmarks in
     // `monarch/python/benches/`.
@@ -1584,6 +1879,7 @@ impl Remote {
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyValueStream>()?;
+    module.add_class::<PyPendingReply>()?;
     module.add_class::<ActorEndpoint>()?;
     module.add_class::<Remote>()?;
 
@@ -1643,8 +1939,9 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
+    use bytes::Bytes;
     use hyperactor::ActorAddr;
-    use hyperactor::OncePortRef;
+    use hyperactor::Endpoint as _;
     use hyperactor::Proc;
     use hyperactor::mailbox::MessageEnvelope;
     use hyperactor::mailbox::PortSender as _;
@@ -1655,6 +1952,7 @@ mod tests {
     use pyo3::exceptions::PyValueError;
 
     use super::*;
+    use crate::pytokio::ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK;
 
     /// Minimal `Endpoint` impl that only serves `get_qualified_name`.
     /// The default `build_operation_context_headers` consults no other
@@ -1786,30 +2084,25 @@ mod tests {
         )
     }
 
-    fn test_span(instance: &Instance<PythonActor>, adverb: EndpointAdverb) -> SpanGuard {
-        SpanGuard::actor_endpoint(
-            adverb.as_str(),
-            instance.self_addr(),
-            "ownership_test_mesh",
-            "ownership_test",
-            0,
-        )
-    }
-
     #[pyclass]
     struct IdentityFuture;
 
     #[pymethods]
     impl IdentityFuture {
         #[staticmethod]
-        fn _from_coro(task: Py<PyPythonTask>) -> Py<PyPythonTask> {
-            task
+        fn _from_pending(reply: Py<PyPendingReply>) -> Py<PyPendingReply> {
+            reply
+        }
+
+        #[staticmethod]
+        fn _from_handle(handle: Py<PyHandle>) -> Py<PyHandle> {
+            handle
         }
     }
 
-    // `Endpoint::call` always resolves `Future._from_coro` through its Python
+    // The endpoint adverbs resolve `Future._from_handle` through its Python
     // module. The Rust unit-test target does not package that module, so expose
-    // only the identity wrapper needed to exercise the real `call` method.
+    // only the identity wrapper needed to exercise the real adverbs.
     fn install_future_test_module(py: Python<'_>) -> PyResult<()> {
         let modules = py
             .import("sys")?
@@ -1845,12 +2138,14 @@ mod tests {
         Ok(())
     }
 
-    async fn drive_task(task: Py<PyPythonTask>) -> PyResult<Py<PyAny>> {
-        let task = monarch_with_gil_blocking(GilSite::Test, |py| task.borrow_mut(py).take_task())
-            .expect("the task should be unconsumed");
-        tokio::time::timeout(WAIT, task)
+    /// Drive one item's collector inline, completing it before observing another.
+    async fn drive_reply(reply: Py<PyPendingReply>) -> PyResult<Py<PyAny>> {
+        let collector = monarch_with_gil_blocking(GilSite::Test, |py| reply.borrow(py).take())
+            .expect("the item should be unconsumed")
+            .0;
+        tokio::time::timeout(WAIT, collector)
             .await
-            .expect("timed out driving the task")
+            .expect("timed out driving the reply collector")
     }
 
     fn assert_message_error(error: PyErr, expected: &str) {
@@ -1860,8 +2155,8 @@ mod tests {
         });
     }
 
-    async fn assert_task_message_error(task: Py<PyPythonTask>, expected: &str) {
-        let error = match drive_task(task).await {
+    async fn assert_reply_message_error(reply: Py<PyPendingReply>, expected: &str) {
+        let error = match drive_reply(reply).await {
             Ok(_) => panic!("the unexpected message kind should be rejected"),
             Err(error) => error,
         };
@@ -1888,41 +2183,18 @@ mod tests {
         }
     }
 
-    fn next_task(stream: &PyValueStream) -> Option<Py<PyPythonTask>> {
-        monarch_with_gil_blocking(GilSite::Test, |py| -> PyResult<Option<Py<PyPythonTask>>> {
-            stream
-                .__next__(py)?
-                .map(|task| task.extract(py).map_err(Into::<PyErr>::into))
-                .transpose()
-        })
-        .expect("ValueStream.__next__ should construct its task")
-    }
-
-    #[tokio::test]
-    async fn value_collector_drop_discards_its_reply() {
-        pyo3::Python::initialize();
-        let instance = test_instance("value_collector_drop_discards_its_reply");
-        let (handle, receiver) = instance.mailbox_for_py().open_port::<PythonMessage>();
-        handle
-            .try_post(&instance, result_message(None))
-            .expect("the positive-control reply should be queued");
-
-        let task = value_collector(
-            receiver,
-            Arc::new(EndpointAttrs::new("ownership_test", None)),
-            None,
-            instance.clone_for_py(),
-            None,
-            EndpointAdverb::Choose,
-            test_span(&instance, EndpointAdverb::Choose),
+    /// Construct an item through the real iterator without starting its collector.
+    fn next_reply(stream: &PyValueStream) -> Option<Py<PyPendingReply>> {
+        monarch_with_gil_blocking(
+            GilSite::Test,
+            |py| -> PyResult<Option<Py<PyPendingReply>>> {
+                stream
+                    .__next__(py)?
+                    .map(|reply| reply.extract(py).map_err(Into::<PyErr>::into))
+                    .transpose()
+            },
         )
-        .expect("value_collector should return a task");
-        drop(task);
-
-        assert!(
-            handle.try_post(&instance, result_message(None)).is_err(),
-            "dropping the task should close its sole response receiver"
-        );
+        .expect("ValueStream.__next__ should construct its pending reply")
     }
 
     #[tokio::test]
@@ -1940,13 +2212,13 @@ mod tests {
             .expect("the second reply should be queued");
         let stream = value_stream(&instance, receiver, 2);
 
-        let first = next_task(&stream).expect("the first slot should yield a task");
-        let second = next_task(&stream).expect("the second slot should yield a task");
+        let first = next_reply(&stream).expect("the first slot should yield an item");
+        let second = next_reply(&stream).expect("the second slot should yield an item");
 
-        assert_task_message_error(second, &first_error).await;
-        assert_task_message_error(first, &second_error).await;
+        assert_reply_message_error(second, &first_error).await;
+        assert_reply_message_error(first, &second_error).await;
         assert!(
-            next_task(&stream).is_none(),
+            next_reply(&stream).is_none(),
             "the two constructed observers should exhaust the stream"
         );
     }
@@ -1967,13 +2239,13 @@ mod tests {
             .expect("the second reply should be queued");
         let stream = value_stream(&instance, receiver, 2);
 
-        let discarded = next_task(&stream).expect("the first slot should yield a task");
+        let discarded = next_reply(&stream).expect("the first slot should yield an item");
         monarch_with_gil_blocking(GilSite::Test, |_py| drop(discarded));
 
-        let retained = next_task(&stream).expect("the second slot should yield a task");
-        assert_task_message_error(retained, &first_error).await;
+        let retained = next_reply(&stream).expect("the second slot should yield an item");
+        assert_reply_message_error(retained, &first_error).await;
         assert!(
-            next_task(&stream).is_none(),
+            next_reply(&stream).is_none(),
             "discarding an observer should still consume its iteration slot"
         );
 
@@ -1987,11 +2259,42 @@ mod tests {
         assert_eq!(stranded.kind, second_kind);
     }
 
+    // Both observation methods must reject a collector already taken. The
+    // block_on rejection happens before it could block this Tokio test thread.
+    #[tokio::test]
+    async fn consumed_stream_item_rejects_both_observation_methods() {
+        pyo3::Python::initialize();
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let reply = Py::new(
+                py,
+                PyPendingReply::for_stream_item(std::future::ready(Ok(py.None())), None),
+            )
+            .expect("the pending reply should be allocated");
+            drop(
+                reply
+                    .borrow(py)
+                    .take()
+                    .expect("the first take should succeed"),
+            );
+
+            let expected = "this stream item was already taken by an earlier get(); if that get() was interrupted, it will never produce a result";
+            let error = reply
+                .borrow(py)
+                .spawn_handle()
+                .err()
+                .expect("spawn_handle should reject the consumed item");
+            assert_message_error(error, expected);
+            let error = PyPendingReply::block_on(reply.borrow(py), py)
+                .expect_err("block_on should reject the consumed item before waiting");
+            assert_message_error(error, expected);
+        });
+    }
+
     struct RecordingCallEndpoint {
         instance: Instance<PythonActor>,
         attrs: Arc<EndpointAttrs>,
         submissions: AtomicUsize,
-        response_ports: Mutex<Vec<OncePortRef<PythonMessage>>>,
+        response_ports: Mutex<Vec<EitherPortRef>>,
     }
 
     impl RecordingCallEndpoint {
@@ -2004,7 +2307,7 @@ mod tests {
             }
         }
 
-        fn take_response_port(&self) -> OncePortRef<PythonMessage> {
+        fn take_recorded_port(&self) -> EitherPortRef {
             self.response_ports
                 .lock()
                 .expect("the response-port recorder should not be poisoned")
@@ -2036,10 +2339,7 @@ mod tests {
             _instance: &Instance<PythonActor>,
             _correlation_id: Option<u64>,
         ) -> PyResult<()> {
-            let Some(EitherPortRef::Once(PythonOncePortRef { inner: Some(port) })) = port_ref
-            else {
-                panic!("call should submit one reducible response port");
-            };
+            let port = port_ref.expect("call and call_one should supply a response port");
             self.response_ports
                 .lock()
                 .expect("the response-port recorder should not be poisoned")
@@ -2076,71 +2376,346 @@ mod tests {
         }
     }
 
-    fn call_observer(endpoint: &RecordingCallEndpoint) -> Py<PyPythonTask> {
-        monarch_with_gil_blocking(GilSite::Test, |py| -> PyResult<Py<PyPythonTask>> {
+    fn call_observer(endpoint: &RecordingCallEndpoint, adverb: EndpointAdverb) -> Py<PyHandle> {
+        monarch_with_gil_blocking(GilSite::Test, |py| -> PyResult<Py<PyHandle>> {
             install_future_test_module(py)?;
-            endpoint
-                .call(py, &PyTuple::empty(py), None)?
-                .extract(py)
-                .map_err(Into::<PyErr>::into)
+            let args = PyTuple::empty(py);
+            let observer = match adverb {
+                EndpointAdverb::Call => endpoint.call(py, &args, None)?,
+                EndpointAdverb::CallOne => endpoint.call_one(py, &args, None)?,
+                EndpointAdverb::Choose => endpoint.choose(py, &args, None)?,
+                _ => unreachable!("this witness covers ordinary reply collectors"),
+            };
+            observer.extract(py).map_err(Into::<PyErr>::into)
         })
         .expect("call should return an observer")
     }
 
-    #[tokio::test]
-    async fn call_submits_cast_before_observer_and_drop_closes_response_port() {
+    /// Exercise the shared construction used by the native methods, without the
+    /// Python wrapper. This fixture records sending rather than running an actor.
+    fn native_collector(endpoint: &RecordingCallEndpoint, adverb: EndpointAdverb) -> ReplyFuture {
+        monarch_with_gil_blocking(GilSite::Test, |py| -> PyResult<ReplyFuture> {
+            let args = PyTuple::empty(py);
+            match adverb {
+                EndpointAdverb::Call => {
+                    Ok(Box::pin(Endpoint::call_future(endpoint, py, &args, None)?))
+                }
+                EndpointAdverb::CallOne => Ok(Box::pin(Endpoint::call_one_future(
+                    endpoint, py, &args, None,
+                )?)),
+                _ => unreachable!("this witness covers call and call_one"),
+            }
+        })
+        .expect("native construction should send and return its collector")
+    }
+
+    /// Both collectors own their reply port before the first poll. Successful
+    /// delivery is the positive control for the later dropped-port assertion.
+    async fn assert_native_collector_ownership(adverb: EndpointAdverb) {
         pyo3::Python::initialize();
-        let instance = test_instance("call_submits_cast_before_observer_and_drop_closes_port");
+        let instance = test_instance(adverb.as_str());
+        let endpoint = RecordingCallEndpoint::new(instance.clone_for_py());
+        let retained = native_collector(&endpoint, adverb);
+        assert_eq!(endpoint.submissions.load(Ordering::SeqCst), 1);
+        let retained_port = endpoint.take_recorded_port();
+        match retained_port {
+            EitherPortRef::Once(PythonOncePortRef { inner: Some(port) }) => {
+                let (return_handle, _return_receiver) = instance
+                    .mailbox_for_py()
+                    .open_port::<Undeliverable<MessageEnvelope>>();
+                instance
+                    .mailbox_for_py()
+                    .serialize_and_send_once(port, result_message(Some(0)), return_handle)
+                    .expect("the retained call reply should serialize");
+                let collected = tokio::time::timeout(WAIT, retained)
+                    .await
+                    .expect("the retained call should finish")
+                    .expect("the retained call should collect its reply");
+                monarch_with_gil_blocking(GilSite::Test, |py| {
+                    collected
+                        .extract::<Py<PyValueMesh>>(py)
+                        .expect("call should return a ValueMesh");
+                });
+            }
+            EitherPortRef::Unbounded(port) => {
+                // An unexpected message produces a specific error before unpickling.
+                // That exact error proves this reply reached the retained collector.
+                let (reply, expected_error) = unexpected_message("native call_one reply");
+                port.inner.post(&instance, reply);
+                let error = tokio::time::timeout(WAIT, retained)
+                    .await
+                    .expect("the retained call_one should finish")
+                    .expect_err("the unexpected reply kind should fail collection");
+                assert_message_error(error, &expected_error);
+            }
+            _ => panic!("the recorded response port should be populated"),
+        }
+
+        let discarded = native_collector(&endpoint, adverb);
+        assert_eq!(endpoint.submissions.load(Ordering::SeqCst), 2);
+        let dropped_port = endpoint.take_recorded_port();
+        drop(discarded);
+        let (return_handle, mut return_receiver) = instance
+            .mailbox_for_py()
+            .open_port::<Undeliverable<MessageEnvelope>>();
+        let dropped_destination = match dropped_port {
+            EitherPortRef::Once(PythonOncePortRef { inner: Some(port) }) => {
+                let destination = port.port_addr().clone();
+                instance
+                    .mailbox_for_py()
+                    .serialize_and_send_once(port, result_message(Some(0)), return_handle)
+                    .expect("the discarded call reply should serialize");
+                destination
+            }
+            EitherPortRef::Unbounded(port) => {
+                let destination = port.inner.port_addr().clone();
+                instance
+                    .mailbox_for_py()
+                    .serialize_and_send(&port.inner, result_message(None), return_handle)
+                    .expect("the discarded call_one reply should serialize");
+                destination
+            }
+            _ => panic!("the recorded response port should be populated"),
+        };
+        let undeliverable = tokio::time::timeout(WAIT, return_receiver.recv())
+            .await
+            .expect("the dropped port must report delivery failure within the deadline")
+            .expect("the return port should receive the delivery failure");
+        let Undeliverable::Returned(envelope) = undeliverable else {
+            panic!("the failed response should retain its envelope");
+        };
+        assert_eq!(envelope.dest(), &dropped_destination);
+        assert_eq!(endpoint.submissions.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn native_call_sends_before_poll_and_drop_closes_response_port() {
+        assert_native_collector_ownership(EndpointAdverb::Call).await;
+    }
+
+    #[tokio::test]
+    async fn native_call_one_sends_before_poll_and_drop_closes_response_port() {
+        assert_native_collector_ownership(EndpointAdverb::CallOne).await;
+    }
+
+    /// Polling does not drive a Handle. Completion here proves collection ran
+    /// without an await or get; each delay leaves the GIL free for decoding.
+    async fn poll_reply(handle: &Py<PyHandle>) -> PyResult<Py<PyAny>> {
+        tokio::time::timeout(WAIT, async {
+            loop {
+                match monarch_with_gil_blocking(GilSite::Test, |py| {
+                    let value = handle.call_method0(py, "poll")?;
+                    Ok::<_, PyErr>((!value.is_none(py)).then_some(value))
+                }) {
+                    Ok(Some(value)) => return Ok(value),
+                    Err(error) => return Err(error),
+                    Ok(None) => tokio::time::sleep(Duration::from_millis(1)).await,
+                }
+            }
+        })
+        .await
+        .expect("reply collection must finish without awaiting its Handle")
+    }
+
+    /// The multipart codec shares these bytes rather than copying them. Their
+    /// final drop acknowledges that the reply and its unobserved result are gone.
+    /// A queued reply or an Undeliverable envelope would still own the bytes.
+    struct ReplyBytes(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl AsRef<[u8]> for ReplyBytes {
+        fn as_ref(&self) -> &[u8] {
+            b"\x80\x04N."
+        }
+    }
+
+    impl Drop for ReplyBytes {
+        fn drop(&mut self) {
+            if let Some(consumed) = self.0.take() {
+                let _ = consumed.send(());
+            }
+        }
+    }
+
+    async fn assert_python_collector_ownership(adverb: EndpointAdverb) {
+        pyo3::Python::initialize();
+        let instance = test_instance(adverb.as_str());
         let endpoint = RecordingCallEndpoint::new(instance.clone_for_py());
 
-        let retained = call_observer(&endpoint);
+        let retained = call_observer(&endpoint, adverb);
         assert_eq!(
             endpoint.submissions.load(Ordering::SeqCst),
             1,
-            "submission should happen before the observer is driven"
+            "submission should happen before the adverb returns"
         );
-        let retained_port = endpoint.take_response_port();
+        let retained_port = endpoint.take_recorded_port();
         let (return_handle, _return_receiver) = instance
             .mailbox_for_py()
             .open_port::<Undeliverable<MessageEnvelope>>();
-        instance
-            .mailbox_for_py()
-            .serialize_and_send_once(retained_port, result_message(Some(0)), return_handle)
-            .expect("the retained observer's response should serialize");
-        let collected = drive_task(retained)
-            .await
-            .expect("the retained observer should collect its response");
-        monarch_with_gil_blocking(GilSite::Test, |py| {
-            collected
-                .extract::<Py<PyValueMesh>>(py)
-                .expect("the retained observer should collect its response");
-        });
+        match retained_port {
+            EitherPortRef::Once(PythonOncePortRef { inner: Some(port) }) => {
+                instance
+                    .mailbox_for_py()
+                    .serialize_and_send_once(port, result_message(Some(0)), return_handle)
+                    .expect("the retained call reply should serialize");
+                let collected = poll_reply(&retained)
+                    .await
+                    .expect("call should collect its reply");
+                monarch_with_gil_blocking(GilSite::Test, |py| {
+                    collected
+                        .extract::<Py<PyValueMesh>>(py)
+                        .expect("call should return a ValueMesh");
+                });
+            }
+            EitherPortRef::Unbounded(port) => {
+                let (reply, expected_error) = unexpected_message("eager single reply");
+                port.inner.post(&instance, reply);
+                let error = poll_reply(&retained)
+                    .await
+                    .expect_err("the unexpected reply kind should fail collection");
+                assert_message_error(error, &expected_error);
+            }
+            _ => panic!("the recorded response port should be populated"),
+        }
 
-        let discarded = call_observer(&endpoint);
+        let discarded = call_observer(&endpoint, adverb);
         assert_eq!(
             endpoint.submissions.load(Ordering::SeqCst),
             2,
             "the second operation should also be submitted before observation"
         );
-        let dropped_port = endpoint.take_response_port();
-        let dropped_destination = dropped_port.port_addr().clone();
+        let dropped_port = endpoint.take_recorded_port();
         monarch_with_gil_blocking(GilSite::Test, |_py| drop(discarded));
 
+        let (consumed, mut acknowledgement) = tokio::sync::oneshot::channel();
+        let payload = Part::from(Bytes::from_owner(ReplyBytes(Some(consumed))));
         let (return_handle, mut return_receiver) = instance
             .mailbox_for_py()
             .open_port::<Undeliverable<MessageEnvelope>>();
-        instance
-            .mailbox_for_py()
-            .serialize_and_send_once(dropped_port, result_message(Some(0)), return_handle)
-            .expect("the post should serialize before delivery is rejected");
-        let undeliverable = tokio::time::timeout(WAIT, return_receiver.recv())
-            .await
-            .expect("timed out waiting for the dropped port's delivery failure")
-            .expect("the return port should receive the delivery failure");
-        let Undeliverable::Returned(envelope) = undeliverable else {
-            panic!("the failed response should retain its original envelope");
-        };
-        assert_eq!(envelope.dest(), &dropped_destination);
+        // Keep the return port connected until we check for a bounced reply.
+        // Each send consumes its own clone of the sender.
+        match dropped_port {
+            EitherPortRef::Once(PythonOncePortRef { inner: Some(port) }) => {
+                let mut reply = result_message(Some(0));
+                reply.message = payload;
+                instance
+                    .mailbox_for_py()
+                    .serialize_and_send_once(port, reply, return_handle.clone())
+                    .expect("the unobserved call reply should serialize");
+            }
+            EitherPortRef::Unbounded(port) => {
+                let (mut reply, _) = unexpected_message("unobserved single reply");
+                reply.message = payload;
+                instance
+                    .mailbox_for_py()
+                    .serialize_and_send(&port.inner, reply, return_handle.clone())
+                    .expect("the unobserved single reply should serialize");
+            }
+            _ => panic!("the recorded response port should be populated"),
+        }
+        tokio::time::timeout(WAIT, async {
+            loop {
+                tokio::select! {
+                    completion = &mut acknowledgement => break completion,
+                    _ = tokio::time::sleep(Duration::from_millis(1)) => {
+                        // PyO3 may defer destruction of the discarded ValueMesh
+                        // until a thread next acquires the GIL.
+                        monarch_with_gil_blocking(GilSite::Test, |_py| {});
+                    }
+                }
+            }
+        })
+        .await
+        .expect("the collector must consume the reply after its observer is dropped")
+        .expect("reply destruction should acknowledge completion");
+        assert!(
+            return_receiver
+                .try_recv()
+                .expect("the return port should remain open")
+                .is_none(),
+            "an unobserved reply should not bounce back to the replying actor"
+        );
+        drop(return_handle);
         assert_eq!(endpoint.submissions.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn call_collects_before_observation_and_survives_observer_drop() {
+        assert_python_collector_ownership(EndpointAdverb::Call).await;
+    }
+
+    #[tokio::test]
+    async fn call_one_collects_before_observation_and_survives_observer_drop() {
+        assert_python_collector_ownership(EndpointAdverb::CallOne).await;
+    }
+
+    #[tokio::test]
+    async fn choose_collects_before_observation_and_survives_observer_drop() {
+        assert_python_collector_ownership(EndpointAdverb::Choose).await;
+    }
+
+    // With ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK set, each adverb keeps its
+    // creation traceback, so an unobserved failure still logs where the call
+    // was made. Without it, none is captured.
+    #[tokio::test]
+    async fn adverbs_capture_creation_traceback_only_when_enabled() {
+        pyo3::Python::initialize();
+        let instance = test_instance("adverbs_capture_creation_traceback_only_when_enabled");
+        let endpoint = RecordingCallEndpoint::new(instance.clone_for_py());
+        let config = hyperactor_config::global::lock();
+        for adverb in [
+            EndpointAdverb::Call,
+            EndpointAdverb::CallOne,
+            EndpointAdverb::Choose,
+        ] {
+            for enabled in [false, true] {
+                let _guard = config.override_key(ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK, enabled);
+                let observer = call_observer(&endpoint, adverb);
+                let captured = monarch_with_gil_blocking(GilSite::Test, |py| {
+                    let captured = observer.borrow(py).has_traceback_for_test();
+                    drop(observer);
+                    captured
+                });
+                assert_eq!(
+                    captured,
+                    enabled,
+                    "{} should capture a creation traceback only when enabled",
+                    adverb.as_str()
+                );
+            }
+        }
+    }
+
+    // Construction captures the same opt-in stack as PythonTask did, and
+    // starting the item transfers it to the Handle's unobserved-error log.
+    #[tokio::test]
+    async fn stream_items_capture_creation_traceback_only_when_enabled() {
+        pyo3::Python::initialize();
+        let instance = test_instance("stream_items_capture_creation_traceback_only_when_enabled");
+        let config = hyperactor_config::global::lock();
+        for enabled in [false, true] {
+            let _guard = config.override_key(ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK, enabled);
+            let (sender, receiver) = instance.mailbox_for_py().open_port::<PythonMessage>();
+            let (message, expected) = unexpected_message("traceback reply");
+            // Queue the reply before starting the collector, so it cannot be
+            // left waiting when this iteration ends.
+            sender
+                .try_post(&instance, message)
+                .expect("the reply should be queued");
+            let stream = value_stream(&instance, receiver, 1);
+            let reply = next_reply(&stream).expect("the slot should yield an item");
+            let observer =
+                monarch_with_gil_blocking(GilSite::Test, |py| reply.borrow(py).spawn_handle())
+                    .expect("the unconsumed item should start its collector");
+            assert_eq!(
+                observer.has_traceback_for_test(),
+                enabled,
+                "a stream item should capture a creation traceback only when enabled"
+            );
+            let error = tokio::time::timeout(WAIT, observer.wait_future())
+                .await
+                .expect("the queued reply should complete the collector")
+                .expect_err("the unexpected message kind should be rejected");
+            assert_message_error(error, &expected);
+        }
     }
 }

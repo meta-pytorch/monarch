@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::VecDeque;
 use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -44,9 +45,10 @@ use typeuri::Named;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
+use crate::endpoint::PyPendingReply;
+use crate::pickle::PicklingState;
 use crate::proc::PyActorAddr;
-use crate::pytokio::PyPythonTask;
-use crate::pytokio::PythonTask;
+use crate::pytokio::current_traceback;
 use crate::runtime::GilSite;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
@@ -323,8 +325,80 @@ pub(super) struct PythonPortReceiver {
     inner: Arc<tokio::sync::Mutex<PortReceiver<PythonMessage>>>,
 }
 
+// Called by recv() to capture the receiving actor's context. Only the
+// Python function is cached here, not the context it returns.
+py_global!(context, "monarch._src.actor.actor_mesh", "context");
+
+// Provides _context, which we temporarily set to the captured context
+// so unpickle hooks on a Tokio worker see the receiving actor.
+py_global!(context_var, "monarch._src.actor.actor_mesh", "_context");
+
+/// Unpickle a channel's result: return its value, or raise its remote exception.
+///
+/// `Result` messages return the payload, or `(rank, payload)` when `ranked`
+/// is true. `Exception` messages return the remote exception as an error.
+///
+/// A ranked receive rejects a missing rank before unpickling. Unsupported
+/// message kinds produce `ValueError`; unpickling errors propagate.
+fn decode_channel_result(
+    py: Python<'_>,
+    message: PythonMessage,
+    ranked: bool,
+) -> PyResult<Py<PyAny>> {
+    let rank = match &message.kind {
+        PythonMessageKind::Result { rank } | PythonMessageKind::Exception { rank } => *rank,
+        _ => None,
+    };
+    if ranked && rank.is_none() {
+        let message = message.into_py_any(py)?;
+        return Err(PyValueError::new_err(format!(
+            "RankedPort receiver got a message without a rank {}",
+            message.bind(py).str()?
+        )));
+    }
+    let kind = message.kind;
+    let refs = message.refs.into_iter().map(Some).collect();
+    let payload = PicklingState::from_parts(message.message, VecDeque::new(), refs).unpickle(py)?;
+    match kind {
+        PythonMessageKind::Result { .. } if ranked => (rank, payload).into_py_any(py),
+        PythonMessageKind::Result { .. } => Ok(payload),
+        PythonMessageKind::Exception { .. } => Err(PyErr::from_value(payload.into_bound(py))),
+        kind => Err(PyValueError::new_err(format!(
+            "Unexpected message kind: {}",
+            kind.into_py_any(py)?.bind(py).str()?
+        ))),
+    }
+}
+
+/// Unpickle a channel result using the actor context captured when `recv()`
+/// was called.
+///
+/// Unpickling can reconstruct Ports and other objects whose hooks call
+/// `context()`. They must see the actor that called `recv()`, even though
+/// decoding runs on a Tokio worker.
+///
+/// Temporarily install that context, then restore the previous context
+/// whether decoding succeeds or returns an error.
+fn decode_channel_result_in_context(
+    py: Python<'_>,
+    message: PythonMessage,
+    ranked: bool,
+    captured_context: Py<PyAny>,
+) -> PyResult<Py<PyAny>> {
+    let context_var = context_var(py);
+    let previous = context_var.call_method1("get", (py.None(),))?;
+    context_var.call_method1("set", (captured_context,))?;
+    // Do not use ? here: a decoding error must not skip restoring the previous context.
+    let result = decode_channel_result(py, message, ranked);
+    context_var.call_method1("set", (previous,))?;
+    result
+}
+
+/// Wait for one message, then decode it under the context captured at `recv()`.
 async fn recv_async(
     receiver: Arc<tokio::sync::Mutex<PortReceiver<PythonMessage>>>,
+    captured_context: Py<PyAny>,
+    ranked: bool,
 ) -> PyResult<Py<PyAny>> {
     let message = receiver
         .lock()
@@ -333,14 +407,25 @@ async fn recv_async(
         .await
         .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
 
-    monarch_with_gil(GilSite::ReplyConvert, |py| message.into_py_any(py)).await
+    // The receiver lock is released before waiting for the GIL or unpickling.
+    monarch_with_gil(GilSite::ReplyConvert, move |py| {
+        decode_channel_result_in_context(py, message, ranked, captured_context)
+    })
+    .await
 }
 
 #[pymethods]
 impl PythonPortReceiver {
-    fn recv_task(&mut self) -> PyResult<PyPythonTask> {
+    /// Return an unstarted receive of one message. First observation receives
+    /// and decodes it; a spawned receive stops once nobody can observe it.
+    fn recv(&self, py: Python<'_>, ranked: bool) -> PyResult<PyPendingReply> {
+        let captured_context = context(py).call0()?.unbind();
+        let traceback = current_traceback()?;
         let receiver = self.inner.clone();
-        Ok(PythonTask::new(recv_async(receiver))?.into())
+        Ok(PyPendingReply::for_port_receive(
+            recv_async(receiver, captured_context, ranked),
+            traceback,
+        ))
     }
 }
 
@@ -526,19 +611,27 @@ pub(super) struct PythonOncePortReceiver {
 
 #[pymethods]
 impl PythonOncePortReceiver {
-    fn recv_task(&mut self) -> PyResult<PyPythonTask> {
-        let Some(receiver) = self.inner.lock().unwrap().take() else {
-            return Err(PyErr::new::<PyValueError, _>("OncePort is already used"));
-        };
+    /// Return an unstarted receive of the once port's sole message. First
+    /// observation claims the port; a receive observed after that fails.
+    fn recv(&self, py: Python<'_>, ranked: bool) -> PyResult<PyPendingReply> {
+        let captured_context = context(py).call0()?.unbind();
+        let traceback = current_traceback()?;
+        let inner = self.inner.clone();
         let fut = async move {
+            let Some(receiver) = inner.lock().unwrap().take() else {
+                return Err(PyErr::new::<PyValueError, _>("OncePort is already used"));
+            };
             let message = receiver
                 .recv()
                 .await
                 .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
 
-            monarch_with_gil(GilSite::ReplyConvert, |py| message.into_py_any(py)).await
+            monarch_with_gil(GilSite::ReplyConvert, move |py| {
+                decode_channel_result_in_context(py, message, ranked, captured_context)
+            })
+            .await
         };
-        Ok(PythonTask::new(fut)?.into())
+        Ok(PyPendingReply::for_port_receive(fut, traceback))
     }
 }
 
@@ -748,86 +841,448 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 mod tests {
     use std::time::Duration;
 
+    use hyperactor::Instance;
     use hyperactor::Proc;
-    use pyo3::PyTypeInfo;
+    use pyo3::exceptions::PyModuleNotFoundError;
+    use pyo3::types::PyDict;
+    use serde_multipart::Part;
 
     use super::*;
+    use crate::actor::MethodSpecifier;
+    use crate::actor::PythonActor;
+    use crate::context::PyContext;
+    use crate::handle::PyHandle;
+    use crate::pytokio::ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK;
+    use crate::runtime::ensure_python;
 
-    fn test_message(rank: usize) -> PythonMessage {
-        PythonMessage {
-            kind: PythonMessageKind::Result { rank: Some(rank) },
-            ..Default::default()
+    const WAIT: Duration = Duration::from_secs(30);
+
+    /// Supply missing Python package boundaries in the Rust-only test target.
+    /// Existing modules and their attributes are left intact.
+    fn test_module<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyModule>> {
+        let modules = py
+            .import("sys")?
+            .getattr("modules")?
+            .cast_into::<PyDict>()?;
+        let mut current = String::new();
+        let mut parent: Option<Bound<'py, PyModule>> = None;
+        for part in path.split('.') {
+            if !current.is_empty() {
+                current.push('.');
+            }
+            current.push_str(part);
+            let module = match modules.get_item(&current)? {
+                Some(module) => module.cast_into::<PyModule>()?,
+                None => {
+                    let module = PyModule::new(py, &current)?;
+                    modules.set_item(&current, &module)?;
+                    module
+                }
+            };
+            if let Some(parent) = &parent
+                && parent.getattr(part).is_err()
+            {
+                parent.setattr(part, &module)?;
+            }
+            parent = Some(module);
         }
+        Ok(parent.expect("the test module path is nonempty"))
     }
 
-    // `recv_task()` takes the native once receiver before it constructs the
-    // returned task. Dropping that task cannot put the receiver back.
-    #[test]
-    fn once_recv_task_consumes_receiver_at_construction() {
-        pyo3::Python::initialize();
-        let proc = Proc::isolated();
-        let client = proc.client("once_recv_task_consumes_receiver_at_construction");
-        let (handle, receiver) = client.open_once_port::<PythonMessage>();
-        handle
-            .try_post(&client, test_message(13))
-            .expect("the message should be queued before recv_task is called");
-        let mut receiver = PythonOncePortReceiver {
+    /// Provide only the context variable and plain-pickle hooks used by these
+    /// integer/exception witnesses. Real channel payloads are covered in Python.
+    fn install_decode_test_modules(py: Python<'_>) -> PyResult<()> {
+        let helpers = PyModule::from_code(
+            py,
+            cr#"
+from contextvars import ContextVar
+_context = ContextVar("mailbox_test_context", default=None)
+def context():
+    return _context.get()
+def maybe_torch():
+    return False
+"#,
+            c"mailbox_test_helpers.py",
+            c"mailbox_test_helpers",
+        )?;
+        let actor_mesh = test_module(py, "monarch._src.actor.actor_mesh")?;
+        if actor_mesh.getattr("context").is_err() {
+            actor_mesh.setattr("_context", helpers.getattr("_context")?)?;
+            actor_mesh.setattr("context", helpers.getattr("context")?)?;
+        }
+        let pickle_hooks = test_module(py, "monarch._src.actor.pickle")?;
+        if pickle_hooks.getattr("maybe_torch").is_err() {
+            pickle_hooks.setattr("maybe_torch", helpers.getattr("maybe_torch")?)?;
+        }
+        match py.import("cloudpickle") {
+            Ok(_) => (),
+            Err(error) if error.is_instance_of::<PyModuleNotFoundError>(py) => {
+                let cloudpickle = test_module(py, "cloudpickle")?;
+                cloudpickle.setattr("cloudpickle", &cloudpickle)?;
+                cloudpickle.setattr("loads", py.import("pickle")?.getattr("loads")?)?;
+            }
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    }
+
+    /// Python's default object str includes an address, not message content.
+    fn without_object_address(text: &str) -> &str {
+        text.split(" at 0x")
+            .next()
+            .expect("split always has a first part")
+    }
+
+    /// Give the binding a real actor context without bootstrapping a root client.
+    fn in_actor_context<T>(
+        instance: &Instance<PythonActor>,
+        f: impl FnOnce(Python<'_>) -> PyResult<T>,
+    ) -> T {
+        monarch_with_gil_blocking(GilSite::Test, |py| -> PyResult<T> {
+            install_decode_test_modules(py)?;
+            let instance: PyInstance = instance.into();
+            let captured = py
+                .get_type::<PyContext>()
+                .call_method1("_from_instance", (instance,))?;
+            let context_var = context_var(py);
+            let token = context_var.call_method1("set", (captured,))?;
+            let result = f(py);
+            context_var.call_method1("reset", (token,))?;
+            result
+        })
+        .expect("the binding should run under the test actor's context")
+    }
+
+    fn test_instance(name: &str) -> Instance<PythonActor> {
+        ensure_python();
+        Proc::isolated()
+            .actor_instance::<PythonActor>(name)
+            .unwrap()
+            .instance
+    }
+
+    /// Serialize a valid payload, rather than relying on empty default bytes.
+    fn message(
+        kind: PythonMessageKind,
+        value: impl FnOnce(Python<'_>) -> Py<PyAny>,
+    ) -> PythonMessage {
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let bytes = py
+                .import("pickle")
+                .unwrap()
+                .call_method1("dumps", (value(py),))
+                .unwrap()
+                .extract::<Vec<u8>>()
+                .unwrap();
+            PythonMessage {
+                kind,
+                message: Part::from(bytes),
+                refs: Vec::new(),
+            }
+        })
+    }
+
+    fn result_message() -> PythonMessage {
+        message(PythonMessageKind::Result { rank: Some(7) }, |py| {
+            42.into_py_any(py).unwrap()
+        })
+    }
+
+    async fn value(handle: &PyHandle) -> Py<PyAny> {
+        tokio::time::timeout(WAIT, handle.wait_future())
+            .await
+            .expect("the receive should complete before the deadline")
+            .expect("the receive should publish a value")
+    }
+
+    fn assert_value(value: Py<PyAny>) {
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            assert_eq!(value.extract::<i64>(py).unwrap(), 42);
+        });
+    }
+
+    // A receive takes nothing until it is observed, even while it is alive: the
+    // queued message goes to the receive that is observed.
+    #[tokio::test]
+    async fn port_recv_waits_for_observation() {
+        let client = test_instance("port_recv_waits_for_observation");
+        let (sender, receiver) = client.mailbox_for_py().open_port::<PythonMessage>();
+        let receiver = PythonPortReceiver {
+            inner: Arc::new(tokio::sync::Mutex::new(receiver)),
+        };
+        sender.try_post(&client, result_message()).unwrap();
+        let unobserved = in_actor_context(&client, |py| receiver.recv(py, false));
+        let observed = in_actor_context(&client, |py| receiver.recv(py, false)?.spawn_handle());
+        assert_value(value(&observed).await);
+        drop(unobserved);
+    }
+
+    // The once port is claimed by the first receive observed, not the first
+    // created; a receive observed after that fails.
+    #[tokio::test]
+    async fn once_recv_claims_on_first_observation() {
+        let client = test_instance("once_recv_claims_on_first_observation");
+        let (sender, receiver) = client.mailbox_for_py().open_once_port::<PythonMessage>();
+        let receiver = PythonOncePortReceiver {
             inner: Arc::new(std::sync::Mutex::new(Some(receiver))),
         };
-
-        let first = receiver
-            .recv_task()
-            .expect("the first recv_task call should construct a task");
-        drop(first);
-
-        let error = match receiver.recv_task() {
-            Ok(_) => panic!("the second recv_task call should fail"),
-            Err(error) => error,
-        };
+        drop(in_actor_context(&client, |py| receiver.recv(py, false)));
+        let first = in_actor_context(&client, |py| receiver.recv(py, false));
+        let second = in_actor_context(&client, |py| receiver.recv(py, false));
+        sender.try_post(&client, result_message()).unwrap();
+        let first = first.spawn_handle().unwrap();
+        assert_value(value(&first).await);
+        let error = tokio::time::timeout(WAIT, second.spawn_handle().unwrap().wait_future())
+            .await
+            .expect("the second receive should finish")
+            .expect_err("the once port is already claimed");
         monarch_with_gil_blocking(GilSite::Test, |py| {
-            assert!(error.get_type(py).is(PyValueError::type_object(py)));
+            assert!(error.is_instance_of::<PyValueError>(py));
             assert_eq!(error.value(py).to_string(), "OncePort is already used");
         });
     }
 
-    // A regular receiver is only cloned at construction. Even with a message
-    // already pending, dropping one task leaves it for the next driven task.
+    // Wait for destruction before sending. Drop-then-send alone would race the
+    // cooperative stop and could legitimately have its message taken.
     #[tokio::test]
-    async fn port_recv_task_claims_only_when_driven() {
-        pyo3::Python::initialize();
-        let proc = Proc::isolated();
-        let client = proc.client("port_recv_task_claims_only_when_driven");
-        let (handle, receiver) = client.open_port::<PythonMessage>();
-        let expected = test_message(17);
-        handle
-            .try_post(&client, expected.clone())
-            .expect("the message should be queued before either task exists");
-        let mut receiver = PythonPortReceiver {
+    async fn spawned_receive_stops_when_unobserved() {
+        let client = test_instance("spawned_receive_stops_when_unobserved");
+        let (sender, receiver) = client.mailbox_for_py().open_port::<PythonMessage>();
+        let receiver = PythonPortReceiver {
             inner: Arc::new(tokio::sync::Mutex::new(receiver)),
         };
-
-        let first = receiver
-            .recv_task()
-            .expect("the first recv_task call should construct a task");
-        let mut second = receiver
-            .recv_task()
-            .expect("the second recv_task call should also construct a task");
-        drop(first);
-
-        let received = tokio::time::timeout(
-            Duration::from_secs(30),
-            second
-                .take_task()
-                .expect("the second receive task should be unconsumed"),
-        )
+        drop(in_actor_context(&client, |py| {
+            receiver.recv(py, false)?.spawn_handle()
+        }));
+        tokio::time::timeout(WAIT, async {
+            while Arc::strong_count(&receiver.inner) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
         .await
-        .expect("timed out driving the second receive task")
-        .expect("the second receive task should succeed");
-        let received = monarch_with_gil_blocking(GilSite::Test, |py| {
-            received
-                .extract::<PythonMessage>(py)
-                .expect("recv_task should return the posted PythonMessage")
+        .expect("the unobserved receive should release its receiver");
+        sender.try_post(&client, result_message()).unwrap();
+        let next = in_actor_context(&client, |py| receiver.recv(py, false)?.spawn_handle());
+        assert_value(value(&next).await);
+    }
+
+    #[tokio::test]
+    async fn dropped_spawned_receive_releases_the_receiver() {
+        let client = test_instance("dropped_spawned_receive_releases_the_receiver");
+        let (_sender, receiver) = client.mailbox_for_py().open_port::<PythonMessage>();
+        let receiver = PythonPortReceiver {
+            inner: Arc::new(tokio::sync::Mutex::new(receiver)),
+        };
+        let weak = Arc::downgrade(&receiver.inner);
+        drop(in_actor_context(&client, |py| {
+            receiver.recv(py, false)?.spawn_handle()
+        }));
+        drop(receiver);
+        tokio::time::timeout(WAIT, async {
+            while weak.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the native port receiver must not be stranded in a task");
+        assert!(weak.upgrade().is_none());
+    }
+
+    // Unbound ports disconnect when their sole sender drops. Mailbox::close()
+    // records a status but does not disconnect these receive queues.
+    #[tokio::test]
+    async fn recv_reports_closed_ports() {
+        let client = test_instance("recv_reports_closed_ports");
+        let (sender, receiver) = client.mailbox_for_py().open_port::<PythonMessage>();
+        let regular = PythonPortReceiver {
+            inner: Arc::new(tokio::sync::Mutex::new(receiver)),
+        };
+        let regular = in_actor_context(&client, |py| regular.recv(py, false)?.spawn_handle());
+        drop(sender);
+        let (sender, receiver) = client.mailbox_for_py().open_once_port::<PythonMessage>();
+        let once = PythonOncePortReceiver {
+            inner: Arc::new(std::sync::Mutex::new(Some(receiver))),
+        };
+        let once = in_actor_context(&client, |py| once.recv(py, false)?.spawn_handle());
+        drop(sender);
+        for handle in [regular, once] {
+            let error = tokio::time::timeout(WAIT, handle.wait_future())
+                .await
+                .expect("a disconnected receive must finish")
+                .expect_err("it must fail");
+            monarch_with_gil_blocking(GilSite::Test, |py| {
+                assert!(error.is_instance_of::<PyEOFError>(py));
+                assert!(error.value(py).to_string().starts_with("Port closed: "));
+            });
+        }
+    }
+
+    // A receive already taken, for example by an interrupted untimed get(),
+    // names the receive in its error from either observation method.
+    #[tokio::test]
+    async fn spent_receive_reports_its_text() {
+        let client = test_instance("spent_receive_reports_its_text");
+        let (_sender, receiver) = client.mailbox_for_py().open_port::<PythonMessage>();
+        let receiver = PythonPortReceiver {
+            inner: Arc::new(tokio::sync::Mutex::new(receiver)),
+        };
+        let item = in_actor_context(&client, |py| receiver.recv(py, false));
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let item = Py::new(py, item).expect("the receive should be allocated");
+            drop(
+                item.borrow(py)
+                    .spawn_handle()
+                    .expect("the first observation should take the receive"),
+            );
+            let expected = "this receive was already taken by an earlier get(); if that get() was interrupted, it will never produce a result";
+            let error = item
+                .borrow(py)
+                .spawn_handle()
+                .err()
+                .expect("spawn_handle should reject the taken receive");
+            assert!(error.is_instance_of::<PyValueError>(py));
+            assert_eq!(error.value(py).to_string(), expected);
+            let error = PyPendingReply::block_on(item.borrow(py), py)
+                .expect_err("block_on should reject the taken receive before waiting");
+            assert!(error.is_instance_of::<PyValueError>(py));
+            assert_eq!(error.value(py).to_string(), expected);
         });
-        assert_eq!(received, expected);
+    }
+
+    #[tokio::test]
+    async fn recv_maps_values_ranks_and_errors() {
+        let client = test_instance("recv_maps_values_ranks_and_errors");
+        let (sender, receiver) = client.mailbox_for_py().open_port::<PythonMessage>();
+        let receiver = PythonPortReceiver {
+            inner: Arc::new(tokio::sync::Mutex::new(receiver)),
+        };
+        for ranked in [false, true] {
+            sender.try_post(&client, result_message()).unwrap();
+            let handle = in_actor_context(&client, |py| receiver.recv(py, ranked)?.spawn_handle());
+            let received = value(&handle).await;
+            monarch_with_gil_blocking(GilSite::Test, |py| {
+                if ranked {
+                    assert_eq!(received.extract::<(usize, i64)>(py).unwrap(), (7, 42));
+                } else {
+                    assert_eq!(received.extract::<i64>(py).unwrap(), 42);
+                }
+            });
+        }
+        for ranked in [false, true] {
+            sender
+                .try_post(
+                    &client,
+                    message(PythonMessageKind::Exception { rank: Some(7) }, |py| {
+                        PyValueError::new_err("sent exception")
+                            .into_value(py)
+                            .into_any()
+                    }),
+                )
+                .unwrap();
+            let handle = in_actor_context(&client, |py| receiver.recv(py, ranked)?.spawn_handle());
+            let error = tokio::time::timeout(WAIT, handle.wait_future())
+                .await
+                .unwrap()
+                .unwrap_err();
+            monarch_with_gil_blocking(GilSite::Test, |py| {
+                assert!(error.is_instance_of::<PyValueError>(py));
+                assert_eq!(error.value(py).to_string(), "sent exception");
+            });
+        }
+        // Invalid bytes prove rank validation happens before decoding, for
+        // both Result and Exception messages with a missing rank.
+        for kind in [
+            PythonMessageKind::Result { rank: None },
+            PythonMessageKind::Exception { rank: None },
+        ] {
+            let no_rank = PythonMessage {
+                kind,
+                ..Default::default()
+            };
+            let expected = monarch_with_gil_blocking(GilSite::Test, |py| {
+                format!(
+                    "RankedPort receiver got a message without a rank {}",
+                    no_rank
+                        .clone()
+                        .into_py_any(py)
+                        .unwrap()
+                        .bind(py)
+                        .str()
+                        .unwrap()
+                )
+            });
+            sender.try_post(&client, no_rank).unwrap();
+            let handle = in_actor_context(&client, |py| receiver.recv(py, true)?.spawn_handle());
+            let error = tokio::time::timeout(WAIT, handle.wait_future())
+                .await
+                .unwrap()
+                .unwrap_err();
+            monarch_with_gil_blocking(GilSite::Test, |py| {
+                assert!(error.is_instance_of::<PyValueError>(py));
+                assert_eq!(
+                    without_object_address(&error.value(py).to_string()),
+                    without_object_address(&expected)
+                );
+            });
+        }
+        let kind = PythonMessageKind::CallMethod {
+            name: MethodSpecifier::ReturnsResponse {
+                name: "unexpected".to_string(),
+            },
+            response_port: None,
+            correlation_id: None,
+        };
+        let expected = monarch_with_gil_blocking(GilSite::Test, |py| {
+            format!(
+                "Unexpected message kind: {}",
+                kind.clone()
+                    .into_py_any(py)
+                    .unwrap()
+                    .bind(py)
+                    .str()
+                    .unwrap()
+            )
+        });
+        sender
+            .try_post(&client, message(kind, |py| 42.into_py_any(py).unwrap()))
+            .unwrap();
+        let handle = in_actor_context(&client, |py| receiver.recv(py, false)?.spawn_handle());
+        let error = tokio::time::timeout(WAIT, handle.wait_future())
+            .await
+            .unwrap()
+            .unwrap_err();
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            assert!(error.is_instance_of::<PyValueError>(py));
+            assert_eq!(
+                without_object_address(&error.value(py).to_string()),
+                without_object_address(&expected)
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn recv_captures_creation_traceback_only_when_enabled() {
+        let client = test_instance("recv_captures_creation_traceback_only_when_enabled");
+        let config = hyperactor_config::global::lock();
+        for enabled in [false, true] {
+            let _guard = config.override_key(ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK, enabled);
+            let (sender, receiver) = client.mailbox_for_py().open_port::<PythonMessage>();
+            let receiver = PythonPortReceiver {
+                inner: Arc::new(tokio::sync::Mutex::new(receiver)),
+            };
+            sender.try_post(&client, result_message()).unwrap();
+            let handle = in_actor_context(&client, |py| receiver.recv(py, false)?.spawn_handle());
+            assert_eq!(handle.has_traceback_for_test(), enabled);
+            assert_value(value(&handle).await);
+
+            let (sender, receiver) = client.mailbox_for_py().open_once_port::<PythonMessage>();
+            let receiver = PythonOncePortReceiver {
+                inner: Arc::new(std::sync::Mutex::new(Some(receiver))),
+            };
+            sender.try_post(&client, result_message()).unwrap();
+            let handle = in_actor_context(&client, |py| receiver.recv(py, false)?.spawn_handle());
+            assert_eq!(handle.has_traceback_for_test(), enabled);
+            assert_value(value(&handle).await);
+        }
     }
 }

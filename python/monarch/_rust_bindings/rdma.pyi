@@ -43,7 +43,7 @@ class _RdmaManager:
     @classmethod
     def ensure_init_rdma_manager_nonblocking(
         cls,
-        proc_mesh_shared: Any,
+        proc_mesh_handle: Any,
         caller: Any,
     ) -> Handle[None]: ...
 

@@ -7,10 +7,10 @@ A small, explicit API to start logging for a `ProcMesh`, stream remote `stdout/s
 
 ## API surface
 
-### `LoggingMeshClient.spawn(instance, proc_mesh) -> PyPythonTask`
-Spawns:
+### `LoggingMeshClient.spawn(instance, raw, *, stream_to_client, aggregate_window_sec, level) -> Handle[LoggingMeshClient]`
+Starts immediately, waits for the raw proc-creation Handle, then creates and configures:
 - a single `LogClientActor` (in the Python/driver process),
-- per-proc `LogForwardActor`s (in remote procs),
+- per-proc `LogForwardActor`s when forwarding is enabled,
 - per-proc `LoggerRuntimeActor`s (Python logging runtime).
 
 ### `LoggingMeshClient.set_mode(instance, stream_to_client: bool, aggregate_window_sec: Optional[int], level: int) -> None`
@@ -30,13 +30,17 @@ See: [Client actor → Barrier protocol](client.md#barrier-protocol-sync-flush) 
 from monarch._rust_bindings.monarch_hyperactor.logging import LoggingMeshClient
 import logging
 
-client = await LoggingMeshClient.spawn(instance, proc_mesh)  # one client actor in driver
-client.set_mode(instance, stream_to_client=True, aggregate_window_sec=3, level=logging.INFO)
+client = await LoggingMeshClient.spawn(
+    instance, raw_proc_handle,
+    stream_to_client=True, aggregate_window_sec=3, level=logging.INFO,
+)  # one client actor in the controller process
 
 # … run workload producing stdout/stderr in remote procs …
 
 await client.flush(instance)  # barrier: all logs observed up to this point
 ```
+
+The Handle completes only after actor creation and initial mode submission succeed. Later calls to `set_mode` keep their existing behavior. Dropping the Handle or timing out an observer does not cancel installation.
 
 ## Related
 

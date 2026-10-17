@@ -33,7 +33,6 @@ use crate::actor_mesh::SupervisableActorMesh;
 use crate::context::PyInstance;
 use crate::handle::PyHandle;
 use crate::pickle::PendingMessage;
-use crate::pytokio::PyShared;
 use crate::runtime::GilSite;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
@@ -76,11 +75,29 @@ impl PyProcMesh {
 
 #[pymethods]
 impl PyProcMesh {
+    /// Return a Handle that resolves to the requested slice after proc mesh creation
+    /// succeeds. If creation or slicing returns an error, `.get()`, `poll()` and
+    /// `await` raise it.
+    #[staticmethod]
+    fn sliced_handle(proc_mesh: &PyHandle, region: &PyRegion) -> PyHandle {
+        let mesh = proc_mesh.wait_future();
+        let region = region.clone();
+        PyHandle::spawn(async move {
+            let mesh = mesh.await?;
+            monarch_with_gil(GilSite::Convert, |py| {
+                mesh.bind(py)
+                    .extract::<PyRef<'_, PyProcMesh>>()?
+                    .sliced(&region)
+            })
+            .await
+        })
+    }
+
     #[staticmethod]
     #[pyo3(signature = (proc_mesh, instance, mesh_base_name, actor, init_message, kind, emulated, supervision_display_name = None))]
     fn spawn_async(
         py: Python<'_>,
-        proc_mesh: &mut PyShared,
+        proc_mesh: &PyHandle,
         instance: &PyInstance,
         mesh_base_name: String,
         actor: Py<PyType>,
@@ -92,7 +109,7 @@ impl PyProcMesh {
         // Pickling may run Python code; do it on the calling Python thread.
         let pickled_type = PickledPyObject::pickle(actor.bind(py).as_any())?;
         let init_message = init_message.take()?;
-        let task = proc_mesh.task()?.take_task()?;
+        let task = proc_mesh.wait_future();
         let instance = instance.clone();
         let mesh_impl = async move {
             let proc_mesh = task.await?;

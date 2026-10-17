@@ -38,7 +38,7 @@ from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
     HostMesh as HyHostMesh,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId, Uid
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Point, Shape, Slice
 from monarch._src.actor.actor_mesh import (
     _client_context,
@@ -49,7 +49,7 @@ from monarch._src.actor.actor_mesh import (
 )
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.future import Future
+from monarch._src.actor.future import _ready_handle, Future
 from monarch._src.actor.host_mesh import (
     _spawn_admin,
     default_bootstrap_cmd,
@@ -73,7 +73,7 @@ def test_process_job_host_mesh() -> None:
         assert host.extent.labels == ["hosts"]
         assert host.extent.sizes == [1]
         assert not host.stream_logs
-        hy_host = host._hy_host_mesh.block_on()
+        hy_host = host._hy_host_mesh.get()
         assert hy_host.region.labels == host.region.labels
         assert hy_host.region.slice() == host.region.slice()
 
@@ -87,7 +87,7 @@ def test_multi_host_mesh() -> None:
         assert not host.stream_logs
         assert host._ndslice == Slice(offset=0, sizes=[8], strides=[1])
         assert host._labels == ("hosts",)
-        hy_host = host._hy_host_mesh.block_on()
+        hy_host = host._hy_host_mesh.get()
         assert hy_host.region.labels == host.region.labels
         assert hy_host.region.slice() == host.region.slice()
 
@@ -101,7 +101,7 @@ def test_multi_host_mesh() -> None:
         assert not sliced.stream_logs
         assert sliced._ndslice == Slice(offset=5, sizes=[2], strides=[2])
         assert sliced._labels == ("hosts",)
-        hy_sliced = sliced._hy_host_mesh.block_on()
+        hy_sliced = sliced._hy_host_mesh.get()
         assert hy_sliced.region.labels == sliced.region.labels
         assert hy_sliced.region.slice() == sliced.region.slice()
 
@@ -112,7 +112,9 @@ def test_multi_host_mesh() -> None:
             return hy_host
 
         # Keep the native mesh unresolved so slicing must take the pending path.
-        host._inner_host_mesh = PythonTask.from_coroutine(resolve_host_mesh()).spawn()
+        host._inner_host_mesh = PythonTask.from_coroutine(
+            resolve_host_mesh()
+        ).spawn_handle()
         try:
             assert host._hy_host_mesh.poll() is None
             pending_sliced = host._new_with_shape(slice_shape)
@@ -120,7 +122,7 @@ def test_multi_host_mesh() -> None:
         finally:
             release_host_mesh.set()
 
-        hy_pending_sliced = pending_sliced._hy_host_mesh.block_on()
+        hy_pending_sliced = pending_sliced._hy_host_mesh.get()
         assert hy_pending_sliced.region.labels == pending_sliced.region.labels
         assert hy_pending_sliced.region.slice() == pending_sliced.region.slice()
 
@@ -134,7 +136,7 @@ def test_spawn_proc_mesh() -> None:
         assert proc_mesh._host_mesh is host
         assert proc_mesh._ndslice == host._ndslice
         assert tuple(proc_mesh._labels) == host._labels
-        hy_proc_mesh = proc_mesh._proc_mesh.block_on()
+        hy_proc_mesh = proc_mesh._proc_mesh.get()
         assert tuple(hy_proc_mesh.region.labels) == host._labels
         assert hy_proc_mesh.region.slice() == host.region.slice()
 
@@ -145,7 +147,7 @@ def test_spawn_proc_mesh() -> None:
         sliced_proc = sliced_host.spawn_procs(
             name="proc_sliced", per_host={"gpus": 3, "just_for_fun": 4}
         )
-        hy_sliced_proc = sliced_proc._proc_mesh.block_on()
+        hy_sliced_proc = sliced_proc._proc_mesh.get()
         assert sliced_proc._host_mesh is sliced_host
         assert sliced_proc._ndslice == Slice(
             offset=0, sizes=[2, 3, 4], strides=[12, 4, 1]
@@ -168,7 +170,7 @@ def test_pickle() -> None:
         assert not host.stream_logs
         assert host._ndslice == Slice(offset=0, sizes=[8], strides=[1])
         assert host._labels == ("hosts",)
-        hy_host = host._hy_host_mesh.block_on()
+        hy_host = host._hy_host_mesh.get()
         assert hy_host.region.labels == host.region.labels
         assert hy_host.region.slice() == host.region.slice()
 
@@ -222,13 +224,6 @@ class _AwaitRecord:
             self._record.append(self._value)
 
         return record().__await__()
-
-    # The drain awaits `shared.task().spawn_handle()`.
-    def task(self) -> "_AwaitRecord":
-        return self
-
-    def spawn_handle(self) -> "_AwaitRecord":
-        return self
 
 
 class _PendingActorRecord:
@@ -309,12 +304,12 @@ def _install_host_teardown_call_through(
     inner: HyHostMesh | None = None,
 ) -> _HostTeardownCallThrough:
     if inner is None:
-        inner = host._hy_host_mesh.block_on()
+        inner = host._hy_host_mesh.get()
     call_through = _HostTeardownCallThrough(inner, record, release)
-    # HostMesh reads this value through the Shared interface. The test wrapper
+    # HostMesh reads this value through the Handle interface. The test wrapper
     # preserves that interface and forwards every teardown call to the exact
     # native object it replaced.
-    host._inner_host_mesh = Shared.from_value(cast(HyHostMesh, call_through))
+    host._inner_host_mesh = _ready_handle(cast(HyHostMesh, call_through))
     return call_through
 
 
@@ -511,14 +506,9 @@ async def test_drain_waits_for_a_spawn_appended_during_an_overlapping_drain() ->
     class _GatedSpawn:
         selected = 0
 
-        def task(self) -> "_GatedSpawn":
-            return self
-
-        def spawn_handle(self) -> "_GatedSpawn":
-            self.selected += 1
-            return self
-
         def __await__(self) -> Generator[Any, None, None]:
+            self.selected += 1
+
             async def wait() -> None:
                 await release.wait()
                 order.append("first")
@@ -551,10 +541,22 @@ async def test_drain_waits_for_a_spawn_appended_during_an_overlapping_drain() ->
         asyncio.ensure_future(HostMesh._drain_pending_spawns(cast(HostMesh, host)))
         for _ in range(2)
     ]
-    while first.selected < 2:
-        await asyncio.sleep(0)
-    release.set()
-    await asyncio.wait_for(asyncio.gather(*drains), timeout=10)
+
+    async def both_drains_selected_first() -> None:
+        while first.selected < 2:
+            await asyncio.sleep(0)
+
+    try:
+        await asyncio.wait_for(both_drains_selected_first(), timeout=10)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*drains), timeout=10)
+    finally:
+        release.set()
+        for drain in drains:
+            drain.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(*drains, return_exceptions=True), timeout=10
+        )
     assert order == ["first", "first", "late"]
     assert host._pending_spawns == []
 
@@ -595,7 +597,7 @@ def test_shutdown_waits_for_a_pending_proc_spawn_after_caller_drops_mesh() -> No
                 bootstrap_command=command,
             )
             # HostMesh retains the raw native spawn in _pending_spawns and the
-            # ProcMesh retains a second Shared that performs logging and setup.
+            # ProcMesh retains a second Handle that waits for logging and setup.
             # Keep witnesses for both before discarding the caller's ProcMesh.
             spawn = hm._pending_spawns[-1]
             proc_initialization = proc_mesh._proc_mesh
@@ -828,10 +830,11 @@ def test_alias_bootstrap() -> None:
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_attach_to_workers_accepts_future_addresses() -> None:
-    """`attach_to_workers` accepts ``Future[str]`` worker addresses, exercising
-    the ``_as_python_task`` -> ``Future._take_inner()`` path: the Future's
-    underlying task is surrendered to Rust, driven there to yield the address,
-    and the attach proceeds exactly as for plain ``str`` workers."""
+    """`attach_to_workers` accepts ``Future[str]`` worker addresses.
+
+    It gets a Handle from each Future and passes those Handles to Rust, which
+    waits for the addresses before attaching, just as for plain string addresses.
+    """
     from monarch._src.actor.future import Future
 
     async def _resolve(addr: str) -> str:
@@ -861,7 +864,7 @@ def test_attach_to_workers_accepts_future_addresses() -> None:
             env=env,
         )
         procs.append(proc)
-        # Wrap the address in a Future[str] so attach goes through _take_inner.
+        # Pass a Future rather than a string to exercise address resolution.
         fut: Future[str] = Future._from_coro(_resolve(proc_addr))
         workers.append(fut)
 
@@ -908,9 +911,6 @@ def test_attach_starts_before_readiness_observation_and_survives_a_dropped_obser
             workers=[address],
         )
 
-        with pytest.raises(ValueError) as consumed:
-            address.get()
-        assert str(consumed.value) == "Future was consumed."
         assert address_started.wait(timeout=10)
 
         discarded = hosts.initialized
@@ -920,6 +920,7 @@ def test_attach_starts_before_readiness_observation_and_survives_a_dropped_obser
         release_address.set()
 
         assert hosts.initialized.get(timeout=30) is True
+        assert address.get(timeout=30) == addr
         assert hosts.initialized.get(timeout=30) is True
         assert hosts.shutdown().get(timeout=30) is None
 
@@ -939,6 +940,22 @@ async def test_host_mesh_context_manager() -> None:
             hm.spawn_procs(per_host={"gpus": 2})
         with pytest.raises(RuntimeError, match="HostMesh has already been shut down"):
             await hm.shutdown()
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_host_readiness_captures_the_creation_before_shutdown() -> None:
+    job = ProcessJob({"hosts": 1})
+    try:
+        host = job.state(cached_path=None).hosts
+        readiness = host.initialized
+        host.shutdown().get(timeout=30)
+        assert readiness.get(timeout=30) is True
+        assert readiness.get(timeout=30) is True
+        with pytest.raises(RuntimeError, match="HostMesh has already been shut down"):
+            _ = host.initialized
+    finally:
+        job.kill()
 
 
 @pytest.mark.timeout(60)

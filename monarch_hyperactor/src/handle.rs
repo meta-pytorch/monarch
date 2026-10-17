@@ -47,6 +47,8 @@
 //!   producer's lifecycle. Enforced by construction: the core holds only a
 //!   result receiver and optional traceback, with no producer task handle or
 //!   abort-on-drop implementation.
+//!   A producer started by `spawn_pyobject_while_observed` instead stops itself
+//!   when every result-channel receiver has gone (HDL-23).
 //! - **HDL-5 (GIL discipline).** No Python object is touched without the GIL,
 //!   and every acquisition goes through `monarch_with_gil{,_blocking}`. Enforced
 //!   by the crate's `#![deny(clippy::disallowed_methods)]` ban on raw
@@ -128,11 +130,14 @@
 //!   `send_result`, without a result-conversion GIL acquisition (same one-shot
 //!   core and unobserved-error policy as pytokio's producers, HDL-1/HDL-2).
 //!   Dropping the result receiver does not cancel the producer (HDL-4).
+//!   [`PyHandle::spawn_pyobject_with_traceback`] does the same, and also keeps
+//!   the producer's creation traceback for `send_result`'s unobserved-error
+//!   log; the endpoint adverbs use it.
 //!   [`PyHandle::wait_completion`] is the matching observer: it projects the
 //!   terminal value to `PyResult<()>`, touching neither the GIL nor the Python
 //!   value on the ready-success fast path (a discriminant-only read, HDL-3) and
-//!   cloning the `PyErr` under the HDL-9 borrow order only on the error path. Both
-//!   constructors and this observer are `pub` Rust-only methods outside
+//!   cloning the `PyErr` under the HDL-9 borrow order only on the error path. The
+//!   three constructors and this observer are `pub` Rust-only methods outside
 //!   `#[pymethods]` (HDL-11).
 //! - **HDL-14 (Rust value observation is owned and non-consuming).**
 //!   [`PyHandle::wait_future`] returns a `Send + 'static` future over a cloned
@@ -199,6 +204,13 @@
 //!   `complete_asyncio_future`, with no observer task and no wake-channel
 //!   registration. Awaiting it returns without giving the loop a turn, as for
 //!   any finished asyncio future.
+//! - **HDL-23 (stop when nobody can observe the result).** A Handle, a blocked
+//!   `get()`, and the native waiter behind `await`/`as_asyncio()` each keep a
+//!   copy of the result receiver. `spawn_pyobject_while_observed` stops its
+//!   producer when all those copies are dropped.
+//!   The stop is not immediate: the task must notice that the copies are gone,
+//!   and it can still take a message before then. Other Handle producers keep
+//!   running when their observers are dropped (HDL-4).
 
 use std::error::Error;
 use std::future::Future;
@@ -285,11 +297,12 @@ pub(crate) fn send_result(
             let tb = if let Some(tb) = traceback {
                 format_traceback(py, &tb).unwrap()
             } else {
-                // No creation traceback was captured: either a capture-disabled
-                // PythonTask (the default when the env var is unset) or a direct
-                // Handle producer, which never captures one.
-                "creation traceback unavailable (PythonTask producers can set \
-                 `MONARCH_HYPERACTOR_ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK=1` to capture one)\n"
+                // No creation traceback was captured: either the env var is
+                // unset (the default), or the producer is a direct Handle
+                // producer other than an endpoint call, which never captures one.
+                "creation traceback unavailable (PythonTask producers and endpoint calls \
+                 capture one when `MONARCH_HYPERACTOR_ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK=1` \
+                 is set)\n"
                     .into()
             };
             tracing::error!(
@@ -539,6 +552,24 @@ pub(crate) fn handle_pair() -> (PyHandle, PyHandleCompleter) {
 }
 
 impl PyHandle {
+    /// Return an owned Rust Handle observing the same completion as this one.
+    ///
+    /// Pending mesh serialization uses this to retain an observer after the
+    /// binding call returns, when its borrow of the original Handle has ended.
+    ///
+    /// Clone the channel receiver and, if present, the reference to the Python
+    /// traceback object. Cloning that Python reference requires the GIL.
+    /// No Python Handle object is allocated and no producer is started.
+    pub(crate) fn clone_ref(&self, py: Python<'_>) -> Self {
+        Self::from_core(HandleCore::new(
+            self.core.rx.clone(),
+            self.core
+                .traceback
+                .as_ref()
+                .map(|trace| trace.clone_ref(py)),
+        ))
+    }
+
     /// Wrap an already-built `HandleCore` in a `PyHandle`.
     ///
     /// Native producers build the core and hand back an observe-only `Handle`
@@ -610,14 +641,63 @@ impl PyHandle {
     where
         F: Future<Output = PyResult<Py<PyAny>>> + Send + 'static,
     {
+        Self::spawn_pyobject_with_traceback(fut, None)
+    }
+
+    /// Like [`Self::spawn_pyobject`], but keep the producer's creation
+    /// traceback, as `PythonTask` producers do (HDL-13). `send_result` logs it
+    /// if the task fails and every observer has gone. Rust-only and outside
+    /// `#[pymethods]` (HDL-11).
+    pub fn spawn_pyobject_with_traceback<F>(fut: F, traceback: Option<Py<PyAny>>) -> Self
+    where
+        F: Future<Output = PyResult<Py<PyAny>>> + Send + 'static,
+    {
+        // The task needs its own reference. Clone it only when a traceback was
+        // captured, so the common case takes no GIL here.
+        let task_traceback = traceback
+            .as_ref()
+            .map(|t| monarch_with_gil_blocking(GilSite::Traceback, |py| t.clone_ref(py)));
         let (tx, rx) = watch::channel(None);
         get_tokio_runtime().spawn(async move {
-            // HDL-1/HDL-2/HDL-13: publish exactly once via the shared helper; a
-            // direct Rust producer carries no creation traceback.
-            send_result(tx, fut.await, None);
+            // HDL-1/HDL-2/HDL-13: publish exactly once via the shared helper.
+            send_result(tx, fut.await, task_traceback);
         });
         // HDL-4: a `Handle`'s core never aborts its producer on drop.
-        PyHandle::from_core(HandleCore::new(rx, None))
+        PyHandle::from_core(HandleCore::new(rx, traceback))
+    }
+
+    /// Start `fut` on Tokio and return a Handle for its Python value or error.
+    ///
+    /// Unlike ordinary Handle producers, this task stops when all copies of its
+    /// result receiver are dropped (HDL-23). A blocked `get()` or the native waiter
+    /// behind `await`/`as_asyncio()` keeps it running after the Handle is dropped.
+    ///
+    /// Port receives use this so an abandoned receive releases its port receiver.
+    /// The stop takes effect when the task next checks for lost observers; a
+    /// message arriving before that check can still be taken.
+    pub fn spawn_pyobject_while_observed<F>(fut: F, traceback: Option<Py<PyAny>>) -> Self
+    where
+        F: Future<Output = PyResult<Py<PyAny>>> + Send + 'static,
+    {
+        let task_traceback = traceback
+            .as_ref()
+            .map(|t| monarch_with_gil_blocking(GilSite::Traceback, |py| t.clone_ref(py)));
+        let (tx, rx) = watch::channel(None);
+        get_tokio_runtime().spawn(async move {
+            let result = tokio::select! {
+                biased;
+                _ = tx.closed() => return,
+                result = fut => result,
+            };
+            send_result(tx, result, task_traceback);
+        });
+        Self::from_core(HandleCore::new(rx, traceback))
+    }
+
+    /// Whether this Handle kept a creation traceback. For tests.
+    #[cfg(test)]
+    pub(crate) fn has_traceback_for_test(&self) -> bool {
+        self.core.traceback.is_some()
     }
 
     /// Observe whether this handle completed successfully, projecting the terminal
@@ -680,6 +760,43 @@ where
 {
     ready.await?;
     operation().await
+}
+
+/// Return a new Handle that reports `result`'s value after all prerequisites
+/// succeed. Proc initialization uses this to wait for logging and setup before
+/// making the proc mesh available.
+///
+/// Await the Handles in `ready` in list order. If one fails, observing the
+/// returned Handle raises that error without waiting for later prerequisites
+/// or `result`. Otherwise, report `result`'s value or error.
+///
+/// The input operations may already be running: this orders observation, not
+/// their start. The new waiting task starts immediately; dropping its Handle
+/// does not cancel it or the input operations.
+#[pyfunction]
+fn _after(ready: Vec<PyRef<'_, PyHandle>>, result: &PyHandle) -> PyHandle {
+    // Capture owned observer futures so the task retains no Python borrows.
+    // Prerequisites need only succeed; their values are not read.
+    let ready: Vec<_> = ready
+        .iter()
+        .map(|handle| handle.wait_completion())
+        .collect();
+    // Retain an observer of the value to return after the prerequisites succeed.
+    let result = result.wait_future();
+    // Run the waits on Tokio. `after_ready` observes `result` only if this
+    // prerequisite future completes successfully.
+    PyHandle::spawn_pyobject(after_ready(
+        async move {
+            for completion in ready {
+                // An error ends this future here and becomes the new Handle's
+                // error, even if `result` has already failed differently.
+                completion.await?;
+            }
+            Ok(())
+        },
+        // Give `after_ready` the result observer when it reaches that step.
+        move || result,
+    ))
 }
 
 #[cfg(test)]
@@ -1058,6 +1175,7 @@ pub fn register_python_bindings(handle_mod: &Bound<'_, PyModule>) -> PyResult<()
     handle_mod.add_class::<PyHandle>()?;
     handle_mod.add_class::<PyHandleCompleter>()?;
     handle_mod.add_function(wrap_pyfunction!(_new_handle_pair, handle_mod)?)?;
+    handle_mod.add_function(wrap_pyfunction!(_after, handle_mod)?)?;
     let would_block = handle_mod.py().get_type::<WouldBlockRuntime>();
     would_block.setattr(
         "__module__",
@@ -1073,6 +1191,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use std::thread;
+    use std::time::Duration;
 
     use pyo3::IntoPyObjectExt;
     use pyo3::exceptions::PyRuntimeError;
@@ -1096,12 +1215,81 @@ mod tests {
     fn assert_producer_ended_error(py: Python<'_>, error: &PyErr) {
         assert!(
             error.is_instance_of::<PyRuntimeError>(py),
-            "a dropped producer should surface a RuntimeError"
+            "a dropped producer should surface a RuntimeError, got {error}"
         );
         assert_eq!(
             error.to_string(),
             "RuntimeError: Handle producer ended without publishing a result"
         );
+    }
+
+    // HDL-23: losing the last result receiver stops the producer. The drop
+    // acknowledgement proves destruction, not merely that a stop was requested.
+    #[tokio::test]
+    async fn while_observed_stops_when_last_observer_drops() {
+        struct AcknowledgeDrop(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for AcknowledgeDrop {
+            fn drop(&mut self) {
+                let _ = self.0.take().expect("only Drop takes the sender").send(());
+            }
+        }
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        let guard = AcknowledgeDrop(Some(dropped_tx));
+        let handle = PyHandle::spawn_pyobject_while_observed(
+            async move {
+                let _guard = guard;
+                started_tx
+                    .send(())
+                    .expect("the test waits for the first poll");
+                std::future::pending::<PyResult<Py<PyAny>>>().await
+            },
+            None,
+        );
+        tokio::time::timeout(Duration::from_secs(30), started_rx)
+            .await
+            .expect("the producer should be polled before observation")
+            .expect("the producer should acknowledge its first poll");
+        drop(handle);
+        tokio::time::timeout(Duration::from_secs(30), dropped_rx)
+            .await
+            .expect("loss of the last observer should destroy the producer")
+            .expect("the producer's Drop should acknowledge destruction");
+    }
+
+    // HDL-23: a native waiter keeps the producer running after its Handle drops.
+    // Aborting when the core drops would lose this waiter's result.
+    #[tokio::test]
+    async fn while_observed_keeps_running_for_a_waiting_observer() {
+        ensure_python();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handle = PyHandle::spawn_pyobject_while_observed(
+            async move { rx.await.expect("the test supplies the value") },
+            None,
+        );
+        let waiter = handle.core.wait_ready();
+        drop(handle);
+        let value = monarch_with_gil_blocking(GilSite::Test, |py| 37.into_py_any(py))
+            .expect("the value should convert");
+        tx.send(Ok(value))
+            .expect("the producer should still be waiting");
+        let ready = tokio::time::timeout(Duration::from_secs(30), waiter)
+            .await
+            .expect("the native waiter should complete")
+            .expect("the producer should publish its value");
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            assert_eq!(
+                ready
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .extract::<i64>(py)
+                    .unwrap(),
+                37
+            );
+        });
     }
 
     // A Python helper module providing loop drivers for the `asyncio` tests.
@@ -1985,7 +2173,7 @@ def ready_await_order(h):
             let producer = thread::spawn(move || {
                 monarch_with_gil_blocking(GilSite::Test, |_py| drop(tx));
             });
-            let result = PyHandle::get(handle.borrow(py), py, Some(5.0));
+            let result = PyHandle::get(handle.borrow(py), py, Some(60.0));
             (producer, result)
         });
         producer.join().expect("producer thread should finish");

@@ -16,7 +16,7 @@
 //! The actor passed to [`mount_read_only_filesystem`] must expose **three
 //! endpoints** that the FUSE driver calls for every kernel filesystem
 //! operation.  Each endpoint is called via the normal Monarch actor RPC
-//! mechanism (`actor.<endpoint>.call_one(args)`).
+//! mechanism, using the native equivalent of `actor.<endpoint>.call_one(args)`.
 //!
 //! ## `getattr_path(path: str) -> dict | int`
 //!
@@ -58,12 +58,12 @@
 //! # GIL / async interaction
 //!
 //! Every FUSE operation executes as follows:
-//!   1. Briefly acquire the GIL to call `actor.<endpoint>.call_one(args)`
-//!      and extract the inner `PyPythonTask` Rust future.
+//!   1. Briefly acquire the GIL to look up the endpoint and send its call,
+//!      obtaining a native reply future without a Python Future wrapper.
 //!   2. Release the GIL entirely.
-//!   3. `.await` the Rust future on the Tokio runtime — the actor's asyncio
-//!      event loop runs the endpoint (acquiring the GIL as needed) and sends
-//!      the result back via Tokio channels, so no GIL is held while we wait.
+//!   3. `.await` the Rust future on the Tokio runtime. The actor runs the
+//!      endpoint on its own driver and sends the reply; no GIL is held while
+//!      the filesystem operation waits for it.
 //!   4. Re-acquire the GIL to decode the `Py<PyAny>` result.
 //!
 //! No blocking thread pool (`spawn_blocking`) is needed.
@@ -71,7 +71,6 @@
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::num::NonZeroU32;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -83,49 +82,34 @@ use fuse3::FileType;
 use fuse3::MountOptions;
 use fuse3::Result as FuseResult;
 use fuse3::path::prelude::*;
-use futures::Future;
 use futures::stream;
 use monarch_gil::GilSite;
 use monarch_gil::monarch_with_gil_blocking;
-use monarch_hyperactor::pytokio::PyPythonTask;
+use monarch_hyperactor::endpoint::ActorEndpoint;
+use monarch_hyperactor::endpoint::ReplyFuture;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use pyo3::types::PyTuple;
 use tokio::sync::oneshot;
 use tracing::warn;
 
 const TTL: Duration = Duration::ZERO;
 
-// ── Helpers for extracting and awaiting actor futures ────────────────────────
+// ── Helpers for sending actor calls and awaiting their replies ────────────────
 
-/// The concrete future type returned by [`take_actor_future`].
-type ActorFuture = Pin<Box<dyn Future<Output = PyResult<Py<PyAny>>> + Send + 'static>>;
-
-/// Extract the inner Rust `Future` from the Python `Future` object returned
-/// by `actor.endpoint.call_one(args)`.
-///
-/// `Future._take_inner()` surrenders the underlying `PythonTask`, whose
-/// `take_task()` then consumes it and returns the raw future.
-fn take_actor_future(py_future: Bound<'_, PyAny>) -> PyResult<ActorFuture> {
-    let task: Bound<'_, PyPythonTask> = py_future.call_method0("_take_inner")?.cast_into()?;
-    task.borrow_mut().take_task()
-}
-
-/// Call `actor.<endpoint>.call_one(<args>)` while holding the GIL, extract
-/// the inner Rust future, then release the GIL and return the future.
-///
-/// The returned future can be `.await`ed on the Tokio runtime without holding
-/// the GIL.  The actor's event loop will acquire the GIL to run the endpoint
-/// function, but this does not conflict because we have already released it.
-fn start_actor_call<'py, A>(
+/// Look up the endpoint and send its call under the GIL. The caller then releases
+/// the GIL and awaits the native reply future.
+fn start_actor_call<'py>(
     actor: &Bound<'py, PyAny>,
     endpoint: &str,
-    args: A,
-) -> PyResult<ActorFuture>
-where
-    A: pyo3::call::PyCallArgs<'py>,
-{
-    take_actor_future(actor.getattr(endpoint)?.call_method1("call_one", args)?)
+    args: &Bound<'py, PyTuple>,
+) -> PyResult<ReplyFuture> {
+    actor
+        .getattr(endpoint)?
+        .cast_into::<ActorEndpoint>()?
+        .borrow()
+        .call_one_future(actor.py(), args, None)
 }
 
 // ── Python result decoders ────────────────────────────────────────────────────
@@ -178,8 +162,8 @@ fn extract_stat_attr(dict: &Bound<'_, PyDict>) -> PyResult<FileAttr> {
     })
 }
 
-/// Decode `actor.getattr_path.call_one(path).get()` result.
-/// Returns `Ok(Some(attr))`, `Ok(None)` for errno, or `Err` for Python errors.
+/// Decode the actor's getattr reply into file attributes or a filesystem errno.
+/// Invalid reply values return a Python error.
 fn decode_getattr(result: Bound<'_, PyAny>) -> PyResult<FuseResult<FileAttr>> {
     if let Ok(errno) = result.extract::<libc::c_int>() {
         return Ok(Err(Errno::from(errno)));
@@ -211,7 +195,7 @@ fn py_err_to_fuse(e: PyErr) -> Errno {
 
 async fn do_getattr(actor: &Arc<Py<PyAny>>, path: String) -> FuseResult<FileAttr> {
     let fut = monarch_with_gil_blocking(GilSite::EndpointDispatch, |py| {
-        start_actor_call(actor.bind(py), "getattr_path", (&path,))
+        start_actor_call(actor.bind(py), "getattr_path", &(&path,).into_pyobject(py)?)
     })
     .map_err(py_err_to_fuse)?;
     let raw = fut.await.map_err(py_err_to_fuse)?;
@@ -223,7 +207,7 @@ async fn do_getattr(actor: &Arc<Py<PyAny>>, path: String) -> FuseResult<FileAttr
 
 async fn do_readdir(actor: &Arc<Py<PyAny>>, path: String) -> FuseResult<Vec<String>> {
     let fut = monarch_with_gil_blocking(GilSite::EndpointDispatch, |py| {
-        start_actor_call(actor.bind(py), "readdir_path", (&path,))
+        start_actor_call(actor.bind(py), "readdir_path", &(&path,).into_pyobject(py)?)
     })
     .map_err(py_err_to_fuse)?;
     let raw = fut.await.map_err(py_err_to_fuse)?;
@@ -240,7 +224,11 @@ async fn do_read(
     offset: u64,
 ) -> FuseResult<Bytes> {
     let fut = monarch_with_gil_blocking(GilSite::EndpointDispatch, |py| {
-        start_actor_call(actor.bind(py), "read_path", (&path, size, offset))
+        start_actor_call(
+            actor.bind(py),
+            "read_path",
+            &(&path, size, offset).into_pyobject(py)?,
+        )
     })
     .map_err(py_err_to_fuse)?;
     let raw = fut.await.map_err(py_err_to_fuse)?;

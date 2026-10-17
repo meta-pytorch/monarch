@@ -4,9 +4,9 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import os
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
+from monarch._rust_bindings.monarch_hyperactor.handle import _after, Handle
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
     _spawn_admin as _hy_spawn_admin,
     BootstrapCommand,
@@ -14,10 +14,9 @@ from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
     PyMeshAdminRef,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Point, Region
 from monarch._src.actor.actor_mesh import _Lazy, context
-from monarch._src.actor.future import Future
+from monarch._src.actor.future import _ready_handle, Future
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcMesh
 from monarch._src.actor.returns_future import returns_future
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
@@ -84,18 +83,18 @@ class HostMesh(MeshTrait):
 
     def __init__(
         self,
-        hy_host_mesh: Shared[HyHostMesh],
+        hy_host_mesh: Handle[HyHostMesh],
         region: Region,
         stream_logs: bool,
         is_fake_in_process: bool,
         code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"],
     ) -> None:
-        self._inner_host_mesh: Optional[Shared[HyHostMesh]] = hy_host_mesh
+        self._inner_host_mesh: Optional[Handle[HyHostMesh]] = hy_host_mesh
         self._region = region
         self._stream_logs = stream_logs
         self._is_fake_in_process = is_fake_in_process
         self._code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"] = code_sync_proc_mesh
-        self._pending_spawns: list[Shared[HyProcMesh]] = []
+        self._pending_spawns: list[Handle[HyProcMesh]] = []
         self._proc_meshes: list["ProcMesh"] = []
 
     def spawn_procs(
@@ -191,22 +190,19 @@ class HostMesh(MeshTrait):
                     "per-rank bootstrap callable must return BootstrapCommand"
                 )
 
-        async def task() -> HyProcMesh:
-            hy_host_mesh = await self._hy_host_mesh
-            return await hy_host_mesh.spawn_nonblocking(
-                context().actor_instance._as_rust(),
-                name,
-                per_host,
-                proc_bind,
-                per_rank_bootstrap,
-            )
-
-        spawn_shared = PythonTask.from_coroutine(task()).spawn()
-        self._pending_spawns.append(spawn_shared)
+        spawned = HyHostMesh.spawn_nonblocking(
+            self._hy_host_mesh,
+            context().actor_instance._as_rust(),
+            name,
+            per_host,
+            proc_bind,
+            per_rank_bootstrap,
+        )
+        self._pending_spawns.append(spawned)
 
         pm = ProcMesh.from_host_mesh(
             self,
-            spawn_shared,
+            spawned,
             extent.region,
             setup,
             _attach_controller_controller,
@@ -226,15 +222,11 @@ class HostMesh(MeshTrait):
         if shape.region == self._region:
             return self
 
-        sliced_hy_hm: Shared[HyHostMesh]
+        sliced_hy_hm: Handle[HyHostMesh]
         if (hm := self._hy_host_mesh.poll()) is not None:
-            sliced_hy_hm = Shared.from_value(hm.sliced(shape.region))
+            sliced_hy_hm = _ready_handle(hm.sliced(shape.region))
         else:
-
-            async def task() -> HyHostMesh:
-                return (await self._hy_host_mesh).sliced(shape.region)
-
-            sliced_hy_hm = PythonTask.from_coroutine(task()).spawn()
+            sliced_hy_hm = HyHostMesh.sliced_handle(self._hy_host_mesh, shape.region)
 
         return HostMesh(
             sliced_hy_hm,
@@ -261,7 +253,7 @@ class HostMesh(MeshTrait):
         is_fake_in_process: bool,
     ) -> "HostMesh":
         return HostMesh(
-            Shared.from_value(hy_host_mesh),
+            _ready_handle(hy_host_mesh),
             region,
             stream_logs,
             is_fake_in_process,
@@ -303,11 +295,19 @@ class HostMesh(MeshTrait):
             bootstrap_env,
         )
 
-        async def task() -> HyHostMesh:
-            return (await self._hy_host_mesh).with_bootstrap(bootstrap_cmd)
+        host = self._hy_host_mesh
+        rebound: Handle[HyHostMesh]
+        if (resolved := host.poll()) is not None:
+            # Fast path: the host mesh is available, so apply the command here
+            # and return a ready Handle, avoiding a Tokio task just for this.
+            rebound = _ready_handle(resolved.with_bootstrap(bootstrap_cmd))
+        else:
+            # Host creation is still pending: Rust waits for it, then applies
+            # the launch command. Return its Handle without waiting here.
+            rebound = HyHostMesh.with_bootstrap_handle(host, bootstrap_cmd)
 
         return HostMesh(
-            PythonTask.from_coroutine(task()).spawn(),
+            rebound,
             self._region,
             self._stream_logs,
             self._is_fake_in_process,
@@ -333,12 +333,14 @@ class HostMesh(MeshTrait):
                     self.stream_logs,
                     self.is_fake_in_process,
                 )
-        return HostMesh, (
-            self._hy_host_mesh,
+        mesh = self._hy_host_mesh.poll()
+        if mesh is None:
+            mesh = self._hy_host_mesh.get()
+        return HostMesh._from_initialized_hy_host_mesh, (
+            mesh,
             self._region,
             self.stream_logs,
             self.is_fake_in_process,
-            None,
         )
 
     @property
@@ -356,22 +358,22 @@ class HostMesh(MeshTrait):
         )
 
     def _initialized_mesh(self) -> HyHostMesh:
-        return self._hy_host_mesh.poll() or self._hy_host_mesh.block_on()
+        return self._hy_host_mesh.poll() or self._hy_host_mesh.get()
 
     async def _drain_pending_spawns(self) -> None:
         """Wait for every pending proc spawn, including any added while waiting,
         then drain each proc mesh's actor spawns and flush its logs."""
         pending = self._pending_spawns
-        while (shared := next(iter(pending), None)) is not None:
+        while (handle := next(iter(pending), None)) is not None:
             try:
-                await shared.task().spawn_handle()
+                await handle
             except Exception:
                 pass
             # Another drain may have removed it while this one waited. Removal
             # matches by identity in one step, so it cannot drop a different
             # spawn that was never waited for.
             try:
-                pending.remove(shared)
+                pending.remove(handle)
             except ValueError:
                 pass
         for pm in self._proc_meshes:
@@ -397,7 +399,7 @@ class HostMesh(MeshTrait):
         """
 
         await self._drain_pending_spawns()
-        hy_mesh = await self._hy_host_mesh.task().spawn_handle()
+        hy_mesh = await self._hy_host_mesh
         await hy_mesh.shutdown(context().actor_instance._as_rust())
         # Remove the inner host mesh to clean up associated memory.
         self._inner_host_mesh = None
@@ -417,7 +419,7 @@ class HostMesh(MeshTrait):
         """
 
         await self._drain_pending_spawns()
-        hy_mesh = await self._hy_host_mesh.task().spawn_handle()
+        hy_mesh = await self._hy_host_mesh
         await hy_mesh.stop(context().actor_instance._as_rust())
 
     async def __aenter__(self) -> "HostMesh":
@@ -463,16 +465,11 @@ class HostMesh(MeshTrait):
         Because `HostMesh` are remote objects, there is no guarantee that the `HostMesh` is
         still usable after this completes, only that at some point in the past it was usable.
         """
-        hm: Shared[HyHostMesh] = self._hy_host_mesh
-
-        async def task() -> Literal[True]:
-            await hm
-            return True
-
-        return Future._from_coro(task())
+        ready: Handle[Literal[True]] = _ready_handle(True)
+        return Future._from_handle(_after([self._hy_host_mesh], ready))
 
     @property
-    def _hy_host_mesh(self) -> Shared[HyHostMesh]:
+    def _hy_host_mesh(self) -> Handle[HyHostMesh]:
         if self._inner_host_mesh is None:
             raise RuntimeError("HostMesh has already been shut down")
         return self._inner_host_mesh
@@ -505,12 +502,11 @@ def _spawn_admin(
     if not host_meshes:
         raise ValueError("_spawn_admin requires at least one HostMesh")
 
-    async def task() -> tuple[str, PyMeshAdminRef]:
-        hy_meshes = [await m._hy_host_mesh for m in host_meshes]
-        admin_url, admin_ref = await _hy_spawn_admin(
-            hy_meshes, context().actor_instance._as_rust(), admin_addr, telemetry_url
+    return Future._from_handle(
+        _hy_spawn_admin(
+            [m._hy_host_mesh for m in host_meshes],
+            context().actor_instance._as_rust(),
+            admin_addr,
+            telemetry_url,
         )
-        os.environ["MONARCH_ADMIN_URL"] = admin_url
-        return admin_url, admin_ref
-
-    return Future._from_coro(task())
+    )

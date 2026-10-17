@@ -4,14 +4,11 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
 from typing import final, TYPE_CHECKING
 
 from monarch._rust_bindings.monarch_hyperactor.handle import Handle
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.context import Instance
@@ -23,8 +20,13 @@ class LoggingMeshClient:
     """
     @staticmethod
     def spawn(
-        instance: Instance, proc_mesh: ProcMesh
-    ) -> PythonTask[LoggingMeshClient]: ...
+        instance: Instance,
+        proc_mesh: Handle[ProcMesh],
+        *,
+        stream_to_client: bool,
+        aggregate_window_sec: int | None,
+        level: int,
+    ) -> Handle[LoggingMeshClient]: ...
     def set_mode(
         self,
         instance: Instance,

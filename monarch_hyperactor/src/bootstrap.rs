@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 
+use futures::FutureExt;
 use futures::future::try_join_all;
 use hyperactor::Gateway;
 use hyperactor::Location;
@@ -23,6 +24,8 @@ use hyperactor_mesh::host_mesh::HostMesh;
 use hyperactor_mesh::mesh_id::HostMeshId;
 use monarch_types::MapPyErr;
 use pyo3::Bound;
+use pyo3::FromPyObject;
+use pyo3::Py;
 use pyo3::PyAny;
 use pyo3::PyResult;
 use pyo3::Python;
@@ -36,7 +39,6 @@ use pyo3::wrap_pyfunction;
 
 use crate::handle::PyHandle;
 use crate::host_mesh::PyHostMesh;
-use crate::pytokio::PyPythonTask;
 use crate::runtime::GilSite;
 use crate::runtime::monarch_with_gil;
 
@@ -217,17 +219,60 @@ pub fn start_worker_loop_until_shutdown(_py: Python<'_>, address: &str) -> PyRes
     start_worker_loop(address, false)
 }
 
+/// A worker address passed from Python to `attach_to_workers`.
+///
+/// Python can supply the address directly, or a Handle that produces it later.
+#[derive(FromPyObject)]
+pub enum WorkerAddress {
+    /// The worker's address, already available as a string.
+    Address(String),
+    /// A Handle whose result is the worker's address as a Python string.
+    Handle(Py<PyHandle>),
+}
+
+/// Create a native `HostMesh` from existing hosts identified by worker-server
+/// addresses. Return a Handle that resolves to its `PyHostMesh` wrapper.
+///
+/// Each worker server runs a `HostAgent` that can start and manage user
+/// processes. This call waits for any pending worker addresses, sends the
+/// caller's configuration to those agents, and waits for their acknowledgements.
+/// It does not start the servers or spawn user processes.
+///
+/// Python's `attach_to_workers()` stores this Handle in the public `HostMesh`
+/// object it returns.
+///
+/// The operation starts when called and continues if the Handle is dropped.
+/// Waiting on the Handle returns the `PyHostMesh` or raises an
+/// address-resolution, address-parsing or attachment error.
 #[pyfunction]
 #[pyo3(signature = (instance, workers, name=None))]
 pub fn attach_to_workers(
+    py: Python<'_>,
     instance: &crate::context::PyInstance,
-    workers: Vec<Bound<'_, PyPythonTask>>,
+    workers: Vec<WorkerAddress>,
     name: Option<&str>,
-) -> PyResult<PyPythonTask> {
+) -> PyHandle {
+    // Both cases produce a future yielding a Rust address string. Boxing gives
+    // them the same type so `try_join_all` below can await them together.
     let tasks = workers
         .into_iter()
-        .map(|x| x.borrow_mut().take_task())
-        .collect::<PyResult<Vec<_>>>()?;
+        .map(|worker| match worker {
+            // The string is already available, so this future is immediately ready.
+            WorkerAddress::Address(address) => async move { Ok(address) }.boxed(),
+            WorkerAddress::Handle(handle) => {
+                // Borrow the Python Handle while this binding holds the GIL.
+                // The resulting owned Rust future can wait without holding the GIL.
+                let observer = handle.borrow(py).wait_future();
+                async move {
+                    let value = observer.await?;
+                    // The result is a Python object; extracting its address string
+                    // requires the GIL.
+                    monarch_with_gil(GilSite::Convert, |py| value.extract::<String>(py)).await
+                }
+                .boxed()
+            }
+        })
+        .collect::<Vec<_>>();
 
     // `Label::strip` (vs. `Label::new`) sanitizes user-supplied names — lowercases,
     // drops illegal characters, falls back to "nil" if empty. Callers pass names
@@ -235,25 +280,25 @@ pub fn attach_to_workers(
     // rejecting them surfaces as an opaque PyException far from the input site.
     let name = HostMeshId::instance(Label::strip(name.unwrap_or("hosts")));
     let instance = instance.clone();
-    PyPythonTask::new(async move {
+    // Start the attachment on Tokio; the returned Handle observes its result.
+    PyHandle::spawn(async move {
+        // Wait concurrently for every worker address to become available.
         let results = try_join_all(tasks).await?;
 
-        let service_procs: Result<Vec<ProcAddr>, anyhow::Error> =
-            monarch_with_gil(GilSite::Bootstrap, |py| {
-                results
-                    .into_iter()
-                    .map(|result| {
-                        let address: String = result.bind(py).extract()?;
-                        parse_service_proc_addr(&address)
-                    })
-                    .collect()
-            })
-            .await;
-        let service_procs = service_procs?;
+        // Parse each string into the address of the worker's existing service proc.
+        // That proc hosts the HostAgent; no proc is created here.
+        let service_procs: Vec<ProcAddr> = results
+            .iter()
+            .map(|address| parse_service_proc_addr(address))
+            .collect::<Result<Vec<_>, _>>()?;
 
+        // Locate the HostAgent in each service proc, send the caller's configuration,
+        // and wait for every agent to acknowledge it.
         let host_mesh = HostMesh::attach(&*instance, name, service_procs)
             .await
             .map_err(|e| anyhow::anyhow!("attach failed: {}", e))?;
+
+        // Return the native host mesh in its Python-facing wrapper.
         Ok(PyHostMesh::new_owned(host_mesh))
     })
 }

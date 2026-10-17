@@ -4,18 +4,9 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import asyncio
 import pickle
-from typing import (
-    Any,
-    Callable,
-    cast,
-    Coroutine,
-    Iterable,
-    List,
-    Type,
-    TYPE_CHECKING,
-    TypeVar,
-)
+from typing import Any, cast, Iterable, List, Type, TYPE_CHECKING, TypeVar
 
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.actor import (
@@ -40,10 +31,11 @@ from scoped_state import scoped_state
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PortProtocol
 
+from monarch._rust_bindings.monarch_hyperactor.host_mesh import HostMesh as HyHostMesh
 from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiver
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.actor_mesh import Context, context, Instance
+from monarch._src.actor.future import _ready_handle
 
 
 def _to_frozen_buffer(data: bytes) -> FrozenBuffer:
@@ -79,26 +71,17 @@ def test_python_message_reunion_invariant() -> None:
 T = TypeVar("T")
 
 
-def run_on_tokio(fn: Callable[[], Coroutine[Any, Any, T]]) -> Callable[[], T]:
+def spawn_proc_mesh() -> Handle[ProcMesh]:
+    """Start an eight-proc mesh on the local host without waiting for creation.
+
+    Return a Handle that supplies the native ProcMesh once creation finishes.
     """
-    Wrapper for function that use the internal tokio event loop
-    APIs and need to run on that event loop.
-    """
-    return lambda: PythonTask.from_coroutine(fn()).block_on()
-
-
-def task() -> Shared[ProcMesh]:
-    host_mesh = this_host()
-
-    async def coro() -> ProcMesh:
-        hy_host_mesh = await host_mesh._hy_host_mesh
-        return await hy_host_mesh.spawn_nonblocking(
-            context().actor_instance._as_rust(),
-            "proc_mesh",
-            Extent(["gpus"], [8]),
-        )
-
-    return PythonTask.from_coroutine(coro()).spawn()
+    return HyHostMesh.spawn_nonblocking(
+        this_host()._hy_host_mesh,
+        context().actor_instance._as_rust(),
+        "proc_mesh",
+        Extent(["gpus"], [8]),
+    )
 
 
 class MyActor:
@@ -144,15 +127,10 @@ class MyActor:
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
 async def test_bind_and_pickling() -> None:
-    @run_on_tokio
-    async def spawn() -> tuple[ProcMesh, PythonActorMesh]:
-        proc_mesh_task = task()
-        actor_mesh = spawn_actor_mesh(proc_mesh_task)
-        return await proc_mesh_task, actor_mesh
-
-    proc_mesh, actor_mesh = spawn()
-    # Legacy proc creation is driven on Tokio; Handle observation belongs on
-    # asyncio. Complete each mesh before exercising its resolved pickle path.
+    proc_mesh_handle = spawn_proc_mesh()
+    actor_mesh = spawn_actor_mesh(proc_mesh_handle)
+    proc_mesh = await proc_mesh_handle
+    # Complete each mesh before exercising its resolved pickle path.
     assert await actor_mesh.initialized() is None
     pickle.dumps(actor_mesh)
 
@@ -165,7 +143,7 @@ async def test_bind_and_pickling() -> None:
     await proc_mesh.stop_nonblocking(instance, "test cleanup")
 
 
-def spawn_actor_mesh(proc_mesh_task: Shared[ProcMesh]) -> PythonActorMesh:
+def spawn_actor_mesh(proc_mesh_task: Handle[ProcMesh]) -> PythonActorMesh:
     # Create an explicit init message
     init_state = monarch_pickle(None)
     init_message = PendingMessage(
@@ -216,14 +194,9 @@ async def verify_cast_to_call(
 
     rcv_ranks = []
     for _ in range(len(root_ranks)):
-        message = await receiver.recv_task()
-        result_kind = message.kind
-        # pyrefly: ignore [invalid-argument]
-        assert isinstance(result_kind, PythonMessageKind.Result)
-        # pyrefly: ignore [missing-attribute]
-        cast_rank = result_kind.rank
-        assert cast_rank is not None
-        root_rank = cast(int, message.decode())
+        cast_rank, root_rank = cast(
+            tuple[int, int], await receiver.recv(True).spawn_handle()
+        )
         rcv_ranks.append((cast_rank, root_rank))
     rcv_ranks.sort(key=lambda pair: pair[0])
     recv_cast_ranks, recv_root_ranks = zip(*rcv_ranks)
@@ -234,48 +207,35 @@ async def verify_cast_to_call(
         f"recv_cast_ranks={recv_cast_ranks}, root_ranks={tuple(root_ranks)}"
     )
     # verify no more messages are received
-    with pytest.raises(TimeoutError):
-        await receiver.recv_task().with_timeout(1)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(receiver.recv(True).spawn_handle(), 1)
 
 
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
 async def test_cast_handle() -> None:
-    @run_on_tokio
-    async def run() -> Handle[None]:
-        proc_mesh_task = task()
-        actor_mesh = spawn_actor_mesh(proc_mesh_task)
-        await verify_cast_to_call(actor_mesh, context().actor_instance, list(range(8)))
-
-        proc_mesh = await proc_mesh_task
-        instance = context().actor_instance._as_rust()
-        return proc_mesh.stop_nonblocking(instance, "test cleanup")
-
-    # `run()` blocks while Tokio drives the inner coroutine, then returns the
-    # cleanup Handle; this `await` observes that Handle on asyncio.
-    await run()
+    proc_mesh_handle = spawn_proc_mesh()
+    actor_mesh = spawn_actor_mesh(proc_mesh_handle)
+    await verify_cast_to_call(actor_mesh, context().actor_instance, list(range(8)))
+    proc_mesh = await proc_mesh_handle
+    await proc_mesh.stop_nonblocking(
+        context().actor_instance._as_rust(), "test cleanup"
+    )
 
 
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
 async def test_cast_ref() -> None:
-    @run_on_tokio
-    async def run() -> Handle[None]:
-        proc_mesh_task = task()
-        actor_mesh = spawn_actor_mesh(proc_mesh_task)
-        proc_mesh = await proc_mesh_task
-        actor_mesh_ref = actor_mesh.new_with_region(proc_mesh.region)
-        await verify_cast_to_call(
-            actor_mesh_ref, context().actor_instance, list(range(8))
-        )
-        instance = context().actor_instance._as_rust()
-        return proc_mesh.stop_nonblocking(instance, "test cleanup")
-
-    # `run()` blocks while Tokio drives the inner coroutine, then returns the
-    # cleanup Handle; this `await` observes that Handle on asyncio.
-    await run()
+    proc_mesh_handle = spawn_proc_mesh()
+    actor_mesh = spawn_actor_mesh(proc_mesh_handle)
+    proc_mesh = await proc_mesh_handle
+    actor_mesh_ref = actor_mesh.new_with_region(proc_mesh.region)
+    await verify_cast_to_call(actor_mesh_ref, context().actor_instance, list(range(8)))
+    await proc_mesh.stop_nonblocking(
+        context().actor_instance._as_rust(), "test cleanup"
+    )
 
 
 # TODO - re-enable after resolving T232206970
@@ -285,50 +245,39 @@ async def test_host_mesh() -> None:
     with scoped_state(ProcessJob({"host_mesh": 2}), cached_path=None) as state:
         py_host_mesh = state.host_mesh
 
-        @run_on_tokio
-        async def run() -> None:
-            host_mesh = await py_host_mesh._hy_host_mesh
+        host_mesh = await py_host_mesh._hy_host_mesh
 
-            assert host_mesh.region.labels == ["hosts"]
-            assert host_mesh.region.slice() == Slice(offset=0, sizes=[2], strides=[1])
+        assert host_mesh.region.labels == ["hosts"]
+        assert host_mesh.region.slice() == Slice(offset=0, sizes=[2], strides=[1])
 
-            async def proc_mesh_task() -> ProcMesh:
-                return await host_mesh.spawn_nonblocking(
-                    context().actor_instance._as_rust(),
-                    "proc_mesh",
-                    Extent(["gpus", "replicas"], [2, 4]),
-                )
+        proc_mesh_handle = HyHostMesh.spawn_nonblocking(
+            py_host_mesh._hy_host_mesh,
+            context().actor_instance._as_rust(),
+            "proc_mesh",
+            Extent(["gpus", "replicas"], [2, 4]),
+        )
 
-            proc_mesh_shared = PythonTask.from_coroutine(proc_mesh_task()).spawn()
-            actor_mesh = spawn_actor_mesh(proc_mesh_shared)
+        actor_mesh = spawn_actor_mesh(proc_mesh_handle)
 
-            await verify_cast_to_call(
-                actor_mesh, context().actor_instance, list(range(16))
+        await verify_cast_to_call(actor_mesh, context().actor_instance, list(range(16)))
+
+        sliced_hm = host_mesh.sliced(
+            Region(
+                labels=["hosts"],
+                slice=Slice(offset=1, sizes=[1], strides=[1]),
             )
+        )
 
-            sliced_hm = host_mesh.sliced(
-                Region(
-                    labels=["hosts"],
-                    slice=Slice(offset=1, sizes=[1], strides=[1]),
-                )
-            )
+        assert sliced_hm.region.labels == ["hosts"]
+        assert sliced_hm.region.slice() == Slice(offset=1, sizes=[1], strides=[1])
 
-            assert sliced_hm.region.labels == ["hosts"]
-            assert sliced_hm.region.slice() == Slice(offset=1, sizes=[1], strides=[1])
+        sliced_pm_handle = HyHostMesh.spawn_nonblocking(
+            _ready_handle(sliced_hm),
+            context().actor_instance._as_rust(),
+            "sliced_pm",
+            Extent(["gpus", "replicas"], [2, 3]),
+        )
 
-            async def sliced_pm_task() -> ProcMesh:
-                return await sliced_hm.spawn_nonblocking(
-                    context().actor_instance._as_rust(),
-                    "sliced_pm",
-                    Extent(["gpus", "replicas"], [2, 3]),
-                )
+        sliced_am = spawn_actor_mesh(sliced_pm_handle)
 
-            sliced_pm_shared = PythonTask.from_coroutine(sliced_pm_task()).spawn()
-            sliced_am = spawn_actor_mesh(sliced_pm_shared)
-
-            await verify_cast_to_call(
-                sliced_am, context().actor_instance, list(range(6))
-            )
-
-        # `run()` blocks while Tokio drives the inner coroutine.
-        run()
+        await verify_cast_to_call(sliced_am, context().actor_instance, list(range(6)))

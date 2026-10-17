@@ -1371,6 +1371,8 @@ class PortReceiver(Generic[R]):
     Handles receiving R-typed objects sent from a corresponding Port.
     """
 
+    _ranked: bool = False
+
     def __init__(
         self,
         mailbox: Mailbox,
@@ -1379,38 +1381,28 @@ class PortReceiver(Generic[R]):
         self._mailbox: Mailbox = mailbox
         self._receiver = receiver
 
-    async def _recv(self) -> R:
-        return self._process(await self._receiver.recv_task())
-
-    def _process(self, msg: PythonMessage) -> R:
-        payload = cast(R, msg.decode())
-        match msg.kind:
-            # pyrefly: ignore [invalid-pattern]
-            case PythonMessageKind.Result():
-                return payload
-            # pyrefly: ignore [invalid-pattern]
-            case PythonMessageKind.Exception():
-                e = cast(Exception, payload)
-                raise e
-            case _:
-                raise ValueError(f"Unexpected message kind: {msg.kind}")
-
     def recv(self) -> "Future[R]":
-        return Future._from_coro(self._recv())
+        """Return a Future for one message from this receiver, decoded to its value.
+
+        The receive starts when the Future is first observed; a Future that is
+        never observed takes nothing. A timed-out ``get()`` leaves the receive
+        running; observe the same Future again to obtain its result.
+
+        Once ``await``, ``as_asyncio()`` or a timed ``get()`` has started the
+        receive, dropping the Future requests a stop once no native observer
+        remains. This is cooperative: a message arriving before the stop is
+        processed can still be taken. Cancelling ``await`` or ``as_asyncio()``
+        leaves an internal native waiter alive, so that receive continues until a
+        message arrives or receiving fails.
+        """
+        return Future._from_pending(self._receiver.recv(self._ranked))
 
     def ranked(self) -> "RankedPortReceiver[R]":
         return RankedPortReceiver[R](self._mailbox, self._receiver)
 
 
 class RankedPortReceiver(PortReceiver[Tuple[int, R]]):
-    def _process(self, msg: PythonMessage) -> Tuple[int, R]:
-        rank = getattr(msg.kind, "rank", None)
-        if rank is None:
-            raise ValueError(
-                f"RankedPort receiver got a message without a rank {msg}",
-            )
-        # pyrefly: ignore [bad-return]
-        return rank, super()._process(msg)
+    _ranked = True
 
 
 singleton_shape = Shape([], NDSlice(offset=0, sizes=[], strides=[]))

@@ -332,7 +332,7 @@ def test_manager_init_cache_reuses_handle_without_retaining_mesh(monkeypatch) ->
         calls = 0
 
         @classmethod
-        def ensure_init_rdma_manager_nonblocking(cls, shared, instance):
+        def ensure_init_rdma_manager_nonblocking(cls, handle, instance):
             cls.calls += 1
             return object()
 
@@ -396,7 +396,7 @@ def test_manager_init_cache_concurrent_first_miss_returns_one_handle(
         calls = 0
 
         @classmethod
-        def ensure_init_rdma_manager_nonblocking(cls, shared, instance):
+        def ensure_init_rdma_manager_nonblocking(cls, handle, instance):
             cls.calls += 1
             first_creation_started.set()
             assert release_first_creation.wait(timeout=5)
@@ -773,7 +773,7 @@ def _ensure_init_handle():
 @isolate_in_subprocess
 async def test_ensure_init_returns_handle_that_resolves_over_tcp() -> None:
     """The binding resolves to None once the owner's full post-init() barrier
-    completes, driven from the raw Shared[ProcMesh] with no Python-side mesh
+    completes, driven from the raw Handle[ProcMesh] with no Python-side mesh
     resolution (RMB-1, RMB-4). TCP fallback lets init() succeed without a NIC.
     Observation is non-consuming, so a second await also yields None (HDL-3)."""
     from monarch._rust_bindings.monarch_hyperactor.handle import Handle
@@ -833,19 +833,19 @@ async def test_ensure_init_succeeds_from_nested_actor_on_remote_worker() -> None
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
-async def test_ensure_init_observes_its_supplied_shared() -> None:
-    """The binding observes the exact Shared it is handed rather than an ambient
-    proc mesh: a Shared resolving to a non-ProcMesh value fails the native
+async def test_ensure_init_observes_its_supplied_handle() -> None:
+    """The binding observes the exact Handle it is handed rather than an ambient
+    proc mesh: a Handle resolving to a non-ProcMesh value fails the native
     downcast with a TypeError naming the expected ProcMesh type, distinct from
     RdmaInitError (RMB-2, RMB-5)."""
-    from monarch._rust_bindings.monarch_hyperactor.pytokio import Shared
     from monarch._rust_bindings.rdma import _RdmaManager
     from monarch._src.actor.actor_mesh import context
+    from monarch._src.actor.future import _ready_handle
 
-    # No configured(...) context: the Shared resolves to a non-ProcMesh value, so the
+    # No configured(...) context: the Handle resolves to a non-ProcMesh value, so the
     # downcast fails before any RDMA config would be read.
     handle = _RdmaManager.ensure_init_rdma_manager_nonblocking(
-        Shared.from_value(object()),
+        _ready_handle(object()),
         context().actor_instance,
     )
     with pytest.raises(TypeError) as excinfo:

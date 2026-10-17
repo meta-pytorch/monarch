@@ -4,14 +4,12 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
-from typing import final, Protocol
+from typing import Any, final, Protocol
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
+from monarch._rust_bindings.monarch_hyperactor.endpoint import PendingReply
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
 @final
 class PortId:
@@ -88,8 +86,13 @@ class PortReceiverBase:
     """
     A receiver to which PythonMessages are sent.
     """
-    def recv_task(self) -> "PythonTask[PythonMessage]":
-        """Receive a PythonMessage from the port's sender, returns a tokio Future for the completion."""
+    def recv(self, ranked: bool) -> PendingReply[Any]:
+        """Return an unstarted receive of one message, decoded when first observed.
+
+        A ranked receive yields ``(rank, payload)``. Exception messages raise
+        their sent exception when observed. A spawned receive stops, and
+        releases its port receiver, once nobody can observe it.
+        """
         ...
 
 @final

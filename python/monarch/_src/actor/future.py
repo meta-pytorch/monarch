@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
 import asyncio
 import logging
 import math
@@ -22,7 +20,11 @@ from typing import (
     TypeVar,
 )
 
-from monarch._rust_bindings.monarch_hyperactor.handle import Handle, WouldBlockRuntime
+from monarch._rust_bindings.monarch_hyperactor.handle import (
+    _new_handle_pair,
+    Handle,
+    WouldBlockRuntime,
+)
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.runtime import _is_in_tokio_runtime
 from monarch._src.actor.telemetry import log_with_tracing
@@ -31,6 +33,7 @@ from monarch._src.actor.telemetry import log_with_tracing
 # for annotations, so importing it only during type checking avoids a circular
 # runtime import.
 if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.endpoint import PendingReply
     from monarch._src.actor.returns_future import _BodyCell
 
 R = TypeVar("R")
@@ -42,6 +45,14 @@ _GET_ON_TOKIO_REFUSAL = (
     "Future.get() cannot block from within a Tokio runtime; "
     "observe the Future from a synchronous or asyncio context."
 )
+
+
+def _ready_handle(value: R) -> Handle[R]:
+    """Put an existing value in a Handle without starting any work."""
+    handle, completer = _new_handle_pair()
+    completer.set_result(value)
+    return handle
+
 
 # Shared by the Python-implemented `Future.get()` paths when a running asyncio
 # loop is detected. Handle-backed Futures enforce the same policy in native
@@ -70,7 +81,7 @@ async def _aincomplete(impl: Any, self: Any) -> Any:
 
 
 class _Unawaited(NamedTuple):
-    coro: PythonTask[Any]
+    coro: "PythonTask[Any] | PendingReply[Any]"
 
 
 class _Complete(NamedTuple):
@@ -85,10 +96,6 @@ class _Handle(NamedTuple):
     handle: Handle[Any]
 
 
-class _Taken(NamedTuple):
-    pass
-
-
 class _Body(NamedTuple):
     """The body of a ``@returns_future`` function, run on the loop of its first
     observer (see ``monarch._src.actor.returns_future``)."""
@@ -96,7 +103,7 @@ class _Body(NamedTuple):
     body: "_BodyCell"
 
 
-_Status = _Unawaited | _Complete | _Exception | _Handle | _Taken | _Body
+_Status = _Unawaited | _Complete | _Exception | _Handle | _Body
 
 
 class Future(Generic[R]):
@@ -114,12 +121,22 @@ class Future(Generic[R]):
             "constructed directly."
         )
 
+    # No production callers remain; only legacy characterization tests use this.
+    # The upcoming Future cleanup will delete it and update those tests.
     @classmethod
     def _from_coro(cls, coro: "Coroutine[Any, Any, R] | PythonTask[R]") -> "Future[R]":
         future = cast("Future[R]", object.__new__(cls))
         future._status = _Unawaited(
             coro if isinstance(coro, PythonTask) else PythonTask.from_coroutine(coro)
         )
+        return future
+
+    @classmethod
+    def _from_pending(cls, reply: "PendingReply[R]") -> "Future[R]":
+        """Hold a stream item's collector or a port receive without starting it.
+        Transitional until T292850732 lets ordinary Handles hold undecoded replies."""
+        future = cast("Future[R]", object.__new__(cls))
+        future._status = _Unawaited(reply)
         return future
 
     @classmethod
@@ -144,22 +161,6 @@ class Future(Generic[R]):
         future._status = _Body(body)
         return future
 
-    def _take_inner(self) -> "PythonTask[R]":
-        """Take the underlying one-shot ``PythonTask`` from this Future.
-
-        Awaiting the task drives its Rust future inline as part of the caller.
-        Calling ``spawn()`` and awaiting its ``Shared`` observes a separately
-        running producer that is not aborted when the observer is dropped. Only
-        valid on a Future that has not yet been awaited or resolved; the Future is
-        spent afterward (a second take, or any get()/await, raises).
-        """
-        match self._status:
-            case _Unawaited(coro=coro):
-                self._status = _Taken()
-                return cast("PythonTask[R]", coro)
-            case _:
-                raise ValueError("Future has already been awaited or resolved.")
-
     def _as_handle(self) -> "Handle[R]":
         match self._status:
             case _Unawaited(coro=coro):
@@ -168,7 +169,7 @@ class Future(Generic[R]):
                 return cast("Handle[R]", handle)
             case _Handle(handle=handle):
                 return cast("Handle[R]", handle)
-            case _Complete() | _Exception() | _Taken():
+            case _Complete() | _Exception():
                 raise ValueError("Future does not have a Handle in its current state.")
             case _Body():
                 # RF-6: waiting on the Handle of a body nobody has started
@@ -262,6 +263,9 @@ class Future(Generic[R]):
                 if in_asyncio:
                     warnings.warn(_GET_ON_LOOP_WARNING, UserWarning, stacklevel=2)
                 try:
+                    # No Handle holds the result during this untimed wait, so
+                    # a concurrent observer gets the consumed-item error
+                    # (T292877484). An interrupted call discards its result.
                     v = coro.block_on()
                     self._status = _Complete(v)
                     return cast("R", v)
@@ -280,8 +284,6 @@ class Future(Generic[R]):
                 return cast("R", value)
             case _Exception(exe=exe):
                 raise exe
-            case _Taken():
-                raise ValueError("Future was consumed.")
             case _Body(body=body):
                 # Refuse before binding, leaving the body unstarted.
                 if in_tokio:
@@ -306,8 +308,6 @@ class Future(Generic[R]):
                         "Future cannot be awaited on a Tokio thread; observe it "
                         "from an asyncio loop or synchronous context."
                     )
-                case _Taken():
-                    raise ValueError("Future was consumed.")
                 case _:
                     raise ValueError(
                         "already converted into a synchronous future, use 'get' to get the value."
@@ -350,8 +350,6 @@ class Future(Generic[R]):
                     else exe
                 )
                 return cast("asyncio.Future[R]", failed)
-            case _Taken():
-                raise ValueError("Future was consumed.")
             case _Body(body=body):
                 return cast("asyncio.Future[R]", body.as_asyncio(loop))
             case _:

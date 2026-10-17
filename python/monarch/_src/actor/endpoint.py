@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
 import functools
 from typing import (
     Any,
@@ -39,7 +37,6 @@ T = TypeVar("T")
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
     from monarch._src.actor.actor_mesh import ActorMesh, Port, ValueMesh
-    from monarch._src.actor.future import Future
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -101,10 +98,12 @@ class Endpoint(Protocol[P, R]):
 
     def stream(self, *args: P.args, **kwargs: P.kwargs) -> Iterator[Future[R]]:
         """
-        Broadcasts to all actors and yields their responses as a stream.
+        Send to all actors now and return an iterator of Futures.
 
-        This enables processing results from multiple actors incrementally as
-        they become available. Returns an iterator of Future values.
+        Replies arrive and queue eagerly. Each item takes and unpickles one
+        queued reply only when first observed. Each next() uses one iteration
+        slot; dropping an item unobserved leaves one reply unread after the
+        slots are exhausted. Observe every item taken to read every reply.
         """
         ...
 

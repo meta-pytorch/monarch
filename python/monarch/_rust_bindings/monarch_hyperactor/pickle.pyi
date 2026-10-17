@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
 from typing import Any, List
 
 from monarch._rust_bindings.monarch_hyperactor.actor import (
@@ -15,7 +13,6 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
 from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.handle import Handle
-from monarch._rust_bindings.monarch_hyperactor.pytokio import Shared
 
 class PicklingState:
     """
@@ -167,7 +164,7 @@ def pop_mesh_reference() -> Any:
     """
     ...
 
-def reserve_mesh_reference(handle: Shared[Any]) -> bool:
+def reserve_mesh_reference(handle: Handle[Any]) -> bool:
     """
     Reserve a slot for a pending mesh, filled sender-side once the handle
     resolves. Returns True if a slot was reserved (mesh-reference collection

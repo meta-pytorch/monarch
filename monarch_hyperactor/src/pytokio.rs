@@ -113,17 +113,48 @@ use tokio::sync::watch;
 use crate::handle::HandleCore;
 use crate::handle::PyHandle;
 use crate::handle::send_result;
-use crate::pickle::reduce_shared;
 use crate::runtime::GilSite;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
 use crate::runtime::signal_safe_block_on;
 
+// Shared class for pickling PyShared values
+py_global!(
+    shared_class,
+    "monarch._rust_bindings.monarch_hyperactor.pytokio",
+    "Shared"
+);
+
+/// Reduce a PyShared for pickling.
+///
+/// This function implements the pickle protocol for PyShared:
+/// 1. If the shared is already finished, return (Shared.from_value, (value,))
+/// 2. Otherwise, block on the shared and return (Shared.from_value, (value,))
+pub fn reduce_shared<'py>(
+    py: Python<'py>,
+    py_shared: &Bound<'py, PyShared>,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+    // First, check if the shared is already finished
+    if let Some(value) = py_shared.borrow().poll()? {
+        let from_value = shared_class(py).getattr("from_value")?;
+        let args = PyTuple::new(py, [value])?;
+        return Ok((from_value, args));
+    }
+
+    // Pending: block on the shared. Meshes ride the out-of-band table via their
+    // own type-specific reducers; this generic path is the fallback for any
+    // other pending `PyShared`.
+    let value = PyShared::block_on(py_shared.borrow(), py)?;
+    let from_value = shared_class(py).getattr("from_value")?;
+    let args = PyTuple::new(py, [value])?;
+    Ok((from_value, args))
+}
+
 declare_attrs! {
-    /// If true, capture a Python stack trace at `PythonTask` creation
-    /// time and log it when a spawned task errors but is never
-    /// awaited/polled.
+    /// If true, capture a Python stack trace when a `PythonTask` or an
+    /// endpoint `call`/`call_one`/`choose` or `ValueStream` item is created,
+    /// and log it when that work errors but is never awaited/polled.
     @meta(CONFIG = ConfigAttr::new(
         Some("MONARCH_HYPERACTOR_ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK".to_string()),
         Some("enable_unawaited_python_task_traceback".to_string()),
@@ -143,7 +174,7 @@ py_global!(actor_mesh_module, "monarch._src.actor", "actor_mesh");
 ///
 /// Returns `None` when disabled to avoid the overhead of
 /// `traceback.extract_stack()`.
-fn current_traceback() -> PyResult<Option<Py<PyAny>>> {
+pub(crate) fn current_traceback() -> PyResult<Option<Py<PyAny>>> {
     if hyperactor_config::global::get(ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK) {
         monarch_with_gil_blocking(GilSite::Traceback, |py| {
             Ok(Some(
@@ -202,14 +233,6 @@ impl PythonTask {
             future: Mutex::new(Box::pin(fut)),
             traceback,
         }
-    }
-
-    /// Construct a `PythonTask`, capturing a creation-site traceback
-    /// if enabled by `ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK`.
-    pub(crate) fn new(
-        fut: impl Future<Output = PyResult<Py<PyAny>>> + Send + 'static,
-    ) -> PyResult<Self> {
-        Ok(Self::new_with_traceback(fut, current_traceback()?))
     }
 
     /// Return the optional captured creation-site traceback (if
@@ -680,27 +703,6 @@ impl PyShared {
     }
 }
 
-#[cfg(test)]
-impl PyShared {
-    /// A `Shared` that stays pending until the returned sender publishes.
-    ///
-    /// Handing back the sender lets a test both control completion and read
-    /// `receiver_count()`. `task()` and `wait_future()` clone the receiver
-    /// eagerly and hold it for the life of the waiter, so the count witnesses
-    /// waiter retention specifically. It is not a witness for observation in
-    /// general: `poll()` reads the watch value through a borrow and clones
-    /// nothing, so it leaves the count unmoved.
-    pub(crate) fn pending() -> (watch::Sender<Option<PyResult<Py<PyAny>>>>, Self) {
-        let (tx, rx) = watch::channel(None);
-        (
-            tx,
-            Self {
-                core: HandleCore::new(rx, None),
-            },
-        )
-    }
-}
-
 #[pymethods]
 impl PyShared {
     /// Convert this `Shared` handle into a `PythonTask` that waits
@@ -751,13 +753,6 @@ impl PyShared {
             return Ok(value);
         }
 
-        // Unlike `Handle::get()`, block_on() deliberately does NOT raise
-        // WouldBlockRuntime for a still-pending value inside a Tokio runtime.
-        // Blocking there panics the runtime loudly, which is preferable to a
-        // silent deadlock for the pending mesh bare-pickle path that relies on
-        // this (`reduce_shared` blocks a pending `Shared` during pickling), and
-        // the common multiprocessing case is unaffected. This trade was
-        // deliberately chosen; do not change it to raise.
         let wait = slf.core.wait_future();
         // Explicitly drop the reference so that if another thread attempts to borrow
         // this object mutably during signal_safe_block_on, it won't throw an exception.

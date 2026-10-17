@@ -59,8 +59,8 @@ def test_root_shutdown_settles_pending_port_receives() -> None:
     _port, receiver = mailbox.open_port()
     _once_port, once_receiver = mailbox.open_once_port()
     pending = [
-        receiver.recv_task().spawn_handle(),
-        once_receiver.recv_task().spawn_handle(),
+        receiver.recv(False).spawn_handle(),
+        once_receiver.recv(False).spawn_handle(),
     ]
     shutdown_context().get(timeout=30)
     for handle in pending:

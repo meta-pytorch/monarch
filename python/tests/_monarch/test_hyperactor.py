@@ -10,7 +10,7 @@ import os
 import pickle
 import signal
 import time
-from typing import Any, Callable, cast, Coroutine, Iterable, Type, TYPE_CHECKING
+from typing import Any, cast, Iterable, Type, TYPE_CHECKING
 
 import numpy as np
 from monarch._rust_bindings.monarch_hyperactor.actor import (
@@ -20,13 +20,14 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
 )
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
+from monarch._rust_bindings.monarch_hyperactor.handle import Handle
+from monarch._rust_bindings.monarch_hyperactor.host_mesh import HostMesh as HyHostMesh
 from monarch._rust_bindings.monarch_hyperactor.pickle import (
     PendingMessage,
     pickle as monarch_pickle,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr, ProcId
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._src.actor.host_mesh import HostMesh, this_host
 from monarch._src.actor.pickle import flatten, unflatten
@@ -102,46 +103,27 @@ def test_no_hang_on_shutdown() -> None:
     assert code == signal.SIGTERM, code
 
 
-def _python_task_test(
-    fn: Callable[[], Coroutine[Any, Any, None]],
-) -> Callable[[], None]:
-    """
-    Wrapper for tests that use the internal tokio event loop
-    APIs and need to run on that event loop.
-    """
-    return lambda: PythonTask.from_coroutine(fn()).block_on()
-
-
-@_python_task_test
 async def test_proc_mesh() -> None:
-    host_mesh: HostMesh = this_host()
-
-    async def task() -> ProcMesh:
-        hy_host_mesh = await host_mesh._hy_host_mesh
-        return await hy_host_mesh.spawn_nonblocking(
-            context().actor_instance._as_rust(),
-            "proc_mesh",
-            Extent(["replicas"], [2]),
-        )
-
-    proc_mesh = await PythonTask.from_coroutine(task()).spawn()
+    proc_mesh = await HyHostMesh.spawn_nonblocking(
+        this_host()._hy_host_mesh,
+        context().actor_instance._as_rust(),
+        "proc_mesh",
+        Extent(["replicas"], [2]),
+    )
     # v1 has a different repr format
     assert "ProcMesh" in str(proc_mesh)
 
 
 def test_actor_mesh() -> None:
-    async def spawn() -> PythonActorMesh:
+    def spawn() -> PythonActorMesh:
         host_mesh: HostMesh = this_host()
 
-        async def task() -> ProcMesh:
-            hy_host_mesh = await host_mesh._hy_host_mesh
-            return await hy_host_mesh.spawn_nonblocking(
-                context().actor_instance._as_rust(),
-                "test",
-                Extent(["replicas"], [2]),
-            )
-
-        proc_mesh_task: Shared[ProcMesh] = PythonTask.from_coroutine(task()).spawn()
+        proc_mesh_handle: Handle[ProcMesh] = HyHostMesh.spawn_nonblocking(
+            host_mesh._hy_host_mesh,
+            context().actor_instance._as_rust(),
+            "test",
+            Extent(["replicas"], [2]),
+        )
 
         # Create an explicit init message
         init_state = monarch_pickle(None)
@@ -153,7 +135,7 @@ def test_actor_mesh() -> None:
 
         # Use spawn_async with the explicit init message
         return ProcMesh.spawn_async(
-            proc_mesh_task,
+            proc_mesh_handle,
             context().actor_instance._as_rust(),
             "test",
             cast(Type["Actor"], MyActor),
@@ -162,8 +144,7 @@ def test_actor_mesh() -> None:
             False,  # emulated
         )
 
-    actor_mesh = PythonTask.from_coroutine(spawn()).block_on()
-    # Handle waits run outside Tokio; legacy proc creation above still uses it.
+    actor_mesh = spawn()
     assert actor_mesh.initialized().get(timeout=30) is None
 
 

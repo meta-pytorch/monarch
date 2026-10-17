@@ -4,9 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
-import asyncio
 import importlib
 import inspect
 import json
@@ -37,8 +34,8 @@ from weakref import WeakSet
 
 from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
+from monarch._rust_bindings.monarch_hyperactor.handle import _after, Handle
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Region, Shape, Slice
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch._src.actor.actor_mesh import (
@@ -60,7 +57,7 @@ from monarch._src.actor.code_sync import (
     WorkspaceShape,
 )
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.future import Future
+from monarch._src.actor.future import _ready_handle, Future
 from monarch._src.actor.logging import LoggingManager
 from monarch._src.actor.returns_future import returns_future
 from monarch._src.actor.shape import MeshTrait
@@ -202,7 +199,7 @@ class SetupActor(Actor):
     @staticmethod
     def startup_actor_from_setup_function(
         pm: "ProcMesh",
-        hy_proc_mesh: "Shared[HyProcMesh]",
+        hy_proc_mesh: Handle[HyProcMesh],
         setup: Callable[[], None] | Callable[[], Awaitable[None]] | None,
         run_startup_functions: bool = True,
     ) -> Optional["SetupActor"]:
@@ -342,7 +339,7 @@ class ProcMesh(MeshTrait):
 
     def __init__(
         self,
-        hy_proc_mesh: "Shared[HyProcMesh]",
+        hy_proc_mesh: Handle[HyProcMesh],
         host_mesh: "HostMesh",
         region: Region,
         root_region: Region,
@@ -368,13 +365,8 @@ class ProcMesh(MeshTrait):
         Because ProcMesh are remote objects, there is no guarantee that the ProcMesh is
         still usable after this completes, only that at some point in the past it was usable.
         """
-        pm: Shared[HyProcMesh] = self._proc_mesh
-
-        async def task() -> Literal[True]:
-            await pm
-            return True
-
-        return Future._from_coro(task())
+        ready: Handle[Literal[True]] = _ready_handle(True)
+        return Future._from_handle(_after([self._proc_mesh], ready))
 
     @property
     def host_mesh(self) -> "HostMesh":
@@ -403,15 +395,11 @@ class ProcMesh(MeshTrait):
             else self._maybe_device_mesh._new_with_shape(shape)
         )
 
-        sliced_hy_pm: Shared[HyProcMesh]
+        sliced_hy_pm: Handle[HyProcMesh]
         if (pm := self._proc_mesh.poll()) is not None:
-            sliced_hy_pm = Shared.from_value(pm.sliced(shape.region))
+            sliced_hy_pm = _ready_handle(pm.sliced(shape.region))
         else:
-
-            async def task() -> HyProcMesh:
-                return (await self._proc_mesh).sliced(shape.region)
-
-            sliced_hy_pm = PythonTask.from_coroutine(task()).spawn()
+            sliced_hy_pm = HyProcMesh.sliced_handle(self._proc_mesh, shape.region)
 
         return ProcMesh(
             sliced_hy_pm,
@@ -456,21 +444,11 @@ class ProcMesh(MeshTrait):
         Class = cast(Type[TActor], get_actor_class(cast(Type[Actor], Class)))
         return self._spawn_nonblocking(name, Class, *args, **kwargs)
 
-    @property
-    async def _proc_mesh_for_asyncio_fixme(self) -> HyProcMesh:
-        """
-        Get ProcMesh on the asyncio event stream.
-        We should redo this functionality to work on the tokio stream.
-        This must be called on the asyncio stream.
-        """
-        assert asyncio.get_running_loop() is not None
-        return await Future._from_coro(self._proc_mesh.task())
-
     @classmethod
     def from_host_mesh(
         self,
         host_mesh: "HostMesh",
-        hy_proc_mesh: "Shared[HyProcMesh]",
+        hy_proc_mesh: Handle[HyProcMesh],
         region: Region,
         setup: Callable[[], None] | Callable[[], Awaitable[None]] | None = None,
         _attach_controller_controller: bool = True,
@@ -482,35 +460,19 @@ class ProcMesh(MeshTrait):
             pm._controller_controller = instance._controller_controller
             instance._add_child(pm)
 
-        async def task(
-            pm: "ProcMesh",
-            hy_proc_mesh_task: "Shared[HyProcMesh]",
-            setup_actor: "SetupActor | None",
-            stream_log_to_client: bool,
-        ) -> HyProcMesh:
-            hy_proc_mesh = await hy_proc_mesh_task
-
-            await pm._logging_manager.init(hy_proc_mesh, stream_log_to_client)
-
-            # If the user has passed the setup lambda, we need to call
-            # it here before any of the other python actors are spawned so
-            # that the environment variables are set up before cuda init.
-            if setup_actor is not None:
-                await setup_actor.setup.call()._take_inner().spawn()
-
-            return hy_proc_mesh
-
-        # Use SetupActor factory to handle setup function and startup functions.
-        # The SetupActor needs to be spawned outside of `task` for now,
-        # since spawning a python actor requires a blocking call to
-        # pickle the proc mesh, and we can't do that from the tokio runtime.
+        instance = context().actor_instance._as_rust()
+        log = pm._logging_manager.start(instance, hy_proc_mesh, host_mesh.stream_logs)
+        logged = _after([log], hy_proc_mesh)
+        # The setup actor's init message must reserve logging readiness, not
+        # the full completion that waits for the setup actor's own reply.
+        pm._proc_mesh = logged
         setup_actor = SetupActor.startup_actor_from_setup_function(
-            pm, hy_proc_mesh, setup, run_startup_functions=_attach_controller_controller
+            pm, logged, setup, run_startup_functions=_attach_controller_controller
         )
-
-        pm._proc_mesh = PythonTask.from_coroutine(
-            task(pm, hy_proc_mesh, setup_actor, host_mesh.stream_logs)
-        ).spawn()
+        if setup_actor is not None:
+            done = setup_actor.setup.call()._as_handle()
+            # Report logging failure before any failure of the queued setup call.
+            pm._proc_mesh = _after([logged, done], logged)
 
         # Invoke registered spawn callbacks
         for callback in _proc_mesh_spawn_callbacks:
@@ -528,7 +490,7 @@ class ProcMesh(MeshTrait):
 
     def _spawn_nonblocking_on(
         self,
-        pm: "Shared[HyProcMesh]",
+        pm: Handle[HyProcMesh],
         name: str,
         Class: Type[TActor],
         *args: Any,
@@ -688,7 +650,7 @@ class ProcMesh(MeshTrait):
     @returns_future
     async def _stop(self, instance: HyInstance, reason: str) -> None:
         await self._drain_pending_actor_spawns()
-        pm = await self._proc_mesh.task().spawn_handle()
+        pm = await self._proc_mesh
         await self._logging_manager.flush_async()
         await pm.stop_nonblocking(instance, reason)
         self._stopped = True
@@ -722,7 +684,7 @@ class ProcMesh(MeshTrait):
         root_region: Region,
     ) -> "ProcMesh":
         return ProcMesh(
-            Shared.from_value(hy_proc_mesh),
+            _ready_handle(hy_proc_mesh),
             host_mesh,
             region,
             root_region,
@@ -747,8 +709,11 @@ class ProcMesh(MeshTrait):
                     self._region,
                     self._root_region,
                 )
-        return ProcMesh, (
-            self._proc_mesh,
+        mesh = self._proc_mesh.poll()
+        if mesh is None:
+            mesh = self._proc_mesh.get()
+        return ProcMesh._from_initialized_hy_proc_mesh, (
+            mesh,
             self._host_mesh,
             self._region,
             self._root_region,
@@ -791,7 +756,7 @@ class ProcMesh(MeshTrait):
         if self._code_sync_client is None:
             self._code_sync_client = CodeSyncMeshClient.spawn_blocking(
                 client=context().actor_instance,
-                proc_mesh=await self._proc_mesh_for_asyncio_fixme,
+                proc_mesh=await self._proc_mesh,
             )
 
         # TODO(agallagher): We need some way to configure and pass this

@@ -9,8 +9,7 @@
 Pins the behavior of ``monarch._src.actor.future.Future`` -- its internal
 states and the transitions between them, ``as_asyncio()`` and the ``__await__``
 shim over it, rejection of Tokio-thread awaits, the ``get()``-inside-a-loop
-warning, and the ``_take_inner()`` accessor with its ``_Taken`` terminal state
--- plus the construction and completion invariants of its permanent ``Handle``
+warning -- plus the construction and completion invariants of its permanent ``Handle``
 carrier, so that any change to that behavior is caught here and made explicit.
 """
 
@@ -223,7 +222,7 @@ def test_as_handle_spawns_an_unawaited_task_once(monkeypatch):
                 original_error.add_note(f"cleanup also failed: {cleanup_error!r}")
 
 
-def test_as_handle_rejects_terminal_and_taken_states_without_mutation():
+def test_as_handle_rejects_terminal_states_without_mutation():
     complete: Future[int] = Future._from_coro(_value(1))
     assert complete.get() == 1
 
@@ -231,11 +230,7 @@ def test_as_handle_rejects_terminal_and_taken_states_without_mutation():
     with pytest.raises(ValueError, match="boom"):
         failed.get()
 
-    taken: Future[int] = Future._from_coro(_value(2))
-    task = taken._take_inner()
-    assert task.block_on() == 2
-
-    for fut in (complete, failed, taken):
+    for fut in (complete, failed):
         status = fut._status
         with pytest.raises(ValueError, match="does not have a Handle"):
             fut._as_handle()
@@ -769,84 +764,6 @@ def test_handle_completion_pair_types_are_not_directly_constructible():
         Handle()
     with pytest.raises(TypeError):
         _HandleCompleter()
-
-
-# ---------------------------------------------------------------------------
-# _take_inner() and the _Taken terminal state
-#
-# _take_inner() requires an unawaited Future -- it fails if the Future was
-# already resolved or converted by get()/await. On success it surrenders the
-# underlying PythonTask to a caller that drives it directly and transitions the
-# Future to the terminal _Taken state, so the Future is spent: a second take,
-# or any later get()/await, fails rather than silently re-driving the one-shot
-# task.
-# ---------------------------------------------------------------------------
-
-
-def test_take_inner_returns_task_and_marks_future_taken():
-    """_take_inner() on an unawaited Future returns the underlying (still
-    drivable) PythonTask and transitions the Future to the terminal _Taken
-    state."""
-    fut: Future[int] = Future._from_coro(_value(1))
-    task = fut._take_inner()
-    assert isinstance(task, PythonTask)
-    assert isinstance(fut._status, future_mod._Taken)
-    assert task.block_on() == 1
-
-
-def test_take_inner_twice_raises():
-    """The Future is spent after the first _take_inner(); a second raises."""
-    fut: Future[int] = Future._from_coro(_value(1))
-    fut._take_inner()
-    with pytest.raises(ValueError, match="already been awaited"):
-        fut._take_inner()
-
-
-def test_get_after_take_inner_raises():
-    """get() after _take_inner() fails at the Future instead of re-driving the
-    surrendered task."""
-    fut: Future[int] = Future._from_coro(_value(1))
-    fut._take_inner()
-    with pytest.raises(ValueError, match="consumed"):
-        fut.get()
-
-
-async def test_await_asyncio_after_take_inner_raises():
-    """await under asyncio after _take_inner() fails instead of re-driving."""
-    fut: Future[int] = Future._from_coro(_value(1))
-    fut._take_inner()
-    with pytest.raises(ValueError, match="consumed"):
-        await fut
-
-
-def test_await_tokio_after_take_inner_raises():
-    """await on a tokio thread after _take_inner() fails instead of re-driving."""
-    fut: Future[int] = Future._from_coro(_value(1))
-    fut._take_inner()
-
-    async def attempt():
-        await fut
-
-    with pytest.raises(ValueError, match="consumed"):
-        _run_in_tokio(attempt())
-
-
-def test_take_inner_after_get_raises():
-    """_take_inner() requires an unawaited Future: once get() has resolved it
-    (_Complete), taking the inner task is refused."""
-    fut: Future[int] = Future._from_coro(_value(1))
-    assert fut.get() == 1  # -> _Complete
-    with pytest.raises(ValueError, match="already been awaited"):
-        fut._take_inner()
-
-
-def test_take_inner_after_asyncio_await_raises():
-    """Once an asyncio await has bridged the Future (_Handle), _take_inner() is
-    refused."""
-    fut: Future[int] = Future._from_coro(_value(1))
-    asyncio.run(_await_once(fut))  # -> _Handle
-    with pytest.raises(ValueError, match="already been awaited"):
-        fut._take_inner()
 
 
 # ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
 from monarch._rust_bindings.monarch_hyperactor.handle import _new_handle_pair, Handle
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch._src.actor.actor_mesh import (
     _client_context,
@@ -36,8 +36,9 @@ from monarch._src.actor.actor_mesh import (
     ValueMesh,
 )
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.future import Future
+from monarch._src.actor.future import _ready_handle, Future
 from monarch._src.actor.host_mesh import this_host, this_proc
+from monarch._src.actor.logging import LoggingManager
 from monarch._src.actor.proc_mesh import (
     get_or_spawn_controller,
     ProcMesh,
@@ -54,6 +55,81 @@ _BOOTSTRAP_FAILURE = "stage 3.4 bootstrap failure"
 
 def _successful_bootstrap() -> None:
     return None
+
+
+def _record_setup(path: str) -> None:
+    pathlib.Path(path).touch()
+
+
+class InitializationOrderActor(Actor):
+    def __init__(self, setup_path: str) -> None:
+        self.setup_finished = pathlib.Path(setup_path).exists()
+
+    @endpoint
+    def saw_setup(self) -> bool:
+        return self.setup_finished
+
+
+@pytest.mark.parametrize("logging_failure", [False, True])
+@pytest.mark.timeout(90)
+@isolate_in_subprocess
+def test_logging_then_setup_then_user_initialization(logging_failure: bool) -> None:
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    pending, completer = _new_handle_pair()
+    captured: list[tuple[HyInstance, Handle[HyProcMesh], bool]] = []
+    real_start = LoggingManager.start
+
+    def gated_start(
+        manager: LoggingManager,
+        instance: HyInstance,
+        raw: Handle[HyProcMesh],
+        stream: bool,
+    ) -> Handle[Any]:
+        captured.append((instance, raw, stream))
+        manager._logging_mesh_client_handle = pending
+        return pending
+
+    with tempfile.TemporaryDirectory() as directory:
+        setup_path = str(pathlib.Path(directory) / "setup-finished")
+        with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+            with patch.object(LoggingManager, "start", gated_start):
+                pm = state.hosts.spawn_procs(
+                    bootstrap=partial(_record_setup, setup_path)
+                )
+                actor = pm.spawn("order", InitializationOrderActor, setup_path)
+                answer = actor.saw_setup.call_one()
+            instance, raw, stream = captured[0]
+            try:
+                assert raw.get(timeout=30) is not None
+                assert pm._proc_mesh.poll() is None
+                setup_ready = pm._pending_actor_spawns[0].initialized
+                with pytest.raises(TimeoutError):
+                    setup_ready.get(timeout=0)
+                assert not pathlib.Path(setup_path).exists()
+                if logging_failure:
+                    failure = RuntimeError("logging installation failed")
+                    completer.set_exception(failure)
+                    with pytest.raises(RuntimeError) as error:
+                        pm.initialized.get(timeout=30)
+                    assert error.value is failure
+                    assert not pathlib.Path(setup_path).exists()
+                else:
+                    manager = pm._logging_manager
+                    manager._logging_mesh_client_handle = None
+                    client = real_start(manager, instance, raw, stream).get(timeout=30)
+                    completer.set_result(client)
+                    assert pm.initialized.get(timeout=30) is True
+                    assert answer.get(timeout=30) is True
+            finally:
+                try:
+                    value = pending.poll()
+                except Exception:
+                    pass
+                else:
+                    if value is None:
+                        completer.set_exception(
+                            RuntimeError("test ended before logging release")
+                        )
 
 
 def _fail_bootstrap() -> None:
@@ -374,7 +450,7 @@ async def test_proc_stop_is_lazy_and_survives_cancelled_observer() -> None:
         assert await asyncio.wait_for(actor.get_value.choose(), 30) == 41
 
         call_through = _ProcStopCallThrough(inner, release)
-        owner._proc_mesh = Shared.from_value(cast(HyProcMesh, call_through))
+        owner._proc_mesh = _ready_handle(cast(HyProcMesh, call_through))
         stop_future = owner.stop()
         assert not owner._stopped
         assert call_through.calls == 0
@@ -526,7 +602,7 @@ def test_stop_state_tracks_native_stop_result() -> None:
             Any, _LoggingManagerProbe(logging_manager, phases, "logging-missing-stop")
         )
         proc_mesh = owner._proc_mesh
-        owner._proc_mesh = cast(Any, Shared.from_value(object()))
+        owner._proc_mesh = cast(Any, _ready_handle(object()))
         missing_stop = owner.stop()
         with pytest.raises(AttributeError, match="stop_nonblocking"):
             missing_stop.get(timeout=30)
@@ -751,7 +827,7 @@ def test_proc_mesh_sliced() -> None:
         # Initialize _proc_rank on each actor process
         actor = proc_mesh.spawn("test_actor", TestActor, 42)
         actor.get_proc_rank.call().get()
-        hy_proc_mesh = proc_mesh._proc_mesh.block_on()
+        hy_proc_mesh = proc_mesh._proc_mesh.get()
         release_proc_mesh = threading.Event()
 
         async def resolve_proc_mesh() -> HyProcMesh:
@@ -759,7 +835,9 @@ def test_proc_mesh_sliced() -> None:
             return hy_proc_mesh
 
         # Keep the native mesh unresolved so slicing must take the pending path.
-        proc_mesh._proc_mesh = PythonTask.from_coroutine(resolve_proc_mesh()).spawn()
+        proc_mesh._proc_mesh = PythonTask.from_coroutine(
+            resolve_proc_mesh()
+        ).spawn_handle()
 
         # Hosts 0 and 2, gpus 1 and 2
         slice_shape = Shape(
@@ -911,9 +989,9 @@ def test_root_client_does_not_leak_proc_meshes() -> None:
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_actor_spawn_does_not_block_on_proc_mesh_init() -> None:
-    async def sleep_then_mesh(pm: Shared[HyProcMesh]) -> HyProcMesh:
+    async def sleep_then_mesh(pm: HyProcMesh) -> HyProcMesh:
         time.sleep(15)
-        return await pm
+        return pm
 
     # Can't use scoped_state here: graceful shutdown blocks on proc_mesh
     # initialization, but this test intentionally replaces _proc_mesh with a
@@ -923,8 +1001,8 @@ def test_actor_spawn_does_not_block_on_proc_mesh_init() -> None:
         host = job.state(cached_path=None).hosts
         proc_mesh = host.spawn_procs(name="test_proc")
         proc_mesh._proc_mesh = PythonTask.from_coroutine(
-            sleep_then_mesh(proc_mesh._proc_mesh)
-        ).spawn()
+            sleep_then_mesh(proc_mesh._proc_mesh.get(timeout=30))
+        ).spawn_handle()
         assert proc_mesh._proc_mesh.poll() is None
         proc_mesh.spawn("pid", PidActor)
         assert proc_mesh._proc_mesh.poll() is None
@@ -935,14 +1013,14 @@ def test_actor_spawn_does_not_block_on_proc_mesh_init() -> None:
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_raw_proc_mesh_pickle_blocks_on_proc_mesh_init() -> None:
-    async def sleep_then_mesh(pm: Shared[HyProcMesh]) -> HyProcMesh:
+    async def sleep_then_mesh(pm: HyProcMesh) -> HyProcMesh:
         time.sleep(15)
-        return await pm
+        return pm
 
     proc_mesh = this_host().spawn_procs(name="test_proc")
     proc_mesh._proc_mesh = PythonTask.from_coroutine(
-        sleep_then_mesh(proc_mesh._proc_mesh)
-    ).spawn()
+        sleep_then_mesh(proc_mesh._proc_mesh.get(timeout=30))
+    ).spawn_handle()
     assert proc_mesh._proc_mesh.poll() is None
     cloudpickle.dumps(proc_mesh)
     assert proc_mesh._proc_mesh.poll() is not None

@@ -9,19 +9,19 @@ from typing import Any, final, Mapping
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.handle import Handle
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
 
 @final
 class HostMesh:
+    @staticmethod
     def spawn_nonblocking(
-        self,
+        host_mesh: Handle[HostMesh],
         instance: Instance,
         name: str,
         per_host: Extent,
         proc_bind: list[dict[str, str]] | None = None,
         per_rank_bootstrap: BootstrapCommand | list[BootstrapCommand] | None = None,
-    ) -> PythonTask[ProcMesh]:
+    ) -> Handle[ProcMesh]:
         """
         Spawn a proc mesh on these hosts.
 
@@ -35,6 +35,29 @@ class HostMesh:
           have one command per proc. None keeps the mesh's configured command
           or the host agent's default. Scoped to this spawn; the mesh itself
           is not mutated.
+        """
+        ...
+
+    @staticmethod
+    def sliced_handle(host_mesh: Handle[HostMesh], region: Region) -> Handle[HostMesh]:
+        """Return a Handle for a non-owning view of the hosts selected by region.
+
+        Wait for the input host mesh if it is still pending, then select those
+        hosts. The view neither creates hosts nor takes ownership of them.
+        Input or slicing errors are raised when the returned Handle is observed.
+        """
+        ...
+
+    @staticmethod
+    def with_bootstrap_handle(
+        host_mesh: Handle[HostMesh], command: BootstrapCommand
+    ) -> Handle[HostMesh]:
+        """Set the launch command for later proc spawns once the host mesh is ready.
+
+        Return a Handle supplying the resulting native HostMesh. An owned mesh
+        is updated in place; a non-owning view is copied with the command
+        override, leaving the original view unchanged. Existing procs are
+        unaffected.
         """
         ...
 
@@ -184,11 +207,11 @@ class PyMeshAdminRef:
     ...
 
 def _spawn_admin(
-    host_meshes: list[HostMesh],
+    host_meshes: list[Handle[HostMesh]],
     instance: Instance,
     admin_addr: str | None = None,
     telemetry_url: str | None = None,
-) -> PythonTask[tuple[str, PyMeshAdminRef]]:
+) -> Handle[tuple[str, PyMeshAdminRef]]:
     """
     Spawn a MeshAdminAgent aggregating topology across one or more meshes.
 

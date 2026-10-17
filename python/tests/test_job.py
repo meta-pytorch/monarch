@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
-
 import asyncio
 import contextlib
 import importlib
@@ -2799,7 +2797,7 @@ def test_exec_command_returns_ordinary_handle_backed_future():
     assert result.get() == 0
 
 
-def test_exec_command_observes_command_without_take_inner():
+def test_exec_command_observes_command_with_get_only():
     """Command results need only the public blocking observation method."""
 
     class GetOnlyResult:

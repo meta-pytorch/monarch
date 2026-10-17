@@ -249,6 +249,8 @@ class Calculator(Actor):
 
 Endpoints support different invocation patterns called **adverbs**:
 
+`call()`, `call_one()` and `choose()` send the request and start collecting replies before they return. Their Future lets you wait for the result; dropping it does not cancel the request or stop reply collection. You can observe the same Future more than once. For `call()`, successful values without mesh references are still decoded when accessed in the returned `ValueMesh`.
+
 #### 1. `call_one()` - Single Actor Call
 
 Call a single actor and get response.
@@ -431,7 +433,9 @@ with procs.activate():
 
 #### 6. `stream()` - Streaming Responses
 
-Stream responses as they arrive.
+`stream()` sends to all actors immediately and returns an iterator of Futures. Replies arrive and queue eagerly, but each item takes and unpickles one queued reply only when first observed. An item nobody observes takes and unpickles nothing.
+
+Each `next()` uses one iteration slot. Dropping an item unobserved leaves one reply unread after the slots are exhausted. Observe every item taken if you need every reply.
 
 ```python
 # Process responses as they arrive (stream returns Iterator[Future])

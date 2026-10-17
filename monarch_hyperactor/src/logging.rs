@@ -47,7 +47,6 @@ use crate::context::PyInstance;
 use crate::handle::PyHandle;
 use crate::proc::PyActorAddr;
 use crate::proc_mesh::PyProcMesh;
-use crate::pytokio::PyPythonTask;
 use crate::runtime::GilSite;
 use crate::runtime::monarch_with_gil;
 
@@ -289,11 +288,26 @@ impl LoggingMeshClient {
     /// is actually streamed back to the client. If forwarding was
     /// disabled by config, requests to enable streaming will fail.
     #[staticmethod]
-    fn spawn(instance: &PyInstance, proc_mesh: &PyProcMesh) -> PyResult<PyPythonTask> {
-        let proc_mesh = proc_mesh.mesh_ref()?;
+    #[pyo3(signature = (instance, proc_mesh, *, stream_to_client, aggregate_window_sec, level))]
+    fn spawn(
+        instance: &PyInstance,
+        proc_mesh: &PyHandle,
+        stream_to_client: bool,
+        aggregate_window_sec: Option<u64>,
+        level: u8,
+    ) -> PyHandle {
+        let proc_mesh = proc_mesh.wait_future();
         let instance = instance.clone();
 
-        PyPythonTask::new(async move {
+        PyHandle::spawn(async move {
+            let proc_mesh = proc_mesh.await?;
+            let proc_mesh = monarch_with_gil(GilSite::Convert, |py| {
+                proc_mesh
+                    .bind(py)
+                    .extract::<PyRef<'_, PyProcMesh>>()?
+                    .mesh_ref()
+            })
+            .await?;
             // 1. Spawn the client-side coordinator actor (lives in
             // the caller's process).
             static LOG_CLIENT_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -332,11 +346,13 @@ impl LoggingMeshClient {
                 .await
                 .map_err(anyhow::Error::from)?;
 
-            Ok(Self {
+            let client = Self {
                 forwarder_mesh,
                 logger_mesh,
                 client_actor,
-            })
+            };
+            client.set_mode(&instance, stream_to_client, aggregate_window_sec, level)?;
+            Ok(client)
         })
     }
 
@@ -598,11 +614,13 @@ mod tests {
     use hyperactor_mesh::host_mesh::HostMeshShutdownGuard;
     use hyperactor_mesh::logging::LogMessage;
     use ndslice::Extent;
+    use pyo3::IntoPyObjectExt;
     use tokio::time::timeout;
 
     use super::*;
     use crate::actor::PythonActor;
     use crate::runtime::ensure_python;
+    use crate::runtime::monarch_with_gil_blocking;
 
     const TEST_DEADLINE: Duration = Duration::from_secs(30);
 
@@ -630,8 +648,8 @@ mod tests {
 
     /// Drive a logging-client task without the test-only conversion helper's
     /// internal `expect`s, so an error remains available to the cleanup path.
-    async fn drive_logging_client(mut task: PyPythonTask) -> Result<Py<LoggingMeshClient>> {
-        let future = task.take_task()?;
+    async fn drive_logging_client(handle: PyHandle) -> Result<Py<LoggingMeshClient>> {
+        let future = handle.wait_future();
         let value = timeout(TEST_DEADLINE, future)
             .await
             .map_err(|_| anyhow::anyhow!("logging client spawn exceeded {TEST_DEADLINE:?}"))??;
@@ -644,14 +662,12 @@ mod tests {
         .await?)
     }
 
-    fn log_client_ordinal(label: &str) -> Result<usize> {
-        if label == "log_client" {
-            return Ok(0);
-        }
-        let suffix = label
-            .strip_prefix("log_client_")
-            .ok_or_else(|| anyhow::anyhow!("unexpected logging client label {label:?}"))?;
-        Ok(suffix.parse()?)
+    /// Supply an already-created proc mesh to the logging producer.
+    fn spawn_logging_client(instance: &PyInstance, proc_mesh: &PyProcMesh) -> PyResult<PyHandle> {
+        let ready = monarch_with_gil_blocking(GilSite::Test, |py| {
+            PyHandle::from_value(PyProcMesh::new_ref(proc_mesh.mesh_ref()?).into_py_any(py)?)
+        })?;
+        Ok(LoggingMeshClient::spawn(instance, &ready, false, None, 20))
     }
 
     /// Read the current sync-flush version without leaving a flush in progress.
@@ -772,8 +788,8 @@ mod tests {
         {
             let _guard = lock.override_key(MESH_ENABLE_LOG_FORWARDING, false);
 
-            let client_task = LoggingMeshClient::spawn(&py_instance, &py_proc_mesh)
-                .expect("spawn PyPythonTask (forwarding disabled)");
+            let client_task = spawn_logging_client(&py_instance, &py_proc_mesh)
+                .expect("spawn logging Handle (forwarding disabled)");
 
             let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task)
                 .await
@@ -795,8 +811,8 @@ mod tests {
         {
             let _guard = lock.override_key(MESH_ENABLE_LOG_FORWARDING, true);
 
-            let client_task = LoggingMeshClient::spawn(&py_instance, &py_proc_mesh)
-                .expect("spawn PyPythonTask (forwarding enabled)");
+            let client_task = spawn_logging_client(&py_instance, &py_proc_mesh)
+                .expect("spawn logging Handle (forwarding enabled)");
 
             let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task)
                 .await
@@ -817,71 +833,48 @@ mod tests {
         host_mesh.shutdown(&instance).await.expect("host shutdown");
     }
 
-    /// Constructing the raw spawn task validates and captures its inputs but does
-    /// not spawn the local logging actor. The monotonic label counter is durable
-    /// even if a wrongly created actor stops before the assertion can inspect it.
+    /// Dropping the logging Handle before proc creation finishes does not cancel
+    /// installation. The raw gate proves it cannot have finished before the drop.
     #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
-    async fn discarded_spawn_task_creates_no_log_client_actor() -> Result<()> {
-        let (_proc, instance, host_mesh, proc_mesh) = timeout(TEST_DEADLINE, logging_test_world())
+    async fn dropped_logging_handle_still_installs_after_raw_creation() -> Result<()> {
+        let (proc, instance, host_mesh, proc_mesh) = timeout(TEST_DEADLINE, logging_test_world())
             .await
             .map_err(|_| anyhow::anyhow!("test world setup exceeded {TEST_DEADLINE:?}"))??;
-
         let test_result = async {
-            let py_instance = PyInstance::from(&instance);
-            let py_proc_mesh = PyProcMesh::new_owned(proc_mesh);
+            let (release, gate) = tokio::sync::oneshot::channel();
+            let raw = PyHandle::spawn(async move {
+                gate.await.map_err(anyhow::Error::from)?;
+                Ok(PyProcMesh::new_owned(proc_mesh))
+            });
             let lock = hyperactor_config::global::lock();
             let _guard = lock.override_key(MESH_ENABLE_LOG_FORWARDING, false);
-
-            let baseline_py = drive_logging_client(LoggingMeshClient::spawn(
-                &py_instance,
-                &py_proc_mesh,
-            )?)
-            .await?;
-            let baseline_label = monarch_with_gil(GilSite::Test, |py| {
-                baseline_py
-                    .borrow(py)
-                    .client_actor
-                    .actor_addr()
-                    .id()
-                    .label()
-                    .map(|label| label.as_str().to_owned())
+            let before = proc.all_terminated_actor_ids();
+            let logging =
+                LoggingMeshClient::spawn(&PyInstance::from(&instance), &raw, false, None, 20);
+            drop(logging);
+            release.send(()).expect("raw creation is still waiting");
+            // With no observers, the completed client is dropped and stops its
+            // coordinator. Its retained termination snapshot proves completion
+            // without observing the Handle or racing a short-lived live actor.
+            timeout(TEST_DEADLINE, async {
+                loop {
+                    if proc.all_terminated_actor_ids().iter().any(|id| {
+                        !before.contains(id)
+                            && id
+                                .id()
+                                .label()
+                                .is_some_and(|label| label.as_str().starts_with("log_client"))
+                    }) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
             })
-            .await
-            .ok_or_else(|| anyhow::anyhow!("baseline logging client has no label"))?;
-            let baseline_ordinal = log_client_ordinal(&baseline_label)?;
-            drop(baseline_py);
-
-            let discarded = LoggingMeshClient::spawn(&py_instance, &py_proc_mesh)?;
-            drop(discarded);
-
-            let control_py = drive_logging_client(LoggingMeshClient::spawn(
-                &py_instance,
-                &py_proc_mesh,
-            )?)
             .await?;
-            let control_label = monarch_with_gil(GilSite::Test, |py| {
-                control_py
-                    .borrow(py)
-                    .client_actor
-                    .actor_addr()
-                    .id()
-                    .label()
-                    .map(|label| label.as_str().to_owned())
-            })
-            .await
-            .ok_or_else(|| anyhow::anyhow!("control logging client has no label"))?;
-            let control_ordinal = log_client_ordinal(&control_label)?;
-            anyhow::ensure!(
-                control_ordinal == baseline_ordinal + 1,
-                "dropping an undriven spawn task must not consume a LogClientActor id: baseline {baseline_label}, control {control_label}"
-            );
-
-            drop(control_py);
             Ok(())
         }
         .await;
-
         shutdown_after_test(host_mesh, &instance, test_result).await
     }
 
@@ -899,8 +892,8 @@ mod tests {
         {
             let _guard = lock.override_key(MESH_ENABLE_LOG_FORWARDING, false);
 
-            let client_task = LoggingMeshClient::spawn(&py_instance, &py_proc_mesh)
-                .expect("spawn PyPythonTask (forwarding disabled)");
+            let client_task = spawn_logging_client(&py_instance, &py_proc_mesh)
+                .expect("spawn logging Handle (forwarding disabled)");
 
             let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task)
                 .await
@@ -958,8 +951,8 @@ mod tests {
         {
             let _guard = lock.override_key(MESH_ENABLE_LOG_FORWARDING, true);
 
-            let client_task = LoggingMeshClient::spawn(&py_instance, &py_proc_mesh)
-                .expect("spawn PyPythonTask (forwarding enabled)");
+            let client_task = spawn_logging_client(&py_instance, &py_proc_mesh)
+                .expect("spawn logging Handle (forwarding enabled)");
 
             let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task)
                 .await
@@ -1016,8 +1009,8 @@ mod tests {
         {
             let _guard = lock.override_key(MESH_ENABLE_LOG_FORWARDING, false);
 
-            let client_task = LoggingMeshClient::spawn(&py_instance, &py_proc_mesh)
-                .expect("spawn PyPythonTask (forwarding disabled)");
+            let client_task = spawn_logging_client(&py_instance, &py_proc_mesh)
+                .expect("spawn logging Handle (forwarding disabled)");
 
             let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task)
                 .await
@@ -1045,8 +1038,8 @@ mod tests {
         {
             let _guard = lock.override_key(MESH_ENABLE_LOG_FORWARDING, true);
 
-            let client_task = LoggingMeshClient::spawn(&py_instance, &py_proc_mesh)
-                .expect("spawn PyPythonTask (forwarding enabled)");
+            let client_task = spawn_logging_client(&py_instance, &py_proc_mesh)
+                .expect("spawn logging Handle (forwarding enabled)");
 
             let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task)
                 .await
@@ -1096,7 +1089,7 @@ mod tests {
             let lock = hyperactor_config::global::lock();
             let _guard = lock.override_key(MESH_ENABLE_LOG_FORWARDING, true);
 
-            let client_py = drive_logging_client(LoggingMeshClient::spawn(
+            let client_py = drive_logging_client(spawn_logging_client(
                 &py_instance,
                 &py_proc_mesh,
             )?)

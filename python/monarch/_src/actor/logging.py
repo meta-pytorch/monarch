@@ -4,14 +4,13 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
 import asyncio
 import logging
 import threading
 import warnings
 from typing import Optional, TextIO, Tuple
 
+from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.handle import Handle
 from monarch._rust_bindings.monarch_hyperactor.logging import LoggingMeshClient
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
@@ -52,22 +51,30 @@ async def _flush_all_proc_mesh_logs_async() -> None:
 
 class LoggingManager:
     def __init__(self) -> None:
-        self._logging_mesh_client: Optional[LoggingMeshClient] = None
+        self._logging_mesh_client_handle: Optional[Handle[LoggingMeshClient]] = None
 
-    async def init(self, proc_mesh: HyProcMesh, stream_to_client: bool) -> None:
-        if self._logging_mesh_client is not None:
-            return
+    @property
+    def _logging_mesh_client(self) -> Optional[LoggingMeshClient]:
+        if self._logging_mesh_client_handle is None:
+            return None
+        try:
+            return self._logging_mesh_client_handle.poll()
+        except Exception:
+            return None
 
-        instance = context().actor_instance._as_rust()
-        self._logging_mesh_client = await LoggingMeshClient.spawn(
-            instance, proc_mesh=proc_mesh
-        )
-        self._logging_mesh_client.set_mode(
+    def start(
+        self, instance: Instance, proc_mesh: Handle[HyProcMesh], stream_to_client: bool
+    ) -> Handle[LoggingMeshClient]:
+        if self._logging_mesh_client_handle is not None:
+            return self._logging_mesh_client_handle
+        self._logging_mesh_client_handle = LoggingMeshClient.spawn(
             instance,
+            proc_mesh,
             stream_to_client=stream_to_client,
             aggregate_window_sec=3 if stream_to_client else None,
             level=logging.INFO,
         )
+        return self._logging_mesh_client_handle
 
     def register_flusher_if_in_ipython(self) -> None:
         if IN_IPYTHON:
