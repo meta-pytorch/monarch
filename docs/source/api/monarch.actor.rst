@@ -55,6 +55,12 @@ Each publicly exposed function of the actor is annotated with `@endpoint`:
 
 .. autofunction:: concurrent_endpoint
 
+.. autofunction:: stream_endpoint
+
+.. autoclass:: ByteStream
+   :members:
+   :exclude-members: __init__
+
 
 
 Messaging Actor

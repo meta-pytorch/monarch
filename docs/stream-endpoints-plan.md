@@ -1,7 +1,7 @@
 # Chunked request endpoints
 
-Status: experimental Python implementation specification, revised to require an
-iterator-only stream and ordinary up-front arguments.
+Status: implemented experimental Python prototype with an iterator-only stream
+and ordinary up-front arguments. Focused validation is recorded below.
 
 ## Problem and scope
 
@@ -293,3 +293,32 @@ from races with in-flight pulls. The original endpoint response stays observed
 while the receiver handles the explicit cancel control. Unknown or completed
 session IDs allocate no retained cancellation state. The invocation owns producer
 closure and invokes an available aclose exactly once.
+
+## Validation record (2026-10-19)
+
+- Final combined transport run: `.venv/bin/python -m pytest
+  python/tests/test_stream_endpoints.py python/tests/test_concurrent_endpoints.py
+  python/tests/test_port_forward.py python/tests/test_port_reconstruction.py -q
+  -m 'not oss_skip'`: **59 passed** in 34.40 seconds, including 27 new stream tests.
+  Reported warnings came from pytest assertion rewriting's deprecated AST APIs.
+- Supported ordinary endpoint/adverb selection in `test_python_actors.py`:
+  **15 passed**, 49 deselected, including the existing ordinary `.stream()` test.
+- The complete incremental three-process example in `docs/source/actors.md`
+  was extracted verbatim and ran successfully with `.venv/bin/python`.
+- Focused Pyrefly checks passed for the new stream module/tests, endpoint binding
+  hook, and public exports. Available Ruff formatting and E/F/I lint checks
+  passed, as did `git diff --check`. This checkout has no `./check` script.
+
+The tested local environment initially loaded an obsolete ignored Python Rust
+extension. Validation used the existing compatible
+`target/release/lib_rust_bindings.so`, copied into the ignored
+`python/monarch/_rust_bindings.cpython-312-x86_64-linux-gnu.so` location. The old
+extension was backed up at `/tmp/monarch-stream-old-bindings.so`. This was a local
+runtime adjustment, not a committed source change or a Rust rebuild.
+
+An exploratory broader actor run included OSS-unsupported tests and was stopped
+after 101 passes and three environment-only failures (missing IPython in two
+logging tests and unavailable packaged test-bin context in another). The final
+focused runs above exclude `oss_skip` tests. Full repository typechecking was not
+claimed: broader actor_mesh Pyrefly checking reports existing unrelated errors,
+and the local Pyright launcher/interpreter discovery is stale.

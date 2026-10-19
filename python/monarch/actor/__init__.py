@@ -21,8 +21,8 @@ from monarch._src.actor.actor_mesh import (
     as_endpoint,
     attach,
     Channel,
-    context,
     Context,
+    context,
     current_actor_name,
     current_rank,
     current_size,
@@ -52,6 +52,7 @@ from monarch._src.actor.host_mesh import (
 )
 from monarch._src.actor.proc_mesh import get_or_spawn_controller, ProcMesh
 from monarch._src.actor.returns_future import returns_future
+from monarch._src.actor.stream import ByteStream, stream_endpoint
 from monarch._src.actor.supervision import unhandled_fault_hook
 from monarch._src.actor.telemetry import get_meter, span, traced
 from monarch.actor.concurrent import concurrent_endpoint
@@ -60,12 +61,14 @@ __all__ = [
     "Accumulator",
     "Actor",
     "ActorError",
+    "ByteStream",
     "current_actor_name",
     "as_endpoint",
     "current_rank",
     "current_size",
     "concurrent_endpoint",
     "endpoint",
+    "stream_endpoint",
     "Future",
     "returns_future",
     "Point",

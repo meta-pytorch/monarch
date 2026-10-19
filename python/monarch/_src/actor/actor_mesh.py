@@ -2435,11 +2435,13 @@ class ActorMesh(MeshTrait, Generic[T]):
                 setattr(
                     self,
                     attr_name,
-                    self._endpoint(
-                        # pyrefly: ignore [bad-argument-count, bad-argument-type]
-                        kind(attr_name),
-                        attr_value._method,
-                        attr_value._propagator,
+                    attr_value._bind(
+                        self._endpoint(
+                            # pyrefly: ignore [bad-argument-count, bad-argument-type]
+                            kind(attr_name),
+                            attr_value._method,
+                            attr_value._propagator,
+                        )
                     ),
                 )
         _actor_kind(self._class)

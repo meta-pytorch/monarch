@@ -1542,3 +1542,142 @@ class MySupervisor(Actor):
         # Handle or propagate
         return True  # Handled
 ```
+
+## Chunked requests (experimental)
+
+Use `@stream_endpoint` when a routing actor must inspect or transform a large
+request without reconstructing its application object. Mark exactly one required
+parameter with `ByteStream`; other parameters carry ordinary metadata available
+before any chunks arrive. The handler receives a single-consumer async iterator
+of `bytes` and returns one ordinary response. It has no whole-stream collection
+or deserialization helpers.
+
+The client handle offers `stream(*args, chunk_size=65536, **kwargs)` and
+`stream_chunks(*args, chunk_size=65536, **kwargs)`. Both bind the handler's Python
+signature, including positional, keyword-only, and default arguments. The marked
+argument may itself be keyword-only. Use `stream` to serialize an object or
+forward an incoming `ByteStream`; use `stream_chunks` to supply an existing async
+byte producer in the marked argument's position. All other arguments are ordinary
+Monarch values in the opening call. The streamed value is not duplicated there.
+The decorator rejects missing or multiple stream annotations, optional or variadic
+stream parameters, and a declared parameter named `chunk_size`, which is reserved
+for the client. Python typing preserves the result type, but does not transform
+arbitrary handler parameter types into the client's signature; runtime argument
+binding validates calls.
+
+Both methods return a Monarch `Future`: await it from async code, or use `.get()`
+from synchronous code. The selection must contain exactly one actor. Ordinary
+`@endpoint.stream()` still broadcasts and yields per-actor replies; these are
+distinct interfaces.
+
+This complete example places the sender, router, and consumer in separate
+processes and processes each chunk incrementally:
+
+```python
+import asyncio
+
+from monarch.actor import Actor, ByteStream, stream_endpoint, this_host
+
+
+class Consumer(Actor):
+    @stream_endpoint
+    async def ingest(self, chunks: ByteStream, *, route_key: str) -> int:
+        total = 0
+        async for chunk in chunks:
+            total += len(chunk)
+        return total
+
+
+class Router(Actor):
+    def __init__(self, destination):
+        self.destination = destination
+        self.bytes_forwarded = 0
+
+    @stream_endpoint
+    async def ingest(self, chunks: ByteStream, *, route_key: str) -> int:
+        if route_key != "training":
+            raise ValueError("unknown route")
+
+        async def observe():
+            async for chunk in chunks:
+                self.bytes_forwarded += len(chunk)
+                yield chunk
+
+        return await self.destination.ingest.stream_chunks(
+            observe(), route_key=route_key
+        )
+
+
+async def main():
+    procs = this_host().spawn_procs(per_host={"processes": 2})
+    consumer = procs.slice(processes=0).spawn("consumer", Consumer)
+    router = procs.slice(processes=1).spawn("router", Router, consumer)
+
+    async def produce():
+        for _ in range(16):
+            yield b"x" * 65536
+
+    try:
+        assert await router.ingest.stream_chunks(
+            produce(), route_key="training"
+        ) == 1_048_576
+    finally:
+        await procs.stop()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+A pass-through handler can return
+`await self.destination.ingest.stream(chunks, route_key=route_key)`. Passing an
+incoming `ByteStream` to `stream` forwards its bytes without serializing the
+iterator or decoding the application object. If no inspection or transformation
+is needed, return a location or destination reference to remove the payload hop.
+
+`stream` serializes the marked argument with **cloudpickle**. Work starts when
+the returned Future is first observed, on that observer's loop. The source retains
+the full serialized object: serialization itself is not incremental. A monolithic
+pickle is a byte stream, not automatically an incrementally decoded sequence of
+Python objects. Application code chooses how to interpret bytes, and must only
+unpickle trusted data. This API does not preserve Monarch tensor-engine or pending
+mesh-reference tables. Object identity and aliases across the separately
+serialized payload and ordinary metadata are not preserved.
+
+`stream_chunks` accepts an async iterable of `bytes` and splits oversized elements
+to `chunk_size`; invalid sizes and non-byte elements raise errors. An empty chunk
+is data. EOF is stable, and subsequent iterations remain at EOF. Overlapping
+reads raise an error. A closed or consumed stream cannot be forwarded again or
+retained for a later invocation.
+
+Metadata needed by a router belongs in ordinary arguments. Metadata needed only
+by the final consumer can be application-encoded alongside payload records. There
+is at most one streamed argument: the API neither zips streams nor defines a
+record format. Transport chunk boundaries need not match application records;
+applications supply framing and an incremental decoder when needed.
+
+Each hop permits one outstanding pull. Downstream demand drives upstream
+production, so relays retain a small number of chunks per hop unless application
+code accumulates them. A producer may itself yield a large element, which remains
+in memory while split; each slice may copy. The transport still encodes bytes and
+control messages. This is neither zero-copy transport nor a throughput claim.
+One round trip per chunk has a latency cost; a bounded credit window is future
+work. Chunks retain channel ordering, and the response is a single ordinary
+endpoint reply, which is not chunked.
+
+Invocations run concurrently using `@concurrent_endpoint` lifecycle support.
+Their handlers start in dispatch order for messages from one source; completion
+order is unrestricted. Actor state can interleave at awaits. An early return or
+an exception stops the source and closes owned async iterators. Source errors
+raise while reading the input; remote errors propagate through awaited forwarding
+calls. Healthy actors remain callable after these errors.
+
+Cancelling an asyncio observation of a stream Future cancels the whole session,
+including downstream forwarding sessions. This stream-specific behavior also
+applies to `asyncio.wait_for`; the cancelled wait completes after cooperative
+cleanup and final response settlement. Other observers share the terminal
+outcome. An owning `.get(timeout=...)` also cancels and drives cleanup on timeout.
+Actor shutdown cancels outstanding handlers before user cleanup. Cancellation
+cannot enforce a hard deadline on an unresponsive process, and process/network
+failure follows existing supervision and delivery behavior. There are no automatic
+retries or new durable/exactly-once guarantees.
