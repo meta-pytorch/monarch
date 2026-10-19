@@ -538,7 +538,7 @@ impl ProcId {
                 h.finish()
             }
         };
-        base_dir.join(&encode_base58_uid(value))
+        base_dir.join(encode_base58_uid(value))
     }
 }
 
@@ -1339,7 +1339,7 @@ mod tests {
         let path = pid.to_path_elem(Path::new("/tmp/socks"));
         assert_eq!(
             path,
-            Path::new("/tmp/socks").join(&encode_base58_uid(0xd5d54d7201103869))
+            Path::new("/tmp/socks").join(encode_base58_uid(0xd5d54d7201103869))
         );
     }
 
