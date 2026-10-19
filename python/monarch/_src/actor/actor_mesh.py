@@ -90,6 +90,12 @@ from monarch._src.actor.endpoint import (
 from monarch._src.actor.future import Future
 from monarch._src.actor.mpsc import Receiver  # noqa: F401 - used in annotations
 from monarch._src.actor.python_extension_methods import rust_struct
+from monarch._src.actor.raw import (
+    _METHOD as _RAW_METHOD,
+    _received,
+    _unframe,
+    MessageEnvelope,
+)
 from monarch._src.actor.returns_future import returns_future
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
@@ -1421,7 +1427,7 @@ MESSAGES_HANDLED: Counter = METER.create_counter("py_mesages_handled")
 
 @dataclass
 class ActorInitArgs:
-    Class: Type["Actor"]
+    Class: Type["RawMessageActor"]
     proc_mesh: Optional["ProcMesh"]
     controller_controller: Optional["_ControllerController"]
     name: str
@@ -1698,57 +1704,41 @@ def _handle_queued_message_sync(actor: "_Actor", msg: "QueuedMessage") -> None:
     _finish_queued_message(msg, panic_flag)
 
 
-class _Actor:
-    """
-    This is the message handling implementation of a Python actor.
+class _EndpointDispatcher:
+    """Ordinary Actor's codec, method dispatch, and endpoint reply policy."""
 
-    The layering goes:
-        Rust `PythonActor` -> `_Actor` -> user-provided `Actor` instance
-
-    Messages are received from the Rust backend, and forwarded to the `handle`
-    methods on this class.
-
-    This class wraps the actual `Actor` instance provided by the user, and
-    routes messages to it, managing argument serialization/deserialization and
-    error handling.
-    """
-
-    def __init__(self) -> None:
-        self.instance: object | None = None
-        # TODO: (@pzhang) remove this with T229200522
-        self._saved_error: ActorError | None = None
+    def __init__(self, actor: Any, runtime: Any) -> None:
+        self.instance = actor
+        self._runtime = runtime
         self._method_cache: Dict[str, Tuple[Callable[..., Any], bool, bool]] = {}
+
+    def _maybe_exit_debugger(self) -> None:
+        self._runtime._maybe_exit_debugger()
+
+    def _report_exception(self, *args: Any) -> None:
+        self._runtime._report_exception(*args)
 
     # HOT PATH: Be mindful of performance when making changes here.
     # To test how performance is affected by a change, run the RPC benchmarks in
     # `monarch/python/benches/`.
-    async def handle(
-        self,
-        ctx: Context,
-        method: MethodSpecifier,
-        message: FrozenBuffer,
-        panic_flag: PanicFlag,
-        local_state: List[Any],
-        mesh_references: List[Any],
-        response_port: "PortProtocol[Any]",
-        correlation_id: int | None = None,
-    ) -> None:
+    async def handle(self, envelope: MessageEnvelope) -> None:
         """Handle a message for an async actor, on its event loop."""
-        MESSAGES_HANDLED.add(1)
 
         # Initialize method_name before try block so it's always defined
-        method_name = method.name
+        ctx = envelope._context
+        method = envelope._endpoint
+        assert method is not None
+        method_name = method[0]
+        response_port = envelope.reply_port or DroppingPort()
 
         # response_port can be None. If so, then sending to port will drop the response,
         # and raise any exceptions to the caller.
 
         try:
-            prepared = self._prepare(
-                ctx, method, message, local_state, mesh_references, response_port
-            )
-            if prepared is None:
-                return
-            args, kwargs, response_port = prepared
+            args, kwargs = envelope._decode()
+            if method[1]:
+                args = (response_port, *args)
+                response_port = DroppingPort()
             the_method, should_instrument, is_coro = self._lookup(ctx, method_name)
 
             # Bracket the real user-method invocation so the actor reports it
@@ -1760,7 +1750,7 @@ class _Actor:
             try:
                 if is_coro:
                     if should_instrument:
-                        with span_with_correlation_id(method_name, correlation_id):
+                        with span_with_correlation_id(method_name, method[2]):
                             result = await the_method(*args, **kwargs)
                     else:
                         result = await the_method(*args, **kwargs)
@@ -1770,7 +1760,7 @@ class _Actor:
                     # actor's own endpoints are all coroutines.
                     with fake_sync_state():
                         if should_instrument:
-                            with span_with_correlation_id(method_name, correlation_id):
+                            with span_with_correlation_id(method_name, method[2]):
                                 result = the_method(*args, **kwargs)
                         else:
                             result = the_method(*args, **kwargs)
@@ -1785,36 +1775,24 @@ class _Actor:
                 await response
         except Exception as e:
             self._report_exception(e, ctx, method_name, response_port)
-        except BaseException as e:
-            self._report_panic(e, ctx, method_name, panic_flag)
-            raise
 
     # HOT PATH: Be mindful of performance when making changes here.
     # To test how performance is affected by a change, run the RPC benchmarks in
     # `monarch/python/benches/`.
-    def handle_sync(
-        self,
-        ctx: Context,
-        method: MethodSpecifier,
-        message: FrozenBuffer,
-        panic_flag: PanicFlag,
-        local_state: List[Any],
-        mesh_references: List[Any],
-        response_port: "PortProtocol[Any]",
-        correlation_id: int | None = None,
-    ) -> None:
+    def handle_sync(self, envelope: MessageEnvelope) -> None:
         """Handle a message for a sync actor, on its driver thread. Differs from
         `handle` in calling the body and sending the reply inline, and in
         rejecting a coroutine method, which has no event loop to run on."""
-        MESSAGES_HANDLED.add(1)
-        method_name = method.name
+        ctx = envelope._context
+        method = envelope._endpoint
+        assert method is not None
+        method_name = method[0]
+        response_port = envelope.reply_port or DroppingPort()
         try:
-            prepared = self._prepare(
-                ctx, method, message, local_state, mesh_references, response_port
-            )
-            if prepared is None:
-                return
-            args, kwargs, response_port = prepared
+            args, kwargs = envelope._decode()
+            if method[1]:
+                args = (response_port, *args)
+                response_port = DroppingPort()
             the_method, should_instrument, is_coro = self._lookup(ctx, method_name)
             if is_coro:
                 # Only `as_endpoint` can reach one: a sync actor's own
@@ -1828,7 +1806,7 @@ class _Actor:
             token = ctx.actor_instance._execution_start(method_name)
             try:
                 if should_instrument:
-                    with span_with_correlation_id(method_name, correlation_id):
+                    with span_with_correlation_id(method_name, method[2]):
                         result = the_method(*args, **kwargs)
                 else:
                     result = the_method(*args, **kwargs)
@@ -1839,8 +1817,154 @@ class _Actor:
             response_port._resolve_and_send_blocking(result)
         except Exception as e:
             self._report_exception(e, ctx, method_name, response_port)
-        except BaseException as e:
-            self._report_panic(e, ctx, method_name, panic_flag)
+
+    def _lookup(
+        self, ctx: Context, method_name: str
+    ) -> Tuple[Callable[..., Any], bool, bool]:
+        """The bound user method for `method_name`, whether to instrument it,
+        and whether it is a coroutine function."""
+        if self.instance is None:
+            assert self._runtime._saved_error is not None
+            error_message = (
+                f'Actor object is missing when executing method "{method_name}" on actor {ctx.actor_instance.actor_id}. '
+                f"This is due to an earlier error: {self._runtime._saved_error}."
+            )
+            raise AssertionError(error_message)
+
+        if method_name not in self._method_cache:
+            the_method = getattr(self.instance, method_name)
+            should_instrument = False
+
+            if isinstance(the_method, EndpointProperty):
+                should_instrument = the_method._instrument
+                the_method = functools.partial(the_method._method, self.instance)
+
+            self._method_cache[method_name] = (
+                the_method,
+                should_instrument,
+                inspect.iscoroutinefunction(the_method),
+            )
+
+        return self._method_cache[method_name]
+
+
+class _Actor:
+    """
+    This is the message handling implementation of a Python actor.
+
+    The layering goes:
+        Rust `PythonActor` -> `_Actor` -> user-provided `Actor` instance
+
+    Messages are received from the Rust backend, and forwarded to the `handle`
+    methods on this class.
+
+    This class owns runtime initialization, context, queue bookkeeping, and
+    lifecycle. Application bodies remain opaque until the user handler or an
+    extension such as Actor deliberately chooses a decoder.
+    """
+
+    def __init__(self) -> None:
+        self.instance: object | None = None
+        # TODO: (@pzhang) remove this with T229200522
+        self._saved_error: ActorError | None = None
+
+    async def handle(
+        self,
+        ctx: Context,
+        method: MethodSpecifier,
+        message: FrozenBuffer,
+        panic_flag: PanicFlag,
+        local_state: List[Any],
+        mesh_references: List[Any],
+        response_port: PortProtocol[Any],
+        correlation_id: int | None = None,
+    ) -> None:
+        """Deliver one envelope without choosing an application decoder."""
+        MESSAGES_HANDLED.add(1)
+        envelope = None
+        try:
+            envelope = self._prepare(
+                ctx,
+                method,
+                message,
+                local_state,
+                mesh_references,
+                response_port,
+                correlation_id=correlation_id,
+            )
+            if envelope is None:
+                return
+            assert self.instance is not None
+            token = (
+                ctx.actor_instance._execution_start("handle")
+                if envelope._endpoint is None
+                else 0
+            )
+            try:
+                result = cast(RawMessageActor, self.instance).handle(envelope)
+                if inspect.isawaitable(result):
+                    await result
+            finally:
+                ctx.actor_instance._execution_finish(token)
+        except Exception as error:
+            if envelope is None:
+                self._report_exception(error, ctx, method.name, response_port)
+            else:
+                raise
+        except BaseException as error:
+            self._report_panic(error, ctx, method.name, panic_flag)
+            raise
+
+    def handle_sync(
+        self,
+        ctx: Context,
+        method: MethodSpecifier,
+        message: FrozenBuffer,
+        panic_flag: PanicFlag,
+        local_state: List[Any],
+        mesh_references: List[Any],
+        response_port: PortProtocol[Any],
+        correlation_id: int | None = None,
+    ) -> None:
+        """Deliver on the synchronous driver's thread, without an event loop."""
+        MESSAGES_HANDLED.add(1)
+        envelope = None
+        try:
+            envelope = self._prepare(
+                ctx,
+                method,
+                message,
+                local_state,
+                mesh_references,
+                response_port,
+                correlation_id=correlation_id,
+            )
+            if envelope is None:
+                return
+            envelope._async = False
+            assert self.instance is not None
+            token = (
+                ctx.actor_instance._execution_start("handle")
+                if envelope._endpoint is None
+                else 0
+            )
+            try:
+                result = cast(RawMessageActor, self.instance).handle(envelope)
+                if inspect.isawaitable(result):
+                    if inspect.iscoroutine(result):
+                        result.close()
+                    raise TypeError(
+                        "a synchronous actor's handle returned an awaitable"
+                    )
+            finally:
+                ctx.actor_instance._execution_finish(token)
+        except Exception as error:
+            if envelope is None:
+                self._report_exception(error, ctx, method.name, response_port)
+            else:
+                raise
+        except BaseException as error:
+            self._report_panic(error, ctx, method.name, panic_flag)
             raise
 
     def _prepare(
@@ -1851,19 +1975,20 @@ class _Actor:
         local_state: List[Any],
         mesh_references: List[Any],
         response_port: "PortProtocol[Any]",
-    ) -> "Tuple[Tuple[Any, ...], Dict[str, Any], PortProtocol[Any]] | None":
-        """The steps before a message's body runs. Returns the body's arguments
-        and the port its result goes to, or None once an `Init` message has
-        constructed the actor and replied."""
+        *,
+        correlation_id: int | None = None,
+    ) -> MessageEnvelope | None:
+        """Set delivery context and decode only control framing or initialization."""
         _set_context(ctx)
 
         DebugContext.set(DebugContext())
 
-        args, kwargs = PicklingState(message, local_state, mesh_references).unpickle()
-
         match method:
             # pyrefly: ignore [invalid-pattern]
             case MethodSpecifier.Init():
+                args, kwargs = PicklingState(
+                    message, local_state, mesh_references
+                ).unpickle()
                 ins = ctx.actor_instance
                 (args,) = args
                 init_args = cast(ActorInitArgs, args)
@@ -1884,10 +2009,14 @@ class _Actor:
                     # Instance.spawn_tensor_engine().
                     from monarch._src.actor.mock import get_tensor_engine_factory
 
-                    mock_factory = get_tensor_engine_factory(Class)
+                    mock_factory = (
+                        get_tensor_engine_factory(cast(Type[Actor], Class))
+                        if issubclass(Class, Actor)
+                        else None
+                    )
                     if mock_factory is not None:
-                        ins._mock_tensor_engine_factory = (
-                            lambda proc_mesh: mock_factory(proc_mesh)
+                        ins._mock_tensor_engine_factory = lambda proc_mesh: (
+                            mock_factory(proc_mesh)
                         )
                     # PY-SYS-2: If Class._is_system_actor is true,
                     # ins.set_system() must run during
@@ -1903,44 +2032,29 @@ class _Actor:
                     raise
                 response_port.send(None)
                 return None
-            # pyrefly: ignore [invalid-pattern]
-            case MethodSpecifier.ReturnsResponse():
+            case _:
                 pass
-            # pyrefly: ignore [invalid-pattern]
-            case MethodSpecifier.ExplicitPort():
-                args = (response_port, *args)
-                response_port = DroppingPort()
 
-        return args, kwargs, response_port
-
-    def _lookup(
-        self, ctx: Context, method_name: str
-    ) -> Tuple[Callable[..., Any], bool, bool]:
-        """The bound user method for `method_name`, whether to instrument it,
-        and whether it is a coroutine function."""
-        if self.instance is None:
-            assert self._saved_error is not None
-            error_message = (
-                f'Actor object is missing when executing method "{method_name}" on actor {ctx.actor_instance.actor_id}. '
-                f"This is due to an earlier error: {self._saved_error}."
+        if method.name == _RAW_METHOD:
+            envelope = _unframe(message, local_state, mesh_references)
+        else:
+            explicit = isinstance(method, cast(Any, MethodSpecifier.ExplicitPort))
+            envelope = _received(
+                {
+                    "protocol": "monarch.endpoint",
+                    "method": method.name,
+                    "explicit_response_port": explicit,
+                },
+                None,
+                response_port,
+                local_state,
+                mesh_references,
+                buffer=message,
+                endpoint=(method.name, explicit, correlation_id),
             )
-            raise AssertionError(error_message)
-
-        if method_name not in self._method_cache:
-            the_method = getattr(self.instance, method_name)
-            should_instrument = False
-
-            if isinstance(the_method, EndpointProperty):
-                should_instrument = the_method._instrument
-                the_method = functools.partial(the_method._method, self.instance)
-
-            self._method_cache[method_name] = (
-                the_method,
-                should_instrument,
-                inspect.iscoroutinefunction(the_method),
-            )
-
-        return self._method_cache[method_name]
+        envelope._runtime = self
+        envelope._context = ctx
+        return envelope
 
     def _report_exception(
         self,
@@ -2124,6 +2238,11 @@ class _Actor:
     async def __cleanup__(self, cx: Context, exc: str | Exception | None) -> None:
         """Cleans up any resources owned by an async Actor before stopping.
         Automatically called even if there is an error"""
+        from monarch._src.actor.tasks import _cancel_tasks
+
+        _context.set(cx)
+        if self.instance is not None:
+            await _cancel_tasks(self.instance)
         found = self._user_cleanup(cx, exc)
         if found is None:
             return None
@@ -2188,6 +2307,19 @@ def _actor_kind(Class: type) -> ActorKind:
                 async_endpoints.append(attr_name)
             else:
                 sync_endpoints.append(attr_name)
+    if isinstance(getattr(Class, "handle", None), EndpointProperty):
+        raise ValueError("endpoint name handle collides with the raw message handler")
+    if not issubclass(Class, Actor):
+        if sync_endpoints or async_endpoints:
+            raise ValueError("endpoint methods require an Actor subclass")
+        handler = getattr(Class, "handle", None)
+        if handler is RawMessageActor.handle:
+            raise ValueError("RawMessageActor requires a handle override")
+        (
+            async_endpoints if inspect.iscoroutinefunction(handler) else sync_endpoints
+        ).append("handle")
+    elif sync_endpoints and inspect.iscoroutinefunction(Class.handle):
+        raise ValueError("sync endpoints require a synchronous handle override")
     cleanup = getattr(Class, "__cleanup__", None)
     supervise = getattr(Class, "__supervise__", None)
     handle_undeliverable = getattr(Class, "_handle_undeliverable_message", None)
@@ -2235,21 +2367,20 @@ def _actor_kind(Class: type) -> ActorKind:
     return ActorKind.SYNC if sync_endpoints else ActorKind.ASYNC
 
 
-class Actor(MeshTrait):
-    """Base class for actors.
+class RawMessageActor(MeshTrait):
+    """An actor with one dynamic handler for decoded headers and opaque bytes.
 
-    Subclass ``Actor`` to define an actor, and decorate the methods that form
-    its public API with ``@endpoint``. Actors are spawned onto a ``ProcMesh``
-    (for example with ``this_proc().spawn(...)``), after which their endpoints
-    are invoked remotely through the messaging adverbs. Each actor processes its
-    messages sequentially and participates in the supervision tree.
-
-    An endpoint that calls ``os.fork()`` must not let the child return or
-    await into the copied event loop; the child must end in ``os._exit()`` or
-    ``os.exec*()``, and under asyncio's default event-loop policy may run a
-    fresh loop with ``asyncio.run()`` first (WF-3 in
-    ``monarch/_src/actor/bootstrap.py``).
+    Override ``handle`` with a plain or async method. Messages are sequential;
+    use ``spawn_actor_task`` explicitly for overlapping protocols. The return
+    value is ignored; replies are sent explicitly through message.reply_port.
+    Initialization, supervision, and cleanup use the normal actor lifecycle.
+    A handler that forks must end the child in os._exit or os.exec instead of
+    returning or awaiting into the copied actor loop (WF-3 in bootstrap.py).
     """
+
+    def handle(self, message: MessageEnvelope) -> Any:
+        """Process a message; the runtime never decodes its application body."""
+        raise NotImplementedError("RawMessageActor subclasses must define handle")
 
     @functools.cached_property
     def logger(cls) -> logging.Logger:
@@ -2388,6 +2519,27 @@ class Actor(MeshTrait):
         ...
 
 
+class Actor(RawMessageActor):
+    """An endpoint actor built on the raw message handler foundation.
+
+    Decorate methods with ``@endpoint`` or ``@concurrent_endpoint``. Override
+    ``handle`` to inspect headers, then delegate endpoint calls to
+    ``super().handle(message)``. Existing subclasses need no base constructor.
+    """
+
+    def handle(self, message: MessageEnvelope) -> Any:
+        """Decode and dispatch an ordinary Monarch endpoint invocation."""
+        if message._endpoint is None:
+            raise ValueError("Actor.handle expects an endpoint invocation")
+        dispatcher = self.__dict__.get("_monarch_endpoint_dispatcher")
+        if dispatcher is None:
+            dispatcher = _EndpointDispatcher(self, message._runtime)
+            self.__dict__["_monarch_endpoint_dispatcher"] = dispatcher
+        if message._async:
+            return dispatcher.handle(message)
+        return dispatcher.handle_sync(message)
+
+
 class ActorMesh(MeshTrait, Generic[T]):
     """
     A group of actor instances of the same class.
@@ -2435,13 +2587,11 @@ class ActorMesh(MeshTrait, Generic[T]):
                 setattr(
                     self,
                     attr_name,
-                    attr_value._bind(
-                        self._endpoint(
-                            # pyrefly: ignore [bad-argument-count, bad-argument-type]
-                            kind(attr_name),
-                            attr_value._method,
-                            attr_value._propagator,
-                        )
+                    self._endpoint(
+                        # pyrefly: ignore [bad-argument-count, bad-argument-type]
+                        kind(attr_name),
+                        attr_value._method,
+                        attr_value._propagator,
                     ),
                 )
         _actor_kind(self._class)

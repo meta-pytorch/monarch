@@ -1,7 +1,8 @@
 # Raw message actors and protocol libraries
 
-Status: implementation specification. Supersedes the public stream-endpoint
-design in `stream-endpoints-plan.md`; retain its lifecycle tests and lessons.
+Status: implemented experimental Python foundation and protocol library.
+Supersedes the public stream-endpoint design in `stream-endpoints-plan.md`.
+Concrete API and focused validation are recorded below.
 
 ## Objective
 
@@ -237,3 +238,98 @@ Keep implementation changes uncommitted until primary review, then commit them
 on the existing feature branch. Update this design with concrete final API names
 and validation results. Mark the prior prototype plan as superseded and replace
 its public guide/API documentation with the raw foundation plus library examples.
+
+## Concrete implementation
+
+Public foundation: `RawMessageActor`, `MessageEnvelope`, `send_message`, and
+`spawn_actor_task` are exported by `monarch.actor`. `MessageEnvelope(headers,
+payload=b"", reply_port=None)` snapshots outgoing mutable buffers and exposes
+read-only headers/payload. `replace(headers=...)` retains payload/reply/attachments.
+`send_message(target, envelope, selection=None)` requires one actor by default;
+explicit `selection="all"` or `"choose"` uses existing selection semantics. Raw
+handler return values are ignored. `spawn_actor_task(actor, coroutine, *,
+name=None)` is the small public task operation; endpoint-specific tracking flags
+remain private.
+
+`Actor(RawMessageActor).handle` genuinely owns normal endpoint decode/dispatch
+through a private dispatcher. The runtime invokes the instance's handler for
+ordinary and raw messages. It still owns Init, context, queues, supervision, and
+cleanup. Ordinary endpoint delivery retains the original FrozenBuffer and both
+reference tables. A user inspection of its payload makes a lazy snapshot using
+an independent buffer cursor; it does not consume the Actor decoder's state.
+The generic registry cancels/awaits owned tasks before user cleanup and is shared
+by concurrent_endpoint and the stream library. Raw handlers/owned tasks receive
+execution bookkeeping, while ordinary endpoint tokens are not double counted.
+Endpoint name `handle` is rejected explicitly as a dispatch-hook collision.
+
+Raw frames have a private magic/version, control byte length, and control mesh-ref
+count, followed by trusted Monarch-pickled headers/reply capability and opaque
+body bytes. The wire reference table contains header refs followed by body refs;
+receiving splits them before decoding controls. Framing validates lengths and
+reference-table bounds before slicing. No application payload decoder runs in
+raw delivery or forwarding. Control capabilities/Ports and byte-channel envelopes
+still use Monarch pickle; application JSON in the guide is a distinct codec,
+not a cross-language transport guarantee.
+
+The prototype preserves resolved header mesh references. Pending header refs are
+collected safely with allow_mesh_references=True, detected by try_resolve_now,
+and rejected with initialization guidance rather than invoking blocking fallback
+reducers. Tensor-engine header references and opaque forwarding of nonempty
+received tensor local_state are explicitly rejected. Standard Actor reference
+semantics remain supported. Fully deferred control headers would require an
+additional private state-composition helper and are future work.
+
+The send path uses the existing queued cast_unresolved(PendingMessage) primitive
+with an already-composed state; AsyncActorMesh.cast itself is unimplemented. No
+native source changes or rebuild were needed. Raw framing snapshots FrozenBuffer
+contents into immutable Python bytes before making public views. This avoids an
+existing native buffer-export format hazard observed when passing a
+memoryview(FrozenBuffer) into Buffer.write. Ordinary Actor delivery does not make
+that unconditional copy. Framing/forwarding and requested payload inspection may
+copy whole messages; zero-copy and throughput claims are outside this change.
+
+Streaming is `monarch.actor.streams`: `PROTOCOL`, `ByteStream`,
+`request(target, async_byte_source, *, metadata=None, chunk_size=65536)`, and
+`await handle(actor, envelope, callback)`. The callback receives `(chunks,
+metadata)` and runs as an explicitly owned session task. Open/cancel handling
+returns promptly. Dynamic application operation lookup belongs inside the
+callback, so cancel controls do not require application metadata. There is no
+stream EndpointProperty, annotation binding, new endpoint adverb, or implicit
+application serialization. The prototype-only binding hook/export were removed.
+
+The library retains one-pull-per-hop flow control, stable EOF, empty chunks,
+oversized-element splitting, read overlap rejection, explicit remote cancellation,
+settlement before releasing reply receivers, native receive self-wakeup, and
+exactly-once owned iterator closure. Generic task completion also settles sessions
+cancelled before their first step. Source/callback errors and early returns close
+sources; actor shutdown settles active sessions and cleans tasks before hooks.
+ByteStream remains iterator-only, with aclose for lifecycle and no read/load API.
+
+## Validation record (2026-10-19)
+
+A combined real-transport run passed **102 tests** in **78.84 seconds**:
+`test_streams.py`, both raw acceptance files, `test_concurrent_endpoints.py`,
+`test_port_forward.py`, `test_port_reconstruction.py`, `test_sync_actor_driver.py`,
+and selected established `test_python_actors.py` endpoint/mesh/cleanup tests,
+excluding `oss_skip`. It includes 25 stream tests and 16 complementary raw tests.
+Coverage includes JSON/non-pickle bytes, reconstruction probes, header/body mesh
+and Port attachments, pending control rejection, mutable payload snapshots,
+framing errors, real Actor delegation, shared task cleanup/failure supervision,
+sync driver behavior, existing stream adverb, cancellation, and active shutdown.
+Both complete examples in `docs/source/actors.md` were extracted verbatim and
+executed successfully with `.venv/bin/python`. After isolating internal task
+tracking arguments behind the private helper, the concurrent/raw-owned-task
+selection passed another **22 tests** in **9.97 seconds**.
+
+Focused Ruff and Pyrefly checks cover the new modules, concurrency wrapper,
+public exports, and acceptance tests. Broader Pyrefly checking of existing
+actor_mesh/proc_mesh still reports six pre-existing issues (Meta __manifest__
+imports, native stub typing, optional setup callback typing, and dynamic marker
+attributes). This is not a full-repository typecheck claim. The checkout has no
+./check script. Test warnings are existing pytest AST deprecations.
+
+Tests use the existing compatible `target/release/lib_rust_bindings.so` copied
+into ignored `python/monarch/_rust_bindings.cpython-312-x86_64-linux-gnu.so`.
+The prior ignored extension remains backed up at
+`/tmp/monarch-stream-old-bindings.so`. This is a local environment adjustment,
+separate from committed source changes. No Rust rebuild was performed.

@@ -181,10 +181,6 @@ class EndpointProperty(Generic[P, R]):
         # and also lookup the method
         return cast(Endpoint[P, R], self)
 
-    def _bind(self, endpoint: Any) -> Any:
-        """Build the client interface for this endpoint on an actor mesh."""
-        return endpoint
-
 
 class NotAnEndpoint:
     """

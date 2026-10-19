@@ -41,8 +41,8 @@ are launched across hosts. HostMesh represents a mesh of hosts. ProcMesh is a me
 Defining Actors
 ===============
 
-All actor classes subclass the Actor base object, which provides them mesh slicing API.
-Each publicly exposed function of the actor is annotated with `@endpoint`:
+``RawMessageActor`` provides one opaque message handler. ``Actor`` extends it
+with Python endpoint dispatch and the established messaging adverbs.
 
 .. autoclass:: Actor
    :members:
@@ -55,11 +55,22 @@ Each publicly exposed function of the actor is annotated with `@endpoint`:
 
 .. autofunction:: concurrent_endpoint
 
-.. autofunction:: stream_endpoint
-
-.. autoclass:: ByteStream
+.. autoclass:: RawMessageActor
    :members:
    :exclude-members: __init__
+
+.. autoclass:: MessageEnvelope
+   :members:
+
+.. autofunction:: send_message
+
+.. autofunction:: spawn_actor_task
+
+Byte streaming protocol library
+------------------------------
+
+.. automodule:: monarch.actor.streams
+   :members:
 
 
 
