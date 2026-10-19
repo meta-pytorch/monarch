@@ -1,6 +1,7 @@
 # Chunked request endpoints
 
-Status: implementation specification for an experimental Python API.
+Status: experimental Python implementation specification, revised to require an
+iterator-only stream and ordinary up-front arguments.
 
 ## Problem and scope
 
@@ -23,8 +24,9 @@ actor mesh reference is still preferable because it removes the payload hop.
 ## Public API
 
 Export `stream_endpoint` and `ByteStream` from `monarch.actor`. A stream endpoint
-is an async method with exactly one input, a `ByteStream`, and one normal return
-value. Reject synchronous methods and async-generator methods at decoration
+is an async method with exactly one parameter annotated `ByteStream`, any number
+of ordinary parameters, and one normal return value. No invocation has multiple
+streamed arguments. Reject synchronous methods and async-generator methods at decoration
 time; async generators are supported as input producers, not endpoint bodies.
 
 ```python
@@ -33,9 +35,11 @@ from monarch.actor import Actor, ByteStream, stream_endpoint
 
 class Consumer(Actor):
     @stream_endpoint
-    async def ingest(self, chunks: ByteStream) -> int:
-        request = await chunks.load()
-        return len(request)
+    async def ingest(self, chunks: ByteStream, *, route_key: str) -> int:
+        total = 0
+        async for chunk in chunks:
+            total += len(chunk)
+        return total
 
 
 class Router(Actor):
@@ -44,21 +48,26 @@ class Router(Actor):
         self.bytes_forwarded = 0
 
     @stream_endpoint
-    async def ingest(self, chunks: ByteStream) -> int:
+    async def ingest(self, chunks: ByteStream, *, route_key: str) -> int:
         async def observe():
             async for chunk in chunks:
                 self.bytes_forwarded += len(chunk)
                 yield chunk
 
-        return await self.destination.ingest.stream_chunks(observe())
+        return await self.destination.ingest.stream_chunks(
+            observe(), route_key=route_key
+        )
 
 
 # Both router and destination are singleton actor mesh selections.
-result = await router.ingest.stream(large_request, chunk_size=64 * 1024)
+result = await router.ingest.stream(
+    large_request, route_key="training", chunk_size=64 * 1024
+)
 ```
 
 A pass-through endpoint can simply return
-`await self.destination.ingest.stream(chunks)`. Passing an incoming `ByteStream`
+`await self.destination.ingest.stream(chunks, route_key=route_key)`.
+Passing an incoming `ByteStream`
 to `stream` forwards its bytes without serializing the iterator or decoding the
 application value.
 
@@ -66,12 +75,25 @@ application value.
 
 The decorator binds a distinct client handle with:
 
-- `stream(message, *, chunk_size=64 * 1024) -> Future[R]`: serialize an ordinary
-  object once using cloudpickle, then send its bytes incrementally. An incoming
-  `ByteStream` is forwarded instead of serialized.
-- `stream_chunks(chunks: AsyncIterable[bytes], *, chunk_size=64 * 1024)
-  -> Future[R]`: send an existing byte producer without object serialization.
-  Split oversized elements into messages no larger than `chunk_size`.
+- `stream(*args, chunk_size=64 * 1024, **kwargs) -> Future[R]`: bind the endpoint's
+  Python signature and serialize the argument corresponding to `ByteStream`
+  once using cloudpickle, then send its bytes incrementally. An incoming
+  `ByteStream` is forwarded instead of serialized. Other arguments are ordinary
+  Monarch values in the opening invocation, available before reading any chunks.
+- `stream_chunks(*args, chunk_size=64 * 1024, **kwargs) -> Future[R]`: the same
+  binding, but the streamed argument must be an `AsyncIterable[bytes]`. Send its
+  bytes without object serialization. Split oversized elements into messages
+  no larger than `chunk_size`.
+
+The streamed argument may be positional or keyword-only; ordinary positional,
+keyword, and default argument behavior follows Python signature binding. Require
+one explicitly annotated, non-variadic ByteStream parameter without a default.
+Reject missing or multiple stream annotations. Reserve `chunk_size` for the
+adverb and reject a declared endpoint parameter with that name. Annotation
+inspection must identify the stream without imposing annotation requirements on
+ordinary metadata. A client may supply an object where the handler sees a
+ByteStream, so runtime binding does not imply that a standard Python type checker
+can automatically transform arbitrary client signatures.
 
 These calls select exactly one actor, using the existing `call_one` validation.
 Reject invalid chunk sizes before dispatch. Use Monarch `Future` and
@@ -87,16 +109,18 @@ fanout adverbs on this new handle accidentally through a generic proxy.
 
 ### ByteStream
 
-`ByteStream` is a single-consumer async iterator yielding `bytes`. It additionally
-supports:
+`ByteStream` is a single-consumer async iterator yielding `bytes`. Do not expose
+`read()` or `load()` or another whole-stream materialization helper. The receiver
+processes chunks incrementally. `aclose()` is a lifecycle operation, not a read
+operation. The public examples must demonstrate incremental processing.
 
-- `await chunks.read() -> bytes`: collect the remaining bytes, explicitly.
-- `await chunks.load() -> object`: collect and deserialize the remaining bytes.
-
-Neither operation is called implicitly by routing code. `load()` requires an
-intact serialized object; applying a byte transformation may require a matching
-inverse operation at the consumer. It is only appropriate for trusted pickle
-payloads, as with ordinary Python object serialization.
+Metadata needed by a router is an ordinary argument sent up front. When metadata
+is needed only at the final consumer, applications can pair it with payload
+records and serialize that combined stream themselves. This API does not zip
+separate streams or define a record format. Transport chunks need not align with
+application records; applications using record streams supply framing and an
+incremental decoder. A monolithic cloudpickle from `.stream(object)` is a byte
+stream, not automatically an incrementally decoded stream of Python objects.
 
 Only one read may be outstanding. Reject overlapping reads rather than silently
 misassociating responses. EOF is stable: subsequent reads terminate without
@@ -118,8 +142,11 @@ handler. Each session has isolated channels and an opaque unique session ID.
 A minimal pull protocol is sufficient:
 
 1. The caller opens a channel for demand and starts the destination's session
-   invocation, passing the demand Port and session ID.
-2. The receiver constructs a ByteStream and opens a data-response channel.
+   invocation, passing the demand Port, session ID, and bound ordinary arguments.
+   The streamed application value is not also included in that envelope.
+2. The receiver constructs a ByteStream, opens a data-response channel, and
+   inserts the ByteStream into the declared parameter when invoking the handler.
+   Metadata is immediately available even when the source has produced no chunks.
 3. Each iteration sends a pull containing the response Port. The caller's pump
    reads at most one bounded chunk from its producer and replies through it.
 4. A dedicated EOF value terminates iteration. Source exceptions are sent through
@@ -200,6 +227,12 @@ repository instructions and use existing isolation/test fixtures.
 Required behavior tests:
 
 - Object round trip through one endpoint, including `.get()` where supported.
+  Test-only application code may explicitly collect and decode to verify pickle
+  behavior; the public iterator must have no collection/deserialization helpers.
+- Ordinary positional and keyword metadata, defaults, a keyword-only streamed
+  argument, and forwarding with metadata. Prove metadata can be used before the
+  first source chunk; reject ambiguous annotations and invalid bindings before
+  remote dispatch.
 - Three-process sender/router/consumer chain, with the downstream result returned
   to the original caller.
 - A pickle reconstruction probe proving the application object is decoded only
@@ -233,3 +266,30 @@ Commit this specification separately. Delegate implementation to a
 files and validation results. The primary agent reviews the result and handles
 any necessary follow-up. Keep this specification aligned with the final API if
 implementation evidence requires changes.
+
+## Argument semantics and scope
+
+Which argument streams is explicitly declared, not selected dynamically by size.
+Even a tiny value supplied for that parameter appears as a ByteStream at the
+receiver. All other values are up-front metadata; unexpectedly large metadata is
+not silently promoted to a stream. Serialization of the payload separately from
+the metadata does not preserve object identity or aliases across that boundary.
+Multiple stream parameters, automatic zipping, typed object-loading wrappers,
+and size-based inline optimizations are outside this implementation.
+
+## Implementation refinements
+
+The client keeps returns_future's lazy execution and synchronous get behavior.
+Its stream-specific asyncio observer requests invocation cancellation, then waits
+for cleanup rather than cancelling its own observer task immediately. This also
+covers cancellation before the observer's first step. Ordinary endpoint Futures
+retain their existing cancellation behavior.
+
+Channel receives run on Tokio and survive cancellation of an asyncio observer.
+A cancelled stream read wakes its pending receive through its own private port
+and observes settlement before releasing the channel. Private demand/data ports
+discard late packets after terminal settlement to prevent undeliverable replies
+from races with in-flight pulls. The original endpoint response stays observed
+while the receiver handles the explicit cancel control. Unknown or completed
+session IDs allocate no retained cancellation state. The invocation owns producer
+closure and invokes an available aclose exactly once.
