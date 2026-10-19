@@ -1,7 +1,8 @@
 # Chunked request endpoints
 
-Status: implemented experimental Python prototype with an iterator-only stream
-and ordinary up-front arguments. Focused validation is recorded below.
+Status: superseded by [Raw message actors and protocol libraries](raw-message-actors-plan.md).
+This records the first prototype and its validation; its experimental endpoint
+API is being replaced by a library on the raw message-handler foundation.
 
 ## Problem and scope
 
