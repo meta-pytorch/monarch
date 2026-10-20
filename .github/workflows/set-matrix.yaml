@@ -47,7 +47,7 @@ jobs:
           # PR/trunk GPU jobs (e.g. test-h100.yml) run cuda13.0, and the
           # g4dn fleet's host driver currently fails nvidia-container-cli's
           # check against cuda13.2 containers. Release/nightly wheels still
-          # ship cu132 via wheels.yml / publish_release.yml on a CPU runner.
+          # ship cu132 via publish_release.yml on a CPU runner.
 
           # Define test matrices (py3.10 only)
           CUDA='{"name": "cuda", "runner": "${{ inputs.runner-cuda }}", "gpu-arch-type": "cuda", "gpu-arch-version": "13.0", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'

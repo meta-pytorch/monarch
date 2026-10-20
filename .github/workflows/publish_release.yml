@@ -1,16 +1,37 @@
-name: Build and publish versioned monarch wheels
+name: Build and publish monarch wheels
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version string (e.g. 0.1.0rc1 or 0.1.0)"
-        required: true
+        description: "Version string (e.g. 0.7.0rc1 or 0.7.0); leave empty for a nightly"
+        type: string
+        required: false
+        default: ''
       is_prerelease:
         description: "Is this a pre-release? (If false, tags as latest)"
         type: boolean
         required: false
         default: false
+  # For testing changes to this workflow.
+  pull_request:
+    branches:
+      - main
+      - gh/**
+    paths:
+      - .github/workflows/publish_release.yml
+      - .github/workflows/build-dist.yml
+      - .github/workflows/build-macos.yml
+      - Dockerfile
+      - Dockerfile.nightly
+  push:
+    branches:
+      - main
+    # Run as soon as any changes to .github actions land
+    paths:
+      - .github/**
+  schedule:
+    - cron: '0 0 * * *'  # Daily at midnight UTC
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
@@ -21,7 +42,7 @@ jobs:
     with:
       # TODO add 3.14 once we figure out py03 issue
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
-      # Stable releases ship cu132 even though PR CI tests at cu130 (see
+      # Published wheels ship cu132 even though PR CI tests at cu130 (see
       # set-matrix.yaml): pytorch core does the same split — publish cu132
       # binaries, GPU-test only at cu130 — because no g4dn-fleet AMI yet
       # carries an NVIDIA driver that satisfies nvidia-container-cli's
@@ -36,23 +57,23 @@ jobs:
       # of auto-suffixing it from gpu-arch-type/version.
       runner: linux.c7i.2xlarge
       docker-image: 'pytorch/manylinux2_28-builder:cuda13.2'
-      torch-spec: 'torch==2.14.1 --extra-index-url https://download.pytorch.org/whl/cu132'
+      torch-spec: ${{ inputs.version && 'torch==2.14.1 --extra-index-url https://download.pytorch.org/whl/cu132' || '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132' }}
       gpu-arch-type: cpu
       gpu-arch-version: ''
       arch-label: cuda13.2
-      version: ${{ github.event.inputs.version }}
+      version: ${{ inputs.version }}
       platform: x86_64
 
-  build-aarch64:
+  build-arm64:
     uses: ./.github/workflows/build-dist.yml
     with:
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
       runner: linux.arm64.2xlarge
       docker-image: 'pytorch/manylinuxaarch64-builder:cuda13.2'
-      torch-spec: 'torch==2.14.1 --extra-index-url https://download.pytorch.org/whl/cu132'
+      torch-spec: ${{ inputs.version && 'torch==2.14.1 --extra-index-url https://download.pytorch.org/whl/cu132' || '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132' }}
       gpu-arch-type: cuda
       gpu-arch-version: '13.2'
-      version: ${{ github.event.inputs.version }}
+      version: ${{ inputs.version }}
       platform: aarch64
 
   build-macos:
@@ -60,14 +81,17 @@ jobs:
     with:
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
       runner: macos-latest
-      torch-spec: 'torch==2.14.1 --extra-index-url https://download.pytorch.org/whl/cpu'
-      version: ${{ github.event.inputs.version }}
+      torch-spec: ${{ inputs.version && 'torch==2.14.1 --extra-index-url https://download.pytorch.org/whl/cpu' || '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu' }}
+      version: ${{ inputs.version }}
 
-  publish:
+  publish-to-pypi:
     name: Publish to PyPI
-    needs: [build-x86_64, build-aarch64, build-macos]
+    needs: [build-x86_64, build-arm64, build-macos]
     runs-on: ubuntu-latest
-    environment: stable
+    # Keep the publishing workflow filename identical for stable and nightly
+    # releases: PyPI compares it when detecting changes of provenance.
+    # Register publish_release.yml with BOTH environments as PyPI trusted publishers.
+    environment: ${{ inputs.version && 'stable' || 'nightly' }}
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     permissions:
       id-token: write  # Required for PyPI trusted publishing
@@ -76,6 +100,7 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: "!*.dockerbuild"
           path: dist
           merge-multiple: true
 
@@ -85,22 +110,80 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
+          attestations: true
           verbose: true
 
-  build-and-push-stable:
-    name: Build and push stable docker image
-    # Only make a new docker image if the publish is successful
-    needs: publish
+  publish-to-container-registry:
+    name: Publish to Github Container Registry
+    needs: [build-x86_64, build-arm64]
     runs-on: ubuntu-latest
-    environment: stable
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    environment: nightly
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !inputs.version }}
     permissions:
       contents: read
       packages: write # Grant write permission for packages (GHCR)
+    steps:
+      # This step is required to avoid the "no space left on device" error from
+      # the large pytorch docker image.
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@v1.3.1
 
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # Download wheels outside the repo so they don't interfere with the
+      # Docker build context (dist/ is in .dockerignore).
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          # Docker container only has python 3.12, so we need to use the x86_64 3.12 wheel.
+          name: monarch-py3.12-cuda13.2-x86_64
+          path: ${{ runner.temp }}/monarch_wheels
+          merge-multiple: true
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Get tag for publishing
+        run: echo "DOCKER_TAG=0.8.0.dev$(date +'%Y%m%d')-cuda13.2" >> $GITHUB_ENV
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: . # Build context is the root directory
+          file: ./Dockerfile.nightly
+          push: true # Push the image to the registry
+          # Push to monarch-nightly package instead of monarch.
+          tags: |
+            ghcr.io/${{ github.repository }}-nightly:${{ env.DOCKER_TAG }}
+            ghcr.io/${{ github.repository }}-nightly:latest
+          # TODO: find docker tag that gets updated automatically.
+          build-args: |
+            PYTORCH_TAG=2.16.0.dev20261010-cuda13.2-cudnn9-runtime
+          build-contexts: |
+            monarch-wheels=${{ runner.temp }}/monarch_wheels
+
+  build-and-push-stable:
+    name: Build and push stable docker image
+    # Only make a new docker image if the publish is successful.
+    needs: publish-to-pypi
+    runs-on: ubuntu-latest
+    environment: stable
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.version }}
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@v1.3.1
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -116,30 +199,32 @@ jobs:
 
       - name: Determine Docker Tags
         id: determine-tags
+        env:
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.is_prerelease }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          VERSION="${{ github.event.inputs.version }}"
-          PRERELEASE="${{ github.event.inputs.is_prerelease }}"
-          TAGS="ghcr.io/${{ github.repository }}:${VERSION}-cuda13.2"
+          TAGS="ghcr.io/${REPOSITORY}:${VERSION}-cuda13.2"
           if [[ "$PRERELEASE" == "false" ]]; then
-            TAGS="$TAGS,ghcr.io/${{ github.repository }}:latest"
+            TAGS="$TAGS,ghcr.io/${REPOSITORY}:latest"
           fi
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
-          context: . # Build context is the root directory
+          context: .
           file: ./Dockerfile
-          push: true # Push the image to the registry
+          push: true
           tags: ${{ steps.determine-tags.outputs.tags }}
           build-args: |
             PYTORCH_TAG=2.14.1-cuda13.2-cudnn9-runtime
-            MONARCH_VERSION=${{ github.event.inputs.version }}
+            MONARCH_VERSION=${{ inputs.version }}
 
   create-docs-branch:
     name: Create docs release branch
-    needs: publish
-    if: ${{ github.event.inputs.is_prerelease != 'true' }}
+    needs: publish-to-pypi
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.version && !inputs.is_prerelease }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -147,7 +232,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Create docs/v${{ github.event.inputs.version }} branch
+      - name: Create docs release branch
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          git checkout -b "docs/v${{ github.event.inputs.version }}"
-          git push origin "docs/v${{ github.event.inputs.version }}"
+          git checkout -b "docs/v${VERSION}"
+          git push origin "docs/v${VERSION}"
