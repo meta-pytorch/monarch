@@ -50,7 +50,8 @@ and [its comparison implementation](https://github.com/pypi/warehouse/blob/main/
 ## Nightly builds
 
 The workflow runs daily at midnight UTC. To run it manually, select **Build and
-publish monarch wheels** in GitHub Actions and leave `version` empty.
+publish monarch wheels** in GitHub Actions, choose **Nightly** from the
+`release_type` dropdown, and leave `version` empty.
 
 Nightly builds use nightly PyTorch, publish wheels under the `nightly`
 environment, and update the `monarch-nightly` container image. Pull requests and
@@ -60,17 +61,32 @@ workflow changes on `main` build wheels without publishing.
 
 Run **Build and publish monarch wheels** manually with:
 
-- `version`: the exact release version, such as `0.7.0rc1` or `0.7.0`.
-- `is_prerelease`: checked for release candidates and other prereleases.
+| Release type | Version | Upload environment | Container `latest` and docs branch |
+| --- | --- | --- | --- |
+| Nightly | Empty | `nightly` | No |
+| Official prerelease | e.g. `0.8.0rc1` | `stable` | No |
+| Official release | e.g. `0.8.0` | `stable` | Yes |
+
+The release type and version must match. Validation rejects a version on a
+nightly, a missing or malformed official version, a prerelease version selected
+as an official release, and an official release version selected as a prerelease.
+Official versions cannot use development, local, or epoch components. Valid
+versions are normalized to their Python package version spelling before builds.
 
 Versioned builds use pinned stable PyTorch and publish wheels under the `stable`
 environment. After PyPI publishing succeeds, the workflow publishes the versioned
-container image. When `is_prerelease` is false, it also updates the container's
-`latest` tag and creates the `docs/v<version>` branch.
+container image. **Official release** also updates the container's `latest` tag
+and creates the `docs/v<version>` branch. Approval rules for `stable` remain
+independent of `nightly`.
 
-The existing CLI workflow filename for versioned releases is unchanged:
+Use GitHub's **Use workflow from** selector to choose a branch. A run builds that
+branch's commit at dispatch time; environment branch restrictions still apply.
+The CLI also accepts a branch or tag through `--ref`.
+
+The CLI workflow filename is unchanged. Replace the old `is_prerelease` input
+with `release_type`:
 
 ```sh
 gh workflow run publish_release.yml --repo meta-pytorch/monarch --ref main \
-  -f version=0.7.0rc1 -f is_prerelease=true
+  -f 'release_type=Official prerelease' -f version=0.8.0rc1
 ```
