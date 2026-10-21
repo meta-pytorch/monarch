@@ -7,8 +7,8 @@
 # pyre-unsafe
 
 """
-Exporting Metrics and Logs with OpenTelemetry
-==============================================
+Exporting Metrics, Logs, and Traces with OpenTelemetry
+======================================================
 
 This example shows how to export Monarch's built-in metrics and logs to an
 `OpenTelemetry Collector <https://opentelemetry.io/docs/collector/>`_ and
@@ -17,11 +17,14 @@ full observability stack on Kubernetes using the
 `Monarch CRD and operator <https://github.com/meta-pytorch/monarch-kubernetes/>`_.
 
 When ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set, Monarch's telemetry layer exports
-metrics and logs via OTLP/HTTP to the specified collector. Metrics are exported
-automatically. Log export uses the unified tracing layer, which is enabled
-by default and wires up the OTLP log sink.
+metrics, logs, and spans via OTLP/HTTP to the specified collector. Metrics are
+exported automatically. Log and span export use the unified tracing layer,
+which is enabled by default and wires up the OTLP log and span sinks. A log
+record emitted inside a span carries that span's trace and span IDs.
 Built-in actor system metrics (mailbox posts, messages sent/received, queue
-sizes, etc.) and log events are exported with no code changes.
+sizes, etc.), log events, and spans are exported with no code changes. This
+example prints spans with the collector's debug exporter; add a tracing backend
+such as Jaeger or Grafana Tempo to visualize them.
 
 External OTLP export is independent of distributed telemetry. When a job also
 enables distributed telemetry, the same OTel metric provider feeds a job-local
@@ -185,30 +188,9 @@ Cleanup
 Configuration
 -------------
 
-.. list-table::
-   :header-rows: 1
-
-   * - Environment Variable
-     - Default
-     - Description
-   * - ``OTEL_EXPORTER_OTLP_ENDPOINT``
-     - (unset)
-     - Collector endpoint. When set, enables OTLP metric and log export.
-   * - ``OTEL_SERVICE_NAME``
-     - ``unknown_service``
-     - Service name attached to all exported telemetry.
-   * - ``OTEL_METRIC_EXPORT_INTERVAL``
-     - ``1s``
-     - How often the periodic metric reader pushes to the exporter.
-   * - ``ENABLE_OTEL_METRICS``
-     - ``true``
-     - Set to ``false`` to disable OTel metrics entirely.
-   * - ``OTEL_EXPORTER_OTLP_HEADERS``
-     - (unset)
-     - Additional headers for the OTLP exporter (e.g., auth tokens).
-   * - ``OTEL_EXPORTER_OTLP_TIMEOUT``
-     - (unset)
-     - Timeout for OTLP export requests.
+The controller and worker pods set ``OTEL_EXPORTER_OTLP_ENDPOINT`` to the
+collector service. See :doc:`/opentelemetry` for every export setting, the
+resource attributes attached to each signal, and delivery limitations.
 """
 
 # %%
@@ -283,10 +265,6 @@ def build_worker_pod_template(port: int) -> V1PodTemplateSpec:
                             value=_OTEL_ENDPOINT,
                         ),
                         V1EnvVar(
-                            name="OTEL_SERVICE_NAME",
-                            value="monarch-worker",
-                        ),
-                        V1EnvVar(
                             name="MONARCH_FILE_LOG",
                             value="trace",
                         ),
@@ -351,12 +329,12 @@ def main():
                 f"    {result['hostname']}: computed {result['iterations']} iterations"
             )
 
-    # Wait for the periodic metric reader and log sink to flush.
-    print("Waiting for metrics and logs to flush to collector...")
+    # Wait for the periodic metric reader and the log and span sinks to flush.
+    print("Waiting for metrics, logs, and spans to flush to collector...")
     time.sleep(10)
 
     print()
-    print("Verify metrics and logs in the OTEL collector logs:")
+    print("Verify metrics, logs, and spans in the OTEL collector logs:")
     print("  kubectl logs -n monarch-tests deployment/otel-collector --tail=100")
     print()
     print("Scrape Prometheus endpoint:")

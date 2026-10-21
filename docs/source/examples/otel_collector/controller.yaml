@@ -7,7 +7,7 @@
 # Controller pod for running the OTEL collector example.
 # Includes RBAC for creating MonarchMesh CRDs and watching pods,
 # and sets OTEL_EXPORTER_OTLP_ENDPOINT so the controller process
-# exports its own metrics and logs to the collector.
+# exports its own metrics, logs, and spans to the collector.
 #
 # Prerequisites:
 # - monarch-tests namespace created
@@ -63,7 +63,5 @@ spec:
       env:
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: "http://otel-collector.monarch-tests.svc.cluster.local:4318"
-        - name: OTEL_SERVICE_NAME
-          value: "monarch-controller"
         - name: MONARCH_FILE_LOG
           value: "trace"

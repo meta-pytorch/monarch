@@ -4,8 +4,8 @@ Monarch provides one observability setup with three complementary job-local
 surfaces: distributed telemetry for SQL analysis, the Monarch Dashboard for
 visual monitoring, and the Mesh Admin TUI for live diagnostics. Enable
 telemetry on a job to start all three data paths consistently. OpenTelemetry
-supplies metrics to distributed telemetry and can independently export metrics
-and logs to external backends.
+supplies metrics to distributed telemetry and can independently export metrics,
+logs, and spans to external backends.
 
 ## Choose a surface
 
@@ -14,7 +14,7 @@ and logs to external backends.
 | Query actor, mesh, message, trace, and metric history | [Distributed telemetry](distributed-telemetry) | DataFusion SQL across host-local collectors |
 | Monitor topology, status, failures, and traffic in a browser | [Monarch Dashboard](monarch-dashboard) | Live summaries, hierarchy views, and a job DAG |
 | Diagnose a running mesh from a terminal | [Mesh Admin TUI](admin-tui) | Live topology, health checks, and py-spy stack traces |
-| Export metrics and logs to an external backend | [OpenTelemetry and Grafana](./generated/examples/otel_collector) | OTLP export to systems such as Prometheus and Loki |
+| Export metrics, logs, and spans to an external backend | [OpenTelemetry](opentelemetry) | OTLP export to systems such as Prometheus and Loki |
 
 The dashboard reads distributed telemetry. The TUI reads the Mesh Admin API.
 Periodic mesh-admin snapshots also flow into telemetry so the dashboard can
@@ -125,6 +125,7 @@ That supports the TUI, but it does not provide the dashboard or SQL history.
 :hidden:
 distributed-telemetry
 metrics
+opentelemetry
 admin-tui
 monarch-dashboard
 ```
