@@ -56,7 +56,7 @@ use pyo3::types::PyMapping;
 use crate::actor::PythonActor;
 use crate::actor::to_py_error;
 use crate::context::PyInstance;
-use crate::context::stop_instance_and_wait;
+use crate::context::shutdown_root_client;
 use crate::handle::PyHandle;
 use crate::proc_mesh::PyProcMesh;
 use crate::pytokio::PyPythonTask;
@@ -806,7 +806,7 @@ fn shutdown_local_host_mesh(timeout_secs: Option<f64>) -> PyResult<PyHandle> {
         if let Some(shutdown) = shutdown {
             if let Some(root) = ROOT_CLIENT_INSTANCE_FOR_HOST.get() {
                 shutdown
-                    .stop_and_join_after_drain(stop_instance_and_wait(
+                    .stop_and_join_after_drain(shutdown_root_client(
                         root,
                         "shutdown".to_string(),
                         flush_timeout,
@@ -817,7 +817,7 @@ fn shutdown_local_host_mesh(timeout_secs: Option<f64>) -> PyResult<PyHandle> {
                 shutdown.stop_and_join().await;
             }
         } else if let Some(root) = ROOT_CLIENT_INSTANCE_FOR_HOST.get() {
-            stop_instance_and_wait(root, "shutdown".to_string(), flush_timeout).await;
+            shutdown_root_client(root, "shutdown".to_string(), flush_timeout).await;
         }
 
         // Python `None`, not unit: PyO3 converts `()` to an empty tuple.

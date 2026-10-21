@@ -580,8 +580,18 @@ def _init_client_context(via: Optional[str] = None) -> Context:
     # ~2s, so we allow 1s here. host_timeout bounds each of the two
     # sequential gateway flushes (host, then root client), which otherwise
     # wait out FORWARDER_FLUSH_TIMEOUT when the peer is already gone (e.g.
-    # after job.kill() on an attached client).
-    atexit.register(lambda: shutdown_context(host_timeout=0.3).get(timeout=1.0))
+    # after job.kill() on an attached client). It also bounds how long
+    # the root client waits for owned children to clean up, so cleanup
+    # is attempted inside this budget rather than abandoned mid-wait.
+    def _shutdown_at_exit() -> None:
+        try:
+            shutdown_context(host_timeout=0.3).get(timeout=1.0)
+        except TimeoutError:
+            # Best effort only: native shutdown keeps running until the
+            # runtime is torn down, and an atexit traceback cannot help.
+            pass
+
+    atexit.register(_shutdown_at_exit)
 
     return ctx
 
@@ -662,6 +672,16 @@ def shutdown_context(host_timeout: float | None = None) -> "Future[None]":
     the root client, attempts its final flush and closes the transports.
     It does not send a shutdown request to each host in an arbitrary HostMesh.
 
+    Shutdown makes these guarantees about actors:
+
+    * The root client's proc, ``this_proc()``, is destroyed: every actor on it
+      is told to stop so it can run ``__cleanup__``.
+    * Shutdown waits on all actors at once, for a bounded time derived from
+      ``host_timeout`` and capped at 0.5 seconds for each of its waits. An
+      actor on ``this_proc()`` can be waited on twice, once through the mesh
+      that owns it and once when the proc is destroyed. If an actor is still
+      cleaning up after that, shutdown stops waiting for it and continues.
+
     This uses the process's initialized client, not the current actor returned
     by ``context()``. There is no controller-only caller check. A worker with
     no initialized client gets an already-completed future without creating
@@ -678,10 +698,14 @@ def shutdown_context(host_timeout: float | None = None) -> "Future[None]":
     Args:
         host_timeout: Timeout in seconds passed to the local host's user-proc
             shutdown. The host and root client's final gateway flushes are
-            also capped by this value. Defaults to 10 seconds. This is not an
-            overall time limit on waiting for shutdown to finish. A supplied
-            timeout must be finite, non-negative and less than 2**64 seconds;
-            an invalid timeout does not claim shutdown.
+            also capped by this value, as are the root client's waits for
+            actors to clean up (each also capped at 0.5 seconds to keep
+            process exit prompt). Defaults to a fixed 10 seconds, the same
+            as the default ``HYPERACTOR_MESH_TERMINATE_TIMEOUT``, but not
+            read from that or any other setting. This is not an overall
+            time limit on waiting for shutdown to finish. A supplied
+            timeout must be finite, non-negative and less than 2**64
+            seconds; an invalid timeout does not claim shutdown.
 
     Returns:
         Future[None]: Reports completion for the call that starts shutdown.

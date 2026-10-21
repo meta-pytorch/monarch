@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hyperactor::Instance;
+use hyperactor::actor::ActorStatus;
 use hyperactor::context;
+use hyperactor::proc::DEFAULT_STOP_CHILDREN_TIMEOUT;
 use hyperactor_mesh::casting::CastInfo;
 use ndslice::Extent;
 use ndslice::Point;
@@ -163,24 +165,64 @@ impl PyInstance {
     }
 }
 
-/// Stop an actor, wait for terminal status, and flush its proc's gateway.
+/// Stop the root client, wait for terminal status, destroy its proc so the
+/// remaining actors there stop too, and flush the proc's gateway.
 ///
 /// The flush needs the proc's transports to still be serving, so host
-/// shutdown calls this for the root client after child drain and before
-/// transport teardown.
-pub(crate) async fn stop_instance_and_wait(
+/// shutdown calls this after child drain and before transport teardown.
+pub(crate) async fn shutdown_root_client(
     instance: &Instance<PythonActor>,
     reason: String,
     flush_timeout: Duration,
 ) {
     let actor_id = instance.self_addr().clone();
-    let proc = instance.proc().clone();
+    let mut proc = instance.proc().clone();
     let mut status = instance.status();
+    // The caller's budget bounds child cleanup, capped so exit stays prompt
+    // for callers with a generous flush timeout.
+    let child_timeout = flush_timeout.min(DEFAULT_STOP_CHILDREN_TIMEOUT);
+    instance.set_stop_children_timeout(child_timeout);
     if let Err(error) = instance.stop(&reason) {
         tracing::warn!(%actor_id, %error, "stop_and_wait: stop failed");
     } else {
-        let _ = status.wait_for(|s| s.is_terminal()).await;
+        // The serving loop finishes its current work, publishes `Stopping`,
+        // stops children within `child_timeout`, and then publishes terminal.
+        // Each phase is bounded, and the flush runs either way because it is
+        // best-effort.
+        let child_stop_started =
+            |s: &ActorStatus| matches!(s, ActorStatus::Stopping(_)) || s.is_terminal();
+        let terminal_wait = child_timeout + Duration::from_millis(100);
+        if tokio::time::timeout(flush_timeout, status.wait_for(child_stop_started))
+            .await
+            .is_err()
+        {
+            tracing::warn!(%actor_id, ?flush_timeout, "stop_and_wait: timed out waiting for child stop to start");
+        } else if tokio::time::timeout(terminal_wait, status.wait_for(|s| s.is_terminal()))
+            .await
+            .is_err()
+        {
+            tracing::warn!(%actor_id, ?terminal_wait, "stop_and_wait: timed out waiting for terminal status");
+        }
     }
+    // Actors co-located with the root client live on its proc, which host
+    // shutdown does not destroy in process mode. Stop them so they can run
+    // cleanup before the process exits. The outer bound matches the inner
+    // one, so if an actor is still cleaning up when it expires, the rest of
+    // `destroy_and_wait` is skipped: aborting that actor, draining the
+    // supervision coordinator and its own flush. The flush below still runs.
+    if tokio::time::timeout(child_timeout, proc.destroy_and_wait(child_timeout, &reason))
+        .await
+        .is_err()
+    {
+        tracing::warn!(%actor_id, ?child_timeout, "stop_and_wait: timed out stopping co-located actors");
+    }
+    // `destroy_and_wait` ends by flushing this same gateway. This second
+    // flush only matters when the `child_timeout` bound above expires first
+    // and cancels `destroy_and_wait` before that flush; otherwise there is
+    // typically nothing left to flush and it returns at once.
+    // TODO: Remove this flush, and the outer bound above, once
+    // `destroy_and_wait` keeps its whole teardown, flush included, within
+    // the timeout it is given.
     match tokio::time::timeout(flush_timeout, proc.flush()).await {
         Ok(Err(error)) => {
             tracing::warn!(%actor_id, %error, "stop_and_wait: flush failed");

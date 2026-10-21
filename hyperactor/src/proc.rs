@@ -2169,6 +2169,12 @@ impl<A: Actor> fmt::Debug for Instance<A> {
     }
 }
 
+/// Default per-child bound for [`Instance::stop_children`], used when no
+/// caller budget was set with [`Instance::set_stop_children_timeout`]. It has
+/// the same value as the idle timeout between `ChildStopped` signals in
+/// ordinary actor-tree teardown, but bounds each child's wait from the start.
+pub const DEFAULT_STOP_CHILDREN_TIMEOUT: Duration = Duration::from_millis(500);
+
 struct InstanceState<A: Actor> {
     /// The proc that owns this instance.
     proc: Proc,
@@ -2203,6 +2209,9 @@ struct InstanceState<A: Actor> {
 
     /// Per-instance local storage.
     instance_locals: ActorLocalStorage,
+
+    /// Caller-provided per-child bound for `stop_children`, if any.
+    stop_children_timeout: Mutex<Option<Duration>>,
 }
 
 struct ActorStopped {
@@ -2688,6 +2697,7 @@ impl<A: Actor> Instance<A> {
             sequencer: Sequencer::new(instance_id),
             id: instance_id,
             instance_locals: ActorLocalStorage::new(),
+            stop_children_timeout: Mutex::new(None),
         });
         (
             Self { inner },
@@ -3003,13 +3013,30 @@ impl<A: Actor> Instance<A> {
         self.inner.cell.status().clone()
     }
 
+    /// Set the per-child bound for later [`Instance::stop_children`] calls.
+    /// Shutdown paths with an external deadline set this before signaling
+    /// the instance to stop.
+    pub fn set_stop_children_timeout(&self, timeout: Duration) {
+        *self.inner.stop_children_timeout.lock().unwrap() = Some(timeout);
+    }
+
+    fn stop_children_timeout(&self) -> Duration {
+        self.inner
+            .stop_children_timeout
+            .lock()
+            .unwrap()
+            .unwrap_or(DEFAULT_STOP_CHILDREN_TIMEOUT)
+    }
+
     /// Stop owned children and wait for their actor-tree cleanup to finish.
     /// Custom serving loops must call this after they stop accepting work and
     /// before publishing a terminal parent status or tearing down transports.
-    /// Each child gets up to `STOP_ACTOR_TIMEOUT`; one that has not stopped by
-    /// then is unlinked, as in ordinary actor-tree teardown.
+    /// Each child gets up to the bound set with
+    /// [`Instance::set_stop_children_timeout`], or
+    /// [`DEFAULT_STOP_CHILDREN_TIMEOUT`] when none was set; one that has not
+    /// stopped by then is unlinked, as in ordinary actor-tree teardown.
     pub async fn stop_children(&self, reason: &str) {
-        let timeout = hyperactor_config::global::get(config::STOP_ACTOR_TIMEOUT);
+        let timeout = self.stop_children_timeout();
         let cell = &self.inner.cell;
         let children: Vec<_> = cell
             .child_iter()
@@ -6478,16 +6505,15 @@ mod tests {
         }
 
         let config = hyperactor_config::global::lock();
-        let _stop_guard = config.override_key(
-            crate::config::STOP_ACTOR_TIMEOUT,
-            Duration::from_millis(200),
-        );
         // Keep the child's own cleanup timeout above the parent's bound so
         // only stop_children's timeout can end the wait.
         let _cleanup_guard =
             config.override_key(crate::config::CLEANUP_TIMEOUT, Duration::from_secs(60));
         let proc = Proc::isolated();
         let client = proc.client("custom_client");
+        client
+            .instance()
+            .set_stop_children_timeout(Duration::from_millis(200));
         client.spawn(StuckCleanup);
         let started = tokio::time::Instant::now();
         client.instance().stop_children("test shutdown").await;
