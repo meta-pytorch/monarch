@@ -98,13 +98,14 @@ use trace_dispatcher::TraceFields;
 pub use tracing;
 pub use tracing::Level;
 use tracing_appender::rolling::RollingFileAppender;
+use tracing_subscriber::Registry;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 pub use unix_sink::set_unix_socket_sink_path;
 pub use unix_sink::unix_socket_sink_dropped_frames;
 pub use unix_sink::unix_socket_sink_is_active;
 
-#[cfg(all(fbcode_build, target_os = "linux"))]
 use crate::config::ENABLE_OTEL_METRICS;
-#[cfg(all(fbcode_build, target_os = "linux"))]
 use crate::config::ENABLE_OTEL_TRACING;
 use crate::config::ENABLE_RECORDER_TRACING;
 use crate::config::ENABLE_SQLITE_TRACING;
@@ -851,37 +852,29 @@ macro_rules! declare_static_histogram {
     };
 }
 
-/// Set up logging based on the given execution environment. We specialize logging based on how the
-/// logs are consumed. The destination scuba table is specialized based on the execution environment.
-/// mast -> monarch_tracing/prod
-/// devserver -> monarch_tracing/local
-/// unit test  -> monarch_tracing/test
-/// scuba logging won't normally be enabled for a unit test unless we are specifically testing logging, so
-/// you don't need to worry about your tests being flakey due to scuba logging. You have to manually call initialize_logging()
-/// to get this behavior.
+/// Set up logging for this process. See [`initialize_logging_with_log_prefix`].
 pub fn initialize_logging(clock: impl TelemetryClock + Send + 'static) {
     initialize_logging_with_log_prefix(clock, None);
 }
 
-/// testing
+/// Set up logging with [`DefaultTelemetryClock`]. See [`initialize_logging`].
 pub fn initialize_logging_for_test() {
     initialize_logging(DefaultTelemetryClock {});
 }
 
-/// Set up logging based on the given execution environment. We specialize logging based on how the
-/// logs are consumed. The destination scuba table is specialized based on the execution environment.
-/// mast -> monarch_tracing/prod
-/// devserver -> monarch_tracing/local
-/// unit test  -> monarch_tracing/test
-/// scuba logging won't normally be enabled for a unit test unless we are specifically testing logging, so
-/// you don't need to worry about your tests being flakey due to scuba logging. You have to manually call initialize_logging()
-/// to get this behavior.
+/// Set up logging for this process, installing the global tracing subscriber
+/// unless one is already set.
 ///
-/// tracing logs will be prefixed with the given prefix and routed to:
-/// test -> stderr
-/// local -> /tmp/monarch_log.log
-/// mast -> /logs/dedicated_monarch_logs.log
-/// Additionally, is MONARCH_STDERR_LOG sets logs level, then logs will be routed to stderr as well.
+/// Tracing logs are prefixed with the value of the environment variable named
+/// by `prefix_env_var`, if given, and written to:
+/// - this crate's unit tests (`Env::Test`): stderr
+/// - local, including other crates' tests: `/tmp/<user>/monarch_log.log`
+/// - mast: `/logs/dedicated_log_monarch.log`
+///
+/// Logs, spans, and metrics are also exported over OTLP when an endpoint is
+/// configured or a build default applies (see the `otlp` module), gated by
+/// `ENABLE_OTEL_TRACING` and `ENABLE_OTEL_METRICS`. `Env::Test` has no default
+/// endpoint.
 pub fn initialize_logging_with_log_prefix(
     clock: impl TelemetryClock + Send + 'static,
     prefix_env_var: Option<String>,
@@ -899,168 +892,99 @@ pub fn initialize_logging_with_log_prefix(
         env::Env::Test => LOG_LEVEL_DEBUG,
     };
 
-    use tracing_subscriber::Registry;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
+    let process_name =
+        std::env::var("HYPERACTOR_PROCESS_NAME").unwrap_or_else(|_| "client".to_string());
 
-    #[cfg(all(fbcode_build, target_os = "linux"))]
-    {
-        if should_install_subscriber {
-            let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
-            sinks.push(Box::new(sinks::glog::GlogSink::new(
-                writer(),
-                prefix_env_var.clone(),
-                file_log_level,
-            )));
+    if should_install_subscriber {
+        let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
+        sinks.push(Box::new(sinks::glog::GlogSink::new(
+            writer(),
+            prefix_env_var.clone(),
+            file_log_level,
+        )));
 
-            let sqlite_enabled = hyperactor_config::global::get(ENABLE_SQLITE_TRACING);
-
-            if sqlite_enabled {
-                match create_sqlite_sink() {
-                    Ok(sink) => {
-                        sinks.push(Box::new(sink));
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to create SqliteSink: {}", e);
-                    }
+        if hyperactor_config::global::get(ENABLE_SQLITE_TRACING) {
+            match create_sqlite_sink() {
+                Ok(sink) => {
+                    sinks.push(Box::new(sink));
+                }
+                Err(e) => {
+                    tracing::warn!("failed to create SqliteSink: {}", e);
                 }
             }
+        }
 
-            if hyperactor_config::global::get(sinks::perfetto::PERFETTO_TRACE_MODE)
-                != sinks::perfetto::PerfettoTraceMode::Off
-            {
-                let exec_id = env::execution_id();
-                let process_name = std::env::var("HYPERACTOR_PROCESS_NAME")
-                    .unwrap_or_else(|_| "client".to_string());
-                match sinks::perfetto::PerfettoFileSink::new(
-                    sinks::perfetto::default_trace_dir(),
-                    &exec_id,
-                    &process_name,
-                ) {
-                    Ok(sink) => {
-                        sinks.push(Box::new(sink));
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to create PerfettoFileSink: {}", e);
-                    }
+        #[cfg(all(fbcode_build, target_os = "linux"))]
+        if hyperactor_config::global::get(sinks::perfetto::PERFETTO_TRACE_MODE)
+            != sinks::perfetto::PerfettoTraceMode::Off
+        {
+            let exec_id = env::execution_id();
+            match sinks::perfetto::PerfettoFileSink::new(
+                sinks::perfetto::default_trace_dir(),
+                &exec_id,
+                &process_name,
+            ) {
+                Ok(sink) => {
+                    sinks.push(Box::new(sink));
+                }
+                Err(e) => {
+                    tracing::warn!("failed to create PerfettoFileSink: {}", e);
                 }
             }
-
-            if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
-                use crate::meta;
-
-                sinks.push(Box::new(
-                    meta::scuba_sink::ScubaSink::new(meta::tracing_resource())
-                        .with_target_filter(crate::config::get_tracing_targets()),
-                ));
-                sinks.extend(otlp::otlp_sinks());
-            }
-
-            sinks.push(unix_sink::install_unix_socket_sink_inactive());
-
-            let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
-            let synthetic_sender = dispatcher.sender();
-
-            if let Err(err) = Registry::default()
-                .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
-                    Some(recorder().layer())
-                } else {
-                    None
-                })
-                .with(dispatcher)
-                .try_init()
-            {
-                tracing::debug!("logging already initialized for this process: {}", err);
-            } else {
-                set_synthetic_trace_event_sender(synthetic_sender);
-            }
         }
-        let exec_id = env::execution_id();
-        let process_name =
-            std::env::var("HYPERACTOR_PROCESS_NAME").unwrap_or_else(|_| "client".to_string());
 
-        // setting target to "execution" will prevent the monarch_tracing scuba client from logging this
-        tracing::info!(
-            target: "execution",
-            execution_id = exec_id,
-            environment = %env::Env::current(),
-            args = ?std::env::args(),
-            build_mode = build_info::BuildInfo::get_build_mode(),
-            compiler = build_info::BuildInfo::get_compiler(),
-            compiler_version = build_info::BuildInfo::get_compiler_version(),
-            buck_rule = build_info::BuildInfo::get_rule(),
-            package_name = build_info::BuildInfo::get_package_name(),
-            package_release = build_info::BuildInfo::get_package_release(),
-            upstream_revision = build_info::BuildInfo::get_upstream_revision(),
-            revision = build_info::BuildInfo::get_revision(),
-            process_name = process_name,
-            "logging_initialized",
-        );
-        // here we have the monarch_executions scuba client log
-        meta::log_execution_event(
-            &exec_id,
-            &env::Env::current().to_string(),
-            std::env::args().collect(),
-            build_info::BuildInfo::get_build_mode(),
-            build_info::BuildInfo::get_compiler(),
-            build_info::BuildInfo::get_compiler_version(),
-            build_info::BuildInfo::get_rule(),
-            build_info::BuildInfo::get_package_name(),
-            build_info::BuildInfo::get_package_release(),
-            build_info::BuildInfo::get_upstream_revision(),
-            build_info::BuildInfo::get_revision(),
-            &process_name,
-        );
-
-        if hyperactor_config::global::get(ENABLE_OTEL_METRICS) {
-            otel::init_metrics();
+        if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
+            sinks.extend(otlp::otlp_sinks());
         }
-    }
-    #[cfg(not(all(fbcode_build, target_os = "linux")))]
-    {
-        let registry =
-            Registry::default().with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
+
+        sinks.push(unix_sink::install_unix_socket_sink_inactive());
+
+        let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
+        let synthetic_sender = dispatcher.sender();
+
+        if let Err(err) = Registry::default()
+            .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
                 Some(recorder().layer())
             } else {
                 None
-            });
-
-        if should_install_subscriber {
-            let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
-
-            let sqlite_enabled = hyperactor_config::global::get(ENABLE_SQLITE_TRACING);
-
-            if sqlite_enabled {
-                match create_sqlite_sink() {
-                    Ok(sink) => {
-                        sinks.push(Box::new(sink));
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to create SqliteSink: {}", e);
-                    }
-                }
-            }
-
-            sinks.push(Box::new(sinks::glog::GlogSink::new(
-                writer(),
-                prefix_env_var.clone(),
-                file_log_level,
-            )));
-
-            sinks.extend(otlp::otlp_sinks());
-
-            sinks.push(unix_sink::install_unix_socket_sink_inactive());
-
-            let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
-            let synthetic_sender = dispatcher.sender();
-
-            if let Err(err) = registry.with(dispatcher).try_init() {
-                tracing::debug!("logging already initialized for this process: {}", err);
-            } else {
-                set_synthetic_trace_event_sender(synthetic_sender);
-            }
+            })
+            .with(dispatcher)
+            .try_init()
+        {
+            tracing::debug!("logging already initialized for this process: {}", err);
+        } else {
+            set_synthetic_trace_event_sender(synthetic_sender);
         }
+    }
 
+    #[cfg(all(fbcode_build, target_os = "linux"))]
+    tracing::info!(
+        target: "execution",
+        execution_id = env::execution_id(),
+        environment = %env::Env::current(),
+        args = ?std::env::args(),
+        build_mode = build_info::BuildInfo::get_build_mode(),
+        compiler = build_info::BuildInfo::get_compiler(),
+        compiler_version = build_info::BuildInfo::get_compiler_version(),
+        buck_rule = build_info::BuildInfo::get_rule(),
+        package_name = build_info::BuildInfo::get_package_name(),
+        package_release = build_info::BuildInfo::get_package_release(),
+        upstream_revision = build_info::BuildInfo::get_upstream_revision(),
+        revision = build_info::BuildInfo::get_revision(),
+        process_name = process_name,
+        "logging_initialized",
+    );
+    #[cfg(not(all(fbcode_build, target_os = "linux")))]
+    tracing::info!(
+        target: "execution",
+        execution_id = env::execution_id(),
+        environment = %env::Env::current(),
+        args = ?std::env::args(),
+        process_name = process_name,
+        "logging_initialized",
+    );
+
+    if hyperactor_config::global::get(ENABLE_OTEL_METRICS) {
         otel::init_metrics();
     }
 }
@@ -1154,7 +1078,6 @@ macro_rules! context_span {
 pub mod env {
     /// Env var name set when monarch launches subprocesses to forward the execution context
     pub const HYPERACTOR_EXECUTION_ID_ENV: &str = "HYPERACTOR_EXECUTION_ID";
-    pub const OTEL_EXPORTER: &str = "HYPERACTOR_OTEL_EXPORTER";
     pub const MAST_ENVIRONMENT: &str = "MAST_ENVIRONMENT";
 
     /// Forward or generate a uuid for this execution. When running in production on mast, this is provided to
@@ -1267,7 +1190,6 @@ mod test {
         declare_static_gauge!(MEMORY_GAUGE, "memory_usage");
 
         // Set values to the gauge with different attributes
-        // This shouldn't actually log to scribe/scuba in test environment
         TEST_GAUGE.record(42.5, kv_pairs!("component" => "test", "unit" => "MB"));
         MEMORY_GAUGE.record(512.0, kv_pairs!("type" => "heap", "process" => "test"));
 

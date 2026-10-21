@@ -8,8 +8,8 @@
 
 //! Perfetto sink that writes trace events directly to .pftrace files on disk.
 //!
-//! This provides an alternative to Scuba-based tracing that:
-//! - Has no row limits (vs 400K Scuba limit)
+//! Unlike export to a remote backend over OTLP, this sink:
+//! - Has no backend row limits
 //! - Has no ingestion latency (immediate file writes)
 //! - Uses native Perfetto protobuf format (no conversion needed)
 //! - Supports distributed file systems like OILFS

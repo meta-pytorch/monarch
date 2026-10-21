@@ -21,16 +21,17 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Targets;
 
 declare_attrs! {
-    /// Enable the OpenTelemetry tracing layer.
-    /// When true (default), OpenTelemetry tracing is enabled.
+    /// Enable OTLP export of logs and spans.
+    /// When true (default), logs and spans are exported if an OTLP endpoint is configured.
     @meta(CONFIG = ConfigAttr::new(
         Some("ENABLE_OTEL_TRACING".to_string()),
         Some("enable_otel_tracing".to_string()),
     ))
     pub attr ENABLE_OTEL_TRACING: bool = true;
 
-    /// Enable the OpenTelemetry metrics layer.
-    /// When true (default), OpenTelemetry metrics are enabled.
+    /// Enable the OpenTelemetry meter provider.
+    /// When true (default), metrics are exported to the distributed telemetry
+    /// table and, if an OTLP endpoint is configured, over OTLP.
     @meta(CONFIG = ConfigAttr::new(
         Some("ENABLE_OTEL_METRICS".to_string()),
         Some("enable_otel_metrics".to_string()),
@@ -68,13 +69,6 @@ declare_attrs! {
         Some("otel_metric_export_interval".to_string()),
     ))
     pub attr OTEL_METRIC_EXPORT_INTERVAL: Duration = Duration::from_secs(1);
-
-    /// Enable logging of span enter/exit events to Scuba.
-    @meta(CONFIG = ConfigAttr::new(
-        Some("SCUBA_LOG_ENTER_EXIT".to_string()),
-        Some("scuba_log_enter_exit".to_string()),
-    ))
-    pub attr SCUBA_LOG_ENTER_EXIT: bool = false;
 
     // Suffix to append to log filenames for test isolation
     @meta(CONFIG = ConfigAttr::new(

@@ -6,9 +6,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Exporters for the unified telemetry layer.
-//! Each exporter implements the TraceExporter trait and handles
-//! writing events to a specific backend (SQLite, Scuba, glog, etc).
+//! Sinks for the unified telemetry layer.
+//! Each sink implements `TraceEventSink` and writes events to a specific
+//! backend (SQLite, Perfetto, glog, etc.).
 
 pub mod glog;
 pub mod perfetto;

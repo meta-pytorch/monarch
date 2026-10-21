@@ -12,8 +12,8 @@
 //! `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` is used as is, otherwise
 //! `OTEL_EXPORTER_OTLP_ENDPOINT` plus the signal path (e.g., `/v1/logs`). An
 //! empty `OTEL_EXPORTER_OTLP_ENDPOINT` disables export; when no var is set,
-//! export falls back to a built-in default. All signals share the resource
-//! built by `resource()`.
+//! export falls back to a build-specific default (none in OSS builds). All
+//! signals share the resource built by `resource()`.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -47,6 +47,7 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Targets;
 
+use crate::env::Env;
 use crate::sinks::perfetto::USER_TELEMETRY_PREFIX;
 use crate::trace_dispatcher::FieldValue;
 use crate::trace_dispatcher::TraceEvent;
@@ -55,8 +56,20 @@ use crate::trace_dispatcher::TraceEventSink;
 /// `service.name` resource attribute on every OTLP signal.
 const SERVICE_NAME: &str = "monarch/monarch";
 
-/// Endpoint used when no OTLP endpoint env var is set.
-const DEFAULT_ENDPOINT: Option<&str> = None;
+/// Module of the shim in `monarch_hyperactor` that forwards Python log records
+/// into `tracing`.
+const PYTHON_LOG_FORWARDER_MODULE: &str = "monarch_hyperactor::telemetry";
+
+/// Endpoint used when no OTLP endpoint env var is set: the host collector
+/// on Meta builds outside tests, otherwise none.
+pub(crate) fn default_endpoint(env: &Env) -> Option<&'static str> {
+    #[cfg(all(fbcode_build, target_os = "linux"))]
+    if *env != Env::Test {
+        return Some(crate::meta::otlp::DEFAULT_ENDPOINT);
+    }
+    let _ = env;
+    None
+}
 
 /// Where an exporter sends its signal.
 #[derive(Debug, PartialEq)]
@@ -90,7 +103,7 @@ fn destination(signal_env: &str, path: &str) -> Option<Destination> {
     resolve_destination(
         std::env::var(signal_env).ok(),
         std::env::var(OTEL_EXPORTER_OTLP_ENDPOINT).ok(),
-        DEFAULT_ENDPOINT,
+        default_endpoint(&Env::current()),
         path,
     )
 }
@@ -107,7 +120,8 @@ pub(crate) fn resource() -> Resource {
     let mut builder = Resource::builder()
         .with_service_name(SERVICE_NAME)
         .with_attribute(KeyValue::new("execution_id", crate::env::execution_id()))
-        .with_attribute(KeyValue::new("user", crate::username()));
+        .with_attribute(KeyValue::new("user", crate::username()))
+        .with_attribute(KeyValue::new("environment", Env::current().to_string()));
     if let Ok(hostname) = whoami::hostname() {
         builder = builder.with_attribute(KeyValue::new("hostname", hostname));
     }
@@ -261,8 +275,6 @@ impl TraceEventSink for OtlpLogSink {
         record.set_timestamp(*timestamp);
         record.set_severity_number(level_to_severity(level));
         record.set_body(AnyValue::String(body.into()));
-        record.add_attribute("event_type", AnyValue::String("instant_event".into()));
-        record.add_attribute("name", AnyValue::String((*name).into()));
         record.add_attribute("level", AnyValue::String(level.as_str().into()));
         record.add_attribute("target", AnyValue::String((*target).into()));
         record.add_attribute("thread_id", AnyValue::String((*thread_id).into()));
@@ -279,13 +291,27 @@ impl TraceEventSink for OtlpLogSink {
             #[cfg(all(fbcode_build, target_os = "linux"))]
             record.add_attribute("span_id", parent.span_id().to_string());
         }
-        if let Some(mp) = module_path {
+        // A log forwarded from Python has the forwarding shim as its Rust call
+        // site; its own `file` and `lineno` arrive as fields. For other events,
+        // a field replaces the call-site attribute with the same key.
+        let forwarded_from_python = *module_path == Some(PYTHON_LOG_FORWARDER_MODULE);
+        let has_field = |key: &str| fields.iter().any(|(k, _)| *k == key);
+        if !forwarded_from_python
+            && !has_field("module_path")
+            && let Some(mp) = module_path
+        {
             record.add_attribute("module_path", AnyValue::String((*mp).into()));
         }
-        if let Some(f) = file {
+        if !forwarded_from_python
+            && !has_field("file")
+            && let Some(f) = file
+        {
             record.add_attribute("file", AnyValue::String((*f).into()));
         }
-        if let Some(l) = line {
+        if !forwarded_from_python
+            && !has_field("line")
+            && let Some(l) = line
+        {
             record.add_attribute("line", AnyValue::Int(*l as i64));
         }
         for (k, v) in fields.iter() {
@@ -667,6 +693,92 @@ mod tests {
     }
 
     #[test]
+    fn log_location_attributes() {
+        let (mut sink, records) = recording_log_sink(OpenSpans::default());
+        let event = |module_path, fields| TraceEvent::Event {
+            name: "event",
+            target: "test",
+            level: tracing::Level::INFO,
+            fields,
+            timestamp: SystemTime::now(),
+            parent_span: None,
+            thread_id: "1",
+            thread_name: "test-thread",
+            module_path: Some(module_path),
+            file: Some("src/io.rs"),
+            line: Some(42),
+        };
+        let message = |m: &str| ("message", FieldValue::Str(m.to_string()));
+
+        sink.consume(&event(
+            PYTHON_LOG_FORWARDER_MODULE,
+            smallvec![
+                message("from python"),
+                ("file", FieldValue::Str("train.py".to_string())),
+                ("lineno", FieldValue::I64(3)),
+            ],
+        ))
+        .unwrap();
+        sink.consume(&event(
+            "my_crate::io",
+            smallvec![
+                message("opened"),
+                ("file", FieldValue::Str("data.bin".to_string())),
+            ],
+        ))
+        .unwrap();
+        sink.consume(&event("my_crate::io", smallvec![message("plain")]))
+            .unwrap();
+
+        let records = records.lock().unwrap();
+        let attrs = |i: usize| -> Vec<(String, AnyValue)> {
+            records[i]
+                .attributes_iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect()
+        };
+        let values = |attrs: &[(String, AnyValue)], key: &str| -> Vec<AnyValue> {
+            attrs
+                .iter()
+                .filter(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .collect()
+        };
+        let text = |s: &str| AnyValue::from(s.to_string());
+
+        let python = attrs(0);
+        assert_eq!(values(&python, "file"), vec![text("train.py")]);
+        assert_eq!(values(&python, "lineno"), vec![AnyValue::Int(3)]);
+        assert!(
+            values(&python, "line").is_empty() && values(&python, "module_path").is_empty(),
+            "a forwarded Python log drops the shim's call site"
+        );
+
+        let rust_with_file_field = attrs(1);
+        assert_eq!(
+            values(&rust_with_file_field, "file"),
+            vec![text("data.bin")],
+            "the event's own `file` field replaces only the call-site `file`"
+        );
+        assert_eq!(
+            values(&rust_with_file_field, "line"),
+            vec![AnyValue::Int(42)]
+        );
+        assert_eq!(
+            values(&rust_with_file_field, "module_path"),
+            vec![text("my_crate::io")]
+        );
+
+        let rust = attrs(2);
+        assert_eq!(values(&rust, "file"), vec![text("src/io.rs")]);
+        assert_eq!(values(&rust, "line"), vec![AnyValue::Int(42)]);
+        assert!(
+            !rust.iter().any(|(k, _)| k == "event_type" || k == "name"),
+            "legacy Scuba attributes are not exported"
+        );
+    }
+
+    #[test]
     fn resolves_destination() {
         let set = |v: &str| Some(v.to_string());
         let default = Some("http://default/");
@@ -778,7 +890,7 @@ mod tests {
             resource.get(&opentelemetry::Key::from_static_str("service.name")),
             Some(opentelemetry::Value::from(SERVICE_NAME))
         );
-        for key in ["execution_id", "user", "hostname"] {
+        for key in ["execution_id", "user", "hostname", "environment"] {
             assert!(
                 resource
                     .get(&opentelemetry::Key::from_static_str(key))

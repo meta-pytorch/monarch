@@ -50,57 +50,23 @@ fn install_metric_provider_with<B, F>(
     });
 }
 
-#[allow(dead_code)]
-pub fn tracing_layer<
-    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
->() -> Option<impl tracing_subscriber::Layer<S>> {
-    #[cfg(all(fbcode_build, target_os = "linux"))]
-    {
-        Some(crate::meta::tracing_layer())
-    }
-    #[cfg(not(all(fbcode_build, target_os = "linux")))]
-    {
-        None::<Box<dyn tracing_subscriber::Layer<S> + Send + Sync>>
-    }
-}
-
-#[allow(dead_code)]
+/// Install the global meter provider, exporting to the distributed telemetry
+/// table and, when an endpoint is configured, over OTLP. Idempotent.
 pub fn init_metrics() {
     if METER_PROVIDER.get().is_some() {
         return;
     }
-
-    #[cfg(all(fbcode_build, target_os = "linux"))]
-    {
-        let resource = crate::meta::metrics_resource();
-        let exporter = crate::meta::scuba_metric_exporter(&resource);
-        let otlp = crate::otlp::otlp_metric_exporter();
-        let uds = crate::metrics_table::uds_metric_exporter();
-        install_metric_provider(|| {
-            let mut builder = SdkMeterProvider::builder()
-                .with_reader(periodic_reader(exporter))
-                .with_reader(periodic_reader(uds))
-                .with_resource(crate::otlp::resource());
-            if let Some(exporter) = otlp {
-                builder = builder.with_reader(periodic_reader(exporter));
-            }
-            builder.build()
-        });
-    }
-    #[cfg(not(all(fbcode_build, target_os = "linux")))]
-    {
-        let otlp = crate::otlp::otlp_metric_exporter();
-        let uds = crate::metrics_table::uds_metric_exporter();
-        install_metric_provider(|| {
-            let mut builder = SdkMeterProvider::builder()
-                .with_reader(periodic_reader(uds))
-                .with_resource(crate::otlp::resource());
-            if let Some(exporter) = otlp {
-                builder = builder.with_reader(periodic_reader(exporter));
-            }
-            builder.build()
-        });
-    }
+    let otlp = crate::otlp::otlp_metric_exporter();
+    let uds = crate::metrics_table::uds_metric_exporter();
+    install_metric_provider(|| {
+        let mut builder = SdkMeterProvider::builder()
+            .with_reader(periodic_reader(uds))
+            .with_resource(crate::otlp::resource());
+        if let Some(exporter) = otlp {
+            builder = builder.with_reader(periodic_reader(exporter));
+        }
+        builder.build()
+    });
 }
 
 #[cfg(test)]
