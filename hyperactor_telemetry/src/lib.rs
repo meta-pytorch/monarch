@@ -953,6 +953,7 @@ pub fn initialize_logging_with_log_prefix(
                     meta::scuba_sink::ScubaSink::new(meta::tracing_resource())
                         .with_target_filter(crate::config::get_tracing_targets()),
                 ));
+                sinks.extend(otlp::otlp_sinks());
             }
 
             sinks.push(unix_sink::install_unix_socket_sink_inactive());
@@ -1046,9 +1047,7 @@ pub fn initialize_logging_with_log_prefix(
                 file_log_level,
             )));
 
-            if let Some(log_sink) = otlp::otlp_log_sink() {
-                sinks.push(log_sink);
-            }
+            sinks.extend(otlp::otlp_sinks());
 
             sinks.push(unix_sink::install_unix_socket_sink_inactive());
 

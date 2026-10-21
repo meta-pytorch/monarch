@@ -8,8 +8,6 @@
 
 use std::sync::OnceLock;
 
-#[cfg(not(all(fbcode_build, target_os = "linux")))]
-use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::metrics::PeriodicReader;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
@@ -76,24 +74,27 @@ pub fn init_metrics() {
     {
         let resource = crate::meta::metrics_resource();
         let exporter = crate::meta::scuba_metric_exporter(&resource);
+        let otlp = crate::otlp::otlp_metric_exporter();
         let uds = crate::metrics_table::uds_metric_exporter();
         install_metric_provider(|| {
-            SdkMeterProvider::builder()
+            let mut builder = SdkMeterProvider::builder()
                 .with_reader(periodic_reader(exporter))
                 .with_reader(periodic_reader(uds))
-                .with_resource(resource)
-                .build()
+                .with_resource(crate::otlp::resource());
+            if let Some(exporter) = otlp {
+                builder = builder.with_reader(periodic_reader(exporter));
+            }
+            builder.build()
         });
     }
     #[cfg(not(all(fbcode_build, target_os = "linux")))]
     {
         let otlp = crate::otlp::otlp_metric_exporter();
         let uds = crate::metrics_table::uds_metric_exporter();
-        let resource = Resource::builder().build();
         install_metric_provider(|| {
             let mut builder = SdkMeterProvider::builder()
                 .with_reader(periodic_reader(uds))
-                .with_resource(resource);
+                .with_resource(crate::otlp::resource());
             if let Some(exporter) = otlp {
                 builder = builder.with_reader(periodic_reader(exporter));
             }
