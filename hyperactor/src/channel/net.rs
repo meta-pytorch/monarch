@@ -458,6 +458,10 @@ fn log_send_error(
             tracing::error!(dest = %dest, session_id, mode, "server rejected connection: {reason}; {link_status}");
             true
         }
+        session::SendLoopError::UnknownSession(reason) => {
+            tracing::warn!(dest = %dest, session_id, mode, "server has no record of session: {reason}; {link_status}");
+            true
+        }
         session::SendLoopError::ServerClosed => {
             tracing::info!(dest = %dest, session_id, mode, "server closed the channel; {link_status}");
             true
@@ -484,11 +488,14 @@ fn log_send_error(
 
 /// Map a terminal [`session::SendLoopError`] to a typed [`CloseReason`] for
 /// the `TxStatus` watcher. Variants that callers want to branch on (e.g.
-/// `DialMailboxRouter` keys cache eviction on `SequenceMismatch`) get their
+/// `DialMailboxRouter` keys cache eviction on `UnknownSession`) get their
 /// own typed reason; the rest flatten to `Other` carrying the same
 /// `{log_id}: {e}` text used previously for logging.
 fn classify_send_loop_error(error: &session::SendLoopError, log_id: &str) -> CloseReason {
     match error {
+        session::SendLoopError::UnknownSession(reason) => {
+            CloseReason::UnknownSession(reason.clone())
+        }
         session::SendLoopError::Rejected(reason) if reason.contains("out-of-sequence message") => {
             CloseReason::SequenceMismatch(reason.clone())
         }
@@ -496,6 +503,9 @@ fn classify_send_loop_error(error: &session::SendLoopError, log_id: &str) -> Clo
             size: *size,
             max: *max,
         },
+        session::SendLoopError::ServerClosed => {
+            CloseReason::ServerClosed(format!("{log_id}: {error}"))
+        }
         _ => CloseReason::Other(format!("{log_id}: {error}")),
     }
 }
@@ -605,6 +615,9 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(
                                                 NetRxResponse::Reject(reason) => {
                                                     return Err(session::SendLoopError::Rejected(reason));
                                                 }
+                                                NetRxResponse::UnknownSession(reason) => {
+                                                    return Err(session::SendLoopError::UnknownSession(reason));
+                                                }
                                                 NetRxResponse::Closed => {
                                                     return Err(session::SendLoopError::ServerClosed);
                                                 }
@@ -643,6 +656,7 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(
                                         message: serialized,
                                         received_at,
                                         sent_at: None,
+                                        written: session::Written::Never,
                                         completion,
                                     };
                                     let framed = queued.message.clone().framed();
@@ -902,20 +916,26 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> super::ChannelTx<M> {
             dest = %dest, session_id = session_id.0, "ChannelTx closing: {reason}"
         );
 
-        let send_error_reason = match &reason {
-            CloseReason::OversizedFrame { size, max } => Some(SendErrorReason::OversizedFrame {
-                len: *size,
-                max: *max,
-            }),
-            _ => Some(SendErrorReason::Other(reason.to_string())),
-        };
+        // A peer that has no record of the session delivered nothing written
+        // on the rejected connection, but an earlier connection's peer may
+        // have delivered what was written to it.
+        let send_error_reason = Some(reason.send_error_reason());
+        let earlier_send_error_reason = Some(SendErrorReason::Other(reason.to_string()));
         receiver.close();
         deliveries
             .unacked
             .deque
             .drain(..)
             .chain(deliveries.outbox.deque.drain(..))
-            .for_each(|queued| queued.try_return(send_error_reason.clone()));
+            .for_each(|queued| {
+                let reason = match queued.written {
+                    session::Written::Earlier => earlier_send_error_reason.clone(),
+                    session::Written::Never | session::Written::Current => {
+                        send_error_reason.clone()
+                    }
+                };
+                queued.try_return(reason)
+            });
         while let Ok((msg, completion, _)) = receiver.try_recv() {
             completion.reject(SendError {
                 error: ChannelError::Closed,
@@ -1237,6 +1257,11 @@ pub(super) enum NetRxResponse {
     Reject(String),
     /// This channel is closed.
     Closed,
+    /// This session is rejected because the receiver has no record of it:
+    /// the first frame it received was out of sequence, and it delivered
+    /// none of the frames written on the connection. ChannelTx should stop
+    /// reconnecting.
+    UnknownSession(String),
 }
 
 pub(super) fn serialize_response(

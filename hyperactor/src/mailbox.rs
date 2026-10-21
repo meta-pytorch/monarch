@@ -146,6 +146,7 @@ use crate::Addr;
 use crate::Endpoint;
 use crate::EndpointLocation;
 use crate::IdleFlushPortRef;
+use crate::Location;
 // for macros
 use crate::OncePortRef;
 use crate::PortAddr;
@@ -1556,10 +1557,44 @@ impl fmt::Debug for MailboxClient {
     }
 }
 
+/// Re-posts a message that a [`MailboxClient`] could not deliver because the
+/// peer rejected the client's session as stale.
+type StaleSessionRepost =
+    Arc<dyn Fn(MessageEnvelope, PortHandle<Undeliverable<MessageEnvelope>>) + Send + Sync>;
+
 impl MailboxClient {
     /// Create a new client that sends messages destined for a
     /// [`MailboxServer`] on the provided Tx channel.
     pub fn new(tx: impl channel::Tx<MessageEnvelope> + Send + Sync + 'static) -> Self {
+        Self::new_inner(tx, None)
+    }
+
+    /// Create a client that hands messages rejected by a stale session to
+    /// `repost` instead of returning them as undeliverable. A peer rejects a
+    /// session as stale when it has no record of it, for example after the
+    /// peer restarted at the same address. The channel reports a message as
+    /// rejected by a stale session only if no peer received it: it was never
+    /// written to a connection before the rejected one. Re-posting such a
+    /// message cannot duplicate it, and because the message keeps its
+    /// sequence number, it fills the gap that the destination's reorder
+    /// buffer would otherwise wait on. Each message is re-posted at most
+    /// once.
+    ///
+    /// Only messages addressed directly to a proc at the peer's address are
+    /// re-posted. A message whose next hop is a `Via` names a proc behind the
+    /// peer's process, such as a child proc of a host, which does not
+    /// survive the peer's restart; it is returned as undeliverable.
+    fn with_stale_session_repost(
+        tx: impl channel::Tx<MessageEnvelope> + Send + Sync + 'static,
+        repost: StaleSessionRepost,
+    ) -> Self {
+        Self::new_inner(tx, Some(repost))
+    }
+
+    fn new_inner(
+        tx: impl channel::Tx<MessageEnvelope> + Send + Sync + 'static,
+        repost: Option<StaleSessionRepost>,
+    ) -> Self {
         let addr = tx.addr();
         let tx = Arc::new(tx);
         let tx_status = tx.status().clone();
@@ -1573,6 +1608,7 @@ impl MailboxClient {
             Buffer::new(move |envelope, return_handle| {
                 let tx = Arc::clone(&tx);
                 let addr = addr.clone();
+                let repost = repost.clone();
                 // Set up for delivery failure.
                 let return_handle_0 = return_handle.clone();
                 let tracker =
@@ -1582,9 +1618,21 @@ impl MailboxClient {
                     move |send_error: SendError<MessageEnvelope>| {
                         let SendError {
                             error,
-                            message,
+                            mut message,
                             reason,
                         } = send_error;
+                        if let Some(SendErrorReason::StaleSession(_)) = &reason
+                            && let Some(repost) = &repost
+                            && matches!(message.next_hop().location(), Location::Addr(_))
+                            && message
+                                .headers()
+                                .get(headers::REPOSTED_AFTER_STALE_SESSION)
+                                .is_none()
+                        {
+                            message.set_header(headers::REPOSTED_AFTER_STALE_SESSION, true);
+                            repost(message, return_handle_0);
+                            return;
+                        }
                         let target = message.dest().clone();
                         let reason_text = reason
                             .as_ref()
@@ -1594,9 +1642,8 @@ impl MailboxClient {
                             Some(SendErrorReason::OversizedFrame { len, max }) => {
                                 TransportFailureReason::OversizedFrame { len, max }
                             }
-                            Some(SendErrorReason::Other(_)) | None => {
-                                TransportFailureReason::ChannelClosed { addr }
-                            }
+                            Some(SendErrorReason::StaleSession(_) | SendErrorReason::Other(_))
+                            | None => TransportFailureReason::ChannelClosed { addr },
                         };
                         let failure = DeliveryFailure::new(UndeliverableReason::Transport(
                             TransportFailure::new(target, reason.clone()),
@@ -3905,17 +3952,29 @@ impl MailboxSender for WeakMailboxRouter {
     }
 }
 
-/// Returns true if `status` is `Closed` with a typed reason identifying a
-/// stale session — the K8s "out-of-sequence message, expected seq 0, got N"
-/// case where the peer's dispatcher GC'd the `SessionId` but our cached
-/// `NetTx` still holds an `Outbox.next_seq` past 0. Re-dialing produces a
-/// fresh session that the peer accepts.
+/// Returns true if `status` is `Closed` with a typed reason after which a
+/// fresh session to the same address can succeed:
+///
+/// - `UnknownSession`: the peer rejected a stale session — the K8s
+///   "out-of-sequence message, expected seq 0, got N" case where the peer's
+///   dispatcher has no record of the `SessionId` but our cached `NetTx`
+///   still holds an `Outbox.next_seq` past 0.
+/// - `SequenceMismatch`: the peer rejected a gap in a session it knows.
+/// - `ServerClosed`: the peer's server shut down, and a new server may
+///   later listen at the same address, as when a host restarts.
 ///
 /// Other close reasons (oversized frame, codec errors, etc.) intentionally
 /// do not match: the message or peer is the problem and re-dialing would
 /// just hit the same failure.
-fn is_stale_session_close(status: &TxStatus) -> bool {
-    matches!(status, TxStatus::Closed(CloseReason::SequenceMismatch(_)))
+fn is_redialable_close(status: &TxStatus) -> bool {
+    matches!(
+        status,
+        TxStatus::Closed(
+            CloseReason::UnknownSession(_)
+                | CloseReason::SequenceMismatch(_)
+                | CloseReason::ServerClosed(_)
+        )
+    )
 }
 
 /// A dynamic mailbox router that supports remote delivery.
@@ -4072,12 +4131,11 @@ impl DialMailboxRouter {
     ) -> Result<Arc<MailboxClient>, MailboxSenderError> {
         // The cache must self-heal when a peer rejects a stale session
         // (e.g. its dispatcher GC'd the SessionId after the prior connection
-        // ended, but our cached NetTx has an Outbox.next_seq past 0). Without
-        // eviction, the cached client is dead-on-arrival forever, since the
-        // server rejects every reconnect with "out-of-sequence message,
-        // expected seq 0, got N".
+        // ended, but our cached NetTx has an Outbox.next_seq past 0), or when
+        // the peer's server shut down and a new one may serve the address.
+        // Without eviction, the cached client is dead-on-arrival forever.
         //
-        // Eviction is narrowly gated on this exact close reason. Re-dialing
+        // Eviction is narrowly gated on these close reasons. Re-dialing
         // a client closed for any other reason (oversized frame, codec
         // error, etc.) just produces a fresh session that fails the same
         // way and would turn the cache into an unbounded redial loop under
@@ -4087,11 +4145,11 @@ impl DialMailboxRouter {
             match self.sender_cache.entry(addr.clone()) {
                 Entry::Occupied(entry) => {
                     let status = entry.get().tx_status().borrow().clone();
-                    if is_stale_session_close(&status) {
+                    if is_redialable_close(&status) {
                         tracing::info!(
                             ?addr,
                             reason = ?status.as_closed(),
-                            "evicting stale-session MailboxClient from DialMailboxRouter cache"
+                            "evicting closed MailboxClient from DialMailboxRouter cache"
                         );
                         entry.remove();
                         continue;
@@ -4099,17 +4157,84 @@ impl DialMailboxRouter {
                     return Ok(entry.get().clone());
                 }
                 Entry::Vacant(entry) => {
-                    let tx = channel::dial(addr.clone()).map_err(|err| {
+                    let sender = dial_router_client(&self.sender_cache, addr).map_err(|err| {
                         MailboxSenderError::new_unbound_type(
                             actor_ref.clone(),
                             MailboxSenderErrorKind::Channel(err),
                             "unknown",
                         )
                     })?;
-                    let sender = Arc::new(MailboxClient::new(tx));
                     return Ok(entry.insert(sender).value().clone());
                 }
             }
+        }
+    }
+}
+
+/// Dial `addr` for a [`DialMailboxRouter`] cache. Messages that the client
+/// cannot deliver because the peer rejected its session as stale are
+/// re-posted through a client on a fresh session, so the first messages
+/// sent to a peer that restarted at the same address are not lost.
+fn dial_router_client(
+    sender_cache: &Arc<DashMap<ChannelAddr, Arc<MailboxClient>>>,
+    addr: &ChannelAddr,
+) -> Result<Arc<MailboxClient>, ChannelError> {
+    let tx = channel::dial(addr.clone())?;
+    let this_client: Arc<OnceLock<Weak<MailboxClient>>> = Arc::default();
+    let repost: StaleSessionRepost = {
+        let sender_cache = Arc::clone(sender_cache);
+        let addr = addr.clone();
+        let this_client = Arc::clone(&this_client);
+        Arc::new(move |envelope, return_handle| {
+            let stale = this_client.get().and_then(Weak::upgrade);
+            match replace_stale_router_client(&sender_cache, &addr, stale.as_ref()) {
+                Ok(fresh) => fresh.post(envelope, return_handle),
+                Err(error) => {
+                    let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+                        TransportFailure::new(
+                            envelope.dest().clone(),
+                            TransportFailureReason::DialFailed {
+                                addr: addr.clone(),
+                                error: error.to_string(),
+                            },
+                        ),
+                    ));
+                    envelope.undeliverable(failure, return_handle)
+                }
+            }
+        })
+    };
+    let client = Arc::new(MailboxClient::with_stale_session_repost(tx, repost));
+    this_client
+        .set(Arc::downgrade(&client))
+        .expect("client reference should be set once");
+    Ok(client)
+}
+
+/// Return the cached client for `addr`, replacing `stale` with a client on
+/// a fresh session if it is still cached. A client that another sender
+/// already cached in its place is reused.
+fn replace_stale_router_client(
+    sender_cache: &Arc<DashMap<ChannelAddr, Arc<MailboxClient>>>,
+    addr: &ChannelAddr,
+    stale: Option<&Arc<MailboxClient>>,
+) -> Result<Arc<MailboxClient>, ChannelError> {
+    match sender_cache.entry(addr.clone()) {
+        Entry::Occupied(mut entry)
+            if stale.is_some_and(|stale| Arc::ptr_eq(entry.get(), stale)) =>
+        {
+            tracing::info!(
+                ?addr,
+                "replacing stale-session MailboxClient in DialMailboxRouter cache"
+            );
+            let fresh = dial_router_client(sender_cache, addr)?;
+            entry.insert(Arc::clone(&fresh));
+            Ok(fresh)
+        }
+        Entry::Occupied(entry) => Ok(Arc::clone(entry.get())),
+        Entry::Vacant(entry) => {
+            let fresh = dial_router_client(sender_cache, addr)?;
+            Ok(Arc::clone(entry.insert(fresh).value()))
         }
     }
 }
@@ -4198,6 +4323,7 @@ mod tests {
     use crate::accum;
     use crate::accum::ReducerMode;
     use crate::channel::ChannelTransport;
+    use crate::channel::TcpMode;
     use crate::context::Actor as _;
     use crate::context::Mailbox as MailboxContext;
     use crate::context::MailboxExt as _;
@@ -5322,12 +5448,19 @@ mod tests {
     }
 
     #[test]
-    fn test_is_stale_session_close() {
-        // Only the typed SequenceMismatch variant identifies a stale session.
-        let stale = TxStatus::Closed(CloseReason::SequenceMismatch(
+    fn test_is_redialable_close() {
+        let stale = TxStatus::Closed(CloseReason::UnknownSession(
             "out-of-sequence message, expected seq 0, got 7".into(),
         ));
-        assert!(is_stale_session_close(&stale));
+        assert!(is_redialable_close(&stale));
+
+        let gap = TxStatus::Closed(CloseReason::SequenceMismatch(
+            "out-of-sequence message, expected seq 3, got 7".into(),
+        ));
+        assert!(is_redialable_close(&gap));
+
+        let server_closed = TxStatus::Closed(CloseReason::ServerClosed("server closed".into()));
+        assert!(is_redialable_close(&server_closed));
 
         // Other close reasons must NOT match — re-dialing would just hit the
         // same failure and create an unbounded evict/redial loop.
@@ -5335,27 +5468,30 @@ mod tests {
             size: 55_001_392,
             max: 50_000_000,
         });
-        assert!(!is_stale_session_close(&oversize));
+        assert!(!is_redialable_close(&oversize));
 
         let generic = TxStatus::Closed(CloseReason::Other("test teardown".into()));
-        assert!(!is_stale_session_close(&generic));
+        assert!(!is_redialable_close(&generic));
 
         // Active is never stale.
-        assert!(!is_stale_session_close(&TxStatus::Active));
+        assert!(!is_redialable_close(&TxStatus::Active));
     }
 
     #[tokio::test]
-    async fn test_dial_router_keeps_client_closed_for_non_stale_reason() {
-        // A client closed for any reason other than the K8s sequence-mismatch
-        // pattern must stay cached — re-dialing on, say, an oversize-frame
+    async fn test_dial_router_keeps_client_closed_for_non_redialable_reason() {
+        // A client closed for a reason that a fresh session would hit again
+        // must stay cached — re-dialing on, say, an oversize-frame
         // rejection would just produce a fresh session that fails the same
         // way under upstream retry, turning the cache into an unbounded
         // evict/redial loop. The closed entry sticks; upstream retries
         // fast-fail via the existing channel-closed path.
+        let config = hyperactor_config::global::lock();
+        let _max_frame = config.override_key(crate::config::CODEC_MAX_FRAME_LENGTH, 1024);
+
         let mbox = Mailbox::new(test_actor_id("non_stale_close_0", "actor0"));
         let (addr, rx) =
             channel::serve::<MessageEnvelope>(ChannelAddr::any(ChannelTransport::Local)).unwrap();
-        let h = mbox.clone().serve(rx);
+        let _server = mbox.clone().serve(rx);
 
         let router = DialMailboxRouter::new();
         router.bind(Addr::from(mbox.actor_addr().clone()), addr.clone());
@@ -5363,37 +5499,198 @@ mod tests {
         let client1 = router.dial(&addr, mbox.actor_addr()).unwrap();
         let mut status = client1.tx_status().clone();
 
-        // Local transport behaves like a socket: the dialer connects lazily
-        // on the first send and only observes peer teardown over an
-        // established connection. Post a message (routed through client1) and
-        // confirm receipt so the session actually connects, then drain acks so
-        // no unacked messages remain — this makes the post-teardown close take
-        // the fast connect-failure path rather than the delivery-timeout path.
-        let (port, receiver) = mbox.open_once_port::<u64>();
-        let port = port.bind();
+        let (port, _receiver) = mbox.open_once_port::<Vec<u8>>();
         router
-            .serialize_and_send_once(port, 67u64, monitored_return_handle())
+            .serialize_and_send_once(port.bind(), vec![0u8; 4096], monitored_return_handle())
             .unwrap();
-        assert_eq!(receiver.recv().await.unwrap(), 67u64);
-        client1.flush().await.unwrap();
-
-        // Tearing down the local server breaks the established connection; the
-        // next reconnect fails (port freed) and the session closes with a
-        // non-stale reason, so it must not trigger eviction.
-        h.stop("test teardown");
-        let _ = h.await;
         while !status.borrow_and_update().is_closed() {
             status.changed().await.unwrap();
         }
-        assert!(!is_stale_session_close(&status.borrow()));
+        assert!(matches!(
+            status.borrow().as_closed(),
+            Some(CloseReason::OversizedFrame { .. })
+        ));
+        assert!(!is_redialable_close(&status.borrow()));
 
         let client2 = router.dial(&addr, mbox.actor_addr()).unwrap();
         assert!(
             Arc::ptr_eq(&client1, &client2),
-            "router must not evict a client closed for a non-stale reason"
+            "router must not evict a client closed for a non-redialable reason"
         );
-        let client3 = router.dial(&addr, mbox.actor_addr()).unwrap();
-        assert!(Arc::ptr_eq(&client1, &client3));
+    }
+
+    /// A TCP relay that forwards each connection to its current target.
+    /// Aborting its connections drops them without a channel-level close, as
+    /// a crashed peer would.
+    struct TcpRelay {
+        addr: ChannelAddr,
+        target: Arc<Mutex<std::net::SocketAddr>>,
+        connections: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
+        accepted: watch::Receiver<usize>,
+    }
+
+    impl TcpRelay {
+        async fn start(target: &ChannelAddr) -> Self {
+            let ChannelAddr::Tcp(target) = target else {
+                panic!("relay target should be a TCP address, got {target}")
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = ChannelAddr::Tcp(listener.local_addr().unwrap());
+            let target = Arc::new(Mutex::new(*target));
+            let connections = Arc::new(Mutex::new(Vec::new()));
+            let (accepted_tx, accepted) = watch::channel(0);
+            {
+                let target = Arc::clone(&target);
+                let connections = Arc::clone(&connections);
+                tokio::spawn(async move {
+                    while let Ok((mut inbound, _)) = listener.accept().await {
+                        accepted_tx.send_modify(|count| *count += 1);
+                        let target = *target.lock().unwrap();
+                        let connection = tokio::spawn(async move {
+                            if let Ok(mut outbound) = tokio::net::TcpStream::connect(target).await {
+                                let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound)
+                                    .await;
+                            }
+                        });
+                        connections.lock().unwrap().push(connection.abort_handle());
+                    }
+                });
+            }
+            Self {
+                addr,
+                target,
+                connections,
+                accepted,
+            }
+        }
+
+        /// Drop every relayed connection and forward new ones to `target`.
+        /// Returns once the relay accepts a new connection, as a client
+        /// that observed the disconnect reconnects.
+        async fn restart_peer_at(&mut self, target: &ChannelAddr) {
+            let ChannelAddr::Tcp(target) = target else {
+                panic!("relay target should be a TCP address, got {target}")
+            };
+            *self.target.lock().unwrap() = *target;
+            let accepted = *self.accepted.borrow_and_update();
+            for connection in self.connections.lock().unwrap().drain(..) {
+                connection.abort();
+            }
+            self.accepted
+                .wait_for(|count| *count > accepted)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dial_router_reposts_message_rejected_by_restarted_peer() {
+        // A peer that restarts at the same address has no record of the
+        // router's cached session, so it rejects the first message sent on
+        // that session. The router must deliver that message on a fresh
+        // session instead of returning it as undeliverable.
+        let mbox = Mailbox::new(test_actor_id("restarted_peer_0", "actor0"));
+        let tcp = ChannelTransport::Tcp(TcpMode::Localhost);
+        let (first_addr, first_rx) = channel::serve::<MessageEnvelope>(tcp.any()).unwrap();
+        let _first_server = mbox.clone().serve(first_rx);
+        let (second_addr, second_rx) = channel::serve::<MessageEnvelope>(tcp.any()).unwrap();
+        let _second_server = mbox.clone().serve(second_rx);
+        let mut relay = TcpRelay::start(&first_addr).await;
+
+        let router = DialMailboxRouter::new();
+        router.bind(Addr::from(mbox.actor_addr().clone()), relay.addr.clone());
+        let stale_client = router.dial(&relay.addr, mbox.actor_addr()).unwrap();
+
+        // Connect the session and drain acks so its sequence number is past 0.
+        let (port, receiver) = mbox.open_once_port::<u64>();
+        router
+            .serialize_and_send_once(port.bind(), 1u64, monitored_return_handle())
+            .unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 1u64);
+        stale_client.flush().await.unwrap();
+
+        relay.restart_peer_at(&second_addr).await;
+
+        let (port, receiver) = mbox.open_once_port::<u64>();
+        router
+            .serialize_and_send_once(port.bind(), 2u64, monitored_return_handle())
+            .unwrap();
+        let received = tokio::time::timeout(Duration::from_secs(30), receiver.recv())
+            .await
+            .expect("the first message after the peer restart should be delivered")
+            .unwrap();
+        assert_eq!(received, 2u64);
+
+        let fresh_client = router.dial(&relay.addr, mbox.actor_addr()).unwrap();
+        assert!(
+            !Arc::ptr_eq(&stale_client, &fresh_client),
+            "the stale-session client should be replaced in the cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dial_router_returns_message_possibly_delivered_before_peer_restart() {
+        // A message written to the peer before it restarted may have been
+        // delivered there, even though its ack never arrived. When the
+        // restarted peer rejects the session, the router must return that
+        // message as undeliverable instead of re-posting it, so it is never
+        // delivered twice.
+        let config = hyperactor_config::global::lock();
+        // Ack the first two messages only.
+        let _ack_count = config.override_key(crate::config::MESSAGE_ACK_EVERY_N_MESSAGES, 2);
+        let _ack_time = config.override_key(
+            crate::config::MESSAGE_ACK_TIME_INTERVAL,
+            Duration::from_secs(600),
+        );
+
+        let mbox = Mailbox::new(test_actor_id("restarted_peer_1", "actor0"));
+        let tcp = ChannelTransport::Tcp(TcpMode::Localhost);
+        let (first_addr, first_rx) = channel::serve::<MessageEnvelope>(tcp.any()).unwrap();
+        let _first_server = mbox.clone().serve(first_rx);
+        let (second_addr, second_rx) = channel::serve::<MessageEnvelope>(tcp.any()).unwrap();
+        let _second_server = mbox.clone().serve(second_rx);
+        let mut relay = TcpRelay::start(&first_addr).await;
+
+        let router = DialMailboxRouter::new();
+        router.bind(Addr::from(mbox.actor_addr().clone()), relay.addr.clone());
+        let stale_client = router.dial(&relay.addr, mbox.actor_addr()).unwrap();
+
+        let (port, mut receiver) = mbox.open_port::<u64>();
+        let port = port.bind();
+        let (return_handle, mut returned) = mbox.open_port::<Undeliverable<MessageEnvelope>>();
+        for value in [0u64, 1] {
+            router
+                .serialize_and_send(&port, value, return_handle.clone())
+                .unwrap();
+            assert_eq!(receiver.recv().await.unwrap(), value);
+        }
+        stale_client.flush().await.unwrap();
+
+        // Delivered, but never acked.
+        router
+            .serialize_and_send(&port, 2u64, return_handle.clone())
+            .unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 2u64);
+
+        relay.restart_peer_at(&second_addr).await;
+
+        let envelope = tokio::time::timeout(Duration::from_secs(30), returned.recv())
+            .await
+            .expect("the possibly delivered message should be returned")
+            .unwrap()
+            .into_returned()
+            .unwrap();
+        assert_eq!(envelope.deserialized::<u64>().unwrap(), 2u64);
+        assert!(
+            receiver.try_recv().unwrap().is_none(),
+            "the possibly delivered message must not be delivered again"
+        );
+
+        // The router re-dials, and later messages are delivered.
+        router
+            .serialize_and_send(&port, 3u64, return_handle.clone())
+            .unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 3u64);
     }
 
     #[tokio::test]

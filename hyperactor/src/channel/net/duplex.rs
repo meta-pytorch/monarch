@@ -58,7 +58,6 @@ use crate::channel::CloseReason;
 use crate::channel::CompletionSink;
 use crate::channel::Rx;
 use crate::channel::SendError;
-use crate::channel::SendErrorReason;
 use crate::channel::Tx;
 use crate::channel::TxStatus;
 use crate::channel::net::Stream;
@@ -238,7 +237,7 @@ impl<M: RemoteMessage> Tx<M> for DuplexTx<M> {
                 .status
                 .borrow()
                 .as_closed()
-                .map(|r| SendErrorReason::Other(r.to_string()));
+                .map(CloseReason::send_error_reason);
             completion.reject(SendError {
                 error: ChannelError::Closed,
                 message,
@@ -604,6 +603,9 @@ pub(super) async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage
             Err(Either::Recv(session::RecvLoopError::SequenceError(reason))) => {
                 Some(super::NetRxResponse::Reject(reason.clone()))
             }
+            Err(Either::Recv(session::RecvLoopError::UnknownSession(reason))) => {
+                Some(super::NetRxResponse::UnknownSession(reason.clone()))
+            }
             Err(Either::Recv(session::RecvLoopError::Cancelled))
             | Err(Either::Send(session::SendLoopError::AppClosed)) => {
                 Some(super::NetRxResponse::Closed)
@@ -826,6 +828,9 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
             let terminal_response = match &result {
                 Err(Either::Recv(session::RecvLoopError::SequenceError(reason))) => {
                     Some(super::NetRxResponse::Reject(reason.clone()))
+                }
+                Err(Either::Recv(session::RecvLoopError::UnknownSession(reason))) => {
+                    Some(super::NetRxResponse::UnknownSession(reason.clone()))
                 }
                 Err(Either::Recv(session::RecvLoopError::Cancelled))
                 | Err(Either::Send(session::SendLoopError::AppClosed)) => {

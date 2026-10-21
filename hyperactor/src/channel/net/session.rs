@@ -335,11 +335,25 @@ pub(super) struct PendingMessage<M: RemoteMessage> {
     pub(super) completion: CompletionSink<M>,
 }
 
+/// Which connections of a session a queued frame has been written to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Written {
+    /// The frame has not been written to any connection.
+    Never,
+    /// The frame has been written, possibly in part, to the current
+    /// connection only.
+    Current,
+    /// The frame has been written to an earlier connection, whose peer may
+    /// have delivered it.
+    Earlier,
+}
+
 pub(super) struct QueuedMessage<M: RemoteMessage> {
     pub(super) seq: u64,
     pub(super) message: serde_multipart::Message,
     pub(super) received_at: Instant,
     pub(super) sent_at: Option<tokio::time::Instant>,
+    pub(super) written: Written,
     pub(super) completion: CompletionSink<M>,
 }
 
@@ -490,10 +504,6 @@ impl<M: RemoteMessage> Outbox<M> {
         self.deque.is_empty()
     }
 
-    pub(super) fn front_message(&self) -> Option<serde_multipart::Message> {
-        self.deque.front().map(|msg| msg.message.clone())
-    }
-
     pub(super) fn front_size(&self) -> Option<usize> {
         self.deque.front().map(|msg| msg.message.frame_len())
     }
@@ -551,6 +561,7 @@ impl<M: RemoteMessage> Outbox<M> {
             message,
             received_at,
             sent_at: None,
+            written: Written::Never,
             completion,
         });
         self.next_seq += 1;
@@ -707,11 +718,18 @@ pub(super) struct Deliveries<M: RemoteMessage> {
 }
 
 impl<M: RemoteMessage> Deliveries<M> {
-    /// Move all unacked messages back to the outbox for retransmission.
+    /// Move all unacked messages back to the outbox for retransmission,
+    /// and mark every frame written so far as written to an earlier
+    /// connection. Called before each connection of the session.
     /// Preserves `largest_acked`.
     pub(super) fn requeue_unacked(&mut self) {
         let old_deque = std::mem::replace(&mut self.unacked.deque, MessageDeque(VecDeque::new()));
         self.outbox.requeue_unacked(old_deque);
+        for message in self.outbox.deque.iter_mut() {
+            if message.written == Written::Current {
+                message.written = Written::Earlier;
+            }
+        }
     }
 
     /// Return the instant at which the earliest queued message (outbox or
@@ -752,8 +770,12 @@ pub(super) enum RecvLoopError {
     Io(anyhow::Error),
     /// Cancellation was requested.
     Cancelled,
-    /// Out-of-sequence message received.
+    /// Out-of-sequence message received after earlier messages of the
+    /// session were delivered.
     SequenceError(String),
+    /// Out-of-sequence message received before any message of the session
+    /// was delivered: the receiver has no record of the session.
+    UnknownSession(String),
 }
 
 impl fmt::Display for RecvLoopError {
@@ -762,6 +784,7 @@ impl fmt::Display for RecvLoopError {
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::Cancelled => write!(f, "cancelled"),
             Self::SequenceError(e) => write!(f, "sequence error: {e}"),
+            Self::UnknownSession(e) => write!(f, "unknown session: {e}"),
         }
     }
 }
@@ -837,6 +860,9 @@ pub(super) async fn recv_connected<
                                 next.seq, seq
                             );
                             tracing::error!(seq, next_seq = next.seq, "{}", error_msg);
+                            if next.seq == 0 {
+                                return Err(RecvLoopError::UnknownSession(error_msg));
+                            }
                             return Err(RecvLoopError::SequenceError(error_msg));
                         }
                         deliver_tx
@@ -956,6 +982,9 @@ pub(super) enum SendLoopError {
     AppClosed,
     /// Server rejected the connection.
     Rejected(String),
+    /// Server had no record of the session and delivered none of the
+    /// frames written on the connection.
+    UnknownSession(String),
     /// Server closed the channel.
     ServerClosed,
     /// Delivery timeout on oldest unacked message.
@@ -970,6 +999,7 @@ impl fmt::Display for SendLoopError {
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::AppClosed => write!(f, "application closed"),
             Self::Rejected(r) => write!(f, "rejected: {r}"),
+            Self::UnknownSession(r) => write!(f, "unknown session: {r}"),
             Self::ServerClosed => write!(f, "server closed"),
             Self::DeliveryTimeout => write!(f, "delivery timeout"),
             Self::OversizedFrame { size, max } => write!(
@@ -1354,8 +1384,11 @@ where
                     .try_return(Some(reason));
                 return Err(SendLoopError::OversizedFrame { size: len, max });
             }
-            let message = deliveries.outbox.front_message().expect("not empty");
-            pending = Some(stream.write(message.framed()));
+            let front = deliveries.outbox.deque.front_mut().expect("not empty");
+            if front.written == Written::Never {
+                front.written = Written::Current;
+            }
+            pending = Some(stream.write(front.message.clone().framed()));
         }
 
         tokio::select! {
@@ -1380,6 +1413,9 @@ where
                             }
                             NetRxResponse::Reject(reason) => {
                                 return Err(SendLoopError::Rejected(reason));
+                            }
+                            NetRxResponse::UnknownSession(reason) => {
+                                return Err(SendLoopError::UnknownSession(reason));
                             }
                             NetRxResponse::Closed => {
                                 return Err(SendLoopError::ServerClosed);

@@ -83,6 +83,11 @@ declare_attrs! {
     /// "stream".
     @meta(OPERATION_CONTEXT_HEADER = true)
     pub attr OPERATION_ADVERB: String;
+
+    /// Set when a message is re-posted on a new session after the peer
+    /// rejected its original session as stale. A message is re-posted at
+    /// most once.
+    pub attr REPOSTED_AFTER_STALE_SESSION: bool;
 }
 
 // HOT PATH: Be mindful of performance when making changes here.

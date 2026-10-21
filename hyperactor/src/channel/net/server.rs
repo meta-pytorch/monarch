@@ -256,6 +256,9 @@ pub(super) async fn dispatch_stream<M: RemoteMessage, S: Stream>(
             Err(session::RecvLoopError::SequenceError(reason)) => {
                 Some(super::NetRxResponse::Reject(reason.clone()))
             }
+            Err(session::RecvLoopError::UnknownSession(reason)) => {
+                Some(super::NetRxResponse::UnknownSession(reason.clone()))
+            }
             Err(session::RecvLoopError::Cancelled) => Some(super::NetRxResponse::Closed),
             _ => None,
         };
@@ -419,6 +422,9 @@ async fn dispatch_multi_stream<M: RemoteMessage, S: Stream>(
         let terminal_response = match &result {
             Err(session::RecvLoopError::SequenceError(reason)) => {
                 Some(super::NetRxResponse::Reject(reason.clone()))
+            }
+            Err(session::RecvLoopError::UnknownSession(reason)) => {
+                Some(super::NetRxResponse::UnknownSession(reason.clone()))
             }
             Err(session::RecvLoopError::Cancelled) => Some(super::NetRxResponse::Closed),
             _ => None,

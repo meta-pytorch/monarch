@@ -123,6 +123,13 @@ pub enum SendErrorReason {
         max: usize,
     },
 
+    /// The peer had no record of the session (see
+    /// [`CloseReason::UnknownSession`]), and the message was never written
+    /// on an earlier connection of the session, so no peer received it. A
+    /// new session can deliver it without risking a duplicate.
+    #[error("stale session: {0}")]
+    StaleSession(String),
+
     /// Other human-readable context.
     #[error("{0}")]
     Other(String),
@@ -382,11 +389,18 @@ impl<M: RemoteMessage> From<SendError<M>> for ChannelError {
 /// into `Other` and is for display/logging only.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CloseReason {
-    /// The peer rejected our session because our sequence number did not
-    /// match what the peer's dispatcher expected — the K8s "out-of-sequence
-    /// message, expected seq 0, got N" case where the peer GC'd the
-    /// `SessionId` while we still hold an `Outbox.next_seq` past 0.
-    /// Re-dialing produces a fresh session that the peer accepts.
+    /// The peer had no record of our session: the first frame it received
+    /// was out of sequence, and it had delivered nothing for the session —
+    /// the K8s "out-of-sequence message, expected seq 0, got N" case where
+    /// the peer restarted, or dropped the `SessionId`, while we still hold
+    /// an `Outbox.next_seq` past 0. The peer delivered none of the frames
+    /// written on the rejected connection. Re-dialing produces a fresh
+    /// session that the peer accepts.
+    UnknownSession(String),
+    /// The peer rejected our session because a frame skipped ahead of the
+    /// sequence number the peer expected next, after it had delivered
+    /// earlier frames of the session. Re-dialing produces a fresh session,
+    /// but the peer may have delivered any of the unacknowledged messages.
     SequenceMismatch(String),
     /// The peer rejected a frame whose length exceeded
     /// `config::CODEC_MAX_FRAME_LENGTH`. Re-dialing will not help — the
@@ -397,6 +411,10 @@ pub enum CloseReason {
         /// `CODEC_MAX_FRAME_LENGTH` at the time of rejection.
         max: usize,
     },
+    /// The peer closed the channel, for example because its server shut
+    /// down. A new server may later listen at the same address, and
+    /// re-dialing reaches it with a fresh session.
+    ServerClosed(String),
     /// Any close reason the transport hasn't classified further. The string
     /// is for display/logging only — do not parse it. If a caller needs to
     /// branch on a sub-case, lift it into its own variant on this enum.
@@ -406,11 +424,29 @@ pub enum CloseReason {
 impl fmt::Display for CloseReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SequenceMismatch(s) => write!(f, "stale session: {}", s),
+            Self::UnknownSession(s) => write!(f, "stale session: {}", s),
+            Self::SequenceMismatch(s) => write!(f, "sequence mismatch: {}", s),
             Self::OversizedFrame { size, max } => {
                 write!(f, "oversized frame: len={size} > max={max}")
             }
-            Self::Other(s) => f.write_str(s),
+            Self::ServerClosed(s) | Self::Other(s) => f.write_str(s),
+        }
+    }
+}
+
+impl CloseReason {
+    /// The [`SendErrorReason`] reported for messages that a channel closed
+    /// for this reason never wrote to any connection.
+    pub(crate) fn send_error_reason(&self) -> SendErrorReason {
+        match self {
+            Self::UnknownSession(s) => SendErrorReason::StaleSession(s.clone()),
+            Self::OversizedFrame { size, max } => SendErrorReason::OversizedFrame {
+                len: *size,
+                max: *max,
+            },
+            Self::SequenceMismatch(_) | Self::ServerClosed(_) | Self::Other(_) => {
+                SendErrorReason::Other(self.to_string())
+            }
         }
     }
 }
@@ -1360,7 +1396,7 @@ impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
                 .status
                 .borrow()
                 .as_closed()
-                .map(|r| SendErrorReason::Other(r.to_string()));
+                .map(CloseReason::send_error_reason);
             completion.reject(SendError {
                 error: ChannelError::Closed,
                 message,

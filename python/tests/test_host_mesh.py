@@ -1085,6 +1085,76 @@ def test_stop_and_reconnect() -> None:
             job.kill()
 
 
+def _restart_process_job_worker(proc_addr: str) -> "subprocess.Popen[bytes]":
+    env = {**os.environ}
+    if "FB_XAR_INVOKED_NAME" in os.environ:
+        env["PYTHONPATH"] = ":".join(sys.path)
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "from monarch.actor import run_worker_loop_forever; "
+            f"run_worker_loop_forever(address={proc_addr!r}, "
+            'ca="trust_all_connections")',
+        ],
+        env=env,
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+    )
+
+
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize("stop", ["shutdown", "kill"])
+@isolate_in_subprocess
+def test_attach_after_host_restart_at_same_address(stop: str) -> None:
+    """A client can attach a new HostMesh to a host that was stopped and
+    restarted at the same address with a new service ProcId, from the same
+    client process.
+
+    ``shutdown`` closes the client's channel to the host gracefully; ``kill``
+    leaves it open on a stale session, as a crashed host would."""
+    with configured(mesh_attach_config_timeout="15s"):
+        job = ProcessJob({"hosts": 1})
+        restarted: Optional["subprocess.Popen[bytes]"] = None
+        try:
+            hm = job.state(cached_path=None).hosts
+            am = hm.spawn_procs(per_host={"gpus": 1}).spawn("actor", RankActor)
+            actor_pids = list(am.get_pid.call().get(timeout=30).values())
+            # Let the host ack everything the client sent.
+            time.sleep(2)
+
+            worker = job._host_to_pid["hosts_0"]
+            if stop == "shutdown":
+                assert hm.shutdown().get(timeout=30) is None
+            else:
+                for pid in [worker.pid, *actor_pids]:
+                    os.kill(pid, signal.SIGKILL)
+            deadline = time.monotonic() + 30
+            while any(is_process_running(pid) for pid in [worker.pid, *actor_pids]):
+                assert time.monotonic() < deadline, "worker did not exit"
+                time.sleep(0.1)
+
+            assert job._tmpdir is not None
+            with suppress(FileNotFoundError):
+                os.unlink(os.path.join(job._tmpdir, "hosts_0"))
+            proc_addr = service_proc_addr(
+                worker.channel.split("@", 1)[1], new_service_proc_id()
+            )
+            restarted = _restart_process_job_worker(proc_addr)
+            hm2 = attach_to_workers(
+                name="hosts", ca="trust_all_connections", workers=[proc_addr]
+            )
+            hm2.initialized.get(timeout=30)
+            am2 = hm2.spawn_procs(per_host={"gpus": 1}).spawn("actor", RankActor)
+            assert list(am2.get_rank.call().get(timeout=30).values()) == [0]
+            hm2.shutdown().get(timeout=30)
+        finally:
+            if restarted is not None and restarted.poll() is None:
+                os.killpg(restarted.pid, signal.SIGKILL)
+                restarted.wait()
+            job.kill()
+
+
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_stop_only_drains_own_mesh_procs() -> None:
