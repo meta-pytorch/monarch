@@ -64,8 +64,6 @@ use super::manager_actor::CreatePeerQueuePair;
 use super::memory_region::IbvMemoryRegionView;
 use super::memory_region::IbvRemoteMemoryRegionView;
 use super::primitives::Gid;
-use super::primitives::GidScope;
-use super::primitives::GidType;
 use super::primitives::IbvConfig;
 use super::primitives::IbvCq;
 use super::primitives::IbvOperation;
@@ -450,8 +448,7 @@ pub struct RCQueuePair {
     qp: IbvQp,
     config: IbvConfig,
     /// The source GID (carrying its table index), resolved from the owning
-    /// device's `IbvDeviceInfo` at construction: the first global RoCE v2 GID on
-    /// `config.port_num`.
+    /// device's `IbvDeviceInfo` at construction by `IbvDeviceInfo::source_gid`.
     gid: Gid,
     /// Remote-access flags granted to peers at connect time, taken from the
     /// owning domain at construction.
@@ -587,12 +584,8 @@ impl IbvQueuePair for RCQueuePair {
         }
 
         // Resolve the source GID up front (before allocating any FFI resources),
-        // so a port without a global RoCE v2 GID fails cleanly here.
-        let gid = domain.device_info().select_gid(
-            config.port_num,
-            Some(GidScope::Global),
-            Some(GidType::RoCEv2),
-        )?;
+        // so a port without a usable source GID fails cleanly here.
+        let gid = domain.device_info().source_gid(config.port_num)?;
 
         // A standard RC QP with the caps from `config`.
         let mut init_attr = rdmaxcel_sys::ibv_qp_init_attr {

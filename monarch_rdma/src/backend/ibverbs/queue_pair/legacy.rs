@@ -43,7 +43,7 @@ pub struct IbvQueuePair {
     config: IbvConfig,
     // The source GID (carrying its table index), resolved from the owning
     // device's `IbvDeviceInfo` at construction: index 0 on the EFA path,
-    // otherwise the first global RoCE v2 GID on `config.port_num`.
+    // otherwise `IbvDeviceInfo::source_gid`.
     gid: Gid,
     is_efa: bool,
     // Keepalive for the protection domain this QP was built against, so the PD
@@ -136,15 +136,11 @@ impl IbvQueuePair {
         let resolved_qp_type = resolve_qp_type(config.qp_type);
         let is_efa = resolved_qp_type == rdmaxcel_sys::RDMA_QP_TYPE_EFA;
         // EFA is not RoCE, so its `gid_attrs/types` never reports "RoCE v2"; it
-        // always uses GID index 0. RoCE selects the first global RoCE v2 GID.
+        // always uses GID index 0.
         let gid = if is_efa {
             domain.device_info().gid_at(config.port_num, 0)?
         } else {
-            domain.device_info().select_gid(
-                config.port_num,
-                Some(GidScope::Global),
-                Some(GidType::RoCEv2),
-            )?
+            domain.device_info().source_gid(config.port_num)?
         };
         // This queue pair builds its own completion queues rather than drawing
         // on the device's pool, so size them the way a pooled queue is sized:
