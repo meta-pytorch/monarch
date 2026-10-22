@@ -15,7 +15,9 @@ import weakref
 from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import torch
+    # torch is not a dependency of this package; tensors come from the
+    # caller's binary, so treat Tensor as opaque for type checking.
+    Tensor = Any
 
 from monarch._rust_bindings.monarch_hyperactor.handle import Handle
 from monarch._src.actor.actor_mesh import context
@@ -265,7 +267,7 @@ def _evict_local_memory(key: Tuple[int, int, int], ref: "weakref.ref") -> None:
 
 
 def _make_local_memory_handle(
-    data: "torch.Tensor | memoryview",
+    data: "Tensor | memoryview",
 ) -> _LocalMemoryHandle:
     _assert_1d_contiguous(data)
     if isinstance(data, memoryview):
@@ -313,13 +315,16 @@ def pt_cuda_allocator_compatibility() -> bool:
     Returns:
         bool: True if both conditions are met, False otherwise
     """
-    import torch
+    import torch  # @manual
 
-    if not torch.cuda.is_available():
+    # torch is provided by the caller's binary, not a dependency here,
+    # so access it dynamically rather than through its typed API.
+    torch_any: Any = torch
+    if not torch_any.cuda.is_available():
         return False
 
     # Get allocator snapshot which contains settings
-    snapshot = torch.cuda.memory._snapshot()
+    snapshot = torch_any.cuda.memory._snapshot()
     allocator_settings = snapshot.get("allocator_settings", {})
 
     # Check if expandable_segments is enabled
@@ -371,7 +376,7 @@ def _check_cuda_expandable_segments_enabled() -> bool:
 class RDMABuffer:
     def __init__(
         self,
-        data: "torch.Tensor | memoryview",
+        data: "Tensor | memoryview",
     ) -> None:
         """
         RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews.
@@ -439,7 +444,7 @@ class RDMABuffer:
 
     def read_into(
         self,
-        dst: "torch.Tensor | memoryview",
+        dst: "Tensor | memoryview",
         *,
         timeout: int = 60,
     ) -> Future[None]:
@@ -462,7 +467,7 @@ class RDMABuffer:
 
     def write_from(
         self,
-        src: "torch.Tensor | memoryview",
+        src: "Tensor | memoryview",
         *,
         timeout: int = 60,
     ) -> Future[None]:
@@ -504,7 +509,7 @@ class RDMABuffer:
 
 
 if TYPE_CHECKING:
-    LocalMemory = torch.Tensor | memoryview
+    LocalMemory = Tensor | memoryview
 
 
 class RDMAAction:
