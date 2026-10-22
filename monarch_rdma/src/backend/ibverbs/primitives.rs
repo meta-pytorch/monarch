@@ -224,6 +224,47 @@ impl GidType {
     }
 }
 
+/// Link layer of an RDMA port, from `ibv_port_attr.link_layer`.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub(crate) enum LinkLayer {
+    /// Native InfiniBand.
+    InfiniBand,
+    /// Ethernet, carrying RoCE.
+    Ethernet,
+    /// No link layer reported (as EFA does), or an unrecognized value.
+    Unspecified,
+}
+
+impl LinkLayer {
+    /// Classifies an `ibv_port_attr.link_layer` value.
+    fn of(link_layer: u8) -> Self {
+        match link_layer {
+            1 => LinkLayer::InfiniBand,
+            2 => LinkLayer::Ethernet,
+            _ => LinkLayer::Unspecified,
+        }
+    }
+}
+
+impl fmt::Display for LinkLayer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            LinkLayer::InfiniBand => "InfiniBand",
+            LinkLayer::Ethernet => "Ethernet",
+            LinkLayer::Unspecified => "Unspecified",
+        })
+    }
+}
+
 /// Queue pair type for RDMA operations.
 ///
 /// Controls whether to use standard ibverbs queue pairs, mlx5dv extended queue pairs,
@@ -642,7 +683,7 @@ pub struct IbvPort {
     /// `capability_mask` - Capability mask of the port.
     capability_mask: u32,
     /// `link_layer` - The link layer type (e.g., InfiniBand, Ethernet).
-    link_layer: String,
+    link_layer: LinkLayer,
     /// `gids` - The port's populated GID-table entries, keyed by table index
     /// (empty slots omitted).
     gids: BTreeMap<u8, Gid>,
@@ -779,23 +820,6 @@ pub fn get_port_phy_state_str(phys_state: u8) -> String {
     }
 }
 
-/// Converts the given link layer type to a human-readable string.
-///
-/// # Arguments
-///
-/// * `link_layer` - The link layer type as a `u8`.
-///
-/// # Returns
-///
-/// A string representation of the link layer type.
-pub fn get_link_layer_str(link_layer: u8) -> String {
-    match link_layer {
-        1 => "InfiniBand".to_string(),
-        2 => "Ethernet".to_string(),
-        _ => "Unknown".to_string(),
-    }
-}
-
 /// Formats a GID (Global Identifier) into a human-readable string.
 ///
 /// # Arguments
@@ -923,7 +947,7 @@ pub(super) unsafe fn query_device_info(
             continue;
         }
         let physical_state = get_port_phy_state_str(port_attr.phys_state);
-        let link_layer = get_link_layer_str(port_attr.link_layer);
+        let link_layer = LinkLayer::of(port_attr.link_layer);
         let gids = read_port_gids(&info.name, port_num, port_attr.gid_tbl_len)?;
         info.ports.push(IbvPort {
             port_num,
@@ -1696,7 +1720,7 @@ mod tests {
                 "display should include port state"
             );
             assert!(
-                display_output.contains(&port.link_layer),
+                display_output.contains(&port.link_layer.to_string()),
                 "display should include link layer"
             );
         }
@@ -1744,7 +1768,7 @@ mod tests {
                 lmc: 0,
                 sm_lid: 0,
                 capability_mask: 0,
-                link_layer: String::new(),
+                link_layer: LinkLayer::Ethernet,
                 gids: BTreeMap::new(),
                 gid_tbl_len: 0,
                 active_speed,
@@ -1886,6 +1910,14 @@ mod tests {
         assert_eq!(GidType::of("IB/RoCE v1\n"), GidType::RoCEv1);
         assert_eq!(GidType::of(""), GidType::Unknown);
         assert_eq!(GidType::of("something else"), GidType::Unknown);
+    }
+
+    #[test]
+    fn test_link_layer_of() {
+        assert_eq!(LinkLayer::of(1), LinkLayer::InfiniBand);
+        assert_eq!(LinkLayer::of(2), LinkLayer::Ethernet);
+        assert_eq!(LinkLayer::of(0), LinkLayer::Unspecified);
+        assert_eq!(LinkLayer::of(9), LinkLayer::Unspecified);
     }
 
     #[test]
