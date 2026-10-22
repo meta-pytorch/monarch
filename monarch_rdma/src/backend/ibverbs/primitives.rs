@@ -525,6 +525,15 @@ impl IbvDeviceInfo {
         self.ports.iter().find(|port| port.port_num == port_num)
     }
 
+    /// The source GID for RC queue pairs on `port_num`: its first global RoCE
+    /// v2 GID, which RoCE needs. InfiniBand ports are held to this rule too,
+    /// which they cannot meet: their only GID is the port GID, typed
+    /// "IB/RoCE v1" under the link-local prefix (issue 5085). Errors if the
+    /// device has no such port or no such GID.
+    pub(crate) fn source_gid(&self, port_num: u8) -> Result<Gid, anyhow::Error> {
+        self.select_gid(port_num, Some(GidScope::Global), Some(GidType::RoCEv2))
+    }
+
     /// The lowest-indexed GID on `port_num` matching `scope` (if `Some`) and
     /// `gid_type` (if `Some`); a `None` filter matches any value. Errors if the
     /// device has no such port or no GID matches.
@@ -1918,6 +1927,73 @@ mod tests {
         assert_eq!(LinkLayer::of(2), LinkLayer::Ethernet);
         assert_eq!(LinkLayer::of(0), LinkLayer::Unspecified);
         assert_eq!(LinkLayer::of(9), LinkLayer::Unspecified);
+    }
+
+    /// A device whose port 1 has `link_layer` and the GID table `gids`, given as
+    /// `(index, address, sysfs type)`.
+    fn device_with_port(link_layer: LinkLayer, gids: &[(u8, &str, &str)]) -> IbvDeviceInfo {
+        let gids = gids
+            .iter()
+            .map(|&(index, addr, gid_type)| {
+                let addr = addr.parse().expect("valid IPv6");
+                (index, Gid::new(addr, GidType::of(gid_type), index))
+            })
+            .collect();
+        let port = IbvPort {
+            port_num: 1,
+            state: rdmaxcel_sys::ibv_port_state::IBV_PORT_ACTIVE,
+            physical_state: String::new(),
+            base_lid: 0,
+            lmc: 0,
+            sm_lid: 0,
+            capability_mask: 0,
+            link_layer,
+            gids,
+            gid_tbl_len: 0,
+            active_speed: 0,
+            active_width: 0,
+        };
+        IbvDeviceInfo {
+            ports: vec![port],
+            ..IbvDeviceInfo::for_test_named("mlx5_0")
+        }
+    }
+
+    #[test]
+    fn test_source_gid_roce_takes_global_roce_v2() {
+        // The usual RoCE table: link-local then global, each as v1 and v2.
+        let device = device_with_port(
+            LinkLayer::Ethernet,
+            &[
+                (0, "fe80::1", "IB/RoCE v1"),
+                (1, "fe80::1", "RoCE v2"),
+                (2, "2401:db00::b", "IB/RoCE v1"),
+                (3, "2401:db00::b", "RoCE v2"),
+            ],
+        );
+        assert_eq!(device.source_gid(1).unwrap().index(), 3);
+    }
+
+    #[test]
+    fn test_source_gid_roce_without_global_roce_v2_errors() {
+        let device = device_with_port(
+            LinkLayer::Ethernet,
+            &[(0, "fe80::1", "IB/RoCE v1"), (1, "fe80::1", "RoCE v2")],
+        );
+        assert!(device.source_gid(1).is_err());
+        assert!(device.source_gid(2).is_err(), "no such port");
+    }
+
+    #[test]
+    fn test_source_gid_ib_port_has_no_roce_v2_gid() {
+        // Issue 5085: an InfiniBand port has only its port GID, typed
+        // "IB/RoCE v1" under the default link-local subnet prefix, so the RoCE v2
+        // rule finds nothing and no queue pair can be built on the port.
+        let device = device_with_port(
+            LinkLayer::InfiniBand,
+            &[(0, "fe80::a088:c203:4e:1234", "IB/RoCE v1")],
+        );
+        assert!(device.source_gid(1).is_err());
     }
 
     #[test]

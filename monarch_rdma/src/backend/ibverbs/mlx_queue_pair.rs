@@ -16,8 +16,6 @@ use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::memory_region::IbvMemoryRegionView;
 use super::memory_region::IbvRemoteMemoryRegionView;
-use super::primitives::GidScope;
-use super::primitives::GidType;
 use super::primitives::IbvConfig;
 use super::primitives::IbvCq;
 use super::primitives::IbvQp;
@@ -116,11 +114,7 @@ impl IbvQueuePair for MlxQueuePair {
         recv_cq: Arc<IbvCq>,
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an MlxQueuePair from config {}", config);
-        let gid = domain.device_info().select_gid(
-            config.port_num,
-            Some(GidScope::Global),
-            Some(GidType::RoCEv2),
-        )?;
+        let gid = domain.device_info().source_gid(config.port_num)?;
         // SAFETY: an `IbvDomain` holds a null-or-live context and PD, which is
         // `create_ibv_qp`'s contract.
         let qp = unsafe { Self::create_ibv_qp(domain, &config, send_cq, recv_cq) }?;
