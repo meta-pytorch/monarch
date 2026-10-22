@@ -166,12 +166,13 @@ impl CastDomainId {
     /// Materialize this domain id over concrete routing nodes and return an
     /// addressable domain handle.
     ///
-    /// Each node identifies the `CastActor` that relays its subtree and the
-    /// destination delivered locally by that actor.
+    /// Each present node identifies the `CastActor` that relays its subtree and
+    /// the destination delivered locally by that actor. An absent node is
+    /// bypassed during setup.
     pub fn materialize(
         self,
         cx: &impl context::Actor,
-        nodes: Arc<ValueMesh<CastNode>>,
+        nodes: Arc<ValueMesh<Option<CastNode>>>,
         tiling_policy: TilingPolicy,
         headers: Flattrs,
     ) -> anyhow::Result<CastDomainRef> {
@@ -179,6 +180,7 @@ impl CastDomainId {
 
         let members = nodes
             .values()
+            .flatten()
             .map(|node| node.destination.actor().clone())
             .collect::<Vec<_>>();
 
@@ -199,6 +201,7 @@ impl CastDomainId {
 
         let root_node = root_tile
             .root_item()
+            .and_then(Option::as_ref)
             .ok_or_else(|| anyhow::anyhow!("cast routing mesh must contain a root node"))?
             .clone();
 
@@ -219,15 +222,13 @@ impl CastDomainId {
             );
         }
 
-        let num_destinations = member_mesh.region().num_ranks();
-
         Ok(CastDomainRef {
             id: self,
             tree: CastTree {
                 root_node,
                 remaining_region: destination_region,
                 children,
-                num_destinations,
+                num_destinations: member_mesh.region().num_ranks(),
             },
             sequencing: CastSequencing {
                 members: member_mesh,
@@ -376,33 +377,44 @@ impl CastSequencing {
     }
 }
 
-/// Return the tiles directly reached from `tile` by the current communication
-/// algorithm.
+/// Return the next present routing tiles, promoting descendants through absent
+/// tile roots.
 ///
-/// This asks only for the current tile's outgoing edges without materializing
-/// the full domain tree. The returned [`MaterializedTile`]s are still tiles of
-/// the input value type.
+/// Input:
 ///
 /// ```text
-/// current MaterializedTile:
-/// T0 [ A0 A1 A2 A3
-///      A4 A5 A6 A7 ]
+/// A
+/// |-- None
+/// |   |-- C
+/// |   `-- D
+/// `-- E
+/// ```
 ///
-/// next_tiles(current), rendered by destination actor rank:
-/// A0
-/// |-- T1 [ A1 ]
-/// |-- T2 [ A2 ]
-/// |-- T3 [ A3 ]
-/// `-- T4 [ A4 A5 A6 A7 ]
+/// Output:
+///
+/// ```text
+/// [
+///   C,
+///   D,
+///   E,
+/// ]
 /// ```
 fn next_tiles<T: 'static>(
     tiling_policy: TilingPolicy,
-    tile: &MaterializedTile<T>,
-) -> Vec<MaterializedTile<T>> {
+    tile: &MaterializedTile<Option<T>>,
+) -> Vec<MaterializedTile<Option<T>>> {
     tiling_policy
         .children(tile.tile())
         .into_iter()
-        .map(|child| tile.subtile(child))
+        .flat_map(|child| {
+            let child = tile.subtile(child);
+
+            if child.root_item().and_then(Option::as_ref).is_some() {
+                vec![child]
+            } else {
+                next_tiles(tiling_policy, &child)
+            }
+        })
         .collect()
 }
 
@@ -464,9 +476,9 @@ impl CastTree {
     /// Input:
     ///
     /// ```text
-    /// parent tile:             [cast_0{a0}, cast_1{a1}, cast_2{a2}, cast_3{a3}]
-    /// parent remaining region: [a0, a1, a2, a3]
-    /// child tiles:            [[cast_2{a2}, cast_3{a3}], [cast_1{a1}]]
+    /// parent tile:             [cast_0{a0}, None, cast_2{a2}, cast_3{a3}, cast_4{a4}]
+    /// parent remaining region: [a0, a2, a3, a4]
+    /// child tiles:            [[cast_2{a2}, cast_3{a3}], [cast_4{a4}]]
     /// ```
     ///
     /// Output:
@@ -474,18 +486,39 @@ impl CastTree {
     /// ```text
     /// [
     ///   CastTree { root_node: cast_2{a2}, remaining_region: [a2, a3] },
-    ///   CastTree { root_node: cast_1{a1}, remaining_region: [a1] },
+    ///   CastTree { root_node: cast_4{a4}, remaining_region: [a4] },
     /// ]
     /// ```
     fn try_from_tiles(
-        parent_tile: &MaterializedTile<CastNode>,
+        parent_tile: &MaterializedTile<Option<CastNode>>,
         parent_remaining_region: &Region,
-        tiles: &[MaterializedTile<CastNode>],
+        tiles: &[MaterializedTile<Option<CastNode>>],
     ) -> anyhow::Result<Vec<Self>> {
-        let destination_offsets = tiles
+        let child_indices = tiles
             .iter()
-            .map(|tile| parent_tile.tile().space().index(tile.root_rank()))
-            .collect::<Result<Vec<_>, _>>()?;
+            .enumerate()
+            .map(|(index, tile)| (tile.root_rank(), index))
+            .collect::<HashMap<_, _>>();
+
+        let destination_offsets = {
+            let mut destination_offsets = vec![None; tiles.len()];
+            let mut destination_offset = 0;
+
+            for rank in parent_tile.tile().ranks() {
+                if let Some(child_index) = child_indices.get(&rank) {
+                    destination_offsets[*child_index] = Some(destination_offset);
+                }
+
+                destination_offset += usize::from(
+                    parent_tile
+                        .item_at(rank)
+                        .expect("parent tile must contain each of its ranks")
+                        .is_some(),
+                );
+            }
+
+            destination_offsets
+        };
 
         tiles
             .iter()
@@ -493,10 +526,15 @@ impl CastTree {
             .map(|(tile, destination_offset)| {
                 let root_node = tile
                     .root_item()
+                    .and_then(Option::as_ref)
                     .ok_or_else(|| anyhow::anyhow!("cast routing tile must contain a root node"))?
                     .clone();
 
-                let destination_count = tile.rank_count();
+                let destination_offset = destination_offset.ok_or_else(|| {
+                    anyhow::anyhow!("child routing tile root must belong to its parent tile")
+                })?;
+
+                let destination_count = tile.items().filter(|node| node.is_some()).count();
 
                 let destination_end = destination_offset
                     .checked_add(destination_count)
@@ -842,7 +880,7 @@ struct CreateCastDomain {
     cast_domain_id: CastDomainId,
     remaining_region: Region,
     tiling_policy: TilingPolicy,
-    tile: MaterializedTile<CastNode>,
+    tile: MaterializedTile<Option<CastNode>>,
 }
 wirevalue::register_type!(CreateCastDomain);
 
@@ -854,7 +892,7 @@ impl Handler<CreateCastDomain> for CastActor {
         fields(
             domain_id = %message.cast_domain_id,
             rank = message.tile.root_rank(),
-            num_members = message.tile.rank_count(),
+            num_routing_slots = message.tile.rank_count(),
         )
     )]
     async fn handle(
@@ -874,6 +912,7 @@ impl Handler<CreateCastDomain> for CastActor {
 
         let root_node = tile
             .root_item()
+            .and_then(Option::as_ref)
             .ok_or_else(|| anyhow::anyhow!("cast routing tile must contain a root node"))?
             .clone();
 
@@ -901,7 +940,7 @@ impl Handler<CreateCastDomain> for CastActor {
             root_node,
             remaining_region,
             children,
-            num_destinations: tile.rank_count(),
+            num_destinations: tile.items().filter(|node| node.is_some()).count(),
         };
 
         #[cfg(test)]
@@ -1420,7 +1459,11 @@ mod tests {
         prop_assert_eq!(tile.items().cloned().collect::<Vec<_>>(), expected_members);
         prop_assert!(seen_roots.insert(tile.root_rank()));
 
-        for child in next_tiles(TilingPolicy::BlockPartitioning, tile) {
+        for child in TilingPolicy::BlockPartitioning
+            .children(tile.tile())
+            .into_iter()
+            .map(|child| tile.subtile(child))
+        {
             validate_domain_tree(members, &child, seen_roots)?;
         }
 
@@ -1537,12 +1580,12 @@ mod tests {
     /// Output:
     ///
     /// ```text
-    /// [proc0::cast {proc0::member}, proc1::cast {proc1::member}]
+    /// [Some(proc0::cast {proc0::member}), Some(proc1::cast {proc1::member})]
     /// ```
     fn proc_cast_node_mesh(
         region: Region,
         members: &HashMap<usize, ActorAddr>,
-    ) -> anyhow::Result<Arc<ValueMesh<CastNode>>> {
+    ) -> anyhow::Result<Arc<ValueMesh<Option<CastNode>>>> {
         let actors = region
             .slice()
             .iter()
@@ -1557,10 +1600,10 @@ mod tests {
         let nodes = destinations
             .values()
             .map(|destination| {
-                CastNode::new(
+                Some(CastNode::new(
                     CastActor::ref_for_proc(destination.actor().proc_addr()),
                     destination.clone(),
-                )
+                ))
             })
             .collect::<Vec<_>>();
 
@@ -2284,6 +2327,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_next_cast_tiles_promotes_children_of_an_absent_node() {
+        // Initial communication tree:
+        //
+        // 0
+        // |-- 2
+        // |   `-- 3
+        // `-- 1
+        //
+        // Removing node 2 promotes node 3 into node 0's next tiles.
+        let region = Region::from(shape!(row = 2, col = 2));
+        let members = region
+            .slice()
+            .iter()
+            .map(|rank| (rank, member(rank)))
+            .collect::<HashMap<_, _>>();
+        let nodes = proc_cast_node_mesh(region.clone(), &members).unwrap();
+        let mut nodes = nodes.values().collect::<Vec<_>>();
+        nodes[2] = None;
+        let root = MaterializedTile::from_value_mesh_with_tile(
+            Tile::from_view(&region),
+            Arc::new(ValueMesh::new(region, nodes).unwrap()),
+        );
+
+        let child_root_ranks = next_tiles(TilingPolicy::BlockPartitioning, &root)
+            .iter()
+            .map(MaterializedTile::root_rank)
+            .collect::<Vec<_>>();
+
+        assert_eq!(child_root_ranks, vec![3, 1]);
+    }
+
     async fn cast_and_collect_histories(
         test_mesh: &CastTestMesh,
         cast_domain: &CastDomainRef,
@@ -2409,6 +2484,46 @@ mod tests {
             Ok(Err(e)) => panic!("reply recv error: {e}"),
             Err(_) => panic!("timed out waiting for reduced replies"),
         }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_absent_cast_node_promotes_its_children() {
+        let mut test_mesh = CastTestMesh::new(4);
+        test_mesh.spawn_delivery_receivers();
+        let region = Region::from(shape!(row = 2, col = 2));
+        let members = test_mesh.domain_members();
+        let nodes = proc_cast_node_mesh(region.clone(), &members).unwrap();
+        let mut nodes = nodes.values().collect::<Vec<_>>();
+        nodes[2] = None;
+        let cast_domain = CastDomainId::new()
+            .materialize(
+                &test_mesh.client,
+                Arc::new(ValueMesh::new(region, nodes).unwrap()),
+                TilingPolicy::BlockPartitioning,
+                Flattrs::new(),
+            )
+            .unwrap();
+
+        cast_domain
+            .cast(
+                &test_mesh.client,
+                Flattrs::new(),
+                TestDelivery {
+                    payload: "hello".to_string(),
+                },
+            )
+            .unwrap();
+
+        let histories = cast_and_collect_histories(&test_mesh, &cast_domain).await;
+        let delivered_procs = histories.keys().cloned().collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            delivered_procs,
+            ["proc_0", "proc_1", "proc_3"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
     }
 
     // CA-1 (direct-delivery equivalence), CA-3 (setup ordering), and CA-5
