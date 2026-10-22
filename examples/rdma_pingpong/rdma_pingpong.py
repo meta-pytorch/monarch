@@ -4,11 +4,13 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import json
 import mmap
 import os
 import socket
 import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 import fire
@@ -16,6 +18,10 @@ import torch
 import xxhash
 from monarch.actor import Actor, endpoint, shutdown_context
 from monarch.rdma import RDMABuffer
+
+
+# Carries main()'s arguments to the batch client, which MAST starts without argv.
+_BATCH_ARGS_ENV = "RDMA_PINGPONG_ARGS"
 
 
 def _checksum(buf: bytes) -> str:
@@ -108,11 +114,21 @@ def main(
     hpc_job_oncall: str = "monarch",
     hpc_cluster_uuid: str = "MastGenAICluster",
     rm_attribution: str = "msl_infra_pytorch_dev",
+    host_type: str = "gtt_any",
+    region: str = "gtn",
+    flex_pool: Optional[str] = None,
+    launch_batch: bool = False,
     k8s_namespace: str = "monarch-tests",
     k8s_image: str = "ghcr.io/meta-pytorch/monarch:latest",
     buffer_type: str = "cpu_tensor",
 ):
-    """RDMA Pingpong: transfer data between two nodes via RDMABuffer."""
+    """RDMA Pingpong: transfer data between two nodes via RDMABuffer.
+
+    With ``backend="mast"`` and ``launch_batch``, the client runs inside the
+    MAST job instead of locally, for hosts that cannot connect back to it.
+    """
+    # Must stay the first statement: locals() holds only the parameters here.
+    batch_args = {k: v for k, v in locals().items() if k != "launch_batch"}
     # pyrefly: ignore [missing-attribute]
     sys.stdout.reconfigure(line_buffering=True)
     size = data_size_mb * 1024 * 1024
@@ -135,11 +151,25 @@ def main(
             hpcClusterUuid=hpc_cluster_uuid,
             rmAttribution=rm_attribution,
             useStrictName=True,
-            localityConstraints=["region", "gtn"],
+            localityConstraints=["region", region] if region else None,
+            flexPoolId=flex_pool,
+            # MAST's GPU prechecks time out between some hosts (e.g. GB300),
+            # delaying the workers past the client's attach timeout.
+            env={
+                "MAST_PRECHECK_SKIP_TIME_CONSUMING_CHECKS": "1",
+                **({_BATCH_ARGS_ENV: json.dumps(batch_args)} if launch_batch else {}),
+            },
             default_transport=ChannelTransport.MetaTlsWithIpV6,
             use_case="example",
         )
-        job.add_mesh("workers", 2)
+        job.add_mesh("workers", 2, host_type)
+        # Uploading a workspace makes MASTJob conda-pack $CONDA_PREFIX for the
+        # workers; without one they run the stock image as-is.
+        job.add_directory(str(Path(__file__).parent), ".")
+        if launch_batch:
+            job.apply(client_script=Path(__file__).name)
+            print("Launched batch job; the ping-pong output is in the job's logs")
+            return
     elif backend == "k8s":
         from kubernetes.client import (
             V1Affinity,
@@ -249,4 +279,8 @@ def main(
 
 
 if __name__ == "__main__":
-    fire.Fire(main)
+    batch_args = os.environ.get(_BATCH_ARGS_ENV)
+    if batch_args is not None:
+        main(**json.loads(batch_args))
+    else:
+        fire.Fire(main)

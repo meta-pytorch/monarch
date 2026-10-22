@@ -11,6 +11,22 @@ python rdma_pingpong.py \
   --num_iterations=3
 ```
 
+## MAST
+
+The script provisions its own MAST job and ships the active conda environment (`$CONDA_PREFIX`) to the workers, so run it from the environment the workers should use:
+
+```bash
+python rdma_pingpong.py \
+  --backend=mast \
+  --rm_attribution=<entitlement> \
+  --host_type=<host type> \
+  --region=<region> \
+  --data_size_mb=1000 \
+  --num_iterations=3
+```
+
+Pass `--region=""` to let MAST choose the region, and `--flex_pool=<id>` for an entitlement that schedules through a flex pool. If the hosts cannot connect back to the launching machine, attaching fails with `config push failed during attach ... reply timed out`; add `--launch_batch` to run the client inside the job instead. The ping-pong output then appears in the job's logs.
+
 ## Kubernetes
 
 ### Prerequisites
