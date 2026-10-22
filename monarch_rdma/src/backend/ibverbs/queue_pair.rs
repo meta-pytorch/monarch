@@ -71,6 +71,8 @@ use super::primitives::IbvQp;
 use super::primitives::IbvQpInfo;
 #[cfg(test)]
 use super::primitives::IbvWc;
+use super::primitives::LinkLayer;
+use super::primitives::PortAddress;
 use super::primitives::resolve_qp_type;
 use crate::RdmaOpType;
 use crate::local_memory::KeepaliveLocalMemory;
@@ -329,12 +331,14 @@ pub(super) unsafe fn state(qp: *mut rdmaxcel_sys::ibv_qp) -> Result<u32, anyhow:
     Ok(qp_attr.qp_state)
 }
 
-/// The address vector with which a QP on `port_num` reaches `remote`, sourced
-/// from local GID-table entry `sgid_index`.
+/// The address vector with which a QP on `port_num`, whose port has address
+/// `local`, reaches `remote`.
 ///
-/// A peer that advertises a GID is reached through a GRH, which RoCE requires;
-/// a peer that advertises none is reached by LID alone.
-fn ah_attr(port_num: u8, sgid_index: u8, remote: &IbvQpInfo) -> rdmaxcel_sys::ibv_ah_attr {
+/// Ethernet has no LIDs, so RoCE always carries a GRH. InfiniBand switches
+/// route by LID, so a GRH is added only when the peer's GID names another
+/// subnet, the same rule NCCL follows. A peer that advertises no GID is reached
+/// by LID alone.
+fn ah_attr(port_num: u8, local: PortAddress, remote: &IbvQpInfo) -> rdmaxcel_sys::ibv_ah_attr {
     let mut attr = rdmaxcel_sys::ibv_ah_attr {
         dlid: remote.lid,
         sl: 0,
@@ -343,11 +347,17 @@ fn ah_attr(port_num: u8, sgid_index: u8, remote: &IbvQpInfo) -> rdmaxcel_sys::ib
         grh: Default::default(),
         ..Default::default()
     };
-    if let Some(dgid) = remote.gid {
+    let grh_dgid = remote.gid.filter(|dgid| match local.link_layer {
+        LinkLayer::Ethernet => true,
+        LinkLayer::InfiniBand | LinkLayer::Unspecified => {
+            dgid.subnet_prefix() != local.gid.subnet_prefix()
+        }
+    });
+    if let Some(dgid) = grh_dgid {
         attr.is_global = 1;
         attr.grh.dgid = rdmaxcel_sys::ibv_gid::from(dgid);
         attr.grh.hop_limit = 0xff;
-        attr.grh.sgid_index = sgid_index;
+        attr.grh.sgid_index = local.gid.index();
     } else {
         attr.is_global = 0;
     }
@@ -356,8 +366,8 @@ fn ah_attr(port_num: u8, sgid_index: u8, remote: &IbvQpInfo) -> rdmaxcel_sys::ib
 
 /// Transitions `qp` through `INIT -> RTR -> RTS`, connected to `info`, granting
 /// remote peers `access_flags` and using the connection parameters in `config`.
-/// `sgid_index` is the local source-GID table index, used as the address
-/// handle's `sgid_index` when `info` carries a (remote) GID.
+/// `local` is the address of `config.port_num`, which decides how the peer is
+/// addressed (see [`ah_attr`]).
 ///
 /// # Safety
 ///
@@ -367,7 +377,7 @@ pub(super) unsafe fn connect(
     config: &IbvConfig,
     access_flags: i32,
     info: &IbvQpInfo,
-    sgid_index: u8,
+    local: PortAddress,
 ) -> Result<(), anyhow::Error> {
     // Transition to INIT.
     let mut qp_attr = rdmaxcel_sys::ibv_qp_attr {
@@ -400,7 +410,7 @@ pub(super) unsafe fn connect(
         rq_psn: info.psn,
         max_dest_rd_atomic: config.max_dest_rd_atomic,
         min_rnr_timer: config.min_rnr_timer,
-        ah_attr: ah_attr(config.port_num, sgid_index, info),
+        ah_attr: ah_attr(config.port_num, local, info),
         ..Default::default()
     };
     let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE
@@ -457,9 +467,11 @@ pub(super) unsafe fn connect(
 pub struct RCQueuePair {
     qp: IbvQp,
     config: IbvConfig,
-    /// The source GID (carrying its table index), resolved from the owning
-    /// device's `IbvDeviceInfo` at construction by `IbvDeviceInfo::source_gid`.
-    gid: Gid,
+    /// The address of `config.port_num`, resolved from the owning device's
+    /// `IbvDeviceInfo` at construction (see [`IbvDeviceInfo::port_address`]).
+    ///
+    /// [`IbvDeviceInfo::port_address`]: super::primitives::IbvDeviceInfo::port_address
+    address: PortAddress,
     /// Remote-access flags granted to peers at connect time, taken from the
     /// owning domain at construction.
     access_flags: i32,
@@ -483,13 +495,13 @@ impl RCQueuePair {
     pub(super) unsafe fn from_qp(
         qp: IbvQp,
         config: IbvConfig,
-        gid: Gid,
+        address: PortAddress,
         access_flags: i32,
     ) -> Self {
         RCQueuePair {
             qp,
             config,
-            gid,
+            address,
             access_flags,
             next_wr_id: 0,
         }
@@ -593,9 +605,9 @@ impl IbvQueuePair for RCQueuePair {
             anyhow::bail!("cannot create an RCQueuePair on a null protection domain");
         }
 
-        // Resolve the source GID up front (before allocating any FFI resources),
-        // so a port without a usable source GID fails cleanly here.
-        let gid = domain.device_info().source_gid(config.port_num)?;
+        // Resolve the port address up front (before allocating any FFI
+        // resources), so a port without a usable source GID fails cleanly here.
+        let address = domain.device_info().port_address(config.port_num)?;
 
         // A standard RC QP with the caps from `config`.
         let mut init_attr = rdmaxcel_sys::ibv_qp_init_attr {
@@ -629,7 +641,7 @@ impl IbvQueuePair for RCQueuePair {
         let access_flags = domain.access_flags();
         // SAFETY: `qp` and its `send_cq`/`recv_cq`/PD/context were all created
         // non-null.
-        Ok(unsafe { Self::from_qp(qp, config, gid, access_flags) })
+        Ok(unsafe { Self::from_qp(qp, config, address, access_flags) })
     }
 
     fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error> {
@@ -640,7 +652,7 @@ impl IbvQueuePair for RCQueuePair {
                 &self.config,
                 self.access_flags,
                 info,
-                self.gid.index(),
+                self.address,
             )
         }
     }
@@ -649,7 +661,7 @@ impl IbvQueuePair for RCQueuePair {
         let context = self.qp.context().as_ptr();
         // SAFETY: `self.qp` is the live QP and `context` its non-null device
         // context (validated inside `new`), both valid for `self`'s lifetime.
-        unsafe { get_qp_info(self.qp.as_ptr(), context, &self.config, self.gid) }
+        unsafe { get_qp_info(self.qp.as_ptr(), context, &self.config, self.address.gid) }
     }
 
     fn state(&mut self) -> Result<u32, anyhow::Error> {
@@ -1448,10 +1460,19 @@ mod tests {
         }
     }
 
+    /// A port address on `link_layer` whose source GID is `addr` at index `index`.
+    fn local(link_layer: LinkLayer, addr: &str, index: u8) -> PortAddress {
+        PortAddress {
+            link_layer,
+            gid: Gid::for_test(addr.parse().expect("valid IPv6"), index),
+        }
+    }
+
     #[test]
-    fn ah_attr_peer_with_gid_carries_grh() {
+    fn ah_attr_roce_always_carries_grh() {
+        let local = local(LinkLayer::Ethernet, "::ffff:10.0.0.1", 3);
         let remote = Gid::for_test("::ffff:10.0.0.2".parse().unwrap(), 5);
-        let attr = ah_attr(1, 3, &peer(Some(remote)));
+        let attr = ah_attr(1, local, &peer(Some(remote)));
         assert_eq!(attr.port_num, 1);
         assert_eq!(attr.is_global, 1);
         assert_eq!(attr.grh.hop_limit, 0xff);
@@ -1472,20 +1493,39 @@ mod tests {
     }
 
     #[test]
-    fn ah_attr_same_subnet_peer_carries_grh() {
-        // Every peer that advertises a GID gets a GRH, including an InfiniBand
-        // peer on the local subnet, where switches route by LID alone.
+    fn ah_attr_ib_same_subnet_routes_by_lid() {
+        let local = local(LinkLayer::InfiniBand, "fe80::1", 0);
         let remote = Gid::for_test("fe80::2".parse().unwrap(), 0);
-        let attr = ah_attr(1, 0, &peer(Some(remote)));
+        let attr = ah_attr(1, local, &peer(Some(remote)));
+        assert_eq!(attr.is_global, 0);
+        assert_eq!(attr.dlid, 0x42);
+        assert_eq!(attr.port_num, 1);
+    }
+
+    #[test]
+    fn ah_attr_ib_other_subnet_carries_grh() {
+        let local = local(LinkLayer::InfiniBand, "fec0:0:0:1::1", 0);
+        let remote = Gid::for_test("fec0:0:0:2::2".parse().unwrap(), 0);
+        let attr = ah_attr(1, local, &peer(Some(remote)));
         assert_eq!(attr.is_global, 1);
         assert_eq!(attr.dlid, 0x42);
+        assert_eq!(attr.grh.sgid_index, 0);
+    }
+
+    #[test]
+    fn ah_attr_unspecified_link_layer_follows_ib() {
+        let local = local(LinkLayer::Unspecified, "fe80::1", 0);
+        let remote = Gid::for_test("fe80::2".parse().unwrap(), 0);
+        assert_eq!(ah_attr(1, local, &peer(Some(remote))).is_global, 0);
     }
 
     #[test]
     fn ah_attr_peer_without_gid_routes_by_lid() {
-        let attr = ah_attr(1, 0, &peer(None));
-        assert_eq!(attr.is_global, 0);
-        assert_eq!(attr.dlid, 0x42);
+        for link_layer in [LinkLayer::Ethernet, LinkLayer::InfiniBand] {
+            let attr = ah_attr(1, local(link_layer, "fe80::1", 0), &peer(None));
+            assert_eq!(attr.is_global, 0, "{link_layer}");
+            assert_eq!(attr.dlid, 0x42, "{link_layer}");
+        }
     }
 
     #[test]

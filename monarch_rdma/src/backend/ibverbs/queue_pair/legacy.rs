@@ -41,10 +41,10 @@ pub struct IbvQueuePair {
     pub dv_recv_cq: usize, // *mut rdmaxcel_sys::mlx5dv_cq,
     context: usize,        // *mut rdmaxcel_sys::ibv_context,
     config: IbvConfig,
-    // The source GID (carrying its table index), resolved from the owning
-    // device's `IbvDeviceInfo` at construction: index 0 on the EFA path,
-    // otherwise `IbvDeviceInfo::source_gid`.
-    gid: Gid,
+    // The address of `config.port_num`, resolved from the owning device's
+    // `IbvDeviceInfo` at construction: GID index 0 on the EFA path, otherwise
+    // `IbvDeviceInfo::port_address`.
+    address: PortAddress,
     is_efa: bool,
     // Keepalive for the protection domain this QP was built against, so the PD
     // (and, through it, the context) outlives the QP regardless of other owners
@@ -137,10 +137,16 @@ impl IbvQueuePair {
         let is_efa = resolved_qp_type == rdmaxcel_sys::RDMA_QP_TYPE_EFA;
         // EFA is not RoCE, so its `gid_attrs/types` never reports "RoCE v2"; it
         // always uses GID index 0.
-        let gid = if is_efa {
-            domain.device_info().gid_at(config.port_num, 0)?
+        let device_info = domain.device_info();
+        let address = if is_efa {
+            let gid = device_info.gid_at(config.port_num, 0)?;
+            let link_layer = device_info
+                .port(config.port_num)
+                .expect("gid_at found the port")
+                .link_layer();
+            PortAddress { link_layer, gid }
         } else {
-            domain.device_info().source_gid(config.port_num)?
+            device_info.port_address(config.port_num)?
         };
         // This queue pair builds its own completion queues rather than drawing
         // on the device's pool, so size them the way a pooled queue is sized:
@@ -180,7 +186,7 @@ impl IbvQueuePair {
                     dv_recv_cq: 0,
                     context: context as usize,
                     config,
-                    gid,
+                    address,
                     is_efa: true,
                     _pd: domain.pd().clone(),
                 });
@@ -220,7 +226,7 @@ impl IbvQueuePair {
                 dv_recv_cq: dv_recv_cq as usize,
                 context: context as usize,
                 config,
-                gid,
+                address,
                 is_efa: false,
                 _pd: domain.pd().clone(),
             })
@@ -233,7 +239,7 @@ impl IbvQueuePair {
         let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
         // SAFETY: `(*qp).ibv_qp` is the live `ibv_qp` owned by this `rdmaxcel_qp`,
         // and `context` is its live device context.
-        unsafe { super::get_qp_info((*qp).ibv_qp, context, &self.config, self.gid) }
+        unsafe { super::get_qp_info((*qp).ibv_qp, context, &self.config, self.address.gid) }
     }
 
     /// Returns the current state of the QP.
@@ -267,7 +273,7 @@ impl IbvQueuePair {
                 &self.config,
                 access_flags,
                 connection_info,
-                self.gid.index(),
+                self.address,
             )
         }?;
 
@@ -303,7 +309,7 @@ impl IbvQueuePair {
                 self.config.pkey_index,
                 0x4242, // qkey
                 self.config.psn,
-                self.gid.index(),
+                self.address.gid.index(),
                 gid_ptr,
                 connection_info.qp_num,
             );

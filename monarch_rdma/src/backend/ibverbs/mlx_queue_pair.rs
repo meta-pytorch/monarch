@@ -114,7 +114,7 @@ impl IbvQueuePair for MlxQueuePair {
         recv_cq: Arc<IbvCq>,
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an MlxQueuePair from config {}", config);
-        let gid = domain.device_info().source_gid(config.port_num)?;
+        let address = domain.device_info().port_address(config.port_num)?;
         // SAFETY: an `IbvDomain` holds a null-or-live context and PD, which is
         // `create_ibv_qp`'s contract.
         let qp = unsafe { Self::create_ibv_qp(domain, &config, send_cq, recv_cq) }?;
@@ -122,7 +122,7 @@ impl IbvQueuePair for MlxQueuePair {
         // SAFETY: `create_ibv_qp` returns a live, fully non-null `IbvQp` (it
         // bails on any null handle).
         Ok(MlxQueuePair(unsafe {
-            RCQueuePair::from_qp(qp, config, gid, access_flags)
+            RCQueuePair::from_qp(qp, config, address, access_flags)
         }))
     }
 
