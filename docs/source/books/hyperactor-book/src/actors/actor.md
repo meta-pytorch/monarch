@@ -38,9 +38,9 @@ pub trait Actor: Sized + Send + 'static {
     async fn handle_supervision_event(
         &mut self,
         _this: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
+        event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        Ok(false)
+        Ok(!event.is_error())
     }
 
     async fn handle_undeliverable_message(
@@ -139,14 +139,22 @@ By default, it simply calls `tokio::spawn(...)` to run the given future on the T
 async fn handle_supervision_event(
     &mut self,
     _this: &Instance<Self>,
-    _event: &ActorSupervisionEvent,
+    event: &ActorSupervisionEvent,
 ) -> Result<bool, anyhow::Error> {
-    Ok(false)
+    Ok(!event.is_error())
 }
 ```
 This method is invoked when the runtime delivers an `ActorSupervisionEvent` to the actor — for example, when a child crashes or exits.
 
-By default, it returns `Ok(false)`, which indicates that the event was not handled by the actor. This allows the runtime to fall back on default behavior (e.g., escalation).
+The outermost frame of the event names the actor's own child. An actor that does not handle an event fails as itself, with the child's event as its cause, so each actor that declines a failure adds one frame to the chain. `ActorSupervisionEvent::caused_by` returns the root cause. An actor can only recover its own child: the child's descendants have stopped with it and are recreated by the child.
+
+- `Ok(true)`: the actor takes responsibility for the event. It may keep running, stop, or fail later.
+- `Ok(false)`: the actor fails with an `UnhandledSupervisionEvent` status, caused by the child's event.
+- `Err(error)`: the supervision handler failed; the actor fails with an `ErrorDuringHandlingSupervision` status, caused by the child's event.
+
+A handler can instead stop the actor with a fully formed terminal event by returning `Err(PropagateSupervisionEvent(event).into())`. This applies to message handlers as well, and the runtime recovers the event even when the error is wrapped with `anyhow::Context`. Proxies use it to stay transparent: the remote `Supervisor` reports its remote child's event as its own, so the owner sees the child it asked for.
+
+By default, supervision handlers return `Ok(true)` for normal lifecycle events and `Ok(false)` for errors.
 
 Actors may override this to implement custom supervision logic.
 

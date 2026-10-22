@@ -31,7 +31,6 @@ use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::PortRef;
 use hyperactor::Uid;
-use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::StopMode;
 use hyperactor::context;
@@ -40,6 +39,7 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor::supervision::PropagateSupervisionEvent;
 use hyperactor_config::Flattrs;
 
 use crate::Gspawn;
@@ -395,12 +395,11 @@ impl Supervisor {
         }
     }
 
+    /// Stop with `event` as this supervisor's terminal event, unchanged except
+    /// for this supervisor's labels. The supervisor is a transparent proxy:
+    /// its owner sees the remote child it asked for, not the supervisor.
     fn propagate_event<T>(&self, event: ActorSupervisionEvent) -> anyhow::Result<T> {
-        Err(anyhow::Error::new(
-            ActorErrorKind::UnhandledSupervisionEvent(Box::new(
-                event.with_labels(self.labels.clone()),
-            )),
-        ))
+        Err(PropagateSupervisionEvent(event.with_labels(self.labels.clone())).into())
     }
 }
 
