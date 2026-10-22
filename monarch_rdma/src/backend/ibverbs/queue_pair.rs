@@ -329,6 +329,31 @@ pub(super) unsafe fn state(qp: *mut rdmaxcel_sys::ibv_qp) -> Result<u32, anyhow:
     Ok(qp_attr.qp_state)
 }
 
+/// The address vector with which a QP on `port_num` reaches `remote`, sourced
+/// from local GID-table entry `sgid_index`.
+///
+/// A peer that advertises a GID is reached through a GRH, which RoCE requires;
+/// a peer that advertises none is reached by LID alone.
+fn ah_attr(port_num: u8, sgid_index: u8, remote: &IbvQpInfo) -> rdmaxcel_sys::ibv_ah_attr {
+    let mut attr = rdmaxcel_sys::ibv_ah_attr {
+        dlid: remote.lid,
+        sl: 0,
+        src_path_bits: 0,
+        port_num,
+        grh: Default::default(),
+        ..Default::default()
+    };
+    if let Some(dgid) = remote.gid {
+        attr.is_global = 1;
+        attr.grh.dgid = rdmaxcel_sys::ibv_gid::from(dgid);
+        attr.grh.hop_limit = 0xff;
+        attr.grh.sgid_index = sgid_index;
+    } else {
+        attr.is_global = 0;
+    }
+    attr
+}
+
 /// Transitions `qp` through `INIT -> RTR -> RTS`, connected to `info`, granting
 /// remote peers `access_flags` and using the connection parameters in `config`.
 /// `sgid_index` is the local source-GID table index, used as the address
@@ -375,24 +400,9 @@ pub(super) unsafe fn connect(
         rq_psn: info.psn,
         max_dest_rd_atomic: config.max_dest_rd_atomic,
         min_rnr_timer: config.min_rnr_timer,
-        ah_attr: rdmaxcel_sys::ibv_ah_attr {
-            dlid: info.lid,
-            sl: 0,
-            src_path_bits: 0,
-            port_num: config.port_num,
-            grh: Default::default(),
-            ..Default::default()
-        },
+        ah_attr: ah_attr(config.port_num, sgid_index, info),
         ..Default::default()
     };
-    if let Some(gid) = info.gid {
-        qp_attr.ah_attr.is_global = 1;
-        qp_attr.ah_attr.grh.dgid = rdmaxcel_sys::ibv_gid::from(gid);
-        qp_attr.ah_attr.grh.hop_limit = 0xff;
-        qp_attr.ah_attr.grh.sgid_index = sgid_index;
-    } else {
-        qp_attr.ah_attr.is_global = 0;
-    }
     let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE
         | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_AV
         | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_PATH_MTU
@@ -1427,6 +1437,56 @@ mod tests {
     use crate::backend::ibverbs::device_selection::resolve_target;
     use crate::backend::ibverbs::mlx_device::MlxDevice;
     use crate::backend::ibverbs::primitives::IbvConfig;
+
+    /// A peer advertising `gid` and LID `0x42`.
+    fn peer(gid: Option<Gid>) -> IbvQpInfo {
+        IbvQpInfo {
+            qp_num: 7,
+            lid: 0x42,
+            gid,
+            psn: 0,
+        }
+    }
+
+    #[test]
+    fn ah_attr_peer_with_gid_carries_grh() {
+        let remote = Gid::for_test("::ffff:10.0.0.2".parse().unwrap(), 5);
+        let attr = ah_attr(1, 3, &peer(Some(remote)));
+        assert_eq!(attr.port_num, 1);
+        assert_eq!(attr.is_global, 1);
+        assert_eq!(attr.grh.hop_limit, 0xff);
+        assert_eq!(
+            attr.grh.sgid_index, 3,
+            "sgid_index names the local GID table entry, not the peer's"
+        );
+        // SAFETY: `raw` is one arm of the `ibv_gid` union and is always
+        // initialized; reading the 16 address bytes back is sound.
+        let dgid = unsafe { attr.grh.dgid.raw };
+        assert_eq!(
+            dgid,
+            "::ffff:10.0.0.2"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap()
+                .octets()
+        );
+    }
+
+    #[test]
+    fn ah_attr_same_subnet_peer_carries_grh() {
+        // Every peer that advertises a GID gets a GRH, including an InfiniBand
+        // peer on the local subnet, where switches route by LID alone.
+        let remote = Gid::for_test("fe80::2".parse().unwrap(), 0);
+        let attr = ah_attr(1, 0, &peer(Some(remote)));
+        assert_eq!(attr.is_global, 1);
+        assert_eq!(attr.dlid, 0x42);
+    }
+
+    #[test]
+    fn ah_attr_peer_without_gid_routes_by_lid() {
+        let attr = ah_attr(1, 0, &peer(None));
+        assert_eq!(attr.is_global, 0);
+        assert_eq!(attr.dlid, 0x42);
+    }
 
     #[test]
     fn test_create_connection() {
