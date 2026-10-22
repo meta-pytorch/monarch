@@ -1,11 +1,11 @@
 # Observability
 
-Monarch provides one observability setup with three complementary job-local
+Monarch provides one observability setup with four complementary job-local
 surfaces: distributed telemetry for SQL analysis, the Monarch Dashboard for
-visual monitoring, and the Mesh Admin TUI for live diagnostics. Enable
-telemetry on a job to start all three data paths consistently. OpenTelemetry
-supplies metrics to distributed telemetry and can independently export metrics,
-logs, and spans to external backends.
+visual monitoring, `monarch profile` for actor activity traces, and the Mesh
+Admin TUI for live diagnostics. Enable telemetry on a job to support all four
+surfaces consistently. OpenTelemetry supplies metrics to distributed telemetry
+and can independently export metrics, logs, and spans to external backends.
 
 ## Choose a surface
 
@@ -13,12 +13,13 @@ logs, and spans to external backends.
 |----------|---------|------------------|
 | Query actor, mesh, message, trace, and metric history | [Distributed telemetry](distributed-telemetry) | DataFusion SQL across host-local collectors |
 | Monitor topology, status, failures, and traffic in a browser | [Monarch Dashboard](monarch-dashboard) | Live summaries, hierarchy views, and a job DAG |
+| Trace endpoint calls and handler execution across a job | [Actor profiling](profiling) | Perfetto traces grouped by process and actor, with call-to-handler links |
 | Diagnose a running mesh from a terminal | [Mesh Admin TUI](admin-tui) | Live topology, health checks, and py-spy stack traces |
 | Export metrics, logs, and spans to an external backend | [OpenTelemetry](opentelemetry) | OTLP export to systems such as Prometheus and Loki |
 
-The dashboard reads distributed telemetry. The TUI reads the Mesh Admin API.
-Periodic mesh-admin snapshots also flow into telemetry so the dashboard can
-show the live administrative topology.
+The dashboard and profiler read distributed telemetry. The TUI reads the Mesh
+Admin API. Periodic mesh-admin snapshots also flow into telemetry so the
+dashboard can show the live administrative topology.
 
 Distributed telemetry is a job-scoped, in-memory query system. OpenTelemetry
 export to an external backend can run alongside it on the same job.
@@ -85,7 +86,8 @@ configuration, and both export paths.
 ```text
 actor and proc events ──> host-local collectors ──> distributed query engine
                                                         ├─> SQL query client
-                                                        └─> Monarch Dashboard
+                                                        ├─> Monarch Dashboard
+                                                        └─> monarch profile ──> Perfetto trace
 
 OTel instruments ──> process-global meter provider ──┬─> UDS metric exporter
                                                       │        └─> host-local collectors
@@ -116,6 +118,7 @@ That supports the TUI, but it does not provide the dashboard or SQL history.
 
 - [Understand metric collection and export](metrics)
 - [Query distributed telemetry](distributed-telemetry)
+- [Profile actor activity](profiling)
 - [Use the Monarch Dashboard](monarch-dashboard)
 - [Diagnose a mesh with the Admin TUI](admin-tui)
 - [Export metrics and logs with OpenTelemetry](./generated/examples/otel_collector)
@@ -124,6 +127,7 @@ That supports the TUI, but it does not provide the dashboard or SQL history.
 :maxdepth: 1
 :hidden:
 distributed-telemetry
+profiling
 metrics
 opentelemetry
 admin-tui

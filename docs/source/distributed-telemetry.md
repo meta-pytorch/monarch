@@ -5,7 +5,8 @@ metrics on each host and makes them queryable as one logical database. It uses
 [Apache DataFusion](https://github.com/apache/datafusion), an extensible SQL
 query engine built on [Apache Arrow](https://arrow.apache.org/). Distributed
 telemetry is the query layer behind the [Monarch Dashboard](monarch-dashboard)
-and complements the live [Mesh Admin TUI](admin-tui).
+and [actor profiling](profiling), and complements the live
+[Mesh Admin TUI](admin-tui).
 
 Start with the [observability overview](observability) if you are choosing a
 diagnostic surface or configuring a job for the first time.
@@ -186,6 +187,7 @@ and event telemetry describe different views of the same job:
 
 - [Metrics](metrics)
 - [Observability overview](observability)
+- [Actor profiling](profiling)
 - [Monarch Dashboard](monarch-dashboard)
 - [Mesh Admin TUI](admin-tui)
 - [OpenTelemetry and Grafana](./generated/examples/otel_collector)

@@ -28,6 +28,7 @@
 | **Observability Overview** | `docs/source/observability.md` |
 | **Metrics** | `docs/source/metrics.md` |
 | **Distributed Telemetry** | `docs/source/distributed-telemetry.md` |
+| **Actor Profiling** (`monarch profile`) | `docs/source/profiling.md` |
 | **Mesh Admin TUI** | `docs/source/admin-tui.md` |
 | **Monarch Dashboard** | `docs/source/monarch-dashboard.md` |
 | **OpenTelemetry and Grafana** | `docs/source/examples/otel_collector.py` |
