@@ -24,34 +24,25 @@ use crate::get_env_var_with_rerun;
 /// Validate ROCm installation exists and return ROCm home path
 ///
 /// Checks for ROCm installation through:
-/// 1. ROCM_PATH environment variable
-/// 2. Default location /opt/rocm
-/// 3. Finding hipcc in PATH and resolving symlinks
+/// 1. ROCM_PATH or ROCM_HOME environment variable
+/// 2. `hipconfig --rocmpath`
 pub fn validate_rocm_installation() -> Result<String, BuildError> {
-    // Try ROCM_PATH environment variable first
-    if let Ok(rocm_path) = get_env_var_with_rerun("ROCM_PATH")
-        && Path::new(&rocm_path).join("bin/hipcc").exists()
-    {
-        return Ok(rocm_path);
-    }
-
-    // Try default location /opt/rocm (handles versioned installs like /opt/rocm-7.1.1 via symlink)
-    let default_rocm = "/opt/rocm";
-    if Path::new(default_rocm).join("bin/hipcc").exists() {
-        // Resolve symlink to get actual versioned path if it exists
-        if let Ok(canonical) = fs::canonicalize(default_rocm) {
-            return Ok(canonical.to_string_lossy().to_string());
-        }
-        return Ok(default_rocm.to_string());
-    }
-
-    // Try finding hipcc in PATH and resolving symlinks
-    if let Ok(hipcc_path) = which("hipcc") {
-        // Resolve symlinks to get the real path
-        if let Ok(real_hipcc) = fs::canonicalize(&hipcc_path)
-            && let Some(rocm_home) = real_hipcc.parent().and_then(|p| p.parent())
+    for var in ["ROCM_PATH", "ROCM_HOME"] {
+        if let Ok(rocm_path) = get_env_var_with_rerun(var)
+            && Path::new(&rocm_path).join("bin/hipcc").exists()
         {
-            return Ok(rocm_home.to_string_lossy().to_string());
+            return Ok(rocm_path);
+        }
+    }
+
+    // Don't derive the root from hipcc's location: the hipcc on PATH may be a
+    // ccache wrapper or a pip rocm-sdk console-script shim.
+    if let Ok(output) = Command::new("hipconfig").arg("--rocmpath").output()
+        && output.status.success()
+    {
+        let rocm_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if Path::new(&rocm_path).join("bin/hipcc").exists() {
+            return Ok(rocm_path);
         }
     }
 

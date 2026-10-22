@@ -117,13 +117,8 @@ def get_rocm_home() -> Optional[str]:
     if rocm_home and os.path.exists(rocm_home):
         return rocm_home
 
-    # Check default ROCm location
-    if os.path.exists("/opt/rocm"):
-        return "/opt/rocm"
-
-    # ROCm shipped as pip wheels ("rocm-sdk" / TheRock) instead of a system
-    # /opt/rocm install -- e.g. the rocm7.14+ PyTorch nightlies pull in
-    # rocm-sdk-core, which unpacks the toolchain under
+    # ROCm shipped as pip wheels ("rocm-sdk" / TheRock) -- e.g. the rocm7.14+
+    # PyTorch nightlies pull in rocm-sdk-core, which unpacks the toolchain under
     # site-packages/_rocm_sdk_core and puts a `hipconfig` console-script shim on
     # PATH. Ask hipconfig for the SDK root so has_rocm is detected and ROCM_PATH
     # is fed to the Rust build (rdmaxcel-sys locates hipcc/headers/libs there).
@@ -279,7 +274,7 @@ elif build_rocm:
     # ROCM_PATH pointed at the SDK root, hipcc/clang search the classic location
     # and abort with "cannot find ROCm device library". Point HIP_DEVICE_LIB_PATH
     # at the real bitcode dir when that (pip) layout is present; the isdir guard
-    # makes this a no-op on a classic /opt/rocm install.
+    # makes this a no-op on a classic (non-pip) ROCm install.
     _rocm_devlib = os.path.join(rocm_home, "lib", "llvm", "amdgcn", "bitcode")
     if os.path.isdir(_rocm_devlib):
         env_vars["HIP_DEVICE_LIB_PATH"] = _rocm_devlib

@@ -312,15 +312,17 @@ setup_cuda_environment() {
 setup_rocm_environment() {
     echo "Setting up ROCm environment..."
 
-    ROCM_HOME="${ROCM_HOME:-/opt/rocm}"
+    if [ -z "${ROCM_HOME:-}" ] && command -v hipconfig &>/dev/null; then
+        ROCM_HOME="$(hipconfig --rocmpath 2>/dev/null || true)"
+    fi
 
-    if [ -d "$ROCM_HOME" ]; then
+    if [ -n "${ROCM_HOME:-}" ] && [ -d "$ROCM_HOME" ]; then
         export PATH="$ROCM_HOME/bin:$PATH"
         export LD_LIBRARY_PATH="$ROCM_HOME/lib:$ROCM_HOME/lib64:${LD_LIBRARY_PATH:-}"
         export LIBRARY_PATH="$ROCM_HOME/lib:$ROCM_HOME/lib64:${LIBRARY_PATH:-}"
         echo "✓ ROCm environment configured (ROCM_HOME: $ROCM_HOME)"
     else
-        echo "⚠ ROCm not found at $ROCM_HOME"
+        echo "⚠ ROCm not found (set ROCM_HOME or put hipconfig on PATH)"
     fi
 }
 
