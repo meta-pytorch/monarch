@@ -231,7 +231,10 @@ mod tests {
 
     use hyperactor::ActorRef;
     use hyperactor::Proc;
+    use hyperactor::Uid;
     use hyperactor::id::Label;
+    use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
+    use hyperactor_cast::cast_actor::CastActor;
     use ndslice::Region;
     use ndslice::extent;
     use tokio::time::Duration;
@@ -283,6 +286,11 @@ mod tests {
     #[tokio::test]
     async fn test_cast_and_collect_returns_all_replies_or_rank_failure() {
         let proc = Proc::isolated();
+        proc.spawn_bound_with_uid(
+            Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
+            CastActor::default(),
+        )
+        .expect("isolated test proc should spawn its CastActor");
         let client = proc.client("client");
         let rank0 = client.spawn_with_label("rank0", testactor::TestActor);
         let rank1 = client.spawn_with_label("rank1", testactor::TestActor);
