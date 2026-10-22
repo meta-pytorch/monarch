@@ -965,39 +965,6 @@ fn default_cast_tiling_policy() -> TilingPolicy {
     }
 }
 
-/// Build one routing node for each destination without changing the mesh shape.
-///
-/// Input:
-///
-/// ```text
-/// destinations: [proc_0::actor_0, proc_1::actor_1]
-/// policy: BlockPartitioning
-/// ```
-///
-/// Output:
-///
-/// ```text
-/// [
-///   Some(proc_0::cast {actor_0}),
-///   Some(proc_1::cast {actor_1}),
-/// ]
-/// ```
-fn cast_node_mesh(
-    destinations: &ValueMesh<CastDestination>,
-) -> anyhow::Result<ValueMesh<Option<CastNode>>> {
-    let nodes = destinations
-        .values()
-        .map(|destination| {
-            Some(CastNode::new(
-                CastActor::ref_for_proc(destination.actor().proc_addr()),
-                destination,
-            ))
-        })
-        .collect::<Vec<_>>();
-
-    ValueMesh::new(destinations.region().clone(), nodes).map_err(Into::into)
-}
-
 #[derive(Clone)]
 struct ActorMeshCastDomain {
     id: CastDomainId,
@@ -1038,6 +1005,70 @@ impl ActorMeshCastDomain {
         }
     }
 
+    /// Build one routing node per destination, then absorb terminal singleton
+    /// destinations into their parent routing nodes without changing the mesh shape.
+    ///
+    /// Input:
+    ///
+    /// ```text
+    /// normal mesh with bounded fanout 2:
+    ///
+    /// cast_0 {actor_0}
+    /// |-- cast_1 {actor_1}
+    /// |   `-- cast_2 {actor_2}
+    /// `-- cast_3 {actor_3}
+    /// ```
+    ///
+    /// Output:
+    ///
+    /// ```text
+    /// [Some(cast_0 {actor_0, actor_3}), Some(cast_1 {actor_1, actor_2}), None, None]
+    /// ```
+    fn cast_node_mesh(&self) -> anyhow::Result<ValueMesh<Option<CastNode>>> {
+        let nodes = self
+            .destinations
+            .values()
+            .map(|destination| {
+                CastNode::new(
+                    CastActor::ref_for_proc(destination.actor().proc_addr()),
+                    vec![destination],
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let nodes = ValueMesh::new(self.destinations.region().clone(), nodes)?;
+        let ranks = nodes.region().slice().iter().collect::<Vec<_>>();
+        let mut nodes_by_rank = ranks
+            .iter()
+            .copied()
+            .zip(nodes.values().map(CastNode::into_parts))
+            .collect::<HashMap<_, _>>();
+
+        self.tiling_policy
+            .visit_terminal_edges(nodes.region(), |parent_rank, child_rank| {
+                let (_, destinations) = nodes_by_rank
+                    .remove(&child_rank)
+                    .expect("terminal child rank must contain a cast node");
+
+                nodes_by_rank
+                    .get_mut(&parent_rank)
+                    .expect("parent rank must contain a cast node")
+                    .1
+                    .extend(destinations);
+            });
+
+        let nodes = ranks
+            .into_iter()
+            .map(|rank| {
+                nodes_by_rank
+                    .remove(&rank)
+                    .map(|(cast_actor, destinations)| CastNode::new(cast_actor, destinations))
+            })
+            .collect::<Vec<_>>();
+
+        ValueMesh::new(self.destinations.region().clone(), nodes).map_err(Into::into)
+    }
+
     fn ensure_materialized(
         &self,
         cx: &impl context::Actor,
@@ -1047,7 +1078,7 @@ impl ActorMeshCastDomain {
             return Ok(cast_domain.get().clone());
         }
 
-        let nodes = Arc::new(cast_node_mesh(&self.destinations)?);
+        let nodes = Arc::new(self.cast_node_mesh()?);
         let cast_domain =
             self.id
                 .clone()
@@ -1806,6 +1837,7 @@ mod tests {
 
     use std::collections::HashMap;
     use std::collections::HashSet;
+    use std::num::NonZeroUsize;
     use std::ops::Deref;
     use std::sync::Arc;
 
@@ -1854,6 +1886,63 @@ mod tests {
     use crate::test_utils::local_host_mesh;
     use crate::testactor;
     use crate::testing;
+
+    #[test]
+    fn cast_node_mesh_preserves_shape_and_removes_terminal_nodes() {
+        let proc_addr = ProcAddr::instance(ChannelAddr::Local(9000), "cast_node_mesh");
+        let actors = (0..9)
+            .map(|rank| proc_addr.actor_addr(format!("actor_{rank}")))
+            .collect::<Vec<_>>();
+        let destinations = CastDestination::mesh(
+            Region::from(ndslice::shape!(row = 3, column = 3)),
+            actors.clone(),
+        )
+        .expect("destination mesh should be valid");
+        let cast_domain = super::ActorMeshCastDomain::with_config(
+            CastDomainId::new(),
+            Arc::new(destinations),
+            TilingPolicy::BoundedFanout {
+                fanout: NonZeroUsize::new(2).expect("fanout should be nonzero"),
+            },
+        );
+        let nodes = cast_domain
+            .cast_node_mesh()
+            .expect("cast node mesh should be valid");
+
+        assert_eq!(nodes.region(), cast_domain.destinations.region());
+
+        let destinations_by_node = nodes
+            .values()
+            .map(|node| {
+                node.map(|node| {
+                    node.into_parts()
+                        .1
+                        .into_iter()
+                        .map(|destination| destination.actor().clone())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            destinations_by_node,
+            vec![
+                Some(vec![actors[0].clone()]),
+                Some(vec![actors[1].clone(), actors[2].clone()]),
+                None,
+                Some(vec![actors[3].clone()]),
+                Some(vec![actors[4].clone(), actors[5].clone()]),
+                None,
+                Some(vec![
+                    actors[6].clone(),
+                    actors[7].clone(),
+                    actors[8].clone()
+                ]),
+                None,
+                None,
+            ]
+        );
+    }
 
     #[test]
     fn test_actor_mesh_ref_is_send_and_sync() {
@@ -2903,12 +2992,20 @@ mod tests {
             (0..2).map(|rank| members[&rank].clone()).collect(),
         )
         .unwrap();
-        let nodes = super::cast_node_mesh(&destinations).unwrap();
-        let cast_domain = hyperactor_cast::cast_actor::CastDomainId::new()
+        let tiling_policy = hyperactor_cast::cast_actor::TilingPolicy::BlockPartitioning;
+        let cast_domain = super::ActorMeshCastDomain::with_config(
+            hyperactor_cast::cast_actor::CastDomainId::new(),
+            Arc::new(destinations),
+            tiling_policy,
+        );
+        let nodes = cast_domain.cast_node_mesh().unwrap();
+        let cast_domain = cast_domain
+            .id
+            .clone()
             .materialize(
                 &client,
                 Arc::new(nodes),
-                hyperactor_cast::cast_actor::TilingPolicy::BlockPartitioning,
+                tiling_policy,
                 hyperactor_config::Flattrs::new(),
             )
             .unwrap();
