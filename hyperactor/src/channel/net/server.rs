@@ -14,6 +14,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -31,6 +32,7 @@ use super::read_link_init;
 use super::session;
 use super::session::Next;
 use super::session::Session;
+use super::session::TaggedStream;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelRx;
@@ -263,10 +265,14 @@ pub(super) async fn dispatch_stream<M: RemoteMessage, S: Stream>(
             _ => None,
         };
         if let Some(rsp) = terminal_response {
+            let rejected = !matches!(rsp, super::NetRxResponse::Closed);
             let data = super::serialize_response(rsp).unwrap();
             let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
             let mut completion = conn.write(data);
             let _ = completion.drive().await;
+            if rejected {
+                linger_until_closed(&conn, &ct).await;
+            }
         }
 
         let recoverable = matches!(&result, Ok(()) | Err(session::RecvLoopError::Io(_)));
@@ -304,6 +310,27 @@ pub(super) async fn dispatch_stream<M: RemoteMessage, S: Stream>(
     // dead channel; any in-flight feeder's send fails after the
     // receiver above is dropped.
     sessions.remove(&session_id);
+}
+
+/// How long a dispatcher that rejected a session waits for the client to
+/// close the connection.
+const REJECT_LINGER: Duration = Duration::from_secs(5);
+
+/// Read and discard frames until the client closes the connection, for at
+/// most [`REJECT_LINGER`] or until `cancel` fires. Closing the connection
+/// with frames still unread would reset it, and the client could lose the
+/// rejection; it would then reconnect and count the frames it wrote here as
+/// possibly delivered.
+async fn linger_until_closed<R, W>(conn: &TaggedStream<R, W>, cancel: &CancellationToken)
+where
+    R: tokio::io::AsyncRead + Unpin + Send,
+    W: tokio::io::AsyncWrite + Unpin + Send,
+{
+    tokio::select! {
+        _ = tokio::time::sleep(REJECT_LINGER) => {}
+        _ = cancel.cancelled() => {}
+        _ = async { while let Ok(Some(_)) = conn.next().await {} } => {}
+    }
 }
 
 /// Handle a multi-stream connection (stream_id > 0). All streams of
@@ -430,10 +457,14 @@ async fn dispatch_multi_stream<M: RemoteMessage, S: Stream>(
             _ => None,
         };
         if let Some(rsp) = terminal_response {
+            let rejected = !matches!(rsp, super::NetRxResponse::Closed);
             let data = super::serialize_response(rsp).unwrap();
             let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
             let mut completion = conn.write(data);
             let _ = completion.drive().await;
+            if rejected {
+                linger_until_closed(&conn, &ct).await;
+            }
         }
 
         let recoverable = matches!(&result, Ok(()) | Err(session::RecvLoopError::Io(_)));

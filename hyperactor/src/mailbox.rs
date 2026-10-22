@@ -4323,7 +4323,6 @@ mod tests {
     use crate::accum;
     use crate::accum::ReducerMode;
     use crate::channel::ChannelTransport;
-    use crate::channel::TcpMode;
     use crate::context::Actor as _;
     use crate::context::Mailbox as MailboxContext;
     use crate::context::MailboxExt as _;
@@ -5519,6 +5518,15 @@ mod tests {
         );
     }
 
+    /// An IPv4 loopback TCP address on an ephemeral port.
+    /// `TcpMode::Localhost` is IPv6, which OSS CI hosts do not provide.
+    fn tcp_loopback() -> ChannelAddr {
+        ChannelAddr::Tcp(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST,
+            0,
+        )))
+    }
+
     /// A TCP relay that forwards each connection to its current target.
     /// Aborting its connections drops them without a channel-level close, as
     /// a crashed peer would.
@@ -5590,10 +5598,9 @@ mod tests {
         // that session. The router must deliver that message on a fresh
         // session instead of returning it as undeliverable.
         let mbox = Mailbox::new(test_actor_id("restarted_peer_0", "actor0"));
-        let tcp = ChannelTransport::Tcp(TcpMode::Localhost);
-        let (first_addr, first_rx) = channel::serve::<MessageEnvelope>(tcp.any()).unwrap();
+        let (first_addr, first_rx) = channel::serve::<MessageEnvelope>(tcp_loopback()).unwrap();
         let _first_server = mbox.clone().serve(first_rx);
-        let (second_addr, second_rx) = channel::serve::<MessageEnvelope>(tcp.any()).unwrap();
+        let (second_addr, second_rx) = channel::serve::<MessageEnvelope>(tcp_loopback()).unwrap();
         let _second_server = mbox.clone().serve(second_rx);
         let mut relay = TcpRelay::start(&first_addr).await;
 
@@ -5644,10 +5651,9 @@ mod tests {
         );
 
         let mbox = Mailbox::new(test_actor_id("restarted_peer_1", "actor0"));
-        let tcp = ChannelTransport::Tcp(TcpMode::Localhost);
-        let (first_addr, first_rx) = channel::serve::<MessageEnvelope>(tcp.any()).unwrap();
+        let (first_addr, first_rx) = channel::serve::<MessageEnvelope>(tcp_loopback()).unwrap();
         let _first_server = mbox.clone().serve(first_rx);
-        let (second_addr, second_rx) = channel::serve::<MessageEnvelope>(tcp.any()).unwrap();
+        let (second_addr, second_rx) = channel::serve::<MessageEnvelope>(tcp_loopback()).unwrap();
         let _second_server = mbox.clone().serve(second_rx);
         let mut relay = TcpRelay::start(&first_addr).await;
 
