@@ -45,5 +45,9 @@ docs/**/generated/**
 disabled_tests.txt
 .config/nextest-filter.txt
 
+# Local JUnit output from run_test_groups (CI uploads it as an artifact;
+# cargo-nextest's junit.xml lands under the already-ignored target/).
+test-results/
+
 # whittle
 .whittle.json

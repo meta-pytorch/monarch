@@ -75,6 +75,23 @@ jobs:
     needs: build-gpu
     uses: ./.github/workflows/test-gpu-rust.yml
 
+  # Aggregate every suite's JUnit XML into a single "Test Results" check + PR
+  # comment + annotations. if: always() so results report even when tests fail.
+  # Job-level permissions override the restrictive workflow-level block above
+  # (id-token/contents only) to grant the publisher check + comment write.
+  # Intentionally omitted from status-check.needs: reporting is informational
+  # and must never gate merging (mirrors type-check-python).
+  publish-test-results:
+    name: Publish Test Results
+    needs: [test-cpu-python, test-gpu-python, test-cpu-rust, test-gpu-rust]
+    if: always()
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+      issues: read
+    uses: ./.github/workflows/publish-test-results.yml
+
   build-docker:
     name: Build Docker image
     needs: build-gpu
