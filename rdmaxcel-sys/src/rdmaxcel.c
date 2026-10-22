@@ -13,7 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
 
 int rdmaxcel_advise_mr_write_async(
     struct ibv_pd* pd,
