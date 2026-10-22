@@ -235,8 +235,10 @@ impl CastDomainId {
                 children,
                 num_destinations,
             },
-            members: member_mesh,
-            seq_keys: Arc::new(OnceLock::new()),
+            sequencing: CastSequencing {
+                members: member_mesh,
+                seq_keys: Arc::new(OnceLock::new()),
+            },
         })
     }
 }
@@ -257,6 +259,13 @@ pub struct CastDomainRef {
     id: CastDomainId,
     /// The cast tree, routed directly by the sender.
     tree: CastTree,
+    /// State used to assign one sequence number to each destination.
+    sequencing: CastSequencing,
+}
+
+/// State used to assign destination sequence numbers for each cast.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CastSequencing {
     /// Destination actor addresses keyed by this domain's rank space.
     members: Arc<ValueMesh<ActorAddr>>,
     /// Per-rank handler sequence keys derived lazily from `members`.
@@ -277,7 +286,7 @@ impl CastDomainRef {
 
     /// Destination actor addresses keyed by this domain's rank space.
     pub fn members(&self) -> &ValueMesh<ActorAddr> {
-        &self.members
+        &self.sequencing.members
     }
 
     /// Cast a message to all members of this domain with caller-supplied headers.
@@ -303,7 +312,7 @@ impl CastDomainRef {
         return_undeliverable: bool,
     ) -> anyhow::Result<()> {
         let data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
-        let (session_id, seqs) = self.seqs_for_cast(cx)?;
+        let (session_id, seqs) = self.sequencing.seqs_for_cast(cx)?;
         let cast_message = CastMessage {
             cast_domain_id: self.id.clone(),
             sender: cx.mailbox().actor_addr().clone(),
@@ -342,7 +351,9 @@ impl CastDomainRef {
             );
         }
     }
+}
 
+impl CastSequencing {
     /// Allocate one normal sender-side sequence number per destination rank.
     ///
     /// This is the same model used by v1 `CommActor`: a complete `rank -> seq`
