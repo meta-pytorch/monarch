@@ -634,26 +634,34 @@ impl DatabaseScanner {
         limit: Option<usize>,
         filter_expr: Option<String>,
     ) -> PyResult<usize> {
-        // Get actor instance from context and extract the Rust Instance once
-        let actor_module = py.import("monarch.actor")?;
-        let ctx = actor_module.call_method0("context")?;
-        let actor_instance_obj = ctx.getattr("actor_instance")?;
-        let py_instance: PyRef<'_, PyInstance> = actor_instance_obj.extract()?;
-        let instance: Instance<PythonActor> = py_instance.clone_for_py();
+        // Get actor instance from context and extract the Rust Instance once.
+        // The `PyRef` is dropped here so no Python borrow is held while the
+        // GIL is released below.
+        let instance: Instance<PythonActor> = {
+            let actor_module = py.import("monarch.actor")?;
+            let ctx = actor_module.call_method0("context")?;
+            let actor_instance_obj = ctx.getattr("actor_instance")?;
+            let py_instance: PyRef<'_, PyInstance> = actor_instance_obj.extract()?;
+            py_instance.clone_for_py()
+        };
 
         // Build destination PortRef once
         let dest_port_id: reference::PortAddr = dest.clone().into();
         let dest_ref: reference::PortRef<QueryResponse> = reference::PortRef::attest(dest_port_id);
 
-        // Execute scan, streaming batches directly to destination
-        self.execute_scan_streaming(
-            &table_name,
-            projection,
-            filter_expr,
-            limit,
-            &instance,
-            &dest_ref,
-        )
+        // Execute scan, streaming batches directly to destination. The scan
+        // does not touch Python, so release the GIL to let other Python
+        // threads in this process run meanwhile.
+        py.detach(|| {
+            self.execute_scan_streaming(
+                &table_name,
+                projection,
+                filter_expr,
+                limit,
+                &instance,
+                &dest_ref,
+            )
+        })
     }
 }
 
