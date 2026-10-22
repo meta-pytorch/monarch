@@ -1649,6 +1649,29 @@ def test_custom_metric() -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
+def test_custom_gauge() -> None:
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        gauge = monarch.actor.get_meter().create_gauge(
+            "example.utilization", unit="1", description="Fraction in use"
+        )
+        gauge.set(0.125, {"device": "gpu-0"})
+        rows = _query(
+            state,
+            "SELECT scope_name, unit, value_f64, attributes_json "
+            "FROM metric_gauges WHERE name = 'example.utilization'",
+            timeout_secs=40.0,
+        )
+        assert rows["scope_name"] == ["monarch"]
+        assert rows["unit"] == ["1"]
+        assert rows["value_f64"] == [0.125]
+        assert json.loads(rows["attributes_json"][0]) == {"device": "gpu-0"}
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_sent_messages_with_sliced_mesh() -> None:
     """Test that sent_messages view_json/shape_json reflect sliced vs full actor mesh casts."""
     with scoped_state(

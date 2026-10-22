@@ -109,6 +109,12 @@ class PyCounter:
         """
         ...
 
+class PyGauge:
+    def __init__(self, name: str, unit: str = "", description: str = "") -> None: ...
+    def set(
+        self, value: float, *, attributes: dict[str, str] | None = None
+    ) -> None: ...
+
 class PyHistogram:
     def __init__(self, name: str) -> None:
         """

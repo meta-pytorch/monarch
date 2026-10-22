@@ -176,6 +176,35 @@ impl PyCounter {
     }
 }
 
+#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.telemetry")]
+struct PyGauge {
+    inner: metrics::Gauge<f64>,
+}
+
+#[pymethods]
+impl PyGauge {
+    #[new]
+    #[pyo3(signature = (name, unit="", description=""))]
+    fn new(name: &str, unit: &str, description: &str) -> Self {
+        Self {
+            inner: global::meter("monarch")
+                .f64_gauge(name.to_owned())
+                .with_unit(unit.to_owned())
+                .with_description(description.to_owned())
+                .build(),
+        }
+    }
+
+    fn set(&self, value: f64, attributes: Option<std::collections::HashMap<String, String>>) {
+        let attributes: Vec<_> = attributes
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(key, value)| opentelemetry::KeyValue::new(key, value))
+            .collect();
+        self.inner.record(value, &attributes);
+    }
+}
+
 #[pyclass(
     subclass,
     module = "monarch._rust_bindings.monarch_hyperactor.telemetry"
@@ -383,6 +412,7 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
 
     module.add_class::<PySpan>()?;
     module.add_class::<PyCounter>()?;
+    module.add_class::<PyGauge>()?;
     module.add_class::<PyHistogram>()?;
     module.add_class::<PyUpDownCounter>()?;
     module.add_class::<PySqliteTracing>()?;
@@ -392,7 +422,6 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use pyo3::ffi::c_str;
-    use pyo3::prelude::*;
 
     use super::*;
     use crate::runtime::GilSite;

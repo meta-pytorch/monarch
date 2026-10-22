@@ -10,7 +10,6 @@
 import functools
 import inspect
 import logging
-import warnings
 from typing import Callable, Dict, Optional, overload, Sequence, TypeVar
 
 import opentelemetry.metrics as metrics  # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api
@@ -19,6 +18,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.telemetry import (  # @manual=//monarch/monarch_extension:monarch_extension
     forward_to_tracing,
     PyCounter,
+    PyGauge,
     PyHistogram,
     PySpan,
     PyUpDownCounter,
@@ -220,6 +220,24 @@ class Histogram(metrics.Histogram):
         self.inner.record(amount, attributes=rust_attributes)
 
 
+class Gauge(metrics._Gauge):
+    inner: PyGauge
+
+    def __init__(self, name: str, unit: str = "", description: str = "") -> None:
+        self.inner = PyGauge(name, unit, description)
+
+    def set(
+        self,
+        amount: int | float,
+        attributes: Optional[Attributes] = None,
+        context: Optional[Context] = None,
+    ) -> None:
+        rust_attributes = (
+            {str(k): str(v) for k, v in attributes.items()} if attributes else None
+        )
+        self.inner.set(float(amount), attributes=rust_attributes)
+
+
 class Meter(metrics.Meter):
     def create_counter(
         self,
@@ -256,16 +274,13 @@ class Meter(metrics.Meter):
     ) -> metrics.Histogram:
         return Histogram(name)
 
-    def create_gauge(  # type: ignore # pylint: disable=no-self-use
+    def create_gauge(
         self,
         name: str,
         unit: str = "",
         description: str = "",
-    ) -> metrics._Gauge:  # pyright: ignore[reportReturnType]
-        warnings.warn(
-            "create_gauge() is not implemented and will be a no-op", stacklevel=2
-        )
-        raise NotImplementedError()
+    ) -> metrics._Gauge:
+        return Gauge(name, unit, description)
 
     def create_observable_gauge(
         self,
