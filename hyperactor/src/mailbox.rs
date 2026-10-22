@@ -3960,6 +3960,10 @@ impl MailboxSender for WeakMailboxRouter {
 ///   dispatcher has no record of the `SessionId` but our cached `NetTx`
 ///   still holds an `Outbox.next_seq` past 0.
 /// - `SequenceMismatch`: the peer rejected a gap in a session it knows.
+/// - `DeliveryTimeout`: the peer did not acknowledge within the delivery
+///   timeout, for example because it was down for longer than the timeout.
+///   A fresh session can reach the peer once it is back. Each fresh session
+///   fails only after another full timeout, so re-dialing cannot spin.
 /// - `ServerClosed`: the peer's server shut down, and a new server may
 ///   later listen at the same address, as when a host restarts.
 ///
@@ -3972,6 +3976,7 @@ fn is_redialable_close(status: &TxStatus) -> bool {
         TxStatus::Closed(
             CloseReason::UnknownSession(_)
                 | CloseReason::SequenceMismatch(_)
+                | CloseReason::DeliveryTimeout(_)
                 | CloseReason::ServerClosed(_)
         )
     )
@@ -4131,8 +4136,9 @@ impl DialMailboxRouter {
     ) -> Result<Arc<MailboxClient>, MailboxSenderError> {
         // The cache must self-heal when a peer rejects a stale session
         // (e.g. its dispatcher GC'd the SessionId after the prior connection
-        // ended, but our cached NetTx has an Outbox.next_seq past 0), or when
-        // the peer's server shut down and a new one may serve the address.
+        // ended, but our cached NetTx has an Outbox.next_seq past 0), when a
+        // peer stayed unreachable past the delivery timeout, or when the
+        // peer's server shut down and a new one may serve the address.
         // Without eviction, the cached client is dead-on-arrival forever.
         //
         // Eviction is narrowly gated on these close reasons. Re-dialing
@@ -5461,6 +5467,13 @@ mod tests {
         let server_closed = TxStatus::Closed(CloseReason::ServerClosed("server closed".into()));
         assert!(is_redialable_close(&server_closed));
 
+        // A delivery timeout means the peer was unreachable; a fresh session
+        // can reach it once it is back.
+        let timed_out = TxStatus::Closed(CloseReason::DeliveryTimeout(
+            "failed to receive ack within timeout 30s; link is currently broken".into(),
+        ));
+        assert!(is_redialable_close(&timed_out));
+
         // Other close reasons must NOT match — re-dialing would just hit the
         // same failure and create an unbounded evict/redial loop.
         let oversize = TxStatus::Closed(CloseReason::OversizedFrame {
@@ -5573,21 +5586,22 @@ mod tests {
         }
 
         /// Drop every relayed connection and forward new ones to `target`.
-        /// Returns once the relay accepts a new connection, as a client
-        /// that observed the disconnect reconnects.
-        async fn restart_peer_at(&mut self, target: &ChannelAddr) {
+        fn restart_peer_at(&mut self, target: &ChannelAddr) {
             let ChannelAddr::Tcp(target) = target else {
                 panic!("relay target should be a TCP address, got {target}")
             };
             *self.target.lock().unwrap() = *target;
-            let accepted = *self.accepted.borrow_and_update();
+            self.accepted.borrow_and_update();
             for connection in self.connections.lock().unwrap().drain(..) {
                 connection.abort();
             }
-            self.accepted
-                .wait_for(|count| *count > accepted)
-                .await
-                .unwrap();
+        }
+
+        /// Wait until the relay accepts a connection after the last
+        /// [`Self::restart_peer_at`], as a client that observed the
+        /// disconnect reconnects.
+        async fn reconnected(&mut self) {
+            self.accepted.changed().await.unwrap();
         }
     }
 
@@ -5616,7 +5630,8 @@ mod tests {
         assert_eq!(receiver.recv().await.unwrap(), 1u64);
         stale_client.flush().await.unwrap();
 
-        relay.restart_peer_at(&second_addr).await;
+        relay.restart_peer_at(&second_addr);
+        relay.reconnected().await;
 
         let (port, receiver) = mbox.open_once_port::<u64>();
         router
@@ -5678,7 +5693,8 @@ mod tests {
             .unwrap();
         assert_eq!(receiver.recv().await.unwrap(), 2u64);
 
-        relay.restart_peer_at(&second_addr).await;
+        relay.restart_peer_at(&second_addr);
+        relay.reconnected().await;
 
         let envelope = tokio::time::timeout(Duration::from_secs(30), returned.recv())
             .await
@@ -5697,6 +5713,76 @@ mod tests {
             .serialize_and_send(&port, 3u64, return_handle.clone())
             .unwrap();
         assert_eq!(receiver.recv().await.unwrap(), 3u64);
+    }
+
+    #[tokio::test]
+    async fn test_dial_router_evicts_client_closed_by_delivery_timeout() {
+        // A peer that stays unreachable past the delivery timeout closes the
+        // cached client. Once the peer is back, the router must dial a fresh
+        // session instead of failing every send on the closed client.
+        let config_lock = hyperactor_config::global::lock();
+        let _timeout = config_lock.override_key(
+            crate::config::MESSAGE_DELIVERY_TIMEOUT,
+            Duration::from_secs(1),
+        );
+        let mbox = Mailbox::new(test_actor_id("timed_out_peer_0", "actor0"));
+        let (server_addr, rx) = channel::serve::<MessageEnvelope>(tcp_loopback()).unwrap();
+        let _server = mbox.clone().serve(rx);
+        let mut relay = TcpRelay::start(&server_addr).await;
+
+        let router = DialMailboxRouter::new();
+        router.bind(Addr::from(mbox.actor_addr().clone()), relay.addr.clone());
+        let timed_out_client = router.dial(&relay.addr, mbox.actor_addr()).unwrap();
+        let (port, receiver) = mbox.open_once_port::<u64>();
+        router
+            .serialize_and_send_once(port.bind(), 1u64, monitored_return_handle())
+            .unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 1u64);
+
+        // Take the peer down for longer than the delivery timeout.
+        let unreachable = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            ChannelAddr::Tcp(listener.local_addr().unwrap())
+        };
+        relay.restart_peer_at(&unreachable);
+        let (port, _receiver) = mbox.open_once_port::<u64>();
+        router
+            .serialize_and_send_once(port.bind(), 2u64, monitored_return_handle())
+            .unwrap();
+        let mut status = timed_out_client.tx_status().clone();
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            status.wait_for(TxStatus::is_closed),
+        )
+        .await
+        .expect("the client should close after the delivery timeout")
+        .unwrap();
+        assert!(
+            matches!(
+                *status.borrow(),
+                TxStatus::Closed(CloseReason::DeliveryTimeout(_))
+            ),
+            "expected a delivery timeout, got {:?}",
+            *status.borrow()
+        );
+
+        relay.restart_peer_at(&server_addr);
+        let (port, receiver) = mbox.open_once_port::<u64>();
+        router
+            .serialize_and_send_once(port.bind(), 3u64, monitored_return_handle())
+            .unwrap();
+        let received = tokio::time::timeout(Duration::from_secs(30), receiver.recv())
+            .await
+            .expect("a message sent after the peer is back should be delivered")
+            .unwrap();
+        assert_eq!(received, 3u64);
+        assert!(
+            !Arc::ptr_eq(
+                &timed_out_client,
+                &router.dial(&relay.addr, mbox.actor_addr()).unwrap()
+            ),
+            "the timed-out client should be evicted from the cache"
+        );
     }
 
     #[tokio::test]

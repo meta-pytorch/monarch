@@ -488,7 +488,8 @@ fn log_send_error(
 
 /// Map a terminal [`session::SendLoopError`] to a typed [`CloseReason`] for
 /// the `TxStatus` watcher. Variants that callers want to branch on (e.g.
-/// `DialMailboxRouter` keys cache eviction on `UnknownSession`) get their
+/// `DialMailboxRouter` keys cache eviction on `UnknownSession` and
+/// `DeliveryTimeout`) get their
 /// own typed reason; the rest flatten to `Other` carrying the same
 /// `{log_id}: {e}` text used previously for logging.
 fn classify_send_loop_error(error: &session::SendLoopError, log_id: &str) -> CloseReason {
@@ -503,6 +504,9 @@ fn classify_send_loop_error(error: &session::SendLoopError, log_id: &str) -> Clo
             size: *size,
             max: *max,
         },
+        session::SendLoopError::DeliveryTimeout => {
+            CloseReason::DeliveryTimeout(format!("{log_id}: {error}"))
+        }
         session::SendLoopError::ServerClosed => {
             CloseReason::ServerClosed(format!("{log_id}: {error}"))
         }
@@ -832,7 +836,7 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> super::ChannelTx<M> {
                         tracing::error!(
                             dest = %dest, session_id = session_id.0, "{}", error_msg
                         );
-                        break 'outer CloseReason::Other(format!("{log_id}: {error_msg}"));
+                        break 'outer CloseReason::DeliveryTimeout(format!("{log_id}: {error_msg}"));
                     }
                 },
                 None => match session.connect().await {

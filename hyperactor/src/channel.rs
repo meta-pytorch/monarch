@@ -411,6 +411,11 @@ pub enum CloseReason {
         /// `CODEC_MAX_FRAME_LENGTH` at the time of rejection.
         max: usize,
     },
+    /// No ack arrived for the oldest unacknowledged message within
+    /// `config::MESSAGE_DELIVERY_TIMEOUT`, either because the peer stopped
+    /// acknowledging or because the link could not reconnect in time. A new
+    /// session can reach a peer that has since come back.
+    DeliveryTimeout(String),
     /// The peer closed the channel, for example because its server shut
     /// down. A new server may later listen at the same address, and
     /// re-dialing reaches it with a fresh session.
@@ -426,6 +431,7 @@ impl fmt::Display for CloseReason {
         match self {
             Self::UnknownSession(s) => write!(f, "stale session: {}", s),
             Self::SequenceMismatch(s) => write!(f, "sequence mismatch: {}", s),
+            Self::DeliveryTimeout(s) => write!(f, "delivery timeout: {}", s),
             Self::OversizedFrame { size, max } => {
                 write!(f, "oversized frame: len={size} > max={max}")
             }
@@ -444,9 +450,10 @@ impl CloseReason {
                 len: *size,
                 max: *max,
             },
-            Self::SequenceMismatch(_) | Self::ServerClosed(_) | Self::Other(_) => {
-                SendErrorReason::Other(self.to_string())
-            }
+            Self::SequenceMismatch(_)
+            | Self::DeliveryTimeout(_)
+            | Self::ServerClosed(_)
+            | Self::Other(_) => SendErrorReason::Other(self.to_string()),
         }
     }
 }
