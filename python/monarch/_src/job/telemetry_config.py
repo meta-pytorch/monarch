@@ -97,6 +97,12 @@ class TelemetryConfig:
             samples (CPU, load, memory, swap, network, and disk) written to the
             ``host_metrics`` table on every telemetry host. 0 disables host
             sampling.
+        gpu_metrics_interval_secs: Interval in seconds between per-device GPU
+            samples (utilization, memory, temperature, and power) written to
+            the ``gpu_metrics`` table through NVML. 0 disables GPU sampling;
+            hosts without NVIDIA GPUs or NVML skip it. Every NVML call
+            contends for a driver lock that co-located trainers also take, so
+            avoid intervals shorter than 10 seconds.
     """
 
     retention_secs: int = 3600
@@ -104,6 +110,7 @@ class TelemetryConfig:
     dashboard_port: int = 8265
     snapshot_interval_secs: float = 30.0
     host_metrics_interval_secs: float = 10.0
+    gpu_metrics_interval_secs: float = 10.0
 
 
 # Successful response from the telemetry handle's `open_or_refresh` control message,
@@ -134,6 +141,7 @@ def _config_from_wire(config: Mapping[str, object]) -> TelemetryConfig:
         include_dashboard=cast(bool, config["include_dashboard"]),
         dashboard_port=cast(int, config["dashboard_port"]),
         host_metrics_interval_secs=cast(float, config["host_metrics_interval_secs"]),
+        gpu_metrics_interval_secs=cast(float, config["gpu_metrics_interval_secs"]),
     )
 
 
@@ -207,6 +215,9 @@ class Telemetry:
                     "dashboard_port": self._config.dashboard_port,
                     "host_metrics_interval_secs": (
                         self._config.host_metrics_interval_secs
+                    ),
+                    "gpu_metrics_interval_secs": (
+                        self._config.gpu_metrics_interval_secs
                     ),
                 },
                 host_meshes=dict(host_meshes or {}),
@@ -326,6 +337,7 @@ class _TelemetryHandle:
             self._apply_id,
             config.retention_secs,
             config.host_metrics_interval_secs,
+            config.gpu_metrics_interval_secs,
         )
         # `activate` is the actor's bind decision: it binds the Unix socket and
         # stands up the scanner for the sidecar host. The job sidecar is keyed

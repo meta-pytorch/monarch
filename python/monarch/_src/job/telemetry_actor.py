@@ -42,12 +42,15 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
-from monarch._src.job.host_metrics_actor import HostMetricsActor
+from monarch._src.job.host_metrics_actor import GpuMetricsActor, HostMetricsActor
 from monarch.actor import Actor, current_rank, endpoint, HostMesh, ProcMesh, this_proc
 
 logger: logging.Logger = logging.getLogger(__name__)
 
 _SCAN_WORKER_TIMEOUT_SECS: float = 10.0
+
+# `GpuMetricsActor.start` initializes NVML, which can hang.
+_SAMPLER_START_TIMEOUT_SECS: float = 10.0
 
 
 def telemetry_socket_dir(apply_id: str) -> str:
@@ -68,6 +71,7 @@ class TelemetryActor(Actor):
         apply_id: str,
         retention_secs: int,
         host_metrics_interval_secs: float = 0.0,
+        gpu_metrics_interval_secs: float = 0.0,
     ) -> None:
         # Job-instance identifier; namespaces the per-host socket path under
         # /tmp so concurrent jobs on the same host do not collide.
@@ -87,6 +91,8 @@ class TelemetryActor(Actor):
         self._worker_proc_meshes: list[ProcMesh] = []
         # Seconds between host metrics samples; 0 disables host sampling.
         self._host_metrics_interval_secs: float = host_metrics_interval_secs
+        # Seconds between GPU metrics samples; 0 disables GPU sampling.
+        self._gpu_metrics_interval_secs: float = gpu_metrics_interval_secs
         # Sampler actor meshes spawned next to this collector's store. Held so
         # the samplers live as long as this collector.
         self._sampler_meshes: list[Any] = []
@@ -137,6 +143,7 @@ class TelemetryActor(Actor):
         """
         samplers = (
             ("host_metrics", HostMetricsActor, self._host_metrics_interval_secs),
+            ("gpu_metrics", GpuMetricsActor, self._gpu_metrics_interval_secs),
         )
         for name, sampler_class, interval_secs in samplers:
             if interval_secs <= 0:
@@ -149,8 +156,16 @@ class TelemetryActor(Actor):
                     interval_secs,
                 )
                 self._sampler_meshes.append(mesh)
-                if not mesh.start.call_one().get():
+                started = mesh.start.call_one().get(timeout=_SAMPLER_START_TIMEOUT_SECS)
+                if not started:
                     logger.info("telemetry sampler unavailable on this host: %s", name)
+            except TimeoutError:
+                logger.warning(
+                    "telemetry sampler %s did not start within %s s; it keeps "
+                    "starting in the background",
+                    name,
+                    _SAMPLER_START_TIMEOUT_SECS,
+                )
             except Exception:
                 logger.warning(
                     "failed to start telemetry sampler: %s", name, exc_info=True
@@ -197,6 +212,7 @@ class TelemetryActor(Actor):
                 apply_id,
                 self._retention_secs,
                 self._host_metrics_interval_secs,
+                self._gpu_metrics_interval_secs,
             )
             active = any(
                 active for _rank, active in worker_collector_mesh.activate.call().get()
