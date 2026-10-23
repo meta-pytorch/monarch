@@ -47,6 +47,7 @@ from monarch._src.actor.actor_mesh import (
     ActorInitArgs,
     ActorMesh,
     context,
+    RawMessageActor,
 )
 from monarch._src.actor.code_sync import (
     CodeSyncMeshClient,
@@ -99,7 +100,7 @@ _COMMON_CUDA_ENV_VARS: Tuple[str, ...] = (
 
 
 T = TypeVar("T")
-TActor = TypeVar("TActor", bound=Actor)
+TActor = TypeVar("TActor", bound=RawMessageActor)
 
 
 def _cuda_env_snapshot() -> Dict[str, Optional[str]]:
@@ -441,7 +442,8 @@ class ProcMesh(MeshTrait):
         """
         from monarch._src.actor.mock import get_actor_class
 
-        Class = cast(Type[TActor], get_actor_class(cast(Type[Actor], Class)))
+        if issubclass(Class, Actor):
+            Class = cast(Type[TActor], get_actor_class(cast(Type[Actor], Class)))
         return self._spawn_nonblocking(name, Class, *args, **kwargs)
 
     @classmethod
@@ -497,9 +499,9 @@ class ProcMesh(MeshTrait):
         *args: Any,
         **kwargs: Any,
     ) -> TActor:
-        if not issubclass(Class, Actor):
+        if not issubclass(Class, RawMessageActor):
             raise ValueError(
-                f"{Class} must subclass monarch.service.Actor to spawn it."
+                f"{Class} must subclass monarch.actor.RawMessageActor to spawn it."
             )
         # SA-5: a mismatched class is rejected before any native side effect.
         kind = _actor_kind(Class)
@@ -517,7 +519,7 @@ class ProcMesh(MeshTrait):
             inspect.signature(Class.__init__),
             (
                 ActorInitArgs(
-                    cast(Type[Actor], Class),
+                    cast(Type[RawMessageActor], Class),
                     self,
                     self._controller_controller or instance._controller_controller,
                     name,
@@ -902,7 +904,7 @@ class _ControllerController(Actor):
     def __init__(self) -> None:
         # Store failed actors in the dict so we can forward their failures to
         # the user.
-        self._controllers: Dict[str, Actor | MeshFailure] = {}
+        self._controllers: Dict[str, RawMessageActor | MeshFailure] = {}
         # Internal mesh name mapped back to the key from _controllers.
         self._mesh_name_to_name: Dict[str, str] = {}
 
@@ -970,7 +972,7 @@ def get_or_spawn_controller(
 
     Args:
         name (str): The unique name of the actor, used as a key for retrieval.
-        Class (Type): The class of the actor to spawn. Must be a subclass of Actor.
+        Class (Type): The class of the actor to spawn. Must be a subclass of RawMessageActor (including Actor).
         *args (Any): Positional arguments to pass to the actor constructor.
         **kwargs (Any): Keyword arguments to pass to the actor constructor.
 

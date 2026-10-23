@@ -1546,3 +1546,236 @@ class MySupervisor(Actor):
         # Handle or propagate
         return True  # Handled
 ```
+
+## Raw message actors (experimental)
+
+`RawMessageActor` is the foundation beneath `Actor`. It exposes one dynamic
+`handle(message)` method. A `MessageEnvelope` provides decoded `headers`, a
+read-only byte `payload`, and an optional transferable `reply_port`. Receiving or
+forwarding a message does not run an application decoder. Each handler normally
+runs sequentially; either a synchronous or an asynchronous handler is supported.
+Its return value is ignored. Send replies explicitly through the supplied Port.
+
+This complete example chooses JSON as an application codec:
+
+```python
+import asyncio
+import json
+
+from monarch.actor import (
+    Channel, MessageEnvelope, RawMessageActor, send_message, this_host,
+)
+
+
+class JsonCounter(RawMessageActor):
+    def handle(self, message: MessageEnvelope) -> None:
+        if message.headers["operation"] != "count":
+            raise ValueError("unknown operation")
+        value = json.loads(bytes(message.payload))
+        message.reply_port.send(len(value))
+
+
+async def main():
+    procs = this_host().spawn_procs(per_host={"processes": 1})
+    counter = procs.spawn("counter", JsonCounter)
+    reply, receiver = Channel[int].open(once=True)
+    try:
+        send_message(counter, MessageEnvelope(
+            headers={"operation": "count", "content_type": "application/json"},
+            payload=json.dumps([1, 2, 3]).encode(),
+            reply_port=reply,
+        ))
+        assert await receiver.recv() == 3
+    finally:
+        await procs.stop()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+A byte-oriented or FlatBuffers handler can use the same transport and choose its
+own decoder. The framework needs no application codec registry. JSON support here
+is an application example, not a cross-language transport guarantee: Monarch
+still pickles trusted Python control metadata and Port wrappers.
+
+`send_message(target, envelope)` defaults to a singleton actor selection and
+raises for larger selections. Specify `selection="all"` for broadcast or
+`selection="choose"` for one randomly selected actor. Sending is not an
+acknowledgement of processing, and raw delivery imposes no response count or
+aggregation convention. A router can retain the original reply Port and forward
+without interpreting the body:
+
+```python
+class Router(RawMessageActor):
+    def __init__(self, destination):
+        self.destination = destination
+
+    def handle(self, message):
+        send_message(self.destination, message.replace(
+            headers={**message.headers, "hop": "router"}
+        ))
+```
+
+Outgoing mutable buffers are snapshotted. The public payload view is read-only
+and stable; headers are shallow read-only snapshots, and sending serializes their
+current nested values. Header and body bytes have independent length-delimited
+framing. Their mesh-reference tables remain separate, and payload attachments
+stay privately owned by the envelope. Public callers do not build reference
+tables. There may be full-message buffering and copies when framing or exposing
+payload bytes; this API does not promise zero-copy transfer.
+
+Control headers support resolved Monarch mesh references and transferable Ports.
+The prototype rejects pending mesh references in headers rather than blocking a
+handler's loop; initialize or resolve them before including them in metadata.
+It also rejects tensor-engine references in headers and opaque forwarding of a
+received payload with nonempty tensor-engine local state. Ordinary `Actor`
+endpoint delivery retains its existing mesh, pending-reference, and tensor-engine
+reference handling. These prototype restrictions do not define a general limit
+on future raw protocols.
+
+### Ordinary actors extend the raw handler
+
+`Actor` inherits `RawMessageActor` and implements `handle` as an endpoint codec
+and dispatcher. The runtime calls that method for ordinary endpoint messages;
+only this layer reconstructs endpoint arguments, looks up methods, and sends
+return-value replies. Existing subclasses need no new base constructor. Endpoint
+adverbs, explicit reply Ports, errors, tracing, and synchronous driver behavior
+retain their existing contracts. Ordinary delivery keeps its original serialized
+buffer and attachments; accessing `message.payload` makes an independent lazy
+byte snapshot, so inspection does not consume the endpoint decoder's cursor.
+
+You can inspect control headers and then delegate:
+
+```python
+class InspectingActor(Actor):
+    def handle(self, message):
+        self.last_method = message.headers["method"]
+        return super().handle(message)
+
+    @endpoint
+    async def ping(self):
+        return "pong"
+```
+
+This also composes with `@concurrent_endpoint`. For a synchronous endpoint actor,
+keep the override synchronous; its user code still runs on the synchronous driver
+without a persistent asyncio loop. An endpoint named `handle` conflicts with the
+foundation's dispatch hook and is rejected explicitly.
+
+### Actor-owned background tasks
+
+Use `spawn_actor_task(self, coroutine, name=...)` inside an asynchronous actor to
+own a background operation. Tasks are tracked until completion, and cancelled
+and awaited before user `__cleanup__`. Uncaught failures follow actor supervision;
+a protocol can instead handle its errors and send them through a reply Port.
+Explicit tasks may interleave state changes at awaits. `@concurrent_endpoint`
+uses the same registry and cleanup machinery; it adds its own endpoint tracing
+and response/error policy. A raw handler is not implicitly concurrent.
+
+## Byte streaming as a protocol library (experimental)
+
+`monarch.actor.streams` provides `request(target, chunks, metadata=None,
+chunk_size=65536)` and `handle(actor, message, callback)`, with metadata and
+chunk_size passed as keywords. The source is an async iterable of `bytes`.
+`request` returns a Monarch `Future` for one final response; await it or use
+`.get()` from synchronous code. Sending and production start on first observation
+on the observer's loop. `handle` dispatches open/cancel control messages and
+promptly starts an actor-owned session task. Your raw handler chooses which
+protocol library handles a message.
+
+The callback receives an iterator-only `streams.ByteStream` and ordinary metadata.
+The following complete example uses separate sender, router, and consumer
+processes and counts bytes incrementally:
+
+```python
+import asyncio
+
+from monarch.actor import MessageEnvelope, RawMessageActor, streams, this_host
+
+
+class Consumer(RawMessageActor):
+    async def handle(self, message: MessageEnvelope) -> None:
+        await streams.handle(self, message, self.ingest)
+
+    async def ingest(self, chunks: streams.ByteStream, metadata) -> int:
+        total = 0
+        async for chunk in chunks:
+            total += len(chunk)
+        return total
+
+
+class Router(RawMessageActor):
+    def __init__(self, destination):
+        self.destination = destination
+        self.bytes_forwarded = 0
+
+    async def handle(self, message: MessageEnvelope) -> None:
+        await streams.handle(self, message, self.forward)
+
+    async def forward(self, chunks: streams.ByteStream, metadata) -> int:
+        if metadata["route_key"] != "training":
+            raise ValueError("unknown route")
+
+        async def observe():
+            async for chunk in chunks:
+                self.bytes_forwarded += len(chunk)
+                yield chunk
+
+        return await streams.request(self.destination, observe(), metadata=metadata)
+
+
+async def main():
+    procs = this_host().spawn_procs(per_host={"processes": 2})
+    consumer = procs.slice(processes=0).spawn("consumer", Consumer)
+    router = procs.slice(processes=1).spawn("router", Router, consumer)
+
+    async def produce():
+        for _ in range(16):
+            yield b"x" * 65536
+
+    try:
+        assert await streams.request(
+            router, produce(), metadata={"route_key": "training"}
+        ) == 1_048_576
+    finally:
+        await procs.stop()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Pass an incoming `ByteStream` directly to `streams.request` for pass-through
+forwarding. There is no stream endpoint decorator, annotation dispatch, new
+endpoint adverb, or built-in application-object serialization. Applications can
+supply a separate serializer as a byte producer. Ordinary `@endpoint.stream()`
+continues to broadcast and yield per-actor replies.
+
+This library permits one stream per request with metadata available before the
+first chunk. Metadata needed by a router belongs in control headers. Metadata
+needed only at the sink can be application-encoded alongside records. The raw
+foundation imposes no one-stream restriction; other libraries can choose other
+protocols. This library neither zips streams nor defines record framing, and
+transport chunk boundaries need not match application records. `ByteStream` has
+async iteration and `aclose`, with no collection or object-loading helpers.
+
+One outstanding pull per hop lets downstream demand drive upstream production.
+Empty byte chunks are data; EOF is stable; overlapping reads are rejected.
+Oversized producer elements are split to `chunk_size`. Relays keep only a small
+number of chunks unless application code accumulates them. A producer may retain
+a large yielded element while it is split. Slices and framing may copy. One
+round trip per chunk costs latency; no throughput or zero-copy claim is made.
+Bulk chunks use existing channels, which still pickle byte/control envelopes.
+The final result or error uses an ordinary explicit Port response, not a native
+endpoint collector trying to decode an application-specific payload codec.
+
+Sessions overlap through generic actor-owned tasks, so account for interleaving at
+awaits. Early return, source errors, and callback errors stop production and close
+owned iterators. Cancelling an asyncio observation, including `asyncio.wait_for`,
+cancels the whole request and forwarding chain, then observes cooperative terminal
+settlement. An owning `.get(timeout=...)` also drives cancellation cleanup. Actor
+shutdown cancels sessions before user cleanup. Cancellation is not a hard deadline
+on an unresponsive process; process/network failures follow existing supervision
+and delivery behavior. No automatic retry or new durable/exactly-once guarantee
+is introduced.
