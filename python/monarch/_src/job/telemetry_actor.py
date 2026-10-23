@@ -42,7 +42,8 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
-from monarch.actor import Actor, current_rank, endpoint, HostMesh, ProcMesh
+from monarch._src.job.host_metrics_actor import HostMetricsActor
+from monarch.actor import Actor, current_rank, endpoint, HostMesh, ProcMesh, this_proc
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -62,7 +63,12 @@ def telemetry_socket_path(apply_id: str) -> str:
 class TelemetryActor(Actor):
     """Host-local telemetry collector actor."""
 
-    def __init__(self, apply_id: str, retention_secs: int) -> None:
+    def __init__(
+        self,
+        apply_id: str,
+        retention_secs: int,
+        host_metrics_interval_secs: float = 0.0,
+    ) -> None:
         # Job-instance identifier; namespaces the per-host socket path under
         # /tmp so concurrent jobs on the same host do not collide.
         self._apply_id: str = apply_id
@@ -79,6 +85,11 @@ class TelemetryActor(Actor):
         # meshes so their failures can be removed before later scans.
         self._worker_collectors: dict[str, Any] = {}
         self._worker_proc_meshes: list[ProcMesh] = []
+        # Seconds between host metrics samples; 0 disables host sampling.
+        self._host_metrics_interval_secs: float = host_metrics_interval_secs
+        # Sampler actor meshes spawned next to this collector's store. Held so
+        # the samplers live as long as this collector.
+        self._sampler_meshes: list[Any] = []
 
     def _scanner_or_raise(self) -> DatabaseScanner:
         scanner = self._scanner
@@ -110,11 +121,40 @@ class TelemetryActor(Actor):
             _register_telemetry_schemas(scanner)
             _pre_register_snapshot_schemas(scanner)
             _start_socket_ingest(scanner, telemetry_socket_path(self._apply_id))
-            self._scanner = scanner
-            return True
         except Exception as error:
             logger.warning("telemetry collector activation failed: %s", error)
-        return False
+            return False
+        self._scanner = scanner
+        self._start_samplers()
+        return True
+
+    def _start_samplers(self) -> None:
+        """Start host samplers in this proc, next to the store they feed.
+
+        Only the collector that owns the host-local socket starts samplers, so
+        each host runs at most one of each. Sampler failures never fail
+        activation.
+        """
+        samplers = (
+            ("host_metrics", HostMetricsActor, self._host_metrics_interval_secs),
+        )
+        for name, sampler_class, interval_secs in samplers:
+            if interval_secs <= 0:
+                continue
+            try:
+                mesh = this_proc().spawn(
+                    name,
+                    sampler_class,
+                    telemetry_socket_path(self._apply_id),
+                    interval_secs,
+                )
+                self._sampler_meshes.append(mesh)
+                if not mesh.start.call_one().get():
+                    logger.info("telemetry sampler unavailable on this host: %s", name)
+            except Exception:
+                logger.warning(
+                    "failed to start telemetry sampler: %s", name, exc_info=True
+                )
 
     @endpoint
     def activate(self) -> bool:
@@ -156,6 +196,7 @@ class TelemetryActor(Actor):
                 actor_class,
                 apply_id,
                 self._retention_secs,
+                self._host_metrics_interval_secs,
             )
             active = any(
                 active for _rank, active in worker_collector_mesh.activate.call().get()
@@ -203,7 +244,7 @@ class TelemetryActor(Actor):
 
     def __supervise__(self, failure: MeshFailure) -> bool:
         self._worker_collectors.pop(failure.mesh_name, None)
-        logger.warning("worker telemetry failure, skipping: %s", failure)
+        logger.warning("telemetry failure, skipping: %s", failure)
         return True
 
     @endpoint

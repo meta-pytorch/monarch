@@ -23,6 +23,7 @@ from unittest.mock import call, MagicMock, patch
 import monarch._src.job.job_sidecar as js
 import monarch._src.job.telemetry_config as tc
 import pytest
+from monarch._src.job.host_metrics_actor import HostMetricsActor
 from monarch._src.job.once_daemon import _Shutdown, _wait_for_socket
 from monarch._src.job.telemetry_actor import telemetry_socket_dir, telemetry_socket_path
 from monarch.config import ChannelTransport, configured
@@ -87,7 +88,12 @@ def _snapshot_ipc(snapshot_id: str) -> bytes:
 
 
 def _cfg_dict(**overrides):
-    base = {"retention_secs": 0, "include_dashboard": False, "dashboard_port": 0}
+    base = {
+        "retention_secs": 0,
+        "include_dashboard": False,
+        "dashboard_port": 0,
+        "host_metrics_interval_secs": 0.0,
+    }
     base.update(overrides)
     return base
 
@@ -453,6 +459,42 @@ def test_telemetry_actor_suppresses_undeliverable_worker_message() -> None:
     # as undeliverable. Returning True suppresses escalation so the query root
     # is not torn down.
     assert telemetry_actor._handle_undeliverable_message(MagicMock())
+
+
+def test_config_from_wire_carries_host_metrics_interval() -> None:
+    config = tc._config_from_wire(_cfg_dict(host_metrics_interval_secs=2.5))
+    assert config.host_metrics_interval_secs == 2.5
+
+
+def test_start_samplers_spawns_enabled_samplers() -> None:
+    actor = tc.TelemetryActor("apply", 0, host_metrics_interval_secs=10.0)
+    proc = MagicMock()
+    mesh = proc.spawn.return_value
+    mesh.start.call_one.return_value.get.return_value = True
+    with patch("monarch._src.job.telemetry_actor.this_proc", return_value=proc):
+        actor._start_samplers()
+    proc.spawn.assert_called_once_with(
+        "host_metrics", HostMetricsActor, telemetry_socket_path("apply"), 10.0
+    )
+    assert actor._sampler_meshes == [mesh]
+
+
+def test_start_samplers_skips_disabled() -> None:
+    actor = tc.TelemetryActor("apply", 0, host_metrics_interval_secs=0.0)
+    proc = MagicMock()
+    with patch("monarch._src.job.telemetry_actor.this_proc", return_value=proc):
+        actor._start_samplers()
+    proc.spawn.assert_not_called()
+    assert actor._sampler_meshes == []
+
+
+def test_start_samplers_tolerates_failures() -> None:
+    actor = tc.TelemetryActor("apply", 0, host_metrics_interval_secs=10.0)
+    proc = MagicMock()
+    proc.spawn.side_effect = RuntimeError("spawn failed")
+    with patch("monarch._src.job.telemetry_actor.this_proc", return_value=proc):
+        actor._start_samplers()
+    assert actor._sampler_meshes == []
 
 
 def test_open_or_refresh_continues_after_worker_setup_failure() -> None:

@@ -93,12 +93,17 @@ class TelemetryConfig:
             introspection snapshots. Snapshots capture the mesh topology
             into the telemetry query surface. The default is 30 seconds;
             0 disables periodic capture.
+        host_metrics_interval_secs: Interval in seconds between host resource
+            samples (CPU, load, memory, swap, network, and disk) written to the
+            ``host_metrics`` table on every telemetry host. 0 disables host
+            sampling.
     """
 
     retention_secs: int = 3600
     include_dashboard: bool = False
     dashboard_port: int = 8265
     snapshot_interval_secs: float = 30.0
+    host_metrics_interval_secs: float = 10.0
 
 
 # Successful response from the telemetry handle's `open_or_refresh` control message,
@@ -121,13 +126,14 @@ def _telemetry_response(response: object) -> _TelemetryResponse:
 
 
 def _config_from_wire(config: Mapping[str, object]) -> TelemetryConfig:
-    """Rebuild a `TelemetryConfig` from the pickled wire dict. Only the three
+    """Rebuild a `TelemetryConfig` from the pickled wire dict. Only the
     fields the telemetry handle acts on cross the wire; the rest take their
     defaults."""
     return TelemetryConfig(
         retention_secs=cast(int, config["retention_secs"]),
         include_dashboard=cast(bool, config["include_dashboard"]),
         dashboard_port=cast(int, config["dashboard_port"]),
+        host_metrics_interval_secs=cast(float, config["host_metrics_interval_secs"]),
     )
 
 
@@ -199,6 +205,9 @@ class Telemetry:
                     "retention_secs": self._config.retention_secs,
                     "include_dashboard": self._config.include_dashboard,
                     "dashboard_port": self._config.dashboard_port,
+                    "host_metrics_interval_secs": (
+                        self._config.host_metrics_interval_secs
+                    ),
                 },
                 host_meshes=dict(host_meshes or {}),
                 spawn_worker_collectors=spawn_worker_collectors,
@@ -316,6 +325,7 @@ class _TelemetryHandle:
             TelemetryActor,
             self._apply_id,
             config.retention_secs,
+            config.host_metrics_interval_secs,
         )
         # `activate` is the actor's bind decision: it binds the Unix socket and
         # stands up the scanner for the sidecar host. The job sidecar is keyed

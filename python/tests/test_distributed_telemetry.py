@@ -11,6 +11,7 @@
 import json
 import os
 import shutil
+import socket
 import time
 import types
 import unittest.mock
@@ -310,6 +311,30 @@ def test_telemetry_actor_starts_local_socket_collector() -> None:
         assert os.stat(socket_dir).st_mode & 0o777 == 0o700
         start_ingest.assert_called_once()
         assert start_ingest.call_args.args[1] == socket_path
+    finally:
+        _remove_socket_dir(apply_id)
+
+
+@pytest.mark.timeout(30)
+def test_activate_spawns_samplers_once() -> None:
+    apply_id = _new_apply_id()
+    _remove_socket_dir(apply_id)
+    try:
+        actor = job_telemetry_actor.TelemetryActor(
+            apply_id, retention_secs=0, host_metrics_interval_secs=10.0
+        )
+        with (
+            unittest.mock.patch.object(
+                job_telemetry_actor,
+                "current_rank",
+                return_value=types.SimpleNamespace(rank=0),
+            ),
+            unittest.mock.patch.object(job_telemetry_actor, "_start_socket_ingest"),
+            unittest.mock.patch.object(actor, "_start_samplers") as start_samplers,
+        ):
+            assert actor._activate_impl()
+            assert actor._activate_impl()
+        start_samplers.assert_called_once_with()
     finally:
         _remove_socket_dir(apply_id)
 
@@ -1668,6 +1693,41 @@ def test_custom_gauge() -> None:
         assert rows["unit"] == ["1"]
         assert rows["value_f64"] == [0.125]
         assert json.loads(rows["attributes_json"][0]) == {"device": "gpu-0"}
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_host_metrics_table() -> None:
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(
+            _sidecar_telemetry_config(host_metrics_interval_secs=0.2)
+        ),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+        rows = _query(
+            state,
+            "SELECT hostname, cpu_count, memory_total_bytes, disk_root_free_bytes "
+            "FROM host_metrics",
+            min_rows=2,
+            timeout_secs=40.0,
+        )
+        assert set(rows["hostname"]) == {socket.gethostname()}, rows
+        assert min(rows["cpu_count"]) >= 1, rows
+        assert min(rows["memory_total_bytes"]) > 0, rows
+        assert min(rows["disk_root_free_bytes"]) > 0, rows
+
+        # Network counters are cumulative, so consecutive samples give a rate.
+        rates = _query(
+            state,
+            "SELECT (net_rx_bytes - LAG(net_rx_bytes) OVER "
+            "(PARTITION BY hostname ORDER BY timestamp_us)) * 1e6 / "
+            "(timestamp_us - LAG(timestamp_us) OVER "
+            "(PARTITION BY hostname ORDER BY timestamp_us)) AS rx_bytes_per_sec "
+            "FROM host_metrics",
+            min_rows=2,
+        )
+        assert any(rate is not None for rate in rates["rx_bytes_per_sec"]), rates
 
 
 @pytest.mark.timeout(120)
