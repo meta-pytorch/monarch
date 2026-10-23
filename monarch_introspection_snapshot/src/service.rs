@@ -126,7 +126,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use datafusion::arrow::record_batch::RecordBatch;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
 use hyperactor::Context;
@@ -137,6 +136,7 @@ use hyperactor_mesh::introspect::NodeRef;
 use hyperactor_mesh::mesh_admin::MeshAdminAgent;
 use hyperactor_mesh::mesh_admin::ResolveReferenceMessageClient;
 use monarch_distributed_telemetry::serialize_batch;
+use monarch_record_batch::arrow::record_batch::RecordBatch;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use serde::Serialize;
