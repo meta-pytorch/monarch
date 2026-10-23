@@ -9,7 +9,7 @@
 import shutil
 from pathlib import Path
 
-from monarch.tools.config.environment import CondaEnvironment, Environment
+from monarch.tools.config.environment import CondaEnvironment, Environment  # @manual
 
 ACTIVE_CONDA_ENV = CondaEnvironment()
 
