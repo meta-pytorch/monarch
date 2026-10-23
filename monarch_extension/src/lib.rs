@@ -82,6 +82,10 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
 
     monarch_hyperactor::runtime::initialize(module.py())?;
+    // Link the optional SQLite trace sink before logging init runs
+    // (inside `hyperactor::initialize`); no-op unless
+    // `ENABLE_SQLITE_TRACING` is set.
+    hyperactor_telemetry_sqlite::register();
     ::hyperactor::initialize(monarch_hyperactor::runtime::get_tokio_runtime());
     monarch_hyperactor::buffers::register_python_bindings(&get_or_add_new_module(
         module,
