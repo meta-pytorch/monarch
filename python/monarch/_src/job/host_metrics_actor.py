@@ -21,7 +21,9 @@ import random
 import socket
 import threading
 import time
-from typing import Callable
+from dataclasses import dataclass
+from types import ModuleType
+from typing import Any, Callable, Sequence
 
 import psutil
 import pyarrow as pa
@@ -51,6 +53,24 @@ HOST_METRICS_SCHEMA: pa.Schema = pa.schema(
         pa.field("disk_write_bytes", pa.uint64()),
         pa.field("disk_root_free_bytes", pa.uint64()),
         pa.field("disk_tmp_free_bytes", pa.uint64()),
+    ]
+)
+
+
+GPU_METRICS_TABLE: str = "gpu_metrics"
+
+GPU_METRICS_SCHEMA: pa.Schema = pa.schema(
+    [
+        pa.field("timestamp_us", pa.int64(), nullable=False),
+        pa.field("hostname", pa.utf8(), nullable=False),
+        pa.field("gpu_index", pa.uint32(), nullable=False),
+        pa.field("gpu_uuid", pa.utf8(), nullable=False),
+        pa.field("gpu_name", pa.utf8(), nullable=False),
+        pa.field("utilization_percent", pa.float64()),
+        pa.field("memory_used_bytes", pa.uint64(), nullable=False),
+        pa.field("memory_total_bytes", pa.uint64(), nullable=False),
+        pa.field("temperature_c", pa.uint32()),
+        pa.field("power_watts", pa.float64()),
     ]
 )
 
@@ -92,6 +112,67 @@ def _free_bytes(path: str) -> int | None:
 def _jittered(interval_secs: float) -> float:
     wait = random.gauss(interval_secs, 0.1 * interval_secs)
     return min(max(wait, 0.5 * interval_secs), 1.5 * interval_secs)
+
+
+@dataclass(frozen=True)
+class GpuDevice:
+    """An NVML device handle with its static identity, cached at start."""
+
+    index: int
+    handle: object
+    uuid: str
+    name: str
+
+
+def sample_gpu_metrics(
+    nvml: Any, devices: Sequence[GpuDevice], hostname: str
+) -> list[dict[str, object]]:
+    """Sample one `gpu_metrics` row per device with four NVML calls each.
+
+    A field NVML cannot report is null. A device whose memory info cannot be
+    read is skipped for this tick.
+    """
+    timestamp_us = time.time_ns() // 1000
+    rows: list[dict[str, object]] = []
+    for device in devices:
+        handle = device.handle
+        try:
+            memory = nvml.nvmlDeviceGetMemoryInfo(handle)
+        except nvml.NVMLError:
+            continue
+        utilization = _nvml_field(nvml, nvml.nvmlDeviceGetUtilizationRates, handle)
+        power_milliwatts = _nvml_field(nvml, nvml.nvmlDeviceGetPowerUsage, handle)
+        rows.append(
+            {
+                "timestamp_us": timestamp_us,
+                "hostname": hostname,
+                "gpu_index": device.index,
+                "gpu_uuid": device.uuid,
+                "gpu_name": device.name,
+                "utilization_percent": (
+                    float(utilization.gpu) if utilization is not None else None
+                ),
+                "memory_used_bytes": memory.used,
+                "memory_total_bytes": memory.total,
+                "temperature_c": _nvml_field(
+                    nvml,
+                    nvml.nvmlDeviceGetTemperature,
+                    handle,
+                    nvml.NVML_TEMPERATURE_GPU,
+                ),
+                "power_watts": (
+                    power_milliwatts / 1000 if power_milliwatts is not None else None
+                ),
+            }
+        )
+    return rows
+
+
+def _nvml_field(nvml: Any, read: Callable[..., Any], *args: object) -> Any:
+    try:
+        return read(*args)
+    except nvml.NVMLError:
+        return None
 
 
 def run_sampler_loop(
@@ -203,3 +284,61 @@ class HostMetricsActor(Sampler):
 
     def _sample(self) -> list[dict[str, object]]:
         return [sample_host_metrics(self._hostname)]
+
+
+class GpuMetricsActor(Sampler):
+    """Samples per-device GPU utilization, memory, temperature, and power.
+
+    Declines to run on hosts without NVIDIA GPUs or NVML.
+    """
+
+    table: str = GPU_METRICS_TABLE
+    schema: pa.Schema = GPU_METRICS_SCHEMA
+
+    def __init__(self, socket_path: str, interval_secs: float) -> None:
+        super().__init__(socket_path, interval_secs)
+        self._hostname: str = socket.gethostname()
+        self._nvml: ModuleType | None = None
+        self._devices: list[GpuDevice] = []
+
+    def _prepare(self) -> bool:
+        # Imported here so a missing or deprecated `pynvml` package affects
+        # only GPU sampling, and only when it is enabled.
+        try:
+            import pynvml
+        except ImportError:
+            logger.info("gpu metrics disabled: pynvml is not installed")
+            return False
+        try:
+            pynvml.nvmlInit()
+            count = pynvml.nvmlDeviceGetCount()
+        except pynvml.NVMLError as error:
+            logger.info("gpu metrics disabled: nvml unavailable: %s", error)
+            return False
+        devices: list[GpuDevice] = []
+        for index in range(count):
+            try:
+                devices.append(_gpu_device(pynvml, index))
+            except pynvml.NVMLError as error:
+                logger.warning("gpu metrics skipping gpu %d: %s", index, error)
+        if not devices:
+            logger.info("gpu metrics disabled: no gpus found")
+            return False
+        self._nvml = pynvml
+        self._devices = devices
+        return True
+
+    def _sample(self) -> list[dict[str, object]]:
+        nvml = self._nvml
+        assert nvml is not None, "gpu sampler ran before nvml was initialized"
+        return sample_gpu_metrics(nvml, self._devices, self._hostname)
+
+
+def _gpu_device(nvml: Any, index: int) -> GpuDevice:
+    handle = nvml.nvmlDeviceGetHandleByIndex(index)
+    return GpuDevice(
+        index=index,
+        handle=handle,
+        uuid=nvml.nvmlDeviceGetUUID(handle),
+        name=nvml.nvmlDeviceGetName(handle),
+    )

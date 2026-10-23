@@ -1289,6 +1289,15 @@ wheels = [
 ]
 
 [[package]]
+name = "nvidia-ml-py"
+version = "13.615.71"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/30/b25216758be3d3e2834825d8193609e2d71c770a8bd7984438c058c90268/nvidia_ml_py-13.615.71.tar.gz", hash = "sha256:bebe4e48f51b1dc75028c0815cb7bfa14a31a5bb80be70c9d980c6036953fc3d", size = 57485, upload-time = "2026-09-25T15:15:28.226Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/a1/1681dfa1c904d4e3e72e51b55a0ff012d50b766843ef832d584abe2113c6/nvidia_ml_py-13.615.71-py3-none-any.whl", hash = "sha256:959bf4adf6fe1308e4bd739e722236b0d1ec8392e2cefad33ff70c311380b9b6", size = 58132, upload-time = "2026-09-25T15:15:26.54Z" },
+]
+
+[[package]]
 name = "nvidia-nccl-cu13"
 version = "2.30.7"
 source = { registry = "https://pypi.org/simple" }
@@ -2402,6 +2411,7 @@ dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "nvidia-ml-py" },
     { name = "opentelemetry-api" },
     { name = "psutil" },
     { name = "py-spy" },
@@ -2489,6 +2499,7 @@ requires-dist = [
     { name = "kubernetes", marker = "extra == 'kubernetes'" },
     { name = "lark" },
     { name = "numpy", specifier = ">=1.26" },
+    { name = "nvidia-ml-py" },
     { name = "opentelemetry-api" },
     { name = "psutil" },
     { name = "psutil", marker = "extra == 'examples'" },

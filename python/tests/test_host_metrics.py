@@ -8,11 +8,14 @@
 
 import socket
 import struct
+import sys
 import threading
 import time
+import types
 
 import monarch._src.job.host_metrics_actor as hma
 import pyarrow as pa
+import pynvml
 import pytest
 from monarch._rust_bindings.monarch_distributed_telemetry import (
     _register_telemetry_schemas,
@@ -203,3 +206,97 @@ def test_first_cpu_sample_is_measured_on_the_sampler_thread(
     finally:
         actor._stop.set()
         server.close()
+
+
+class _NVMLError(Exception):
+    pass
+
+
+def _stub_nvml(
+    *, util_error: bool = False, memory_error: bool = False
+) -> types.SimpleNamespace:
+    def utilization(handle: object) -> types.SimpleNamespace:
+        if util_error:
+            raise _NVMLError("not supported")
+        return types.SimpleNamespace(gpu=37, memory=5)
+
+    def memory_info(handle: object) -> types.SimpleNamespace:
+        if memory_error:
+            raise _NVMLError("gpu is lost")
+        return types.SimpleNamespace(used=1, total=2, free=1)
+
+    return types.SimpleNamespace(
+        NVMLError=_NVMLError,
+        NVML_TEMPERATURE_GPU=0,
+        nvmlDeviceGetUtilizationRates=utilization,
+        nvmlDeviceGetMemoryInfo=memory_info,
+        nvmlDeviceGetTemperature=lambda handle, sensor: 55,
+        nvmlDeviceGetPowerUsage=lambda handle: 250_000,
+    )
+
+
+_DEVICES = [hma.GpuDevice(index=0, handle=object(), uuid="GPU-0", name="H100")]
+
+
+def test_gpu_metrics_schema_matches_registered() -> None:
+    assert hma.GPU_METRICS_SCHEMA == _registered_schema("gpu_metrics")
+
+
+def test_sample_gpu_metrics_populates_rows() -> None:
+    rows = hma.sample_gpu_metrics(_stub_nvml(), _DEVICES, "h")
+    assert len(rows) == 1
+    assert rows[0]["hostname"] == "h"
+    assert rows[0]["gpu_index"] == 0
+    assert rows[0]["gpu_uuid"] == "GPU-0"
+    assert rows[0]["gpu_name"] == "H100"
+    assert rows[0]["utilization_percent"] == 37.0
+    assert rows[0]["temperature_c"] == 55
+    assert rows[0]["power_watts"] == 250.0
+    assert rows[0]["memory_used_bytes"] == 1
+    assert rows[0]["memory_total_bytes"] == 2
+    pa.RecordBatch.from_pylist(rows, schema=hma.GPU_METRICS_SCHEMA)
+
+
+def test_sample_gpu_metrics_nulls_unsupported_fields() -> None:
+    rows = hma.sample_gpu_metrics(_stub_nvml(util_error=True), _DEVICES, "h")
+    assert rows[0]["utilization_percent"] is None
+    assert rows[0]["temperature_c"] == 55
+    pa.RecordBatch.from_pylist(rows, schema=hma.GPU_METRICS_SCHEMA)
+
+
+def test_sample_gpu_metrics_drops_row_without_memory() -> None:
+    assert hma.sample_gpu_metrics(_stub_nvml(memory_error=True), _DEVICES, "h") == []
+
+
+def test_gpu_sampler_start_without_nvml(monkeypatch, tmp_path) -> None:
+    # A `None` entry makes `import pynvml` raise ImportError.
+    monkeypatch.setitem(sys.modules, "pynvml", None)
+    actor = hma.GpuMetricsActor(str(tmp_path / "t.sock"), 10.0)
+    assert not actor._start_impl()
+    assert actor._thread is None
+
+
+def test_gpu_sampler_start_when_nvml_init_fails(monkeypatch, tmp_path) -> None:
+    def fail_init() -> None:
+        raise pynvml.NVMLError(pynvml.NVML_ERROR_LIBRARY_NOT_FOUND)
+
+    monkeypatch.setattr(pynvml, "nvmlInit", fail_init)
+    actor = hma.GpuMetricsActor(str(tmp_path / "t.sock"), 10.0)
+    assert not actor._start_impl()
+    assert actor._thread is None
+
+
+def test_gpu_sampler_skips_a_gpu_it_cannot_open(monkeypatch, tmp_path) -> None:
+    def handle_by_index(index: int) -> object:
+        if index == 1:
+            raise pynvml.NVMLError(pynvml.NVML_ERROR_GPU_IS_LOST)
+        return f"handle-{index}"
+
+    monkeypatch.setattr(pynvml, "nvmlInit", lambda: None)
+    monkeypatch.setattr(pynvml, "nvmlDeviceGetCount", lambda: 3)
+    monkeypatch.setattr(pynvml, "nvmlDeviceGetHandleByIndex", handle_by_index)
+    monkeypatch.setattr(pynvml, "nvmlDeviceGetUUID", lambda handle: f"uuid-{handle}")
+    monkeypatch.setattr(pynvml, "nvmlDeviceGetName", lambda handle: "H100")
+    actor = hma.GpuMetricsActor(str(tmp_path / "t.sock"), 10.0)
+    assert actor._prepare()
+    assert [device.index for device in actor._devices] == [0, 2]

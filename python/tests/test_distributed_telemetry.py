@@ -1732,6 +1732,20 @@ def test_host_metrics_table() -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
+def test_gpu_metrics_table_registered_and_empty_when_disabled() -> None:
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(
+            _sidecar_telemetry_config(gpu_metrics_interval_secs=0.0)
+        ),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+        rows = _sidecar_query_rows(state, "SELECT COUNT(*) AS n FROM gpu_metrics")
+        assert rows == [{"n": 0}], rows
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_sent_messages_with_sliced_mesh() -> None:
     """Test that sent_messages view_json/shape_json reflect sliced vs full actor mesh casts."""
     with scoped_state(
