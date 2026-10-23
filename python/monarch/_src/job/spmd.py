@@ -211,6 +211,8 @@ def serve(
     appdef: AppDef | List[str],
     scheduler: str = "mast_conda",
     scheduler_cfg: Optional[Dict[str, Any]] = None,
+    *,
+    name: Optional[str] = None,
 ) -> "SPMDJob":
     """
     Launch SPMD job using an AppDef or a single-node torchrun command.
@@ -240,12 +242,15 @@ def serve(
             entrypoint and the rest are arguments.
         scheduler: Scheduler name (e.g., 'mast_conda', 'local_cwd')
         scheduler_cfg: Scheduler configuration dict
+        name: Job and proc mesh name for a command list; defaults to
+            ``spmd-job``. For an ``AppDef``, set ``AppDef.name`` instead.
 
     Returns:
         SPMDJob instance
 
     Raises:
         ValueError: If command list specifies multi-node (--nnodes > 1).
+        ValueError: If ``name`` is supplied with an ``AppDef``.
 
     Example:
         Using a torchrun command list (single-node only)::
@@ -255,6 +260,7 @@ def serve(
             job = serve(
                 ["torchrun", "--nproc-per-node=4", "--standalone", "train.py"],
                 scheduler="local_cwd",
+                name="my-training",
             )
             job.run_spmd()
 
@@ -298,7 +304,7 @@ def serve(
         args = list(command[1:]) if len(command) > 1 else []
 
         appdef = AppDef(
-            name="spmd-job",
+            name=name if name is not None else "spmd-job",
             roles=[
                 Role(
                     name="trainer",
@@ -308,6 +314,10 @@ def serve(
                     num_replicas=1,
                 ),
             ],
+        )
+    elif name is not None:
+        raise ValueError(
+            "name is only supported for command lists; set AppDef.name instead"
         )
 
     # Clean up stale job state file
@@ -379,6 +389,7 @@ def serve(
     job = SPMDJob(
         handle=handle,
         scheduler=scheduler,
+        name=appdef.name,
         workspace=workspace,
         original_roles=original_roles,
         service_proc_ids=(
@@ -487,6 +498,7 @@ class SPMDJob(JobTrait):
         service_proc_ids: list[ProcId],
         workspace: Optional[str] = None,
         original_roles: Optional[List[Dict[str, Any]]] = None,
+        name: str = "spmd",
     ):
         super().__init__()
         self._app_handle = handle
@@ -494,6 +506,7 @@ class SPMDJob(JobTrait):
         self._workspace = workspace
         self._original_roles = original_roles or []
         self._service_proc_ids = service_proc_ids
+        self._name = name
         self._hostnames: Optional[List[str]] = None
 
     def _get_runner(self) -> Runner:
@@ -600,7 +613,7 @@ class SPMDJob(JobTrait):
 
         script_args, nproc_per_node = _parse_torchrun(self._original_roles)
 
-        procs = workers.spawn_procs(per_host={"gpus": nproc_per_node})
+        procs = workers.spawn_procs(per_host={"gpus": nproc_per_node}, name=self._name)
         am = procs.spawn("_SPMDActor", SPMDActor)
 
         # Get master addr/port from first actor

@@ -11,14 +11,16 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch._src.job.spmd import _parse_torchrun, SPMDJob, StoreJob
+from monarch._src.job.spmd import _parse_torchrun, serve, SPMDJob, StoreJob
 from monarch.actor import Actor, current_rank, current_size, endpoint, this_host
 from monarch.spmd import (
     setup_torch_elastic_env,
     setup_torch_elastic_env_async,
     SPMDActor,
 )
+from torchx.specs import AppDef, Role
 
 
 def test_store_liveness_is_independent_of_cache_reuse() -> None:
@@ -262,12 +264,14 @@ def test_parse_torchrun_entrypoint() -> None:
     assert nproc_per_node == 8
 
 
-def test_run_spmd() -> None:
+@pytest.mark.parametrize("name", ["spmd", "microduck-training"])
+def test_run_spmd(name: str) -> None:
     """Test run_spmd parses args and spawns actors correctly."""
     job = SPMDJob(
         handle="test_handle",
         scheduler="mast_conda",
         service_proc_ids=[],
+        name=name,
         original_roles=[
             {
                 "entrypoint": "workspace/entrypoint.sh",
@@ -296,6 +300,59 @@ def test_run_spmd() -> None:
         mock_state.return_value = MagicMock(workers=mock_workers)
         job.run_spmd()
 
-    mock_workers.spawn_procs.assert_called_once_with(per_host={"gpus": 4})
+    mock_workers.spawn_procs.assert_called_once_with(per_host={"gpus": 4}, name=name)
     mock_procs.spawn.assert_called_once_with("_SPMDActor", SPMDActor)
     mock_am.main.call.assert_called_once_with("localhost", 29500, ["-m", "train"])
+
+
+@pytest.mark.parametrize(
+    "app_name, name, expected_name",
+    [
+        (None, None, "spmd-job"),
+        (None, "microduck-training", "microduck-training"),
+        ("my-training", None, "my-training"),
+    ],
+)
+def test_serve_preserves_job_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    app_name: str | None,
+    name: str | None,
+    expected_name: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    command = ["torchrun", "--nproc-per-node=4", "-m", "train"]
+    appdef = (
+        AppDef(
+            name=app_name,
+            roles=[
+                Role(name="trainer", image="", entrypoint=command[0], args=command[1:])
+            ],
+        )
+        if app_name is not None
+        else command
+    )
+    with patch("monarch._src.job.spmd.torchx_runner") as get_runner:
+        runner = get_runner.return_value
+        runner.schedule.return_value = "local_cwd://session/job"
+        runner.status.return_value = None
+        job = serve(appdef, scheduler="local_cwd", name=name)
+
+    assert runner.dryrun.call_args.kwargs["app"].name == expected_name
+    workers = MagicMock()
+    actors = workers.spawn_procs.return_value.spawn.return_value
+    actors.slice.return_value.get_host_port.call_one.return_value.get.return_value = (
+        "localhost",
+        29500,
+    )
+    with patch.object(job, "_state", return_value=MagicMock(workers=workers)):
+        job.run_spmd()
+    workers.spawn_procs.assert_called_once_with(
+        per_host={"gpus": 4}, name=expected_name
+    )
+
+
+def test_serve_rejects_name_with_appdef() -> None:
+    appdef = AppDef(name="my-training", roles=[])
+    with pytest.raises(ValueError, match="set AppDef.name instead"):
+        serve(appdef, name="other-training")
