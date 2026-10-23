@@ -205,6 +205,10 @@
                 "addr": {
                   "type": "string"
                 },
+                "hostname": {
+                  "description": "OS hostname of the host.",
+                  "type": "string"
+                },
                 "memory": {
                   "$ref": "#/$defs/ProcessMemoryStats",
                   "description": "Hosting-process memory stats."
@@ -223,6 +227,7 @@
               },
               "required": [
                 "addr",
+                "hostname",
                 "num_procs",
                 "system_children",
                 "memory"

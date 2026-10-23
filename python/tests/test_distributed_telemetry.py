@@ -1730,6 +1730,36 @@ def test_host_metrics_table() -> None:
         assert any(rate is not None for rate in rates["rx_bytes_per_sec"]), rates
 
 
+@pytest.mark.timeout(180)
+@isolate_in_subprocess
+def test_host_agents_join_host_metrics_by_hostname() -> None:
+    with scoped_state(
+        ProcessJob({"hosts": 2}).enable_telemetry(
+            _sidecar_telemetry_config(
+                snapshot_interval_secs=5, host_metrics_interval_secs=0.2
+            ),
+            mesh_admin_config=MeshAdminConfig(admin_addr="[::]:0"),
+        ),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+        rows = _query(
+            state,
+            "WITH latest AS ("
+            "SELECT snapshot_id FROM snapshots ORDER BY snapshot_ts DESC LIMIT 1)"
+            " SELECT DISTINCT a.full_name AS host_agent, hm.hostname"
+            " FROM actors a"
+            " JOIN meshes m ON m.id = a.mesh_id AND m.class = 'Host'"
+            " JOIN host_nodes hn ON hn.node_id = 'host:' || a.full_name"
+            " JOIN latest ON latest.snapshot_id = hn.snapshot_id"
+            " JOIN host_metrics hm ON hm.hostname = hn.hostname",
+            min_rows=2,
+            timeout_secs=60.0,
+        )
+        assert len(set(rows["host_agent"])) >= 2, rows
+        assert set(rows["hostname"]) == {socket.gethostname()}, rows
+
+
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_gpu_metrics_table_registered_and_empty_when_disabled() -> None:

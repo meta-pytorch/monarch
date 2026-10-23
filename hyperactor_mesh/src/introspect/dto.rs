@@ -131,6 +131,8 @@ pub enum NodePropertiesDto {
     /// A host in the mesh, represented by its `HostAgent`.
     Host {
         addr: String,
+        /// OS hostname of the host.
+        hostname: String,
         num_procs: usize,
         system_children: Vec<String>,
         /// Hosting-process memory stats.
@@ -331,11 +333,13 @@ impl From<NodeProperties> for NodePropertiesDto {
             },
             NodeProperties::Host {
                 addr,
+                hostname,
                 num_procs,
                 system_children,
                 memory,
             } => Self::Host {
                 addr,
+                hostname,
                 num_procs,
                 system_children: refs_to_strings(&system_children),
                 memory: ProcessMemoryStatsDto {
@@ -519,11 +523,13 @@ impl TryFrom<NodePropertiesDto> for NodeProperties {
             },
             NodePropertiesDto::Host {
                 addr,
+                hostname,
                 num_procs,
                 system_children,
                 memory,
             } => Self::Host {
                 addr,
+                hostname,
                 num_procs,
                 system_children: parse_refs("Host.system_children", &system_children)?,
                 memory: super::ProcessMemoryStats {
@@ -770,6 +776,7 @@ mod tests {
             identity: NodeRef::Host(test_host_actor_id()),
             properties: NodeProperties::Host {
                 addr: "127.0.0.1:8080".to_string(),
+                hostname: "host-1".to_string(),
                 num_procs: 1,
                 system_children: vec![],
                 memory: Default::default(),

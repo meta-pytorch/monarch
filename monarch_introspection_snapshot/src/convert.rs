@@ -284,13 +284,17 @@ pub fn convert_node(snapshot_id: &str, payload: &NodePayload) -> anyhow::Result<
             )
         }
         NodeProperties::Host {
-            addr, num_procs, ..
+            addr,
+            hostname,
+            num_procs,
+            ..
         } => {
             let row = HostNodeRow {
                 snapshot_id: snapshot_id.to_owned(),
                 node_id: node_id.clone(),
                 addr: addr.clone(),
                 host_num_procs: i64::try_from(*num_procs).context("num_procs overflow i64")?,
+                hostname: hostname.clone(),
             };
             (
                 NodeKindRow::Host(row),
@@ -613,6 +617,7 @@ mod tests {
             identity: NodeRef::Host(test_host_actor_id()),
             properties: NodeProperties::Host {
                 addr: "10.0.0.1:8080".to_owned(),
+                hostname: "host-1".to_owned(),
                 num_procs: 3,
                 system_children: vec![],
                 memory: Default::default(),
@@ -637,6 +642,7 @@ mod tests {
         assert_eq!(host.node_id, result.node.node_id);
         assert_eq!(host.addr, "10.0.0.1:8080");
         assert_eq!(host.host_num_procs, 3);
+        assert_eq!(host.hostname, "host-1");
         assert!(result.actor_failure.is_none());
         assert_eq!(result.children.len(), 1);
     }
@@ -1141,6 +1147,7 @@ mod tests {
                 "host",
                 NodeProperties::Host {
                     addr: String::new(),
+                    hostname: "host".into(),
                     num_procs: 0,
                     system_children: vec![],
                     memory: Default::default(),
@@ -1263,6 +1270,7 @@ mod tests {
             identity: NodeRef::Host(test_host_actor_id()),
             properties: NodeProperties::Host {
                 addr: "addr".to_owned(),
+                hostname: "host".into(),
                 num_procs: 1,
                 system_children: vec![],
                 memory: Default::default(),

@@ -542,6 +542,7 @@ mod tests {
                 identity: host_ref.clone(),
                 properties: NodeProperties::Host {
                     addr: "10.0.0.1".to_owned(),
+                    hostname: "host".into(),
                     num_procs: 1,
                     system_children: vec![],
                     memory: Default::default(),

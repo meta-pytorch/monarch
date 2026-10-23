@@ -196,6 +196,9 @@ pub struct HostNodeRow {
     pub addr: String,
     /// Number of proc children on this host.
     pub host_num_procs: i64,
+    /// OS hostname of the host. Matches `host_metrics.hostname` and
+    /// `gpu_metrics.hostname`.
+    pub hostname: String,
 }
 
 /// Subtype table for proc nodes. PK: `(snapshot_id, node_id)`.
@@ -515,9 +518,10 @@ mod tests {
     #[test]
     fn test_host_node_row_schema() {
         let schema = HostNodeRowBuffer::schema();
-        assert_eq!(schema.fields().len(), 4);
+        assert_eq!(schema.fields().len(), 5);
         assert_field(&schema, 0, "snapshot_id", DataType::Utf8, false);
         assert_field(&schema, 1, "node_id", DataType::Utf8, false);
+        assert_field(&schema, 4, "hostname", DataType::Utf8, false);
         assert_field(&schema, 2, "addr", DataType::Utf8, false);
         assert_field(&schema, 3, "host_num_procs", DataType::Int64, false);
     }
@@ -803,6 +807,7 @@ mod tests {
             node_id: "host:abc".into(),
             addr: "10.0.0.1:8080".into(),
             host_num_procs: 2,
+            hostname: "host".into(),
         });
         let batch = buf.drain_to_record_batch().unwrap();
         assert_eq!(batch.num_rows(), 1);
