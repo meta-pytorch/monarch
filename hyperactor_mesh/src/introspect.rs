@@ -399,6 +399,13 @@ declare_attrs! {
     })
     pub attr ADDR: String;
 
+    /// OS hostname of the machine running a host's `HostAgent`.
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "hostname".into(),
+        desc: "OS hostname of the host".into(),
+    })
+    pub attr HOSTNAME: String;
+
     /// Number of procs on a host.
     @meta(INTROSPECT = IntrospectAttr {
         name: "num_procs".into(),
@@ -777,6 +784,8 @@ impl ProcDebugStats {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostAttrsView {
     pub addr: String,
+    /// OS hostname of the host.
+    pub hostname: String,
     pub num_procs: usize,
     pub system_children: Vec<NodeRef>,
     /// Hosting-process memory stats.
@@ -784,19 +793,24 @@ pub struct HostAttrsView {
 }
 
 impl HostAttrsView {
-    /// Decode from an `Attrs` bag (AV-2, AV-3). Requires `ADDR`;
-    /// `NUM_PROCS` defaults to 0, `SYSTEM_CHILDREN` defaults to
-    /// empty.
+    /// Decode from an `Attrs` bag (AV-2, AV-3). Requires `ADDR` and
+    /// `HOSTNAME`; `NUM_PROCS` defaults to 0, `SYSTEM_CHILDREN` defaults
+    /// to empty.
     pub fn from_attrs(attrs: &Attrs) -> Result<Self, AttrsViewError> {
         let addr = attrs
             .get(ADDR)
             .ok_or_else(|| AttrsViewError::missing("addr"))?
+            .clone();
+        let hostname = attrs
+            .get(HOSTNAME)
+            .ok_or_else(|| AttrsViewError::missing("hostname"))?
             .clone();
         let num_procs = *attrs.get(NUM_PROCS).unwrap_or(&0);
         let system_children = attrs.get(SYSTEM_CHILDREN).cloned().unwrap_or_default();
         let memory = ProcessMemoryStats::from_attrs(attrs);
         Ok(Self {
             addr,
+            hostname,
             num_procs,
             system_children,
             memory,
@@ -808,6 +822,7 @@ impl HostAttrsView {
         let mut attrs = Attrs::new();
         attrs.set(NODE_TYPE, "host".to_string());
         attrs.set(ADDR, self.addr.clone());
+        attrs.set(HOSTNAME, self.hostname.clone());
         attrs.set(NUM_PROCS, self.num_procs);
         attrs.set(SYSTEM_CHILDREN, self.system_children.clone());
         self.memory.to_attrs(&mut attrs);
@@ -1052,6 +1067,8 @@ pub enum NodeProperties {
     /// A host in the mesh, represented by its `HostAgent`.
     Host {
         addr: String,
+        /// OS hostname of the host.
+        hostname: String,
         num_procs: usize,
         system_children: Vec<NodeRef>,
         memory: ProcessMemoryStats,
@@ -1263,6 +1280,7 @@ impl IntoNodeProperties for HostAttrsView {
     fn into_node_properties(self) -> NodeProperties {
         NodeProperties::Host {
             addr: self.addr,
+            hostname: self.hostname,
             num_procs: self.num_procs,
             system_children: self.system_children,
             memory: self.memory,
@@ -1471,6 +1489,7 @@ mod tests {
         let cases = vec![
             ("node_type", NODE_TYPE.attrs()),
             ("addr", ADDR.attrs()),
+            ("hostname", HOSTNAME.attrs()),
             ("num_procs", NUM_PROCS.attrs()),
             ("proc_name", PROC_NAME.attrs()),
             ("num_actors", NUM_ACTORS.attrs()),
@@ -1557,6 +1576,7 @@ mod tests {
     fn host_view() -> HostAttrsView {
         HostAttrsView {
             addr: "10.0.0.1:8080".into(),
+            hostname: "host-1".into(),
             num_procs: 2,
             system_children: vec![test_actor_ref("proc", "sys")],
             memory: Default::default(),
@@ -1599,6 +1619,15 @@ mod tests {
         assert_eq!(rt, view);
     }
 
+    /// AV-2.
+    #[test]
+    fn test_host_view_missing_hostname() {
+        let mut attrs = Attrs::new();
+        attrs.set(ADDR, "10.0.0.1:8080".to_string());
+        let err = HostAttrsView::from_attrs(&attrs).unwrap_err();
+        assert_eq!(err, AttrsViewError::MissingKey { key: "hostname" });
+    }
+
     /// AV-1.
     #[test]
     fn test_proc_view_round_trip() {
@@ -1612,6 +1641,7 @@ mod tests {
     fn test_host_view_round_trip_with_memory() {
         let view = HostAttrsView {
             addr: "10.0.0.1:8080".into(),
+            hostname: "host".into(),
             num_procs: 2,
             system_children: vec![],
             memory: ProcessMemoryStats {
@@ -1797,7 +1827,10 @@ mod tests {
         let view = host_view();
         let json = serde_json::to_string(&view.to_attrs()).unwrap();
         let props = derive_properties(&json);
-        assert!(matches!(props, NodeProperties::Host { num_procs: 2, .. }));
+        assert!(matches!(
+            props,
+            NodeProperties::Host { num_procs: 2, ref hostname, .. } if hostname == "host-1"
+        ));
     }
 
     /// DP-3: node_type "proc" → Proc variant.
@@ -2007,6 +2040,7 @@ mod tests {
                 identity: NodeRef::Host(actor_id.clone()),
                 properties: NodeProperties::Host {
                     addr: "10.0.0.1:8080".into(),
+                    hostname: "host".into(),
                     num_procs: 2,
                     system_children: vec![test_actor_ref("proc", "sys")],
                     memory: Default::default(),

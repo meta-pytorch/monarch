@@ -190,6 +190,26 @@ host-wide, not limited to the job's container or cgroup.
 A host has one row per sample, so `hostname` alone is not unique; `hostname`
 and `timestamp_us` together identify a row.
 
+To find the metrics for a Monarch host, start from its `HostAgent` in
+`actors`, find its snapshot row in `host_nodes`, whose `node_id` is `host:`
+followed by the agent's `full_name`, and join `host_nodes.hostname` to
+`host_metrics.hostname`. Several Monarch hosts on one machine all match that
+machine's rows. Snapshots repeat every `snapshot_interval_secs`, so pick one
+snapshot to avoid duplicate rows:
+
+```sql
+WITH latest AS (
+  SELECT snapshot_id FROM snapshots ORDER BY snapshot_ts DESC LIMIT 1
+)
+SELECT a.full_name AS host_agent, a.rank, hm.timestamp_us, hm.cpu_percent
+FROM actors AS a
+JOIN meshes AS m ON m.id = a.mesh_id AND m.class = 'Host'
+JOIN host_nodes AS hn ON hn.node_id = 'host:' || a.full_name
+JOIN latest ON latest.snapshot_id = hn.snapshot_id
+JOIN host_metrics AS hm ON hm.hostname = hn.hostname
+ORDER BY a.rank, hm.timestamp_us
+```
+
 | Column | Type | Description |
 |--------|------|-------------|
 | `timestamp_us` | int64 | Sample time, microseconds since the Unix epoch |

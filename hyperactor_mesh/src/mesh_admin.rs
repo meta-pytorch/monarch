@@ -3885,6 +3885,7 @@ mod tests {
             let mut attrs = hyperactor_config::Attrs::new();
             attrs.set(crate::introspect::NODE_TYPE, "host".to_string());
             attrs.set(crate::introspect::ADDR, cx.self_addr().addr().to_string());
+            attrs.set(crate::introspect::HOSTNAME, "stand-in".to_string());
             attrs.set(crate::introspect::NUM_PROCS, procs.len());
             attrs.set(
                 hyperactor::introspect::CHILDREN,
@@ -4267,12 +4268,16 @@ mod tests {
         // LC-2: host system_children is always empty.
         match &host_node.properties {
             NodeProperties::Host {
-                system_children, ..
+                system_children,
+                hostname,
+                ..
             } => {
                 assert!(
                     system_children.is_empty(),
                     "LC-2: host system_children must be empty"
                 );
+                let expected_hostname = hostname::get().unwrap().into_string().unwrap();
+                assert_eq!(hostname, &expected_hostname);
             }
             other => panic!("expected Host, got {:?}", other),
         }

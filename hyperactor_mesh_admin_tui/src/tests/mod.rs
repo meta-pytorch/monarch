@@ -2607,6 +2607,7 @@ fn detail_content_clipped_guards() {
             identity: host("h"),
             properties: NodeProperties::Host {
                 addr: "10.0.0.1:8080".into(),
+                hostname: "host".into(),
                 num_procs: 1,
                 system_children: vec![],
                 memory: hyperactor_mesh::introspect::ProcessMemoryStats {

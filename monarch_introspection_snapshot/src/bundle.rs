@@ -449,6 +449,7 @@ mod tests {
                 node_id: host_id,
                 addr: "10.0.0.1".to_owned(),
                 host_num_procs: 1,
+                hostname: "host".into(),
             }],
             proc_nodes: vec![ProcNodeRow {
                 snapshot_id: id.to_owned(),

@@ -369,6 +369,7 @@ mod tests {
                     host_ref.clone(),
                     NodeProperties::Host {
                         addr: "addr".to_owned(),
+                        hostname: "host".into(),
                         num_procs: 1,
                         system_children: vec![],
                         memory: Default::default(),
@@ -486,6 +487,7 @@ mod tests {
                     host_ref.clone(),
                     NodeProperties::Host {
                         addr: "a".to_owned(),
+                        hostname: "host".into(),
                         num_procs: 1,
                         system_children: vec![],
                         memory: Default::default(),
@@ -627,6 +629,7 @@ mod tests {
                     host_ref.clone(),
                     NodeProperties::Host {
                         addr: "a".to_owned(),
+                        hostname: "host".into(),
                         num_procs: 1,
                         system_children: vec![],
                         memory: Default::default(),
@@ -774,6 +777,7 @@ mod tests {
                         node_id: "h".to_owned(),
                         addr: "a".to_owned(),
                         host_num_procs: 0,
+                        hostname: "host".into(),
                     }),
                     actor_failure: None,
                     actor_inbound_ordering: None,
@@ -976,6 +980,7 @@ mod tests {
                     host_ref,
                     NodeProperties::Host {
                         addr: "a".to_owned(),
+                        hostname: "host".into(),
                         num_procs: 2,
                         system_children: vec![],
                         memory: Default::default(),
@@ -1042,6 +1047,7 @@ mod tests {
                     host_ref.clone(),
                     NodeProperties::Host {
                         addr: "a".to_owned(),
+                        hostname: "host".into(),
                         num_procs: 1,
                         system_children: vec![],
                         memory: Default::default(),

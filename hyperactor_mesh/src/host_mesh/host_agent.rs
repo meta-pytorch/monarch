@@ -33,6 +33,7 @@ use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::OnceLock;
 
+use anyhow::Context as _;
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use futures::FutureExt;
@@ -625,6 +626,8 @@ pub struct HostAgent {
     /// Boots on first [`GetLocalProc`] (LP-1 — see
     /// `crate::host::LOCAL_PROC_NAME`).
     local_mesh_agent: OnceLock<anyhow::Result<ActorHandle<ProcAgent>>>,
+    /// OS hostname of this host. Set in `init()`.
+    hostname: String,
 }
 
 impl HostAgent {
@@ -651,6 +654,7 @@ impl HostAgent {
             watching: HashSet::new(),
             proc_status_port: None,
             local_mesh_agent: OnceLock::new(),
+            hostname: String::new(),
         }
     }
 
@@ -832,6 +836,7 @@ impl HostAgent {
         let mut attrs = hyperactor_config::Attrs::new();
         attrs.set(crate::introspect::NODE_TYPE, "host".to_string());
         attrs.set(crate::introspect::ADDR, addr);
+        attrs.set(crate::introspect::HOSTNAME, self.hostname.clone());
         attrs.set(crate::introspect::NUM_PROCS, num_procs);
         attrs.set(hyperactor::introspect::CHILDREN, children);
         attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children);
@@ -863,6 +868,10 @@ impl Actor for HostAgent {
             );
         }
         this.set_system();
+        self.hostname = hostname::get()
+            .context("failed to read the OS hostname")?
+            .to_string_lossy()
+            .into_owned();
         self.publish_introspect_properties(this);
 
         // Register callback for QueryChild — resolves system procs
