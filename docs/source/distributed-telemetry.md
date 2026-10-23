@@ -52,6 +52,8 @@ meaning from their numeric values.
 | `actor_status_events` | Actor status transitions and reasons |
 | `actors` | Actor identity, rank, mesh, and creation time |
 | `events` | Structured tracing events and log fields |
+| `gpu_metrics` | Per-device GPU utilization, memory, temperature, and power samples |
+| `host_metrics` | Per-host CPU, load, memory, swap, network, and disk samples |
 | `meshes` | Mesh creation, shape, class, name, and parent view |
 | `metric_gauges` | Gauge points with typed `value_f64`, `value_i64`, or `value_u64` values |
 | `metric_histograms` | Explicit histogram counts, typed summaries, bounds, and bucket counts |
@@ -153,8 +155,10 @@ continue operating.
 ## Retention and snapshots
 
 `TelemetryConfig.retention_secs` applies to `sent_messages`, `messages`,
-`message_status_events`, `metric_gauges`, `metric_sums`, and
-`metric_histograms`, `spans`, `span_events`, and `events`. Trace tables are
+`message_status_events`, `metric_gauges`, `metric_sums`,
+`metric_histograms`, `spans`, `span_events`, `events`, `host_metrics`, and
+`gpu_metrics`.
+Trace tables are
 filtered independently by row timestamp, with spans filtered before dependent
 trace rows. A recent trace row is not displayed by span-joined views if its span
 has already expired. The default is 3600 seconds. Set it to `0` to disable
@@ -172,6 +176,61 @@ and event telemetry describe different views of the same job:
   message delivery.
 - Snapshot tables capture the administrative topology and actor diagnostics at
   a point in time.
+
+## Host metrics
+
+Every telemetry host samples its own CPU, load average, memory, swap, network,
+and disk usage into `host_metrics`, one row per host per interval.
+`TelemetryConfig.host_metrics_interval_secs` sets the interval; the default is
+10 seconds, and `0` disables sampling. Each wait varies randomly by about 10%
+around the interval, so hosts do not sample in lockstep. Samplers run next to
+each host's telemetry collector, including the client host. Values are
+host-wide, not limited to the job's container or cgroup.
+
+A host has one row per sample, so `hostname` alone is not unique; `hostname`
+and `timestamp_us` together identify a row.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `timestamp_us` | int64 | Sample time, microseconds since the Unix epoch |
+| `hostname` | string | Host name of the sampling host |
+| `cpu_percent` | float64 | System-wide CPU utilization, 0 to 100, since the previous sample |
+| `cpu_count` | uint64, nullable | Number of logical CPUs; null when it cannot be determined |
+| `load_avg_1m`, `load_avg_5m`, `load_avg_15m` | float64 | System load averages over 1, 5, and 15 minutes |
+| `memory_total_bytes` | uint64 | Total physical memory |
+| `memory_available_bytes` | uint64 | Memory available to new processes without swapping |
+| `memory_used_bytes` | uint64 | Memory in use |
+| `swap_used_bytes` | uint64 | Swap in use |
+| `net_rx_bytes`, `net_tx_bytes` | uint64 | Bytes received and sent on all network interfaces, cumulative since boot |
+| `disk_read_bytes`, `disk_write_bytes` | uint64, nullable | Bytes read from and written to all disks, cumulative since boot; null where disk counters are unavailable, as in some containers |
+| `disk_root_free_bytes`, `disk_tmp_free_bytes` | uint64, nullable | Free space available to unprivileged users on `/` and `/tmp`; null when the path cannot be read |
+
+### GPU metrics
+
+`gpu_metrics` holds one row per GPU per interval: utilization, memory used and
+total, temperature, and power, read through NVML.
+`TelemetryConfig.gpu_metrics_interval_secs` sets the interval; the default is
+10 seconds, and `0` disables GPU sampling. Every NVML call contends for a
+driver lock that co-located training processes also take, so avoid intervals
+shorter than 10 seconds. Hosts without NVIDIA GPUs or NVML leave the table
+empty. All rows from one sampling pass share a timestamp.
+
+`hostname`, `gpu_uuid`, and `timestamp_us` together identify a row.
+`gpu_metrics.hostname` matches `host_metrics.hostname` for the same host, but
+the two samplers run on separate timers, so their timestamps do not line up.
+Join the tables on `hostname` and a time window rather than on `timestamp_us`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `timestamp_us` | int64 | Sample time, microseconds since the Unix epoch |
+| `hostname` | string | Host name of the sampling host; matches `host_metrics.hostname` |
+| `gpu_index` | uint32 | NVML device index as seen by the sampling process; it can differ from the CUDA device ordinal and is renumbered inside containers |
+| `gpu_uuid` | string | NVML device UUID; the stable identifier for joins and de-duplication |
+| `gpu_name` | string | NVML product name, such as `NVIDIA A10G` |
+| `utilization_percent` | float64, nullable | Percent of NVML's recent sample window in which at least one kernel was running; null when NVML does not support it |
+| `memory_used_bytes`, `memory_total_bytes` | uint64 | Device memory in use and total; a GPU whose memory NVML cannot read is skipped for that pass |
+| `temperature_c` | uint32, nullable | GPU core temperature in degrees Celsius; null when unsupported |
+| `power_watts` | float64, nullable | Board power draw in watts; null when unsupported |
 
 ## Troubleshooting
 
