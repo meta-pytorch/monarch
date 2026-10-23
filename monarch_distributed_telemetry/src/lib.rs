@@ -38,6 +38,8 @@ use monarch_telemetry_schema::entity_tables::MessageBuffer;
 use monarch_telemetry_schema::entity_tables::MessageStatusEventBuffer;
 use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
 use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
+use monarch_telemetry_schema::host_tables::HOST_METRICS;
+use monarch_telemetry_schema::host_tables::HostMetricBuffer;
 use monarch_telemetry_schema::metric_tables::METRIC_GAUGES;
 use monarch_telemetry_schema::metric_tables::METRIC_HISTOGRAMS;
 use monarch_telemetry_schema::metric_tables::METRIC_SUMS;
@@ -120,6 +122,7 @@ fn _register_telemetry_schemas(scanner: PyRef<'_, DatabaseScanner>) -> PyResult<
     register_table_schema::<MetricGaugeBuffer>(&scanner, METRIC_GAUGES)?;
     register_table_schema::<MetricSumBuffer>(&scanner, METRIC_SUMS)?;
     register_table_schema::<MetricHistogramBuffer>(&scanner, METRIC_HISTOGRAMS)?;
+    register_table_schema::<HostMetricBuffer>(&scanner, HOST_METRICS)?;
     Ok(())
 }
 

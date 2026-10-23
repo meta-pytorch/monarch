@@ -284,6 +284,47 @@ pub mod metric_tables {
     }
 }
 
+/// Host resource sample table row schemas.
+///
+/// Rows are produced by the Python host samplers in
+/// `monarch._src.job.host_metrics_actor`, which mirror these schemas.
+pub mod host_tables {
+    use super::*;
+
+    /// Table containing one host resource sample per host per interval.
+    pub const HOST_METRICS: &str = "host_metrics";
+
+    /// Row data for the host metrics table.
+    #[derive(RecordBatchRow)]
+    pub struct HostMetric {
+        pub timestamp_us: i64,
+        pub hostname: String,
+        /// System-wide CPU utilization since the previous sample, in percent.
+        pub cpu_percent: f64,
+        /// Logical CPU count, if available.
+        pub cpu_count: Option<u64>,
+        pub load_avg_1m: f64,
+        pub load_avg_5m: f64,
+        pub load_avg_15m: f64,
+        pub memory_total_bytes: u64,
+        pub memory_available_bytes: u64,
+        pub memory_used_bytes: u64,
+        pub swap_used_bytes: u64,
+        /// Cumulative bytes received on all interfaces since boot.
+        pub net_rx_bytes: u64,
+        /// Cumulative bytes sent on all interfaces since boot.
+        pub net_tx_bytes: u64,
+        /// Cumulative bytes read from all disks since boot, if available.
+        pub disk_read_bytes: Option<u64>,
+        /// Cumulative bytes written to all disks since boot, if available.
+        pub disk_write_bytes: Option<u64>,
+        /// Bytes free to unprivileged users on `/`, if available.
+        pub disk_root_free_bytes: Option<u64>,
+        /// Bytes free to unprivileged users on `/tmp`, if available.
+        pub disk_tmp_free_bytes: Option<u64>,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use datafusion::arrow::array::Float64Array;

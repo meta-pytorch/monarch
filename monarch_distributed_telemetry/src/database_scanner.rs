@@ -41,6 +41,7 @@ use monarch_telemetry_schema::deserialize_one_batch;
 use monarch_telemetry_schema::entity_tables::MESSAGE_STATUS_EVENTS;
 use monarch_telemetry_schema::entity_tables::MESSAGES;
 use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
+use monarch_telemetry_schema::host_tables::HOST_METRICS;
 use monarch_telemetry_schema::metric_tables::METRIC_GAUGES;
 use monarch_telemetry_schema::metric_tables::METRIC_HISTOGRAMS;
 use monarch_telemetry_schema::metric_tables::METRIC_SUMS;
@@ -339,6 +340,7 @@ const RETENTION_TABLES: &[&str] = &[
     METRIC_GAUGES,
     METRIC_SUMS,
     METRIC_HISTOGRAMS,
+    HOST_METRICS,
 ];
 
 /// Bounds for routine retention sweeps.
@@ -1167,6 +1169,8 @@ mod tests {
     use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
     use monarch_telemetry_schema::entity_tables::SentMessage;
     use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
+    use monarch_telemetry_schema::host_tables::HostMetric;
+    use monarch_telemetry_schema::host_tables::HostMetricBuffer;
     use monarch_telemetry_schema::metric_tables::MetricGauge;
     use monarch_telemetry_schema::metric_tables::MetricGaugeBuffer;
     use monarch_telemetry_schema::metric_tables::MetricHistogram;
@@ -1485,6 +1489,38 @@ mod tests {
             histograms.drain_to_record_batch().unwrap(),
         )
         .await;
+
+        let mut host_metrics = HostMetricBuffer::default();
+        host_metrics.insert(host_metric(old_us));
+        host_metrics.insert(host_metric(fresh_us));
+        ingest_batch(
+            scanner,
+            HOST_METRICS,
+            host_metrics.drain_to_record_batch().unwrap(),
+        )
+        .await;
+    }
+
+    fn host_metric(timestamp_us: i64) -> HostMetric {
+        HostMetric {
+            timestamp_us,
+            hostname: "host".to_string(),
+            cpu_percent: 12.5,
+            cpu_count: Some(8),
+            load_avg_1m: 1.0,
+            load_avg_5m: 0.5,
+            load_avg_15m: 0.25,
+            memory_total_bytes: 1024,
+            memory_available_bytes: 512,
+            memory_used_bytes: 512,
+            swap_used_bytes: 0,
+            net_rx_bytes: 100,
+            net_tx_bytes: 200,
+            disk_read_bytes: Some(300),
+            disk_write_bytes: None,
+            disk_root_free_bytes: Some(4096),
+            disk_tmp_free_bytes: Some(2048),
+        }
     }
 
     async fn table_row_count_async(scanner: &DatabaseScanner, table_name: &str) -> usize {
@@ -1791,6 +1827,7 @@ mod tests {
         assert_eq!(table_row_count_async(&scanner, METRIC_GAUGES).await, 1);
         assert_eq!(table_row_count_async(&scanner, METRIC_SUMS).await, 1);
         assert_eq!(table_row_count_async(&scanner, METRIC_HISTOGRAMS).await, 1);
+        assert_eq!(table_row_count_async(&scanner, HOST_METRICS).await, 1);
         assert_eq!(table_row_count_async(&scanner, ACTORS).await, 2);
     }
 
