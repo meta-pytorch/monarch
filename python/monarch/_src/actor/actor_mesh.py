@@ -1318,9 +1318,9 @@ class Port(Generic[R]):
         def _reconstruct_port(
             port_ref: PortRef | OncePortRef, rank: Optional[int]
         ) -> "Port[R]":
-            # Prefer the receiver the decoder installed. An eager reply decode
-            # runs on a Tokio worker with no Monarch context, where `context()`
-            # would bootstrap a client inside the receiving actor's process.
+            # Prefer the receiver the decoder installed, whether unpickling runs
+            # on an observer's thread or on Tokio. A worker without Monarch
+            # context would otherwise bootstrap a client inside this process.
             # Outside such a decode -- ordinary client-side reconstruction --
             # there is no receiver and the context path is unchanged.
             receiver = _current_receiver_instance()
@@ -1410,17 +1410,17 @@ class PortReceiver(Generic[R]):
         """Return a Future for one message from this receiver, decoded to its value.
 
         The receive starts when the Future is first observed; a Future that is
-        never observed takes nothing. A timed-out ``get()`` leaves the receive
+        never observed takes nothing. Every observer of the Future shares its one
+        result, and a timed-out or interrupted ``get()`` leaves the receive
         running; observe the same Future again to obtain its result.
 
-        Once ``await``, ``as_asyncio()`` or a timed ``get()`` has started the
-        receive, dropping the Future requests a stop once no native observer
-        remains. This is cooperative: a message arriving before the stop is
-        processed can still be taken. Cancelling ``await`` or ``as_asyncio()``
-        leaves an internal native waiter alive, so that receive continues until a
-        message arrives or receiving fails.
+        Once an observation has started the receive, dropping the Future requests
+        a stop once no observer remains. This is cooperative: a message arriving
+        before the stop is processed can still be taken. Cancelling ``await`` or
+        ``as_asyncio()`` leaves an internal native waiter alive, so that receive
+        continues until a message arrives or receiving fails.
         """
-        return Future._from_pending(self._receiver.recv(self._ranked))
+        return Future._from_handle(self._receiver.recv(self._ranked))
 
     def ranked(self) -> "RankedPortReceiver[R]":
         return RankedPortReceiver[R](self._mailbox, self._receiver)

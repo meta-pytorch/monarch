@@ -33,6 +33,10 @@ class Handle(Generic[T]):
         the loop; on a sync thread it blocks until resolved. On timeout it raises
         TimeoutError without cancelling the handle, so a later get()/poll()/await
         still observes completion.
+
+        For a successful call_one/choose reply, the first observer unpickles on
+        its calling thread. The timeout limits waiting, not that unpickle code.
+        A caller-side interrupt leaves the bytes available for another attempt.
         """
         ...
 
@@ -41,6 +45,8 @@ class Handle(Generic[T]):
         If the handle has resolved, return the value; otherwise return None. If
         its producer has ended without publishing a result, raise RuntimeError.
         Non-consuming: the value stays observable by later observers.
+        An available call_one/choose reply may be unpickled here. Return None
+        if another observer is already unpickling; never wait for that observer.
         """
         ...
 
@@ -51,6 +57,8 @@ class Handle(Generic[T]):
         producer ends without publishing a result, the Future resolves with
         RuntimeError. A handle that already holds its outcome returns a Future
         that is already done, so awaiting it does not yield to the loop.
+        An available call_one/choose reply is unpickled on the loop thread;
+        a later reply is unpickled by its native waiter before waking the loop.
         """
         ...
 

@@ -396,18 +396,18 @@ where
     })
 }
 
-/// Wait directly for an operation that is already running elsewhere.
-/// `Handle.get()` supplies a future that only waits for its result channel;
-/// the calling thread polls that waiter with the GIL released.
+/// Poll `future` on the calling thread with the GIL released.
 ///
 /// On Python's main thread, `signal_safe_block_on` would start a Tokio task
-/// to wait on the caller's behalf. This instead polls the waiter directly,
+/// to run the future on the caller's behalf. This instead polls it directly,
 /// alongside signal checks so Ctrl-C interrupts the wait.
 ///
-/// Ctrl-C drops the supplied future. For `Handle.get()`, that removes only
-/// this waiter: the producer continues and its result remains observable.
-/// Do not substitute this for `signal_safe_block_on` when unfinished work
-/// must keep running after the caller is interrupted.
+/// Ctrl-C drops the supplied future. `Handle.get()` supplies either a waiter
+/// for a producer running elsewhere, which is all it loses, or a future that
+/// borrows a deferred producer, which `get()` keeps and hands to Tokio
+/// (HDL-24). Do not substitute this for `signal_safe_block_on` when
+/// unfinished work must keep running after the caller is interrupted and
+/// nothing keeps it.
 pub(crate) fn signal_safe_block_on_inline<F>(py: Python<'_>, future: F) -> PyResult<F::Output>
 where
     F: Future + Send,
@@ -417,9 +417,8 @@ where
     py.detach(|| {
         if is_main_thread() {
             runtime.block_on(async {
-                // Poll the waiter and signal checks on this thread. If a
-                // signal handler raises, select! drops the waiter, not the
-                // independent producer that will supply its result.
+                // Poll the future and signal checks on this thread. If a
+                // signal handler raises, select! drops the future.
                 tokio::select! {
                     result = future => Ok(result),
                     signal = check_python_signals() => signal,

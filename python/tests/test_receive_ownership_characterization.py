@@ -4,7 +4,10 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import _thread
 import pickle
+import threading
+import time
 from typing import Any, cast
 
 import pytest
@@ -87,3 +90,91 @@ def test_ranked_recv_and_remote_exception() -> None:
     post(cast(Any, PythonMessageKind.Exception)(8), RuntimeError("remote failure"))
     with pytest.raises(RuntimeError, match="^remote failure$"):
         receiver.recv().get(timeout=2)
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("once", [False, True])
+def test_second_reader_shares_the_receive(once: bool) -> None:
+    """A second reader of one receive Future, while an untimed get() on another
+    thread drives it, reads the same object instead of failing."""
+    sender, receiver = Channel[Any].open(once=once)
+    fut = receiver.recv()
+    results: list[Any] = []
+    first = threading.Thread(target=lambda: results.append(fut.get()))
+    first.start()
+    time.sleep(0.05)
+    second = threading.Thread(target=lambda: results.append(fut.get(timeout=5)))
+    second.start()
+    sender.send([1, 2, 3])
+    first.join(timeout=5)
+    second.join(timeout=5)
+    assert len(results) == 2
+    assert results[0] == [1, 2, 3]
+    assert results[0] is results[1]
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("once", [False, True])
+def test_interrupted_get_leaves_the_receive_for_a_later_read(once: bool) -> None:
+    """Ctrl-C ends a main-thread get() but not its receive, so a later get()
+    reads the message."""
+    assert threading.current_thread() is threading.main_thread()
+    sender, receiver = Channel[int].open(once=once)
+    fut = receiver.recv()
+    timer = threading.Timer(0.3, _thread.interrupt_main)
+    timer.start()
+    with pytest.raises(KeyboardInterrupt):
+        fut.get()
+    timer.join()
+    sender.send(9)
+    assert fut.get(timeout=2) == 9
+
+
+def _decode_off_the_main_thread(error: BaseException, value: object) -> object:
+    """Return `value`, but raise `error` on Python's main thread, as a signal
+    handler interrupting the decoding there would."""
+    if threading.current_thread() is threading.main_thread():
+        raise error
+    return value
+
+
+class _MainThreadDecodeRaises:
+    """Unpickles as `value`, except on Python's main thread, where unpickling
+    raises `error`."""
+
+    def __init__(self, error: BaseException, value: object) -> None:
+        self.error = error
+        self.value = value
+
+    def __reduce__(self) -> tuple[Any, tuple[BaseException, object]]:
+        return (_decode_off_the_main_thread, (self.error, self.value))
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("once", [False, True])
+def test_interrupted_decode_leaves_the_message_for_a_later_read(once: bool) -> None:
+    """Ctrl-C landing while a main-thread get() decodes the message ends that
+    get(), and a later get() reads the message."""
+    assert threading.current_thread() is threading.main_thread()
+    sender, receiver = Channel[Any].open(once=once)
+    sender.send(_MainThreadDecodeRaises(KeyboardInterrupt(), "decoded"))
+    fut = receiver.recv()
+    with pytest.raises(KeyboardInterrupt):
+        fut.get()
+    assert fut.get(timeout=2) == "decoded"
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("once", [False, True])
+def test_main_thread_decode_exception_is_the_result(once: bool) -> None:
+    """An Exception raised while a main-thread get() decodes the message is
+    the receive's result, not an interrupt: a later get() raises it again."""
+    assert threading.current_thread() is threading.main_thread()
+    sender, receiver = Channel[Any].open(once=once)
+    sender.send(_MainThreadDecodeRaises(ValueError("bad payload"), "decoded"))
+    fut = receiver.recv()
+    with pytest.raises(ValueError, match="^bad payload$") as first:
+        fut.get()
+    with pytest.raises(ValueError) as second:
+        fut.get(timeout=2)
+    assert second.value is first.value

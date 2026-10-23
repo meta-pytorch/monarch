@@ -41,7 +41,7 @@ from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId, Uid
 from monarch._rust_bindings.monarch_hyperactor.shape import Point, Shape, Slice
-from monarch._rust_bindings.monarch_hyperactor.testing import _handle_receiver_count
+from monarch._rust_bindings.monarch_hyperactor.testing import _handle_observer_count
 from monarch._src.actor.actor_mesh import (
     _client_context,
     Actor,
@@ -887,7 +887,7 @@ def test_attach_starts_before_readiness_observation_and_survives_a_dropped_obser
 
         # The native attach has retained an observer of the pending address
         # before anybody observes host readiness.
-        assert _handle_receiver_count(completer) >= 2
+        assert _handle_observer_count(completer) >= 2
 
         discarded = hosts.initialized
         with pytest.raises(TimeoutError):

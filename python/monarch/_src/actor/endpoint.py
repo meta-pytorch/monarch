@@ -83,7 +83,10 @@ class Endpoint(Protocol[P, R]):
 
     def choose(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
         """
-        Sends a message to a randomly selected actor and waits for its result.
+        Send to a randomly selected actor and return a Future for its result.
+        The reply is received eagerly, but success is unpickled only on first
+        observation. Later observers share its Python value. Dropping the
+        Future stops neither the call nor collection.
 
         Each call independently selects an actor uniformly at random. Selection
         does not account for actor load, so calls are balanced only across many
@@ -92,7 +95,13 @@ class Endpoint(Protocol[P, R]):
         """
         ...
 
-    def call_one(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]: ...
+    def call_one(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
+        """Send to exactly one actor and return a Future for its result.
+
+        Receive the reply eagerly; unpickle success on first observation and
+        share that value with later observers. Ignored successes are not unpickled.
+        """
+        ...
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> "Future[ValueMesh[R]]": ...
 

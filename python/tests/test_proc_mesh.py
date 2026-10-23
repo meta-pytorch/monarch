@@ -30,7 +30,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyPr
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch._rust_bindings.monarch_hyperactor.testing import (
     _call_in_tokio_context,
-    _handle_receiver_count,
+    _handle_observer_count,
 )
 from monarch._src.actor.actor_mesh import (
     _client_context,
@@ -1025,7 +1025,7 @@ def test_raw_proc_mesh_pickle_blocks_on_proc_mesh_init() -> None:
     hy_proc_mesh = proc_mesh._proc_mesh.get(timeout=30)
     proc_mesh._proc_mesh, complete_proc_mesh = _new_handle_pair()
     assert proc_mesh._proc_mesh.poll() is None
-    assert _handle_receiver_count(complete_proc_mesh) == 1
+    assert _handle_observer_count(complete_proc_mesh) == 1
     pickle_returned = threading.Event()
     wait_seen = threading.Event()
 
@@ -1033,7 +1033,7 @@ def test_raw_proc_mesh_pickle_blocks_on_proc_mesh_init() -> None:
         try:
             deadline = time.monotonic() + 10
             while not pickle_returned.is_set() and time.monotonic() < deadline:
-                if _handle_receiver_count(complete_proc_mesh) == 2:
+                if _handle_observer_count(complete_proc_mesh) == 2:
                     wait_seen.set()
                     break
                 pickle_returned.wait(0.001)

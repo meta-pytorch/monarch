@@ -251,6 +251,12 @@ Endpoints support different invocation patterns called **adverbs**:
 
 `call()`, `call_one()` and `choose()` send the request and start collecting replies before they return. Their Future lets you wait for the result; dropping it does not cancel the request or stop reply collection. You can observe the same Future more than once. For `call()`, successful values without mesh references are still decoded when accessed in the returned `ValueMesh`.
 
+For `call_one()` and `choose()`, Tokio receives a successful reply as pickled bytes. The first observer unpickles those bytes into a Python value; later observers share the same value or unpickling error. An ignored successful reply is never unpickled. Remote exceptions are still unpickled when collected, including errors from calls whose Future is dropped.
+
+A synchronous `get()` unpickles on its calling thread, using the calling actor's instance to rebuild any Ports in the reply. `poll()` can also unpickle an available reply: it does not wait for a message or another reconstructor, but the unpickle code itself may take time. An asyncio observation unpickles on the loop thread if the bytes are already available; otherwise a Tokio waiter unpickles before notifying the loop. Unpickle hooks therefore run on observation, not necessarily when the reply arrives.
+
+A `get()` timeout limits waiting for arrival or another observer's unpickling; it does not preempt Python unpickle code that the caller runs itself. A caller-side interrupt leaves the original bytes available for another observation. The `call_one` and `choose` latency histograms and spans measure sending and collection, not observer-side unpickling. Native Rust `call_one_future` callers still decode on their future's driver, with the existing end-of-decoding measurement boundary.
+
 #### 1. `call_one()` - Single Actor Call
 
 Call a single actor and get response.

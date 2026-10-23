@@ -17,7 +17,7 @@
 //!    for the `Future`/`Handle` contract suite.
 //! 3. `_make_delayed_handle`, a `Handle` that publishes after registering its
 //!    first waiter, for the `returns_future` overhead benchmark.
-//! 4. `_handle_receiver_count`, a probe for proving that a pending `get()`
+//! 4. `_handle_observer_count`, a probe for proving that a pending `get()`
 //!    has registered its local wait before a test requests an interrupt.
 //! 5. `_call_in_tokio_context`, a synchronous probe call with the runtime-entered
 //!    state that makes nested blocking unsafe, without a coroutine driver.
@@ -36,12 +36,9 @@ use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tokio::sync::oneshot;
-use tokio::sync::watch;
 
-use crate::handle::HandleCore;
 use crate::handle::PyHandle;
 use crate::handle::PyHandleCompleter;
-use crate::handle::send_result;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::signal_safe_block_on;
 
@@ -49,13 +46,13 @@ use crate::runtime::signal_safe_block_on;
 /// caller-supplied producer or value.
 pub(crate) const PROBE_SUCCESS_VALUE: i64 = 4242;
 
-/// Count a paired Handle's live result receivers without adding an observer.
-/// A fresh pair has one. A pending `get()` clones a second before releasing
-/// the GIL; a Python helper thread can then observe that the native call is
-/// active. Completion consumes the sender, after which this returns zero.
+/// Count a paired Handle's observers without adding one. A fresh pair has
+/// one. A pending `get()` adds a second before releasing the GIL; a Python
+/// helper thread can then observe that the native call is active. Completion
+/// consumes the publisher, after which this returns zero.
 #[pyfunction]
-fn _handle_receiver_count(completer: &PyHandleCompleter) -> usize {
-    completer.receiver_count_for_test()
+fn _handle_observer_count(completer: &PyHandleCompleter) -> usize {
+    completer.observer_count_for_test()
 }
 
 /// The closed set of terminal outcomes the probe can produce.
@@ -206,25 +203,26 @@ fn _make_handle_probe(py: Python<'_>, outcome: &str) -> PyResult<PyHandleProbe> 
 
 /// A `Handle` that publishes `value` after registering its first waiter.
 ///
-/// The producer publishes through `send_result` rather than
+/// The producer publishes through its `Publisher` rather than
 /// [`PyHandle::spawn`], which takes the GIL to convert its value on
-/// completion, so completion takes no GIL. The core holds one receiver, and
-/// `get()` or `await` clones another; `poll()` does not. Once the producer
-/// detects the first clone, it waits at least `delay` before publishing. A
+/// completion, so completion takes no GIL. The Handle is one observer of the
+/// core, and `get()` or `await` adds another; `poll()` does not. Once the
+/// producer detects the second, it waits at least `delay` before publishing. A
 /// later observer waits only for the remaining time. The producer yields
 /// between checks, so it remains runnable on Tokio until the first waiter is
 /// registered, and ends if the Handle is dropped unobserved. The time from its
 /// first poll until it detects that waiter is added to the gate totals read by
 /// `_delayed_handle_gate_stats`.
 fn delayed_handle(delay: Duration, value: Py<PyAny>) -> PyHandle {
-    let (tx, rx) = watch::channel(None);
+    let (publisher, handle) = PyHandle::pending();
     get_tokio_runtime().spawn(async move {
         let first_poll = Instant::now();
-        while tx.receiver_count() < 2 {
-            if tx.is_closed() {
-                return;
+        loop {
+            match publisher.observer_count() {
+                0 => return,
+                1 => tokio::task::yield_now().await,
+                _ => break,
             }
-            tokio::task::yield_now().await;
         }
         let gate = u64::try_from(first_poll.elapsed().as_nanos()).unwrap_or(u64::MAX);
         {
@@ -237,9 +235,9 @@ fn delayed_handle(delay: Duration, value: Py<PyAny>) -> PyHandle {
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
         }
-        send_result(tx, Ok(value), None);
+        publisher.publish(Ok(value));
     });
-    PyHandle::from_core(HandleCore::new(rx, None))
+    handle
 }
 
 /// Build a `Handle` that publishes `None` no sooner than `delay` seconds after
@@ -312,7 +310,7 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_make_test_struct, module)?)?;
     module.add_class::<PyHandleProbe>()?;
     module.add_function(wrap_pyfunction!(_make_handle_probe, module)?)?;
-    module.add_function(wrap_pyfunction!(_handle_receiver_count, module)?)?;
+    module.add_function(wrap_pyfunction!(_handle_observer_count, module)?)?;
     module.add("_PROBE_SUCCESS_VALUE", PROBE_SUCCESS_VALUE)?;
     module.add_function(wrap_pyfunction!(_make_delayed_handle, module)?)?;
     module.add_function(wrap_pyfunction!(_delayed_handle_gate_stats, module)?)?;
@@ -365,7 +363,9 @@ mod tests {
             let handle = delayed_handle(delay, none());
             std::thread::sleep(Duration::from_millis(30));
             assert!(
-                handle.poll_ready().unwrap().is_none(),
+                monarch_with_gil_blocking(GilSite::Test, |py| handle.poll_ready(py))
+                    .unwrap()
+                    .is_none(),
                 "an unobserved Handle with delay {delay:?} should still be pending"
             );
         }

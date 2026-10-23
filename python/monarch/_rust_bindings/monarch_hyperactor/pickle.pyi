@@ -191,9 +191,9 @@ def _reset_mesh_pop_count() -> None:
 def _current_receiver_instance() -> Instance | None:
     """
     The actor receiving the payload currently being decoded, or ``None``
-    outside an eager reply decode.
+    outside payload decoding.
 
-    Set by the endpoint response collectors for the duration of a decode, so a
+    Set while rebuilding an endpoint reply, on its observer or collector, so a
     ``Port`` in a reply reconstructs against the caller actor rather than
     falling back to ``context()`` on a Tokio worker, which would bootstrap a
     client inside a worker process.

@@ -46,8 +46,8 @@ class PortOwner(Actor):
     async def make_port_and_mesh(self) -> Tuple[Port[int], "PortOwner"]:
         """A reply carrying both a ``Port`` and a mesh reference.
 
-        The mesh drives ``collect_valuemesh`` down its *eager* ref-reuniting
-        branch, a different decode site from ``value_collector_future``.
+        With ``call()``, the mesh exercises ValueMesh's ref-reuniting branch.
+        With ``call_one()``, it exercises observer-side reply reconstruction.
         """
         send, self._recv = Channel[int].open()
         extra = self._extra
@@ -220,11 +220,10 @@ def test_port_returned_to_async_actor_does_not_bootstrap_client() -> None:
 
 @pytest.mark.timeout(120)
 def test_port_returned_to_sync_actor_does_not_bootstrap_client() -> None:
-    """Worker-side reply decoding must retain the sync caller's instance.
+    """Reply reconstruction must retain the sync caller's instance.
 
-    ``Future.get()`` waits on the actor's driver thread, but the Handle's
-    collector decodes the reply on Tokio. The decoder must install the caller
-    instance so reconstructing the Port does not bootstrap a client there.
+    ``Future.get()`` rebuilds the reply on the actor's driver thread. The
+    decoder installs that caller instance while rebuilding a Port.
     """
     pm, owner, caller = _spawn_owner_and_caller(SyncCaller)
     try:

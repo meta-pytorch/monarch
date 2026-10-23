@@ -35,11 +35,13 @@ def _sync_inbox_for_test() -> tuple[
 # The value a successful probe publishes.
 _PROBE_SUCCESS_VALUE: int
 
-def _handle_receiver_count(completer: _HandleCompleter[Any]) -> int:
-    """Count live receivers without registering one; private pending-get probe.
+def _handle_observer_count(completer: _HandleCompleter[Any]) -> int:
+    """Count a paired Handle's observers without adding one; private
+    pending-get probe.
 
-    A fresh pair has one receiver. A pending ``get()`` registers another before
-    releasing the GIL. Completion consumes the sender, then this returns zero.
+    A fresh pair has one observer. A pending ``get()`` adds another before
+    releasing the GIL. Completion consumes the publisher, then this returns
+    zero.
     """
     ...
 @final

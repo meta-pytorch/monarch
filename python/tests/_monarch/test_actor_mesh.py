@@ -194,9 +194,7 @@ async def verify_cast_to_call(
 
     rcv_ranks = []
     for _ in range(len(root_ranks)):
-        cast_rank, root_rank = cast(
-            tuple[int, int], await receiver.recv(True).spawn_handle()
-        )
+        cast_rank, root_rank = cast(tuple[int, int], await receiver.recv(True))
         rcv_ranks.append((cast_rank, root_rank))
     rcv_ranks.sort(key=lambda pair: pair[0])
     recv_cast_ranks, recv_root_ranks = zip(*rcv_ranks)
@@ -208,7 +206,7 @@ async def verify_cast_to_call(
     )
     # verify no more messages are received
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(receiver.recv(True).spawn_handle(), 1)
+        await asyncio.wait_for(receiver.recv(True), 1)
 
 
 # TODO - re-enable after resolving T232206970
