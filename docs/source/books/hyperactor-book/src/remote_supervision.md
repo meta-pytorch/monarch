@@ -98,10 +98,12 @@ Worker<C>::handle_supervision_event
     v
 Supervisor
     |
-    | returns ActorErrorKind::UnhandledSupervisionEvent
+    | returns Err(PropagateSupervisionEvent(event).into())
     v
 Parent actor receives an ordinary supervision event
 ```
+
+The `Supervisor` is a transparent proxy: it reports the child's event unchanged except for its own labels, so the parent's event names the remote child rather than the `Supervisor`.
 
 When the worker-side link actor fails, `Worker<C>` reports a synthesized child event with `RemoteActorDisposition::Unreachable`. The child may still be running, because the failure only proves that the supervision channel is broken. The worker then applies its `OrphanPolicy`.
 
