@@ -11,6 +11,7 @@ and validates that the query functions return correct results.
 """
 
 import os
+import sqlite3
 import tempfile
 import unittest
 
@@ -349,7 +350,7 @@ class GetSummaryTest(_DbTestBase):
             "message_counts",
             "errors",
             "timeline",
-            "health_score",
+            "health_status",
         ):
             self.assertIn(key, summary)
 
@@ -430,16 +431,28 @@ class GetSummaryTest(_DbTestBase):
         self.assertGreater(tl["total_status_events"], 0)
         self.assertGreater(tl["total_message_events"], 0)
 
-    def test_health_score_range(self):
+    def test_health_status_reflects_reported_failures(self):
         summary = db.get_summary()
-        score = summary["health_score"]
-        self.assertGreaterEqual(score, 0)
-        self.assertLessEqual(score, 100)
-
-    def test_health_score_reflects_failures(self):
-        # With failed/stopped actors, health should be below 100.
-        summary = db.get_summary()
-        self.assertLess(summary["health_score"], 100)
+        self.assertTrue(summary["errors"]["failed_actors"])
+        # The default fixture failures are Host/Proc agents: retained in the
+        # errors panel, but excluded from workload health by explicit membership.
+        self.assertEqual(summary["health_status"], "healthy")
+        workload = next(a for a in db.list_actors() if a["is_system"] is not True)
+        with sqlite3.connect(self._db_path) as connection:
+            event_id, timestamp = connection.execute(
+                "SELECT MAX(id)+1, MAX(timestamp_us)+1 FROM actor_status_events"
+            ).fetchone()
+            connection.execute(
+                "INSERT INTO actor_status_events VALUES (?, ?, ?, 'Failed', 'user failure')",
+                (event_id, timestamp, workload["id"]),
+            )
+        try:
+            self.assertEqual(db.get_summary()["health_status"], "unhealthy")
+        finally:
+            with sqlite3.connect(self._db_path) as connection:
+                connection.execute(
+                    "DELETE FROM actor_status_events WHERE id=?", (event_id,)
+                )
 
 
 class GetMessageStatsTest(_DbTestBase):

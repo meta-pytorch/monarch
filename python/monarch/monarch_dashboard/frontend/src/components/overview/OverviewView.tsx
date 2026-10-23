@@ -9,10 +9,11 @@
 import React, { useMemo, useState } from "react";
 import { useApi } from "../../lib/useApi";
 import { ActorStats, useActorStats } from "../../lib/actorStats";
+import { fleetActorSubtitle } from "../../lib/actorHealth";
 import { MessageStats, useMessageStats } from "../../lib/useMessageStats";
 import { Actor, EntityId, ErrorActor, MessageActivity, Summary } from "../../types";
-import { healthBand, statusMeta } from "../../lib/status";
-import { actorInstance, actorRole, compact, formatTime, isSystemActor, leafName, localTzAbbrev, prettyRole } from "../../lib/format";
+import { healthMeta, statusMeta } from "../../lib/status";
+import { actorInstance, actorRole, compact, formatTime, leafName, localTzAbbrev, prettyRole } from "../../lib/format";
 import { EChart } from "../common/echart";
 import { Drawer, EmptyState, ErrorState, Loading } from "../common/ui";
 import { ActorDetail } from "../hierarchy/ActorDetail";
@@ -77,15 +78,8 @@ export function OverviewView() {
 
 /* ----------------------------- KPI row ----------------------------- */
 function KpiRow({ s, stats, ms, windowMin }: { s: Summary; stats: ActorStats; ms: MessageStats | null; windowMin: number | null }) {
-  const band = healthBand(stats.health);
-  const actorsSub =
-    stats.down > 0
-      ? `${stats.down} down`
-      : stats.system > 0
-        ? `${stats.workload} workload · ${stats.system} system`
-        : stats.unknown > 0
-          ? `${stats.unknown} unknown`
-          : "all healthy";
+  const band = healthMeta(stats.health);
+  const actorsSub = fleetActorSubtitle(stats);
   // Handler-lifecycle metrics. Telemetry has no request/response distinction, so
   // "Messages" is total send throughput and "Success" is the handler success rate
   // = completed / (completed + failed) over messages whose handlers finished;
@@ -110,15 +104,15 @@ function KpiRow({ s, stats, ms, windowMin }: { s: Summary; stats: ActorStats; ms
   const tiles = [
     { label: "Hosts", val: s.hierarchy_counts.host_meshes, sub: "host meshes", Icon: IconHost, color: "var(--chart-2)" },
     { label: "Procs", val: s.hierarchy_counts.proc_meshes, sub: "proc meshes", Icon: IconProc, color: "var(--chart-4)" },
-    { label: "Actors", val: stats.total, sub: actorsSub, Icon: IconActor, color: stats.down > 0 ? "var(--st-failed)" : "var(--st-idle)" },
+    { label: "Actors", val: stats.total, sub: actorsSub, Icon: IconActor, color: band.color },
     { label: "Messages", val: msgVal, sub: msgSub, Icon: IconMessage, color: "var(--chart-3)" },
     { label: "Success", val: okVal, sub: okSub, Icon: IconDelivery, color: okColor },
-    { label: "Health", val: stats.health, sub: band.label, Icon: IconHealth, color: band.color },
+    { label: "Fleet health", val: band.label, sub: stats.health === "inactive" ? "no live workload" : stats.health === "unknown" ? `${stats.unknown} unknown states` : `${stats.down} reported actor failures`, Icon: IconHealth, color: band.color },
   ];
   return (
     <div className="grid kpis">
       {tiles.map((t) => (
-        <div key={t.label} className="kpi" style={{ ["--kpi-accent" as string]: t.color }}>
+        <div key={t.label} className={`kpi${t.label === "Fleet health" ? " kpi-health" : ""}`} style={{ ["--kpi-accent" as string]: t.color }}>
           <div className="kpi-top">
             <span className="kpi-label">{t.label}</span>
             <t.Icon className="kpi-ico" size={16} />
@@ -133,55 +127,26 @@ function KpiRow({ s, stats, ms, windowMin }: { s: Summary; stats: ActorStats; ms
 
 /* --------------------------- Health gauge --------------------------- */
 function HealthPanel({ stats }: { stats: ActorStats }) {
-  const band = healthBand(stats.health);
-  const option = useMemo(
-    () => ({
-      series: [
-        {
-          type: "gauge",
-          startAngle: 210,
-          endAngle: -30,
-          radius: "92%",
-          center: ["50%", "58%"],
-          progress: { show: true, width: 14, roundCap: true, itemStyle: { color: band.color } },
-          axisLine: { lineStyle: { width: 14, color: [[1, "rgba(255,255,255,0.06)"]] } },
-          pointer: { show: false },
-          axisTick: { show: false },
-          splitLine: { show: false },
-          axisLabel: { show: false },
-          anchor: { show: false },
-          data: [{ value: stats.health }],
-          detail: {
-            valueAnimation: true,
-            offsetCenter: [0, "-2%"],
-            fontSize: 40,
-            fontWeight: 700,
-            fontFamily: "SF Mono, monospace",
-            color: "#e9edf3",
-            formatter: "{value}",
-          },
-          title: { show: false },
-        },
-      ],
-    }),
-    [stats.health, band.color]
-  );
+  const band = healthMeta(stats.health);
   const parts = [
     `${stats.healthy} healthy`,
     stats.unknown > 0 ? `${stats.unknown} unknown` : null,
-    stats.down > 0 ? `${stats.down} down` : null,
+    stats.down > 0 ? `${stats.down} failed` : null,
   ].filter(Boolean);
   const desc =
     `${parts.join(" · ")} of ${stats.workload} workload` +
+    (stats.stopped > 0 ? ` · ${stats.stopped} stopped excluded` : "") +
     (stats.system > 0 ? ` · ${stats.system} system excluded` : "");
   return (
     <div className="panel">
-      <div className="panel-head"><h3>System Health</h3><div className="spacer" /><span className="count-tag">workload</span></div>
-      <div className="panel-body gauge-wrap">
-        <EChart option={option} height={180} />
-        <div className="gauge-caption">
+      <div className="panel-head"><h3>Fleet Health</h3><div className="spacer" /><span className="count-tag">live actors</span></div>
+      <div className="panel-body health-wrap">
+        <IconHealth size={48} style={{ color: band.color }} />
+        <div className="health-caption">
           <div className="band" style={{ color: band.color }}>{band.label}</div>
+          <div className="desc">{stats.health === "inactive" ? "No live workload" : stats.health === "unknown" ? "Some actor states are unavailable" : stats.health === "unhealthy" ? "Reported actor failures" : "No reported actor failures"}</div>
           <div className="desc">{desc}</div>
+          <div className="desc" title="Reported actor statuses do not independently verify process or host liveness. Process loss may leave missing or stale statuses.">Telemetry coverage: {stats.known}/{stats.known + stats.unknown} known workload states</div>
         </div>
       </div>
     </div>
@@ -376,8 +341,8 @@ function FleetPanel({ actors, onSelect }: { actors: Actor[]; onSelect: (id: Enti
   const sorted = useMemo(() => {
     return [...actors].sort((a, b) => {
       // Workload first, then system; then by role, then instance.
-      const sa = isSystemActor(a.full_name) ? 1 : 0;
-      const sb = isSystemActor(b.full_name) ? 1 : 0;
+      const sa = (a.is_system === true) ? 1 : 0;
+      const sb = (b.is_system === true) ? 1 : 0;
       if (sa !== sb) return sa - sb;
       const ra = actorRole(a.full_name);
       const rb = actorRole(b.full_name);
@@ -385,8 +350,8 @@ function FleetPanel({ actors, onSelect }: { actors: Actor[]; onSelect: (id: Enti
       return (actorInstance(a.full_name) ?? "").localeCompare(actorInstance(b.full_name) ?? "");
     });
   }, [actors]);
-  const systemCount = useMemo(() => actors.filter((a) => isSystemActor(a.full_name)).length, [actors]);
-  const shown = hideSystem ? sorted.filter((a) => !isSystemActor(a.full_name)) : sorted;
+  const systemCount = useMemo(() => actors.filter((a) => (a.is_system === true)).length, [actors]);
+  const shown = hideSystem ? sorted.filter((a) => !(a.is_system === true)) : sorted;
   return (
     <div className="panel">
       <div className="panel-head">
@@ -412,8 +377,8 @@ function FleetPanel({ actors, onSelect }: { actors: Actor[]; onSelect: (id: Enti
         ) : (
           <div className="fleet-tiles">
             {shown.map((a) => {
-              const sys = isSystemActor(a.full_name);
-              const st = sys ? "system" : a.latest_status ?? "unknown";
+              const sys = (a.is_system === true);
+              const st = a.latest_status ?? (sys ? "system" : "unknown");
               const m = statusMeta(st);
               const err = m.kind === "error";
               const role = prettyRole(actorRole(a.full_name));
@@ -450,33 +415,30 @@ function ErrorsPanel({ errors, stats }: { errors: Summary["errors"]; stats: Acto
   // deriving down actors from current state so the panel is never inconsistent
   // with the "N down" shown elsewhere.
   const derivedDown = stats.actors.filter(
-    (a) => (a.latest_status ?? "").toLowerCase() === "failed" || (a.latest_status ?? "").toLowerCase() === "stopped"
+    (a) => (a.latest_status ?? "").toLowerCase() === "failed"
   );
   const failed = errors.failed_actors;
   const stopped = errors.stopped_actors;
-  const hasBackend = failed.length > 0 || stopped.length > 0;
+  const hasBackend = failed.length > 0;
   const has = hasBackend || derivedDown.length > 0 || errors.failed_messages > 0;
 
   return (
     <div className="panel">
       <div className="panel-head">
-        <h3>Errors &amp; Failures</h3>
+        <h3>Fleet Errors &amp; Failures</h3>
         <div className="spacer" />
         {has && (
           <span className="count-tag" style={{ color: "#fff", background: "var(--st-failed)", borderColor: "var(--st-failed)" }}>
-            {hasBackend ? failed.length + stopped.length : derivedDown.length}
+            {(hasBackend ? failed.length : derivedDown.length) + errors.failed_messages}
           </span>
         )}
       </div>
       <div className="panel-body">
         {!has ? (
-          <div className="ok-banner"><IconDelivery size={18} /> No errors detected</div>
+          <div className="ok-banner"><IconDelivery size={18} /> No fleet errors detected</div>
         ) : hasBackend ? (
-          <>
-            <ErrGroup title="Failed Actors" actors={failed} color="var(--st-failed)" />
-            <ErrGroup title="Stopped Actors" actors={stopped} color="var(--st-stopped)" />
-          </>
-        ) : (
+          <ErrGroup title="Failed Actors" actors={failed} color="var(--st-failed)" />
+        ) : derivedDown.length > 0 ? (
           <div className="err-group">
             <div className="err-head"><IconAlert size={13} /> Down Actors <span className="count-tag">{derivedDown.length}</span></div>
             {derivedDown.map((a) => (
@@ -486,6 +448,20 @@ function ErrorsPanel({ errors, stats }: { errors: Summary["errors"]; stats: Acto
               </div>
             ))}
           </div>
+        ) : null}
+        {errors.failed_messages > 0 && (
+          <div className="err-group">
+            <div className="err-head"><IconAlert size={13} /> Failed Messages <span className="count-tag">{errors.failed_messages}</span></div>
+            <div className="err-item">
+              <div className="name">{errors.failed_messages} failed {errors.failed_messages === 1 ? "message" : "messages"}</div>
+            </div>
+          </div>
+        )}
+        {stopped.length > 0 && (
+          <details>
+            <summary>{stopped.length} stopped actors · lifecycle history</summary>
+            <ErrGroup title="Stopped Actors" actors={stopped} color="var(--st-stopped)" />
+          </details>
         )}
       </div>
     </div>
@@ -627,7 +603,7 @@ function HierarchyPanel({ s, stats }: { s: Summary; stats: ActorStats }) {
     <div className="panel">
       <div className="panel-head"><h3>Topology Breakdown</h3></div>
       <div className="panel-body">
-        <div className="row" style={{ marginBottom: "var(--s4)" }}>
+        <div className="row" style={{ marginBottom: "var(--s4)", flexWrap: "wrap" }}>
           {entries.map(([lab, n]) => (
             <div key={lab} className="mesh-chip">
               <span className="big">{n}</span>

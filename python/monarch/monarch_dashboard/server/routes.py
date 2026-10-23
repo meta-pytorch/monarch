@@ -106,7 +106,7 @@ def dag():
     When snapshot tables are populated (periodic snapshot capture),
     uses the 4-tier snapshot hierarchy — same structure as the TUI:
     Host → Proc → Actor.  System actors are filtered using the
-    snapshot ``is_system`` flag and a name-based heuristic.
+    snapshot ``is_system`` flags.
 
     The response distinguishes a cold start (``snapshot_pending``) from
     a partial capture (``snapshot_partial`` and

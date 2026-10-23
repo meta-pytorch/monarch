@@ -21,11 +21,11 @@ export const STATUS_META: Record<string, StatusMeta> = {
   processing: { color: "#3b82f6", kind: "active", glyph: "▶" },
   saving: { color: "#2563eb", kind: "active", glyph: "▼" },
   loading: { color: "#06b6d4", kind: "active", glyph: "▲" },
-  created: { color: "#eab308", kind: "transitional", glyph: "○" },
-  initializing: { color: "#f59e0b", kind: "transitional", glyph: "◐" },
-  stopping: { color: "#f97316", kind: "warn", glyph: "◑" },
+  created: { color: "#3b82f6", kind: "transitional", glyph: "○" },
+  initializing: { color: "#3b82f6", kind: "transitional", glyph: "◐" },
+  stopping: { color: "#3b82f6", kind: "transitional", glyph: "◑" },
   failed: { color: "#f85149", kind: "error", glyph: "✕" },
-  stopped: { color: "#a371f7", kind: "error", glyph: "■" },
+  stopped: { color: "#a371f7", kind: "neutral", glyph: "■" },
   unknown: { color: "#8b949e", kind: "neutral", glyph: "?" },
   system: { color: "#6e7681", kind: "neutral", glyph: "⚙" },
   "n/a": { color: "#6e7681", kind: "neutral", glyph: "·" },
@@ -71,10 +71,12 @@ export function messageStatusColor(status: string): string {
   }
 }
 
-/** Health-score band → color + label. */
-export function healthBand(score: number): { color: string; label: string } {
-  if (score >= 85) return { color: "#3fb950", label: "Healthy" };
-  if (score >= 60) return { color: "#eab308", label: "Degraded" };
-  if (score >= 35) return { color: "#f97316", label: "At Risk" };
-  return { color: "#f85149", label: "Critical" };
+/** Labels for reported actor health and telemetry availability. */
+export function healthMeta(health: string | null | undefined): { color: string; label: string } {
+  switch (health) {
+    case "healthy": return { color: "#3fb950", label: "Healthy" };
+    case "unhealthy": return { color: "#f85149", label: "Unhealthy" };
+    case "inactive": return { color: "#8b949e", label: "Inactive" };
+    default: return { color: "#8b949e", label: "Unknown" };
+  }
 }

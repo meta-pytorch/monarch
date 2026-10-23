@@ -59,16 +59,16 @@ The tab is organized into panels:
 
 - **Metric cards** — host meshes, proc meshes, actors (split into workload and
   system), messages over the retention window, handler success rate, and the
-  health score.
-- **System Health** — a gauge scoring the workload actors. System actors are
-  excluded, and the caption reports how many.
+  fleet health status.
+- **Fleet Health** — Healthy when all reported live workload states are normal;
+  Unhealthy when any workload actor reports Failed. System actors are excluded.
 - **Message Activity** — throughput across the retention window, annotated with
   the sampled time range. Viewing the dashboard itself adds a little `scan`
   traffic, which the panel notes.
 - **Actor Status** — a donut of the current state of every actor, with a legend
   per status.
-- **Errors & Failures** — failed and stopped actors with their reasons, or a
-  clean bill of health.
+- **Errors & Failures** — reported failures with their reasons. Normal stopped
+  actors appear separately in lifecycle history.
 - **Message Traffic** — the handler lifecycle (queued → active →
   completed / failed) and a ranked list of message volume by endpoint. These
   are handler states, not delivery kinds.
@@ -77,6 +77,13 @@ The tab is organized into panels:
   system actors.
 - **Topology Breakdown** — counts and proportions of host, proc, and actor
   meshes.
+
+System roles come from the runtime's `actor_nodes.is_system` snapshot flag,
+matched to telemetry by canonical actor id. Host/Proc mesh membership also identifies runtime agents, including processes
+that exit between captures. Actor names do not determine roles.
+Before an actor has snapshot metadata, it stays visible and its reported state
+still counts toward health. Retained actors keep their last recorded role.
+Topology also uses the explicit `children.is_system` membership flag.
 
 ## Topology
 
@@ -185,3 +192,18 @@ print(state.dashboard_url)
 `enable_telemetry()` also starts mesh admin and periodic introspection
 snapshots. Use `state.query_engine_client` to query the same data directly; see
 [Distributed Telemetry](distributed-telemetry).
+
+
+## Health coverage
+
+Fleet health uses current reported actor states, with no numeric score or weights.
+Created, Initializing, Loading, Client, Idle, Processing, Saving, and Stopping
+are normal, healthy states. Any Failed workload actor makes health Unhealthy,
+regardless of how many other actors are healthy. Stopped actors remain in
+lifecycle history and leave the live workload calculation.
+
+Missing or unrecognized states make health Unknown unless a failure is already
+reported. A workload with only stopped actors is Inactive. The caption shows
+known, unknown, and stopped counts. Message failures are shown separately.
+Reported actor states do not independently verify process or host liveness.
+The frontend excludes system roles; the backend summary includes them.

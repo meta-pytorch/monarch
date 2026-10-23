@@ -16,8 +16,7 @@ periodic snapshot capture.  Messages and telemetry actor IDs come
 from the telemetry SQL tables (``messages``, ``actors``, ``meshes``).
 
 System actors are filtered using the ``is_system`` flag from the
-``actor_nodes`` / ``children`` snapshot tables, plus a name-based
-heuristic for infrastructure actors that aren't flagged.
+``actor_nodes`` / ``children`` snapshot tables. Names do not determine roles.
 """
 
 import logging
@@ -27,16 +26,6 @@ from typing import Any, Dict, List, Optional, Set
 from . import db
 
 logger = logging.getLogger(__name__)
-
-# Known system/infrastructure actor name patterns.
-# These actors are spawned by Monarch internals, not by user code.
-_SYSTEM_NAME_PATTERNS = re.compile(
-    r"(telemetry|setup[-_]|SetupActor|cast[-_]|CastActor|"
-    r"logger[-_]|LoggerActor|log_client|MeshAdminAgent|HostAgent|ProcAgent|"
-    r"host_agent|proc_agent|mesh_admin|controller_controller|"
-    r"proc_mesh_controller|actor_mesh_controller)",
-    re.IGNORECASE,
-)
 
 _DISPLAY_ID_COMPONENT_RE = re.compile(
     r"^(?:(?P<label>[^<]+)<(?P<uid>[^>]+)>|<(?P<anon_uid>[^>]+)>)$"
@@ -52,11 +41,6 @@ def _is_client_actor(ref: str) -> bool:
     it in the DAG preserves message edge visibility.
     """
     return ref.endswith(",client[0]")
-
-
-def _is_system_by_name(label: str) -> bool:
-    """Heuristic: check if a node label looks like a system/infra actor."""
-    return bool(_SYSTEM_NAME_PATTERNS.search(label))
 
 
 def _format_display_id_component(component: str) -> str:
@@ -259,14 +243,12 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
         else:
             label = _derive_label(ref, ntype)
 
-        # Filter system actors — both snapshot is_system flag and name heuristic.
+        # Filter system actors using their explicit snapshot flag.
         # The root client actor is exempt.
         if hide_system and not _is_client_actor(ref):
             if ntype == "actor":
                 a = actor_info.get(ref, {})
                 if a.get("is_system", False):
-                    continue
-                if _is_system_by_name(label):
                     continue
 
         # Build node data.

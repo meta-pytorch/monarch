@@ -351,7 +351,7 @@ class SummaryRoutesTest(_RouteTestBase):
             "message_counts",
             "errors",
             "timeline",
-            "health_score",
+            "health_status",
         ):
             self.assertIn(key, data)
 

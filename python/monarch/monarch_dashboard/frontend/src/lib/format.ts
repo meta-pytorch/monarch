@@ -114,33 +114,6 @@ export function actorInstance(fullName: string | null | undefined): string | nul
   return parts[1].split("<")[0].trim() || null;
 }
 
-const SYSTEM_ROLES = new Set([
-  "proc_agent",
-  "host_agent",
-  "log_level",
-  "setup",
-  "telemetry",
-  "comm",
-  "mesh_admin",
-  "client",
-  "cast",
-  "controller_controller",
-  "proc_mesh_controller",
-  "actor_mesh_controller",
-]);
-
-/**
- * True if an actor is Monarch infrastructure (proc/host agents, loggers,
- * setup, telemetry, controllers, …) rather than user workload. These don't
- * emit lifecycle status, so they're shown as a neutral "system" state and
- * excluded from the workload health score.
- */
-export function isSystemActor(fullName: string | null | undefined): boolean {
-  const r = actorRole(fullName).toLowerCase();
-  if (SYSTEM_ROLES.has(r)) return true;
-  return /(_agent|agent$|logger|telemetry|setup|(^|_)comm|mesh_admin|controller|log_client)/.test(r);
-}
-
 /** Title-case a role slug: "host_agent" -> "Host Agent". */
 export function prettyRole(role: string): string {
   return role

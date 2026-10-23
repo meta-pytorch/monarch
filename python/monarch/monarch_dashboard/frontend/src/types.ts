@@ -34,6 +34,8 @@ export interface Actor {
   mesh_id: EntityId;
   rank: number;
   full_name: string;
+  /** Runtime snapshot flag; null/absent means classification is not available. */
+  is_system?: boolean | null;
   display_name?: string | null;
   mesh_class?: string | null;
   mesh_name?: string | null;
@@ -67,6 +69,8 @@ export interface MessageStatusEvent {
 }
 
 /** Aggregate summary from GET /api/summary. */
+export type HealthStatus = "healthy" | "unhealthy" | "unknown" | "inactive";
+
 export interface Summary {
   mesh_counts: { total: number };
   hierarchy_counts: {
@@ -96,7 +100,8 @@ export interface Summary {
     total_status_events: number;
     total_message_events: number;
   };
-  health_score: number;
+  health_status: HealthStatus;
+  health_coverage: { known: number; unknown: number; stopped: number };
 }
 
 /** Message-throughput histogram from GET /api/message-activity. */

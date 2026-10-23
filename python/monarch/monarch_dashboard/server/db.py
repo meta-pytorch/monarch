@@ -316,17 +316,55 @@ def get_mesh_children(
 # ---------------------------------------------------------------------------
 
 
+def _actor_classification_sql() -> str:
+    """Latest explicit role per canonical actor id, including retained actors.
+
+    A newer snapshot can omit a stopped actor. Keep its last recorded role;
+    absent tables, unpublished captures, and unmatched ids remain NULL.
+    """
+    if not {"actor_nodes", "snapshots"}.issubset(_get_adapter().table_names()):
+        return (
+            "SELECT CAST(NULL AS TEXT) AS node_id,"
+            " CAST(NULL AS BOOLEAN) AS is_system WHERE 1=0"
+        )
+    return (
+        "SELECT node_id, is_system FROM ("
+        " SELECT a.node_id, a.is_system, ROW_NUMBER() OVER ("
+        " PARTITION BY a.node_id ORDER BY s.snapshot_ts DESC, s.snapshot_id DESC"
+        " ) AS rn FROM actor_nodes a"
+        " JOIN snapshots s ON a.snapshot_id = s.snapshot_id"
+        " ) classified WHERE rn=1"
+    )
+
+
+def _actor_system_sql() -> str:
+    """Prefer snapshot flags; Host/Proc memberships explicitly identify agents.
+
+    The mesh producer records HostAgents directly in Host meshes and ProcAgents
+    directly in Proc meshes. This also covers processes that exit before a
+    snapshot. User actors belong to actor meshes, even on the same processes.
+    """
+    return (
+        "CASE WHEN role.is_system IS NOT NULL THEN role.is_system"
+        " WHEN agent.id IS NOT NULL"
+        " THEN TRUE ELSE NULL END"
+    )
+
+
 def list_actors(mesh_id: int | None = None) -> list[dict[str, Any]]:
     """Return all actors with latest_status and mesh_class, optionally filtered."""
     base = (
         "SELECT a.*, m.class AS mesh_class,"
         " m.given_name AS mesh_name,"
         " latest.new_status AS latest_status,"
-        " latest.max_ts AS status_timestamp_us"
+        " latest.max_ts AS status_timestamp_us,"
+        f" {_actor_system_sql()} AS is_system"
         " FROM actors a"
         " LEFT JOIN meshes m ON a.mesh_id = m.id"
         f" LEFT JOIN ({_LATEST_ACTOR_STATUS_SQL}) latest"
         " ON a.id = latest.actor_id"
+        " LEFT JOIN (SELECT DISTINCT id FROM meshes WHERE class IN ('Host', 'Proc')) agent ON a.mesh_id=agent.id"
+        f" LEFT JOIN ({_actor_classification_sql()}) role ON a.full_name = role.node_id"
     )
     if mesh_id is not None:
         rows = _query(f"{base} WHERE a.mesh_id = ? ORDER BY a.id", (mesh_id,))
@@ -335,6 +373,7 @@ def list_actors(mesh_id: int | None = None) -> list[dict[str, Any]]:
     rows = _dedup_rows(rows)
     # Normalise status to lowercase (DataFusion emits PascalCase, fake data lowercase).
     for r in rows:
+        r["is_system"] = None if r["is_system"] is None else bool(r["is_system"])
         if r.get("latest_status"):
             r["latest_status"] = r["latest_status"].lower()
     return rows
@@ -485,6 +524,35 @@ def list_sent_messages(
 # ---------------------------------------------------------------------------
 
 
+_HEALTHY_ACTOR_STATES = frozenset(
+    (
+        "idle",
+        "processing",
+        "client",
+        "saving",
+        "loading",
+        "created",
+        "initializing",
+        "stopping",
+    )
+)
+
+
+def _actor_health_status(counts: dict[str, int]) -> str:
+    """Classify current actor failures, normal lifecycle states, and coverage gaps."""
+    if counts.get("failed", 0):
+        return "unhealthy"
+    if any(
+        n
+        for status, n in counts.items()
+        if status not in _HEALTHY_ACTOR_STATES | {"stopped"}
+    ):
+        return "unknown"
+    if any(counts.get(status, 0) for status in _HEALTHY_ACTOR_STATES):
+        return "healthy"
+    return "inactive"
+
+
 def get_summary() -> dict[str, Any]:
     """Return aggregate metrics for the summary dashboard."""
 
@@ -509,15 +577,23 @@ def get_summary() -> dict[str, Any]:
     # ties to a single status per actor. Normalise to lowercase so both fake
     # data ("idle") and real DataFusion telemetry ("Idle") match.
     actor_status_rows = _query(
-        "SELECT new_status, COUNT(*) AS n FROM ("
-        "  SELECT actor_id, MIN(new_status) AS new_status"
-        f"  FROM ({_LATEST_ACTOR_STATUS_SQL}) GROUP BY actor_id"
-        " ) t GROUP BY new_status"
+        f"SELECT latest.new_status, {_actor_system_sql()} AS is_system, COUNT(*) AS n FROM actors a"
+        " LEFT JOIN (SELECT actor_id, MIN(new_status) AS new_status"
+        f" FROM ({_LATEST_ACTOR_STATUS_SQL}) GROUP BY actor_id) latest"
+        " ON a.id = latest.actor_id"
+        " LEFT JOIN (SELECT DISTINCT id FROM meshes WHERE class IN ('Host', 'Proc')) agent ON a.mesh_id=agent.id"
+        f" LEFT JOIN ({_actor_classification_sql()}) role ON a.full_name = role.node_id"
+        f" GROUP BY latest.new_status, {_actor_system_sql()}"
     )
     actor_by_status: dict[str, int] = {}
+    health_by_status: dict[str, int] = {}
     for row in actor_status_rows:
-        s = (row["new_status"] or "unknown").lower()
-        actor_by_status[s] = actor_by_status.get(s, 0) + int(row["n"] or 0)
+        status = (row["new_status"] or "unknown").lower()
+        count = int(row["n"] or 0)
+        if row["new_status"] is not None:
+            actor_by_status[status] = actor_by_status.get(status, 0) + count
+        if not row["is_system"]:
+            health_by_status[status] = health_by_status.get(status, 0) + count
 
     # -- Message counts --
     total_messages = _count("SELECT COUNT(*) AS n FROM messages")
@@ -600,31 +676,7 @@ def get_summary() -> dict[str, Any]:
 
     total_message_events = _count("SELECT COUNT(*) AS n FROM message_status_events")
 
-    # -- Health score (0-100) --
-    weights = {
-        "idle": 100,
-        "processing": 80,
-        "client": 50,
-        "unknown": 50,
-        "created": 30,
-        "initializing": 30,
-        "saving": 30,
-        "loading": 30,
-        "stopping": 30,
-        "stopped": 20,
-        "failed": 0,
-    }
-    total_weight = 0
-    actor_count_with_status = 0
-    for status, count in actor_by_status.items():
-        w = weights.get(status, 50)
-        total_weight += w * count
-        actor_count_with_status += count
-    health_score = (
-        round(total_weight / actor_count_with_status)
-        if actor_count_with_status > 0
-        else 100
-    )
+    health_status = _actor_health_status(health_by_status)
 
     return {
         "mesh_counts": {
@@ -657,7 +709,20 @@ def get_summary() -> dict[str, Any]:
             "total_status_events": total_status_events,
             "total_message_events": total_message_events,
         },
-        "health_score": health_score,
+        "health_status": health_status,
+        "health_coverage": {
+            "known": sum(
+                n
+                for s, n in health_by_status.items()
+                if s in _HEALTHY_ACTOR_STATES | {"failed"}
+            ),
+            "unknown": sum(
+                n
+                for s, n in health_by_status.items()
+                if s not in _HEALTHY_ACTOR_STATES | {"failed", "stopped"}
+            ),
+            "stopped": health_by_status.get("stopped", 0),
+        },
     }
 
 

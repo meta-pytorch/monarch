@@ -8,7 +8,7 @@
 
 import React, { useState } from "react";
 import { useActorStats } from "./lib/actorStats";
-import { healthBand } from "./lib/status";
+import { healthMeta } from "./lib/status";
 import { relativeTime } from "./lib/format";
 import {
   IconOverview,
@@ -50,8 +50,8 @@ function MonarchLogo() {
 }
 
 function HealthChip() {
-  const { total, health, down, updatedAt, loading } = useActorStats();
-  const band = healthBand(health);
+  const { total, health, down, unknown, known, updatedAt, loading } = useActorStats();
+  const band = healthMeta(health);
   const stale = updatedAt != null && Date.now() - updatedAt > 8000;
 
   return (
@@ -68,9 +68,8 @@ function HealthChip() {
         <span style={{ color: "var(--text-3)", fontWeight: 500 }}>· {relativeTime(updatedAt)}</span>
       </span>
       {!loading && total > 0 && (
-        <span className="health-chip">
-          <span className="health-chip-label">Health</span>
-          <span className="health-chip-val" style={{ color: band.color }}>{health}</span>
+        <span className="health-chip" title={`${known} known workload states · ${unknown} unknown. Reported actor states do not independently verify process liveness.`}>
+          <span className="health-chip-label">Fleet</span>
           <span className="health-chip-pill" style={{ background: band.color }}>{band.label}</span>
         </span>
       )}

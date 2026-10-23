@@ -18,7 +18,8 @@ class AdminDagTest(unittest.TestCase):
         host = "host:host_agent.service<2>@tcp://host:1"
         live_proc = "worker<live>@worker<live>.tcp://host:1"
         stale_proc = "anon<stale>@anon<stale>.tcp://host:1"
-        actor = "trainer<actor>.worker<live>@worker<live>.tcp://host:1"
+        actor = "logger_controller<actor>.worker<live>@worker<live>.tcp://host:1"
+        system = "ordinary<system>.worker<live>@worker<live>.tcp://host:1"
 
         def query(sql: str, _params=()):
             if " FROM nodes " in sql:
@@ -28,6 +29,7 @@ class AdminDagTest(unittest.TestCase):
                     {"node_id": live_proc, "node_kind": "proc"},
                     {"node_id": stale_proc, "node_kind": "error"},
                     {"node_id": actor, "node_kind": "actor"},
+                    {"node_id": system, "node_kind": "actor"},
                 ]
             if " FROM children " in sql:
                 return [
@@ -51,6 +53,12 @@ class AdminDagTest(unittest.TestCase):
                     },
                     {
                         "parent_id": live_proc,
+                        "child_id": system,
+                        "is_system": False,
+                        "child_sort_key": 1,
+                    },
+                    {
+                        "parent_id": live_proc,
                         "child_id": actor,
                         "is_system": False,
                         "child_sort_key": 0,
@@ -69,11 +77,12 @@ class AdminDagTest(unittest.TestCase):
                 ]
             if " FROM actor_nodes " in sql:
                 return [
+                    {"node_id": system, "actor_status": "idle", "is_system": True},
                     {
                         "node_id": actor,
                         "actor_status": "idle",
                         "is_system": False,
-                    }
+                    },
                 ]
             # Telemetry enrichment and message edges are optional for this
             # topology-only regression test.
@@ -84,7 +93,9 @@ class AdminDagTest(unittest.TestCase):
             patch.object(admin_dag.db, "_query", side_effect=query),
         ):
             result = admin_dag.build_admin_dag()
+            unfiltered = admin_dag.build_admin_dag(hide_system=False)
 
+        self.assertIn(system, {node["entity_id"] for node in unfiltered["nodes"]})
         entity_ids = {node["entity_id"] for node in result["nodes"]}
         self.assertEqual(entity_ids, {host, live_proc, actor})
         self.assertNotIn(stale_proc, entity_ids)

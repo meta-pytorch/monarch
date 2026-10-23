@@ -392,6 +392,7 @@ a {
    Panels / cards
    ============================================================ */
 .panel {
+  min-width: 0;
   background: linear-gradient(180deg, var(--surface-1), var(--surface-0));
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
@@ -491,6 +492,11 @@ a {
   color: var(--text-3);
   margin-top: 3px;
 }
+.kpi-health .kpi-val {
+  font-family: inherit;
+  font-size: 24px;
+  overflow-wrap: anywhere;
+}
 .kpi-spark {
   position: absolute;
   right: var(--s4);
@@ -548,22 +554,22 @@ a {
 .chart {
   width: 100%;
 }
-.gauge-wrap {
+.health-wrap {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   height: 100%;
 }
-.gauge-caption {
+.health-caption {
   text-align: center;
-  margin-top: -8px;
+  margin-top: 12px;
 }
-.gauge-caption .band {
-  font-size: 13px;
+.health-caption .band {
+  font-size: 24px;
   font-weight: 700;
 }
-.gauge-caption .desc {
+.health-caption .desc {
   font-size: 11px;
   color: var(--text-3);
   margin-top: 2px;
