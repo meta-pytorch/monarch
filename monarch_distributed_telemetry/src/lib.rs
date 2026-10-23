@@ -38,6 +38,8 @@ use monarch_telemetry_schema::entity_tables::MessageBuffer;
 use monarch_telemetry_schema::entity_tables::MessageStatusEventBuffer;
 use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
 use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
+use monarch_telemetry_schema::host_tables::GPU_METRICS;
+use monarch_telemetry_schema::host_tables::GpuMetricBuffer;
 use monarch_telemetry_schema::host_tables::HOST_METRICS;
 use monarch_telemetry_schema::host_tables::HostMetricBuffer;
 use monarch_telemetry_schema::metric_tables::METRIC_GAUGES;
@@ -123,6 +125,7 @@ fn _register_telemetry_schemas(scanner: PyRef<'_, DatabaseScanner>) -> PyResult<
     register_table_schema::<MetricSumBuffer>(&scanner, METRIC_SUMS)?;
     register_table_schema::<MetricHistogramBuffer>(&scanner, METRIC_HISTOGRAMS)?;
     register_table_schema::<HostMetricBuffer>(&scanner, HOST_METRICS)?;
+    register_table_schema::<GpuMetricBuffer>(&scanner, GPU_METRICS)?;
     Ok(())
 }
 

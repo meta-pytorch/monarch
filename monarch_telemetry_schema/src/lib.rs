@@ -293,6 +293,8 @@ pub mod host_tables {
 
     /// Table containing one host resource sample per host per interval.
     pub const HOST_METRICS: &str = "host_metrics";
+    /// Table containing one GPU sample per device per interval.
+    pub const GPU_METRICS: &str = "gpu_metrics";
 
     /// Row data for the host metrics table.
     #[derive(RecordBatchRow)]
@@ -322,6 +324,23 @@ pub mod host_tables {
         pub disk_root_free_bytes: Option<u64>,
         /// Bytes free to unprivileged users on `/tmp`, if available.
         pub disk_tmp_free_bytes: Option<u64>,
+    }
+
+    /// Row data for the GPU metrics table. Optional fields are null when NVML
+    /// does not support them on the device.
+    #[derive(RecordBatchRow)]
+    pub struct GpuMetric {
+        pub timestamp_us: i64,
+        pub hostname: String,
+        pub gpu_index: u32,
+        pub gpu_uuid: String,
+        pub gpu_name: String,
+        /// Percent of the last NVML sample period in which a kernel ran.
+        pub utilization_percent: Option<f64>,
+        pub memory_used_bytes: u64,
+        pub memory_total_bytes: u64,
+        pub temperature_c: Option<u32>,
+        pub power_watts: Option<f64>,
     }
 }
 

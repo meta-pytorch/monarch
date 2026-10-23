@@ -23,7 +23,7 @@ from unittest.mock import call, MagicMock, patch
 import monarch._src.job.job_sidecar as js
 import monarch._src.job.telemetry_config as tc
 import pytest
-from monarch._src.job.host_metrics_actor import HostMetricsActor
+from monarch._src.job.host_metrics_actor import GpuMetricsActor, HostMetricsActor
 from monarch._src.job.once_daemon import _Shutdown, _wait_for_socket
 from monarch._src.job.telemetry_actor import telemetry_socket_dir, telemetry_socket_path
 from monarch.config import ChannelTransport, configured
@@ -93,6 +93,7 @@ def _cfg_dict(**overrides):
         "include_dashboard": False,
         "dashboard_port": 0,
         "host_metrics_interval_secs": 0.0,
+        "gpu_metrics_interval_secs": 0.0,
     }
     base.update(overrides)
     return base
@@ -488,6 +489,28 @@ def test_start_samplers_skips_disabled() -> None:
     assert actor._sampler_meshes == []
 
 
+def test_config_from_wire_carries_gpu_metrics_interval() -> None:
+    config = tc._config_from_wire(_cfg_dict(gpu_metrics_interval_secs=30.0))
+    assert config.gpu_metrics_interval_secs == 30.0
+
+
+def test_telemetry_config_samples_host_and_gpu_by_default() -> None:
+    assert TelemetryConfig().gpu_metrics_interval_secs == 10.0
+    assert TelemetryConfig().host_metrics_interval_secs == 10.0
+
+
+def test_start_samplers_spawns_gpu_sampler_when_enabled() -> None:
+    actor = tc.TelemetryActor(
+        "apply", 0, host_metrics_interval_secs=0.0, gpu_metrics_interval_secs=30.0
+    )
+    proc = MagicMock()
+    with patch("monarch._src.job.telemetry_actor.this_proc", return_value=proc):
+        actor._start_samplers()
+    proc.spawn.assert_called_once_with(
+        "gpu_metrics", GpuMetricsActor, telemetry_socket_path("apply"), 30.0
+    )
+
+
 def test_start_samplers_tolerates_failures() -> None:
     actor = tc.TelemetryActor("apply", 0, host_metrics_interval_secs=10.0)
     proc = MagicMock()
@@ -495,6 +518,29 @@ def test_start_samplers_tolerates_failures() -> None:
     with patch("monarch._src.job.telemetry_actor.this_proc", return_value=proc):
         actor._start_samplers()
     assert actor._sampler_meshes == []
+
+
+def test_start_samplers_bounds_the_wait_on_a_hung_start() -> None:
+    actor = tc.TelemetryActor(
+        "apply", 0, host_metrics_interval_secs=10.0, gpu_metrics_interval_secs=30.0
+    )
+    hung = MagicMock()
+    healthy = MagicMock()
+    timeouts = []
+
+    def hung_get(timeout: float | None = None) -> bool:
+        timeouts.append(timeout)
+        raise TimeoutError
+
+    hung.start.call_one.return_value.get.side_effect = hung_get
+    healthy.start.call_one.return_value.get.return_value = True
+    proc = MagicMock()
+    proc.spawn.side_effect = [hung, healthy]
+    with patch("monarch._src.job.telemetry_actor.this_proc", return_value=proc):
+        actor._start_samplers()
+    assert len(timeouts) == 1
+    assert timeouts[0] is not None and 0 < timeouts[0] < float("inf")
+    assert actor._sampler_meshes == [hung, healthy]
 
 
 def test_open_or_refresh_continues_after_worker_setup_failure() -> None:
