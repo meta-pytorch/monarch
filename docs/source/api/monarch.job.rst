@@ -118,6 +118,15 @@ SlurmJob
    :show-inheritance:
    :exclude-members: __init__
 
+PBSJob
+------
+
+.. autoclass:: PBSJob
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :exclude-members: __init__
+
 KubernetesJob
 -------------
 
