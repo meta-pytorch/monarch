@@ -132,6 +132,8 @@ use dashmap::mapref::entry::Entry;
 use dashmap::mapref::multiple::RefMulti;
 use enum_as_inner::EnumAsInner;
 use futures::FutureExt;
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use hyperactor_config::Flattrs;
 use hyperactor_telemetry::ActorStatusEvent;
 use hyperactor_telemetry::generate_actor_status_event_id;
@@ -2170,9 +2172,7 @@ impl<A: Actor> fmt::Debug for Instance<A> {
 }
 
 /// Default per-child bound for [`Instance::stop_children`], used when no
-/// caller budget was set with [`Instance::set_stop_children_timeout`]. It has
-/// the same value as the idle timeout between `ChildStopped` signals in
-/// ordinary actor-tree teardown, but bounds each child's wait from the start.
+/// caller budget was set with [`Instance::set_stop_children_timeout`].
 pub const DEFAULT_STOP_CHILDREN_TIMEOUT: Duration = Duration::from_millis(500);
 
 struct InstanceState<A: Actor> {
@@ -3431,6 +3431,50 @@ impl<A: Actor> Instance<A> {
         self.change_status(terminal_status);
     }
 
+    /// Stop current children and wait for terminal statuses in parallel.
+    /// The whole pass gets `CLEANUP_TIMEOUT`; remaining children are unlinked.
+    async fn stop_and_wait_children(&self, signal: &Signal) {
+        let timeout = hyperactor_config::global::get(config::CLEANUP_TIMEOUT);
+        let children: Vec<_> = self
+            .inner
+            .cell
+            .child_iter()
+            .map(|child| child.value().clone())
+            .collect();
+        let waits = children.iter().filter_map(|child| {
+            if let Err(err) = child.signal(signal.clone()) {
+                tracing::error!(
+                    "{}: failed to send stop signal to child {}: {:?}",
+                    self.self_addr(),
+                    child.actor_addr(),
+                    err
+                );
+                self.inner.cell.unlink(child);
+                return None;
+            }
+            let mut status = child.status().clone();
+            Some(async move {
+                let _ = status.wait_for(|status| status.is_terminal()).await;
+            })
+        });
+        if tokio::time::timeout(
+            timeout,
+            waits.collect::<FuturesUnordered<_>>().collect::<()>(),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!(
+                parent = %self.self_addr(),
+                ?timeout,
+                "timed out waiting for children to stop; unlinking"
+            );
+            for child in children {
+                self.inner.cell.unlink(&child);
+            }
+        }
+    }
+
     /// Runs the actor, and manages its supervision tree. When the function returns,
     /// the whole tree rooted at this actor has stopped. On success, returns the reason
     /// why the actor stopped. On failure, returns the error that caused the failure.
@@ -3476,9 +3520,6 @@ impl<A: Actor> Instance<A> {
             tracing::error!("{}: actor failure: {}", self.self_addr(), err);
         }
 
-        // After this point, we know we won't spawn any more children,
-        // so we can safely read the current child keys.
-        let mut to_unlink = Vec::new();
         let child_signal = match ChildTeardown::from_run_result(&result) {
             ChildTeardown::Cooperative(mode) => ChildTeardown::cooperative_signal(mode),
             ChildTeardown::Kill => {
@@ -3487,51 +3528,7 @@ impl<A: Actor> Instance<A> {
                 ChildTeardown::cooperative_signal(StopMode::Stop)
             }
         };
-        for child in self.inner.cell.child_iter() {
-            if let Err(err) = child.value().signal(child_signal.clone()) {
-                tracing::error!(
-                    "{}: failed to send stop signal to child pid {}: {:?}",
-                    self.self_addr(),
-                    child.key(),
-                    err
-                );
-                to_unlink.push(child.value().clone());
-            }
-        }
-        // Manually unlink children that have already been stopped.
-        for child in to_unlink {
-            self.inner.cell.unlink(&child);
-        }
-
-        let (mut signal_receiver, _) = actor_loop_receivers;
-        while self.inner.cell.child_count() > 0 {
-            match tokio::time::timeout(Duration::from_millis(500), signal_receiver.recv()).await {
-                Ok(Some(Signal::ChildStopped(uid))) => {
-                    assert!(self.inner.cell.get_child(&uid).is_none());
-                }
-                // Drain only tracks child termination; other signals are
-                // intentionally swallowed here.
-                Ok(Some(_)) => {}
-                Ok(None) => {
-                    // Signal channel closed: no further ChildStopped will
-                    // arrive, so we can no longer track child termination.
-                    // Drop remaining links and exit the drain loop, mirroring
-                    // the timeout branch below.
-                    self.inner.cell.unlink_all();
-                    break;
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "timeout waiting for ChildStopped signal from child on actor: {}, ignoring",
-                        self.self_addr()
-                    );
-                    // No more waiting to receive messages. Unlink all remaining
-                    // children.
-                    self.inner.cell.unlink_all();
-                    break;
-                }
-            }
-        }
+        self.stop_and_wait_children(&child_signal).await;
         // Run the actor cleanup function before the actor stops to delete
         // resources. If it times out, continue with stopping the actor.
         // Don't call it if there was a panic, because the actor may
@@ -3560,6 +3557,8 @@ impl<A: Actor> Instance<A> {
         } else {
             Ok(())
         };
+        // Cleanup can spawn children after the first stop pass.
+        self.stop_and_wait_children(&child_signal).await;
         if let Err(ref actor_err) = result {
             // The original result error takes precedence over the cleanup error,
             // so make sure the cleanup error is still logged in that case.
@@ -4841,11 +4840,6 @@ impl InstanceCell {
     fn unlink(&self, child: &InstanceCell) {
         assert_eq!(self.actor_addr().proc_id(), child.actor_addr().proc_id());
         self.inner.children.remove(child.uid());
-    }
-
-    /// Unlink this instance from all children.
-    fn unlink_all(&self) {
-        self.inner.children.clear();
     }
 
     /// Link this instance to its parent, if it has one.
@@ -6483,6 +6477,48 @@ mod tests {
         assert_eq!(client.instance().inner.cell.child_count(), 0);
         // Repeated cleanup is harmless.
         client.instance().stop_children("test shutdown").await;
+    }
+
+    #[derive(Debug)]
+    struct CleanupSpawner {
+        spawn_child: bool,
+        cleaned: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Actor for CleanupSpawner {
+        async fn cleanup(
+            &mut self,
+            this: &Instance<Self>,
+            _error: Option<&ActorError>,
+        ) -> anyhow::Result<()> {
+            if self.spawn_child {
+                this.spawn(Self {
+                    spawn_child: false,
+                    cleaned: self.cleaned.clone(),
+                });
+            }
+            self.cleaned.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn teardown_stops_children_spawned_during_cleanup() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let cleaned = Arc::new(AtomicUsize::new(0));
+        let parent = client.spawn(CleanupSpawner {
+            spawn_child: true,
+            cleaned: cleaned.clone(),
+        });
+        parent.stop("test stop").unwrap();
+        parent.await;
+        assert_eq!(
+            cleaned.load(Ordering::SeqCst),
+            2,
+            "the parent and the child spawned during cleanup should both run cleanup"
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
