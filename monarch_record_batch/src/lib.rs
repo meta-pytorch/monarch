@@ -13,8 +13,12 @@
 //! It is extracted here so the derive macro can be used from any
 //! Monarch crate, not only `monarch_distributed_telemetry`.
 
-use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::record_batch::RecordBatch;
+// Re-export arrow so derive-generated code (which references
+// `::monarch_record_batch::arrow`) and consumers only need to depend
+// on this crate, not on arrow/datafusion directly.
+pub use arrow;
+use arrow::error::ArrowError;
+use arrow::record_batch::RecordBatch;
 // Re-export the derive macro so consumers only need to depend on this
 // crate.
 pub use monarch_record_batch_macros::RecordBatchRow;

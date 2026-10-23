@@ -28,7 +28,7 @@
 //!   `drain_to_record_batch()` methods
 //!
 //! The consumer crate must depend on `monarch_record_batch` (for the trait)
-//! and `datafusion` (for Arrow types used in the generated code).
+//! and `monarch_record_batch` (for Arrow types used in the generated code).
 
 use proc_macro::TokenStream;
 use quote::format_ident;
@@ -72,7 +72,7 @@ pub fn derive_record_batch_row(input: TokenStream) -> TokenStream {
         let nullable = f.nullable;
         let data_type = &f.arrow_data_type;
         quote! {
-            datafusion::arrow::datatypes::Field::new(#field_name_str, #data_type, #nullable)
+            ::monarch_record_batch::arrow::datatypes::Field::new(#field_name_str, #data_type, #nullable)
         }
     });
 
@@ -97,8 +97,8 @@ pub fn derive_record_batch_row(input: TokenStream) -> TokenStream {
                 #(#insert_pushes)*
             }
 
-            pub fn schema() -> datafusion::arrow::datatypes::SchemaRef {
-                std::sync::Arc::new(datafusion::arrow::datatypes::Schema::new(vec![
+            pub fn schema() -> ::monarch_record_batch::arrow::datatypes::SchemaRef {
+                std::sync::Arc::new(::monarch_record_batch::arrow::datatypes::Schema::new(vec![
                     #(#schema_fields,)*
                 ]))
             }
@@ -109,12 +109,12 @@ pub fn derive_record_batch_row(input: TokenStream) -> TokenStream {
                 self.#first_field.len()
             }
 
-            fn drain_to_record_batch(&mut self) -> Result<datafusion::arrow::record_batch::RecordBatch, datafusion::arrow::error::ArrowError> {
+            fn drain_to_record_batch(&mut self) -> Result<::monarch_record_batch::arrow::record_batch::RecordBatch, ::monarch_record_batch::arrow::error::ArrowError> {
                 let schema = #buffer_name::schema();
-                let columns: Vec<datafusion::arrow::array::ArrayRef> = vec![
+                let columns: Vec<::monarch_record_batch::arrow::array::ArrayRef> = vec![
                     #(#column_conversions,)*
                 ];
-                datafusion::arrow::record_batch::RecordBatch::try_new(schema, columns)
+                ::monarch_record_batch::arrow::record_batch::RecordBatch::try_new(schema, columns)
             }
         }
     };
@@ -174,40 +174,40 @@ fn get_arrow_type_and_conversion(
 
     match type_str.as_str() {
         "u64" => (
-            quote! { datafusion::arrow::datatypes::DataType::UInt64 },
-            quote! { datafusion::arrow::array::UInt64Array::from },
+            quote! { ::monarch_record_batch::arrow::datatypes::DataType::UInt64 },
+            quote! { ::monarch_record_batch::arrow::array::UInt64Array::from },
         ),
         "u32" => (
-            quote! { datafusion::arrow::datatypes::DataType::UInt32 },
-            quote! { datafusion::arrow::array::UInt32Array::from },
+            quote! { ::monarch_record_batch::arrow::datatypes::DataType::UInt32 },
+            quote! { ::monarch_record_batch::arrow::array::UInt32Array::from },
         ),
         "i64" => (
-            quote! { datafusion::arrow::datatypes::DataType::Int64 },
-            quote! { datafusion::arrow::array::Int64Array::from },
+            quote! { ::monarch_record_batch::arrow::datatypes::DataType::Int64 },
+            quote! { ::monarch_record_batch::arrow::array::Int64Array::from },
         ),
         "i32" => (
-            quote! { datafusion::arrow::datatypes::DataType::Int32 },
-            quote! { datafusion::arrow::array::Int32Array::from },
+            quote! { ::monarch_record_batch::arrow::datatypes::DataType::Int32 },
+            quote! { ::monarch_record_batch::arrow::array::Int32Array::from },
         ),
         "String" => (
-            quote! { datafusion::arrow::datatypes::DataType::Utf8 },
-            quote! { datafusion::arrow::array::StringArray::from },
+            quote! { ::monarch_record_batch::arrow::datatypes::DataType::Utf8 },
+            quote! { ::monarch_record_batch::arrow::array::StringArray::from },
         ),
         "&'staticstr" => (
-            quote! { datafusion::arrow::datatypes::DataType::Utf8 },
-            quote! { datafusion::arrow::array::StringArray::from },
+            quote! { ::monarch_record_batch::arrow::datatypes::DataType::Utf8 },
+            quote! { ::monarch_record_batch::arrow::array::StringArray::from },
         ),
         "bool" => (
-            quote! { datafusion::arrow::datatypes::DataType::Boolean },
-            quote! { datafusion::arrow::array::BooleanArray::from },
+            quote! { ::monarch_record_batch::arrow::datatypes::DataType::Boolean },
+            quote! { ::monarch_record_batch::arrow::array::BooleanArray::from },
         ),
         "f64" => (
-            quote! { datafusion::arrow::datatypes::DataType::Float64 },
-            quote! { datafusion::arrow::array::Float64Array::from },
+            quote! { ::monarch_record_batch::arrow::datatypes::DataType::Float64 },
+            quote! { ::monarch_record_batch::arrow::array::Float64Array::from },
         ),
         "f32" => (
-            quote! { datafusion::arrow::datatypes::DataType::Float32 },
-            quote! { datafusion::arrow::array::Float32Array::from },
+            quote! { ::monarch_record_batch::arrow::datatypes::DataType::Float32 },
+            quote! { ::monarch_record_batch::arrow::array::Float32Array::from },
         ),
         _ => panic!("unsupported type: {}", type_str),
     }

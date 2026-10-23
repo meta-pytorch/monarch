@@ -10,10 +10,10 @@
 
 use std::io::Cursor;
 
-use datafusion::arrow::ipc::reader::StreamReader;
-use datafusion::arrow::ipc::writer::StreamWriter;
-use datafusion::arrow::record_batch::RecordBatch;
 use monarch_record_batch::RecordBatchRow;
+use monarch_record_batch::arrow::ipc::reader::StreamReader;
+use monarch_record_batch::arrow::ipc::writer::StreamWriter;
+use monarch_record_batch::arrow::record_batch::RecordBatch;
 
 /// Maximum table-name length in a socket frame.
 pub const MAX_TABLE_NAME_LEN: usize = 256;
@@ -346,10 +346,10 @@ pub mod host_tables {
 
 #[cfg(test)]
 mod tests {
-    use datafusion::arrow::array::Float64Array;
-    use datafusion::arrow::array::StringArray;
-    use datafusion::arrow::array::UInt64Array;
     use monarch_record_batch::RecordBatchBuffer;
+    use monarch_record_batch::arrow::array::Float64Array;
+    use monarch_record_batch::arrow::array::StringArray;
+    use monarch_record_batch::arrow::array::UInt64Array;
     use serde_json::json;
 
     use super::*;

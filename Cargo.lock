@@ -3669,7 +3669,6 @@ dependencies = [
  "anyhow",
  "chrono",
  "dashmap",
- "datafusion",
  "erased-serde",
  "hyperactor_config",
  "libc",
@@ -4866,7 +4865,7 @@ dependencies = [
 name = "monarch_record_batch"
 version = "0.0.0"
 dependencies = [
- "datafusion",
+ "arrow",
  "monarch_record_batch_macros",
 ]
 
@@ -4884,7 +4883,6 @@ name = "monarch_telemetry_schema"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "datafusion",
  "monarch_record_batch",
  "serde_json",
 ]

@@ -434,9 +434,9 @@ pub struct ResolutionErrorRow {
 
 #[cfg(test)]
 mod tests {
-    use datafusion::arrow::array::Array;
-    use datafusion::arrow::datatypes::DataType;
     use monarch_record_batch::RecordBatchBuffer;
+    use monarch_record_batch::arrow::array::Array;
+    use monarch_record_batch::arrow::datatypes::DataType;
 
     use super::*;
 
@@ -445,7 +445,7 @@ mod tests {
     /// Helper: assert a schema field has the expected name, type, and
     /// nullability.
     fn assert_field(
-        schema: &datafusion::arrow::datatypes::Schema,
+        schema: &monarch_record_batch::arrow::datatypes::Schema,
         index: usize,
         name: &str,
         data_type: DataType,
@@ -705,7 +705,7 @@ mod tests {
             .column_by_name("snapshot_id")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::StringArray>()
             .unwrap();
         assert_eq!(ids.value(0), "snap-1");
         assert_eq!(ids.value(1), "snap-2");
@@ -714,7 +714,7 @@ mod tests {
             .column_by_name("snapshot_ts")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .unwrap();
         assert_eq!(ts.value(0), 1_000_000);
         assert_eq!(ts.value(1), 2_000_000);
@@ -737,7 +737,7 @@ mod tests {
             .column_by_name("node_kind")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::StringArray>()
             .unwrap();
         assert_eq!(kind.value(0), "root");
     }
@@ -769,7 +769,7 @@ mod tests {
             .column_by_name("is_system")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::BooleanArray>()
             .unwrap();
         assert!(!sys.value(0));
         assert!(sys.value(1));
@@ -793,7 +793,7 @@ mod tests {
             .column_by_name("num_hosts")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .unwrap();
         assert_eq!(hosts.value(0), 3);
     }
@@ -816,7 +816,7 @@ mod tests {
             .column_by_name("addr")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::StringArray>()
             .unwrap();
         assert_eq!(addr.value(0), "10.0.0.1:8080");
     }
@@ -841,7 +841,7 @@ mod tests {
             .column_by_name("is_poisoned")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::BooleanArray>()
             .unwrap();
         assert!(!poisoned.value(0));
     }
@@ -886,7 +886,7 @@ mod tests {
             .column_by_name("created_at")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .unwrap();
         assert!(!created.is_null(0));
         assert_eq!(created.value(0), 999_000);
@@ -897,7 +897,7 @@ mod tests {
             .column_by_name("last_message_handler")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::StringArray>()
             .unwrap();
         assert!(!handler.is_null(0));
         assert_eq!(handler.value(0), "grant_chopstick");
@@ -908,7 +908,7 @@ mod tests {
             .column_by_name("is_system")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::BooleanArray>()
             .unwrap();
         assert!(!sys.value(0));
         assert!(sys.value(1));
@@ -918,7 +918,7 @@ mod tests {
             .column_by_name("instance_id")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::StringArray>()
             .unwrap();
         assert_eq!(inst.value(0), "019e5661-7d33-7380-9afe-699ffc567531");
         assert_eq!(inst.value(1), "");
@@ -927,7 +927,7 @@ mod tests {
             .column_by_name("queue_depth")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .unwrap();
         assert_eq!(qd.value(0), 8);
         assert_eq!(qd.value(1), 0);
@@ -955,7 +955,7 @@ mod tests {
             .column_by_name("enabled")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::BooleanArray>()
             .unwrap();
         assert!(enabled.value(0));
 
@@ -963,7 +963,7 @@ mod tests {
             .column_by_name("known_session_count")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .unwrap();
         assert_eq!(known.value(0), 2);
     }
@@ -1006,7 +1006,7 @@ mod tests {
             .column_by_name("sender")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::StringArray>()
             .unwrap();
         assert!(!sender.is_null(0));
         assert_eq!(sender.value(0), "session_owner_addr");
@@ -1016,7 +1016,7 @@ mod tests {
             .column_by_name("oldest_buffered_seq")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .unwrap();
         assert!(!oldest.is_null(0));
         assert_eq!(oldest.value(0), 2);
@@ -1026,7 +1026,7 @@ mod tests {
             .column_by_name("newest_buffered_seq")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .unwrap();
         assert!(!newest.is_null(0));
         assert_eq!(newest.value(0), 6);
@@ -1050,7 +1050,7 @@ mod tests {
             .column_by_name("active_count")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .unwrap();
         assert_eq!(count.value(0), 3);
     }
@@ -1072,7 +1072,7 @@ mod tests {
             .column_by_name("oldest_since")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .unwrap();
         assert!(!oldest.is_null(0));
         assert_eq!(oldest.value(0), 1_700_000_000_000_000);
@@ -1109,7 +1109,7 @@ mod tests {
             .column_by_name("failure_root_cause_name")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::StringArray>()
             .unwrap();
         assert!(!name.is_null(0));
         assert_eq!(name.value(0), "Philosopher");
@@ -1119,7 +1119,7 @@ mod tests {
             .column_by_name("failure_is_propagated")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::BooleanArray>()
             .unwrap();
         assert!(!propagated.value(0));
         assert!(propagated.value(1));
@@ -1142,7 +1142,7 @@ mod tests {
             .column_by_name("error_code")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::StringArray>()
             .unwrap();
         assert_eq!(code.value(0), "NOT_FOUND");
     }
