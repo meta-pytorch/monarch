@@ -24,9 +24,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Build a CPU wheel WITH the RDMA extension in the test-infra container (dnf toolchain +
-  # a build-only CUDA toolkit). Mirrors build-cpu.yml's build but is kept local to the
-  # FUSE lane so the shared CPU wheel stays RDMA-free. FUSE is not needed to build, so the
+  # Build a CPU wheel WITH the RDMA extension in the test-infra container (CUDA builder
+  # image, CPU runner). Mirrors build-cpu.yml's build but is kept local to the FUSE lane
+  # so the shared CPU wheel stays RDMA-free. FUSE is not needed to build, so the
   # container (which has no /dev/fuse) is fine here; the fuse tests run in the next job.
   build-rdma-wheel:
     name: Build CPU wheel (RDMA)
@@ -34,6 +34,9 @@ jobs:
     with:
       timeout: 60
       runner: linux.4xlarge
+      # Same image as build-gpu.yml. Its baked-in toolkit avoids dnf-installing CUDA from
+      # NVIDIA's rhel9 repo, whose CDN intermittently serves repomd.xml pointing at 404s.
+      docker-image: pytorch/manylinux2_28-builder:cuda13.0
       submodules: recursive
       upload-artifact: monarch-cpu-rdma-fuse-${{ github.sha }}-py3.10
       script: |
@@ -49,9 +52,10 @@ jobs:
 
         # RDMA (monarch._rust_bindings.rdma) only builds with a CUDA/ROCm toolchain --
         # setup.py sets build_rdma = has_cuda or has_rocm (rdmaxcel-sys compiles device
-        # code). The remotemount fan-out test needs RDMABuffer, so install the build-only
-        # CUDA toolkit (statically linked, so no GPU or CUDA runtime is needed to import).
-        command -v nvcc &> /dev/null || setup_cuda_toolkit
+        # code). The remotemount fan-out test needs RDMABuffer, so fail fast if the image
+        # lacks the CUDA toolkit (statically linked, so no GPU or CUDA runtime is needed
+        # to import).
+        command -v nvcc
 
         # Build monarch (No tensor engine, CPU version)
         USE_TENSOR_ENGINE=0 python -m build --wheel --no-isolation
