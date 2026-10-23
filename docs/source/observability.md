@@ -11,7 +11,7 @@ and can independently export metrics, logs, and spans to external backends.
 
 | Use case | Surface | What it provides |
 |----------|---------|------------------|
-| Query actor, mesh, message, trace, and metric history | [Distributed telemetry](distributed-telemetry) | DataFusion SQL across host-local collectors |
+| Query actor, mesh, message, trace, metric, and host resource history | [Distributed telemetry](distributed-telemetry) | DataFusion SQL across host-local collectors |
 | Monitor topology, status, failures, and traffic in a browser | [Monarch Dashboard](monarch-dashboard) | Live summaries, hierarchy views, and a job DAG |
 | Trace endpoint calls and handler execution across a job | [Actor profiling](profiling) | Perfetto traces grouped by process and actor, with call-to-handler links |
 | Diagnose a running mesh from a terminal | [Mesh Admin TUI](admin-tui) | Live topology, health checks, and py-spy stack traces |
@@ -81,6 +81,43 @@ job-local distributed telemetry, an external OTLP endpoint, or both.
 See [Metrics](metrics) for provider scope, collection and flushing behavior,
 configuration, and both export paths.
 
+## Host and GPU metrics
+
+Each telemetry host also records its own resource usage, so you can line up
+actor and message activity with what the machine was doing at the time.
+
+| Table | Default | Contents |
+|-------|---------|----------|
+| `host_metrics` | Every 10 seconds | CPU utilization and count, load averages, memory, swap, cumulative network and disk byte counters, and free space on `/` and `/tmp` |
+| `gpu_metrics` | Every 10 seconds | Per-GPU utilization, memory used and total, temperature, and power, read through NVML |
+
+Samplers run next to each host's telemetry collector, including the client
+host, and write one row per host, or one row per GPU, per interval. Both tables
+follow `retention_secs`. A host without NVIDIA GPUs or NVML skips GPU sampling
+and leaves `gpu_metrics` empty. See
+[Distributed telemetry](distributed-telemetry) for columns, row keys, and
+example queries.
+
+Every NVML call contends for a driver lock that co-located training processes
+also take, so avoid GPU sampling intervals shorter than 10 seconds. To turn
+either sampler off, set its interval to `0`:
+
+```python
+TelemetryConfig(host_metrics_interval_secs=0, gpu_metrics_interval_secs=0)
+```
+
+For example, this query reports each GPU's average utilization over the last
+five minutes:
+
+```sql
+SELECT hostname, gpu_index, AVG(utilization_percent) AS avg_util,
+  MAX(memory_used_bytes) AS max_memory_used
+FROM gpu_metrics
+WHERE timestamp_us > (SELECT MAX(timestamp_us) FROM gpu_metrics) - 300000000
+GROUP BY hostname, gpu_index
+ORDER BY hostname, gpu_index
+```
+
 ## Data flow
 
 ```text
@@ -89,9 +126,11 @@ actor and proc events ──> host-local collectors ──> distributed query en
                                                         ├─> Monarch Dashboard
                                                         └─> monarch profile ──> Perfetto trace
 
+host and GPU samplers ──> host-local collectors
+
 OTel instruments ──> process-global meter provider ──┬─> UDS metric exporter
-                                                      │        └─> host-local collectors
-                                                      └─> external metric exporter
+                                                     │        └─> host-local collectors
+                                                     └─> external metric exporter
 
 live mesh ──> Mesh Admin API ──────────────────────────────> Mesh Admin TUI
      └──────> periodic snapshots ──> distributed telemetry ─> Dashboard DAG
@@ -110,6 +149,8 @@ are not a durable event archive.
 | `include_dashboard` | `False` | Advertise the browser dashboard |
 | `dashboard_port` | `8265` | Preferred dashboard port; use `0` for an ephemeral port |
 | `snapshot_interval_secs` | `30` | Mesh-introspection snapshot interval; `0` disables periodic snapshots |
+| `host_metrics_interval_secs` | `10.0` | `host_metrics` sampling interval on every telemetry host; `0` disables host sampling |
+| `gpu_metrics_interval_secs` | `10.0` | `gpu_metrics` sampling interval on every telemetry host; `0` disables GPU sampling |
 
 For an admin server without distributed telemetry, call `job.enable_admin()`.
 That supports the TUI, but it does not provide the dashboard or SQL history.
