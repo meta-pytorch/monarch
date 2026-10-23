@@ -2005,6 +2005,45 @@ def test_cleanup_async():
     procs.stop().get()
 
 
+class ActorWithSlowCleanup(Actor):
+    def __init__(self, counter: Counter) -> None:
+        self.counter = counter
+
+    @endpoint
+    def check(self) -> None:
+        pass
+
+    def __cleanup__(self, exc: Exception | None) -> None:
+        # Long enough to outlast the idle window that ordinary teardown gives
+        # an actor's children.
+        time.sleep(1.0)
+        self.counter.incr.call_one().get()
+
+
+def _check_proc_stop_runs_actor_cleanup() -> None:
+    procs = this_host().spawn_procs(per_host={"gpus": 1})
+    counter = procs.spawn("counter", Counter, 0)
+    stopped_procs = this_host().spawn_procs(per_host={"gpus": 1})
+    actor = stopped_procs.spawn("slow_cleanup", ActorWithSlowCleanup, counter)
+    actor.check.call_one().get()
+    # Stopping only the proc mesh must still let its actors finish cleanup
+    # before the procs exit.
+    stopped_procs.stop().get()
+    assert counter.value.call_one().get() == 1
+    procs.stop().get()
+
+
+@isolate_in_subprocess
+def test_proc_stop_runs_actor_cleanup():
+    _check_proc_stop_runs_actor_cleanup()
+
+
+@isolate_in_subprocess
+def test_proc_stop_runs_data_mesh_actor_cleanup():
+    with configured(use_direct_spawn=True):
+        _check_proc_stop_runs_actor_cleanup()
+
+
 class WrapperActor(Actor):
     """Just spawns an actor and does nothing with it."""
 

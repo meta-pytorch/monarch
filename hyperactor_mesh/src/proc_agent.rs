@@ -36,6 +36,7 @@ use hyperactor::PortRef;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::actor::handle_undeliverable_message;
 use hyperactor::actor::remote::Remote;
+use hyperactor::context::Actor as _;
 use hyperactor::id::Label;
 use hyperactor::id::Uid;
 use hyperactor::mailbox::MessageEnvelope;
@@ -128,6 +129,11 @@ struct RepublishIntrospect {
     emit_memory_metrics: bool,
 }
 wirevalue::register_type!(RepublishIntrospect);
+
+/// Notification that the actor spawner and its descendants have stopped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+struct ActorSpawnerStopped;
+wirevalue::register_type!(ActorSpawnerStopped);
 
 /// Collect live actor children and system actor children from the
 /// proc's instance DashMap using `all_instance_keys()` with point
@@ -294,6 +300,13 @@ impl ActorInstanceState {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Named)]
 pub(crate) struct SelfCheck {}
 
+#[derive(Debug, PartialEq, Eq)]
+enum ProcState {
+    Running,
+    Stopping,
+    ShuttingDown,
+}
+
 /// A mesh agent is responsible for managing procs in a [`ProcMesh`].
 ///
 /// ## Supervision event ingestion (remote)
@@ -326,6 +339,7 @@ pub(crate) struct SelfCheck {}
         resource::GetRankStatus,
         resource::WaitRankStatus,
         RepublishIntrospect,
+        ActorSpawnerStopped,
         PySpyDump,
         PySpyProfile,
         ConfigDump,
@@ -346,10 +360,11 @@ pub struct ProcAgent {
     /// channel instead of calling process::exit directly, allowing the
     /// caller to perform graceful shutdown (e.g. draining the mailbox server).
     shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
-    /// True once a StopAll message has been received. When set, the
-    /// supervision event handler checks whether all actors have reached
-    /// terminal state and, if so, triggers process shutdown.
-    stopping_all: bool,
+    state: ProcState,
+    /// Owns the workers and data actor mesh members on this proc.
+    actor_spawner: ActorHandle<ActorSpawner>,
+    /// True once the spawner has finished stopping its descendants.
+    actor_spawner_stopped: bool,
     /// If set, check for expired actors whose keepalive has lapsed.
     mesh_orphan_timeout: Option<Duration>,
     /// Root-owned client-root services keyed by validated static service name.
@@ -371,7 +386,7 @@ impl ProcAgent {
         // `spawn_data` discovers the per-proc ActorSpawner at its well-known UID,
         // so legacy ProcAgent bootstrapping must install it. This compatibility
         // step goes away when proc bootstrapping moves off ProcAgent entirely.
-        proc.spawn_bound_with_uid(actor_spawner_uid(), ActorSpawner)?;
+        let actor_spawner = proc.spawn_bound_with_uid(actor_spawner_uid(), ActorSpawner)?;
 
         let orphan_timeout = hyperactor_config::global::get(MESH_ORPHAN_TIMEOUT);
         let agent = ProcAgent {
@@ -381,7 +396,9 @@ impl ProcAgent {
             record_supervision_events: true,
             introspect_dirty: false,
             shutdown_tx,
-            stopping_all: false,
+            state: ProcState::Running,
+            actor_spawner,
+            actor_spawner_stopped: false,
             mesh_orphan_timeout: orphan_timeout,
             client_root_services: HashMap::new(),
         };
@@ -398,10 +415,21 @@ impl ProcAgent {
         self.actor_states.values().all(|state| state.is_terminal())
     }
 
+    /// Returns true when stopping was requested and all actors have stopped.
+    fn ready_to_shutdown(&self) -> bool {
+        self.state == ProcState::Stopping
+            && self.all_actors_terminal()
+            && self.actor_spawner_stopped
+    }
+
     /// Trigger process shutdown. Flushes the forwarder first so that
     /// supervision events reach their destinations, then sends through
     /// `shutdown_tx` if available, otherwise calls `process::exit`.
     async fn shutdown(&mut self) {
+        if self.state == ProcState::ShuttingDown {
+            return;
+        }
+        self.state = ProcState::ShuttingDown;
         let has_errors = self.actor_states.values().any(|state| state.has_errors());
         let exit_code = if has_errors { 1 } else { 0 };
 
@@ -811,7 +839,7 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
 
             // If StopAll was requested, check whether all actors have now
             // reached terminal state. If so, shut down the process.
-            if self.stopping_all && self.all_actors_terminal() {
+            if self.ready_to_shutdown() {
                 self.shutdown().await;
             }
         }
@@ -1032,7 +1060,7 @@ impl ProcAgent {
         // Refuse to create a new service once shutdown has begun: a StopAll has
         // already snapshotted and stopped the live actors, so a service created
         // afterwards would never be stopped and would strand shutdown.
-        if self.stopping_all {
+        if self.state != ProcState::Running {
             return Err(ClientRootError::Unavailable {
                 name: service_name.as_str().to_string(),
                 reason: "the client root is shutting down".to_string(),
@@ -1132,7 +1160,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
         }
         // Once shutdown has begun, a new actor would escape the StopAll snapshot
         // and strand shutdown; do not create it.
-        if self.stopping_all {
+        if self.state != ProcState::Running {
             return Ok(());
         }
         let create_rank = create_or_update.rank.unwrap();
@@ -1207,17 +1235,19 @@ impl Handler<resource::Stop> for ProcAgent {
     }
 }
 
-/// Handles `StopAll` by sending stop signals to all child actors.
-/// Process shutdown is deferred until all actors have reached terminal
-/// state, as observed through supervision events.
+/// Stops resource-managed actors and the actor spawner. Process shutdown waits
+/// for the tracked supervision events and the spawner's descendant cleanup.
 #[async_trait]
 impl Handler<resource::StopAll> for ProcAgent {
     async fn handle(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         message: resource::StopAll,
     ) -> anyhow::Result<()> {
-        self.stopping_all = true;
+        if self.state != ProcState::Running {
+            return Ok(());
+        }
+        self.state = ProcState::Stopping;
 
         // Send stop signals to all actors that haven't been stopped yet.
         let to_stop: Vec<ActorAddr> = self
@@ -1235,12 +1265,26 @@ impl Handler<resource::StopAll> for ProcAgent {
         for actor_id in &to_stop {
             self.stop_actor_by_id(actor_id, &message.reason);
         }
+        self.actor_spawner.drain_and_stop(&message.reason)?;
+        let actor_spawner = self.actor_spawner.clone();
+        let stopped = cx.instance().port::<ActorSpawnerStopped>();
+        let this = cx.instance().clone_for_py();
+        tokio::spawn(async move {
+            let _status = actor_spawner.await;
+            stopped.post(&this, ActorSpawnerStopped);
+        });
 
-        // If there are no actors to stop, shut down immediately.
-        if self.all_actors_terminal() {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<ActorSpawnerStopped> for ProcAgent {
+    async fn handle(&mut self, _cx: &Context<Self>, _: ActorSpawnerStopped) -> anyhow::Result<()> {
+        self.actor_spawner_stopped = true;
+        if self.ready_to_shutdown() {
             self.shutdown().await;
         }
-
         Ok(())
     }
 }
@@ -2636,6 +2680,34 @@ mod tests {
             .expect("shutdown must complete once the last actor terminates")
             .expect("shutdown channel delivered an exit code");
         assert_eq!(code, 0, "clean shutdown exit code");
+
+        agent.bind::<ProcAgent>().post(
+            &control,
+            resource::StopAll {
+                reason: "repeated shutdown".to_string(),
+            },
+        );
+        agent
+            .bind::<ProcAgent>()
+            .post(&control, ActorSpawnerStopped);
+        let err = tokio::time::timeout(
+            Duration::from_secs(15),
+            ClientRootService::<ExtraActor>::declare("after-shutdown").ensure(
+                &control,
+                &client_root,
+                (),
+            ),
+        )
+        .await
+        .expect("agent must answer after repeated shutdown notifications")
+        .expect_err("a new ensure after shutdown must be rejected");
+        assert!(
+            matches!(
+                err,
+                crate::Error::ClientRootError(ClientRootError::Unavailable { .. })
+            ),
+            "ensure after shutdown must be Unavailable, got {err:?}"
+        );
     }
 
     // CROOT-7: a service spawned through ensure inherits the client-root
