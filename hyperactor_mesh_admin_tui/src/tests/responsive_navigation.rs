@@ -264,6 +264,7 @@ fn large_topology() -> TestTopology {
                 identity: host_reference.clone(),
                 properties: NodeProperties::Host {
                     addr: format!("host-{host_index}"),
+                    hostname: "host".into(),
                     num_procs: proc_references.len(),
                     system_children: Vec::new(),
                     memory: Default::default(),
@@ -870,6 +871,7 @@ async fn refresh_removes_proc_missing_from_host_introspection() {
             identity: host_reference.clone(),
             properties: NodeProperties::Host {
                 addr: "host-0".to_string(),
+                hostname: "host".into(),
                 num_procs: remaining_procs.len(),
                 system_children: Vec::new(),
                 memory: Default::default(),

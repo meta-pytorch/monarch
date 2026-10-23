@@ -1380,6 +1380,7 @@ mod tests {
             identity: mock_host_ref(),
             properties: NodeProperties::Host {
                 addr: "10.0.0.1:8080".to_string(),
+                hostname: "host".into(),
                 num_procs: 3,
                 system_children: vec![],
                 memory: ProcessMemoryStats {
@@ -1441,6 +1442,7 @@ mod tests {
             identity: mock_host_ref(),
             properties: NodeProperties::Host {
                 addr: "10.0.0.1:8080".to_string(),
+                hostname: "host".into(),
                 num_procs: 1,
                 system_children: vec![],
                 memory: ProcessMemoryStats {

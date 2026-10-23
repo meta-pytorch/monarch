@@ -324,6 +324,7 @@ mod tests {
             identity: mock_host_ref("h1"),
             properties: NodeProperties::Host {
                 addr: "10.0.0.1:8000".to_string(),
+                hostname: "host".into(),
                 num_procs: 3,
                 system_children: vec![],
                 memory: Default::default(),
@@ -341,6 +342,7 @@ mod tests {
             identity: mock_host_ref("h1"),
             properties: NodeProperties::Host {
                 addr: "10.0.0.1:8000".to_string(),
+                hostname: "host".into(),
                 num_procs: 5,
                 system_children: vec![mock_actor_ref("sys1"), mock_actor_ref("sys2")],
                 memory: Default::default(),
@@ -358,6 +360,7 @@ mod tests {
             identity: mock_host_ref("h1"),
             properties: NodeProperties::Host {
                 addr: "10.0.0.1:8000".to_string(),
+                hostname: "host".into(),
                 num_procs: 2,
                 system_children: vec![mock_actor_ref("s1"), mock_actor_ref("s2")],
                 memory: Default::default(),
