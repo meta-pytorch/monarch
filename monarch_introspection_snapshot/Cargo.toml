@@ -14,7 +14,6 @@ path = "test/snapshot_integration_test.rs"
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.92"
-datafusion = "52.5.0"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 monarch_distributed_telemetry = { version = "0.0.0", path = "../monarch_distributed_telemetry" }
@@ -28,6 +27,7 @@ uuid = { version = "1.26.1", features = ["rng-getrandom", "serde", "v4", "v5", "
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [dev-dependencies]
+datafusion = "52.5.0"
 ndslice = { version = "0.0.0", path = "../ndslice" }
 tempfile = "3.27.0"
 tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }

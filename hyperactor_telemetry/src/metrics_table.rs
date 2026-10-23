@@ -323,14 +323,14 @@ fn timestamp_to_micros(timestamp: SystemTime) -> i64 {
 mod tests {
     use std::sync::Arc;
 
-    use datafusion::arrow::array::Array as _;
-    use datafusion::arrow::array::BooleanArray;
-    use datafusion::arrow::array::Float64Array;
-    use datafusion::arrow::array::Int64Array;
-    use datafusion::arrow::array::StringArray;
-    use datafusion::arrow::array::UInt64Array;
-    use datafusion::arrow::record_batch::RecordBatch;
     use monarch_record_batch::RecordBatchBuffer;
+    use monarch_record_batch::arrow::array::Array as _;
+    use monarch_record_batch::arrow::array::BooleanArray;
+    use monarch_record_batch::arrow::array::Float64Array;
+    use monarch_record_batch::arrow::array::Int64Array;
+    use monarch_record_batch::arrow::array::StringArray;
+    use monarch_record_batch::arrow::array::UInt64Array;
+    use monarch_record_batch::arrow::record_batch::RecordBatch;
     use opentelemetry::KeyValue;
     use opentelemetry::metrics::MeterProvider as _;
     use opentelemetry_sdk::Resource;

@@ -47,12 +47,12 @@ use std::io::BufWriter;
 use std::path::Path;
 
 use anyhow::Context;
-use datafusion::arrow::array::AsArray;
-use datafusion::arrow::datatypes::Int64Type;
-use datafusion::arrow::ipc::reader::FileReader;
-use datafusion::arrow::ipc::writer::FileWriter;
-use datafusion::arrow::record_batch::RecordBatch;
 use monarch_distributed_telemetry::database_scanner::TableStore;
+use monarch_record_batch::arrow::array::AsArray;
+use monarch_record_batch::arrow::datatypes::Int64Type;
+use monarch_record_batch::arrow::ipc::reader::FileReader;
+use monarch_record_batch::arrow::ipc::writer::FileWriter;
+use monarch_record_batch::arrow::record_batch::RecordBatch;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -321,12 +321,12 @@ pub async fn import_snapshot_bundle(dir: &Path) -> anyhow::Result<(TableStore, B
 
 #[cfg(test)]
 mod tests {
-    use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::prelude::SessionContext;
     use hyperactor::ProcAddr;
     use hyperactor::channel::ChannelAddr;
     use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
     use hyperactor_mesh::introspect::NodeRef;
+    use monarch_record_batch::arrow::record_batch::RecordBatch;
 
     use super::*;
     use crate::capture::SnapshotData;
@@ -505,7 +505,7 @@ mod tests {
             .expect("cnt column missing");
         let arr = col
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .expect("cnt not Int64");
         Ok(arr.value(0))
     }
