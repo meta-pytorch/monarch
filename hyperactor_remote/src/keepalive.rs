@@ -315,7 +315,7 @@ impl Handler<KeepaliveAck> for KeepaliveWorker {
 impl Handler<AckDeadline> for KeepaliveWorker {
     async fn handle(&mut self, cx: &Context<Self>, message: AckDeadline) -> anyhow::Result<()> {
         if self.acked_generation < message.generation {
-            cx.kill("keepalive acknowledgment missed")?;
+            cx.abort("keepalive acknowledgment missed")?;
         }
         Ok(())
     }
@@ -382,7 +382,7 @@ impl Handler<Deadline> for KeepaliveSupervisor {
         // cannot be produced by this actor before it observes that generation.
         if message.generation == self.generation {
             let reason = format!("keepalive missed for generation {}", message.generation);
-            cx.kill(&reason)?;
+            cx.abort(&reason)?;
         }
         Ok(())
     }
