@@ -400,7 +400,7 @@ impl LoopWake {
             }
         }
         // A non-consuming read (HDL-3).
-        let published = match entry.handle.bind(py).borrow().poll_ready() {
+        let published = match entry.handle.bind(py).borrow().poll_ready(py) {
             Ok(Some(value)) => complete_asyncio_future(fut, false, value),
             // Includes HDL-10's "producer ended without publishing a result".
             Err(err) => complete_asyncio_future(fut, true, err.into_value(py).into_any()),
@@ -576,10 +576,9 @@ mod tests {
     use pyo3::exceptions::PyOSError;
     use pyo3::types::IntoPyDict;
     use pyo3::types::PyModule;
-    use tokio::sync::watch;
 
     use super::*;
-    use crate::handle::HandleCore;
+    use crate::handle::Publisher;
     use crate::runtime::GilSite;
     use crate::runtime::ensure_python;
     use crate::runtime::monarch_with_gil_blocking;
@@ -764,8 +763,6 @@ def base_done(fut):
     return asyncio.Future.done(fut)
 "#;
 
-    type Sender = watch::Sender<Option<PyResult<Py<PyAny>>>>;
-
     fn helper(py: Python<'_>) -> Bound<'_, PyModule> {
         PyModule::from_code(
             py,
@@ -783,18 +780,13 @@ def base_done(fut):
             .unwrap()
     }
 
-    fn pending_handle(py: Python<'_>) -> (Sender, Py<PyHandle>) {
-        let (tx, rx) = watch::channel(None);
-        let handle = Py::new(py, PyHandle::from_core(HandleCore::new(rx, None))).unwrap();
-        (tx, handle)
+    fn pending_handle(py: Python<'_>) -> (Publisher, Py<PyHandle>) {
+        let (publisher, handle) = PyHandle::pending();
+        (publisher, Py::new(py, handle).unwrap())
     }
 
     fn ready_handle(py: Python<'_>, value: i64) -> Py<PyHandle> {
-        Py::new(
-            py,
-            PyHandle::from_value(value.into_py_any(py).unwrap()).unwrap(),
-        )
-        .unwrap()
+        Py::new(py, PyHandle::from_value(value.into_py_any(py).unwrap())).unwrap()
     }
 
     fn collect_garbage(py: Python<'_>) {
@@ -826,7 +818,7 @@ def base_done(fut):
                 .unwrap()
                 .expect("a selector loop should get a wake channel");
 
-            tx.send(Some(Ok(42i64.into_py_any(py).unwrap()))).unwrap();
+            tx.publish(Ok(42i64.into_py_any(py).unwrap()));
             assert!(
                 readable_within(channel.get(), Duration::from_secs(5)),
                 "the observer should write the pipe without the GIL, which this thread holds"
@@ -867,8 +859,7 @@ def base_done(fut):
 
             let value = helper.getattr("Probe").unwrap().call0().unwrap();
             let value_ref = PyWeakrefReference::new(&value).unwrap().unbind();
-            tx.send(Some(Ok(value.unbind()))).unwrap();
-            drop(tx);
+            tx.publish(Ok(value.unbind()));
             assert!(
                 readable_within(channel.get(), Duration::from_secs(5)),
                 "the observer should notify the channel"
@@ -902,7 +893,7 @@ def base_done(fut):
                 .unwrap();
             drop(handle);
             collect_garbage(py);
-            tx.send(Some(Ok(7i64.into_py_any(py).unwrap()))).unwrap();
+            tx.publish(Ok(7i64.into_py_any(py).unwrap()));
             helper
                 .call_method1("run_until_nonempty", (&event_loop, &results))
                 .unwrap();
@@ -991,7 +982,7 @@ def base_done(fut):
                 "the loop's channel, with its token, should be freed with it"
             );
 
-            tx.send(Some(Ok(py.None()))).unwrap();
+            tx.publish(Ok(py.None()));
         });
     }
 
@@ -1021,8 +1012,7 @@ def base_done(fut):
                 let channel_ref = PyWeakrefReference::new(channel.as_any()).unwrap();
 
                 // The loop never runs again, so the value is never delivered.
-                tx.send(Some(Ok(value.clone().unbind()))).unwrap();
-                drop(tx);
+                tx.publish(Ok(value.clone().unbind()));
                 assert!(
                     readable_within(channel.get(), Duration::from_secs(5)),
                     "{variant}: the observer should finish, releasing its receiver"
@@ -1122,7 +1112,7 @@ def base_done(fut):
                 .call_method1("start_and_cancel", (&event_loop, &handle))
                 .unwrap();
 
-            tx.send(Some(Ok(7i64.into_py_any(py).unwrap()))).unwrap();
+            tx.publish(Ok(7i64.into_py_any(py).unwrap()));
             let value: i64 = helper
                 .call_method1("observe_after_cancel", (&event_loop, &handle))
                 .unwrap()
@@ -1228,7 +1218,7 @@ def base_done(fut):
                 let fut = helper
                     .call_method1("start_observer", (&event_loop, &handle))
                     .unwrap();
-                tx.send(Some(Ok(value.into_py_any(py).unwrap()))).unwrap();
+                tx.publish(Ok(value.into_py_any(py).unwrap()));
                 let got: i64 = helper
                     .call_method1("run_until_done", (&event_loop, &fut))
                     .unwrap()
@@ -1272,7 +1262,7 @@ def base_done(fut):
             let fut = helper
                 .call_method1("start_observer", (&event_loop, &second))
                 .unwrap();
-            tx.send(Some(Ok(2i64.into_py_any(py).unwrap()))).unwrap();
+            tx.publish(Ok(2i64.into_py_any(py).unwrap()));
             let got: i64 = helper
                 .call_method1("run_until_done", (&event_loop, &fut))
                 .unwrap()
@@ -1339,7 +1329,7 @@ def base_done(fut):
                 1,
                 "the await should be registered with the channel"
             );
-            tx.send(Some(Ok(7i64.into_py_any(py).unwrap()))).unwrap();
+            tx.publish(Ok(7i64.into_py_any(py).unwrap()));
             let got: i64 = helper
                 .call_method1("run_until_done", (&event_loop, &fut))
                 .unwrap()

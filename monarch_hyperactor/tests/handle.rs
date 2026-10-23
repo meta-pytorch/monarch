@@ -20,10 +20,10 @@ fn rust_value_observers_outlive_handle_and_remain_non_consuming() {
         let value = 42i64
             .into_py_any(py)
             .expect("test value should convert to Python");
-        PyHandle::from_value(value).expect("ready Handle should be constructed")
+        PyHandle::from_value(value)
     });
 
-    // Each waiter owns a cloned receiver, and ready construction starts no
+    // Each waiter owns a reference to the core, and ready construction starts no
     // producer task. Dropping the wrapper must leave both observers
     // independently able to clone the same terminal value.
     let first = handle.wait_future();

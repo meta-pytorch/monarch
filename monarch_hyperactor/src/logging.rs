@@ -533,8 +533,10 @@ mod tests {
 
     /// Supply an already-created proc mesh to the logging producer.
     fn spawn_logging_client(instance: &PyInstance, proc_mesh: &PyProcMesh) -> PyResult<PyHandle> {
-        let ready = monarch_with_gil_blocking(GilSite::Test, |py| {
-            PyHandle::from_value(PyProcMesh::new_ref(proc_mesh.mesh_ref()?).into_py_any(py)?)
+        let ready = monarch_with_gil_blocking(GilSite::Test, |py| -> PyResult<PyHandle> {
+            Ok(PyHandle::from_value(
+                PyProcMesh::new_ref(proc_mesh.mesh_ref()?).into_py_any(py)?,
+            ))
         })?;
         Ok(LoggingMeshClient::spawn(instance, &ready, false, None))
     }

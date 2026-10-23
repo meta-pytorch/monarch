@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import _thread
 import asyncio
 import contextlib
 import ctypes
@@ -41,9 +42,9 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
-from monarch._rust_bindings.monarch_hyperactor.testing import _handle_receiver_count
+from monarch._rust_bindings.monarch_hyperactor.testing import _handle_observer_count
 from monarch._src.actor import actor_mesh
-from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
+from monarch._src.actor.actor_mesh import ActorError, ActorMesh, Channel, context, Port
 from monarch._src.actor.host_mesh import _spawn_admin, HostMesh, this_host, this_proc
 from monarch._src.actor.logging import _pending_flush_tasks
 from monarch._src.actor.proc_mesh import get_or_spawn_controller, HyProcMesh
@@ -126,6 +127,127 @@ async def test_stream():
 
     assert 8 == sum([await x for x in v.value.stream()])
     await proc.stop()
+
+
+class SlowEcho(Actor):
+    @endpoint
+    async def echo(self, value: str, delay: float) -> str:
+        await asyncio.sleep(delay)
+        return value
+
+
+@pytest.mark.timeout(60)
+def test_stream_item_observed_twice_shares_its_reply() -> None:
+    """A second reader of one stream item, while an untimed get() on another
+    thread drives it, reads the same object instead of failing."""
+    proc = this_host().spawn_procs(per_host={"gpus": 1})
+    try:
+        echo = proc.spawn("slow_echo_shared", SlowEcho)
+        (item,) = list(echo.echo.stream("shared reply", 0.5))
+        results: list[str] = []
+        first = threading.Thread(target=lambda: results.append(item.get()))
+        first.start()
+        time.sleep(0.1)
+        results.append(item.get(timeout=30))
+        first.join(timeout=30)
+        assert results == ["shared reply", "shared reply"]
+        assert results[0] is results[1]
+    finally:
+        proc.stop().get()
+
+
+@pytest.mark.timeout(60)
+def test_interrupted_stream_item_get_leaves_its_reply() -> None:
+    """Ctrl-C ends a main-thread get() on a stream item but not the item, so a
+    later get() reads its reply."""
+    assert threading.current_thread() is threading.main_thread()
+    proc = this_host().spawn_procs(per_host={"gpus": 1})
+    try:
+        echo = proc.spawn("slow_echo_interrupted", SlowEcho)
+        (item,) = list(echo.echo.stream("late reply", 2.0))
+        timer = threading.Timer(0.3, _thread.interrupt_main)
+        timer.start()
+        with pytest.raises(KeyboardInterrupt):
+            item.get()
+        timer.join()
+        assert item.get(timeout=30) == "late reply"
+    finally:
+        proc.stop().get()
+
+
+def _decode_off_the_main_thread(error: BaseException, value: object) -> object:
+    """Return `value`, but raise `error` on Python's main thread, as a signal
+    handler interrupting the decoding there would."""
+    if threading.current_thread() is threading.main_thread():
+        raise error
+    return value
+
+
+class MainThreadDecodeInterrupted:
+    """Unpickles as `value`, except on Python's main thread, where unpickling
+    raises KeyboardInterrupt."""
+
+    def __init__(self, value: object) -> None:
+        self.value = value
+
+    def __reduce__(self) -> Tuple[Any, Tuple[BaseException, object]]:
+        return (_decode_off_the_main_thread, (KeyboardInterrupt(), self.value))
+
+
+class MainThreadDecodeInterruptedError(Exception):
+    """Unpickles as `ValueError("remote failure")`, except on Python's main
+    thread, where unpickling raises KeyboardInterrupt."""
+
+    def __reduce__(self) -> Tuple[Any, Tuple[BaseException, object]]:
+        return (
+            _decode_off_the_main_thread,
+            (KeyboardInterrupt(), ValueError("remote failure")),
+        )
+
+
+class DecodeInterrupter(Actor):
+    @endpoint
+    async def reply(self) -> MainThreadDecodeInterrupted:
+        return MainThreadDecodeInterrupted("decoded")
+
+    @endpoint
+    async def fail(self) -> None:
+        raise MainThreadDecodeInterruptedError()
+
+
+@pytest.mark.timeout(60)
+def test_interrupted_decode_of_a_stream_reply_leaves_it_for_a_later_read() -> None:
+    """Ctrl-C landing while a main-thread get() decodes a stream item's reply
+    ends that get(), and a later get() reads the reply."""
+    assert threading.current_thread() is threading.main_thread()
+    proc = this_host().spawn_procs(per_host={"gpus": 1})
+    try:
+        interrupter = proc.spawn("decode_interrupter_reply", DecodeInterrupter)
+        (item,) = list(interrupter.reply.stream())
+        with pytest.raises(KeyboardInterrupt):
+            item.get()
+        assert item.get(timeout=30) == "decoded"
+    finally:
+        proc.stop().get()
+
+
+@pytest.mark.timeout(60)
+def test_interrupted_decode_of_a_stream_exception_leaves_it_for_a_later_read() -> None:
+    """Ctrl-C landing while a main-thread get() decodes a stream item's remote
+    exception ends that get(), and a later get() raises the exception."""
+    assert threading.current_thread() is threading.main_thread()
+    proc = this_host().spawn_procs(per_host={"gpus": 1})
+    try:
+        interrupter = proc.spawn("decode_interrupter_fail", DecodeInterrupter)
+        (item,) = list(interrupter.fail.stream())
+        with pytest.raises(KeyboardInterrupt):
+            item.get()
+        with pytest.raises(ActorError) as failure:
+            item.get(timeout=30)
+        assert isinstance(failure.value.exception, ValueError)
+        assert str(failure.value.exception) == "remote failure"
+    finally:
+        proc.stop().get()
 
 
 class To(Actor):
@@ -2139,7 +2261,7 @@ def test_raw_actor_mesh_pickle_blocks_on_proc_mesh_init() -> None:
     # so its waiter cannot be mistaken for the pickle's native get() below.
     proc_mesh._proc_mesh, complete_proc_mesh = _new_handle_pair()
     assert proc_mesh._proc_mesh.poll() is None
-    assert _handle_receiver_count(complete_proc_mesh) == 1
+    assert _handle_observer_count(complete_proc_mesh) == 1
     pickle_returned = threading.Event()
     wait_seen = threading.Event()
 
@@ -2147,7 +2269,7 @@ def test_raw_actor_mesh_pickle_blocks_on_proc_mesh_init() -> None:
         try:
             deadline = time.monotonic() + 10
             while not pickle_returned.is_set() and time.monotonic() < deadline:
-                if _handle_receiver_count(complete_proc_mesh) == 2:
+                if _handle_observer_count(complete_proc_mesh) == 2:
                     wait_seen.set()
                     break
                 pickle_returned.wait(0.001)

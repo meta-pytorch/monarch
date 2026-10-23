@@ -20,7 +20,6 @@ from typing import (
 from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorMeshProtocol
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
-from monarch._rust_bindings.monarch_hyperactor.handle import Handle
 from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import ValueMesh
@@ -40,28 +39,6 @@ class Future(Generic[_T]):
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.value_mesh import ValueMesh
-
-@final
-class PendingReply(Generic[R]):
-    """An unstarted stream-item collector or port receive held by a Monarch
-    Future.
-
-    Internal, transitional carrier until Handles can hold undecoded replies.
-    Each observation method takes the collector once; a second take raises
-    ValueError.
-    """
-
-    def spawn_handle(self) -> Handle[R]:
-        """Start taking and unpickling one queued reply, or one port message,
-        on Tokio and return a Handle observing its value or error. A port
-        receive's task stops once nobody can observe it."""
-        ...
-    def block_on(self) -> R:
-        """Take and unpickle one reply or message, blocking the caller until it
-        completes.
-        Off the main thread the caller drives collection inline; on the main
-        thread Tokio drives it while the caller waits and checks for signals."""
-        ...
 
 @final
 class ValueStream(Iterator[Future[Any]]):
