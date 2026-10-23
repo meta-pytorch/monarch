@@ -12,4 +12,3 @@
 
 pub mod glog;
 pub mod perfetto;
-pub mod sqlite;

@@ -10,9 +10,9 @@
 
 use hyperactor_telemetry::end_user_span;
 use hyperactor_telemetry::sinks::perfetto::USER_TELEMETRY_PREFIX;
-use hyperactor_telemetry::sqlite::SqliteTracing;
 use hyperactor_telemetry::start_user_span;
 use hyperactor_telemetry::trace_dispatcher::FieldValue;
+use hyperactor_telemetry_sqlite::sqlite::SqliteTracing;
 use opentelemetry::global;
 use opentelemetry::metrics;
 use pyo3::prelude::*;

@@ -16,6 +16,9 @@ use std::path::Path;
 
 use anyhow::Result;
 use anyhow::anyhow;
+use hyperactor_telemetry::trace_dispatcher::FieldValue;
+use hyperactor_telemetry::trace_dispatcher::TraceEvent;
+use hyperactor_telemetry::trace_dispatcher::TraceEventSink;
 use rusqlite::Connection;
 use rusqlite::functions::FunctionFlags;
 use serde_json::Value as JValue;
@@ -23,9 +26,6 @@ use tracing_core::LevelFilter;
 use tracing_subscriber::filter::Targets;
 
 use crate::sqlite;
-use crate::trace_dispatcher::FieldValue;
-use crate::trace_dispatcher::TraceEvent;
-use crate::trace_dispatcher::TraceEventSink;
 
 /// SQLite sink that batches events and writes them in transactions.
 /// Reuses the exact same table schema and insertion logic from SqliteLayer.

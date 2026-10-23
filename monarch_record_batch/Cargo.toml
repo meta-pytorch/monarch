@@ -8,7 +8,7 @@ edition = "2024"
 license = "BSD-3-Clause"
 
 [dependencies]
-datafusion = "52.5.0"
+arrow = { version = "=57.3.0", features = ["ffi", "json", "prettyprint", "pyarrow"] }
 monarch_record_batch_macros = { version = "0.0.0", path = "../monarch_record_batch_macros" }
 
 [lints]

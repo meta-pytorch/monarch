@@ -29,10 +29,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use datafusion::arrow::array::BooleanArray;
-use datafusion::arrow::array::Int64Array;
-use datafusion::arrow::array::StringArray;
-use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::prelude::SessionContext;
 use hyperactor::Actor;
 use hyperactor::Context;
@@ -48,6 +44,10 @@ use monarch_introspection_snapshot::integration::start_periodic_snapshots;
 use monarch_introspection_snapshot::push::SNAPSHOT_TABLE_NAMES;
 use monarch_introspection_snapshot::push::push_snapshot;
 use monarch_introspection_snapshot::service::HttpPublisher;
+use monarch_record_batch::arrow::array::BooleanArray;
+use monarch_record_batch::arrow::array::Int64Array;
+use monarch_record_batch::arrow::array::StringArray;
+use monarch_record_batch::arrow::record_batch::RecordBatch;
 use ndslice::extent;
 use ndslice::view::Ranked;
 
@@ -87,7 +87,7 @@ async fn register_all(store: &TableStore, ctx: &SessionContext) -> Result<()> {
 /// `RecordBatch`. Handles the case where DataFusion returns multiple
 /// output batches by merging them.
 async fn query_batch(ctx: &SessionContext, sql: &str) -> Result<RecordBatch> {
-    use datafusion::arrow::compute::concat_batches;
+    use monarch_record_batch::arrow::compute::concat_batches;
     let df = ctx.sql(sql).await?;
     let batches = df.collect().await?;
     if batches.is_empty() {

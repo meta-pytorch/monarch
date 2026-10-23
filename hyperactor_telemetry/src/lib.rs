@@ -65,7 +65,7 @@ mod rate_limit;
 pub mod recorder;
 pub mod sinks;
 mod spool;
-pub mod sqlite;
+
 pub mod task;
 pub mod trace;
 pub mod trace_dispatcher;
@@ -905,11 +905,18 @@ pub fn initialize_logging_with_log_prefix(
 
         if hyperactor_config::global::get(ENABLE_SQLITE_TRACING) {
             match create_sqlite_sink() {
-                Ok(sink) => {
-                    sinks.push(Box::new(sink));
+                Some(Ok(sink)) => {
+                    sinks.push(sink);
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     tracing::warn!("failed to create SqliteSink: {}", e);
+                }
+                None => {
+                    tracing::warn!(
+                        "ENABLE_SQLITE_TRACING is set but no SQLite sink is registered; \
+                         link `hyperactor_telemetry_sqlite` and call `register()` \
+                         before `initialize_logging`"
+                    );
                 }
             }
         }
@@ -989,12 +996,32 @@ pub fn initialize_logging_with_log_prefix(
     }
 }
 
-fn create_sqlite_sink() -> anyhow::Result<sinks::sqlite::SqliteSink> {
+/// Factory that creates the SQLite trace sink for the given db file
+/// path. Registered by the `hyperactor_telemetry_sqlite` crate,
+/// which is kept separate so its `libsqlite3-sys` C build stays off
+/// the compile critical path of core crates.
+pub type SqliteSinkFactory = fn(&str) -> anyhow::Result<Box<dyn trace_dispatcher::TraceEventSink>>;
+
+static SQLITE_SINK_FACTORY: std::sync::OnceLock<SqliteSinkFactory> = std::sync::OnceLock::new();
+
+/// Register the factory used to create the SQLite sink when
+/// `ENABLE_SQLITE_TRACING` is set. Callers that link
+/// `hyperactor_telemetry_sqlite` should invoke its `register()`
+/// (which calls this) before `initialize_logging`. Idempotent:
+/// only the first registration takes effect.
+pub fn register_sqlite_sink_factory(factory: SqliteSinkFactory) {
+    let _ = SQLITE_SINK_FACTORY.set(factory);
+}
+
+/// Create the SQLite sink via the registered factory, or `None` if
+/// no factory is registered in this process.
+fn create_sqlite_sink() -> Option<anyhow::Result<Box<dyn trace_dispatcher::TraceEventSink>>> {
+    let factory = SQLITE_SINK_FACTORY.get()?;
     let (db_path, _) = log_file_path(env::Env::current(), Some("traces"))
         .expect("failed to determine trace db path");
     let db_file = format!("{}/hyperactor_trace_{}.db", db_path, std::process::id());
 
-    sinks::sqlite::SqliteSink::new_with_file(&db_file, 100)
+    Some(factory(&db_file))
 }
 
 /// Create a context span at ERROR level with skip_record enabled.

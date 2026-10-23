@@ -33,9 +33,9 @@
 //! - **PS-7 (error propagation):** Drain/ingest failure returns `Err`
 //!   and does not silently skip tables.
 
-use datafusion::arrow::record_batch::RecordBatch;
 use monarch_distributed_telemetry::database_scanner::TableStore;
 use monarch_record_batch::RecordBatchBuffer;
+use monarch_record_batch::arrow::record_batch::RecordBatch;
 
 use crate::capture::SnapshotData;
 use crate::schema::ActiveHandlerRowBuffer;
@@ -242,7 +242,7 @@ mod tests {
             .expect("cnt column missing");
         let arr = col
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .expect("cnt not Int64");
         Ok(arr.value(0))
     }
@@ -665,7 +665,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("column '{}' not found", column))?;
         let arr = col
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::StringArray>()
             .ok_or_else(|| anyhow::anyhow!("column '{}' not Utf8", column))?;
         Ok(arr.value(0).to_owned())
     }
@@ -686,7 +686,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("column '{}' not found", column))?;
         let arr = col
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .ok_or_else(|| anyhow::anyhow!("column '{}' not Int64", column))?;
         Ok(arr.value(0))
     }
@@ -707,7 +707,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("column '{}' not found", column))?;
         let arr = col
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::BooleanArray>()
             .ok_or_else(|| anyhow::anyhow!("column '{}' not Boolean", column))?;
         Ok(arr.value(0))
     }
@@ -973,7 +973,7 @@ mod tests {
             .column_by_name("actor_type")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::StringArray>()
             .unwrap();
         assert_eq!(actor_type.value(0), ACTOR_NAME);
 
@@ -981,7 +981,7 @@ mod tests {
             .column_by_name("buffered_count")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .unwrap();
         assert_eq!(buffered.value(0), 5);
 
@@ -989,7 +989,7 @@ mod tests {
             .column_by_name("expected_next_seq")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .unwrap();
         assert_eq!(expected.value(0), 1);
     }
@@ -1088,7 +1088,7 @@ mod tests {
             .column_by_name("actor_type")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::StringArray>()
             .unwrap();
         assert_eq!(actor_type.value(0), ACTOR_NAME);
 
@@ -1096,7 +1096,7 @@ mod tests {
             .column_by_name("total")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .downcast_ref::<monarch_record_batch::arrow::array::Int64Array>()
             .unwrap();
         assert_eq!(total.value(0), 2);
 
@@ -1104,7 +1104,7 @@ mod tests {
             .column_by_name("name")
             .unwrap()
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .downcast_ref::<monarch_record_batch::arrow::array::StringArray>()
             .unwrap();
         assert_eq!(name.value(0), "endpoint_slow");
     }
