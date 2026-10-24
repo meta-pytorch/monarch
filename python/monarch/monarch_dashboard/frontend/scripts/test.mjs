@@ -7,17 +7,22 @@
  */
 
 import { build } from "esbuild";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
+const files = (await readdir("tests", { withFileTypes: true }))
+  .filter(file => file.isFile() && /\.test\.tsx?$/.test(file.name))
+  .map(file => file.name)
+  .sort();
+if (files.length === 0) throw new Error("No frontend test files found");
+
 const directory = await mkdtemp(join(tmpdir(), "monarch-dashboard-tests-"));
 try {
-  const names = ["actorHealth"];
-  await build({ entryPoints: names.map(name => `tests/${name}.test.ts`), outdir: directory,
+  await build({ entryPoints: Object.fromEntries(files.map(file => [file, `tests/${file}`])), outdir: directory,
     outExtension: { ".js": ".cjs" }, bundle: true, platform: "node", format: "cjs" });
-  const result = spawnSync(process.execPath, ["--test", ...names.map(name => join(directory, `${name}.test.cjs`))], { stdio: "inherit" });
+  const result = spawnSync(process.execPath, ["--test", ...files.map(file => join(directory, `${file}.cjs`))], { stdio: "inherit" });
   if (result.error) throw result.error;
   process.exitCode = result.status ?? 1;
 } finally {
