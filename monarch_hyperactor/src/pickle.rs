@@ -151,7 +151,7 @@ impl Drop for ActivePicklingGuard {
 thread_local! {
     /// The actor that is *receiving* the payload currently being decoded.
     ///
-    /// A reply is decoded on a Tokio worker with no Monarch context, so
+    /// A reply can be decoded on a Tokio worker with no Monarch context, so
     /// `Port._reconstruct_port` cannot recover the receiver from `context()`
     /// without bootstrapping a client in a worker process. The eager decoders
     /// install the caller instance they already hold here for the duration of
@@ -488,10 +488,11 @@ impl PicklingState {
     ///
     /// A reply may contain a `Port`. Rebuilding it must use the calling actor's
     /// instance, because later sends through that Port come from this actor.
-    /// Decoding runs on a Tokio worker, not the actor's Python thread, so looking
-    /// up `context()` there could create a new client instead. The guard makes
-    /// the calling actor's instance available to Port reconstruction during
-    /// decoding, then restores the previous receiver, including on error.
+    /// Decoding can run on a Tokio worker rather than the actor's Python thread,
+    /// and looking up `context()` there could create a new client instead. The
+    /// guard makes the calling actor's instance available to Port
+    /// reconstruction during decoding, then restores the previous receiver,
+    /// including on error.
     /// Other unpickle hooks that call `context()` do not inherit the caller's
     /// Monarch context on this path (T292966706).
     ///
@@ -779,8 +780,8 @@ pub(crate) fn reserve_mesh_reference_if_active(fill: PendingMeshFill) -> bool {
 /// Python-callable wrapper over [`reserve_mesh_reference_if_active`] for the
 /// typed Proc/Host reduces, which reserve their pending slot from Python.
 #[pyfunction]
-fn reserve_mesh_reference(py: Python<'_>, handle: &PyHandle) -> bool {
-    reserve_mesh_reference_if_active(PendingMeshFill::Handle(handle.clone_ref(py)))
+fn reserve_mesh_reference(handle: &PyHandle) -> bool {
+    reserve_mesh_reference_if_active(PendingMeshFill::Handle(handle.clone_ref()))
 }
 
 /// Pickle a Python object into a [`Buffer`].
@@ -953,11 +954,7 @@ mod tests {
 
     /// An already-complete Handle, so slot filling needs no producer scheduling.
     fn completed_handle(py: Python<'_>, value: Py<PyAny>) -> Py<PyHandle> {
-        Py::new(
-            py,
-            PyHandle::from_value(value).expect("ready Handle should construct"),
-        )
-        .expect("Handle Python wrapper should allocate")
+        Py::new(py, PyHandle::from_value(value)).expect("Handle Python wrapper should allocate")
     }
 
     /// The Python object a resolved pending mesh hands back: the wrapper type
@@ -992,7 +989,7 @@ mod tests {
                     .map(|(index, handle)| {
                         (
                             index,
-                            PendingMeshFill::Handle(handle.borrow(py).clone_ref(py)),
+                            PendingMeshFill::Handle(handle.borrow(py).clone_ref()),
                         )
                     })
                     .collect(),
@@ -1284,13 +1281,10 @@ mod tests {
         pyo3::Python::initialize();
 
         let (outer_handle, mut outer) = monarch_with_gil_blocking(GilSite::Test, |py| {
-            let (sender, receiver) = tokio::sync::watch::channel(None);
-            let pending = PyHandle::from_core(crate::handle::HandleCore::new(receiver, None));
-            sender
-                .send(Some(Err(pyo3::exceptions::PyRuntimeError::new_err(
-                    "pending mesh producer failed",
-                ))))
-                .expect("the pending Handle should retain its receiver");
+            let (publisher, pending) = PyHandle::pending();
+            publisher.publish(Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "pending mesh producer failed",
+            )));
             let handle = Py::new(py, pending)?;
 
             let mut outer = PendingMessage::new(
@@ -1387,20 +1381,19 @@ mod tests {
     /// `py_resolve` starts waiting on a pending handle, and dropping its
     /// returned observer does not cancel that wait.
     ///
-    /// The sender's receiver count is the witness: `Handle::wait_future()` clones
-    /// the watch receiver for the life of the waiter. The original Handle stays
-    /// alive to keep the baseline stable after the returned observer is
-    /// dropped.
+    /// The pending Handle's observer count is the witness: the fill holds a
+    /// clone, and `Handle::wait_future()` holds the core for the life of the
+    /// waiter (HDL-23). The original Handle stays alive to keep the baseline
+    /// stable after the returned observer is dropped.
     #[tokio::test]
     async fn py_resolve_starts_resolution_and_survives_returned_handle_drop() {
         pyo3::Python::initialize();
 
-        let (sender, pending_handle, baseline, mut message) =
+        let (publisher, pending_handle, baseline, mut message) =
             monarch_with_gil_blocking(GilSite::Test, |py| {
-                let (sender, receiver) = tokio::sync::watch::channel(None);
-                let pending = PyHandle::from_core(crate::handle::HandleCore::new(receiver, None));
+                let (publisher, pending) = PyHandle::pending();
                 let handle = Py::new(py, pending)?;
-                let baseline = sender.receiver_count();
+                let baseline = handle.borrow(py).observer_count_for_test();
 
                 let mut message = PendingMessage::new(
                     PythonMessageKind::Result { rank: Some(7) },
@@ -1414,33 +1407,36 @@ mod tests {
 
                 let observer = message.py_resolve()?;
                 drop(observer);
-                Ok::<_, PyErr>((sender, handle, baseline, message))
+                Ok::<_, PyErr>((publisher, handle, baseline, message))
             })
             .expect("construction should succeed");
+        let observers = || {
+            monarch_with_gil_blocking(GilSite::Test, |py| {
+                pending_handle.borrow(py).observer_count_for_test()
+            })
+        };
 
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while sender.receiver_count() <= baseline + 1 {
+            while observers() <= baseline + 1 {
                 tokio::task::yield_now().await;
             }
         })
         .await
         .expect("resolution must start and retain a waiter after its observer is dropped");
         assert_eq!(
-            sender.receiver_count(),
+            observers(),
             baseline + 2,
-            "the fill owns one receiver and its active waiter owns another"
+            "the fill holds one observer and its active waiter holds another"
         );
 
         let value = monarch_with_gil_blocking(GilSite::Test, |py| {
             Ok::<_, PyErr>(mesh_value(py, &proc_mesh_ref(44, "pending")))
         })
         .expect("the pending mesh value should construct");
-        sender
-            .send(Some(Ok(value)))
-            .expect("the retained pending handle should receive its value");
+        publisher.publish(Ok(value));
 
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while sender.receiver_count() != baseline {
+            while observers() != baseline {
                 tokio::task::yield_now().await;
             }
         })

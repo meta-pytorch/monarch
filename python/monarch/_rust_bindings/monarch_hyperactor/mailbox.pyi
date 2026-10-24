@@ -8,7 +8,7 @@ from typing import Any, final, Protocol
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
-from monarch._rust_bindings.monarch_hyperactor.endpoint import PendingReply
+from monarch._rust_bindings.monarch_hyperactor.handle import Handle
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 
 @final
@@ -86,11 +86,12 @@ class PortReceiverBase:
     """
     A receiver to which PythonMessages are sent.
     """
-    def recv(self, ranked: bool) -> PendingReply[Any]:
-        """Return an unstarted receive of one message, decoded when first observed.
+    def recv(self, ranked: bool) -> Handle[Any]:
+        """Return a Handle for one message, received and decoded when first
+        observed.
 
         A ranked receive yields ``(rank, payload)``. Exception messages raise
-        their sent exception when observed. A spawned receive stops, and
+        their sent exception when observed. A started receive stops, and
         releases its port receiver, once nobody can observe it.
         """
         ...

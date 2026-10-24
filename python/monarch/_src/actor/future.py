@@ -7,7 +7,6 @@
 import asyncio
 import logging
 import math
-import warnings
 from typing import (
     Any,
     cast,
@@ -31,7 +30,6 @@ from monarch._src.actor.telemetry import log_with_tracing
 # for annotations, so importing it only during type checking avoids a circular
 # runtime import.
 if TYPE_CHECKING:
-    from monarch._rust_bindings.monarch_hyperactor.endpoint import PendingReply
     from monarch._src.actor.returns_future import _BodyCell
 
 R = TypeVar("R")
@@ -70,19 +68,16 @@ def _validate_timeout(timeout: float | None) -> None:
         )
 
 
-class _Unawaited(NamedTuple):
-    coro: "PendingReply[Any]"
-
-
 class _Complete(NamedTuple):
+    """A value supplied by Future._resolved(), with no operation to wait for."""
+
     value: Any
 
 
-class _Exception(NamedTuple):
-    exe: Exception
-
-
 class _Handle(NamedTuple):
+    """An operation observed through a native Handle, which manages its shared
+    value or error. The work itself may be native or Python-owned."""
+
     handle: Handle[Any]
 
 
@@ -93,7 +88,9 @@ class _Body(NamedTuple):
     body: "_BodyCell"
 
 
-_Status = _Unawaited | _Complete | _Exception | _Handle | _Body
+# A Future either holds an existing value, observes an operation through a
+# native Handle, or runs a Python async function body.
+_Status = _Complete | _Handle | _Body
 
 
 class Future(Generic[R]):
@@ -110,14 +107,6 @@ class Future(Generic[R]):
             "Future objects are returned by Monarch operations and cannot be "
             "constructed directly."
         )
-
-    @classmethod
-    def _from_pending(cls, reply: "PendingReply[R]") -> "Future[R]":
-        """Hold a stream item's collector or a port receive without starting it.
-        Transitional until T292850732 lets ordinary Handles hold undecoded replies."""
-        future = cast("Future[R]", object.__new__(cls))
-        future._status = _Unawaited(reply)
-        return future
 
     @classmethod
     def _resolved(cls, value: R) -> "Future[R]":
@@ -143,13 +132,9 @@ class Future(Generic[R]):
 
     def _as_handle(self) -> "Handle[R]":
         match self._status:
-            case _Unawaited(coro=coro):
-                handle = coro.spawn_handle()
-                self._status = _Handle(handle)
-                return cast("Handle[R]", handle)
             case _Handle(handle=handle):
                 return cast("Handle[R]", handle)
-            case _Complete() | _Exception():
+            case _Complete():
                 raise ValueError("Future does not have a Handle in its current state.")
             case _Body():
                 # RF-6: waiting on the Handle of a body nobody has started
@@ -205,11 +190,10 @@ class Future(Generic[R]):
             # including non-actor driver processes where no `TracingForwarder`
             # handler is on the Python logging chain. A UserWarning (separate
             # from this trace) fires only on a running asyncio loop, never on a
-            # Tokio thread: the blocking `_Unawaited`/`_Handle` paths raise
-            # `WouldBlockRuntime` before warning, and cached `_Complete`/
-            # `_Exception` reads don't block or warn. On asyncio it fires once,
-            # inline below for the no-timeout `_Unawaited` path, else via
-            # `Handle.get()` for the `get(timeout=...)`/`_Handle` paths.
+            # Tokio thread: the blocking `_Handle` path raises
+            # `WouldBlockRuntime` before warning, and cached `_Complete` reads
+            # don't block or warn. On asyncio it fires once, via
+            # `Handle.get()`.
             log_with_tracing(
                 logging.WARNING,
                 "Future.get() called from within an active event loop",
@@ -217,41 +201,6 @@ class Future(Generic[R]):
                 stacklevel=2,
             )
         match self._status:
-            case _Unawaited(coro=coro):
-                if in_tokio:
-                    # Cannot block inside a Tokio runtime. Refuse cleanly BEFORE
-                    # spawning or consuming the task (mirroring Handle.get()), for
-                    # BOTH the timeout and no-timeout paths, so a rejected call
-                    # never starts work or flips state and a later get()/await
-                    # from a valid context still drives the Future. (Otherwise the
-                    # no-timeout path's block_on() takes the task then panics, and
-                    # the timeout path spawns a Handle then raises -- both mutate.)
-                    raise WouldBlockRuntime(_GET_ON_TOKIO_REFUSAL)
-                if timeout is not None:
-                    # Validate the timeout BEFORE spawning: an invalid value must
-                    # not start work or flip state to _Handle. Handle.get()
-                    # re-validates authoritatively; this only avoids the spawn on
-                    # a bad argument.
-                    _validate_timeout(timeout)
-                    # A timeout must not destroy the Future. Observe the task
-                    # through a Handle, which is non-cancelling on timeout, so a
-                    # later get()/poll()/await still resolves. Handle.get() applies
-                    # the context policy and emits the warning itself.
-                    handle = coro.spawn_handle()
-                    self._status = _Handle(handle)
-                    return cast("R", handle.get(timeout))
-                if in_asyncio:
-                    warnings.warn(_GET_ON_LOOP_WARNING, UserWarning, stacklevel=2)
-                try:
-                    # No Handle holds the result during this untimed wait, so
-                    # a concurrent observer gets the consumed-item error
-                    # (T292877484). An interrupted call discards its result.
-                    v = coro.block_on()
-                    self._status = _Complete(v)
-                    return cast("R", v)
-                except Exception as e:
-                    self._status = _Exception(e)
-                    raise e from None
             case _Handle(handle=handle):
                 if in_tokio:
                     raise WouldBlockRuntime(_GET_ON_TOKIO_REFUSAL)
@@ -262,8 +211,6 @@ class Future(Generic[R]):
                 return cast("R", handle.get(timeout))
             case _Complete(value=value):
                 return cast("R", value)
-            case _Exception(exe=exe):
-                raise exe
             case _Body(body=body):
                 # Refuse before binding, leaving the body unstarted.
                 if in_tokio:
@@ -283,7 +230,7 @@ class Future(Generic[R]):
             return self.as_asyncio().__await__()
         elif _is_in_tokio_runtime():
             match self._status:
-                case _Unawaited() | _Body():
+                case _Body():
                     raise RuntimeError(
                         "Future cannot be awaited on a Tokio thread; observe it "
                         "from an asyncio loop or synchronous context."
@@ -302,8 +249,8 @@ class Future(Generic[R]):
         does.
 
         Requires a running event loop; off a loop it raises ``RuntimeError``
-        **without** consuming the underlying task (the Future stays unawaited, so
-        a later ``get()`` still drives it). Observation is non-consuming:
+        **without** starting the underlying operation, so a later ``get()``
+        still observes it. Observation is non-consuming:
         repeated ``as_asyncio()``/``await`` each return a fresh loop-local future
         observing the same result.
         """
@@ -311,25 +258,12 @@ class Future(Generic[R]):
         if loop is None:
             raise RuntimeError("as_asyncio() requires a running asyncio event loop.")
         match self._status:
-            case _Unawaited() | _Handle():
-                # The loop is confirmed above, so an off-loop call cannot make
-                # `_as_handle()` spawn or mutate the Future.
-                return self._as_handle().as_asyncio()
+            case _Handle(handle=handle):
+                return cast("asyncio.Future[R]", handle.as_asyncio())
             case _Complete(value=value):
                 done = loop.create_future()
                 done.set_result(value)
                 return cast("asyncio.Future[R]", done)
-            case _Exception(exe=exe):
-                failed = loop.create_future()
-                # asyncio.Future.set_exception rejects StopIteration (PEP 479);
-                # surface it as `raise StopIteration` already does out of a
-                # coroutine, matching the Handle observer path.
-                failed.set_exception(
-                    RuntimeError("coroutine raised StopIteration")
-                    if isinstance(exe, StopIteration)
-                    else exe
-                )
-                return cast("asyncio.Future[R]", failed)
             case _Body(body=body):
                 return cast("asyncio.Future[R]", body.as_asyncio(loop))
             case _:

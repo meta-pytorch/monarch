@@ -142,7 +142,7 @@ async def test_accumulator() -> None:
         )
 
     async def recv_message() -> str:
-        return cast(str, await asyncio.wait_for(receiver.recv(False).spawn_handle(), 5))
+        return cast(str, await asyncio.wait_for(receiver.recv(False), 5))
 
     post_message(1)
     # Receive the first message
@@ -230,7 +230,7 @@ async def test_reducer() -> None:
         ins._as_rust(),
     )
 
-    value = await asyncio.wait_for(receiver.recv(False).spawn_handle(), 5)
+    value = await asyncio.wait_for(receiver.recv(False), 5)
     assert "[reduced](start+msg0)" in value
 
     #  Note: occasionally test would hang without this stop

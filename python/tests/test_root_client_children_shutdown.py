@@ -58,10 +58,11 @@ def test_root_shutdown_settles_pending_port_receives() -> None:
     # still holds handles or the static client instance retains its mailbox.
     _port, receiver = mailbox.open_port()
     _once_port, once_receiver = mailbox.open_once_port()
-    pending = [
-        receiver.recv(False).spawn_handle(),
-        once_receiver.recv(False).spawn_handle(),
-    ]
+    pending = [receiver.recv(False), once_receiver.recv(False)]
+    # poll() starts each receive on Tokio, so both are waiting when shutdown
+    # begins.
+    for handle in pending:
+        assert handle.poll() is None
     shutdown_context().get(timeout=30)
     for handle in pending:
         with pytest.raises(EOFError, match="Port closed"):

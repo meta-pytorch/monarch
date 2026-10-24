@@ -45,7 +45,9 @@ use typeuri::Named;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
-use crate::endpoint::PyPendingReply;
+use crate::handle::ObserverLoss;
+use crate::handle::PyHandle;
+use crate::handle::ReceiveOutcome;
 use crate::pickle::PicklingState;
 use crate::proc::PyActorAddr;
 use crate::runtime::GilSite;
@@ -330,13 +332,14 @@ pub(super) struct PythonPortReceiver {
 py_global!(context, "monarch._src.actor.actor_mesh", "context");
 
 // Provides _context, which we temporarily set to the captured context
-// so unpickle hooks on a Tokio worker see the receiving actor.
+// so unpickle hooks see the receiving actor on whichever thread decodes.
 py_global!(context_var, "monarch._src.actor.actor_mesh", "_context");
 
-/// Unpickle a channel's result: return its value, or raise its remote exception.
+/// Unpickle a channel's result: its value, or its remote exception as an
+/// error. The outer error means decoding failed.
 ///
-/// `Result` messages return the payload, or `(rank, payload)` when `ranked`
-/// is true. `Exception` messages return the remote exception as an error.
+/// `Result` messages give the payload, or `(rank, payload)` when `ranked`
+/// is true. `Exception` messages give the remote exception.
 ///
 /// A ranked receive rejects a missing rank before unpickling. Unsupported
 /// message kinds produce `ValueError`; unpickling errors propagate.
@@ -344,7 +347,7 @@ fn decode_channel_result(
     py: Python<'_>,
     message: PythonMessage,
     ranked: bool,
-) -> PyResult<Py<PyAny>> {
+) -> PyResult<PyResult<Py<PyAny>>> {
     let rank = match &message.kind {
         PythonMessageKind::Result { rank } | PythonMessageKind::Exception { rank } => *rank,
         _ => None,
@@ -359,7 +362,7 @@ fn decode_channel_result(
     let kind = message.kind;
     let refs = message.refs.into_iter().map(Some).collect();
     let payload = PicklingState::from_parts(message.message, VecDeque::new(), refs).unpickle(py)?;
-    match kind {
+    let outcome = match kind {
         PythonMessageKind::Result { .. } if ranked => (rank, payload).into_py_any(py),
         PythonMessageKind::Result { .. } => Ok(payload),
         PythonMessageKind::Exception { .. } => Err(PyErr::from_value(payload.into_bound(py))),
@@ -367,7 +370,8 @@ fn decode_channel_result(
             "Unexpected message kind: {}",
             kind.into_py_any(py)?.bind(py).str()?
         ))),
-    }
+    };
+    Ok(outcome)
 }
 
 /// Unpickle a channel result using the actor context captured when `recv()`
@@ -375,7 +379,8 @@ fn decode_channel_result(
 ///
 /// Unpickling can reconstruct Ports and other objects whose hooks call
 /// `context()`. They must see the actor that called `recv()`, even though
-/// decoding runs on a Tokio worker.
+/// decoding runs on a Tokio worker or on the thread of a `get()` that drives
+/// the receive (HDL-24).
 ///
 /// Temporarily install that context, then restore the previous context
 /// whether decoding succeeds or returns an error.
@@ -384,7 +389,7 @@ fn decode_channel_result_in_context(
     message: PythonMessage,
     ranked: bool,
     captured_context: Py<PyAny>,
-) -> PyResult<Py<PyAny>> {
+) -> PyResult<PyResult<Py<PyAny>>> {
     let context_var = context_var(py);
     let previous = context_var.call_method1("get", (py.None(),))?;
     context_var.call_method1("set", (captured_context,))?;
@@ -399,32 +404,48 @@ async fn recv_async(
     receiver: Arc<tokio::sync::Mutex<PortReceiver<PythonMessage>>>,
     captured_context: Py<PyAny>,
     ranked: bool,
-) -> PyResult<Py<PyAny>> {
-    let message = receiver
-        .lock()
-        .await
-        .recv()
-        .await
-        .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
-
+) -> ReceiveOutcome {
     // The receiver lock is released before waiting for the GIL or unpickling.
+    let received = receiver.lock().await.recv().await;
+    match received {
+        Ok(message) => decode_received(message, ranked, captured_context).await,
+        Err(err) => ReceiveOutcome::Outcome(Err(PyErr::new::<PyEOFError, _>(format!(
+            "Port closed: {}",
+            err
+        )))),
+    }
+}
+
+/// Decode a received message under the context captured at `recv()`. A
+/// `get()` driving the receive on Python's main thread decodes it there,
+/// where Ctrl-C can interrupt the decoding (HDL-26).
+async fn decode_received(
+    message: PythonMessage,
+    ranked: bool,
+    captured_context: Py<PyAny>,
+) -> ReceiveOutcome {
     monarch_with_gil(GilSite::ReplyConvert, move |py| {
-        decode_channel_result_in_context(py, message, ranked, captured_context)
+        ReceiveOutcome::decode(py, GilSite::ReplyConvert, message, move |py, message| {
+            decode_channel_result_in_context(py, message, ranked, captured_context.clone_ref(py))
+        })
     })
     .await
 }
 
 #[pymethods]
 impl PythonPortReceiver {
-    /// Return an unstarted receive of one message. First observation receives
-    /// and decodes it; a spawned receive stops once nobody can observe it.
-    fn recv(&self, py: Python<'_>, ranked: bool) -> PyResult<PyPendingReply> {
+    /// Return a Handle for one message. Its first observation receives and
+    /// decodes it (HDL-24); a started receive stops once nobody can observe it
+    /// (HDL-23).
+    fn recv(&self, py: Python<'_>, ranked: bool) -> PyResult<PyHandle> {
         let captured_context = context(py).call0()?.unbind();
         let traceback = current_traceback()?;
         let receiver = self.inner.clone();
-        Ok(PyPendingReply::for_port_receive(
+        Ok(PyHandle::deferred(
+            py,
             recv_async(receiver, captured_context, ranked),
             traceback,
+            ObserverLoss::Stop,
         ))
     }
 }
@@ -611,27 +632,27 @@ pub(super) struct PythonOncePortReceiver {
 
 #[pymethods]
 impl PythonOncePortReceiver {
-    /// Return an unstarted receive of the once port's sole message. First
-    /// observation claims the port; a receive observed after that fails.
-    fn recv(&self, py: Python<'_>, ranked: bool) -> PyResult<PyPendingReply> {
+    /// Return a Handle for the once port's sole message. Its first observation
+    /// claims the port (HDL-24); a receive observed after that fails.
+    fn recv(&self, py: Python<'_>, ranked: bool) -> PyResult<PyHandle> {
         let captured_context = context(py).call0()?.unbind();
         let traceback = current_traceback()?;
         let inner = self.inner.clone();
         let fut = async move {
             let Some(receiver) = inner.lock().unwrap().take() else {
-                return Err(PyErr::new::<PyValueError, _>("OncePort is already used"));
+                return ReceiveOutcome::Outcome(Err(PyErr::new::<PyValueError, _>(
+                    "OncePort is already used",
+                )));
             };
-            let message = receiver
-                .recv()
-                .await
-                .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
-
-            monarch_with_gil(GilSite::ReplyConvert, move |py| {
-                decode_channel_result_in_context(py, message, ranked, captured_context)
-            })
-            .await
+            match receiver.recv().await {
+                Ok(message) => decode_received(message, ranked, captured_context).await,
+                Err(err) => ReceiveOutcome::Outcome(Err(PyErr::new::<PyEOFError, _>(format!(
+                    "Port closed: {}",
+                    err
+                )))),
+            }
         };
-        Ok(PyPendingReply::for_port_receive(fut, traceback))
+        Ok(PyHandle::deferred(py, fut, traceback, ObserverLoss::Stop))
     }
 }
 
@@ -988,6 +1009,13 @@ def maybe_torch():
         })
     }
 
+    /// Start a receive the way a Python observer does, without reading it
+    /// (HDL-24).
+    fn start(py: Python<'_>, handle: PyHandle) -> PyResult<PyHandle> {
+        handle.poll(py)?;
+        Ok(handle)
+    }
+
     async fn value(handle: &PyHandle) -> Py<PyAny> {
         tokio::time::timeout(WAIT, handle.wait_future())
             .await
@@ -1012,7 +1040,7 @@ def maybe_torch():
         };
         sender.try_post(&client, result_message()).unwrap();
         let unobserved = in_actor_context(&client, |py| receiver.recv(py, false));
-        let observed = in_actor_context(&client, |py| receiver.recv(py, false)?.spawn_handle());
+        let observed = in_actor_context(&client, |py| start(py, receiver.recv(py, false)?));
         assert_value(value(&observed).await);
         drop(unobserved);
     }
@@ -1030,9 +1058,8 @@ def maybe_torch():
         let first = in_actor_context(&client, |py| receiver.recv(py, false));
         let second = in_actor_context(&client, |py| receiver.recv(py, false));
         sender.try_post(&client, result_message()).unwrap();
-        let first = first.spawn_handle().unwrap();
         assert_value(value(&first).await);
-        let error = tokio::time::timeout(WAIT, second.spawn_handle().unwrap().wait_future())
+        let error = tokio::time::timeout(WAIT, second.wait_future())
             .await
             .expect("the second receive should finish")
             .expect_err("the once port is already claimed");
@@ -1052,7 +1079,7 @@ def maybe_torch():
             inner: Arc::new(tokio::sync::Mutex::new(receiver)),
         };
         drop(in_actor_context(&client, |py| {
-            receiver.recv(py, false)?.spawn_handle()
+            start(py, receiver.recv(py, false)?)
         }));
         tokio::time::timeout(WAIT, async {
             while Arc::strong_count(&receiver.inner) != 1 {
@@ -1062,7 +1089,7 @@ def maybe_torch():
         .await
         .expect("the unobserved receive should release its receiver");
         sender.try_post(&client, result_message()).unwrap();
-        let next = in_actor_context(&client, |py| receiver.recv(py, false)?.spawn_handle());
+        let next = in_actor_context(&client, |py| start(py, receiver.recv(py, false)?));
         assert_value(value(&next).await);
     }
 
@@ -1075,7 +1102,7 @@ def maybe_torch():
         };
         let weak = Arc::downgrade(&receiver.inner);
         drop(in_actor_context(&client, |py| {
-            receiver.recv(py, false)?.spawn_handle()
+            start(py, receiver.recv(py, false)?)
         }));
         drop(receiver);
         tokio::time::timeout(WAIT, async {
@@ -1097,13 +1124,13 @@ def maybe_torch():
         let regular = PythonPortReceiver {
             inner: Arc::new(tokio::sync::Mutex::new(receiver)),
         };
-        let regular = in_actor_context(&client, |py| regular.recv(py, false)?.spawn_handle());
+        let regular = in_actor_context(&client, |py| start(py, regular.recv(py, false)?));
         drop(sender);
         let (sender, receiver) = client.mailbox_for_py().open_once_port::<PythonMessage>();
         let once = PythonOncePortReceiver {
             inner: Arc::new(std::sync::Mutex::new(Some(receiver))),
         };
-        let once = in_actor_context(&client, |py| once.recv(py, false)?.spawn_handle());
+        let once = in_actor_context(&client, |py| start(py, once.recv(py, false)?));
         drop(sender);
         for handle in [regular, once] {
             let error = tokio::time::timeout(WAIT, handle.wait_future())
@@ -1117,36 +1144,29 @@ def maybe_torch():
         }
     }
 
-    // A receive already taken, for example by an interrupted untimed get(),
-    // names the receive in its error from either observation method.
+    // A receive observed twice shares one result: the second observation
+    // neither takes another message nor fails, so the next message is left for
+    // the next receive.
     #[tokio::test]
-    async fn spent_receive_reports_its_text() {
-        let client = test_instance("spent_receive_reports_its_text");
-        let (_sender, receiver) = client.mailbox_for_py().open_port::<PythonMessage>();
+    async fn second_observation_shares_the_receive() {
+        let client = test_instance("second_observation_shares_the_receive");
+        let (sender, receiver) = client.mailbox_for_py().open_port::<PythonMessage>();
         let receiver = PythonPortReceiver {
             inner: Arc::new(tokio::sync::Mutex::new(receiver)),
         };
+        sender.try_post(&client, result_message()).unwrap();
+        sender.try_post(&client, result_message()).unwrap();
         let item = in_actor_context(&client, |py| receiver.recv(py, false));
+        let first = value(&item).await;
+        let second = value(&item).await;
         monarch_with_gil_blocking(GilSite::Test, |py| {
-            let item = Py::new(py, item).expect("the receive should be allocated");
-            drop(
-                item.borrow(py)
-                    .spawn_handle()
-                    .expect("the first observation should take the receive"),
+            assert!(
+                first.bind(py).is(second.bind(py)),
+                "both observations should read the same object"
             );
-            let expected = "this receive was already taken by an earlier get(); if that get() was interrupted, it will never produce a result";
-            let error = item
-                .borrow(py)
-                .spawn_handle()
-                .err()
-                .expect("spawn_handle should reject the taken receive");
-            assert!(error.is_instance_of::<PyValueError>(py));
-            assert_eq!(error.value(py).to_string(), expected);
-            let error = PyPendingReply::block_on(item.borrow(py), py)
-                .expect_err("block_on should reject the taken receive before waiting");
-            assert!(error.is_instance_of::<PyValueError>(py));
-            assert_eq!(error.value(py).to_string(), expected);
         });
+        let next = in_actor_context(&client, |py| receiver.recv(py, false));
+        assert_value(value(&next).await);
     }
 
     #[tokio::test]
@@ -1158,7 +1178,7 @@ def maybe_torch():
         };
         for ranked in [false, true] {
             sender.try_post(&client, result_message()).unwrap();
-            let handle = in_actor_context(&client, |py| receiver.recv(py, ranked)?.spawn_handle());
+            let handle = in_actor_context(&client, |py| start(py, receiver.recv(py, ranked)?));
             let received = value(&handle).await;
             monarch_with_gil_blocking(GilSite::Test, |py| {
                 if ranked {
@@ -1179,7 +1199,7 @@ def maybe_torch():
                     }),
                 )
                 .unwrap();
-            let handle = in_actor_context(&client, |py| receiver.recv(py, ranked)?.spawn_handle());
+            let handle = in_actor_context(&client, |py| start(py, receiver.recv(py, ranked)?));
             let error = tokio::time::timeout(WAIT, handle.wait_future())
                 .await
                 .unwrap()
@@ -1212,7 +1232,7 @@ def maybe_torch():
                 )
             });
             sender.try_post(&client, no_rank).unwrap();
-            let handle = in_actor_context(&client, |py| receiver.recv(py, true)?.spawn_handle());
+            let handle = in_actor_context(&client, |py| start(py, receiver.recv(py, true)?));
             let error = tokio::time::timeout(WAIT, handle.wait_future())
                 .await
                 .unwrap()
@@ -1246,7 +1266,7 @@ def maybe_torch():
         sender
             .try_post(&client, message(kind, |py| 42.into_py_any(py).unwrap()))
             .unwrap();
-        let handle = in_actor_context(&client, |py| receiver.recv(py, false)?.spawn_handle());
+        let handle = in_actor_context(&client, |py| start(py, receiver.recv(py, false)?));
         let error = tokio::time::timeout(WAIT, handle.wait_future())
             .await
             .unwrap()
@@ -1271,7 +1291,7 @@ def maybe_torch():
                 inner: Arc::new(tokio::sync::Mutex::new(receiver)),
             };
             sender.try_post(&client, result_message()).unwrap();
-            let handle = in_actor_context(&client, |py| receiver.recv(py, false)?.spawn_handle());
+            let handle = in_actor_context(&client, |py| start(py, receiver.recv(py, false)?));
             assert_eq!(handle.has_traceback_for_test(), enabled);
             assert_value(value(&handle).await);
 
@@ -1280,7 +1300,7 @@ def maybe_torch():
                 inner: Arc::new(std::sync::Mutex::new(Some(receiver))),
             };
             sender.try_post(&client, result_message()).unwrap();
-            let handle = in_actor_context(&client, |py| receiver.recv(py, false)?.spawn_handle());
+            let handle = in_actor_context(&client, |py| start(py, receiver.recv(py, false)?));
             assert_eq!(handle.has_traceback_for_test(), enabled);
             assert_value(value(&handle).await);
         }
