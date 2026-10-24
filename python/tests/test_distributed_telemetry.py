@@ -67,6 +67,19 @@ class _CrashingTelemetryActor(job_telemetry_actor.TelemetryActor):
         raise _TelemetryActorFailure("intentional telemetry actor failure")
 
 
+class _ClientHostTelemetryActor(job_telemetry_actor.TelemetryActor):
+    """Worker collector for a job whose client runs on worker host 0.
+
+    Rank 0 shares the query root's socket namespace, as a collector on the
+    client's own host does, so it cannot activate. Other ranks get their own
+    namespace, as collectors on remote hosts do.
+    """
+
+    def __init__(self, apply_id: str, *args: Any) -> None:
+        rank = current_rank().rank
+        super().__init__(apply_id if rank == 0 else f"{apply_id}-host{rank}", *args)
+
+
 class _FailureTestTelemetryRoot(job_telemetry_actor.TelemetryActor):
     @endpoint
     def start_failing_collector(self, host_mesh: Any, apply_id: str) -> Any:
@@ -91,6 +104,15 @@ class _FailureTestTelemetryRoot(job_telemetry_actor.TelemetryActor):
         if healthy is None:
             raise RuntimeError("healthy test collector did not activate")
         return healthy
+
+    @endpoint
+    def start_client_host_collector(self, host_mesh: Any, apply_id: str) -> Any:
+        return self._start_worker_collector(
+            host_mesh,
+            _ClientHostTelemetryActor,
+            apply_id,
+            "telemetry_client_host_procs",
+        )
 
     @endpoint
     def worker_collector_count(self) -> int:
@@ -2004,6 +2026,50 @@ def test_worker_telemetry_failure_preserves_other_workers() -> None:
     finally:
         for apply_id in apply_ids.values():
             _remove_socket_dir(apply_id)
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_client_host_collector_does_not_hide_remote_workers() -> None:
+    apply_id = _new_apply_id()
+    remote_apply_id = f"{apply_id}-host1"
+    for socket_apply_id in (apply_id, remote_apply_id):
+        _remove_socket_dir(socket_apply_id)
+
+    try:
+        with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
+            root = monarch.actor.context().actor_instance.proc_mesh.spawn(
+                "root_telemetry",
+                _FailureTestTelemetryRoot,
+                apply_id,
+                0,
+            )
+            assert root.activate.call_one().get()
+            workers = root.start_client_host_collector.call_one(
+                state.hosts, apply_id
+            ).get()
+            assert workers is not None
+            assert root.worker_collector_count.call_one().get() == 1
+
+            # Seed a row on the remote host's collector only.
+            workers.slice(hosts=1).store_pyspy_dump.call_one(
+                "remote-dump", "proc[1]", _sample_pyspy_dump_json()
+            ).get()
+
+            query_engine = QueryEngine(root)
+            sql = "SELECT dump_id FROM pyspy_dumps"
+            observed = []
+            for _ in range(3):
+                observed.append(
+                    (
+                        query_engine.query(sql).num_rows,
+                        root.worker_collector_count.call_one().get(),
+                    )
+                )
+            assert observed == [(1, 1)] * 3
+    finally:
+        for socket_apply_id in (apply_id, remote_apply_id):
+            _remove_socket_dir(socket_apply_id)
 
 
 @pytest.mark.timeout(120)
