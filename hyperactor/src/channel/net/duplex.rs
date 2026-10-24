@@ -186,6 +186,16 @@ impl<Out: RemoteMessage, In: RemoteMessage> DuplexClient<Out, In> {
         &self.addr
     }
 
+    /// Signal this session to stop without changing detach-on-drop ownership.
+    pub fn stop(&self) {
+        self.cancel_token.cancel();
+    }
+
+    /// A cancellation owner for setup and other scoped session users.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
+    }
+
     /// Gracefully shut down the duplex client session. Cancels the
     /// recv/send loop's cancellation token (which the spawned task
     /// observes in its `select!`s) and awaits the spawned task. On
@@ -483,7 +493,14 @@ pub(super) async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage
         addr: addr.clone(),
         status,
     };
-    let _ = accept_tx.send((net_rx, net_tx)).await;
+    let accepted = tokio::select! {
+        result = accept_tx.send((net_rx, net_tx)) => result.is_ok(),
+        () = cancel.cancelled() => false,
+    };
+    if !accepted {
+        sessions.remove(&session_id);
+        return;
+    }
 
     // Hand the first connection off through the channel; the loop
     // below picks it up via `session.connect().await`.
@@ -507,9 +524,14 @@ pub(super) async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage
     let mut recv_next = Next { seq: 0, ack: 0 };
 
     loop {
-        let connected = match session.connect().await {
-            Ok(s) => s,
-            Err(_) => break,
+        // Connected attached sessions can be idle indefinitely. Only bound
+        // the disconnected reconnect wait so a cancelled/crashed initiator
+        // cannot retain its application receiver and peer guard forever.
+        let reconnect_timeout =
+            hyperactor_config::global::get(crate::config::MESSAGE_DELIVERY_TIMEOUT);
+        let connected = match tokio::time::timeout(reconnect_timeout, session.connect()).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(_)) | Err(_) => break,
         };
         deliveries.requeue_unacked();
         let result = {
@@ -738,7 +760,10 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
                             delay_ms = delay.as_millis() as u64,
                             "duplex send_connected returned EOF, reconnecting after backoff; {link_status}"
                         );
-                        tokio::time::sleep(delay).await;
+                        tokio::select! {
+                            () = tokio::time::sleep(delay) => {},
+                            () = task_cancel.cancelled() => {},
+                        }
                     }
                     false
                 }
@@ -755,7 +780,10 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
                                 mode = "duplex",
                                 "send error (recoverable), reconnecting after backoff; {link_status}",
                             );
-                            tokio::time::sleep(delay).await;
+                            tokio::select! {
+                            () = tokio::time::sleep(delay) => {},
+                            () = task_cancel.cancelled() => {},
+                        }
                         }
                     }
                     terminal
@@ -770,7 +798,10 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
                             mode = "duplex",
                             "recv error (recoverable), reconnecting after backoff; {link_status}",
                         );
-                        tokio::time::sleep(delay).await;
+                        tokio::select! {
+                            () = tokio::time::sleep(delay) => {},
+                            () = task_cancel.cancelled() => {},
+                        }
                     }
                     metrics::CHANNEL_ERRORS.add(
                         1,
@@ -956,6 +987,92 @@ mod tests {
         assert_eq!(srx2.recv().await.unwrap(), 300);
         stx2.post(400);
         assert_eq!(rx2.recv().await.unwrap(), 400);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_connected_idle_duplex_outlives_reconnect_timeout() {
+        let config = hyperactor_config::global::lock();
+        let _timeout = config.override_key(
+            crate::config::MESSAGE_DELIVERY_TIMEOUT,
+            std::time::Duration::from_secs(1),
+        );
+        let mut server = serve::<u64, u64>(ChannelAddr::any(ChannelTransport::Unix), None).unwrap();
+        let mut client = dial::<u64, u64>(server.addr().clone()).unwrap();
+        let tx = client.tx();
+        let mut rx = client.take_rx().unwrap();
+        let (mut accepted_rx, accepted_tx) = server.accept().await.unwrap();
+        tx.post(1);
+        assert_eq!(accepted_rx.recv().await.unwrap(), 1);
+        tokio::time::advance(std::time::Duration::from_secs(60)).await;
+        accepted_tx.post(2);
+        assert_eq!(rx.recv().await.unwrap(), 2);
+        tx.post(3);
+        assert_eq!(accepted_rx.recv().await.unwrap(), 3);
+        client.join().await;
+        server.stop("test complete");
+        server.join().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_disconnected_duplex_expires_and_releases_application_receiver() {
+        let config = hyperactor_config::global::lock();
+        let _timeout = config.override_key(
+            crate::config::MESSAGE_DELIVERY_TIMEOUT,
+            std::time::Duration::from_secs(1),
+        );
+        let mut server =
+            serve::<u64, u64>(ChannelAddr::Tcp("127.0.0.1:0".parse().unwrap()), None).unwrap();
+        let ChannelAddr::Tcp(addr) = server.addr() else {
+            panic!("TCP server")
+        };
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        super::super::write_link_init(
+            &mut stream,
+            SessionId::random(),
+            0,
+            super::super::ProtocolKind::Duplex,
+        )
+        .await
+        .unwrap();
+        let (mut rx, _tx) = server.accept().await.unwrap();
+        drop(stream); // abrupt loss, with no Closed response and no reconnect
+        assert!(matches!(rx.recv().await, Err(ChannelError::Closed)));
+        server.stop("test complete");
+        server.join().await;
+    }
+
+    #[tokio::test]
+    async fn test_cancel_full_accept_handoff_releases_pending_session() {
+        let (accept_tx, _accept_rx) = mpsc::channel(1);
+        let (dummy_in, dummy_rx) = mpsc::channel::<u64>(1);
+        let (dummy_tx, _dummy_out) = mpsc::unbounded_channel();
+        let (_health, status) = watch::channel(TxStatus::Active);
+        let addr = ChannelAddr::Local(1);
+        accept_tx
+            .send((
+                DuplexRx::new(dummy_rx, addr.clone()),
+                DuplexTx::new(dummy_tx, addr.clone(), status),
+            ))
+            .await
+            .unwrap();
+        let sessions = Arc::new(DashMap::new());
+        let (stream, _peer) = tokio::io::duplex(64);
+        let cancel = CancellationToken::new();
+        let dispatch = dispatch_duplex_stream::<u64, u64>(
+            SessionId::random(),
+            Box::new(stream),
+            sessions.clone(),
+            addr,
+            &accept_tx,
+            cancel.clone(),
+        );
+        tokio::pin!(dispatch);
+        assert!(futures::poll!(&mut dispatch).is_pending());
+        assert_eq!(sessions.len(), 1, "dispatch reached the full accept queue");
+        cancel.cancel();
+        assert!(futures::poll!(&mut dispatch).is_ready());
+        assert!(sessions.is_empty());
+        drop(dummy_in);
     }
 
     /// Ping-pong helper: server echoes back each message it receives.
