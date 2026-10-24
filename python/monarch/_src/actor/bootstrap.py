@@ -103,9 +103,12 @@ def start_worker_loop_forever(
 
     ``address`` accepts either of these string formats:
 
-    - A ZMQ-style channel URL. This allocates a fresh service proc identity.
+    - A ZMQ-style channel URL. This allocates a fresh service proc identity
+      for this process. Clients discover it by passing the same URL to
+      :func:`attach_to_workers`, so a worker restarted with the same
+      arguments is discovered under a new identity.
     - A ProcAddr in ``<proc-id>@<channel-url>`` form. This uses the embedded
-      proc identity. Use this form to share the identity with a client.
+      proc identity.
 
     Channel URL examples:
 
@@ -116,7 +119,7 @@ def start_worker_loop_forever(
 
     A ProcAddr example:
 
-        service<2MuAHeDjLCEd>@tcp://worker-fqdn:4444
+        service<gVQHWd9h6Km>@tcp://worker-fqdn:4444
 
     To bind to one interface but advertise a different one, append the bind
     address after ``@``:
@@ -132,7 +135,7 @@ def start_worker_loop_forever(
 
     The bind alias can also be used inside a ProcAddr:
 
-        service<2MuAHeDjLCEd>@tcp://worker-fqdn:4444@tcp://0.0.0.0:4444
+        service<gVQHWd9h6Km>@tcp://worker-fqdn:4444@tcp://0.0.0.0:4444
 
     The server will accept a connection to a new root client and enable it to
     use this machine as a host. If the client disconnects or cannot be contacted, this server
@@ -214,9 +217,14 @@ def attach_to_workers(
     used to decide if we have successfully connected to all hosts. Workers may
     be strings or monarch.actor.Future objects that resolve to strings.
 
-    Each worker string must be a ProcAddr in ``<proc-id>@<location>`` form,
-    such as ``service<2MuAHeDjLCEd>@tcp://worker-fqdn:4444``. The proc identity
-    must match the identity used when starting the worker.
+    Each worker string accepts either of these formats:
+
+    - A ZMQ-style channel URL such as ``tcp://worker-fqdn:4444``. The worker's
+      service proc identity is discovered by querying that address, so the
+      worker can be started with a bare channel URL.
+    - A ProcAddr in ``<proc-id>@<location>`` form, such as
+      ``service<gVQHWd9h6Km>@tcp://worker-fqdn:4444``. The proc identity must
+      match the identity used when starting the worker.
 
     If a worker string uses the alias form ``dial_to@bind_to``,
     ``attach_to_workers`` treats it as a reference to an already-serving

@@ -10,7 +10,10 @@ use std::collections::HashMap;
 use std::future::Future;
 
 use futures::FutureExt;
+use futures::StreamExt;
+use futures::TryStreamExt;
 use futures::future::try_join_all;
+use futures::stream;
 use hyperactor::Gateway;
 use hyperactor::Location;
 use hyperactor::ProcAddr;
@@ -20,6 +23,7 @@ use hyperactor::id::Label;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap::bootstrap;
 use hyperactor_mesh::bootstrap::host;
+use hyperactor_mesh::host::query_service_proc;
 use hyperactor_mesh::host_mesh::HostMesh;
 use hyperactor_mesh::mesh_id::HostMeshId;
 use monarch_types::MapPyErr;
@@ -42,8 +46,10 @@ use crate::host_mesh::PyHostMesh;
 use crate::runtime::GilSite;
 use crate::runtime::monarch_with_gil;
 
-const SERVICE_ADDRESS_FORMAT: &str =
-    "expected a service ProcAddr such as 'service<2MuAHeDjLCEd>@tcp://host:4444'";
+const SERVICE_ADDRESS_FORMAT: &str = "expected a channel URL such as 'tcp://host:4444' or a service ProcAddr such as 'service<gVQHWd9h6Km>@tcp://host:4444'";
+
+/// Upper bound on concurrent service proc queries during attach.
+const WORKER_QUERY_CONCURRENCY: usize = 128;
 
 fn service_address_parse_error(address: &str, error: impl std::fmt::Display) -> anyhow::Error {
     anyhow::anyhow!("invalid worker address {address:?}: {error}; {SERVICE_ADDRESS_FORMAT}")
@@ -71,19 +77,40 @@ fn into_dial_location(location: Location) -> Location {
     }
 }
 
-fn parse_service_proc_addr(address: &str) -> anyhow::Result<ProcAddr> {
-    let proc_addr = address
-        .parse::<ProcAddr>()
-        .map_err(|error| service_address_parse_error(address, error))?;
+/// A parsed worker address passed to [`attach_to_workers`].
+#[derive(Debug, PartialEq)]
+enum ServiceAddress {
+    /// A service ProcAddr naming the worker's identity.
+    Proc(ProcAddr),
+    /// A bare frontend address; the worker's identity is discovered by
+    /// querying it.
+    Frontend(ChannelAddr),
+}
+
+impl ServiceAddress {
+    async fn resolve(self) -> anyhow::Result<ProcAddr> {
+        match self {
+            Self::Proc(proc_addr) => Ok(proc_addr),
+            Self::Frontend(addr) => query_service_proc(addr).await,
+        }
+    }
+}
+
+fn parse_service_address(address: &str) -> anyhow::Result<ServiceAddress> {
+    let Ok(proc_addr) = address.parse::<ProcAddr>() else {
+        let addr = ChannelAddr::from_zmq_url(address)
+            .map_err(|error| service_address_parse_error(address, error))?;
+        return Ok(ServiceAddress::Frontend(addr.into_dial_addr()));
+    };
 
     anyhow::ensure!(
         proc_addr.uid().is_instance(),
         "service proc must have an instance id"
     );
-    Ok(ProcAddr::new(
+    Ok(ServiceAddress::Proc(ProcAddr::new(
         proc_addr.id().clone(),
         into_dial_location(proc_addr.location().clone()),
-    ))
+    )))
 }
 
 /// Parses a service address without discarding serve-only resources.
@@ -285,12 +312,18 @@ pub fn attach_to_workers(
         // Wait concurrently for every worker address to become available.
         let results = try_join_all(tasks).await?;
 
-        // Parse each string into the address of the worker's existing service proc.
-        // That proc hosts the HostAgent; no proc is created here.
-        let service_procs: Vec<ProcAddr> = results
+        // Parse each string into the worker's service ProcAddr, querying bare
+        // frontend addresses for it. That proc hosts the HostAgent; no proc is
+        // created here.
+        let service_addresses = results
             .iter()
-            .map(|address| parse_service_proc_addr(address))
+            .map(|address| parse_service_address(address))
             .collect::<Result<Vec<_>, _>>()?;
+        let service_procs: Vec<ProcAddr> = stream::iter(service_addresses)
+            .map(ServiceAddress::resolve)
+            .buffered(WORKER_QUERY_CONCURRENCY)
+            .try_collect()
+            .await?;
 
         // Locate the HostAgent in each service proc, send the caller's configuration,
         // and wait for every agent to acknowledge it.
@@ -361,10 +394,41 @@ mod tests {
     use super::*;
     use crate::runtime::monarch_with_gil_blocking;
 
+    fn parse_proc_worker_address(address: &str) -> ProcAddr {
+        match parse_service_address(address).unwrap() {
+            ServiceAddress::Proc(proc_addr) => proc_addr,
+            other => panic!("expected a ProcAddr worker address, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_known_service_proc_bypasses_discovery_on_non_duplex_transport() {
+        let id = ProcId::instance(Label::strip("service"));
+        let non_duplex = ChannelAddr::from_zmq_url("quic://127.0.0.1:12345").unwrap();
+        assert!(!non_duplex.transport().supports_duplex());
+        for addr in [ChannelAddr::Local(12345), non_duplex] {
+            let known = ProcAddr::new(id.clone(), addr.into());
+            let resolved = parse_service_address(&known.to_string())
+                .unwrap()
+                .resolve()
+                .await
+                .unwrap();
+            assert_eq!(resolved, known);
+        }
+    }
+
     #[test]
-    fn test_attach_requires_service_proc_identity() {
-        assert!(parse_service_proc_addr("tcp://127.0.0.1:1234").is_err());
-        assert!(parse_service_proc_addr("service@tcp://127.0.0.1:1234").is_err());
+    fn test_bare_worker_address_is_discovered() {
+        assert_eq!(
+            parse_service_address("tcp://127.0.0.1:1234").unwrap(),
+            ServiceAddress::Frontend(ChannelAddr::from_zmq_url("tcp://127.0.0.1:1234").unwrap()),
+            "a bare channel URL should be resolved by querying the worker"
+        );
+    }
+
+    #[test]
+    fn test_worker_address_rejects_singleton_service_proc() {
+        assert!(parse_service_address("service@tcp://127.0.0.1:1234").is_err());
         assert!(parse_service_proc_addr_for_serve("service@tcp://127.0.0.1:1234").is_err());
     }
 
@@ -378,7 +442,7 @@ mod tests {
                 .into(),
         );
 
-        let parsed = parse_service_proc_addr(&service_proc.to_string()).unwrap();
+        let parsed = parse_proc_worker_address(&service_proc.to_string());
 
         assert_eq!(parsed, service_proc);
     }
@@ -387,11 +451,15 @@ mod tests {
     fn test_worker_address_disambiguates_proc_addr_from_channel_alias() {
         let alias = "tcp://127.0.0.1:1234@tcp://0.0.0.0:1234";
         let dial_addr = ChannelAddr::from_zmq_url("tcp://127.0.0.1:1234").unwrap();
-        assert!(parse_service_proc_addr(alias).is_err());
+        assert_eq!(
+            parse_service_address(alias).unwrap(),
+            ServiceAddress::Frontend(dial_addr.clone()),
+            "a bare alias should be discovered at its dial address"
+        );
 
         let service_proc_id = ProcId::instance(Label::strip("service"));
         let proc_address = format!("{service_proc_id}@{alias}");
-        let parsed = parse_service_proc_addr(&proc_address).unwrap();
+        let parsed = parse_proc_worker_address(&proc_address);
         assert_eq!(parsed.id(), &service_proc_id);
         assert_eq!(parsed.addr(), &dial_addr);
     }
@@ -406,12 +474,25 @@ mod tests {
             Location::from(alias).with_via(via_uid.clone()),
         );
 
-        let parsed = parse_service_proc_addr(&service_proc.to_string()).unwrap();
+        let parsed = parse_proc_worker_address(&service_proc.to_string());
         let (parsed_via, inner) = parsed.location().as_via().unwrap();
 
         assert_eq!(parsed.id(), &service_proc_id);
         assert_eq!(parsed_via, &via_uid);
         assert_eq!(inner.addr().to_zmq_url(), "tcp://127.0.0.1:1234");
+    }
+
+    #[test]
+    fn test_bare_serve_address_mints_fresh_service_identity() {
+        let (first, _) = parse_service_proc_addr_for_serve("tcp://127.0.0.1:1234").unwrap();
+        let (second, _) = parse_service_proc_addr_for_serve("tcp://127.0.0.1:1234").unwrap();
+
+        assert!(first.uid().is_instance());
+        assert_ne!(
+            first.id(),
+            second.id(),
+            "workers started with the same bare address should get distinct identities"
+        );
     }
 
     #[test]
@@ -632,9 +713,10 @@ mod tests {
 
     #[test]
     fn test_invalid_worker_address_error_includes_valid_formats() {
-        let error = parse_service_proc_addr("not an address").unwrap_err();
+        let error = parse_service_address("not an address").unwrap_err();
         let message = error.to_string();
         assert!(message.contains("invalid worker address \"not an address\""));
-        assert!(message.contains("service<2MuAHeDjLCEd>@tcp://host:4444"));
+        assert!(message.contains("'tcp://host:4444'"));
+        assert!(message.contains("service<gVQHWd9h6Km>@tcp://host:4444"));
     }
 }
