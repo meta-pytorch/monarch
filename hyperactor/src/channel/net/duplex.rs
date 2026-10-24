@@ -186,6 +186,11 @@ impl<Out: RemoteMessage, In: RemoteMessage> DuplexClient<Out, In> {
         &self.addr
     }
 
+    /// Cancellation owner for a scoped session, such as a service identity query.
+    pub(crate) fn cancellation_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
+    }
+
     /// Gracefully shut down the duplex client session. Cancels the
     /// recv/send loop's cancellation token (which the spawned task
     /// observes in its `select!`s) and awaits the spawned task. On
@@ -507,9 +512,14 @@ pub(super) async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage
     let mut recv_next = Next { seq: 0, ack: 0 };
 
     loop {
-        let connected = match session.connect().await {
-            Ok(s) => s,
-            Err(_) => break,
+        // A one-shot query can disappear while its reply is being sent.
+        // Bound disconnected sessions so they cannot retain that reply forever;
+        // this does not impose a deadline on connected, idle attachments.
+        let reconnect_timeout =
+            hyperactor_config::global::get(crate::config::MESSAGE_DELIVERY_TIMEOUT);
+        let connected = match tokio::time::timeout(reconnect_timeout, session.connect()).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(_)) | Err(_) => break,
         };
         deliveries.requeue_unacked();
         let result = {
@@ -956,6 +966,62 @@ mod tests {
         assert_eq!(srx2.recv().await.unwrap(), 300);
         stx2.post(400);
         assert_eq!(rx2.recv().await.unwrap(), 400);
+    }
+
+    #[tokio::test]
+    async fn test_connected_idle_duplex_outlives_reconnect_timeout() {
+        let config = hyperactor_config::global::lock();
+        let _timeout = config.override_key(
+            crate::config::MESSAGE_DELIVERY_TIMEOUT,
+            std::time::Duration::from_secs(1),
+        );
+        let mut server = serve::<u64, u64>(ChannelAddr::any(ChannelTransport::Unix), None).unwrap();
+        let mut client = dial::<u64, u64>(server.addr().clone()).unwrap();
+        let tx = client.tx();
+        let mut rx = client.take_rx().unwrap();
+        let (mut accepted_rx, accepted_tx) = server.accept().await.unwrap();
+        tx.send(1).await.unwrap(); // Fence delivery before advancing past its deadline.
+        assert_eq!(accepted_rx.recv().await.unwrap(), 1);
+        tokio::time::pause();
+        tokio::time::advance(std::time::Duration::from_secs(60)).await;
+        // Only idle time is simulated. Real socket I/O below must not let
+        // automatic clock advancement expire a newly posted message.
+        tokio::time::resume();
+        accepted_tx.post(2);
+        assert_eq!(rx.recv().await.unwrap(), 2);
+        tx.post(3);
+        assert_eq!(accepted_rx.recv().await.unwrap(), 3);
+        client.join().await;
+        server.stop("test complete");
+        server.join().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_disconnected_duplex_expires_and_releases_application_receiver() {
+        let config = hyperactor_config::global::lock();
+        let _timeout = config.override_key(
+            crate::config::MESSAGE_DELIVERY_TIMEOUT,
+            std::time::Duration::from_secs(1),
+        );
+        let mut server =
+            serve::<u64, u64>(ChannelAddr::Tcp("127.0.0.1:0".parse().unwrap()), None).unwrap();
+        let ChannelAddr::Tcp(addr) = server.addr() else {
+            panic!("TCP server")
+        };
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        super::super::write_link_init(
+            &mut stream,
+            SessionId::random(),
+            0,
+            super::super::ProtocolKind::Duplex,
+        )
+        .await
+        .unwrap();
+        let (mut rx, _tx) = server.accept().await.unwrap();
+        drop(stream); // abrupt loss, with no Closed response and no reconnect
+        assert!(matches!(rx.recv().await, Err(ChannelError::Closed)));
+        server.stop("test complete");
+        server.join().await;
     }
 
     /// Ping-pong helper: server echoes back each message it receives.

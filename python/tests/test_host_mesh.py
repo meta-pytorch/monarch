@@ -816,6 +816,106 @@ def test_alias_bootstrap() -> None:
             proc.wait()
 
 
+def _start_bare_address_worker(addr: str) -> subprocess.Popen[bytes]:
+    env = {**os.environ}
+    if "FB_XAR_INVOKED_NAME" in os.environ:
+        env["PYTHONPATH"] = ":".join(sys.path)
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "from monarch.actor import run_worker_loop_forever; "
+            f'run_worker_loop_forever(address={addr!r}, ca="trust_all_connections")',
+        ],
+        env=env,
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+    )
+
+
+def _stop_bare_address_worker(
+    worker: subprocess.Popen[bytes], actor_pids: list[int]
+) -> None:
+    # Native proc launchers put each child in its own process group. Own all
+    # groups created by this test, including children orphaned by a host crash.
+    for pid in [worker.pid, *actor_pids]:
+        with suppress(ProcessLookupError):
+            os.killpg(pid, signal.SIGKILL)
+    worker.wait(timeout=10)
+    actor_pids.clear()
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_attach_to_workers_discovers_bare_address_identity() -> None:
+    """Make two attachments from one caller, then discover a replacement at
+    the same frontend. Observe stale-reference transport failure explicitly."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    addr = f"tcp://127.0.0.1:{port}"
+
+    import monarch.actor
+
+    faults: list[str] = []
+    faulted = threading.Event()
+
+    def capture_stale_delivery(failure: Any) -> None:
+        faults.append(failure.report())
+        faulted.set()
+
+    original_hook = monarch.actor.unhandled_fault_hook
+    worker = _start_bare_address_worker(addr)
+    actor_pids: list[int] = []
+    try:
+        # pyrefly: ignore [bad-argument-type]
+        first = attach_to_workers(ca="trust_all_connections", workers=[addr], name="a")
+        # pyrefly: ignore [bad-argument-type]
+        second = attach_to_workers(ca="trust_all_connections", workers=[addr], name="b")
+        old_actor = first.spawn_procs(per_host={"gpus": 1}, name="first").spawn(
+            "rank", RankActor
+        )
+        other_actor = second.spawn_procs(per_host={"gpus": 1}, name="second").spawn(
+            "rank", RankActor
+        )
+        for actor in [old_actor, other_actor]:
+            assert list(actor.get_rank.call().get(timeout=30).values()) == [0]
+            actor_pids.extend(actor.get_pid.call().get(timeout=30).values())
+
+        # Transport failures reach the root supervision hook, whose default
+        # exits via KeyboardInterrupt. Observe the explicit delivery failure
+        # while keeping this caller alive to reach the replacement.
+        monarch.actor.unhandled_fault_hook = capture_stale_delivery
+        _stop_bare_address_worker(worker, actor_pids)
+        worker = _start_bare_address_worker(addr)
+        # pyrefly: ignore [bad-argument-type]
+        restarted = attach_to_workers(
+            ca="trust_all_connections", workers=[addr], name="restarted"
+        )
+        replacement = restarted.spawn_procs(per_host={"gpus": 1}, name="first").spawn(
+            "rank", RankActor
+        )
+        assert list(replacement.get_rank.call().get(timeout=30).values()) == [0]
+        actor_pids.extend(replacement.get_pid.call().get(timeout=30).values())
+        faulted.clear()
+        first_new_fault = len(faults)
+        # A transport failure is delivered through root supervision, rather
+        # than an ActorError reply. Avoid creating a reply future that cannot
+        # be satisfied by the dead incarnation.
+        old_actor.get_rank.broadcast()
+        assert faulted.wait(timeout=15), "stale transport delivery did not fail"
+        assert any(
+            "undeliverable" in report and addr in report
+            for report in faults[first_new_fault:]
+        ), faults
+        assert list(replacement.get_rank.call().get(timeout=30).values()) == [0]
+        restarted.shutdown().get(timeout=30)
+    finally:
+        _stop_bare_address_worker(worker, actor_pids)
+        monarch.actor.unhandled_fault_hook = original_hook
+
+
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_attach_to_workers_accepts_future_addresses() -> None:
