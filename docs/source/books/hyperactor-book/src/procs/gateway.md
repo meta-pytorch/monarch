@@ -125,3 +125,8 @@ dropped attach never leaves the gateway holding a dead duplex sender.
 - [Host](host.md) — owns one gateway and wires its procs into it
 - [Syntax](../references/syntax.md) — `Location` and the `Via` source-route form
 - [Routers](../mailboxes/routers.md) — `DialMailboxRouter`, the default forwarder
+
+## Attachment delivery guarantees
+
+See [Gateway attachment and outbound delivery](gateway_connection.md) for the
+route cutover contract, cancellation behavior, and regression scenarios.

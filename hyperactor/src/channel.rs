@@ -264,6 +264,7 @@ impl<M: RemoteMessage> CompletionReceipt<M> {
 pub(crate) struct CompletionTracker {
     completed: Arc<AtomicUsize>,
     completed_notify: Arc<tokio::sync::Notify>,
+    additional: Option<(Arc<AtomicUsize>, Arc<tokio::sync::Notify>)>,
 }
 
 impl CompletionTracker {
@@ -274,12 +275,22 @@ impl CompletionTracker {
         Self {
             completed,
             completed_notify,
+            additional: None,
         }
     }
 
+    pub(crate) fn with_additional(mut self, tracker: CompletionTracker) -> Self {
+        self.additional = Some((tracker.completed, tracker.completed_notify));
+        self
+    }
+
     fn complete(&self) {
-        self.completed.fetch_add(1, Ordering::Relaxed);
+        self.completed.fetch_add(1, Ordering::Release);
         self.completed_notify.notify_waiters();
+        if let Some((completed, notify)) = &self.additional {
+            completed.fetch_add(1, Ordering::Release);
+            notify.notify_waiters();
+        }
     }
 }
 
