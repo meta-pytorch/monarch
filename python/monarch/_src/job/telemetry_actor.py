@@ -17,7 +17,7 @@ Python coordinates activation and exposes actor endpoints for query fan-out.
 Only one live `TelemetryActor` may own a given host-local socket namespace. The
 socket bind is the ownership point: the actor that binds
 `/tmp/monarch_<apply_id>/telemetry.sock` owns the store, and any activation
-candidate that cannot bind leaves its scanner unset and must not participate in
+candidate that cannot bind leaves its scanner unset and contributes no rows to
 query fan-out.
 """
 
@@ -305,10 +305,15 @@ class TelemetryActor(Actor):
     ) -> int:
         """Scan the local store and configured worker collector meshes."""
         # The client collector is the singleton query root: scan its local store
-        # first, then fan out flat to active worker collector meshes. Worker
+        # first, then fan out flat to worker collector meshes. Worker
         # collectors have an empty `_worker_collectors` registry, so the same
         # endpoint is leaf-only when invoked on a worker.
-        local_count: int = self._scanner_or_raise().scan(
+        scanner = self._scanner
+        if scanner is None:
+            # An inactive worker shares a host with the collector that owns
+            # its socket, such as the client's host, so it holds no rows.
+            return 0
+        local_count: int = scanner.scan(
             dest, table_name, projection, limit, filter_expr
         )
 
