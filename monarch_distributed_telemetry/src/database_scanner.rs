@@ -41,6 +41,7 @@ use monarch_telemetry_schema::deserialize_one_batch;
 use monarch_telemetry_schema::entity_tables::MESSAGE_STATUS_EVENTS;
 use monarch_telemetry_schema::entity_tables::MESSAGES;
 use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
+use monarch_telemetry_schema::execution_tables::EXECUTION_STATUS_EVENTS;
 use monarch_telemetry_schema::host_tables::GPU_METRICS;
 use monarch_telemetry_schema::host_tables::HOST_METRICS;
 use monarch_telemetry_schema::metric_tables::METRIC_GAUGES;
@@ -343,6 +344,7 @@ const RETENTION_TABLES: &[&str] = &[
     METRIC_HISTOGRAMS,
     HOST_METRICS,
     GPU_METRICS,
+    EXECUTION_STATUS_EVENTS,
 ];
 
 /// Bounds for routine retention sweeps.
@@ -772,7 +774,14 @@ impl DatabaseScanner {
                 .get(table_name)
                 .cloned();
             if let Some(table) = table {
-                table.apply_retention(table_name, where_clause).await?;
+                let predicate = if table_name == EXECUTION_STATUS_EVENTS {
+                    format!(
+                        "({where_clause}) OR status IN ('succeeded','failed','interrupted','unknown')"
+                    )
+                } else {
+                    where_clause.to_owned()
+                };
+                table.apply_retention(table_name, &predicate).await?;
             }
         }
         Ok(())
@@ -1171,6 +1180,14 @@ mod tests {
     use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
     use monarch_telemetry_schema::entity_tables::SentMessage;
     use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
+    use monarch_telemetry_schema::execution_tables::EXECUTION_RANK_RESULTS;
+    use monarch_telemetry_schema::execution_tables::EXECUTIONS;
+    use monarch_telemetry_schema::execution_tables::Execution;
+    use monarch_telemetry_schema::execution_tables::ExecutionBuffer;
+    use monarch_telemetry_schema::execution_tables::ExecutionRankResult;
+    use monarch_telemetry_schema::execution_tables::ExecutionRankResultBuffer;
+    use monarch_telemetry_schema::execution_tables::ExecutionStatusEvent;
+    use monarch_telemetry_schema::execution_tables::ExecutionStatusEventBuffer;
     use monarch_telemetry_schema::host_tables::GpuMetric;
     use monarch_telemetry_schema::host_tables::GpuMetricBuffer;
     use monarch_telemetry_schema::host_tables::HostMetric;
@@ -1859,6 +1876,178 @@ mod tests {
         assert_eq!(table_row_count_async(&scanner, HOST_METRICS).await, 1);
         assert_eq!(table_row_count_async(&scanner, GPU_METRICS).await, 1);
         assert_eq!(table_row_count_async(&scanner, ACTORS).await, 2);
+    }
+
+    #[tokio::test]
+    async fn test_execution_retention_expires_heartbeats_and_preserves_final_facts() {
+        let scanner = test_scanner(10_000_000);
+        let mut executions = ExecutionBuffer::default();
+        let mut statuses = ExecutionStatusEventBuffer::default();
+        let mut ranks = ExecutionRankResultBuffer::default();
+        for (id, status, returncode) in [
+            ("active", "running", None),
+            ("detached", "detached", None),
+            ("succeeded", "succeeded", Some(0)),
+            ("failed", "failed", Some(7)),
+            ("interrupted", "interrupted", Some(130)),
+            ("unknown", "unknown", None),
+            ("missing-status", "", None),
+        ] {
+            executions.insert(Execution {
+                id: id.into(),
+                timestamp_us: 1,
+                command: "train.py".into(),
+                workdir: Some("/workspace".into()),
+                output_dir: Some("/tmp/command-output".into()),
+            });
+            if !status.is_empty() {
+                statuses.insert(ExecutionStatusEvent {
+                    execution_id: id.into(),
+                    timestamp_us: 2,
+                    status: status.into(),
+                    returncode,
+                    error: Some(format!("report for {id}")),
+                });
+            }
+            if let Some(returncode) = returncode {
+                ranks.insert(ExecutionRankResult {
+                    id: id.into(),
+                    execution_id: id.into(),
+                    timestamp_us: 3,
+                    mesh: "workers".into(),
+                    rank: "0".into(),
+                    flat_rank: Some(0),
+                    coordinates: Some("{\"hosts\":0}".into()),
+                    host_rank: Some(0),
+                    returncode,
+                });
+            }
+        }
+        for (id, status, timestamp_us) in [
+            ("active", "running", 90_000_000),
+            ("active", "running", 91_000_000),
+            ("active", "running", 95_000_000),
+            ("detached", "detached", 96_000_000),
+        ] {
+            statuses.insert(ExecutionStatusEvent {
+                execution_id: id.into(),
+                timestamp_us,
+                status: status.into(),
+                returncode: None,
+                error: None,
+            });
+        }
+        ingest_batch(
+            &scanner,
+            EXECUTIONS,
+            executions.drain_to_record_batch().unwrap(),
+        )
+        .await;
+        ingest_batch(
+            &scanner,
+            EXECUTION_STATUS_EVENTS,
+            statuses.drain_to_record_batch().unwrap(),
+        )
+        .await;
+        ingest_batch(
+            &scanner,
+            EXECUTION_RANK_RESULTS,
+            ranks.drain_to_record_batch().unwrap(),
+        )
+        .await;
+        DatabaseScanner::apply_retention_policies_to_tables(
+            &scanner.table_data,
+            &DatabaseScanner::retention_where_clause(scanner.retention_us, 100_000_000),
+        )
+        .await
+        .unwrap();
+        assert_eq!(table_row_count_async(&scanner, EXECUTIONS).await, 7);
+        assert_eq!(
+            table_row_count_async(&scanner, EXECUTION_RANK_RESULTS).await,
+            3
+        );
+        assert_eq!(
+            table_i64_values_async(&scanner, EXECUTION_STATUS_EVENTS, "timestamp_us").await,
+            vec![2, 2, 2, 2, 91_000_000, 95_000_000, 96_000_000],
+        );
+        let table = scanner
+            .table_data
+            .lock()
+            .unwrap()
+            .get(EXECUTION_STATUS_EVENTS)
+            .unwrap()
+            .clone();
+        let ctx = SessionContext::new();
+        ctx.register_table(EXECUTION_STATUS_EVENTS, table.mem_table())
+            .unwrap();
+        let failed = ctx
+            .sql(
+                "SELECT returncode, error FROM execution_status_events WHERE execution_id='failed'",
+            )
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(
+            failed[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .value(0),
+            7
+        );
+        assert_eq!(
+            failed[0]
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "report for failed"
+        );
+        assert_eq!(
+            table_i64_values_async(&scanner, EXECUTION_RANK_RESULTS, "timestamp_us").await,
+            vec![3, 3, 3]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_periodic_retention_expires_command_heartbeats() {
+        let scanner = test_scanner(10_000);
+        let mut statuses = ExecutionStatusEventBuffer::default();
+        for (status, timestamp_us) in [("running", 1), ("succeeded", 2)] {
+            statuses.insert(ExecutionStatusEvent {
+                execution_id: "command".into(),
+                timestamp_us,
+                status: status.into(),
+                returncode: Some(0),
+                error: None,
+            });
+        }
+        ingest_batch(
+            &scanner,
+            EXECUTION_STATUS_EVENTS,
+            statuses.drain_to_record_batch().unwrap(),
+        )
+        .await;
+        let handle = DatabaseScanner::spawn_periodic_retention_task(
+            scanner.table_data.clone(),
+            scanner.retention_us,
+        );
+        let retained = tokio::time::timeout(Duration::from_secs(5), async {
+            while table_row_count_async(&scanner, EXECUTION_STATUS_EVENTS).await != 1 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        handle.abort();
+        retained.expect("periodic retention should expire old heartbeats");
+        assert_eq!(
+            table_i64_values_async(&scanner, EXECUTION_STATUS_EVENTS, "timestamp_us").await,
+            vec![2]
+        );
     }
 
     #[test]

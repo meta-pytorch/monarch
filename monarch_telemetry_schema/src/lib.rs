@@ -132,6 +132,49 @@ pub mod trace_tables {
     }
 }
 
+/// Command lifecycle schemas, distinct from actor liveness.
+pub mod execution_tables {
+    use super::*;
+
+    pub const EXECUTIONS: &str = "executions";
+    pub const EXECUTION_STATUS_EVENTS: &str = "execution_status_events";
+    pub const EXECUTION_RANK_RESULTS: &str = "execution_rank_results";
+
+    /// One committed CLI invocation, grouping all targeted meshes and ranks.
+    #[derive(RecordBatchRow)]
+    pub struct Execution {
+        pub id: String,
+        pub timestamp_us: i64,
+        pub command: String,
+        pub workdir: Option<String>,
+        pub output_dir: Option<String>,
+    }
+
+    /// Controller heartbeats and terminal command outcomes.
+    #[derive(RecordBatchRow)]
+    pub struct ExecutionStatusEvent {
+        pub execution_id: String,
+        pub timestamp_us: i64,
+        pub status: String,
+        pub returncode: Option<i32>,
+        pub error: Option<String>,
+    }
+
+    /// A command process's rank identity and exit code.
+    #[derive(RecordBatchRow)]
+    pub struct ExecutionRankResult {
+        pub id: String,
+        pub execution_id: String,
+        pub timestamp_us: i64,
+        pub mesh: String,
+        pub rank: String,
+        pub flat_rank: Option<i64>,
+        pub coordinates: Option<String>,
+        pub host_rank: Option<i64>,
+        pub returncode: i32,
+    }
+}
+
 /// Entity table row schemas.
 pub mod entity_tables {
     use super::*;
