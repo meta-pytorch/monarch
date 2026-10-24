@@ -1,0 +1,25 @@
+apiVersion: monarch.pytorch.org/v1alpha1
+kind: MonarchMesh
+metadata:
+  labels:
+    app.kubernetes.io/name: monarchmesh-sample
+    app.kubernetes.io/managed-by: kustomize
+  name: monarchmesh-sample
+  namespace: monarch-workspace
+spec:
+  replicas: 2
+  port: 26600  # Optional, defaults to 26600
+  podTemplate:
+    containers:
+    - name: worker
+      image: ghcr.io/meta-pytorch/monarch:2025-12-16-alpha
+      imagePullPolicy: IfNotPresent
+      ports:
+      - name: monarch
+        containerPort: 26600
+      env:
+      # TODO: Once we have port name based discovery, we can remove passing in the env var.
+      - name: MONARCH_PORT
+        value: "26600"
+      - name: HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG
+        value: "false"
