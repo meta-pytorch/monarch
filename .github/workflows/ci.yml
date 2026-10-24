@@ -92,14 +92,21 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
           cache-dependency-path: python/monarch/monarch_dashboard/frontend/package-lock.json
-      - name: Install and build dashboard frontend
+      - name: Install dashboard frontend dependencies
         working-directory: python/monarch/monarch_dashboard/frontend
-        run: |
-          npm ci
-          npm run build
+        run: npm ci
+      - name: Test dashboard frontend
+        working-directory: python/monarch/monarch_dashboard/frontend
+        run: npm test
+      - name: Type check dashboard frontend
+        working-directory: python/monarch/monarch_dashboard/frontend
+        run: npm run typecheck
+      - name: Build dashboard frontend
+        working-directory: python/monarch/monarch_dashboard/frontend
+        run: npm run build
 
   status-check:
     name: Status Check

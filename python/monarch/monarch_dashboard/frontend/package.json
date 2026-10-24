@@ -17,7 +17,8 @@
   },
   "scripts": {
     "build": "esbuild src/index.tsx --bundle --outfile=build/static/js/main.js --loader:.tsx=tsx --loader:.ts=ts --loader:.css=css --jsx=automatic --minify --target=es2020 --define:process.env.NODE_ENV=\\\"production\\\"",
-    "test": "node scripts/test.mjs"
+    "test": "node scripts/test.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "proxy": "http://localhost:5199",
   "browserslist": {
