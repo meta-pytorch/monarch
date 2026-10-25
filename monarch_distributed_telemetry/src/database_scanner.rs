@@ -161,8 +161,9 @@ impl LiveTableData {
         let partition = &self.mem_table.batches[0];
         let mut guard = partition.write().await;
 
-        // Drain current batches into a temporary MemTable for querying.
-        let current_batches: Vec<RecordBatch> = guard.drain(..).collect();
+        // Clone Arrow handles, then swap only after every fallible step succeeds.
+        // Query errors and task cancellation both preserve the original rows.
+        let current_batches = guard.clone();
         let tmp = MemTable::try_new(self.mem_table.schema(), vec![current_batches])?;
 
         let ctx = SessionContext::new();
@@ -171,12 +172,14 @@ impl LiveTableData {
         let query = format!("SELECT * FROM {table_name} WHERE {where_clause}");
         let df = ctx.sql(&query).await?;
         let filtered: Vec<RecordBatch> = df.execute_stream().await?.try_collect().await?;
-
-        for batch in filtered {
-            if batch.num_rows() > 0 {
-                guard.push(batch);
-            }
-        }
+        // SQL projections may widen nullability. Restore the registered schema
+        // and validate all columns before touching the shared partition.
+        let filtered = filtered
+            .into_iter()
+            .filter(|b| b.num_rows() > 0)
+            .map(|b| RecordBatch::try_new(self.schema(), b.columns().to_vec()))
+            .collect::<Result<Vec<_>, _>>()?;
+        *guard = filtered;
 
         // The rewrite emits coalesced batches, so nothing is left pending.
         self.pending_batches.store(0, Ordering::Relaxed);
@@ -1159,12 +1162,15 @@ mod tests {
 
     use datafusion::arrow::array::Array;
     use datafusion::arrow::array::BooleanArray;
+    use datafusion::arrow::array::DictionaryArray;
     use datafusion::arrow::array::Int32Array;
     use datafusion::arrow::array::Int64Array;
     use datafusion::arrow::array::StringArray;
+    use datafusion::arrow::array::StringDictionaryBuilder;
     use datafusion::arrow::array::UInt64Array;
     use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::datatypes::Field;
+    use datafusion::arrow::datatypes::Int32Type;
     use datafusion::arrow::datatypes::Schema;
     use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::arrow::record_batch::RecordBatch;
@@ -2011,6 +2017,92 @@ mod tests {
             table_i64_values_async(&scanner, EXECUTION_RANK_RESULTS, "timestamp_us").await,
             vec![3, 3, 3]
         );
+    }
+
+    #[tokio::test]
+    async fn test_failed_retention_rewrite_preserves_original_rows() {
+        let batch = make_batch(&[1, 2, 3]);
+        let table = LiveTableData::new(batch.schema());
+        table.push(batch).await;
+        assert!(
+            table
+                .apply_retention("sample", "missing_column > 0")
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            table.mem_table.batches[0]
+                .read()
+                .await
+                .iter()
+                .map(|b| b.num_rows())
+                .sum::<usize>(),
+            3
+        );
+        table.apply_retention("sample", "x > 1").await.unwrap();
+        assert_eq!(
+            table.mem_table.batches[0]
+                .read()
+                .await
+                .iter()
+                .map(|b| b.num_rows())
+                .sum::<usize>(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_retention_preserves_dictionary_types_and_nullable_columns() {
+        let mut tags = StringDictionaryBuilder::<Int32Type>::new();
+        for value in ["a", "b", "a"] {
+            tags.append(value).unwrap();
+        }
+        let tags = tags.finish();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("tag", tags.data_type().clone(), false),
+            Field::new("x", DataType::Int64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(tags),
+                Arc::new(Int64Array::from(vec![Some(1), Some(3), None])),
+            ],
+        )
+        .unwrap();
+        let table = LiveTableData::new(schema.clone());
+        table.push(batch).await;
+
+        for predicate in ["x IS NULL OR x > 1", "x IS NULL"] {
+            table.apply_retention("sample", predicate).await.unwrap();
+            let batches = table.mem_table.batches[0].read().await;
+            assert_eq!(batches.len(), 1);
+            let batch = &batches[0];
+            assert_eq!(batch.schema(), schema);
+            let tags = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<DictionaryArray<Int32Type>>()
+                .unwrap();
+            let values = tags
+                .values()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let retained_tags: Vec<_> = tags
+                .keys()
+                .values()
+                .iter()
+                .map(|key| values.value(*key as usize))
+                .collect();
+            if predicate == "x IS NULL" {
+                assert_eq!(retained_tags, ["a"]);
+                assert!(batch.column(1).is_null(0));
+            } else {
+                assert_eq!(retained_tags, ["b", "a"]);
+                assert!(batch.column(1).is_null(1));
+            }
+        }
     }
 
     #[tokio::test]
