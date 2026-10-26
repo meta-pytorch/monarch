@@ -1492,6 +1492,16 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
     )?))
 }
 
+/// Query the server at `addr` for its query reply.
+///
+/// Muxed servers (see [`serve_mux`]) answer queries on a dedicated,
+/// short-lived connection that shares no state with message channels
+/// to the same address. Returns an error if the server does not
+/// support queries or has no query reply configured.
+pub async fn query(addr: ChannelAddr) -> Result<bytes::Bytes, ChannelError> {
+    Ok(net::query(addr.into_dial_addr()).await?)
+}
+
 /// Channels that may deliver messages out of send order.
 pub mod unordered {
     use super::*;
@@ -1622,6 +1632,9 @@ pub fn serve_with_listener<M: RemoteMessage>(
 /// are supported; the caller picks transports that implement both
 /// protocol styles.
 ///
+/// Clients that call [`query`] on this address receive `query_reply`.
+/// When it is `None`, query connections are closed without a reply.
+///
 /// The returned [`MuxServer`] owns both halves and a shared
 /// [`MuxShutdown`]. Dropping or stopping any of these tears down the
 /// listener and the other half together — see [`MuxServer`] for the
@@ -1630,6 +1643,7 @@ pub fn serve_with_listener<M: RemoteMessage>(
 pub fn serve_mux<M: RemoteMessage, In: RemoteMessage, Out: RemoteMessage>(
     addr: ChannelAddr,
     prebound_listener: Option<std::net::TcpListener>,
+    query_reply: Option<bytes::Bytes>,
 ) -> Result<MuxServer<M, In, Out>, ChannelError> {
     if !addr.transport().is_net() {
         return Err(ChannelError::InvalidAddress(format!(
@@ -1637,7 +1651,7 @@ pub fn serve_mux<M: RemoteMessage, In: RemoteMessage, Out: RemoteMessage>(
             addr
         )));
     }
-    let parts = net::mux::serve::<M, In, Out>(addr, prebound_listener)?;
+    let parts = net::mux::serve::<M, In, Out>(addr, prebound_listener, query_reply)?;
     Ok(MuxServer {
         addr: parts.addr,
         simplex: parts.simplex,

@@ -816,6 +816,63 @@ def test_alias_bootstrap() -> None:
             proc.wait()
 
 
+def _start_bare_address_worker(addr: str) -> subprocess.Popen[bytes]:
+    env = {**os.environ}
+    if "FB_XAR_INVOKED_NAME" in os.environ:
+        env["PYTHONPATH"] = ":".join(sys.path)
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from monarch.actor import run_worker_loop_forever; "
+            f'run_worker_loop_forever(address={addr!r}, ca="trust_all_connections")',
+        ],
+        env=env,
+    )
+
+
+def _spawn_ranks(hosts: HostMesh, name: str) -> list[int]:
+    am = hosts.spawn_procs(per_host={"gpus": 1}, name=name).spawn("rank", RankActor)
+    return sorted(v for _, v in am.get_rank.call().get().items())
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_attach_to_workers_discovers_bare_address_identity() -> None:
+    """A worker started from a bare channel URL mints its own service
+    identity, and `attach_to_workers` discovers it by querying the address.
+    Two clients can discover the same worker, and a worker restarted with
+    identical arguments is discovered under its new identity."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    addr = f"tcp://127.0.0.1:{port}"
+
+    worker = _start_bare_address_worker(addr)
+    try:
+        # pyrefly: ignore [bad-argument-type]
+        first = attach_to_workers(ca="trust_all_connections", workers=[addr], name="a")
+        # pyrefly: ignore [bad-argument-type]
+        second = attach_to_workers(ca="trust_all_connections", workers=[addr], name="b")
+        assert _spawn_ranks(first, "first") == [0]
+        assert _spawn_ranks(second, "second") == [0]
+
+        worker.kill()
+        worker.wait()
+        worker = _start_bare_address_worker(addr)
+
+        # pyrefly: ignore [bad-argument-type]
+        restarted = attach_to_workers(
+            ca="trust_all_connections", workers=[addr], name="restarted"
+        )
+        assert _spawn_ranks(restarted, "restarted") == [0]
+        restarted.shutdown().get()
+    finally:
+        worker.kill()
+        worker.wait()
+
+
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_attach_to_workers_accepts_future_addresses() -> None:
