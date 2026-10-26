@@ -160,8 +160,9 @@ sequenceDiagram
 ### 4. Termination Phase
 
 **Normal Termination:**
-- Triggered by `ActorMesh.stop()`
+- Triggered by `ActorMesh.stop()`; awaiting the returned Future waits until every actor has finished `__cleanup__` and stopped, or until the wait for an unresponsive actor times out
 - Mailbox drained, `__cleanup__` runs, parent notified
+- When an actor stops, or `shutdown_context()` runs, meshes it owns are sent a stop but not waited on; see the `shutdown_context()` docstring for the shutdown guarantees
 
 **Error Termination:**
 - Triggered by an unhandled exception in a handler
@@ -193,9 +194,9 @@ class FileWriter(Actor):
 - Cancelled if it exceeds `HYPERACTOR_CLEANUP_TIMEOUT`, which puts the actor in an error state
 
 **What Has Already Happened:**
-- Every mesh this actor owns has already been stopped recursively
-- Each owned actor's `__cleanup__` has already run
+- Every mesh this actor owns has been told to stop
 - Owned actor meshes and proc meshes are no longer usable from this method
+- Owned actors may still be running their own `__cleanup__`; stopping does not wait for them
 - For shutdown work that needs an owned mesh, expose a dedicated endpoint and call it before `stop()`
 
 **What to Clean Up Here:**

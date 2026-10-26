@@ -546,9 +546,10 @@ pub trait Controlled: Clone + Debug + Send + Sync + 'static {
         health_state: &mut HealthState,
     ) -> anyhow::Result<()>;
 
-    /// Stop this mesh on controller cleanup (when `Stop` was not received
-    /// but the actor is shutting down).
-    async fn cleanup_stop(&self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()>;
+    /// Send stop messages for this mesh on controller cleanup (when `Stop`
+    /// was not received but the actor is shutting down), without waiting
+    /// for per-rank termination.
+    fn cleanup_stop(&self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()>;
 }
 
 /// Generic controller for a mesh of resources. Actor meshes instantiate this
@@ -838,8 +839,7 @@ where
                 "starting cleanup for ResourceController, stopping mesh",
             );
             self.mesh
-                .cleanup_stop(this, "resource controller cleanup".to_string())
-                .await?;
+                .cleanup_stop(this, "resource controller cleanup".to_string())?;
         }
         Ok(())
     }
@@ -1359,18 +1359,19 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
             .map(|p| p.extent().clone());
 
         // Cannot use "ActorMesh::stop" as it tries to message the controller.
-        let result = self
-            .proc_mesh
-            .stop_actor_by_id(
-                cx,
-                self.actor_mesh
-                    .as_managed()
-                    .expect("actor mesh control plane requires a managed mesh")
-                    .id()
-                    .clone(),
-                reason,
-            )
-            .await;
+        let actor_mesh_id = self
+            .actor_mesh
+            .as_managed()
+            .expect("actor mesh control plane requires a managed mesh")
+            .id();
+        let result = async {
+            self.proc_mesh
+                .send_stop_actor_by_id(cx, actor_mesh_id, reason)?;
+            self.proc_mesh
+                .wait_actor_stopped_by_id(cx, actor_mesh_id)
+                .await
+        }
+        .await;
 
         match result {
             Ok(statuses) => {
@@ -1406,18 +1407,14 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
         Ok(())
     }
 
-    async fn cleanup_stop(&self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
+    fn cleanup_stop(&self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
+        let actor_mesh_id = self
+            .actor_mesh
+            .as_managed()
+            .expect("actor mesh control plane requires a managed mesh")
+            .id();
         self.proc_mesh
-            .stop_actor_by_id(
-                cx,
-                self.actor_mesh
-                    .as_managed()
-                    .expect("actor mesh control plane requires a managed mesh")
-                    .id()
-                    .clone(),
-                reason,
-            )
-            .await?;
+            .send_stop_actor_by_id(cx, actor_mesh_id, reason)?;
         Ok(())
     }
 }
@@ -1574,8 +1571,8 @@ impl Controlled for ProcMeshRef {
         let Some(hosts) = self.hosts() else {
             return Ok(());
         };
-        // stop_proc_mesh waits for every rank to reach a terminating state
-        // before returning Ok, so we can apply its returned StatusMesh
+        // wait_proc_mesh_stopped waits for every rank to reach a terminating
+        // state before returning Ok, so we can apply its returned StatusMesh
         // verbatim. On error we still got per-rank statuses for whatever
         // ranks the host agents reported on; apply those too so health
         // state stays as accurate as we can make it.
@@ -1585,8 +1582,9 @@ impl Controlled for ProcMeshRef {
             .keys()
             .next()
             .map(|p| p.extent().clone());
+        hosts.send_stop_proc_mesh(cx, names.iter().cloned(), &region, reason);
         match hosts
-            .stop_proc_mesh(cx, self.id(), names, region, reason)
+            .wait_proc_mesh_stopped(cx, self.id(), names, region)
             .await
         {
             Ok(statuses) => {
@@ -1615,13 +1613,9 @@ impl Controlled for ProcMeshRef {
         }
     }
 
-    async fn cleanup_stop(&self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
-        let names = self.proc_ids().collect::<Vec<hyperactor::ProcAddr>>();
-        let region = Ranked::region(self).clone();
+    fn cleanup_stop(&self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
         if let Some(hosts) = self.hosts() {
-            hosts
-                .stop_proc_mesh(cx, self.id(), names, region, reason)
-                .await?;
+            hosts.send_stop_proc_mesh(cx, self.proc_ids(), Ranked::region(self), reason);
         }
         Ok(())
     }

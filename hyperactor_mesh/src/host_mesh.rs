@@ -1600,7 +1600,67 @@ impl HostMeshRef {
             .expect("proc rank must map to a host in its originating host mesh")
     }
 
-    /// Stop every proc in this proc mesh.
+    /// Pair each proc in a proc mesh with its resource id and owning host
+    /// agent, in view-rank order. `region` must be the proc mesh's
+    /// creation-time region because its ranks determine which host owns
+    /// each proc.
+    fn proc_stop_targets<'a>(
+        &'a self,
+        procs: impl IntoIterator<Item = ProcAddr>,
+        region: &'a Region,
+    ) -> impl Iterator<Item = (ResourceId, &'a ActorRef<HostAgent>)> + 'a {
+        let procs = procs.into_iter().collect::<Vec<_>>();
+        assert_eq!(
+            procs.len(),
+            region.num_ranks(),
+            "proc addresses must match the proc mesh region"
+        );
+        region
+            .slice()
+            .iter()
+            .zip(procs)
+            .map(move |(create_rank, proc_id)| {
+                (
+                    ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned()),
+                    self.host_agent_for_proc_rank(region, create_rank),
+                )
+            })
+    }
+
+    /// Post `Stop` for every proc in a proc mesh without waiting for the
+    /// procs to terminate. Use [`HostMeshRef::wait_proc_mesh_stopped`] to
+    /// wait for termination.
+    pub(crate) fn send_stop_proc_mesh(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+        procs: impl IntoIterator<Item = ProcAddr>,
+        region: &Region,
+        reason: String,
+    ) {
+        let proc_names = self
+            .proc_stop_targets(procs, region)
+            .map(|(proc_resource_id, host_agent)| {
+                host_agent.post(
+                    cx,
+                    resource::Stop {
+                        id: proc_resource_id.clone(),
+                        reason: reason.clone(),
+                    },
+                );
+                proc_resource_id.to_string()
+            })
+            .collect::<Vec<_>>();
+        tracing::info!(
+            name = "HostMeshStatus",
+            status = "ProcMesh::Stop::Sent",
+            "sending Stop to proc mesh for {} procs: {}",
+            proc_names.len(),
+            proc_names.join(", ")
+        );
+    }
+
+    /// Wait for every proc in a proc mesh to terminate after
+    /// [`HostMeshRef::send_stop_proc_mesh`].
     ///
     /// On success returns the final per-rank `StatusMesh`, in which every
     /// rank is guaranteed to be `is_terminated()` (`Stopped`, `Failed`, or
@@ -1613,24 +1673,13 @@ impl HostMeshRef {
     /// `region` must be the proc mesh's creation-time region because its ranks
     /// determine which host owns each proc.
     #[hyperactor::instrument(fields(host_mesh=self.id.to_string(), proc_mesh=proc_mesh_id.to_string()))]
-    pub(crate) async fn stop_proc_mesh(
+    pub(crate) async fn wait_proc_mesh_stopped(
         &self,
         cx: &impl hyperactor::context::Actor,
         proc_mesh_id: &ProcMeshId,
         procs: impl IntoIterator<Item = ProcAddr>,
         region: Region,
-        reason: String,
     ) -> crate::Result<crate::StatusMesh> {
-        let procs = procs.into_iter().collect::<Vec<_>>();
-        assert_eq!(
-            procs.len(),
-            region.num_ranks(),
-            "proc addresses must match the proc mesh region"
-        );
-        let proc_names = procs
-            .iter()
-            .map(|proc_id| ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned()))
-            .collect::<Vec<_>>();
         let num_ranks = region.num_ranks();
         let (port, rx) = cx.mailbox().open_idle_flush_accum_port(
             crate::StatusMesh::from_single(region.clone(), Status::NotExist),
@@ -1642,16 +1691,9 @@ impl HostMeshRef {
         );
         let mut reply = port.bind();
         reply.return_undeliverable(false);
-        for (view_rank, (create_rank, proc_id)) in region.slice().iter().zip(procs).enumerate() {
-            let proc_resource_id = ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned());
-            let host_agent = self.host_agent_for_proc_rank(&region, create_rank);
-            host_agent.post(
-                cx,
-                resource::Stop {
-                    id: proc_resource_id.clone(),
-                    reason: reason.clone(),
-                },
-            );
+        for (view_rank, (proc_resource_id, host_agent)) in
+            self.proc_stop_targets(procs, &region).enumerate()
+        {
             host_agent
                 .wait_rank_status(
                     cx,
@@ -1663,17 +1705,6 @@ impl HostMeshRef {
                 .await
                 .map_err(|error| crate::Error::CallError(host_agent.actor_addr().clone(), error))?;
         }
-        tracing::info!(
-            name = "HostMeshStatus",
-            status = "ProcMesh::Stop::Sent",
-            "sending Stop to proc mesh for {} procs: {}",
-            proc_names.len(),
-            proc_names
-                .iter()
-                .map(|n| n.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
 
         let start_time = tokio::time::Instant::now();
 

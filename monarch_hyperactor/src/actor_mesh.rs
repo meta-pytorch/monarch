@@ -700,8 +700,13 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
             monarch_with_gil_blocking(GilSite::Stop, |_py| (self.clone(), instance.clone()));
         match slf {
             PythonActorMeshImpl::Owned(mut mesh) => Ok(async move {
+                // The Rust-level stop only sends the stop; Python's `stop()`
+                // also waits for the actors to terminate.
                 mesh.mesh
                     .stop(instance.deref(), reason)
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                mesh.mesh
+                    .wait_for_terminal(instance.deref())
                     .await
                     .map_err(|err| PyValueError::new_err(err.to_string()))
             }

@@ -643,7 +643,8 @@ class ProcMesh(MeshTrait):
     def stop(self, reason: str = "stopped by client") -> Future[None]:
         """
         This will stop all processes (and actors) in the mesh and
-        release any resources associated with the mesh.
+        release any resources associated with the mesh. The returned Future
+        completes once every proc has stopped, failed, or timed out.
         """
         instance = context().actor_instance._as_rust()
         return self._stop(instance, reason)

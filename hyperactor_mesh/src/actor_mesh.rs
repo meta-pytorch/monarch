@@ -42,6 +42,7 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
+use hyperactor::monitor::MonitorFailure;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_cast::TilingPolicy;
 use hyperactor_cast::cast_actor::CastActor;
@@ -115,6 +116,9 @@ pub struct ActorMesh<A: Referable> {
     /// detached (`Data`).
     current_ref: ActorMeshRef<A>,
     lifecycle: ActorMeshLifecycle,
+    /// The controller a managed mesh's [`ActorMesh::stop`] sent `Stop` to,
+    /// kept so [`ActorMesh::wait_for_terminal`] can read the outcome.
+    stopping_controller: Option<ActorRef<ActorMeshController<A>>>,
 }
 
 /// The local lifecycle handle for one spawner-backed rank.
@@ -174,6 +178,7 @@ impl<A: Referable> ActorMesh<A> {
         Self {
             current_ref,
             lifecycle: ActorMeshLifecycle::Managed,
+            stopping_controller: None,
         }
     }
 
@@ -201,6 +206,7 @@ impl<A: Referable> ActorMesh<A> {
                 stop_handles,
                 stop_requested: Arc::new(OnceCell::new()),
             },
+            stopping_controller: None,
         })
     }
 
@@ -211,11 +217,15 @@ impl<A: Referable> ActorMesh<A> {
             .set_controller(controller);
     }
 
-    /// Stop actors on this mesh across all procs.
+    /// Send a stop to every actor on this mesh without waiting for the actors
+    /// to terminate; use [`ActorMesh::wait_for_terminal`] to wait.
     ///
-    /// A data mesh stops each rank's local supervisor proxy. The shared stop
-    /// fence makes this operation one-shot across owner clones.
-    pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> crate::Result<()> {
+    /// A managed mesh posts `Stop` to its controller, which stops the actors
+    /// and records their final statuses. A data mesh signals each rank's local
+    /// supervisor proxy, which forwards the stop and exits. Either way the mesh
+    /// is no longer usable once this returns. The shared stop fence makes a
+    /// data mesh stop one-shot across owner clones.
+    pub fn stop(&mut self, cx: &impl context::Actor, reason: String) -> crate::Result<()> {
         if let ActorMeshLifecycle::Data {
             stop_handles,
             stop_requested,
@@ -247,7 +257,7 @@ impl<A: Referable> ActorMesh<A> {
         // Refs and slices on other machines will still be able to query the
         // controller and will be sent a notification about this stop by the controller
         // itself.
-        let (controller, id, num_ranks) = {
+        let (controller, id) = {
             let managed = self
                 .current_ref
                 .as_managed_mut()
@@ -255,83 +265,110 @@ impl<A: Referable> ActorMesh<A> {
             (
                 managed.take_controller(),
                 managed.id().resource_id().clone(),
-                managed.region().num_ranks(),
             )
         };
-        if let Some(controller) = controller {
-            // Run the Stop/GetState exchange. We wrap it so that, no matter
-            // how it ends, we can record a single unhealthy event
-            // afterwards. Taking the controller is one-way: once it is gone,
-            // no future call through this handle can retry the stop, so a
-            // silently-still-healthy mesh with a vanished controller would
-            // hide the fact that the stop never reached (or never confirmed)
-            // the actors.
-            let result: crate::Result<()> = async {
-                controller.post(
+        let Some(controller) = controller else {
+            return Ok(());
+        };
+        controller.post(cx, resource::Stop { id, reason });
+        // Taking the controller is one-way: no later call through this handle
+        // can retry the stop. Record it now so the mesh reads as stopped even
+        // if the caller never waits; `wait_for_terminal` overwrites this if it
+        // cannot confirm the stop.
+        self.current_ref
+            .record_stopped(cx, ActorStatus::Stopped("mesh stopped".to_string()));
+        self.stopping_controller = Some(controller);
+        Ok(())
+    }
+
+    /// Wait for every actor to terminate after this handle's
+    /// [`ActorMesh::stop`].
+    ///
+    /// A managed mesh asks the controller for the statuses its stop recorded,
+    /// and returns once every rank is stopped, failed, or timed out
+    /// (`ACTOR_SPAWN_MAX_IDLE` without progress); it returns an error if a
+    /// rank never began stopping. A data mesh waits for each rank's terminal
+    /// status (stopped, failed, or no longer present); a rank whose status
+    /// cannot be confirmed, because its status request timed out, is logged
+    /// and treated as stopped. A managed mesh whose `stop` was not called on
+    /// this handle returns immediately.
+    pub async fn wait_for_terminal(&self, cx: &impl context::Actor) -> crate::Result<()> {
+        if let Some(controller) = &self.stopping_controller {
+            let result = self.wait_for_controller_stop(cx, controller).await;
+            if let Err(error) = &result {
+                self.current_ref.record_stopped(
                     cx,
-                    resource::Stop {
-                        id: id.clone(),
-                        reason,
-                    },
+                    ActorStatus::Stopped(format!("mesh stop failed: {error}")),
                 );
-                // The controller processes messages serially, and its `Stop`
-                // handler already awaits the underlying ProcAgent wait, which
-                // sends its own `WaitRankStatus` to the ProcAgents and
-                // blocks up to `ACTOR_SPAWN_MAX_IDLE` for the actors to
-                // reach `Stopped`. By the time the controller gets to this
-                // `GetState`, its `health_state.statuses` already reflects
-                // the outcome (Stopping, Stopped, Failed, or Timeout on
-                // abort-budget exhaustion). We just need to serialize
-                // behind the Stop handler and read the result.
-                let (port, mut rx) = cx.mailbox().open_port();
-                controller.post(
-                    cx,
-                    resource::GetState::<resource::mesh::State<()>> {
-                        id: id.clone(),
-                        reply: port.bind(),
-                    },
-                );
-                let statuses = rx.recv().await?;
-                let Some(state) = &statuses.state else {
-                    return Err(Error::Other(anyhow::anyhow!(
-                        "non-existent state in GetState reply from controller: {}",
-                        controller.actor_addr()
-                    )));
-                };
-                // `is_terminating` accepts Stopping, Stopped, Failed, and
-                // Timeout. The controller's Stop handler has already
-                // awaited (or timed out) the underlying ProcAgent wait, so
-                // any rank still in Running here means the controller
-                // never processed the stop for that rank — a genuine
-                // error.
-                let all_terminating = state.statuses.values().all(|s| s.is_terminating());
-                if !all_terminating {
-                    let legacy = mesh_to_rankedvalues_with_default(
-                        &state.statuses,
-                        resource::Status::NotExist,
-                        resource::Status::is_not_exist,
-                        num_ranks,
-                    );
-                    return Err(Error::ActorStopError { statuses: legacy });
-                }
-                Ok(())
             }
-            .await;
-
-            // Record the unhealthy event regardless of outcome. On success
-            // the mesh is stopped; on failure the controller is gone and
-            // the actors may still be running, but callers need to see the
-            // mesh as unhealthy either way so they stop treating it as
-            // live.
-            let status = match &result {
-                Ok(()) => ActorStatus::Stopped("mesh stopped".to_string()),
-                Err(e) => ActorStatus::Stopped(format!("mesh stop failed: {e}")),
-            };
-            self.current_ref.record_stopped(cx, status);
-
-            result?;
+            return result;
+        }
+        let Some(monitor) = self.current_ref.data_monitor(cx) else {
+            return Ok(());
+        };
+        let _activation = monitor.activate(cx);
+        for outcome in monitor.wait_all_terminal().await {
+            if !matches!(
+                outcome,
+                MonitorFailure::ActorStopped { .. }
+                    | MonitorFailure::ActorFailed { .. }
+                    | MonitorFailure::ActorGone { .. }
+            ) {
+                tracing::warn!(actor_mesh = %self.current_ref.id(), %outcome, "could not confirm that an actor stopped");
+            }
         }
         Ok(())
+    }
+
+    async fn wait_for_controller_stop(
+        &self,
+        cx: &impl context::Actor,
+        controller: &ActorRef<ActorMeshController<A>>,
+    ) -> crate::Result<()> {
+        let managed = self
+            .current_ref
+            .as_managed()
+            .expect("managed actor mesh has a managed ref");
+        let id = managed.id().resource_id().clone();
+        let num_ranks = managed.region().num_ranks();
+        // The controller processes messages serially, and its `Stop` handler
+        // awaits the underlying ProcAgent wait, which sends its own
+        // `WaitRankStatus` to the ProcAgents and blocks up to
+        // `ACTOR_SPAWN_MAX_IDLE` for the actors to reach `Stopped`. By the
+        // time the controller gets to this `GetState`, its
+        // `health_state.statuses` already reflects the outcome (Stopping,
+        // Stopped, Failed, or Timeout on abort-budget exhaustion). We just
+        // need to serialize behind the Stop handler and read the result.
+        let (port, mut rx) = cx.mailbox().open_port();
+        controller.post(
+            cx,
+            resource::GetState::<resource::mesh::State<()>> {
+                id,
+                reply: port.bind(),
+            },
+        );
+        let statuses = rx.recv().await?;
+        let Some(state) = &statuses.state else {
+            return Err(Error::Other(anyhow::anyhow!(
+                "non-existent state in GetState reply from controller: {}",
+                controller.actor_addr()
+            )));
+        };
+        // `is_terminating` accepts Stopping, Stopped, Failed, and Timeout.
+        // The controller's Stop handler has already awaited (or timed out)
+        // the underlying ProcAgent wait, so any rank still in Running here
+        // means the controller never processed the stop for that rank — a
+        // genuine error.
+        if state.statuses.values().all(|s| s.is_terminating()) {
+            return Ok(());
+        }
+        let legacy = mesh_to_rankedvalues_with_default(
+            &state.statuses,
+            resource::Status::NotExist,
+            resource::Status::is_not_exist,
+            num_ranks,
+        );
+        Err(Error::ActorStopError { statuses: legacy })
     }
 }
 
@@ -363,6 +400,7 @@ impl<A: Referable> Clone for ActorMesh<A> {
         Self {
             current_ref: self.current_ref.clone(),
             lifecycle: self.lifecycle.clone(),
+            stopping_controller: self.stopping_controller.clone(),
         }
     }
 }
@@ -705,19 +743,31 @@ impl<A: Referable> ActorMeshRef<A> {
     ) -> Result<MeshFailure, anyhow::Error> {
         match self {
             Self::Managed(managed) => managed.next_supervision_event(cx).await,
-            Self::Data(data) => {
-                let monitor = data
-                    .monitor
-                    .entry(cx)
-                    .or_insert_with(|| {
-                        Arc::new(MeshMonitor::spawn_dormant(cx, self.monitored_actors()))
-                    })
-                    .get()
-                    .clone();
+            Self::Data(_) => {
+                let monitor = self
+                    .data_monitor(cx)
+                    .expect("data actor meshes have a monitor");
                 let _activation = monitor.activate(cx);
                 Ok((&*monitor).await)
             }
         }
+    }
+
+    /// Return this context's shared dormant monitor for a data actor mesh, or
+    /// `None` for a managed one.
+    fn data_monitor(&self, cx: &impl context::Actor) -> Option<Arc<MeshMonitor>> {
+        let Self::Data(data) = self else {
+            return None;
+        };
+        Some(
+            data.monitor
+                .entry(cx)
+                .or_insert_with(|| {
+                    Arc::new(MeshMonitor::spawn_dormant(cx, self.monitored_actors()))
+                })
+                .get()
+                .clone(),
+        )
     }
 
     /// See [`ManagedActorMeshRef::clone_with_supervision_receiver`].
@@ -3113,10 +3163,8 @@ mod tests {
         );
 
         // Now stop the pong actor mesh to break communication
-        pong_mesh
-            .stop(instance, "test stop".to_string())
-            .await
-            .unwrap();
+        pong_mesh.stop(instance, "test stop".to_string()).unwrap();
+        pong_mesh.wait_for_terminal(instance).await.unwrap();
 
         // Give it a moment to fully stop
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -3225,7 +3273,11 @@ mod tests {
         // ranks as `Status::Timeout`. Time this operation to confirm we
         // return on that budget rather than waiting the full 5s sleep.
         let stop_start = tokio::time::Instant::now();
-        let result = sleep_mesh.stop(instance, "test stop".to_string()).await;
+        let result = async {
+            sleep_mesh.stop(instance, "test stop".to_string())?;
+            sleep_mesh.wait_for_terminal(instance).await
+        }
+        .await;
         let stop_duration = tokio::time::Instant::now().duration_since(stop_start);
 
         // `stop()` returns `Ok(())` because `is_terminating()` accepts
@@ -3307,7 +3359,11 @@ mod tests {
 
         // Time the stop operation
         let stop_start = tokio::time::Instant::now();
-        let result = actor_mesh.stop(instance, "test stop".to_string()).await;
+        let result = async {
+            actor_mesh.stop(instance, "test stop".to_string())?;
+            actor_mesh.wait_for_terminal(instance).await
+        }
+        .await;
         let stop_duration = tokio::time::Instant::now().duration_since(stop_start);
 
         // Graceful stop should succeed (return Ok)

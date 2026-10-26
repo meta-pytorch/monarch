@@ -678,10 +678,14 @@ def shutdown_context(host_timeout: float | None = None) -> "Future[None]":
     * The root client's proc, ``this_proc()``, is destroyed: every actor on it
       is told to stop so it can run ``__cleanup__``.
     * Shutdown waits on all actors at once, for a bounded time derived from
-      ``host_timeout`` and capped at 0.5 seconds for each of its waits. An
-      actor on ``this_proc()`` can be waited on twice, once through the mesh
-      that owns it and once when the proc is destroyed. If an actor is still
-      cleaning up after that, shutdown stops waiting for it and continues.
+      ``host_timeout`` and capped at 0.5 seconds for each of its waits. If an
+      actor is still cleaning up after that, shutdown stops waiting for it and
+      continues.
+    * Some of those actors own meshes of other actors, local or remote. Their
+      cleanup sends those actors a stop without waiting for it to be
+      acknowledged. Once the stop is delivered, which the final flush attempts,
+      each owned actor is stopping or already terminal, and handles no further
+      messages other than status queries.
 
     This uses the process's initialized client, not the current actor returned
     by ``context()``. There is no controller-only caller check. A worker with
@@ -2378,11 +2382,12 @@ class Actor(MeshTrait):
         override is cancelled, while a sync one in an actor whose endpoints are
         all ``def`` still runs to completion on the actor's thread.
 
-        By the time this runs, every mesh this actor owns has already been
-        stopped recursively, and each owned actor's ``__cleanup__`` has already
-        run. Owned actor meshes and proc meshes are no longer usable from this
-        method. For shutdown work that needs an owned mesh, expose a dedicated
-        endpoint and call it before ``stop()``.
+        By the time this runs, every mesh this actor owns has been told to stop,
+        so owned actor meshes and proc meshes are no longer usable from this
+        method. Stopping does not wait for owned actors to finish: they may
+        still be running their own ``__cleanup__``. For shutdown work that
+        needs an owned mesh, expose a dedicated endpoint and call it before
+        ``stop()``.
 
         Use ``__cleanup__`` to release resources the actor owns directly: open
         files, network connections, background threads, asyncio tasks, and the
@@ -2512,6 +2517,11 @@ class ActorMesh(MeshTrait, Generic[T]):
     def stop(self, reason: str = "stopped by client") -> Future[None]:
         """Start stopping this actor mesh and return a Future for completion.
 
+        For every kind of mesh, the Future completes once each actor has
+        finished its ``__cleanup__`` and reached a terminal status (stopped or
+        failed), or once the wait for an actor that does not respond times out.
+        This differs from the stop that an owner's ``__cleanup__`` or
+        ``shutdown_context()`` sends to the meshes it owns, which does not wait.
         Dropping the Future or timing out while waiting does not cancel the stop.
         ``reason`` is included in the shutdown message sent to the actors.
         """

@@ -240,12 +240,16 @@ impl ProcMesh {
     ///
     /// If a `ProcMeshController` is present (owned meshes spawned from a host
     /// mesh), the stop is delegated to the controller via `resource::Stop`;
-    /// the controller's handler awaits `HostMeshRef::stop_proc_mesh`, which
-    /// casts `Stop` + `WaitRankStatus{min_status: Stopped}` to the
-    /// HostAgents and waits up to `PROC_STOP_MAX_IDLE` for every proc to
-    /// reach `Stopped`. We then serialize behind that handler with a
+    /// the controller's handler posts `Stop` with
+    /// `HostMeshRef::send_stop_proc_mesh`, then awaits
+    /// `HostMeshRef::wait_proc_mesh_stopped`, which sends
+    /// `WaitRankStatus{min_status: Stopped}` to the HostAgents and waits up
+    /// to `PROC_STOP_MAX_IDLE` for every proc to reach `Stopped`. We then
+    /// serialize behind that handler with a
     /// `GetState` to read the final statuses out of the controller's
-    /// `health_state`.
+    /// `health_state`. Without a controller, this calls the same two
+    /// functions directly. Either way, it returns once every proc has
+    /// stopped, failed, or timed out.
     pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
         if let Some(controller) = self.controller.take() {
             let id = self.id.resource_id().clone();
@@ -259,7 +263,7 @@ impl ProcMesh {
 
             // The controller processes messages serially, so by the time it
             // gets to this `GetState`, its `health_state.statuses` already
-            // reflects the outcome of `stop_proc_mesh` (Stopping, Stopped,
+            // reflects the outcome of `wait_proc_mesh_stopped` (Stopping, Stopped,
             // Failed, or Timeout on `PROC_STOP_MAX_IDLE` exhaustion).
             let (port, mut rx) = cx.mailbox().open_port();
             controller.post(
@@ -297,11 +301,14 @@ impl ProcMesh {
         let procs = self.current_ref.proc_ids().collect::<Vec<ProcAddr>>();
         // We use the proc mesh region rather than the host mesh region
         // because the host agent stores one entry per proc, not per host.
-        self.current_ref
+        let host_mesh = self
+            .current_ref
             .host_mesh
             .as_ref()
-            .expect("ProcMesh always has a host mesh")
-            .stop_proc_mesh(cx, &self.id, procs, region, reason)
+            .expect("ProcMesh always has a host mesh");
+        host_mesh.send_stop_proc_mesh(cx, procs.iter().cloned(), &region, reason);
+        host_mesh
+            .wait_proc_mesh_stopped(cx, &self.id, procs, region)
             .await
             .map(|_| ())
             .map_err(anyhow::Error::from)
@@ -1236,21 +1243,40 @@ impl ProcMeshRef {
         Ok((mesh, statuses))
     }
 
-    /// Send stop actors message to all mesh agents for a specific actor mesh id.
+    /// Cast `Stop` for an actor mesh to all proc agents without waiting for
+    /// the actors to terminate. Use [`ProcMeshRef::wait_actor_stopped_by_id`]
+    /// to wait for termination.
+    pub(crate) fn send_stop_actor_by_id(
+        &self,
+        cx: &impl context::Actor,
+        actor_mesh_id: &ActorMeshId,
+        reason: String,
+    ) -> crate::Result<()> {
+        tracing::info!(name = "ProcMeshStatus", status = "ActorMesh::Stop::Attempt", actor_mesh = %actor_mesh_id);
+        tracing::info!(name = "ActorMeshStatus", status = "Stop::Attempt", actor_mesh = %actor_mesh_id);
+        self.proc_agent_mesh.cast(
+            cx,
+            resource::Stop {
+                id: actor_mesh_id.resource_id().clone(),
+                reason,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Wait for every rank of an actor mesh to reach a terminating state
+    /// after [`ProcMeshRef::send_stop_actor_by_id`].
     #[hyperactor::instrument(fields(
         host_mesh = self.host_mesh_id().map(|id| id.to_string()),
         proc_mesh = self.id.to_string(),
         actor_mesh = actor_mesh_id.to_string(),
     ))]
-    pub(crate) async fn stop_actor_by_id(
+    pub(crate) async fn wait_actor_stopped_by_id(
         &self,
         cx: &impl context::Actor,
-        actor_mesh_id: ActorMeshId,
-        reason: String,
+        actor_mesh_id: &ActorMeshId,
     ) -> crate::Result<ValueMesh<Status>> {
-        tracing::info!(name = "ProcMeshStatus", status = "ActorMesh::Stop::Attempt");
-        tracing::info!(name = "ActorMeshStatus", status = "Stop::Attempt");
-        let result = self.stop_actor_by_id_inner(cx, actor_mesh_id, reason).await;
+        let result = self.wait_actor_stopped_by_id_inner(cx, actor_mesh_id).await;
         match &result {
             Ok(_) => {
                 tracing::info!(name = "ProcMeshStatus", status = "ActorMesh::Stop::Success");
@@ -1264,20 +1290,12 @@ impl ProcMeshRef {
         result
     }
 
-    async fn stop_actor_by_id_inner(
+    async fn wait_actor_stopped_by_id_inner(
         &self,
         cx: &impl context::Actor,
-        actor_mesh_id: ActorMeshId,
-        reason: String,
+        actor_mesh_id: &ActorMeshId,
     ) -> crate::Result<ValueMesh<Status>> {
         let region = self.region().clone();
-        self.proc_agent_mesh.cast(
-            cx,
-            resource::Stop {
-                id: actor_mesh_id.resource_id().clone(),
-                reason,
-            },
-        )?;
 
         // Open an accum port that *receives overlays* and *emits full
         // meshes*.
@@ -1456,6 +1474,7 @@ mod tests {
     use hyperactor::context::Mailbox;
     #[cfg(fbcode_build)]
     use hyperactor::id::Label;
+    use hyperactor::monitor::MonitorFailure;
     #[cfg(fbcode_build)]
     use hyperactor_config::NonZeroUsize;
     #[cfg(fbcode_build)]
@@ -1577,12 +1596,22 @@ mod tests {
         let mut actor_mesh_clone = actor_mesh.clone();
         actor_mesh
             .stop(instance, "test complete".to_string())
-            .await
             .expect("stop data actor mesh");
         actor_mesh_clone
             .stop(instance, "test complete".to_string())
-            .await
             .expect("stopping a data actor mesh clone should be idempotent");
+        actor_mesh
+            .wait_for_terminal(instance)
+            .await
+            .expect("wait for data actor mesh to stop");
+        let outcomes = actor_mesh.monitor(instance).wait_all_terminal().await;
+        assert!(
+            outcomes.iter().all(|outcome| matches!(
+                outcome,
+                MonitorFailure::ActorStopped { .. } | MonitorFailure::ActorGone { .. }
+            )),
+            "every rank should be stopped once wait_for_terminal returns: {outcomes:?}"
+        );
 
         hm.shutdown(instance)
             .await
@@ -1654,8 +1683,11 @@ mod tests {
 
         actor_mesh
             .stop(instance, "test complete".to_string())
-            .await
             .expect("stop configured data actor mesh");
+        actor_mesh
+            .wait_for_terminal(instance)
+            .await
+            .expect("wait for configured data actor mesh to stop");
         hm.shutdown(instance)
             .await
             .expect("host mesh shutdown should complete");
@@ -1916,8 +1948,11 @@ mod tests {
 
         actor_mesh
             .stop(&root.instance, "test complete".to_string())
-            .await
             .expect("stop direct environment probes");
+        actor_mesh
+            .wait_for_terminal(&root.instance)
+            .await
+            .expect("wait for direct environment probes to stop");
         hm.shutdown(&root.instance)
             .await
             .expect("host mesh shutdown should complete");

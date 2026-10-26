@@ -1036,14 +1036,18 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
                 self.history.report_exit(port);
             }
             ClientToControllerMessage::StopWorkers { response_port } => {
-                let worker_stop_result = self
-                    .workers_mut()
-                    .stop(this, "client requested stop".to_string())
-                    .await;
-                let broker_stop_result = self
-                    .brokers_mut()
-                    .stop(this, "client requested stop".to_string())
-                    .await;
+                let worker_stop_result = async {
+                    let workers = self.workers_mut();
+                    workers.stop(this, "client requested stop".to_string())?;
+                    workers.wait_for_terminal(this).await
+                }
+                .await;
+                let broker_stop_result = async {
+                    let brokers = self.brokers_mut();
+                    brokers.stop(this, "client requested stop".to_string())?;
+                    brokers.wait_for_terminal(this).await
+                }
+                .await;
                 if worker_stop_result.is_ok() && broker_stop_result.is_ok() {
                     response_port.post(this, Ok(()));
                 } else {

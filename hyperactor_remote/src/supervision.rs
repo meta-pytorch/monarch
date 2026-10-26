@@ -347,33 +347,29 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Forward a pending stop to the worker, then exit without waiting for
+    /// the child to stop. The stop stays pending until a worker endpoint is
+    /// known, at the latest when the worker reports `Linked`.
     fn send_pending_worker_stop(&mut self, cx: &Instance<Self>) -> anyhow::Result<()> {
         let Some(stop) = self.pending_stop.take() else {
             return Ok(());
         };
-        let Some(session) = &self.session else {
-            let Some(worker) = self.bootstrap.worker_endpoint() else {
-                self.pending_stop = Some(stop);
-                return Ok(());
-            };
-            worker.post(
-                cx,
-                WorkerCommand::Stop {
-                    session_id: self.session_id.clone(),
-                    mode: stop.mode,
-                    reason: stop.reason,
-                },
-            );
-            return Ok(());
+        let command = WorkerCommand::Stop {
+            session_id: self.session_id.clone(),
+            mode: stop.mode,
+            reason: stop.reason.clone(),
         };
-        (&session.worker).post(
-            cx,
-            WorkerCommand::Stop {
-                session_id: self.session_id.clone(),
-                mode: stop.mode,
-                reason: stop.reason,
-            },
-        );
+        match &self.session {
+            Some(session) => (&session.worker).post(cx, command),
+            None => {
+                let Some(worker) = self.bootstrap.worker_endpoint() else {
+                    self.pending_stop = Some(stop);
+                    return Ok(());
+                };
+                worker.post(cx, command);
+            }
+        }
+        cx.exit(&stop.reason)?;
         Ok(())
     }
 
@@ -1267,10 +1263,10 @@ mod tests {
     //         └── supervisor-side liveness actor: KeepaliveSupervisor
     //
     // Stopping Parent stops Supervisor, Supervisor forwards the same stop mode
-    // and reason to Worker, Worker stops TestChild, and TestChild reports the
-    // reason through the client stopped port before the handles complete.
+    // and reason to Worker and exits, Worker stops TestChild, and TestChild
+    // reports the reason through the client stopped port.
     #[tokio::test]
-    async fn test_parent_stop_stops_remote_child_before_parent_finishes() {
+    async fn test_parent_stop_stops_remote_child() {
         let proc = Proc::isolated();
         let client = proc.client("client");
         let session_id = Uid::anonymous();

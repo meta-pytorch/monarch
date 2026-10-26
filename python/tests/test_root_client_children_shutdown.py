@@ -18,7 +18,6 @@ from monarch.actor import Actor, endpoint, shutdown_context, this_proc
 class CleanupMarker(Actor):
     def __init__(self, marker: str, child_marker: str | None = None) -> None:
         self.marker = Path(marker)
-        self.child_marker = None if child_marker is None else Path(child_marker)
         self.child = (
             None
             if child_marker is None
@@ -30,8 +29,6 @@ class CleanupMarker(Actor):
         return self.child is None or self.child.ready.call_one().get(timeout=30)
 
     def __cleanup__(self, exc: Exception | None) -> None:
-        if self.child_marker is not None:
-            assert self.child_marker.exists(), "owned child cleanup must finish first"
         self.marker.write_text("cleaned up\n")
 
 

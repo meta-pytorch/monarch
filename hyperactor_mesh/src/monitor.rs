@@ -18,6 +18,7 @@ use std::future::Future;
 use std::future::IntoFuture;
 use std::pin::Pin;
 
+use futures::future::join_all;
 use futures::future::select_all;
 use hyperactor::ActorAddr;
 use hyperactor::ActorMonitor;
@@ -130,6 +131,26 @@ impl MeshMonitor {
         });
         let ((rank, failure), _index, _rest) = select_all(waits).await;
         monitor_failure_to_mesh_failure(rank, &failure)
+    }
+
+    /// Wait until every monitored rank is terminal, returning each rank's
+    /// outcome in rank order. Hold a [`MeshMonitorActivation`] while waiting so
+    /// that an unreachable rank resolves with a status timeout instead of
+    /// waiting for a terminal notification that never arrives.
+    pub async fn wait_all_terminal(&self) -> Vec<MonitorFailure> {
+        join_all((0..self.region().num_ranks()).map(|rank| {
+            let monitor = self
+                .monitors
+                .get(rank)
+                .expect("dense actor monitor mesh has one value per rank");
+            async move {
+                monitor
+                    .guard(std::future::pending::<()>())
+                    .await
+                    .expect_err("pending future never completes")
+            }
+        }))
+        .await
     }
 
     /// Run `fut` until it completes or any monitored rank fails.
