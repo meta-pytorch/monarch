@@ -88,8 +88,8 @@ actor and message activity with what the machine was doing at the time.
 
 | Table | Default | Contents |
 |-------|---------|----------|
-| `host_metrics` | Every 10 seconds | CPU utilization and count, load averages, memory, swap, cumulative network and disk byte counters, and free space on `/` and `/tmp` |
-| `gpu_metrics` | Every 10 seconds | Per-GPU utilization, memory used and total, temperature, and power, read through NVML |
+| `host_metrics` | Every second | CPU utilization and count, load averages, memory, swap, cumulative network and disk byte counters, and free space on `/` and `/tmp` |
+| `gpu_metrics` | Every second | Per-GPU utilization, memory used and total, temperature, and power, read through NVML |
 
 Samplers run next to each host's telemetry collector, including the client
 host, and write one row per host, or one row per GPU, per interval. Both tables
@@ -98,9 +98,7 @@ and leaves `gpu_metrics` empty. See
 [Distributed telemetry](distributed-telemetry) for columns, row keys, and
 example queries.
 
-Every NVML call contends for a driver lock that co-located training processes
-also take, so avoid GPU sampling intervals shorter than 10 seconds. To turn
-either sampler off, set its interval to `0`:
+To turn either sampler off, set its interval to `0`:
 
 ```python
 TelemetryConfig(host_metrics_interval_secs=0, gpu_metrics_interval_secs=0)
@@ -149,8 +147,8 @@ are not a durable event archive.
 | `include_dashboard` | `False` | Advertise the browser dashboard |
 | `dashboard_port` | `8265` | Preferred dashboard port; use `0` for an ephemeral port |
 | `snapshot_interval_secs` | `30` | Mesh-introspection snapshot interval; `0` disables periodic snapshots |
-| `host_metrics_interval_secs` | `10.0` | `host_metrics` sampling interval on every telemetry host; `0` disables host sampling |
-| `gpu_metrics_interval_secs` | `10.0` | `gpu_metrics` sampling interval on every telemetry host; `0` disables GPU sampling |
+| `host_metrics_interval_secs` | `1.0` | `host_metrics` sampling interval on every telemetry host; `0` disables host sampling |
+| `gpu_metrics_interval_secs` | `1.0` | `gpu_metrics` sampling interval on every telemetry host; `0` disables GPU sampling |
 
 For an admin server without distributed telemetry, call `job.enable_admin()`.
 That supports the TUI, but it does not provide the dashboard or SQL history.

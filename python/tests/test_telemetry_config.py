@@ -495,8 +495,8 @@ def test_config_from_wire_carries_gpu_metrics_interval() -> None:
 
 
 def test_telemetry_config_samples_host_and_gpu_by_default() -> None:
-    assert TelemetryConfig().gpu_metrics_interval_secs == 10.0
-    assert TelemetryConfig().host_metrics_interval_secs == 10.0
+    assert TelemetryConfig().gpu_metrics_interval_secs == 1.0
+    assert TelemetryConfig().host_metrics_interval_secs == 1.0
 
 
 def test_start_samplers_spawns_gpu_sampler_when_enabled() -> None:

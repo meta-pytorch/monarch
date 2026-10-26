@@ -182,7 +182,7 @@ and event telemetry describe different views of the same job:
 Every telemetry host samples its own CPU, load average, memory, swap, network,
 and disk usage into `host_metrics`, one row per host per interval.
 `TelemetryConfig.host_metrics_interval_secs` sets the interval; the default is
-10 seconds, and `0` disables sampling. Each wait varies randomly by about 10%
+1 second, and `0` disables sampling. Each wait varies randomly by about 10%
 around the interval, so hosts do not sample in lockstep. Samplers run next to
 each host's telemetry collector, including the client host. Values are
 host-wide, not limited to the job's container or cgroup.
@@ -230,10 +230,8 @@ ORDER BY a.rank, hm.timestamp_us
 `gpu_metrics` holds one row per GPU per interval: utilization, memory used and
 total, temperature, and power, read through NVML.
 `TelemetryConfig.gpu_metrics_interval_secs` sets the interval; the default is
-10 seconds, and `0` disables GPU sampling. Every NVML call contends for a
-driver lock that co-located training processes also take, so avoid intervals
-shorter than 10 seconds. Hosts without NVIDIA GPUs or NVML leave the table
-empty. All rows from one sampling pass share a timestamp.
+1 second, and `0` disables GPU sampling. Hosts without NVIDIA GPUs or NVML
+leave the table empty. All rows from one sampling pass share a timestamp.
 
 `hostname`, `gpu_uuid`, and `timestamp_us` together identify a row.
 `gpu_metrics.hostname` matches `host_metrics.hostname` for the same host, but

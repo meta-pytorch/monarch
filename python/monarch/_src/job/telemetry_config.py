@@ -95,22 +95,21 @@ class TelemetryConfig:
             0 disables periodic capture.
         host_metrics_interval_secs: Interval in seconds between host resource
             samples (CPU, load, memory, swap, network, and disk) written to the
-            ``host_metrics`` table on every telemetry host. 0 disables host
-            sampling.
+            ``host_metrics`` table on every telemetry host. The default is
+            1 second; 0 disables host sampling.
         gpu_metrics_interval_secs: Interval in seconds between per-device GPU
             samples (utilization, memory, temperature, and power) written to
-            the ``gpu_metrics`` table through NVML. 0 disables GPU sampling;
-            hosts without NVIDIA GPUs or NVML skip it. Every NVML call
-            contends for a driver lock that co-located trainers also take, so
-            avoid intervals shorter than 10 seconds.
+            the ``gpu_metrics`` table through NVML. The default is 1 second;
+            0 disables GPU sampling, and hosts without NVIDIA GPUs or NVML
+            skip it.
     """
 
     retention_secs: int = 3600
     include_dashboard: bool = False
     dashboard_port: int = 8265
     snapshot_interval_secs: float = 30.0
-    host_metrics_interval_secs: float = 10.0
-    gpu_metrics_interval_secs: float = 10.0
+    host_metrics_interval_secs: float = 1.0
+    gpu_metrics_interval_secs: float = 1.0
 
 
 # Successful response from the telemetry handle's `open_or_refresh` control message,
