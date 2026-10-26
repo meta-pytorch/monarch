@@ -177,7 +177,7 @@ impl CastDomainId {
         headers: Flattrs,
     ) -> anyhow::Result<CastDomainRef> {
         let root_tile = MaterializedTile::from_value_mesh_with_tile(
-            Tile::from_view(&nodes.region()),
+            Tile::from_view(nodes.region()),
             Arc::clone(&nodes),
         );
 
@@ -640,7 +640,7 @@ impl CastDestination {
         region: Region,
     ) -> anyhow::Result<ValueMesh<Self>> {
         anyhow::ensure!(
-            region.is_subset(&destinations.region()),
+            region.is_subset(destinations.region()),
             "cast domain slice must be a subset of the logical region"
         );
 
