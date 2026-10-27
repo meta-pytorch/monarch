@@ -1417,6 +1417,25 @@ impl PythonActor {
             // have stopped their remote resources and completed cleanup.
             instance.change_status(ActorStatus::stopping());
             instance.stop_children("client stopping").await;
+            // Run the cleanup that `Instance::serve` would, so the root's
+            // event loop is stopped before terminal status is published.
+            let cleanup_timeout =
+                hyperactor_config::global::get(hyperactor::config::CLEANUP_TIMEOUT);
+            let cleanup = actor.cleanup(instance, err.as_ref());
+            let cleanup_result = match tokio::time::timeout(cleanup_timeout, cleanup).await {
+                Ok(result) => result,
+                Err(elapsed) => Err(elapsed.into()),
+            };
+            if let Err(cleanup_err) = cleanup_result {
+                // The root has no supervisor, and an error below interrupts
+                // the main thread, so a cleanup failure is only logged. Any
+                // original error takes precedence.
+                tracing::warn!(
+                    actor_id = %instance.self_addr(),
+                    error = %cleanup_err,
+                    "client cleanup failed",
+                );
+            }
             if let Some(err) = err {
                 let event = actor_error_to_event(instance, &actor, err);
                 // The proc supervision handler will send to ProcAgent, which
