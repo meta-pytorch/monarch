@@ -30,7 +30,7 @@ test("Drawer opens with its content and closes through the Close button", async 
   assert.equal(screen.queryByRole("dialog"), null);
 
   await user.click(screen.getByRole("button", { name: "Open details" }));
-  const drawer = screen.getByRole("dialog", { name: "Details" });
+  const drawer = screen.getByRole("dialog", { name: "Worker" });
   assert.ok(within(drawer).getByText("Worker"));
   assert.ok(within(drawer).getByText("Worker details"));
 

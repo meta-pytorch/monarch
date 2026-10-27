@@ -1326,6 +1326,7 @@ table.tbl tbody tr.clickable:hover td:first-child {
   word-break: break-all;
 }
 .drawer-head .sub {
+  overflow-wrap: anywhere;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-3);
@@ -2255,6 +2256,40 @@ table.tbl tbody tr.clickable:hover td:first-child {
   }
 }
 
+@media (max-width: 700px) {
+  .topbar {
+    height: auto;
+    min-height: var(--topbar-h);
+    flex-wrap: wrap;
+    padding: var(--s3);
+    gap: var(--s3);
+  }
+  .brand-sub,
+  .brand-badge,
+  .topbar-spacer {
+    display: none;
+  }
+  .nav {
+    order: 3;
+    width: 100%;
+  }
+  .nav-item {
+    flex: 1;
+    justify-content: center;
+    padding: 7px 8px;
+    font-size: 11px;
+  }
+  .topbar-right {
+    margin-left: auto;
+  }
+  .topbar-right .live-dot {
+    display: none;
+  }
+  .content {
+    padding: var(--s3);
+  }
+}
+
 /* responsive */
 @media (max-width: 1400px) {
   .grid.kpis {
@@ -2270,4 +2305,21 @@ table.tbl tbody tr.clickable:hover td:first-child {
   .grid.hero {
     grid-template-columns: 1fr;
   }
+}
+/* Leave room for coverage labels and command attention in the header. */
+@media (max-width: 1400px) {
+  .nav-item { padding-inline: 10px; }
+  .brand-sub { display: none; }
+}
+@media (max-width: 1100px) {
+  .topbar { height: auto; flex-wrap: wrap; min-height: var(--topbar-h); padding-block: var(--s3); }
+  .nav { order: 3; width: 100%; }
+  .nav-item { flex: 1; justify-content: center; }
+  .topbar-right { margin-left: auto; }
+}
+@media (max-width: 700px) {
+  .topbar-right { width: 100%; flex-wrap: wrap; justify-content: flex-end; gap: var(--s2); }
+}
+@media (max-width: 700px) {
+  .nav-item { padding: 7px 6px; gap: var(--s1); min-width: 0; }
 }

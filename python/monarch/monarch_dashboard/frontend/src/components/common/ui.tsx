@@ -6,7 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import React from "react";
+import React, { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { statusMeta } from "../../lib/status";
 import { formatTime } from "../../lib/format";
 import { IconAlert, IconClose } from "./icons";
@@ -68,10 +69,59 @@ export function Drawer({
   onClose: () => void;
   children: React.ReactNode;
 }) {
-  return (
+  const dialog = useRef<HTMLElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    const node = dialog.current;
+    if (!node) return;
+    const focusable = () =>
+      Array.from(
+        node.querySelectorAll<HTMLElement>(
+          "button:not(:disabled),a[href],input:not(:disabled),textarea:not(:disabled),select:not(:disabled),summary,[tabindex='0']",
+        ),
+      ).filter((element) => element.getClientRects().length > 0);
+    (focusable()[0] ?? node).focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close.current();
+      }
+      if (event.key !== "Tab") return;
+      const elements = focusable();
+      if (elements.length === 0) {
+        event.preventDefault();
+        node.focus();
+        return;
+      }
+      const first = elements[0],
+        last = elements[elements.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    node.addEventListener("keydown", onKey);
+    return () => {
+      node.removeEventListener("keydown", onKey);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, []);
+  return createPortal(
     <>
       <div className="drawer-scrim" onClick={onClose} />
-      <aside className="drawer" role="dialog" aria-label="Details">
+      <aside
+        ref={dialog}
+        className="drawer"
+        role="dialog"
+        tabIndex={-1}
+        aria-modal="true"
+        aria-label={typeof title === "string" ? title : "Details"}
+      >
         <div className="drawer-head">
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="title">{title}</div>
@@ -83,7 +133,8 @@ export function Drawer({
         </div>
         <div className="drawer-body">{children}</div>
       </aside>
-    </>
+    </>,
+    document.body,
   );
 }
 
