@@ -902,10 +902,12 @@ async def test_flush_logs_ipython() -> None:
             ),
             unittest.mock.patch("monarch._src.actor.logging.IN_IPYTHON", True),
         ):
+            spawned_meshes = []
             # Make sure we can register and unregister callbacks
             for _ in range(3):
                 pm1 = this_host().spawn_procs(per_host={"gpus": 2})
                 pm2 = this_host().spawn_procs(per_host={"gpus": 2})
+                spawned_meshes.extend((pm1, pm2))
                 am1 = pm1.spawn("printer", Printer)
                 am2 = pm2.spawn("printer", Printer)
 
@@ -962,6 +964,14 @@ async def test_flush_logs_ipython() -> None:
 
         assert len(re.findall(pattern1, stdout_content)) >= 3, stdout_content
         assert len(re.findall(pattern2, stdout_content)) >= 3, stdout_content
+
+        # Stop the proc meshes now that their logs have been collected. Left
+        # active, their actor loops survive into interpreter shutdown, where the
+        # exit-time reaper may miss one and that thread, force-unwound mid
+        # PyO3 call by Py_FinalizeEx, aborts the process (the test passes but
+        # the binary exits non-zero).
+        for pm in spawned_meshes:
+            await pm.stop()
 
 
 # oss_skip: importlib not pulling resource correctly in git CI, needs to be revisited
