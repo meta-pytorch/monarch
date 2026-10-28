@@ -32,7 +32,7 @@
   - [Proc](procs/proc.md)
   - [Gateway](procs/gateway.md)
   - [Host](procs/host.md)
-  - [Host Identity Discovery](procs/host_identity.md)
+  - [Endpoint-owned Proc Resolution](procs/host_identity.md)
 - [Actors](actors/index.md)
   - [Actor](actors/actor.md)
   - [Handler](actors/handler.md)

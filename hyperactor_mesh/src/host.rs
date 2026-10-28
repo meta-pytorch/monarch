@@ -114,14 +114,13 @@ pub(crate) fn service_proc_id() -> ProcId {
     ProcId::instance(Label::strip(SERVICE_PROC_NAME))
 }
 
-/// Discover a Host frontend's concrete service proc over a fresh duplex session.
-/// The ID is immutable for that Host incarnation. Discovery registers no peer
-/// and changes no caller routes; a restarted default Host has a fresh ID.
+/// Resolve a Host frontend's concrete service proc using a private attachment.
+/// Discovery temporarily registers a peer for its ordinary reply port, without
+/// changing any caller routes. A restarted default Host has a fresh ID.
 /// Non-duplex setups can supply a concrete ProcAddr directly instead.
 pub async fn query_service_proc(addr: ChannelAddr) -> anyhow::Result<ProcAddr> {
     let addr = addr.into_dial_addr();
-    let id = Gateway::isolated()
-        .identify_service(addr.clone())
+    let id = Gateway::query_endpoint_proc(addr.clone())
         .await
         .map_err(|error| anyhow::anyhow!("query service proc at {addr}: {error}"))?;
     Ok(ProcAddr::new(id, addr.into()))
@@ -389,10 +388,10 @@ impl<M: ProcManager> Host<M> {
         // `supports_duplex()` (the in-process `Local` transport supports
         // duplex but is not a kernel socket). Both paths register the bound
         // address as the gateway's active serve location. The muxed frontend
-        // advertises its immutable service ID in the per-session duplex setup.
+        // owns a listener-scoped runtime control registration.
         let frontend_result: Result<GatewayServeHandle, ChannelError> = if addr.transport().is_net()
         {
-            gateway.serve_mux_with_service(addr, listener, Some(service_proc_id.clone()))
+            gateway.serve_mux_with_listener(addr, listener)
         } else {
             gateway.serve_with_listener(addr, listener)
         };
@@ -456,6 +455,11 @@ impl<M: ProcManager> Host<M> {
             .shared_gateway(gateway.clone())
             .build()
             .map_err(HostError::ProcConstructionFailure)?;
+        if frontend_addr.transport().supports_duplex() {
+            frontend_handle
+                .register_proc_owner(&service_proc)
+                .map_err(HostError::ProcConstructionFailure)?;
+        }
         assert_eq!(
             service_proc.proc_addr(),
             expected_service_proc_addr,
