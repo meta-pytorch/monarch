@@ -33,7 +33,7 @@ jobs:
       test-matrix: ${{ steps.set.outputs.test-matrix }}
       build-matrix: ${{ steps.set.outputs.build-matrix }}
     env:
-      IS_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads') }}
+      IS_PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       IS_SCHEDULE: ${{ github.event_name == 'schedule' }}
       IS_ROCM_TAG: ${{ startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
       HAS_ROCM_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ciflow/rocm') }}
@@ -62,20 +62,25 @@ jobs:
 
           # Build matrix:
           # - ROCm tag: ROCm only (manual opt-in; CUDA already built in PR run)
-          # - Otherwise (PR/push/schedule): CUDA only
-          # ROCm is disabled in normal CI while it is broken. Push a
-          # ciflow/rocm tag to build and test ROCm manually. See
+          # - Push to main: CUDA + ROCm
+          # - Otherwise (PR/schedule): CUDA only
+          # ROCm is not run on PRs. Push a ciflow/rocm tag to build and test
+          # ROCm manually. See
           # https://github.com/meta-pytorch/monarch/issues/4145 for re-enabling.
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
             BUILD_MATRIX="[$ROCM_714_PY310, $ROCM_100_PY310]"
+          elif [[ "$IS_PUSH" == "true" ]]; then
+            BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312, $ROCM_714_PY310, $ROCM_100_PY310]"
           else
             BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312]"
           fi
 
-          # Test matrix: ROCm tested only on a manual ciflow/rocm tag; CUDA
-          # otherwise. ROCm is disabled in normal CI while it is broken.
+          # Test matrix: ROCm tested on a manual ciflow/rocm tag and on pushes
+          # to main; CUDA otherwise.
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
             TEST_MATRIX="[$ROCM_714, $ROCM_100]"
+          elif [[ "$IS_PUSH" == "true" ]]; then
+            TEST_MATRIX="[$CUDA, $ROCM_714, $ROCM_100]"
           else
             TEST_MATRIX="[$CUDA]"
           fi
