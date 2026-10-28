@@ -229,8 +229,8 @@ fn stop_actor_loops_and_wait_for_actor_threads(
 /// that through pyo3's `catch_unwind` aborts the process.
 ///
 /// This is an interpreter-exit guard, not the lifecycle repair: an async
-/// actor's cleanup still returns before its loop thread terminates, and the
-/// root client still publishes `Stopped` without running cleanup.
+/// actor's cleanup still returns before its loop thread terminates, so a
+/// loop whose cleanup is skipped, times out, or fails reaches this handler.
 fn reap_actor_threads(py: Python<'_>, timeout: Duration) {
     let remaining = match stop_actor_loops_and_wait_for_actor_threads(py, timeout) {
         Ok(remaining) => remaining,

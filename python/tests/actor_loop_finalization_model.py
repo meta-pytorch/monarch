@@ -17,6 +17,11 @@ Run by ``test_actor_loop_finalization``. Two arms:
     CPython <= 3.12 force-exits that daemon thread with ``pthread_exit``; the
     forced unwind crosses PyO3's ``catch_unwind`` and glibc aborts.
 
+Both arms spawn a user actor on the client proc whose ``__cleanup__``
+never returns, so shutdown's cleanup bound (``CLEANUP_TIMEOUT``) gives
+up on it and leaves its loop running: the survival the reaper exists
+for. ``fixed`` lets the reaper stop it; ``unmitigated`` hides it.
+
 ``fixed``
     leave the marker in place and let the reaper run. Version-independent.
 
@@ -36,7 +41,7 @@ import resource
 import sys
 import threading
 import time
-from typing import Callable, TypeVar
+from typing import Any, Callable, TypeVar
 
 from monarch.python.tests import actor_loop_finalization_timeouts as timeouts
 
@@ -46,8 +51,9 @@ _ACTOR_DRIVER_ATTRIBUTE = "_monarch_actor_driver"
 
 # `context()` bootstraps the root client actor, an async actor with one asyncio
 # loop on its own thread, and the `controller_controller` actor, a sync actor
-# with one driver thread.
-_EXPECTED_ACTOR_LOOPS = 1
+# with one driver thread. The wedged-cleanup actor spawned on the client proc
+# adds a second async loop.
+_EXPECTED_ACTOR_LOOPS = 2
 _EXPECTED_ACTOR_DRIVERS = 1
 
 # Deadlines live in a side-effect-free module so the test can assert they nest
@@ -235,6 +241,24 @@ _actor = importlib.import_module("monarch.actor")
 context = _actor.context
 
 
+class _WedgedCleanupActor(_actor.Actor):
+    """User actor whose ``__cleanup__`` never returns.
+
+    Shutdown gives up on it at ``CLEANUP_TIMEOUT`` and leaves its loop
+    running. Keeping its mesh referenced keeps the actor alive until then.
+    """
+
+    @_actor.endpoint
+    async def ping(self) -> None:
+        pass
+
+    async def __cleanup__(self, _exc: Exception | None) -> None:
+        await asyncio.Event().wait()
+
+
+_wedged_meshes: list[Any] = []
+
+
 def main() -> None:
     global _model_mode
 
@@ -252,6 +276,10 @@ def main() -> None:
     )
 
     context()
+    _wedged_meshes.append(
+        _actor.this_proc().spawn("wedged_cleanup", _WedgedCleanupActor)
+    )
+    _wedged_meshes[0].ping.call().get(timeout=30)
     _actor_loops.extend(
         _wait_for_actor_threads(
             _actor_event_loops, _EXPECTED_ACTOR_LOOPS, "actor event-loop"
