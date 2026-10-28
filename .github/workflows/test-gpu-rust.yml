@@ -12,7 +12,7 @@ jobs:
     uses: ./.github/workflows/set-matrix.yaml
 
   test-gpu-rust:
-    name: Test GPU Rust (${{ matrix.name }}-py3.10)
+    name: Test GPU Rust (${{ matrix.name }}-py${{ matrix.python-version }})
     needs: set-matrix
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     strategy:
@@ -24,7 +24,7 @@ jobs:
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
       submodules: recursive
-      download-artifact: monarch-${{ matrix.name }}-${{ github.sha }}-py3.10
+      download-artifact: monarch-${{ matrix.name }}-${{ github.sha }}-py${{ matrix.python-version }}
       upload-artifact: test-results-gpu-rust-${{ matrix.name }}-${{ github.sha }}
       script: |
         # Source common setup functions
@@ -35,7 +35,7 @@ jobs:
         python3 scripts/fetch_disabled_tests.py
 
         # Setup test environment
-        setup_test_environment
+        setup_test_environment ${{ matrix.python-version }}
 
         # Install Rust
         setup_rust_toolchain
