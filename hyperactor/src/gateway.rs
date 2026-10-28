@@ -905,6 +905,60 @@ impl Gateway {
         .map_err(|_| anyhow::anyhow!("endpoint proc query timed out"))?
     }
 
+    /// Resolve an endpoint through this Gateway's newest active attachment.
+    /// Uses that attachment's accepted Via return route even when a later local
+    /// server changed the default location. With no attachment, query directly.
+    /// An attached-route failure never falls back to dialing on this client.
+    pub async fn resolve_endpoint_proc(&self, addr: ChannelAddr) -> anyhow::Result<ProcId> {
+        self.resolve_endpoint_proc_with_timeout(addr, ATTACH_HANDSHAKE_TIMEOUT)
+            .await
+    }
+
+    async fn resolve_endpoint_proc_with_timeout(
+        &self,
+        addr: ChannelAddr,
+        timeout: Duration,
+    ) -> anyhow::Result<ProcId> {
+        let route = {
+            let routing = self.inner.routing.read().unwrap();
+            routing
+                .state
+                .active_serves
+                .iter()
+                .rev()
+                .find_map(|serve| match &serve.kind {
+                    ActiveServeKind::Via { forwarder } => {
+                        Some((forwarder.clone(), serve.location.clone()))
+                    }
+                    ActiveServeKind::Server => None,
+                })
+        };
+        let Some((sender, location)) = route else {
+            return Self::query_endpoint_proc_with_timeout(addr.into_dial_addr(), timeout).await;
+        };
+        tokio::time::timeout(timeout, async {
+            let proc = Proc::builder().shared_gateway(self.clone()).build()?;
+            let client = proc.client("resolve_endpoint_via");
+            let (reply, receiver) =
+                client.open_once_port::<crate::proc::control::ResolveProcResult>();
+            // Port identity is local; its advertised location belongs to this
+            // immutable attachment snapshot, never the mutable default route.
+            let reply = reply.bind().into_port_addr();
+            let mut reply = crate::OncePortRef::attest(PortAddr::new(reply.id().clone(), location));
+            reply.return_undeliverable(false);
+            sender.post(
+                crate::proc::control::resolve_target_envelope(
+                    crate::proc::control::ResolveProcTarget::Endpoint(addr.into_dial_addr()),
+                    reply,
+                )?,
+                crate::mailbox::monitored_return_handle(),
+            );
+            receiver.recv().await?.into_result()
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("endpoint proc query timed out"))?
+    }
+
     fn serve_inner(
         &self,
         addr: ChannelAddr,
@@ -1138,18 +1192,7 @@ impl GatewayServeHandle {
         connection
             .tx()
             .post(crate::proc::control::resolve_envelope(reply.bind())?);
-        match receiver.recv().await? {
-            crate::proc::control::ResolveProcResult::Resolved(id) => {
-                anyhow::ensure!(
-                    id.uid().is_instance(),
-                    "resolved proc must have an instance id"
-                );
-                Ok(id)
-            }
-            crate::proc::control::ResolveProcResult::Unavailable => {
-                anyhow::bail!("endpoint owner unavailable")
-            }
-        }
+        receiver.recv().await?.into_result()
     }
 
     /// [`GatewayServeHandle`] of kind `Serve` for an already-open receiver.
@@ -1307,11 +1350,13 @@ async fn duplex_accept_loop(
         ));
     }
 
+    endpoint_owner.clear();
     while let Some(result) = tasks.join_next().await {
         if let Err(error) = result {
             tracing::error!(%error, "duplex connection task failed during shutdown");
         }
     }
+    endpoint_owner.shutdown().await;
     // Tear down the server now that the accept loop has exited. The loop
     // broke on its own `cancel_token`, which is distinct from the server's
     // listener cancel, so we must signal the listener explicitly: `stop`
@@ -2073,6 +2118,369 @@ mod tests {
         listener.stop("test complete");
         listener.join().await.unwrap();
         idle.join().await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_endpoint_relay_uses_explicit_target_and_selected_attachment() {
+        let relay = Gateway::isolated();
+        let relay_proc = service_proc(&relay);
+        let relay_listener = relay
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        relay_listener.register_proc_owner(&relay_proc).unwrap();
+        let relay_addr = relay.default_location().addr().clone();
+        let target = Gateway::isolated();
+        let target_proc = service_proc(&target);
+        let mut target_listener = target
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        target_listener.register_proc_owner(&target_proc).unwrap();
+        let target_addr = target.default_location().addr().clone();
+        let other = Gateway::isolated();
+        let other_proc = service_proc(&other);
+        let other_listener = other
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        other_listener.register_proc_owner(&other_proc).unwrap();
+        let other_addr = other.default_location().addr().clone();
+        let caller = Gateway::isolated();
+        let _caller_proc = service_proc(&caller);
+        let mut attachment = caller.serve_via(relay_addr.clone()).await.unwrap();
+        // A later local serve wins default_location, but is not the selected
+        // attached sender or its accepted reply route.
+        let mut local_listener = caller
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        let before = caller.default_location();
+        let count = caller
+            .inner
+            .routing
+            .read()
+            .unwrap()
+            .state
+            .active_serves
+            .len();
+        let (b, d, a) = tokio::join!(
+            caller.resolve_endpoint_proc(target_addr.clone()),
+            caller.resolve_endpoint_proc(other_addr),
+            caller.resolve_endpoint_proc(relay_addr),
+        );
+        assert_eq!(b.unwrap(), *target_proc.proc_id());
+        assert_eq!(d.unwrap(), *other_proc.proc_id());
+        assert_eq!(a.unwrap(), *relay_proc.proc_id());
+        assert_eq!(caller.default_location(), before);
+        assert_eq!(
+            caller
+                .inner
+                .routing
+                .read()
+                .unwrap()
+                .state
+                .active_serves
+                .len(),
+            count
+        );
+        // Restart the target on the same endpoint with no updated identity input.
+        let old_id = target_proc.proc_id().clone();
+        drop(target_proc);
+        assert!(
+            caller
+                .resolve_endpoint_proc(target_addr.clone())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("unavailable")
+        );
+        target_listener.stop("restart");
+        target_listener.join().await.unwrap();
+        let replacement = service_proc(&target);
+        let restarted = target.serve_duplex(target_addr.clone()).unwrap();
+        restarted.register_proc_owner(&replacement).unwrap();
+        let new_id = caller.resolve_endpoint_proc(target_addr).await.unwrap();
+        assert_eq!(new_id, *replacement.proc_id());
+        assert_ne!(new_id, old_id);
+        attachment.stop("test complete");
+        attachment.join().await.unwrap();
+        local_listener.stop("test complete");
+        local_listener.join().await.unwrap();
+        for mut listener in [relay_listener, other_listener, restarted] {
+            listener.stop("test complete");
+            listener.join().await.unwrap();
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_endpoint_relay_reply_keeps_original_attachment_after_route_change() {
+        use crate::proc::control::ResolveProc;
+        use crate::proc::control::ResolveProcResult;
+        let relay = Gateway::isolated();
+        let relay_listener = relay
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        let relay_proc = service_proc(&relay);
+        relay_listener.register_proc_owner(&relay_proc).unwrap();
+        let receiver = relay_proc.client("ordinary");
+        let (port, mut ordinary) = receiver.bind_handler_port::<u64>();
+        let caller = Gateway::isolated();
+        let original = caller
+            .serve_via(relay.default_location().addr().clone())
+            .await
+            .unwrap();
+        let original_location = caller.default_location();
+        let mut target = channel::duplex::serve::<MessageEnvelope, AttachWire>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+        )
+        .unwrap();
+        let pending = tokio::spawn({
+            let caller = caller.clone();
+            let addr = target.addr().clone();
+            async move { caller.resolve_endpoint_proc(addr).await }
+        });
+        // The relay has started the target query: caller selection is complete.
+        let (mut rx, tx) = target.accept().await.unwrap();
+        let attach = rx
+            .recv()
+            .await
+            .unwrap()
+            .deserialized::<AttachRequest>()
+            .unwrap();
+        caller.post(
+            MessageEnvelope::serialize(
+                test_actor_id("test", "ordinary"),
+                port.bind().port_addr().clone(),
+                &42u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            monitored_return_handle(),
+        );
+        assert_eq!(ordinary.recv().await.unwrap(), 42);
+        let other = Gateway::isolated();
+        let other_listener = other
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        let newer = caller
+            .serve_via(other.default_location().addr().clone())
+            .await
+            .unwrap();
+        assert_ne!(caller.default_location(), original_location);
+        let before = caller.default_location();
+        tx.post(AttachWire::Ack(AttachAck::Accepted {
+            location: Location::from(target.addr().clone()).with_via(attach.uid),
+        }));
+        let request = rx
+            .recv()
+            .await
+            .unwrap()
+            .deserialized::<ResolveProc>()
+            .unwrap();
+        assert!(matches!(
+            request.target,
+            crate::proc::control::ResolveProcTarget::OwnEndpoint
+        ));
+        let id = ProcId::instance(Label::strip("service"));
+        tx.post(AttachWire::Envelope(MessageEnvelope::new_unknown(
+            request.reply.port_addr().clone(),
+            wirevalue::Any::serialize(&ResolveProcResult::Resolved(id.clone())).unwrap(),
+        )));
+        assert_eq!(pending.await.unwrap().unwrap(), id);
+        assert_eq!(caller.default_location(), before);
+        for mut handle in [newer, original, relay_listener, other_listener] {
+            handle.stop("test complete");
+            handle.join().await.unwrap();
+        }
+        target.stop("test complete");
+        target.join().await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_endpoint_relay_overload_disconnect_and_shutdown_release_target_sessions() {
+        use crate::proc::control::EndpointIngress;
+        use crate::proc::control::EndpointOwner;
+        use crate::proc::control::ResolveProcResult;
+        use crate::proc::control::ResolveProcTarget;
+        use crate::proc::control::resolve_target_envelope;
+        let config = hyperactor_config::global::lock();
+        let _delivery = config.override_key(
+            crate::config::MESSAGE_DELIVERY_TIMEOUT,
+            Duration::from_secs(1),
+        );
+        let mut target = channel::duplex::serve::<MessageEnvelope, AttachWire>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+        )
+        .unwrap();
+        let relay = Gateway::isolated();
+        let proc = service_proc(&relay);
+        let client = proc.client("query");
+        let owner = EndpointOwner::with_relay_limit(1);
+        let ingress = EndpointIngress::new(relay.clone(), owner.clone());
+        let (reply, _pending) = client.open_once_port::<ResolveProcResult>();
+        ingress.post(
+            resolve_target_envelope(
+                ResolveProcTarget::Endpoint(target.addr().clone()),
+                reply.bind(),
+            )
+            .unwrap(),
+            monitored_return_handle(),
+        );
+        let (mut rx, _tx) = target.accept().await.unwrap();
+        assert!(rx.recv().await.unwrap().data().is::<AttachRequest>());
+        let (reply, overloaded) = client.open_once_port::<ResolveProcResult>();
+        ingress.post(
+            resolve_target_envelope(
+                ResolveProcTarget::Endpoint(target.addr().clone()),
+                reply.bind(),
+            )
+            .unwrap(),
+            monitored_return_handle(),
+        );
+        assert!(
+            matches!(overloaded.recv().await.unwrap(), ResolveProcResult::Failed(reason) if reason.contains("overloaded"))
+        );
+        owner.shutdown().await;
+        assert!(matches!(
+            time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap(),
+            Err(ChannelError::Closed)
+        ));
+        // Real accepted-source disconnect cancels its pending target attach.
+        for stop_listener in [false, true] {
+            let mut listener = relay
+                .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+                .unwrap();
+            let caller = Gateway::isolated();
+            let mut attached = caller
+                .serve_via(relay.default_location().addr().clone())
+                .await
+                .unwrap();
+            let query = tokio::spawn({
+                let caller = caller.clone();
+                let addr = target.addr().clone();
+                async move {
+                    caller
+                        .resolve_endpoint_proc_with_timeout(addr, Duration::from_millis(300))
+                        .await
+                }
+            });
+            let (mut rx, _tx) = target.accept().await.unwrap();
+            assert!(rx.recv().await.unwrap().data().is::<AttachRequest>());
+            if stop_listener {
+                listener.stop("cancel relays");
+                listener.join().await.unwrap();
+                attached.stop("test complete");
+                attached.join().await.unwrap();
+            } else {
+                attached.stop("source disconnected");
+                attached.join().await.unwrap();
+                // Prove source-close cancellation before listener shutdown can
+                // cancel all relay work and hide a per-source lifetime bug.
+                assert!(matches!(
+                    time::timeout(Duration::from_secs(5), rx.recv())
+                        .await
+                        .unwrap(),
+                    Err(ChannelError::Closed)
+                ));
+                listener.stop("test complete");
+                listener.join().await.unwrap();
+            }
+            assert!(matches!(
+                time::timeout(Duration::from_secs(5), rx.recv())
+                    .await
+                    .unwrap(),
+                Err(ChannelError::Closed)
+            ));
+            assert!(
+                query
+                    .await
+                    .unwrap()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("timed out")
+            );
+        }
+        target.stop("test complete");
+        target.join().await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_endpoint_relay_failure_does_not_fall_back_to_client_dial() {
+        use crate::proc::control::ResolveProc;
+        use crate::proc::control::ResolveProcResult;
+        let target = Gateway::isolated();
+        let owner = service_proc(&target);
+        let mut target_listener = target
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        target_listener.register_proc_owner(&owner).unwrap();
+        let mut relay = channel::duplex::serve::<MessageEnvelope, AttachWire>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+        )
+        .unwrap();
+        let caller = Gateway::isolated();
+        let attaching = tokio::spawn({
+            let caller = caller.clone();
+            let addr = relay.addr().clone();
+            async move { caller.serve_via(addr).await }
+        });
+        let (mut rx, tx) = relay.accept().await.unwrap();
+        let attach = rx
+            .recv()
+            .await
+            .unwrap()
+            .deserialized::<AttachRequest>()
+            .unwrap();
+        tx.post(AttachWire::Ack(AttachAck::Accepted {
+            location: Location::from(relay.addr().clone()).with_via(attach.uid),
+        }));
+        let mut attached = attaching.await.unwrap().unwrap();
+        for fail in [true, false] {
+            let query = tokio::spawn({
+                let caller = caller.clone();
+                let addr = target.default_location().addr().clone();
+                async move { caller.resolve_endpoint_proc(addr).await }
+            });
+            let request = rx
+                .recv()
+                .await
+                .unwrap()
+                .deserialized::<ResolveProc>()
+                .unwrap();
+            let reply = if fail {
+                ResolveProcResult::Failed("selected route unavailable".to_owned())
+            } else {
+                ResolveProcResult::Resolved(owner.proc_id().clone())
+            };
+            tx.post(AttachWire::Envelope(MessageEnvelope::new_unknown(
+                request.reply.port_addr().clone(),
+                wirevalue::Any::serialize(&reply).unwrap(),
+            )));
+            let result = query.await.unwrap();
+            if fail {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("selected route unavailable")
+                );
+            } else {
+                assert_eq!(result.unwrap(), *owner.proc_id());
+            }
+            assert_eq!(
+                target.inner.active_duplex_sessions.load(Ordering::Acquire),
+                0,
+                "C must not dial target even though target is directly reachable in this fixture"
+            );
+        }
+        attached.stop("test complete");
+        attached.join().await.unwrap();
+        relay.stop("test complete");
+        relay.join().await;
+        target_listener.stop("test complete");
+        target_listener.join().await.unwrap();
     }
 
     /// Test-only helper that connects two gateways over real

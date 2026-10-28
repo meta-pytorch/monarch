@@ -23,7 +23,7 @@ use hyperactor::id::Label;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap::bootstrap;
 use hyperactor_mesh::bootstrap::host;
-use hyperactor_mesh::host::query_service_proc;
+use hyperactor_mesh::host::query_service_proc_with_gateway;
 use hyperactor_mesh::host_mesh::HostMesh;
 use hyperactor_mesh::mesh_id::HostMeshId;
 use monarch_types::MapPyErr;
@@ -88,10 +88,10 @@ enum ServiceAddress {
 }
 
 impl ServiceAddress {
-    async fn resolve(self) -> anyhow::Result<ProcAddr> {
+    async fn resolve(self, gateway: &Gateway) -> anyhow::Result<ProcAddr> {
         match self {
             Self::Proc(proc_addr) => Ok(proc_addr),
-            Self::Frontend(addr) => query_service_proc(addr).await,
+            Self::Frontend(addr) => query_service_proc_with_gateway(gateway, addr).await,
         }
     }
 }
@@ -319,8 +319,9 @@ pub fn attach_to_workers(
             .iter()
             .map(|address| parse_service_address(address))
             .collect::<Result<Vec<_>, _>>()?;
+        let gateway = instance.proc().gateway();
         let service_procs: Vec<ProcAddr> = stream::iter(service_addresses)
-            .map(ServiceAddress::resolve)
+            .map(|address| address.resolve(&gateway))
             .buffered(WORKER_QUERY_CONCURRENCY)
             .try_collect()
             .await?;
@@ -410,7 +411,7 @@ mod tests {
             let known = ProcAddr::new(id.clone(), addr.into());
             let resolved = parse_service_address(&known.to_string())
                 .unwrap()
-                .resolve()
+                .resolve(&Gateway::isolated())
                 .await
                 .unwrap();
             assert_eq!(resolved, known);

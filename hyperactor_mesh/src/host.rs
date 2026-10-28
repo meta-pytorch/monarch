@@ -126,6 +126,21 @@ pub async fn query_service_proc(addr: ChannelAddr) -> anyhow::Result<ProcAddr> {
     Ok(ProcAddr::new(id, addr.into()))
 }
 
+/// Resolve through the caller's existing Gateway attachment when present.
+/// The attached peer contacts the target frontend on the caller's behalf;
+/// no caller-side direct dial is attempted if that route fails.
+pub async fn query_service_proc_with_gateway(
+    gateway: &Gateway,
+    addr: ChannelAddr,
+) -> anyhow::Result<ProcAddr> {
+    let addr = addr.into_dial_addr();
+    let id = gateway
+        .resolve_endpoint_proc(addr.clone())
+        .await
+        .map_err(|error| anyhow::anyhow!("query service proc at {addr}: {error}"))?;
+    Ok(ProcAddr::new(id, addr.into()))
+}
+
 /// Name of the local client proc on a host.
 ///
 /// See LP-1 (lazy activation) in module doc.
