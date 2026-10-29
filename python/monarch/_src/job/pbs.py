@@ -20,7 +20,7 @@ from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._batch_env import in_batch_job
-from monarch._src.job._pbs_batch import read_nodefile
+from monarch._src.job._pbs_batch import _DEFAULT_MONARCH_PORT, read_nodefile
 from monarch._src.job.job import BatchJob, DEFAULT_JOB_PATH, JobState, JobTrait
 from monarch._src.job.service_identity import (
     allocate_service_proc_ids,
@@ -66,7 +66,7 @@ class PBSJob(JobTrait):
         meshes: Dict[str, int],
         python_exe: str = "python",
         pbs_args: Sequence[str] = (),
-        monarch_port: int = 22222,
+        monarch_port: int = _DEFAULT_MONARCH_PORT,
         job_name: str = "monarch_job",
         time_limit: Optional[str] = None,
         queue: Optional[str] = None,

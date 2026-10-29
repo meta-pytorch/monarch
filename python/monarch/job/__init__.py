@@ -19,6 +19,7 @@ from monarch._src.job.job import (
     TelemetryConfig,
 )
 from monarch._src.job.job_state import JobState
+from monarch._src.job.pbs import PBSJob
 from monarch._src.job.port_forward import PortForwarder
 from monarch._src.job.process import ProcessJob
 from monarch._src.job.service_identity import (
@@ -32,7 +33,6 @@ from monarch._src.job.service_identity import (
     SERVICE_PROC_RANK_ENV,
 )
 from monarch._src.job.shell import shell
-from monarch._src.job.pbs import PBSJob
 from monarch._src.job.slurm import SlurmJob
 
 # Define exports
@@ -49,6 +49,7 @@ __all__ = [
     "LocalJob",
     "MeshAdminConfig",
     "new_service_proc_id",
+    "PBSJob",
     "PortForwarder",
     "ProcessJob",
     "ranked_service_proc_id_from_env",
@@ -59,7 +60,6 @@ __all__ = [
     "SERVICE_PROC_RANK_ENV",
     "set_current_job",
     "shell",
-    "PBSJob",
     "SlurmJob",
     "TelemetryConfig",
 ]

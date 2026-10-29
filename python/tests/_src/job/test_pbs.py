@@ -89,7 +89,7 @@ def test_batch_mode_invokes_in_allocation_runner(tmp_path, monkeypatch):
     assert any(line.startswith(f"export {SERVICE_PROC_IDS_ENV}=") for line in lines)
     runner = lines[-1]
     assert "-m monarch._src.job._pbs_batch" in runner
-    assert "--port 22222" in runner and "--bind-to" not in runner
+    assert "--port 26600" in runner and "--bind-to" not in runner
     assert runner.endswith(shlex.quote(client))
     # a BatchJob wrapper is cached so the in-allocation client reconnects
     cached = job_load(str(tmp_path / ".monarch" / "job_state.pkl"))
@@ -155,7 +155,7 @@ def test_submit_wraps_qsub_failure(tmp_path, monkeypatch):
             _make_job().apply()
 
 
-@pytest.mark.parametrize("bind_to", ["0.0.0.0:22222", "tcp://0.0.0.0", "worker"])
+@pytest.mark.parametrize("bind_to", ["0.0.0.0:26600", "tcp://0.0.0.0", "worker"])
 def test_bind_to_rejects_values_that_are_not_ip_addresses(bind_to):
     with pytest.raises(ValueError, match="IPv4 or IPv6 address"):
         _make_job(bind_to=bind_to)
@@ -205,10 +205,10 @@ def test_state_pairs_controller_addresses_with_worker_service_proc_ids():
         job._state()
 
     assert attach.call_args_list[0].kwargs["workers"] == [
-        f"{service_proc_ids[0]}@tcp://worker-a:22222"
+        f"{service_proc_ids[0]}@tcp://worker-a:26600"
     ]
     assert attach.call_args_list[1].kwargs["workers"] == [
-        f"{service_proc_ids[1]}@tcp://worker-b:22222"
+        f"{service_proc_ids[1]}@tcp://worker-b:26600"
     ]
 
 
@@ -232,8 +232,8 @@ def test_batch_state_adopts_the_allocation_of_a_hand_written_script(
         job.state(cached_path=None)
 
     assert attach.call_args.kwargs["workers"] == [
-        f"{ids[0]}@tcp://host-a:22222",
-        f"{ids[1]}@tcp://host-b:22222",
+        f"{ids[0]}@tcp://host-a:26600",
+        f"{ids[1]}@tcp://host-b:26600",
     ]
 
 
@@ -274,13 +274,13 @@ def test_worker_bootstrap_uses_rank_env_and_drops_launcher_env(monkeypatch):
         patch("socket.gethostname", return_value="worker-a.cluster.org"),
         patch("monarch.actor.run_worker_loop_forever") as run_worker,
     ):
-        exec(_pbs_batch._worker_bootstrap(22222, "0.0.0.0", "PALS_RANKID"), {})
+        exec(_pbs_batch._worker_bootstrap(26600, "0.0.0.0", "PALS_RANKID"), {})
         import os
 
         leaked = [k for k in os.environ if k.startswith(("PMI_", "PALS_"))]
 
     run_worker.assert_called_once_with(
-        address=f"{ids[3]}@tcp://worker-a:22222@tcp://0.0.0.0:22222",
+        address=f"{ids[3]}@tcp://worker-a:26600@tcp://0.0.0.0:26600",
         ca="trust_all_connections",
     )
     assert leaked == []
@@ -339,6 +339,6 @@ def test_runner_seeds_workers_with_mpiexec_then_runs_the_client(nodefile, monkey
 
 def test_worker_bootstrap_stops_when_the_rank_variable_is_missing(monkeypatch):
     monkeypatch.delenv("PALS_RANKID", raising=False)
-    source = _pbs_batch._worker_bootstrap(22222, None, "PALS_RANKID")
+    source = _pbs_batch._worker_bootstrap(26600, None, "PALS_RANKID")
     with pytest.raises(SystemExit, match="PALS_RANKID is not set"):
         exec(source, {})

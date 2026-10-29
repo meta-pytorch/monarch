@@ -34,6 +34,9 @@ from monarch._src.job.service_identity import (
     SERVICE_PROC_IDS_ENV,
 )
 
+# The worker port the other jobs default to (e.g. KubernetesJob).
+_DEFAULT_MONARCH_PORT: int = 26600
+
 
 def _worker_bootstrap(port: int, bind_to: Optional[str], rank_env: str) -> str:
     """Source of one Monarch worker; it advertises the short hostname the client reads from PBS."""
@@ -71,7 +74,7 @@ def read_nodefile(path: Optional[str] = None) -> List[str]:
 
 def main(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(prog="monarch._src.job._pbs_batch")
-    parser.add_argument("--port", type=int, default=22222)
+    parser.add_argument("--port", type=int, default=_DEFAULT_MONARCH_PORT)
     parser.add_argument("--bind-to")
     parser.add_argument("--mpiexec", default="mpiexec")
     parser.add_argument(
