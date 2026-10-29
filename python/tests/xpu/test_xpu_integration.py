@@ -348,6 +348,7 @@ class TestSpmdActorXcclFsdp2(unittest.TestCase):
                 """
 import os
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
