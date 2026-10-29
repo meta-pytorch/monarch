@@ -793,6 +793,10 @@ impl<T: Controlled> Actor for ResourceController<T>
 where
     resource::State<T::StateInner>: RemoteMessage,
 {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
 

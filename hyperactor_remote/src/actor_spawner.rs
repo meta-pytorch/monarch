@@ -117,7 +117,10 @@ use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::RemoteSpawn;
 use hyperactor::Uid;
+use hyperactor::actor::ActorErrorKind;
+use hyperactor::actor::ActorStatus;
 use hyperactor::context;
+use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 
 use crate::Gspawn;
@@ -139,9 +142,26 @@ pub struct ActorSpawner;
 
 #[async_trait]
 impl Actor for ActorSpawner {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         this.set_system();
         Ok(())
+    }
+
+    async fn handle_supervision_event(
+        &mut self,
+        _this: &Instance<Self>,
+        event: &ActorSupervisionEvent,
+    ) -> anyhow::Result<bool> {
+        // Workers report child failures to the remote owner, which decides recovery.
+        Ok(!event.is_error()
+            || matches!(
+                event.actor_status,
+                ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(_))
+            ))
     }
 }
 
@@ -667,7 +687,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(event.is_error());
-        assert_eq!(event.actor_id, spawned_actor);
+        assert_eq!(event.caused_by().actor_id, spawned_actor);
 
         actor_spawner.stop("test").unwrap();
         tokio::time::timeout(Duration::from_secs(5), spawner)
@@ -881,12 +901,20 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let (session_id, child) = match linked {
+        let (session_id, worker, child) = match linked {
             SupervisorEvent::Linked {
-                session_id, child, ..
-            } => (session_id, child),
+                session_id,
+                worker,
+                child,
+                ..
+            } => (session_id, worker, child),
             message => panic!("expected linked message, got {:?}", message),
         };
+        let mut worker_status = proc
+            .get_instance(&worker.port_addr().actor_addr())
+            .unwrap()
+            .status()
+            .clone();
         PortRef::<Fail>::attest_handler_port(&child).post(&client, Fail);
 
         let event = tokio::time::timeout(Duration::from_secs(5), supervisor_rx.recv())
@@ -896,11 +924,34 @@ mod tests {
         match event {
             SupervisorEvent::SupervisionEvent {
                 session_id: event_session_id,
-                event: ActorSupervisionEvent { actor_id, .. },
+                event,
                 disposition: RemoteActorDisposition::Terminal,
-            } if event_session_id == session_id && actor_id == child => {}
+            } if event_session_id == session_id && event.caused_by().actor_id == child => {}
             message => panic!("expected terminal supervision event, got {:?}", message),
         }
+
+        let terminal = tokio::time::timeout(
+            Duration::from_secs(5),
+            worker_status.wait_for(ActorStatus::is_terminal),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(terminal.is_failed());
+
+        let (next_supervisor, mut next_supervisor_rx) = client.open_port::<SupervisorEvent>();
+        spawn_test_child(
+            &actor_spawner,
+            &client,
+            next_supervisor.bind(),
+            Uid::anonymous(),
+        )
+        .await;
+        let next_linked = tokio::time::timeout(Duration::from_secs(5), next_supervisor_rx.recv())
+            .await
+            .expect("actor spawner must accept spawns after a child fails")
+            .unwrap();
+        assert!(matches!(next_linked, SupervisorEvent::Linked { .. }));
 
         actor_spawner.stop("test").unwrap();
         tokio::time::timeout(Duration::from_secs(5), actor_spawner)

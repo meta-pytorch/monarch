@@ -1024,6 +1024,10 @@ impl axum::serve::Listener for TlsListener {
 
 #[async_trait]
 impl Actor for MeshAdminAgent {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     /// Initializes the mesh admin agent and its HTTP server.
     ///
     /// 1. Binds well-known handler ports (`proc.spawn_with_label()` does not

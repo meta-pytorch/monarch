@@ -577,6 +577,10 @@ impl ProcAgent {
 
 #[async_trait]
 impl Actor for ProcAgent {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
         self.proc.set_supervision_coordinator(this.port().bind())?;

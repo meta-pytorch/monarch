@@ -1213,6 +1213,69 @@ mod tests {
         events: crate::PortRef<ActorSupervisionEvent>,
     }
 
+    /// Supervises `target` through a monitor and leaves supervision events
+    /// to the default handler, which declines failures.
+    #[derive(Debug)]
+    struct DecliningSupervisorActor {
+        target: ActorAddr,
+        ready: Option<crate::OncePortRef<()>>,
+        supervisor: Option<ActorSupervisor>,
+    }
+
+    #[derive(Debug)]
+    struct RecordingParent {
+        events: crate::PortRef<ActorSupervisionEvent>,
+    }
+
+    /// Keeps a [`RecordingParent`] busy, so that supervision events queue.
+    #[derive(Debug)]
+    struct Pause(Duration);
+
+    #[async_trait]
+    impl Actor for DecliningSupervisorActor {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            let monitor = ActorMonitor::spawn_with_timings(
+                this,
+                self.target.clone(),
+                Duration::ZERO,
+                Duration::from_millis(10),
+                Duration::from_millis(50),
+                None,
+                true,
+            );
+            self.supervisor = Some(monitor.into_supervisor(this));
+            self.ready
+                .take()
+                .expect("ready port should be present")
+                .post(this, ());
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Actor for RecordingParent {
+        async fn handle_supervision_event(
+            &mut self,
+            this: &Instance<Self>,
+            event: &ActorSupervisionEvent,
+        ) -> anyhow::Result<bool> {
+            self.events.post(this, event.clone());
+            Ok(true)
+        }
+    }
+
+    #[async_trait]
+    impl Handler<Pause> for RecordingParent {
+        async fn handle(
+            &mut self,
+            _cx: &crate::Context<Self>,
+            message: Pause,
+        ) -> anyhow::Result<()> {
+            time::sleep(message.0).await;
+            Ok(())
+        }
+    }
+
     #[async_trait]
     impl Actor for SupervisorActor {
         async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
@@ -2035,6 +2098,53 @@ mod tests {
         time::timeout(Duration::from_millis(100), poll)
             .await
             .expect("monitor poll actor should stop with a pending request");
+    }
+
+    // The owner of a supervised monitor dies when it declines the monitor's
+    // failure, and dropping the owner cancels the monitor. The owner's own
+    // failure must still reach its parent, so it must not carry the monitor's
+    // local fence. The parent is busy while the owner dies, so the event is
+    // still queued when the owner is dropped.
+    #[tokio::test]
+    async fn test_declined_monitor_failure_reaches_owner_parent() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let target = proc.spawn(TestActor);
+        let target_id = target.actor_addr().clone();
+        let (events, mut event_rx) = client.open_port();
+        let parent = proc.spawn(RecordingParent {
+            events: events.bind(),
+        });
+        let (ready, ready_rx) = client.open_once_port();
+        let owner = proc.spawn_child(
+            parent.cell().clone(),
+            DecliningSupervisorActor {
+                target: target_id.clone(),
+                ready: Some(ready.bind()),
+                supervisor: None,
+            },
+        );
+        let owner_id = owner.actor_addr().clone();
+        ready_rx.recv().await.unwrap();
+
+        parent.post(&client, Pause(Duration::from_secs(1)));
+        target.drain_and_stop("done").unwrap();
+
+        let event = time::timeout(Duration::from_secs(10), event_rx.recv())
+            .await
+            .expect("the owner's failure should reach its parent")
+            .unwrap();
+        assert_eq!(event.actor_id, owner_id);
+        let ActorStatus::Failed(ActorErrorKind::SyntheticSupervision(synthetic)) =
+            &event.caused_by().actor_status
+        else {
+            panic!(
+                "expected a synthetic supervision root cause, got {:?}",
+                event.caused_by().actor_status
+            );
+        };
+        assert_eq!(synthetic.subject, target_id);
+        parent.drain_and_stop("test complete").unwrap();
     }
 
     #[tokio::test]

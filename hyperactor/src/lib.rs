@@ -48,9 +48,7 @@
 
 #![feature(anonymous_lifetime_in_impl_trait)]
 #![feature(associated_type_defaults)]
-#![feature(box_patterns)]
 #![feature(btree_cursors)]
-#![feature(error_reporter)]
 #![feature(exact_size_is_empty)]
 #![feature(impl_trait_in_assoc_type)]
 #![feature(never_type)]

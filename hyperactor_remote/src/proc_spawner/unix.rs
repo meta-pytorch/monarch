@@ -86,6 +86,8 @@ use hyperactor::gateway::PeerAttachGuard;
 use hyperactor::mailbox::IntoBoxedMailboxSender as _;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor::supervision::SupervisionObservation;
+use hyperactor::supervision::SupervisionTarget;
 use nix::errno::Errno;
 use nix::sys::signal;
 use nix::sys::signal::Signal;
@@ -298,6 +300,10 @@ impl UnixProcSpawner {
 
 #[async_trait]
 impl Actor for UnixProcSpawner {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     async fn handle_supervision_event(
         &mut self,
         _this: &Instance<Self>,
@@ -770,12 +776,14 @@ impl UnixProcWorker {
             cx,
             SupervisorEvent::SupervisionEvent {
                 session_id: session.session_id.clone(),
-                event: ActorSupervisionEvent::new(
-                    self.actor_spawner.actor_addr().clone(),
-                    Some(self.uid.to_string()),
-                    ActorStatus::generic_failure("proc supervision liveness failed"),
-                    None,
-                ),
+                event: event
+                    .clone()
+                    .with_observation(Some(SupervisionObservation::ProcLinkLost(
+                        SupervisionTarget {
+                            actor_id: self.actor_spawner.actor_addr().clone(),
+                            display_name: Some(self.uid.to_string()),
+                        },
+                    ))),
                 disposition: RemoteActorDisposition::Unreachable,
             },
         );
@@ -833,6 +841,10 @@ struct KillProc {
 
 #[async_trait]
 impl Actor for UnixProcWorker {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         if let Err(error) = self.launch(this)
             && let Some(supervise) = self.supervise.take()

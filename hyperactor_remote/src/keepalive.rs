@@ -270,6 +270,10 @@ pub struct KeepaliveWorker {
 
 #[async_trait]
 impl Actor for KeepaliveWorker {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         self.send_keepalive(this)
     }
@@ -354,6 +358,10 @@ pub struct KeepaliveSupervisor {
 
 #[async_trait]
 impl Actor for KeepaliveSupervisor {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         self.schedule_deadline(this)
     }

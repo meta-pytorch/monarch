@@ -24,6 +24,7 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor::supervision::SupervisionObservation;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -260,6 +261,8 @@ struct Harness {
     observer: hyperactor::Client,
     parent_root: hyperactor::ActorHandle<ParentRoot>,
     worker_root: hyperactor::ActorHandle<WorkerRoot>,
+    child_addr: ActorAddr,
+    worker_addr: ActorAddr,
     child_stopped_rx: PortReceiver<String>,
     parent_events_rx: PortReceiver<ActorSupervisionEvent>,
 }
@@ -314,14 +317,16 @@ impl Harness {
                 anyhow::bail!("token join rejected: {}", reason)
             }
         }
-        let _worker_addr = recv(&mut parent_linked_rx).await?;
-        let _child_addr = recv(&mut child_ready_rx).await?;
+        let worker_addr = recv(&mut parent_linked_rx).await?;
+        let child_addr = recv(&mut child_ready_rx).await?;
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         Ok(Self {
             observer,
             parent_root,
             worker_root,
+            child_addr,
+            worker_addr,
             child_stopped_rx,
             parent_events_rx,
         })
@@ -450,10 +455,14 @@ async fn test_token_join_worker_kill_notifies_parent() -> anyhow::Result<()> {
 
     let event = recv(&mut harness.parent_events_rx).await?;
     assert!(matches!(event.actor_status, ActorStatus::Failed(_)));
-    assert!(
-        event.to_string().contains("supervision liveness failed"),
-        "parent event should describe the failed supervision link"
-    );
+    assert_ne!(event.actor_id, harness.child_addr);
+    let Some(SupervisionObservation::LinkLost(target)) = &event.observation else {
+        panic!("expected the lost link's affected actor: {event:?}");
+    };
+    assert_eq!(target.actor_id, harness.child_addr);
+    let cause = event.caused_by();
+    assert_ne!(cause.actor_id, event.actor_id);
+    assert!(cause.is_error());
     harness.stop().await?;
     Ok(())
 }
@@ -473,10 +482,19 @@ async fn test_token_join_child_stop_notifies_parent() -> anyhow::Result<()> {
     assert_eq!(reason, "child finished");
 
     let event = recv(&mut harness.parent_events_rx).await?;
-    match event.actor_status {
-        ActorStatus::Stopped(reason) => assert_eq!(reason, "child finished"),
-        status => panic!("expected stopped child event, got {:?}", status),
-    }
+    assert_eq!(
+        event.actor_status,
+        ActorStatus::Stopped("supervised child stopped".to_string()),
+    );
+    let worker = event.cause().unwrap();
+    assert_eq!(worker.actor_id, harness.worker_addr);
+    let child = worker.cause().unwrap();
+    assert_eq!(child.actor_id, harness.child_addr);
+    assert_eq!(
+        child.actor_status,
+        ActorStatus::Stopped("child finished".to_string())
+    );
+    assert_eq!(event.causal_chain().count(), 3);
     harness.stop().await?;
     Ok(())
 }

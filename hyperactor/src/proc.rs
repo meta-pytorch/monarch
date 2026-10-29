@@ -3339,40 +3339,26 @@ impl<A: Actor> Instance<A> {
                     status.clone(),
                     None,
                 );
-                (status, Some(event))
+                (
+                    status,
+                    Some(
+                        event
+                            .with_labels(actor.supervision_labels())
+                            .with_transparent(actor.supervision_is_transparent())
+                            .with_stop_cause(actor.supervision_stop_cause())
+                            .with_observation(actor.supervision_observation()),
+                    ),
+                )
             }
-            Err(err) => match *err.kind {
-                ActorErrorKind::UnhandledSupervisionEvent(box event) => {
-                    // We use the event's actor_status as this actor's terminal status.
-                    assert!(event.actor_status.is_terminal());
-                    let status = event.actor_status.clone();
-                    (status, Some(event))
-                }
-                ActorErrorKind::SyntheticSupervision(synthetic) => {
-                    let local_fence = synthetic.local_fence.clone();
-                    let error_kind = ActorErrorKind::SyntheticSupervision(synthetic);
-                    let status = ActorStatus::Failed(error_kind);
-                    let event = ActorSupervisionEvent::new(
-                        self.inner.cell.actor_addr().clone(),
-                        actor.display_name(),
-                        status.clone(),
-                        None,
-                    )
-                    .with_local_fence(local_fence);
-                    (status, Some(event))
-                }
-                _ => {
-                    let error_kind = ActorErrorKind::Generic(err.kind.to_string());
-                    let status = ActorStatus::Failed(error_kind);
-                    let event = ActorSupervisionEvent::new(
-                        self.inner.cell.actor_addr().clone(),
-                        actor.display_name(),
-                        status.clone(),
-                        None,
-                    );
-                    (status, Some(event))
-                }
-            },
+            Err(err) => {
+                let event = (*err.kind)
+                    .into_supervision_event(self.inner.cell.actor_addr(), || actor.display_name())
+                    .with_labels(actor.supervision_labels())
+                    .with_transparent(actor.supervision_is_transparent())
+                    .with_observation(actor.supervision_observation());
+                assert!(event.actor_status.is_terminal());
+                (event.actor_status.clone(), Some(event))
+            }
         };
 
         let current_status = self.inner.cell.status().borrow().clone();
@@ -3721,8 +3707,6 @@ impl<A: Actor> Instance<A> {
                 Err(ActorError::new(self.self_addr(), kind))
             }
             Err(err) => {
-                // The actor failed to handle the supervision event, it should die.
-                // Create a new supervision event for this failure and propagate it.
                 let kind = ActorErrorKind::ErrorDuringHandlingSupervision(
                     err.to_string(),
                     Box::new(supervision_event),
@@ -5373,6 +5357,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc as std_mpsc;
 
+    use anyhow::Context as _;
     use hyperactor_macros::export;
     use hyperactor_telemetry::EntityEvent;
     use hyperactor_telemetry::TraceEvent;
@@ -8264,6 +8249,7 @@ mod tests {
 
         // fail `root_2_1`, the supervision msg should be propagated to
         // ProcSupervisionCoordinator.
+        let root_2_id = root_2.actor_addr().clone();
         let root_2_1_id = root_2_1.actor_addr().clone();
         root_2_1.post(&client, "some random failure".to_string());
 
@@ -8274,8 +8260,10 @@ mod tests {
 
         // Wait for the supervision event from root_2_1's failure to
         // reach the ProcSupervisionCoordinator.
+        // `root_2` declined, so it reports as itself, caused by `root_2_1`.
         let event = reported_event.recv().await;
-        assert_eq!(event.actor_id, root_2_1_id);
+        assert_eq!(event.actor_id, root_2_id);
+        assert_eq!(event.caused_by().actor_id, root_2_1_id);
 
         assert!(!root_state.load(Ordering::SeqCst));
         assert!(root_1_state.load(Ordering::SeqCst));
@@ -8283,6 +8271,241 @@ mod tests {
         assert!(!root_1_1_1_state.load(Ordering::SeqCst));
         assert!(!root_2_state.load(Ordering::SeqCst));
         assert!(!root_2_1_state.load(Ordering::SeqCst));
+    }
+
+    /// Fails a child of an actor whose supervision handler is `decide`, and
+    /// returns the child's id and the event that reaches the proc.
+    async fn supervise_child_failure(
+        decide: fn(&ActorSupervisionEvent) -> anyhow::Result<bool>,
+    ) -> (ActorAddr, ActorAddr, ActorSupervisionEvent) {
+        #[derive(Debug)]
+        struct DecidingActor(fn(&ActorSupervisionEvent) -> anyhow::Result<bool>);
+
+        #[async_trait]
+        impl Actor for DecidingActor {
+            async fn handle_supervision_event(
+                &mut self,
+                _this: &Instance<Self>,
+                event: &ActorSupervisionEvent,
+            ) -> Result<bool, anyhow::Error> {
+                (self.0)(event)
+            }
+        }
+
+        #[async_trait]
+        impl Handler<String> for DecidingActor {
+            async fn handle(
+                &mut self,
+                _cx: &crate::Context<Self>,
+                message: String,
+            ) -> anyhow::Result<()> {
+                Err(anyhow::anyhow!(message))
+            }
+        }
+
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (mut reported_event, _coordinator) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let parent = proc.spawn_with_label::<DecidingActor>("parent", DecidingActor(decide));
+        let child = proc.spawn_child::<DecidingActor>(parent.cell().clone(), DecidingActor(decide));
+        let child_id = child.actor_addr().clone();
+        child.post(&client, "child failure".to_string());
+
+        let event = reported_event.recv().await;
+        (parent.actor_addr().clone(), child_id, event)
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_decline_appends_frame() {
+        let (parent_id, child_id, event) = supervise_child_failure(|_| Ok(false)).await;
+
+        assert_eq!(event.actor_id, parent_id);
+        let root_cause = event.caused_by();
+        assert_eq!(
+            root_cause.actor_id, child_id,
+            "the parent's event should chain to the child's failure"
+        );
+        assert_eq!(
+            root_cause.actor_status,
+            ActorStatus::generic_failure("child failure")
+        );
+        assert!(
+            !Arc::ptr_eq(&event.local_fence, &root_cause.local_fence),
+            "the parent's frame must not share the child's local fence"
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_handler_structured_errors_retain_child() {
+        for decide in [
+            (|_: &ActorSupervisionEvent| {
+                Err(anyhow::Error::new(ActorErrorKind::Generic(
+                    "handler failed".to_string(),
+                )))
+            }) as fn(&ActorSupervisionEvent) -> anyhow::Result<bool>,
+            |event: &ActorSupervisionEvent| {
+                Err(anyhow::Error::new(
+                    ActorErrorKind::UnhandledSupervisionEvent(Box::new(
+                        ActorSupervisionEvent::new(
+                            event.actor_id.clone(),
+                            None,
+                            ActorStatus::generic_failure("replaced"),
+                            None,
+                        ),
+                    )),
+                ))
+                .context("while supervising")
+            },
+        ] {
+            let (parent_id, child_id, event) = supervise_child_failure(decide).await;
+            assert_eq!(event.actor_id, parent_id);
+            let ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(_, cause)) =
+                &event.actor_status
+            else {
+                panic!("expected an error while handling supervision: {event}");
+            };
+            assert_eq!(cause.actor_id, child_id);
+            assert_eq!(
+                cause.actor_status,
+                ActorStatus::generic_failure("child failure")
+            );
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_handler_error_chains_to_cause() {
+        let (parent_id, child_id, event) = supervise_child_failure(|_| {
+            Err(anyhow::anyhow!("handler failed")).context("while supervising")
+        })
+        .await;
+
+        // Context on the handler's error changes only the message, not the
+        // attribution.
+        assert_eq!(event.actor_id, parent_id);
+        let ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(message, cause)) =
+            &event.actor_status
+        else {
+            panic!(
+                "expected ErrorDuringHandlingSupervision, got {:?}",
+                event.actor_status
+            );
+        };
+        assert!(message.contains("while supervising"), "{message}");
+        assert_eq!(cause.actor_id, child_id);
+        assert_eq!(
+            cause.actor_status,
+            ActorStatus::generic_failure("child failure")
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_handler_error_on_clean_stop_has_failure_report() {
+        #[derive(Debug)]
+        struct FailingSupervisor(&'static str);
+
+        #[async_trait]
+        impl Actor for FailingSupervisor {
+            fn display_name(&self) -> Option<String> {
+                Some(self.0.to_string())
+            }
+
+            async fn handle_supervision_event(
+                &mut self,
+                _this: &Instance<Self>,
+                _event: &ActorSupervisionEvent,
+            ) -> anyhow::Result<bool> {
+                anyhow::bail!("handler failed")
+            }
+        }
+
+        let proc = Proc::isolated();
+        let (mut reported_event, _coordinator) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let parent = proc.spawn(FailingSupervisor("parent"));
+        let child = proc.spawn_child(parent.cell().clone(), FailingSupervisor("child"));
+        child.drain_and_stop("done").unwrap();
+
+        let event = reported_event.recv().await;
+        assert_eq!(event.actor_id, *parent.actor_addr());
+        assert_eq!(
+            event.failure_report().unwrap(),
+            "The actor parent and all its descendants have failed:\n\
+             \x20 handler failed\n\
+             This error occurred while handling a supervision event:\n\
+             \x20 Supervision event: actor child has status:\n\
+             \x20   stopped: done"
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_handler_returns_supervision_cause_with_context() {
+        #[derive(Debug)]
+        struct FailingActor;
+
+        impl Actor for FailingActor {
+            fn display_name(&self) -> Option<String> {
+                Some("failing actor".to_string())
+            }
+        }
+
+        #[async_trait]
+        impl Handler<String> for FailingActor {
+            async fn handle(
+                &mut self,
+                cx: &crate::Context<Self>,
+                message: String,
+            ) -> anyhow::Result<()> {
+                if message == "ignore" {
+                    return Ok(());
+                }
+                let cause = ActorSupervisionEvent::new(
+                    cx.self_addr().proc_addr().actor_addr("child"),
+                    None,
+                    if message == "idle" {
+                        ActorStatus::Idle
+                    } else {
+                        ActorStatus::generic_failure(message)
+                    },
+                    None,
+                );
+                Err(anyhow::Error::new(
+                    ActorErrorKind::UnhandledSupervisionEvent(Box::new(cause)),
+                ))
+                .context("while handling a mesh failure")
+            }
+        }
+
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (mut reported_event, _coordinator) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let actor = proc.spawn_with_label::<FailingActor>("failing", FailingActor);
+        let actor_id = actor.actor_addr().clone();
+        actor.post(&client, "ignore".to_string());
+        actor.post(&client, "cause".to_string());
+
+        let event = reported_event.recv().await;
+        assert_eq!(event.actor_id, actor_id);
+        assert_eq!(event.display_name.as_deref(), Some("failing actor"));
+        let ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(cause)) =
+            &event.actor_status
+        else {
+            panic!(
+                "expected UnhandledSupervisionEvent, got {:?}",
+                event.actor_status
+            );
+        };
+        assert_eq!(cause.actor_status, ActorStatus::generic_failure("cause"));
+
+        let actor = proc.spawn(FailingActor);
+        actor.post(&client, "idle".to_string());
+        let event = reported_event.recv().await;
+        assert_eq!(event.actor_id, actor.actor_addr().clone());
+        assert!(event.actor_status.is_terminal());
+        assert_eq!(event.caused_by().actor_status, ActorStatus::Idle);
     }
 
     #[async_timed_test(timeout_secs = 30)]

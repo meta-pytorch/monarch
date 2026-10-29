@@ -1350,12 +1350,11 @@ impl PythonActor {
                                 kind: Box::new(kind),
                             };
 
-                            // Only a `SupervisionOutcome` verdict fails with
-                            // `UnhandledSupervisionEvent`. It is `__supervise__`'s
+                            // A structured supervision failure is `__supervise__`'s
                             // final answer (including an `UnhandledFaultHookException`
                             // raised by `RootClientActor`), so exit rather than
                             // supervising it again, which could loop forever.
-                            if matches!(*err.kind, ActorErrorKind::UnhandledSupervisionEvent(_)) {
+                            if matches!(*err.kind, ActorErrorKind::UnhandledSupervisionEvent(_) | ActorErrorKind::ErrorDuringHandlingSupervision(_, _)) {
                                 break Some(err);
                             }
 
@@ -1486,18 +1485,11 @@ fn actor_error_to_event(
     actor: &PythonActor,
     err: ActorError,
 ) -> ActorSupervisionEvent {
-    match *err.kind {
-        ActorErrorKind::UnhandledSupervisionEvent(event) => *event,
-        _ => {
-            let status = ActorStatus::generic_failure(err.kind.to_string());
-            ActorSupervisionEvent::new(
-                instance.self_addr().clone(),
-                actor.display_name(),
-                status,
-                None,
-            )
-        }
-    }
+    (*err.kind)
+        .into_supervision_event(instance.self_addr(), || actor.display_name())
+        .with_labels(actor.supervision_labels())
+        .with_transparent(actor.supervision_is_transparent())
+        .with_observation(actor.supervision_observation())
 }
 
 pub(crate) fn root_client_actor(py: Python<'_>) -> &'static Instance<PythonActor> {
@@ -1832,7 +1824,6 @@ struct SupervisionReply {
     port: PortHandle<SupervisionOutcome>,
     instance: PyInstance,
     failure: MeshFailure,
-    display_name: Option<String>,
     _in_flight: InFlight,
 }
 
@@ -1859,17 +1850,12 @@ impl QueuedSupervision {
             port,
             instance,
             failure,
-            display_name,
             _in_flight,
         } = self
             .reply
             .take()
             .expect("supervision verdict reported twice");
-        let outcome = SupervisionOutcome {
-            failure,
-            display_name,
-            verdict,
-        };
+        let outcome = SupervisionOutcome { failure, verdict };
         if let Err(err) = port.try_post(instance.deref(), outcome) {
             tracing::debug!(
                 actor_id = %instance.self_addr(),
@@ -1895,8 +1881,7 @@ impl<'py> IntoPyObject<'py> for PendingSupervision {
     type Error = PyErr;
 
     fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
-        let mut reply = self.reply;
-        reply.display_name = self.instance.bind(py).str().ok().map(|s| s.to_string());
+        let reply = self.reply;
         let context = crate::context::PyContext::from_parts(
             self.instance.clone_ref(py),
             self.rank,
@@ -2089,7 +2074,6 @@ impl Handler<UndeliverableOutcome> for PythonActor {
 #[derive(Debug)]
 pub struct SupervisionOutcome {
     failure: MeshFailure,
-    display_name: Option<String>,
     verdict: SupervisionVerdict,
 }
 
@@ -2129,7 +2113,6 @@ impl Handler<MeshFailure> for PythonActor {
                 port: cx.port(),
                 instance: cx.into(),
                 failure: message,
-                display_name: None,
                 _in_flight: InFlight::new(&self.callbacks_pending),
             },
         };
@@ -2150,7 +2133,6 @@ impl Handler<SupervisionOutcome> for PythonActor {
     ) -> anyhow::Result<()> {
         let SupervisionOutcome {
             failure: message,
-            display_name,
             verdict,
         } = outcome;
         let (status, description, cause) = match verdict {
@@ -2169,9 +2151,8 @@ impl Handler<SupervisionOutcome> for PythonActor {
                 return Ok(());
             }
             // We propagate the event to the next owning actor by failing
-            // with a new event that names this actor as its creator. This
-            // does not set the causal chain for ActorSupervisionEvent, so
-            // the original event is included in the error.
+            // with a new event that names this actor, caused by the child's
+            // event.
             SupervisionVerdict::Unhandled => (
                 "SupervisionError::Unhandled",
                 "did not handle a supervision event, reporting to the next owner",
@@ -2206,14 +2187,7 @@ impl Handler<SupervisionOutcome> for PythonActor {
                 description,
             );
         }
-        Err(anyhow::Error::new(
-            ActorErrorKind::UnhandledSupervisionEvent(Box::new(ActorSupervisionEvent::new(
-                cx.self_addr().clone(),
-                display_name,
-                ActorStatus::Failed(cause),
-                None,
-            ))),
-        ))
+        Err(cause.into())
     }
 }
 

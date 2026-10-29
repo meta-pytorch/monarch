@@ -25,6 +25,7 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::watch;
@@ -61,6 +62,7 @@ use crate::proc::Instance;
 use crate::proc::InstanceCell;
 use crate::proc::Proc;
 use crate::supervision::ActorSupervisionEvent;
+use crate::supervision::SupervisionObservation;
 
 pub mod remote;
 
@@ -149,14 +151,23 @@ pub trait Actor: Sized + Send + 'static {
         tokio::spawn(future)
     }
 
-    /// Handle actor supervision event. Return `Ok(true)`` if the event is handled here.
+    /// Handle a supervision event from a child. The event's outermost frame
+    /// names that child; [`ActorSupervisionEvent::caused_by`] finds the root
+    /// cause. Recovery acts on the child, which owns its own descendants.
+    ///
+    /// - `Ok(true)`: this actor takes responsibility for the event. It may keep
+    ///   running, stop, or fail later.
+    /// - `Ok(false)`: this actor fails, with the child's event as the cause.
+    /// - `Err(err)`: handling failed; this actor fails with `err`, with the
+    ///   child's event as the cause, regardless of the error's type.
+    ///
+    /// By default, normal lifecycle events (e.g. a clean stop) are absorbed and
+    /// errors are not handled.
     async fn handle_supervision_event(
         &mut self,
         _this: &Instance<Self>,
         event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        // Error events are not handled by default and bubble up to the parent.
-        // Normal lifecycle events (e.g. clean stop) are absorbed.
         Ok(!event.is_error())
     }
 
@@ -203,6 +214,27 @@ pub trait Actor: Sized + Send + 'static {
     /// ActorAddr for talking about this actor in supervision error
     /// messages.
     fn display_name(&self) -> Option<String> {
+        None
+    }
+
+    /// Semantic labels on this actor's terminal supervision event.
+    fn supervision_labels(&self) -> Flattrs {
+        Flattrs::new()
+    }
+
+    /// Whether causal wrapper frames may be omitted from the Python
+    /// supervision view. An actor's own errors remain visible.
+    fn supervision_is_transparent(&self) -> bool {
+        false
+    }
+
+    /// The child event that caused this actor to stop normally.
+    fn supervision_stop_cause(&self) -> Option<Box<ActorSupervisionEvent>> {
+        None
+    }
+
+    /// Observed loss of supervision or failure of a request for another actor.
+    fn supervision_observation(&self) -> Option<SupervisionObservation> {
         None
     }
 }
@@ -343,7 +375,11 @@ pub trait Handler<M>: Actor {
         MessageStatusReporting::Immediate
     }
 
-    /// Handle the next M-typed message.
+    /// Handle the next M-typed message. Returning `Err` fails the actor.
+    /// Return an [`ActorErrorKind`] through [`anyhow::Error`] to preserve a
+    /// structured failure, including through [`anyhow::Context`]. An
+    /// [`ActorErrorKind::UnhandledSupervisionEvent`] carries the cause; the
+    /// runtime adds this actor's frame.
     async fn handle(&mut self, cx: &Context<Self>, message: M) -> Result<(), anyhow::Error>;
 }
 
@@ -599,11 +635,11 @@ pub enum ActorErrorKind {
     #[error("{0} while handling {1}")]
     ErrorDuringHandlingSupervision(String, Box<ActorSupervisionEvent>),
 
-    /// The actor did not attempt to handle
+    /// The actor did not handle the enclosed supervision event.
     #[error("{0}")]
     UnhandledSupervisionEvent(Box<ActorSupervisionEvent>),
 
-    /// The actor failed to synthesize a supervision event for another subject.
+    /// The actor detected a liveness failure for another subject.
     #[error("{0}")]
     SyntheticSupervision(Box<crate::monitor::SyntheticSupervision>),
 
@@ -618,14 +654,10 @@ pub enum ActorErrorKind {
 }
 
 impl ActorErrorKind {
-    /// Error while processing actor, i.e., returned by the actor's
-    /// processing method.
+    /// Recover a structured actor error returned by a message handler,
+    /// including through `anyhow::Context`, or convert it to a generic failure.
     pub fn processing(err: anyhow::Error) -> Self {
-        // Unbox err from the anyhow err. Check if it is an ActorErrorKind object.
-        // If it is directly use it as the new ActorError's ActorErrorKind.
-        // This lets us directly pass the ActorErrorKind::UnhandledSupervisionEvent
-        // up the handling infrastructure.
-        err.downcast::<ActorErrorKind>()
+        err.downcast::<Self>()
             .unwrap_or_else(|err| Self::Generic(err.to_string()))
     }
 
@@ -657,6 +689,44 @@ impl ActorErrorKind {
     /// The actor's state could not be determined.
     pub fn indeterminate_state() -> Self {
         Self::Generic("actor is in an indeterminate state".to_string())
+    }
+
+    /// The terminal supervision event for `actor_id`, which failed with this
+    /// error. Every failure adds a frame naming this actor.
+    pub fn into_supervision_event(
+        self,
+        actor_id: &ActorAddr,
+        display_name: impl FnOnce() -> Option<String>,
+    ) -> ActorSupervisionEvent {
+        match self {
+            Self::UnhandledSupervisionEvent(cause) => {
+                ActorSupervisionEvent::unhandled(actor_id.clone(), display_name(), *cause)
+            }
+            Self::ErrorDuringHandlingSupervision(message, cause) => {
+                ActorSupervisionEvent::error_during_handling(
+                    actor_id.clone(),
+                    display_name(),
+                    message,
+                    *cause,
+                )
+            }
+            Self::SyntheticSupervision(synthetic) => {
+                let local_fence = synthetic.local_fence.clone();
+                ActorSupervisionEvent::new(
+                    actor_id.clone(),
+                    display_name(),
+                    ActorStatus::Failed(Self::SyntheticSupervision(synthetic)),
+                    None,
+                )
+                .with_local_fence(local_fence)
+            }
+            kind => ActorSupervisionEvent::new(
+                actor_id.clone(),
+                display_name(),
+                ActorStatus::generic_failure(kind.to_string()),
+                None,
+            ),
+        }
     }
 }
 

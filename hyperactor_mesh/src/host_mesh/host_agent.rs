@@ -547,6 +547,10 @@ struct DrainWorker {
 
 #[async_trait]
 impl Actor for DrainWorker {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         if let Some(host) = self.host.as_mut() {
             match host {
@@ -858,6 +862,10 @@ impl HostAgent {
 
 #[async_trait]
 impl Actor for HostAgent {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.bind::<Self>();
         if matches!(self.host().unwrap(), HostAgentMode::Process { .. }) {

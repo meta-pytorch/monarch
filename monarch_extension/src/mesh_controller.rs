@@ -33,7 +33,6 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxSenderError;
-use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::ProcMeshRef;
@@ -912,6 +911,10 @@ impl MeshControllerActor {
 
 #[async_trait]
 impl Actor for MeshControllerActor {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         let controller_actor_ref: reference::ActorRef<ControllerActor> = this.bind();
         let world_size = Ranked::region(&self.proc_mesh_ref).num_ranks();
@@ -1061,17 +1064,9 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
 
 #[async_trait]
 impl Handler<MeshFailure> for MeshControllerActor {
-    async fn handle(&mut self, this: &Context<Self>, message: MeshFailure) -> anyhow::Result<()> {
+    async fn handle(&mut self, _this: &Context<Self>, message: MeshFailure) -> anyhow::Result<()> {
         // If an actor spawned by this one fails, we can't handle it. We fail
         // ourselves with a chained error and bubble up to the next owner.
-        let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(ActorSupervisionEvent::new(
-            this.self_addr().clone(),
-            None,
-            ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(
-                message.event.clone(),
-            ))),
-            None,
-        )));
-        Err(anyhow::Error::new(err))
+        Err(ActorErrorKind::UnhandledSupervisionEvent(Box::new(message.event)).into())
     }
 }
