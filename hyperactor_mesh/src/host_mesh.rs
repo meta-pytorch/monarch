@@ -94,6 +94,7 @@ use crate::ActorMeshRef;
 use crate::Bootstrap;
 use crate::ProcMesh;
 use crate::ValueMesh;
+use crate::actor_mesh::notify_mesh_created;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcManager;
 use crate::bootstrap::HostBootstrapReady;
@@ -274,35 +275,28 @@ impl HostMesh {
         let name_str = self.id.to_string();
         let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&self.id);
 
-        hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
-            id: mesh_id_hash,
-            timestamp: std::time::SystemTime::now(),
-            class: "Host".to_string(),
-            given_name: self
-                .id
-                .display_label()
-                .map(|l| l.as_str())
-                .unwrap_or("unnamed")
-                .to_string(),
-            full_name: name_str,
-            shape_json: serde_json::to_string(&self.extent).unwrap_or_default(),
-            parent_mesh_id: None,
-            parent_view_json: None,
-        });
-
-        // Notify telemetry of each HostAgent actor in this mesh.
-        // These are skipped in Proc::spawn_inner. mesh_id directly points to host mesh.
-        let now = std::time::SystemTime::now();
-        for (rank, actor) in self.current_ref.host_agent_mesh.values().enumerate() {
-            hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: hyperactor_telemetry::hash_to_u64(actor.actor_addr().id()),
-                timestamp: now,
-                mesh_id: mesh_id_hash,
-                rank: rank as u64,
-                full_name: actor.actor_addr().to_string(),
-                display_name: None,
-            });
-        }
+        notify_mesh_created(
+            hyperactor_telemetry::MeshEvent {
+                id: mesh_id_hash,
+                timestamp: std::time::SystemTime::now(),
+                class: "Host".to_string(),
+                given_name: self
+                    .id
+                    .display_label()
+                    .map(|l| l.as_str())
+                    .unwrap_or("unnamed")
+                    .to_string(),
+                full_name: name_str,
+                shape_json: serde_json::to_string(&self.extent).unwrap_or_default(),
+                parent_mesh_id: None,
+                parent_view_json: None,
+            },
+            self.current_ref
+                .host_agent_mesh
+                .values()
+                .enumerate()
+                .map(|(rank, actor)| (rank, actor.actor_addr().clone(), None)),
+        );
     }
 
     /// Bring up a local single-host mesh and, in the launcher

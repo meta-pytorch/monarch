@@ -19,7 +19,6 @@ use futures::future::BoxFuture;
 use futures::future::FutureExt;
 use futures::future::Shared;
 use hyperactor::Instance;
-use hyperactor::RemoteEndpoint as _;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMeshRef;
@@ -34,7 +33,6 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyTuple;
-use rand::RngExt as _;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::Instrument;
@@ -783,13 +781,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
                     .cast_choose_with_headers(instance, &caller_headers, message)
                     .map_err(cast_error_to_py_error),
                 ActorMeshRef::Data(mesh) => {
-                    let num_ranks = mesh.region().num_ranks();
-                    if num_ranks > 0 {
-                        let actor = mesh
-                            .get(rand::rng().random_range(0..num_ranks))
-                            .expect("selected rank should exist in dense data mesh");
-                        actor.post_with_headers(instance, caller_headers, message);
-                    }
+                    mesh.cast_choose_with_headers(instance, caller_headers, message);
                     Ok(())
                 }
             },
