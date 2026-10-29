@@ -172,6 +172,8 @@ fn spawn_snapshot_http_counter() -> (String, Arc<AtomicUsize>, Arc<AtomicBool>, 
                 }
                 Err(error) => panic!("snapshot HTTP test server failed: {error}"),
             };
+            // Darwin inherits the listener's nonblocking flag on accepted sockets.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();

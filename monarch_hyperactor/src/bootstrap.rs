@@ -351,9 +351,7 @@ mod tests {
     use nix::sys::socket::SockaddrIn;
     use nix::sys::socket::bind;
     use nix::sys::socket::getsockname;
-    use nix::sys::socket::getsockopt;
     use nix::sys::socket::socket;
-    use nix::sys::socket::sockopt;
     use nix::unistd::dup;
     use pyo3::PyErr;
     use pyo3::PyTypeInfo;
@@ -426,9 +424,7 @@ mod tests {
         assert!(listener.is_none());
     }
 
-    /// A bound but deliberately not-yet-listening IPv4 socket, plus the address
-    /// it holds. Starting from a listening socket would make the
-    /// `SO_ACCEPTCONN` transition below vacuous.
+    /// A bound but deliberately not-yet-listening IPv4 socket, plus its address.
     fn bound_not_listening() -> (OwnedFd, SockaddrIn) {
         let sock = socket(
             AddressFamily::Inet,
@@ -441,6 +437,21 @@ mod tests {
         bind(sock.as_raw_fd(), &wildcard).expect("binding an ephemeral port should succeed");
         let bound = getsockname::<SockaddrIn>(sock.as_raw_fd()).expect("bound socket has a name");
         (sock, bound)
+    }
+
+    fn assert_listening(addr: &SockaddrIn, expected: bool) {
+        // SO_ACCEPTCONN is unavailable on Darwin. Probe the listening state
+        // through a real connection without polling the worker-loop future.
+        let addr = std::net::SocketAddr::from((addr.ip(), addr.port()));
+        let result = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1));
+        if expected {
+            drop(result.expect("preparation must make the socket listen"));
+        } else {
+            assert!(
+                result.is_err(),
+                "the fixture must be bound but not listening"
+            );
+        }
     }
 
     /// What the kernel says when a fresh socket tries to take `addr`. A live
@@ -485,10 +496,7 @@ mod tests {
         ] {
             let (sock, bound) = bound_not_listening();
             let observer = dup(sock.as_fd()).expect("duplicating for observation should succeed");
-            assert!(
-                !getsockopt(&observer, sockopt::AcceptConn).expect("SO_ACCEPTCONN is readable"),
-                "the fixture must hand over a bound socket that is not yet listening"
-            );
+            assert_listening(&bound, false);
 
             // Ownership leaves `OwnedFd` tracking here: the number is all that
             // is passed, and worker-loop preparation adopts it.
@@ -526,10 +534,7 @@ mod tests {
                 bound,
                 "the retained descriptor must still be the socket that was handed over"
             );
-            assert!(
-                getsockopt(&observer, sockopt::AcceptConn).expect("SO_ACCEPTCONN is readable"),
-                "preparation must call listen before it returns"
-            );
+            assert_listening(&bound, true);
 
             // The future must be the only owner left before the address can say
             // anything about what the future holds.
@@ -564,20 +569,14 @@ mod tests {
 
         let (sock, bound) = bound_not_listening();
         let observer = dup(sock.as_fd()).expect("duplicating for observation should succeed");
-        assert!(
-            !getsockopt(&observer, sockopt::AcceptConn).expect("SO_ACCEPTCONN is readable"),
-            "the fixture must hand over a bound socket that is not yet listening"
-        );
+        assert_listening(&bound, false);
 
         let transferred = sock.into_raw_fd();
         let address = format!("tcp://127.0.0.1:4444@tcp://127.0.0.1:fd{transferred}");
         let future = prepare_worker_loop(&address, true)
             .expect("a valid alias descriptor address should prepare a worker loop");
 
-        assert!(
-            getsockopt(&observer, sockopt::AcceptConn).expect("SO_ACCEPTCONN is readable"),
-            "alias parsing must call listen before discarding the adopted listener"
-        );
+        assert_listening(&bound, true);
         drop(observer);
         assert_eq!(
             rebind_result(&bound),

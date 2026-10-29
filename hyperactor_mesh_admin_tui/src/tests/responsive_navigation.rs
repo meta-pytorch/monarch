@@ -474,7 +474,13 @@ async fn rapid_navigation_fetches_only_final_selection() {
     assert_eq!(server.total_request_count(), 0);
 
     tokio::time::advance(std::time::Duration::from_millis(1)).await;
-    assert_eq!(server.next_request().await, final_reference.to_string());
+    // The debounce assertions use virtual time, but the request uses real TCP.
+    // Auto-advancing a paused clock can expire its timeout before I/O arrives.
+    tokio::time::resume();
+    let request = tokio::time::timeout(std::time::Duration::from_secs(5), server.next_request())
+        .await
+        .expect("final selection should reach the test server");
+    assert_eq!(request, final_reference.to_string());
     assert_eq!(server.request_count(&final_reference), 1);
     server.assert_no_additional_request();
     server.release(&final_reference);

@@ -8548,9 +8548,6 @@ mod tests {
         assert_matches!(*status.borrow(), ActorStatus::Stopped(_));
     }
 
-    // Tokio's I/O driver is not fork-safe on macOS, and this test intentionally
-    // validates process termination by forking without a coordinator.
-    #[cfg_attr(target_os = "macos", ignore = "tokio runtime fork assertion on macOS")]
     #[tokio::test]
     async fn test_proc_terminate_without_coordinator() {
         if std::env::var("CARGO_TEST").is_ok() {
