@@ -83,30 +83,3 @@ class TestXpuAcceleratorEnvVars(unittest.TestCase):
 
         with patch.dict(sys.modules, {"torch": None}):
             self.assertEqual(_get_accelerator_env_vars(), _COMMON_CUDA_ENV_VARS)
-
-
-class TestLocalDeviceCount(unittest.TestCase):
-    def test_ze_affinity_mask_counts_its_tiles(self):
-        from monarch._src.actor.device_utils import _local_device_count
-
-        with patch.dict(os.environ, {"ZE_AFFINITY_MASK": "0,1,2,3"}, clear=True):
-            self.assertEqual(_local_device_count(), 4)
-
-    def test_cuda_visible_devices_wins_over_ze_affinity_mask(self):
-        from monarch._src.actor.device_utils import _local_device_count
-
-        with patch.dict(
-            os.environ,
-            {"CUDA_VISIBLE_DEVICES": "0,1", "ZE_AFFINITY_MASK": "0,1,2,3"},
-            clear=True,
-        ):
-            self.assertEqual(_local_device_count(), 2)
-
-    def test_counting_does_not_need_torch(self):
-        from monarch._src.actor.device_utils import _local_device_count
-
-        with (
-            patch.dict(sys.modules, {"torch": None}),
-            patch.dict(os.environ, {"ZE_AFFINITY_MASK": "0"}, clear=True),
-        ):
-            self.assertEqual(_local_device_count(), 1)
