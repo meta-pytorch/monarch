@@ -2702,6 +2702,16 @@ def test_exec_command_returns_max_returncode():
     assert exec_command(host_mesh, ["echo", "hi"]).get() == 7
 
 
+def test_direct_exec_command_signal_is_nonzero_without_recording():
+    host_mesh, _procs, bash_actors, markers = _exec_env()
+    bash_actors.run.call.return_value = _results_future(
+        [("rank0", {"returncode": -9, "stdout": "", "stderr": "killed"})]
+    )
+    assert exec_command(host_mesh, ["sleep", "60"]).get() == 137
+    assert markers["stop_driven"]
+    host_mesh.spawn_procs.assert_called_once_with(per_host=None)
+
+
 def test_exec_command_drives_cleanup_on_success():
     """procs.stop() is driven to completion on the happy path."""
     host_mesh, procs, bash_actors, markers = _exec_env()

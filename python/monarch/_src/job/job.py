@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
-
 """Implementation of Monarch's public job lifecycle and command API."""
 
 import contextlib
@@ -1117,7 +1115,8 @@ def exec_command(
                 results = bash_actors.run.call(script, output_dir=output_dir).get()
             max_rc = 0
             for _rank_key, result in results:
-                rc = result.get("returncode", 1)
+                rc = int(result.get("returncode", 1))
+                rc = rc if rc >= 0 else min(128 - rc, 255)
                 max_rc = max(max_rc, rc)
                 if output_dir is None:
                     stdout = result.get("stdout", "")
