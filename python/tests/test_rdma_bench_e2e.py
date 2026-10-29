@@ -32,7 +32,9 @@ import bench_stats as bs
 import bench_topology as bt
 import benchmark_driver as bd
 import pytest
-from rdma_test_utils import skip_if_ibverbs_unavailable
+from rdma_test_utils import requires_native_rdma, skip_if_ibverbs_unavailable
+
+pytestmark = requires_native_rdma
 
 
 _LANES = 2

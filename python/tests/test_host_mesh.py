@@ -1821,6 +1821,18 @@ def test_client_attach_addr_this_host_and_this_proc() -> None:
         assert result == "ping"
 
 
+class _LoopbackHTTPConnection(http.client.HTTPConnection):
+    """Reach the local test server without requiring hostname DNS."""
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection(("::1", self.port), timeout=self.timeout)
+
+
+class _LoopbackHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
+        return self.do_open(_LoopbackHTTPConnection, req)
+
+
 class _LoopbackHTTPSConnection(http.client.HTTPSConnection):
     """Connect locally and verify the certificate against the URL's hostname."""
 
@@ -1845,7 +1857,7 @@ class _LoopbackHTTPSHandler(urllib.request.HTTPSHandler):
 
 
 def _admin_get(base: str, ref: str) -> Dict[str, Any]:
-    """Read admin JSON; HTTPS uses loopback and verifies the URL's hostname."""
+    """Read local admin JSON, preserving HTTPS hostname verification."""
     ca = "/var/facebook/rootcanal/ca.pem"
     ctx = ssl.create_default_context(cafile=ca if os.path.exists(ca) else None)
     if base.startswith("https"):
@@ -1853,7 +1865,9 @@ def _admin_get(base: str, ref: str) -> Dict[str, Any]:
         if os.path.exists(cert):
             ctx.load_cert_chain(cert, cert)
     opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}), _LoopbackHTTPSHandler(context=ctx)
+        urllib.request.ProxyHandler({}),
+        _LoopbackHTTPHandler(),
+        _LoopbackHTTPSHandler(context=ctx),
     )
     url = f"{base}/v1/{urllib.parse.quote(ref, safe='')}"
     with opener.open(url, timeout=10) as resp:

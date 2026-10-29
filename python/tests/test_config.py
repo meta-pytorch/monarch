@@ -13,6 +13,7 @@ from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelT
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch.actor import Actor, endpoint, this_host
 from monarch.config import configured, get_global_config
+from rdma_test_utils import requires_native_rdma
 
 
 class Chunker(Actor):
@@ -95,6 +96,7 @@ def test_get_set_multiple() -> None:
     assert config["default_transport"] == BindSpec(ChannelTransport.Unix)
 
 
+@requires_native_rdma
 @isolate_in_subprocess
 def test_rdma_ibverbs_target_round_trip_and_propagation() -> None:
     assert get_global_config()["rdma_ibverbs_target"] == ""
@@ -110,6 +112,7 @@ def test_rdma_ibverbs_target_round_trip_and_propagation() -> None:
     assert get_global_config()["rdma_ibverbs_target"] == ""
 
 
+@requires_native_rdma
 def test_rdma_peer_device_affinity_round_trip() -> None:
     assert get_global_config()["rdma_peer_device_affinity"] == ""
 
@@ -120,6 +123,7 @@ def test_rdma_peer_device_affinity_round_trip() -> None:
     assert get_global_config()["rdma_peer_device_affinity"] == ""
 
 
+@requires_native_rdma
 def test_rdma_max_nics_per_buffer_round_trip() -> None:
     assert get_global_config()["rdma_max_nics_per_buffer"] == None
 
@@ -135,6 +139,7 @@ def test_rdma_max_nics_per_buffer_round_trip() -> None:
             pass
 
 
+@requires_native_rdma
 def test_rdma_runtime_worker_threads_round_trip() -> None:
     assert get_global_config()["rdma_runtime_worker_threads"] == 4
 

@@ -10,10 +10,13 @@
 
 import socket
 import struct
+from pathlib import Path
 
 import monarch._src.job.telemetry_ingest as ti
 import pyarrow as pa
 import pytest
+
+pytest_plugins = ["socket_test_utils"]
 
 
 def _recv_exact(conn: socket.socket, size: int) -> bytes:
@@ -36,8 +39,8 @@ def test_encode_frame_layout() -> None:
     assert pa.ipc.open_stream(payload).read_all().num_rows == 1
 
 
-def test_frame_writer_reconnects(tmp_path) -> None:
-    path = str(tmp_path / "t.sock")
+def test_frame_writer_reconnects(unix_socket_path: str) -> None:
+    path = unix_socket_path
     writer = ti.FrameWriter(path)
 
     first = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -48,7 +51,7 @@ def test_frame_writer_reconnects(tmp_path) -> None:
     assert _recv_exact(conn, 3) == b"one"
     conn.close()
     first.close()
-    (tmp_path / "t.sock").unlink()
+    Path(path).unlink()
 
     # The peer and the socket path are gone; the cached connection fails.
     with pytest.raises(OSError):
