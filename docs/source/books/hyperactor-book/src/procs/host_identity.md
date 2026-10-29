@@ -1,152 +1,177 @@
-# Endpoint-owned proc resolution specification
+# Endpoint-owner discovery over address and peer routes
 
-## Goal and identity
+## Goals
 
-A frontend address names an endpoint. A concrete service `ProcId`, such as
-`service<gVQHWd9h6Km>`, names one Host process incarnation. A default Host generates
-a fresh ID on every startup, including a container restart with an unchanged
-Kubernetes Pod UID. Retained actor references keep naming their original
-incarnation. Recreating actors with the same labels never rebinds those references.
-Explicit concrete IDs remain supported; callers supplying them control their reuse.
+A frontend location identifies a reachable endpoint. A concrete service ProcId
+identifies one Host process incarnation. The default Host creates a fresh concrete
+ID on every process start, even when its address and Kubernetes Pod UID do not
+change. Existing actor references retain their original identities. Explicitly
+supplied concrete ProcIds remain supported and bypass discovery.
 
-An external client C may reach only a gateway endpoint A, while A can reach worker
-B inside a cluster. C must discover B's current service ID from B's frontend
-address through C's existing attachment to A. No launcher identity lists, identity
-cache, or side-channel update is needed after B restarts at the same endpoint.
+An external client C can reach a gateway A while only A can reach worker B. C must
+be able to discover B's service ProcId using endpoint addresses and its existing
+runtime context, then send ordinary actor messages and receive replies through
+that topology. B does not need to register a symbolic name at A or supply its
+incarnation identity through a launcher side channel.
 
-## Ownership and routing invariants
+The runtime implements the routing and discovery behavior described here.
+Locations retain concrete process identity independently of route progress.
 
-- Each supported listener has an explicitly registered concrete proc owner.
-  Listeners sharing a Gateway may have different owners, even with identical
-  labels. Registration requires a proc attached to that Gateway and rejects
-  conflicting live owners. Expired owners may be replaced. Weak registration
-  retains neither the proc nor its Gateway/server; no live owner means unavailable.
-- Registration and teardown belong to that listener's slot. Stopping an old
-  listener cannot erase another listener's owner. Stopped handles reject new
-  registration; replacement listeners do not inherit ownership.
-- `Gateway.procs` contains actual proc registrations only. Discovery never adds
-  a singleton alias, changes `ProcId` equality, searches by label, or changes
-  ordinary local delivery. Same-label procs at C, A, or B cannot shadow B.
-  Ordinary actor messages cannot use the discovery selector to reach an owner.
-- Concrete IDs never fall back to resolution. A stale B1 actor reference is
-  never rewritten to B2, including after rediscovery returns B2's new ID.
-- Owner resolution runs in runtime control before actor lookup or work queues.
-  It works before actor startup, after ordinary traffic, concurrently, and while
-  handler sequencing waits on a gap. Requests consume no handler sequence numbers.
-  Each request owns a normal `OncePortRef` reply endpoint.
+## Locations and identities
 
-## Runtime control and Via reuse
+A location can describe an ordered path containing address steps and peer steps:
 
-An ordinary `MessageEnvelope` addresses `ControlPort::ResolveProc` at a fixed
-channel-local protocol destination. Its `ResolveProc` payload distinguishes:
+- Address(A): reach the endpoint at channel address A.
+- Peer(k): use the connection registered under key k at the current gateway.
 
-| Target | Meaning at the receiving listener |
-| --- | --- |
-| `OwnEndpoint` | Return only this listener's registered live owner. |
-| `Endpoint(ChannelAddr)` | Contact that explicit endpoint and request its own owner. Never answer from the relay's owner or a label lookup. |
+Examples in traversal order:
 
-The listener ingress validates the exact protocol destination, rejects next-hop
-overrides and Via destinations, and validates the payload. Malformed requests
-fail without panic or route mutation. Ordinary Gateway submission rejects this
-control port before local proc lookup or Via forwarding. Only direct submission
-on the selected channel invokes discovery; it is not a routable singleton alias.
+- [Address(B)]: directly reach B.
+- [Address(A), Address(B)]: reach A, then let A reach B.
+- [Address(A), Peer(k)]: reach A, then use A's registered peer k.
+- [Address(A), Address(B), Peer(child)]: reach B through A, then use B's child route.
 
-Existing `Location::Via` semantics remain unchanged: Via hops name known
-Gateway/peer UIDs, which are peeled during forwarding. They supply the query's
-return route and identify the existing attachment used for its forward leg.
-An independent target B need not already be A's registered peer, so the relay
-request also carries B's explicit `ChannelAddr`. No parallel source-route syntax
-or assumption equating Gateway UIDs with service ProcIds is introduced.
+Native Python worker addresses accept these strings (`route:` is followed by a
+JSON array containing at least two strings):
 
-A relay always sends `OwnEndpoint` to B on a fresh private direct attachment.
-B alone answers for B's physically contacted listener. Terminal resolution never
-recursively relays or falls back to another endpoint. Bind/dial string equality
-is never used; wildcard binds, hostname resolution, loopback dialing, and address
-aliases retain existing transport behavior and normalization.
-
-Replies use ordinary serialization and Gateway delivery. Results are a concrete
-`Resolved(ProcId)`, `Unavailable`, or an explicit relay/target failure. Clients
-reject singleton-valued resolved replies. No duplex wire variant or connection
-phase is added: `AttachWire` remains `Ack` then `Envelope`, with existing tags.
-
-## Context-aware query API
-
-`Gateway::resolve_endpoint_proc(address)` uses the caller's newest active Via
-attachment when one exists. It atomically snapshots that attachment's sender and
-accepted return `Location`; a newer local listener's `default_location` does not
-select the query route. The query posts directly on the selected attached sender.
-
-A temporary query Proc/client binds an ordinary reply port on the caller Gateway.
-The reply is advertised with the snapshot's accepted Via location, so a later
-attachment or default-route change cannot redirect it. Discovery does not mutate
-the caller's default location, forwarder, or existing attachments. Failure on the
-selected route is returned; it never triggers a caller-side direct dial to B.
-
-`query_service_proc_with_gateway` exposes this behavior to Host clients. Native
-`attach_to_workers` passes its instance's Gateway when resolving bare frontend
-URLs. Explicit concrete `ProcAddr` inputs bypass discovery, including existing
-Via addresses and non-duplex transports.
-
-When no attachment exists, the contextual API uses the direct helper:
-
-```rust,ignore
-use hyperactor_mesh::host::{query_service_proc, query_service_proc_with_gateway};
-
-let direct = query_service_proc(frontend.clone()).await?;
-let through_current_attachment = query_service_proc_with_gateway(&gateway, frontend).await?;
+```text
+tcp://worker:4444
+route:["tcp://gateway:4444","tcp://worker:4444"]
+route:["tcp://gateway:4444","child.tcp://worker:4444"]
+child.route:["tcp://gateway:4444","tcp://worker:4444"]
 ```
 
-The explicitly direct `query_service_proc` / `Gateway::query_endpoint_proc` helper
-creates a fresh private Gateway, establishes the existing attach handshake, then
-creates its query Proc/client and reply ports. Only after the acknowledgement can
-legitimate query replies exist. It sends `OwnEndpoint`, receives the normal reply,
-and stops and joins its private attachment. `GatewayServeHandle::resolve_proc`
-also supports `OwnEndpoint` on a suitable existing direct attachment.
+The third example means gateway, worker, then worker's peer `child`; the fourth
+means gateway, gateway's peer `child`, then worker. A legacy `Via` prefix applies
+after the address immediately beneath it. Nested instance UIDs remain accepted.
+Consecutive address steps display as a flat JSON array. JSON quoting escapes
+embedded quotes and backslashes; ordinary URLs stay opaque, so an existing
+`ipc://` socket path containing `>` retains its meaning. Concrete identities can
+prefix any location with `service<UID>@` and bypass discovery.
 
-Private discovery temporarily registers a peer at the contacted endpoint. Direct
-resolution costs connection setup, an attach round trip, and a resolution round
-trip. Relayed discovery reuses C–A, adds its request/reply, and performs that
-private A–B exchange. Caller routes remain unchanged. Fresh private Gateways have
-no old outbound traffic or pre-ack query replies to drain; discovery does not
-change generic attachment cutover behavior.
+Peer keys select connections; they need not equal the final destination ProcId.
+Existing Via addresses remain accepted with their existing meaning. A new address
+hop must not make an old Via change meaning. Concrete actor/port identity remains
+separate from the location and from progress along the route.
 
-## Deadlines, cancellation, and admission
+Discovery takes a context and an unresolved location and returns a concrete
+ProcAddr. A location without a ProcId is a discovery input, not an ordinary actor
+reference that automatically re-resolves on every send. Unknown concrete IDs
+never fall back to owner resolution. Intermediate hop identities are not implicitly
+queried. A peer-only endpoint still requires a known registered key.
 
-One 30-second caller deadline bounds resolution. Each relay's terminal query is
-also bounded by 30 seconds. A listener admits at most 128 concurrent relay tasks,
-using non-waiting permit acquisition; overload receives an explicit error. No
-unbounded queue of tasks waits for a permit. No owner/routing lock spans an await.
+## Sender-side peeling
 
-Relay admission and task registration synchronize with listener shutdown, so no
-work can be spawned after shutdown has observed all tasks complete. Tracked tasks
-observe listener cancellation; listener teardown joins them. Target query errors
-are returned normally and asynchronous panics are logged. Duplex source-connection
-closure also cancels its in-flight relay work. Canceling an individual request on
-a shared still-live connection has no wire cancellation protocol: remote work
-remains bounded by its terminal deadline. Simplex receiver lifetime can span
-multiple sources, so individual source loss there has the same bounded behavior.
+For an explicit route [Address(A), Address(B)]:
 
-Private-session drop guards close in-progress attachments on failure, timeout,
-or cancellation. Closing them removes temporary peers and sessions. Healthy
-accepted connections waiting for their first message gain no timeout. Ordinary
-attachments, idle messaging, and source-route hop semantics remain intact;
-connection task join failures are logged during serving and shutdown.
+1. C selects the connection to A, removes only Address(A), and sends [Address(B)].
+2. A selects the connection to B, removes only Address(B), and sends a terminal route.
+3. B receives terminal arrival and handles the message locally or reports failure.
 
-## Validation requirements
+A sender removes a hop only when dispatching onto its selected connection. It must
+not repost the shortened route to its own general routing entry point. Multiple
+MailboxSender adapters on a path do not represent multiple address hops.
 
-Tests cover listener ownership, live/dead/conflicting owners, malformed control,
-explicit target isolation among same-label procs, concurrent B/D queries, and
-fresh IDs after same-endpoint restart. They verify an overridden local default and
-a second attachment started during a pending query do not change its reply route.
-Failure coverage includes unavailable owners, invalid singleton replies, rejected
-attachment, target failure, overload, timeout, cancellation, source disconnect,
-listener shutdown, and temporary peer/session cleanup. Existing ordinary Gateway,
-Via, duplex idle/disconnected, bootstrap parsing, and explicit-ID tests remain valid.
+Explicit terminal arrival differs from having no explicit route state. Terminal
+failure never consults an ambient forwarder, redials the endpoint, or restarts the
+canonical destination's route. A missing peer or failed address step is a failure,
+not a reason to try another gateway. The canonical destination, sender, and actor
+sequence information remain unchanged as route progress advances.
 
-A Linux multi-process Python integration establishes C–A, then denies all new
-`connect(2)` calls on C's existing native threads using a test-only seccomp TSYNC
-filter. It verifies C's direct B connection receives `EACCES`, while bare-address
-`attach_to_workers(B)` succeeds through A. B restarts with the same endpoint and
-Pod UID environment; rediscovery succeeds without new metadata, new actors work,
-and B1 references fail. Worker/supervisor processes remain outside C's filter.
-No live Kubernetes cluster is required or contacted by these tests.
+Transport retry resends the prepared envelope to the same selected endpoint; it
+does not interpret the remaining route at the original sender. TTL and delivery
+failure handling remain bounded. Address aliases, DNS names, wildcard binds, and
+normal transport normalization work without comparing a receive-side bind string
+to a dial string to decide whether a hop was consumed.
+
+The envelope stores one progress state: unset, a legacy next-hop reference, or
+an explicit deque of address/peer actions. An empty explicit deque means terminal
+arrival. Normalization preserves legacy Via traversal order before sending.
+`MailboxSender` adapters never consume actions. Actor and ephemeral-port sequence
+keys use ActorId and PortId respectively, so reaching the same identity through
+different locations cannot create duplicate sequence streams.
+
+The `Addr` and `Via` Location enum variants retain their serialized names and
+order; `Address` is appended. Envelope progress and ResolveProc wire payloads
+changed, so this change does **not** promise rolling interoperability with the
+previous envelope/control format. All participants must run matching builds.
+
+## Existing attachments and return paths
+
+Explicit routes can reuse suitable established attachments. A C-to-A session must
+remain usable after C loses permission to open new network connections. Selecting
+that session consumes the A step, never an unvisited B step.
+
+Native attachment accepts a bare B frontend location in an already attached
+runtime by constructing a route through the selected attachment. It uses ordinary
+routing, not an A-side task that performs a second discovery exchange. Explicit
+multi-address inputs are also accepted. The resolved ProcAddr retains a usable
+location for subsequent actor messages. Python's public attachment signature does
+not change; it already supplies the runtime context.
+
+The query's one-shot reply port belongs to the existing actor context and has a
+reachable location. The Rust caller must already have a listener or attachment
+that supplies that return path; discovery does not establish one. Route selection
+and return-route binding must not silently change because another attachment or
+local listener starts during a query.
+Discovery does not change the caller's default routing or create a temporary Proc,
+Gateway, or private attach session. Existing Via replies and child-proc routes are
+preserved; successful discovery alone is not sufficient if actor traffic fails.
+
+## Endpoint ownership and control
+
+ResolveProc is an ordinary unsequenced runtime control message. It traverses the
+same routing mechanism as actor messages and is consumed only on terminal arrival
+at the selected endpoint. Transit gateways never answer using their own owners,
+and same-label local procs never intercept the request. The discovery selector is
+not a registered singleton alias and cannot address ordinary actor messages.
+
+Each supported listener or outbound duplex attachment receive endpoint has an
+explicitly registered weak concrete owner. Live conflicting registration is
+rejected. Expired owners can be explicitly replaced; old listener teardown cannot
+clear a new listener's registration. A terminal endpoint with
+no live owner reports unavailable. Owner lookup does not wait for actor handler
+startup, sequence gaps, or handler work queues.
+
+Each request has an independent one-shot reply port and a bounded deadline.
+Concurrent and repeated queries are valid before or after ordinary traffic.
+Dropping a request releases its local reply port. Forwarding does not spawn
+per-query relay tasks, allocate temporary runtimes, or introduce duplex setup
+messages. Ordinary transport queues and connection lifetimes carry the messages.
+
+## Flush, attachment, and failure behavior
+
+Address steps use the configured base DialMailboxRouter's existing cache and
+stale-session replay. Gateway flush drains that base router and all active
+outbound attachments, while excluding peer gateways to avoid recursive flush.
+An isolated Gateway or a custom non-dial forwarder cannot gain a direct network
+escape through explicit routing; a matching existing attachment can still be
+selected. No routing locks span asynchronous waits. Attachment cutover and
+migration are outside this contract; explicit routes must still participate in
+the Gateway's flush semantics so their outbound queues can be drained.
+
+A restarted B can be rediscovered at the same location, returning B2 rather than
+B1. Retained B1 actor references fail; successful resolution does not rewrite them.
+A broken intermediate route returns a bounded error. A missing concrete ProcId
+at terminal arrival and a missing final peer are invalid-reference failures,
+which preserve ordinary actor fault reporting for stale references. Missing
+intermediate routes remain transport NoRoute failures. Reply and undeliverable
+traffic keep their own destinations and do not accidentally reuse a forward
+request's remaining route.
+
+## Required validation
+
+Tests must cover direct, two-address, three-address, and mixed address/peer routes;
+legacy Via behavior; parsing/display and wire round trips; correct terminal owner
+selection among same-label procs; no redial/default fallback at terminal failure;
+retry preserving the selected hop; concurrent queries; unavailable/conflicting/dead
+owners; ordinary traffic and sequencing after resolution; attachment reuse and
+return-route stability; and draining buffered explicit-route sends.
+
+A Linux multi-process Python test establishes C-to-A and then blocks new connect
+calls on C's native threads. C discovers B and exchanges actor messages through A.
+B restarts at the same address and with unchanged Pod UID metadata; rediscovery
+returns a fresh identity, new actors work, and old references fail. Exercise both
+explicit routes and contextual bare worker inputs. Explicit supplied ProcIds and
+future-valued worker addresses continue working. No live Kubernetes cluster is
+required.

@@ -186,11 +186,6 @@ impl<Out: RemoteMessage, In: RemoteMessage> DuplexClient<Out, In> {
         &self.addr
     }
 
-    /// Cancellation owner for a scoped session, such as a service identity query.
-    pub(crate) fn cancellation_token(&self) -> CancellationToken {
-        self.cancel_token.clone()
-    }
-
     /// Gracefully shut down the duplex client session. Cancels the
     /// recv/send loop's cancellation token (which the spawned task
     /// observes in its `select!`s) and awaits the spawned task. On

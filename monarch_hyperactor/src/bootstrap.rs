@@ -19,11 +19,12 @@ use hyperactor::Location;
 use hyperactor::ProcAddr;
 use hyperactor::ProcId;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::context;
 use hyperactor::id::Label;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap::bootstrap;
 use hyperactor_mesh::bootstrap::host;
-use hyperactor_mesh::host::query_service_proc_with_gateway;
+use hyperactor_mesh::host::query_service_proc;
 use hyperactor_mesh::host_mesh::HostMesh;
 use hyperactor_mesh::mesh_id::HostMeshId;
 use monarch_types::MapPyErr;
@@ -46,7 +47,7 @@ use crate::host_mesh::PyHostMesh;
 use crate::runtime::GilSite;
 use crate::runtime::monarch_with_gil;
 
-const SERVICE_ADDRESS_FORMAT: &str = "expected a channel URL such as 'tcp://host:4444' or a service ProcAddr such as 'service<gVQHWd9h6Km>@tcp://host:4444'";
+const SERVICE_ADDRESS_FORMAT: &str = r#"expected a location such as 'tcp://host:4444' or 'route:["tcp://gateway:4444","tcp://worker:4444"]', or a concrete service ProcAddr such as 'service<gVQHWd9h6Km>@tcp://host:4444'"#;
 
 /// Upper bound on concurrent service proc queries during attach.
 const WORKER_QUERY_CONCURRENCY: usize = 128;
@@ -74,6 +75,9 @@ fn into_dial_location(location: Location) -> Location {
     match location {
         Location::Addr(addr) => addr.into_dial_addr().into(),
         Location::Via(uid, inner) => into_dial_location(*inner).with_via(uid),
+        Location::Address(addr, inner) => {
+            Location::Address(addr.into_dial_addr(), Box::new(into_dial_location(*inner)))
+        }
     }
 }
 
@@ -82,25 +86,26 @@ fn into_dial_location(location: Location) -> Location {
 enum ServiceAddress {
     /// A service ProcAddr naming the worker's identity.
     Proc(ProcAddr),
-    /// A bare frontend address; the worker's identity is discovered by
-    /// querying it.
-    Frontend(ChannelAddr),
+    /// A frontend location; the worker's identity is discovered by querying
+    /// its terminal endpoint through any explicit address and peer hops.
+    Frontend(Location),
 }
 
 impl ServiceAddress {
-    async fn resolve(self, gateway: &Gateway) -> anyhow::Result<ProcAddr> {
+    async fn resolve(self, cx: &impl context::Actor) -> anyhow::Result<ProcAddr> {
         match self {
             Self::Proc(proc_addr) => Ok(proc_addr),
-            Self::Frontend(addr) => query_service_proc_with_gateway(gateway, addr).await,
+            Self::Frontend(location) => query_service_proc(cx, location).await,
         }
     }
 }
 
 fn parse_service_address(address: &str) -> anyhow::Result<ServiceAddress> {
     let Ok(proc_addr) = address.parse::<ProcAddr>() else {
-        let addr = ChannelAddr::from_zmq_url(address)
+        let location = address
+            .parse::<Location>()
             .map_err(|error| service_address_parse_error(address, error))?;
-        return Ok(ServiceAddress::Frontend(addr.into_dial_addr()));
+        return Ok(ServiceAddress::Frontend(into_dial_location(location)));
     };
 
     anyhow::ensure!(
@@ -265,6 +270,12 @@ pub enum WorkerAddress {
 /// caller's configuration to those agents, and waits for their acknowledgements.
 /// It does not start the servers or spawn user processes.
 ///
+/// A bare worker location resolves the live service identity. Address hops use
+/// `route:["tcp://gateway:4444","tcp://worker:4444"]`; a concrete
+/// `service<uid>@location`
+/// skips discovery. A bare address uses an existing upstream attachment when
+/// available, and the resolved location also carries subsequent actor traffic.
+///
 /// Python's `attach_to_workers()` stores this Handle in the public `HostMesh`
 /// object it returns.
 ///
@@ -319,9 +330,8 @@ pub fn attach_to_workers(
             .iter()
             .map(|address| parse_service_address(address))
             .collect::<Result<Vec<_>, _>>()?;
-        let gateway = instance.proc().gateway();
         let service_procs: Vec<ProcAddr> = stream::iter(service_addresses)
-            .map(|address| address.resolve(&gateway))
+            .map(|address| address.resolve(&*instance))
             .buffered(WORKER_QUERY_CONCURRENCY)
             .try_collect()
             .await?;
@@ -407,11 +417,16 @@ mod tests {
         let id = ProcId::instance(Label::strip("service"));
         let non_duplex = ChannelAddr::from_zmq_url("quic://127.0.0.1:12345").unwrap();
         assert!(!non_duplex.transport().supports_duplex());
+        let proc = hyperactor::Proc::builder()
+            .shared_gateway(Gateway::isolated())
+            .build()
+            .unwrap();
+        let client = proc.client("known_service");
         for addr in [ChannelAddr::Local(12345), non_duplex] {
             let known = ProcAddr::new(id.clone(), addr.into());
             let resolved = parse_service_address(&known.to_string())
                 .unwrap()
-                .resolve(&Gateway::isolated())
+                .resolve(&client)
                 .await
                 .unwrap();
             assert_eq!(resolved, known);
@@ -422,8 +437,45 @@ mod tests {
     fn test_bare_worker_address_is_discovered() {
         assert_eq!(
             parse_service_address("tcp://127.0.0.1:1234").unwrap(),
-            ServiceAddress::Frontend(ChannelAddr::from_zmq_url("tcp://127.0.0.1:1234").unwrap()),
+            ServiceAddress::Frontend(
+                ChannelAddr::from_zmq_url("tcp://127.0.0.1:1234")
+                    .unwrap()
+                    .into()
+            ),
             "a bare channel URL should be resolved by querying the worker"
+        );
+    }
+
+    #[test]
+    fn test_worker_address_preserves_explicit_address_and_peer_hops() {
+        let gateway = ChannelAddr::from_zmq_url("tcp://127.0.0.1:1234").unwrap();
+        let worker = ChannelAddr::from_zmq_url("tcp://127.0.0.1:5678").unwrap();
+        let peer = hyperactor::Uid::Instance(0x71a, Some(Label::strip("child")));
+        let location = Location::Address(gateway, Box::new(Location::from(worker).with_via(peer)));
+        assert_eq!(
+            parse_service_address(&location.to_string()).unwrap(),
+            ServiceAddress::Frontend(location.clone()),
+        );
+        let known = ProcAddr::new(ProcId::instance(Label::strip("service")), location);
+        assert_eq!(parse_proc_worker_address(&known.to_string()), known);
+    }
+
+    #[test]
+    fn test_worker_address_canonicalizes_each_explicit_address_hop() {
+        let parsed = parse_service_address(
+            r#"route:["tcp://127.0.0.1:1234@tcp://0.0.0.0:1234","tcp://127.0.0.1:5678@tcp://0.0.0.0:5678"]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed,
+            ServiceAddress::Frontend(Location::Address(
+                ChannelAddr::from_zmq_url("tcp://127.0.0.1:1234").unwrap(),
+                Box::new(
+                    ChannelAddr::from_zmq_url("tcp://127.0.0.1:5678")
+                        .unwrap()
+                        .into()
+                ),
+            )),
         );
     }
 
@@ -454,7 +506,7 @@ mod tests {
         let dial_addr = ChannelAddr::from_zmq_url("tcp://127.0.0.1:1234").unwrap();
         assert_eq!(
             parse_service_address(alias).unwrap(),
-            ServiceAddress::Frontend(dial_addr.clone()),
+            ServiceAddress::Frontend(dial_addr.clone().into()),
             "a bare alias should be discovered at its dial address"
         );
 

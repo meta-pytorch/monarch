@@ -24,7 +24,9 @@ use typeuri::Named;
 use uuid::Uuid;
 
 use crate::ActorAddr;
+use crate::ActorId;
 use crate::PortAddr;
+use crate::PortId;
 
 // Control ports are delivered through runtime-owned channels rather than the
 // actor's work queue, so they must not share the per-actor handler-port
@@ -176,27 +178,29 @@ impl std::str::FromStr for OrderingSnapshot {
 
 /// Key for sequence assignment.
 /// Handler ports share a sequence per actor; ephemeral ports get individual
-/// sequences. Control ports are direct.
+/// sequences. Keys use concrete identity, excluding the route location, so
+/// alternate paths to the same receiver cannot restart its sequence. Control
+/// ports are direct.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct SeqKey(SeqKeyKind);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 enum SeqKeyKind {
-    Actor(ActorAddr),
-    Port(PortAddr),
+    Actor(ActorId),
+    Port(PortId),
 }
 
 impl SeqKey {
     /// Return the sequence key shared by an actor's handler ports.
     pub fn for_handler(actor: &ActorAddr) -> Self {
-        Self(SeqKeyKind::Actor(actor.clone()))
+        Self(SeqKeyKind::Actor(actor.id().clone()))
     }
 
     /// Return the sequence key for an ephemeral port.
     pub fn for_ephemeral_port(port: &PortAddr) -> Option<Self> {
         port.port()
             .is_ephemeral()
-            .then(|| Self(SeqKeyKind::Port(port.clone())))
+            .then(|| Self(SeqKeyKind::Port(port.id().clone())))
     }
 }
 
@@ -276,8 +280,8 @@ impl Sequencer {
     /// Assign the next seq for a port, mutate the sequencer with the new seq,
     /// and return the new seq.
     ///
-    /// - Handler ports: share the same sequence scheme per actor (keyed by ActorAddr).
-    /// - Ephemeral ports: get individual sequence schemes (keyed by PortAddr).
+    /// - Handler ports: share the same sequence scheme per actor (keyed by ActorId).
+    /// - Ephemeral ports: get individual sequence schemes (keyed by PortId).
     /// - Control ports: bypass receive-side reordering and use [`SeqInfo::Direct`].
     pub fn assign_seq(&self, port_id: &PortAddr) -> SeqInfo {
         let Some(key) = Self::seq_key(port_id) else {
@@ -610,7 +614,7 @@ mod tests {
         let handler_port_1 = actor_ref.port_addr(Port::handler::<TestMsg1>());
         let handler_port_2 = actor_ref.port_addr(Port::handler::<TestMsg2>());
 
-        // Handler ports should share a sequence (keyed by ActorAddr)
+        // Handler ports should share a sequence (keyed by ActorId)
         assert_eq!(get_seq(sequencer.assign_seq(&handler_port_1)), 1);
         assert_eq!(get_seq(sequencer.assign_seq(&handler_port_2)), 2); // continues from 1
         assert_eq!(get_seq(sequencer.assign_seq(&handler_port_1)), 3);
@@ -619,6 +623,90 @@ mod tests {
         let actor_ref_2: ActorAddr = test_actor_id("worker_1", "worker");
         let handler_port_3 = actor_ref_2.port_addr(Port::handler::<TestMsg1>());
         assert_eq!(get_seq(sequencer.assign_seq(&handler_port_3)), 1); // independent from actor_ref
+    }
+
+    fn alternate_routes_to_actor() -> [ActorAddr; 3] {
+        let direct = test_actor_id("alternate_routes", "receiver");
+        let via = ActorAddr::new(
+            direct.id().clone(),
+            direct
+                .location()
+                .clone()
+                .with_via(crate::id::Uid::anonymous()),
+        );
+        let explicit = ActorAddr::new(
+            direct.id().clone(),
+            crate::Location::Address(
+                crate::channel::ChannelAddr::Local(123456),
+                Box::new(direct.location().clone()),
+            ),
+        );
+        assert_ne!(direct, via);
+        assert_ne!(direct, explicit);
+        [direct, via, explicit]
+    }
+
+    #[test]
+    fn test_sequencer_alternate_routes_share_identity_sequences() {
+        let sequencer = Sequencer::new(Uuid::now_v7());
+        let actors = alternate_routes_to_actor();
+        for (index, actor) in actors.iter().enumerate() {
+            let handler = actor.port_addr(Port::handler::<TestMsg1>());
+            let ephemeral = actor.port_addr(Port::from(1));
+            assert_eq!(get_seq(sequencer.assign_seq(&handler)), index as u64 + 1);
+            assert_eq!(get_seq(sequencer.assign_seq(&ephemeral)), index as u64 + 1);
+        }
+        for actor in &actors {
+            assert_eq!(sequencer.last_sent_to_actor(actor), 3);
+            assert_eq!(
+                sequencer.last_sent(&actor.port_addr(Port::from(1))),
+                Some(3)
+            );
+        }
+        // A distinct ephemeral identity still owns its own sequence.
+        assert_eq!(
+            get_seq(sequencer.assign_seq(&actors[0].port_addr(Port::from(2)))),
+            1,
+        );
+    }
+
+    #[test]
+    fn assign_seqs_groups_alternate_routes_by_receiver_identity() {
+        let sequencer = Sequencer::new(Uuid::now_v7());
+        let actors = alternate_routes_to_actor();
+        // Cast batches use the same public SeqKey constructors as scalar sends.
+        let keys: Vec<_> =
+            actors
+                .iter()
+                .map(SeqKey::for_handler)
+                .chain(actors.iter().map(|actor| {
+                    SeqKey::for_ephemeral_port(&actor.port_addr(Port::from(1))).unwrap()
+                }))
+                .collect();
+        assert_eq!(keys[0], keys[1]);
+        assert_eq!(keys[1], keys[2]);
+        assert_eq!(keys[3], keys[4]);
+        assert_eq!(keys[4], keys[5]);
+        assert_ne!(keys[0], keys[3]);
+        assert_eq!(
+            sequencer.assign_seqs(&keys),
+            vec![
+                (0..1, 1),
+                (1..2, 2),
+                (2..3, 3),
+                (3..4, 1),
+                (4..5, 2),
+                (5..6, 3)
+            ],
+        );
+        assert_eq!(
+            get_seq(sequencer.assign_seq(&actors[0].port_addr(Port::handler::<TestMsg2>()))),
+            4,
+        );
+        assert_eq!(
+            get_seq(sequencer.assign_seq(&actors[1].port_addr(Port::from(1)))),
+            4,
+        );
     }
 
     #[test]
@@ -635,7 +723,7 @@ mod tests {
         let port_1 = actor_ref_0.port_addr(Port::from(1));
         let port_2 = actor_ref_0.port_addr(Port::from(2));
 
-        // Non-handler ports should have independent sequences (keyed by PortAddr)
+        // Non-handler ports should have independent sequences (keyed by PortId)
         assert_eq!(get_seq(sequencer.assign_seq(&port_1)), 1);
         assert_eq!(get_seq(sequencer.assign_seq(&port_2)), 1); // independent, starts at 1
         assert_eq!(get_seq(sequencer.assign_seq(&port_1)), 2);

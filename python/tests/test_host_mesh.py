@@ -959,8 +959,11 @@ def _deny_new_connects_for_relay_client() -> None:
 
 @pytest.mark.skipif(sys.platform != "linux", reason="requires Linux seccomp TSYNC")
 @pytest.mark.timeout(120)
+@pytest.mark.parametrize("explicit_route", [False, True], ids=["bare", "address-route"])
 @isolate_in_subprocess
-def test_bare_worker_rediscovery_through_gateway_without_client_dials() -> None:
+def test_worker_rediscovery_through_gateway_without_client_dials(
+    explicit_route: bool,
+) -> None:
     """C can use its established attachment to A; only A may dial B.
 
     Restart B with the same address and Pod UID environment. Neither worker
@@ -976,6 +979,11 @@ def test_bare_worker_rediscovery_through_gateway_without_client_dials() -> None:
             reserved.bind(("127.0.0.1", 0))
             ports.append(reserved.getsockname()[1])
     relay_address, worker_address = [f"tcp://127.0.0.1:{port}" for port in ports]
+    worker_location = (
+        "route:" + json.dumps([relay_address, worker_address])
+        if explicit_route
+        else worker_address
+    )
     # This pre-filter supervisor owns worker restarts, so B2 does not inherit
     # C's connection-denying filter. All launches use the exact same bare URL.
     supervisor_script = textwrap.dedent("""\
@@ -1046,7 +1054,7 @@ def test_bare_worker_rediscovery_through_gateway_without_client_dials() -> None:
         # A and C have their own service procs. B's environment proves the
         # response came from B rather than either ambient same-label proc.
         first = attach_to_workers(
-            ca="trust_all_connections", workers=[worker_address], name="relay-b1"
+            ca="trust_all_connections", workers=[worker_location], name="relay-b1"
         )
         old_actor = first.spawn_procs(per_host={"gpus": 1}).spawn("echo", EchoActor)
         assert list(
@@ -1058,7 +1066,7 @@ def test_bare_worker_rediscovery_through_gateway_without_client_dials() -> None:
         supervisor.stdin.flush()
         assert supervisor.stdout.readline().strip() == "restarted"
         second = attach_to_workers(
-            ca="trust_all_connections", workers=[worker_address], name="relay-b2"
+            ca="trust_all_connections", workers=[worker_location], name="relay-b2"
         )
         replacement = second.spawn_procs(per_host={"gpus": 1}).spawn("echo", EchoActor)
         assert list(

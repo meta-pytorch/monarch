@@ -26,7 +26,6 @@ use crate::parse::id::parse_id_with_parser;
 use crate::parse::id::parse_port_id_with_parser;
 use crate::parse::id::parse_proc_id_with_parser;
 use crate::parse::id::parse_uid;
-use crate::parse::lex::Span;
 use crate::parse::lex::Token;
 use crate::parse::lex::TokenKind;
 
@@ -86,18 +85,50 @@ fn parse_location_body(parser: &mut Parser<'_>, anchor: Token<'_>) -> Result<Loc
     // so we sniff the URL scheme directly in the raw input and parse
     // it with `ChannelAddr`.
     let rest_start = parser.rest_span().start;
-    let url_offset = find_url_scheme_start(rest).ok_or_else(|| {
-        ParseError::invalid_location(
-            parser.rest_span(),
-            "expected ZMQ URL with `://`".to_string(),
-        )
-    })?;
+    // An explicit route is a prefixed JSON list. Ordinary channel URLs stay
+    // opaque, including `>` and punctuation in Unix socket paths.
+    let route_offset = rest.find("route:[").filter(|offset| {
+        (*offset == 0 || rest.as_bytes()[offset - 1] == b'.')
+            && find_url_scheme_start(rest).is_none_or(|url| *offset < url)
+    });
+    let (url_offset, mut location) = if let Some(offset) = route_offset {
+        let parts: Vec<String> = serde_json::from_str(&rest[offset + "route:".len()..])
+            .map_err(|error| ParseError::invalid_location(parser.rest_span(), error.to_string()))?;
+        let mut parts = parts.into_iter().rev();
+        let last = parts.next().ok_or_else(|| {
+            ParseError::invalid_location(
+                parser.rest_span(),
+                "route requires at least two locations".to_owned(),
+            )
+        })?;
+        let mut location = parse_location_str(&last)?;
+        let mut count = 1;
+        for part in parts {
+            let addr = ChannelAddr::from_zmq_url(&part).map_err(|error| {
+                ParseError::invalid_location(parser.rest_span(), error.to_string())
+            })?;
+            location = Location::Address(addr, Box::new(location));
+            count += 1;
+        }
+        if count < 2 {
+            return Err(ParseError::invalid_location(
+                parser.rest_span(),
+                "route requires at least two locations".to_owned(),
+            ));
+        }
+        (offset, location)
+    } else {
+        let offset = find_url_scheme_start(rest).ok_or_else(|| {
+            ParseError::invalid_location(
+                parser.rest_span(),
+                "expected ZMQ URL with `://`".to_owned(),
+            )
+        })?;
+        let addr = ChannelAddr::from_zmq_url(&rest[offset..])
+            .map_err(|error| ParseError::invalid_location(parser.rest_span(), error.to_string()))?;
+        (offset, Location::Addr(addr))
+    };
     let url_start = rest_start + url_offset;
-
-    let url_text = &rest[url_offset..];
-    let url_span = Span::new(url_start, rest_start + rest.len());
-    let addr = ChannelAddr::from_zmq_url(url_text)
-        .map_err(|err: anyhow::Error| ParseError::invalid_location(url_span, err.to_string()))?;
 
     // Parse the via prefix `(uid ".")*` with the shared combinator,
     // bounding the lexer at the sniffed URL (synthesizing an EOF
@@ -110,7 +141,6 @@ fn parse_location_body(parser: &mut Parser<'_>, anchor: Token<'_>) -> Result<Loc
         parser.expect_kind(TokenKind::Dot)?;
     }
 
-    let mut location = Location::Addr(addr);
     for uid in uids.into_iter().rev() {
         location = Location::Via(uid, Box::new(location));
     }
