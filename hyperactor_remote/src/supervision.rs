@@ -193,7 +193,8 @@ impl Supervisor {
     /// accepts the supervise request and reports [`SupervisorEvent::Linked`], this
     /// supervisor has no worker control endpoint; stop requests are therefore
     /// held pending. `fallback_actor` is used only to synthesize a supervision
-    /// event if liveness fails before the worker reports the supervised child.
+    /// event if liveness fails or the worker rejects the request before it
+    /// reports the supervised child.
     /// When `ready` is set, it is posted once the worker reports `Linked` — the
     /// earliest point at which messages to the child are guaranteed to route.
     pub(crate) fn bootstrap_uid<F>(
@@ -342,7 +343,15 @@ impl Handler<SupervisorEvent> for Supervisor {
             }
             SupervisorEvent::SuperviseRejected { session_id, reason } => {
                 self.ensure_session(&session_id)?;
-                anyhow::bail!("remote supervision request rejected: {}", reason)
+                let reason = format!("remote supervision request rejected: {}", reason);
+                if let SupervisorBootstrap::Callback { fallback_actor, .. } = &self.bootstrap {
+                    self.observation =
+                        Some(SupervisionObservation::RequestFailed(SupervisionTarget {
+                            actor_id: fallback_actor.clone(),
+                            display_name: None,
+                        }));
+                }
+                anyhow::bail!(reason)
             }
             SupervisorEvent::SupervisionEvent {
                 session_id,
@@ -1908,6 +1917,60 @@ mod tests {
 
         parent2.stop("test").unwrap();
         tokio::time::timeout(Duration::from_secs(5), parent2)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_rejection_reports_fallback_actor() {
+        let proc = Proc::isolated();
+        let inst = proc.client("inst");
+        let child = proc.proc_addr().actor_addr("never_spawned");
+        let (events, mut events_rx) = inst.open_port::<ActorSupervisionEvent>();
+        let parent = proc.spawn_with_label(
+            "parent",
+            Parent {
+                supervisor: Some(Supervisor::bootstrap_uid(
+                    KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+                    SupervisionOptions::default(),
+                    Uid::anonymous(),
+                    child.clone(),
+                    None,
+                    |cx, supervise| {
+                        supervise.supervisor.post(
+                            cx,
+                            SupervisorEvent::SuperviseRejected {
+                                session_id: supervise.session_id,
+                                reason: "spawn failed".to_string(),
+                            },
+                        );
+                        Ok(())
+                    },
+                )),
+                events,
+            },
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(event.actor_id, child);
+        let Some(SupervisionObservation::RequestFailed(target)) = &event.observation else {
+            panic!("expected the rejected request's target: {event:?}");
+        };
+        assert_eq!(target.actor_id, child);
+        assert!(matches!(event.actor_status, ActorStatus::Failed(_)));
+        assert!(
+            event
+                .to_string()
+                .contains("remote supervision request rejected: spawn failed"),
+            "unexpected event: {}",
+            event
+        );
+
+        parent.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent)
             .await
             .unwrap();
     }
