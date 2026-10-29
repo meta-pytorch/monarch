@@ -22,6 +22,7 @@
 //! default forwarder.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -352,6 +353,7 @@ struct RoutingState {
 
     /// Active normal serves and `serve_via` sessions in start order.
     active_serves: Vec<ActiveServe>,
+    retired_forwarders: Vec<(ServeId, BoxedMailboxSender)>,
 }
 
 /// Routing state for a gateway. Holds original inputs plus derived fields
@@ -359,6 +361,13 @@ struct RoutingState {
 /// lock so advertised reachability and outbound routing stay synchronized.
 struct Routing {
     state: RoutingState,
+    gated: bool,
+    releasing: bool,
+    release_generation: u64,
+    submitted: u64,
+    dispatched: u64,
+    posting: usize,
+    pending: VecDeque<(MessageEnvelope, PortHandle<Undeliverable<MessageEnvelope>>)>,
 
     /// The advertised location for newly bound refs. The newest active
     /// normal serve or [`Gateway::serve_via`] session takes precedence.
@@ -378,7 +387,15 @@ impl Routing {
                 fallback_location: fallback_location.clone(),
                 base_forwarder: base_forwarder.clone(),
                 active_serves: Vec::new(),
+                retired_forwarders: Vec::new(),
             },
+            gated: false,
+            releasing: false,
+            release_generation: 0,
+            submitted: 0,
+            dispatched: 0,
+            posting: 0,
+            pending: VecDeque::new(),
             default_location: fallback_location,
             forwarder: base_forwarder,
         }
@@ -436,6 +453,8 @@ struct GatewayState {
     /// stopping a serve updates both in one critical section, so
     /// concurrent readers never observe a half-updated pair.
     routing: RwLock<Routing>,
+    attach_serial: tokio::sync::Mutex<()>,
+    posts_done: tokio::sync::Notify,
 
     /// Local procs registered with this gateway, keyed by proc id.
     /// Values hold weak proc references for in-process delivery.
@@ -450,6 +469,191 @@ struct GatewayState {
     /// routes (`Location::Via(uid, ...)`) consult this table to peel
     /// the outermost hop and forward.
     peers: RwLock<HashMap<Uid, BoxedMailboxSender>>,
+}
+
+/// Stable default-egress handle. It deliberately does not own the gateway.
+struct Egress(Weak<GatewayState>);
+
+#[async_trait]
+impl crate::mailbox::MailboxSender for Egress {
+    fn post_unchecked(
+        &self,
+        envelope: MessageEnvelope,
+        handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        if let Some(inner) = self.0.upgrade() {
+            Gateway { inner }.post_egress(envelope, handle);
+        } else {
+            Gateway::return_no_route(envelope, handle);
+        }
+    }
+    async fn flush(&self) -> anyhow::Result<()> {
+        if let Some(inner) = self.0.upgrade() {
+            Gateway { inner }.flush_egress().await?;
+        }
+        Ok(())
+    }
+}
+
+/// Covers the selection-to-post interval without holding a routing lock while
+/// invoking an arbitrary (possibly reentrant) sender.
+struct Posting(Gateway);
+impl Drop for Posting {
+    fn drop(&mut self) {
+        {
+            let mut routing = self.0.inner.routing.write().unwrap();
+            routing.posting -= 1;
+            routing.dispatched += 1;
+        }
+        self.0.inner.posts_done.notify_waiters();
+    }
+}
+
+/// Reopens the gate against the current live routing state on every exit path,
+/// including cancellation. Never restores a captured, possibly stopped sender.
+struct Cutover {
+    gateway: Gateway,
+    forwarders: Vec<BoxedMailboxSender>,
+    drained_ids: Vec<ServeId>,
+    prefix: VecDeque<(MessageEnvelope, PortHandle<Undeliverable<MessageEnvelope>>)>,
+}
+impl Cutover {
+    fn new(gateway: Gateway) -> Self {
+        let (forwarders, drained_ids, prefix) = {
+            let mut routing = gateway.inner.routing.write().unwrap();
+            // Invalidate a previous replay worker and capture its finite
+            // unposted prefix. New submissions belong behind this barrier.
+            routing.gated = true;
+            routing.releasing = false;
+            routing.release_generation += 1;
+            let prefix = std::mem::take(&mut routing.pending);
+            let mut forwarders = vec![routing.forwarder.clone()];
+            forwarders.extend(
+                routing
+                    .state
+                    .retired_forwarders
+                    .iter()
+                    .map(|(_, sender)| sender.clone()),
+            );
+            // Include the selected live serve: it can be removed while this
+            // barrier waits for a post that already selected it.
+            let mut ids: Vec<_> = routing
+                .state
+                .retired_forwarders
+                .iter()
+                .map(|(id, _)| *id)
+                .collect();
+            if let Some(serve) = routing
+                .state
+                .active_serves
+                .iter()
+                .rev()
+                .find(|serve| matches!(serve.kind, ActiveServeKind::Via { .. }))
+            {
+                ids.push(serve.id);
+            }
+            (forwarders, ids, prefix)
+        };
+        Self {
+            gateway,
+            forwarders,
+            drained_ids,
+            prefix,
+        }
+    }
+    async fn drain(&mut self) -> anyhow::Result<()> {
+        self.gateway.wait_for_posts().await;
+        let mut batch = 0;
+        while let Some((envelope, handle)) = self.prefix.pop_front() {
+            self.gateway.inner.routing.write().unwrap().posting += 1;
+            {
+                let _posting = Posting(self.gateway.clone());
+                self.forwarders[0].post_unchecked(envelope, handle);
+            }
+            batch += 1;
+            if batch == 64 {
+                batch = 0;
+                tokio::task::yield_now().await;
+            }
+        }
+        futures::future::try_join_all(self.forwarders.iter().map(|sender| sender.drain())).await?;
+        Ok(())
+    }
+    fn finish(self) {
+        self.gateway
+            .inner
+            .routing
+            .write()
+            .unwrap()
+            .state
+            .retired_forwarders
+            .retain(|(id, _)| !self.drained_ids.contains(id));
+        drop(self);
+    }
+}
+impl Drop for Cutover {
+    fn drop(&mut self) {
+        let generation = {
+            let mut routing = self.gateway.inner.routing.write().unwrap();
+            // Cancellation retains only the prefix not yet posted. It precedes
+            // all submissions admitted while the transition was in progress.
+            self.prefix.append(&mut routing.pending);
+            routing.pending = std::mem::take(&mut self.prefix);
+            routing.releasing = true;
+            routing.release_generation += 1;
+            routing.release_generation
+        };
+        let gateway = self.gateway.clone();
+        crate::init::get_runtime().spawn(async move {
+            gateway.release_egress(generation).await;
+        });
+    }
+}
+
+const MAX_SETUP_ENVELOPES: usize = 1024;
+struct SetupInbox {
+    gateway: Gateway,
+    pending: VecDeque<MessageEnvelope>,
+}
+impl SetupInbox {
+    fn push(&mut self, envelope: MessageEnvelope) -> anyhow::Result<()> {
+        self.pending.push_back(envelope);
+        anyhow::ensure!(
+            self.pending.len() <= MAX_SETUP_ENVELOPES,
+            "too many inbound envelopes during attach setup"
+        );
+        Ok(())
+    }
+}
+impl Drop for SetupInbox {
+    fn drop(&mut self) {
+        // These envelopes are already transport-acknowledged. Cancellation may
+        // discard the connection but must not silently discard accepted data.
+        for envelope in self.pending.drain(..) {
+            self.gateway
+                .post(envelope, crate::mailbox::monitored_return_handle());
+        }
+    }
+}
+
+struct SetupRx<R> {
+    pending: VecDeque<MessageEnvelope>,
+    inner: R,
+}
+#[async_trait]
+impl<R: channel::Rx<MessageEnvelope> + Send> channel::Rx<MessageEnvelope> for SetupRx<R> {
+    async fn recv(&mut self) -> Result<MessageEnvelope, ChannelError> {
+        match self.pending.pop_front() {
+            Some(envelope) => Ok(envelope),
+            None => self.inner.recv().await,
+        }
+    }
+    fn addr(&self) -> ChannelAddr {
+        self.inner.addr()
+    }
+    async fn join(self) {
+        self.inner.join().await
+    }
 }
 
 impl Gateway {
@@ -491,6 +695,8 @@ impl Gateway {
             inner: Arc::new(GatewayState {
                 uid: Uid::anonymous(),
                 routing: RwLock::new(Routing::new(default_location, forwarder.clone())),
+                attach_serial: tokio::sync::Mutex::new(()),
+                posts_done: tokio::sync::Notify::new(),
                 procs: RwLock::new(HashMap::new()),
                 next_serve_id: AtomicU64::new(1),
                 peers: RwLock::new(HashMap::new()),
@@ -514,7 +720,7 @@ impl Gateway {
     /// don't match a bound proc, route, or via peer is handed off to
     /// this sender.
     pub fn forwarder(&self) -> BoxedMailboxSender {
-        self.inner.routing.read().unwrap().forwarder.clone()
+        BoxedMailboxSender::new(Egress(Arc::downgrade(&self.inner)))
     }
 
     /// Set the gateway's fallback advertised location.
@@ -814,32 +1020,62 @@ impl Gateway {
     /// default location, while older active locations remain valid. The
     /// newest active `serve_via` supplies the outbound forwarder.
     pub async fn serve_via(&self, addr: ChannelAddr) -> anyhow::Result<GatewayServeHandle> {
-        let my_uid = self.inner.uid.clone();
-        let mut duplex_client = channel::duplex::dial::<MessageEnvelope, AttachWire>(addr)?;
-        let duplex_tx = duplex_client.tx();
-        let mut duplex_rx = duplex_client
-            .take_rx()
-            .expect("dial returns a fresh DuplexClient with rx present");
-
-        duplex_tx.post(build_control_envelope(&AttachRequest { uid: my_uid })?);
-
-        let location = match tokio::time::timeout(ATTACH_HANDSHAKE_TIMEOUT, duplex_rx.recv())
+        tokio::time::timeout(ATTACH_HANDSHAKE_TIMEOUT, self.serve_via_inner(addr))
             .await
             .map_err(|_| {
                 anyhow::anyhow!(
-                    "attach handshake timed out after {:?} waiting for AttachAck",
+                    "attach setup timed out after {:?}",
                     ATTACH_HANDSHAKE_TIMEOUT
                 )
-            })?? {
-            AttachWire::Ack(AttachAck::Accepted { location }) => location,
-            AttachWire::Ack(AttachAck::Rejected { reason }) => {
-                anyhow::bail!("attach rejected by peer: {reason}")
+            })?
+    }
+
+    async fn serve_via_inner(&self, addr: ChannelAddr) -> anyhow::Result<GatewayServeHandle> {
+        let _serial = self.inner.attach_serial.lock().await;
+        let mut duplex_client = channel::duplex::dial::<MessageEnvelope, AttachWire>(addr)?;
+        // DuplexClient intentionally detaches on drop. Setup has scoped ownership
+        // until success transfers that ownership to GatewayServeHandle.
+        let cleanup = duplex_client.cancellation_token().drop_guard();
+        let duplex_tx = duplex_client.tx();
+        let mut duplex_rx = duplex_client.take_rx().expect("fresh duplex receiver");
+        duplex_tx.post(build_control_envelope(&AttachRequest {
+            uid: self.uid().clone(),
+        })?);
+        let mut inbox = SetupInbox {
+            gateway: self.clone(),
+            pending: VecDeque::new(),
+        };
+        let location = loop {
+            match duplex_rx.recv().await? {
+                AttachWire::Ack(AttachAck::Accepted { location }) => break location,
+                AttachWire::Ack(AttachAck::Rejected { reason }) => {
+                    anyhow::bail!("attach rejected by peer: {reason}")
+                }
+                AttachWire::Envelope(envelope) => inbox.push(envelope)?,
             }
-            AttachWire::Envelope(_) => anyhow::bail!("expected attach ack as first message"),
         };
 
+        let mut cutover = Cutover::new(self.clone());
+        {
+            let drain = cutover.drain();
+            tokio::pin!(drain);
+            loop {
+                tokio::select! {
+                    result = &mut drain => { result?; break; }
+                    incoming = duplex_rx.recv() => match incoming? {
+                        AttachWire::Envelope(envelope) => inbox.push(envelope)?,
+                        _ => anyhow::bail!("unexpected control reply during route drain"),
+                    }
+                }
+            }
+        }
         let serve_id = self.add_via_server(location, MailboxClient::new(duplex_tx).into_boxed());
-        let serve_handle = self.serve_rx(AttachRx(duplex_rx));
+        cutover.finish();
+        let serve_handle = self.serve_rx(SetupRx {
+            pending: std::mem::take(&mut inbox.pending),
+            inner: AttachRx(duplex_rx),
+        });
+        cleanup.disarm();
         Ok(GatewayServeHandle {
             gateway: self.clone(),
             handle: serve_handle,
@@ -849,6 +1085,121 @@ impl Gateway {
                 duplex_client: Some(duplex_client),
             },
         })
+    }
+
+    #[cfg(test)]
+    async fn wait_for_gate(&self) {
+        loop {
+            let notified = self.inner.posts_done.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self.inner.routing.read().unwrap().gated {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    async fn flush_egress(&self) -> anyhow::Result<()> {
+        let target = self.inner.routing.read().unwrap().submitted;
+        loop {
+            let notified = self.inner.posts_done.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.inner.routing.read().unwrap().dispatched >= target {
+                break;
+            }
+            notified.await;
+        }
+        let senders = {
+            let routing = self.inner.routing.read().unwrap();
+            std::iter::once(routing.forwarder.clone())
+                .chain(
+                    routing
+                        .state
+                        .retired_forwarders
+                        .iter()
+                        .map(|(_, sender)| sender.clone()),
+                )
+                .collect::<Vec<_>>()
+        };
+        futures::future::join_all(senders.iter().map(|sender| sender.flush()))
+            .await
+            .into_iter()
+            .collect()
+    }
+
+    async fn wait_for_posts(&self) {
+        loop {
+            let notified = self.inner.posts_done.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.inner.routing.read().unwrap().posting == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    fn post_egress(
+        &self,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        let sender = {
+            let mut routing = self.inner.routing.write().unwrap();
+            routing.submitted += 1;
+            if routing.gated {
+                routing.pending.push_back((envelope, return_handle));
+                return;
+            }
+            routing.posting += 1;
+            routing.forwarder.clone()
+        };
+        let _posting = Posting(self.clone());
+        // Egress is a proxy, not another routing hop. Its caller already applied
+        // the underlying sender's hop policy, including TTL, exactly once.
+        sender.post_unchecked(envelope, return_handle);
+    }
+
+    async fn release_egress(&self, generation: u64) {
+        // An invalidated replay worker may still be inside an arbitrary post
+        // callback. Its selected prefix must finish posting before rollback
+        // can release the next queued envelope.
+        self.wait_for_posts().await;
+        let mut batch = 0;
+        loop {
+            let next = {
+                let mut routing = self.inner.routing.write().unwrap();
+                if !routing.releasing || routing.release_generation != generation {
+                    return;
+                }
+                match routing.pending.pop_front() {
+                    Some((envelope, handle)) => {
+                        routing.posting += 1;
+                        Some((routing.forwarder.clone(), envelope, handle))
+                    }
+                    None => {
+                        routing.gated = false;
+                        routing.releasing = false;
+                        None
+                    }
+                }
+            };
+            let Some((sender, envelope, handle)) = next else {
+                self.inner.posts_done.notify_waiters();
+                return;
+            };
+            {
+                let _posting = Posting(self.clone());
+                sender.post_unchecked(envelope, handle);
+            }
+            batch += 1;
+            if batch == 64 {
+                batch = 0;
+                tokio::task::yield_now().await;
+            }
+        }
     }
 
     fn serve_inner(
@@ -911,7 +1262,10 @@ impl Gateway {
                 .iter()
                 .rposition(|active| active.id == serve_id)
             {
-                routing.active_serves.remove(index);
+                let removed = routing.active_serves.remove(index);
+                if let ActiveServeKind::Via { forwarder } = removed.kind {
+                    routing.retired_forwarders.push((removed.id, forwarder));
+                }
             }
         });
     }
@@ -978,8 +1332,7 @@ impl Gateway {
         .buffer_unordered(concurrency)
         .collect()
         .await;
-        let forwarder = self.inner.routing.read().unwrap().forwarder.clone();
-        let forwarder_result = forwarder.flush().await;
+        let forwarder_result = self.flush_egress().await;
 
         // Best-effort: all flushes have run; surface the first error.
         proc_results
@@ -1128,6 +1481,13 @@ impl GatewayServeHandle {
     }
 
     fn run_cleanup(&mut self) {
+        if let HandleKind::ServeVia {
+            duplex_client: Some(client),
+            ..
+        } = &self.kind
+        {
+            client.stop();
+        }
         match &mut self.kind {
             HandleKind::Serve { serve_id }
             | HandleKind::ServeDuplex { serve_id, .. }
@@ -1153,7 +1513,7 @@ impl Drop for GatewayServeHandle {
             return;
         }
         if matches!(&self.kind, HandleKind::ServeVia { .. }) {
-            self.run_cleanup();
+            self.stop("gateway attach handle dropped");
         }
     }
 }
@@ -1413,8 +1773,7 @@ impl Gateway {
                 // waypoint, not the destination. Forward toward the
                 // default route, which itself returns the message as
                 // undeliverable if it is terminal.
-                let forwarder = self.inner.routing.read().unwrap().forwarder.clone();
-                forwarder.post(envelope, return_handle);
+                Egress(Arc::downgrade(&self.inner)).post(envelope, return_handle);
                 return;
             }
             envelope = Gateway::envelope_with_next_hop_location(envelope, inner_location);
@@ -1441,8 +1800,7 @@ impl Gateway {
         if envelope.has_next_hop() {
             Gateway::return_no_route(envelope, return_handle);
         } else {
-            let forwarder = self.inner.routing.read().unwrap().forwarder.clone();
-            forwarder.post(envelope, return_handle)
+            Egress(Arc::downgrade(&self.inner)).post(envelope, return_handle)
         }
     }
 }
@@ -1489,6 +1847,860 @@ mod tests {
                 .send(envelope)
                 .expect("recording sender should be open");
         }
+    }
+
+    /// The old sender is deliberately held at its terminal-completion barrier.
+    /// Sends via retained Gateway and Proc handles must wait behind that barrier.
+    #[tokio::test]
+    async fn test_attach_cutover_drains_and_migrates_saved_forwarders() {
+        #[derive(Clone)]
+        struct HeldFlush {
+            messages: mpsc::UnboundedSender<MessageEnvelope>,
+            entered: Arc<tokio::sync::Semaphore>,
+            release: Arc<tokio::sync::Semaphore>,
+        }
+        #[async_trait]
+        impl MailboxSender for HeldFlush {
+            fn post_unchecked(
+                &self,
+                envelope: MessageEnvelope,
+                _: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                self.messages.send(envelope).unwrap();
+            }
+            async fn flush(&self) -> anyhow::Result<()> {
+                self.entered.add_permits(1);
+                self.release.acquire().await.unwrap().forget();
+                Ok(())
+            }
+        }
+        let server = Gateway::isolated();
+        let mut listener = server
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        let proc = Proc::builder()
+            .shared_gateway(server.clone())
+            .build()
+            .unwrap();
+        let recv = proc.client("receiver");
+        let (port, mut received) = recv.bind_handler_port::<u64>();
+        let dest = port.bind().port_addr().clone();
+        let (messages, mut old_messages) = mpsc::unbounded_channel();
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let client = Gateway::configured(
+            ChannelAddr::Local(777).into(),
+            BoxedMailboxSender::new(HeldFlush {
+                messages,
+                entered: entered.clone(),
+                release: release.clone(),
+            }),
+        );
+        let saved = client.forwarder();
+        let local_proc = Proc::builder()
+            .shared_gateway(client.clone())
+            .build()
+            .unwrap();
+        let proc_saved = local_proc.forwarder();
+        let envelope = |value| {
+            MessageEnvelope::serialize(
+                test_actor_id("cutover", "sender"),
+                dest.clone(),
+                &value,
+                Flattrs::new(),
+            )
+            .unwrap()
+        };
+        saved.post(envelope(1u64), monitored_return_handle());
+        assert_eq!(
+            old_messages
+                .recv()
+                .await
+                .unwrap()
+                .deserialized::<u64>()
+                .unwrap(),
+            1
+        );
+        let before = client.default_location();
+        let mut attachment = tokio::spawn({
+            let client = client.clone();
+            let addr = server.default_location().addr().clone();
+            async move { client.serve_via(addr).await }
+        });
+        entered.acquire().await.unwrap().forget();
+        assert_eq!(client.default_location(), before);
+        assert!(!attachment.is_finished());
+        saved.post(envelope(2u64), monitored_return_handle());
+        proc_saved.post(envelope(3u64), monitored_return_handle());
+        assert!(old_messages.try_recv().is_err());
+        release.add_permits(1);
+        let mut via = (&mut attachment).await.unwrap().unwrap();
+        assert_eq!(received.recv().await.unwrap(), 2);
+        assert_eq!(received.recv().await.unwrap(), 3);
+        saved.post(envelope(4u64), monitored_return_handle());
+        assert_eq!(received.recv().await.unwrap(), 4);
+        via.stop("test complete");
+        via.join().await.unwrap();
+        listener.stop("test complete");
+        listener.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_cutover_cancellation_uses_current_live_fallback() {
+        let (base_tx, mut base_rx) = mpsc::unbounded_channel();
+        let (old_tx, mut old_rx) = mpsc::unbounded_channel();
+        let gateway = Gateway::configured(
+            ChannelAddr::Local(1).into(),
+            BoxedMailboxSender::new(RecordingSender(base_tx)),
+        );
+        let old = gateway.add_via_server(
+            ChannelAddr::Local(2).into(),
+            BoxedMailboxSender::new(RecordingSender(old_tx)),
+        );
+        let saved = gateway.forwarder();
+        let cutover = Cutover::new(gateway.clone());
+        let dest = ProcAddr::instance(ChannelAddr::Local(3), "remote")
+            .actor_addr("recv")
+            .port_addr(Port::from(0u64));
+        saved.post(
+            MessageEnvelope::serialize(
+                test_actor_id("cancel", "sender"),
+                dest,
+                &9u64,
+                Flattrs::new(),
+            )
+            .unwrap()
+            .set_ttl(8),
+            monitored_return_handle(),
+        );
+        gateway.remove_active_serve(old);
+        drop(cutover);
+        let returned = base_rx.recv().await.unwrap();
+        assert_eq!(returned.deserialized::<u64>().unwrap(), 9);
+        assert_eq!(
+            returned.ttl(),
+            7,
+            "proxy and queue must not consume extra TTL"
+        );
+        assert!(old_rx.try_recv().is_err());
+        gateway.wait_for_gate().await;
+        assert!(!gateway.inner.routing.read().unwrap().gated);
+    }
+
+    #[tokio::test]
+    async fn test_cutover_fences_selected_post_without_locking_callback() {
+        struct BlockPost {
+            entered: Arc<std::sync::Barrier>,
+            release: Arc<std::sync::Barrier>,
+            messages: mpsc::UnboundedSender<MessageEnvelope>,
+        }
+        #[async_trait]
+        impl MailboxSender for BlockPost {
+            fn post_unchecked(
+                &self,
+                envelope: MessageEnvelope,
+                _: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                self.entered.wait();
+                self.release.wait();
+                self.messages.send(envelope).unwrap();
+            }
+        }
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let (messages, mut rx) = mpsc::unbounded_channel();
+        let gateway = Gateway::configured(
+            ChannelAddr::Local(1).into(),
+            BoxedMailboxSender::new(BlockPost {
+                entered: entered.clone(),
+                release: release.clone(),
+                messages,
+            }),
+        );
+        let saved = gateway.forwarder();
+        let dest = ProcAddr::instance(ChannelAddr::Local(3), "remote")
+            .actor_addr("recv")
+            .port_addr(Port::from(0u64));
+        // Initialize this runtime-backed port before entering a plain thread.
+        let return_handle = monitored_return_handle();
+        let thread = std::thread::spawn(move || {
+            saved.post(
+                MessageEnvelope::serialize(
+                    test_actor_id("fence", "sender"),
+                    dest,
+                    &1u64,
+                    Flattrs::new(),
+                )
+                .unwrap(),
+                return_handle,
+            )
+        });
+        entered.wait();
+        let cutover = Cutover::new(gateway.clone());
+        let wait = gateway.wait_for_posts();
+        tokio::pin!(wait);
+        assert!(futures::poll!(&mut wait).is_pending());
+        release.wait();
+        thread.join().unwrap();
+        wait.await;
+        assert_eq!(rx.recv().await.unwrap().deserialized::<u64>().unwrap(), 1);
+        drop(cutover);
+    }
+
+    #[tokio::test]
+    async fn test_cutover_release_orders_reentrant_posts_and_public_flush() {
+        struct Reentrant {
+            proxy: Arc<OnceLock<BoxedMailboxSender>>,
+            messages: mpsc::UnboundedSender<MessageEnvelope>,
+        }
+        #[async_trait]
+        impl MailboxSender for Reentrant {
+            fn post_unchecked(
+                &self,
+                envelope: MessageEnvelope,
+                handle: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                if envelope.deserialized::<u64>().unwrap() == 1 {
+                    let next = MessageEnvelope::serialize(
+                        envelope.sender().clone(),
+                        envelope.dest().clone(),
+                        &3u64,
+                        Flattrs::new(),
+                    )
+                    .unwrap();
+                    self.proxy.get().unwrap().post(next, handle);
+                }
+                self.messages.send(envelope).unwrap();
+            }
+        }
+        let (messages, mut received) = mpsc::unbounded_channel();
+        let proxy = Arc::new(OnceLock::new());
+        let gateway = Gateway::configured(
+            ChannelAddr::Local(1).into(),
+            BoxedMailboxSender::new(Reentrant {
+                proxy: proxy.clone(),
+                messages,
+            }),
+        );
+        let saved = gateway.forwarder();
+        proxy.set(saved.clone()).unwrap();
+        let cutover = Cutover::new(gateway.clone());
+        let dest = ProcAddr::instance(ChannelAddr::Local(3), "remote")
+            .actor_addr("recv")
+            .port_addr(Port::from(0u64));
+        for value in 1..=2u64 {
+            saved.post(
+                MessageEnvelope::serialize(
+                    test_actor_id("ordered", "sender"),
+                    dest.clone(),
+                    &value,
+                    Flattrs::new(),
+                )
+                .unwrap(),
+                monitored_return_handle(),
+            );
+        }
+        let flush = saved.flush();
+        tokio::pin!(flush);
+        assert!(futures::poll!(&mut flush).is_pending());
+        cutover.finish();
+        flush.await.unwrap();
+        for expected in 1..=3u64 {
+            assert_eq!(
+                received
+                    .recv()
+                    .await
+                    .unwrap()
+                    .deserialized::<u64>()
+                    .unwrap(),
+                expected
+            );
+        }
+        assert!(received.try_recv().is_err());
+    }
+
+    #[derive(Clone)]
+    struct ControlledFlush {
+        messages: mpsc::UnboundedSender<MessageEnvelope>,
+        entered: Arc<tokio::sync::Semaphore>,
+        release: Arc<tokio::sync::Semaphore>,
+        fail: bool,
+    }
+    #[async_trait]
+    impl MailboxSender for ControlledFlush {
+        fn post_unchecked(
+            &self,
+            envelope: MessageEnvelope,
+            _: PortHandle<Undeliverable<MessageEnvelope>>,
+        ) {
+            self.messages.send(envelope).unwrap();
+        }
+        async fn flush(&self) -> anyhow::Result<()> {
+            self.entered.add_permits(1);
+            self.release.acquire().await.unwrap().forget();
+            anyhow::ensure!(!self.fail, "controlled drain failure");
+            Ok(())
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_attach_abort_and_failed_drain_reopen_live_route_and_remove_peer() {
+        for cancel in [true, false] {
+            let server = Gateway::isolated();
+            let mut listener = server
+                .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+                .unwrap();
+            let (messages, mut old) = mpsc::unbounded_channel();
+            let entered = Arc::new(tokio::sync::Semaphore::new(0));
+            let release = Arc::new(tokio::sync::Semaphore::new(0));
+            let gateway = Gateway::configured(
+                ChannelAddr::Local(1).into(),
+                BoxedMailboxSender::new(ControlledFlush {
+                    messages,
+                    entered: entered.clone(),
+                    release: release.clone(),
+                    fail: !cancel,
+                }),
+            );
+            let original = gateway.default_location();
+            let task = tokio::spawn({
+                let gateway = gateway.clone();
+                let addr = server.default_location().addr().clone();
+                async move { gateway.serve_via(addr).await }
+            });
+            entered.acquire().await.unwrap().forget();
+            assert!(
+                server
+                    .inner
+                    .peers
+                    .read()
+                    .unwrap()
+                    .contains_key(gateway.uid())
+            );
+            let dest = ProcAddr::instance(ChannelAddr::Local(3), "remote")
+                .actor_addr("recv")
+                .port_addr(Port::from(0u64));
+            gateway.forwarder().post(
+                MessageEnvelope::serialize(
+                    test_actor_id("abort", "sender"),
+                    dest,
+                    &7u64,
+                    Flattrs::new(),
+                )
+                .unwrap(),
+                monitored_return_handle(),
+            );
+            if cancel {
+                task.abort();
+                assert!(task.await.unwrap_err().is_cancelled());
+            } else {
+                release.add_permits(1);
+                assert!(
+                    task.await
+                        .unwrap()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("controlled drain failure")
+                );
+            }
+            assert_eq!(old.recv().await.unwrap().deserialized::<u64>().unwrap(), 7);
+            assert_eq!(gateway.default_location(), original);
+            gateway.wait_for_gate().await;
+            while server
+                .inner
+                .peers
+                .read()
+                .unwrap()
+                .contains_key(gateway.uid())
+            {
+                tokio::task::yield_now().await;
+            }
+            listener.stop("test complete");
+            listener.join().await.unwrap();
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cancelled_attach_delivers_buffered_inbound_prefix_once_in_order() {
+        let mut server = channel::duplex::serve::<MessageEnvelope, AttachWire>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+        )
+        .unwrap();
+        let addr = server.addr().clone();
+        let (messages, _old) = mpsc::unbounded_channel();
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let gateway = Gateway::configured(
+            ChannelAddr::Local(1).into(),
+            BoxedMailboxSender::new(ControlledFlush {
+                messages,
+                entered: entered.clone(),
+                release,
+                fail: false,
+            }),
+        );
+        let proc = Proc::builder()
+            .shared_gateway(gateway.clone())
+            .build()
+            .unwrap();
+        let recv = proc.client("receiver");
+        let (port, mut received) = recv.bind_handler_port::<u64>();
+        let dest = port.bind().port_addr().clone();
+        let task = tokio::spawn({
+            let gateway = gateway.clone();
+            async move { gateway.serve_via(addr).await }
+        });
+        let (mut rx, tx) = server.accept().await.unwrap();
+        assert!(rx.recv().await.unwrap().data().is::<AttachRequest>());
+        for value in 1..=2u64 {
+            tx.post(AttachWire::Envelope(
+                MessageEnvelope::serialize(
+                    test_actor_id("early", "sender"),
+                    dest.clone(),
+                    &value,
+                    Flattrs::new(),
+                )
+                .unwrap(),
+            ));
+        }
+        tx.post(AttachWire::Ack(AttachAck::Accepted {
+            location: ChannelAddr::Local(2).into(),
+        }));
+        entered.acquire().await.unwrap().forget();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(received.recv().await.unwrap(), 1);
+        assert_eq!(received.recv().await.unwrap(), 2);
+        assert!(received.try_recv().unwrap().is_none());
+        server.stop("test complete");
+        server.join().await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_concurrent_attaches_serialize_and_stopped_old_route_is_not_restored() {
+        let first_server = Gateway::isolated();
+        let second_server = Gateway::isolated();
+        let mut first_listener = first_server
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        let mut second_listener = second_server
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        let (base_messages, mut base_received) = mpsc::unbounded_channel();
+        let (old_messages, _old_received) = mpsc::unbounded_channel();
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let gateway = Gateway::configured(
+            ChannelAddr::Local(1).into(),
+            BoxedMailboxSender::new(RecordingSender(base_messages)),
+        );
+        let old = gateway.add_via_server(
+            ChannelAddr::Local(2).into(),
+            BoxedMailboxSender::new(ControlledFlush {
+                messages: old_messages,
+                entered: entered.clone(),
+                release: release.clone(),
+                fail: false,
+            }),
+        );
+        let first = tokio::spawn({
+            let gateway = gateway.clone();
+            let addr = first_server.default_location().addr().clone();
+            async move { gateway.serve_via(addr).await }
+        });
+        entered.acquire().await.unwrap().forget();
+        let second = tokio::spawn({
+            let gateway = gateway.clone();
+            let addr = second_server.default_location().addr().clone();
+            async move { gateway.serve_via(addr).await }
+        });
+        // Stop the selected old route during the new route's drain, then abort
+        // that attachment. The waiting second attachment must still succeed.
+        gateway.remove_active_serve(old);
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        release.add_permits(1);
+        let mut via = second.await.unwrap().unwrap();
+        assert_eq!(
+            gateway.default_location().addr(),
+            second_server.default_location().addr()
+        );
+        via.stop("test complete");
+        via.join().await.unwrap();
+        let dest = ProcAddr::instance(ChannelAddr::Local(3), "remote")
+            .actor_addr("recv")
+            .port_addr(Port::from(0u64));
+        gateway.forwarder().post(
+            MessageEnvelope::serialize(
+                test_actor_id("live_fallback", "sender"),
+                dest,
+                &1u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            monitored_return_handle(),
+        );
+        assert_eq!(
+            base_received
+                .recv()
+                .await
+                .unwrap()
+                .deserialized::<u64>()
+                .unwrap(),
+            1
+        );
+        first_listener.stop("test complete");
+        first_listener.join().await.unwrap();
+        second_listener.stop("test complete");
+        second_listener.join().await.unwrap();
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_stopping_route_during_selected_post_cannot_bypass_its_flush() {
+        struct PausedRoute {
+            entered: Arc<std::sync::Barrier>,
+            release: Arc<std::sync::Barrier>,
+            flush_entered: Arc<tokio::sync::Semaphore>,
+            flush_release: Arc<tokio::sync::Semaphore>,
+        }
+        #[async_trait]
+        impl MailboxSender for PausedRoute {
+            fn post_unchecked(
+                &self,
+                _: MessageEnvelope,
+                _: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                self.entered.wait();
+                self.release.wait();
+            }
+            async fn flush(&self) -> anyhow::Result<()> {
+                self.flush_entered.add_permits(1);
+                self.flush_release.acquire().await.unwrap().forget();
+                Ok(())
+            }
+        }
+        let server = Gateway::isolated();
+        let mut listener = server
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        let gateway = Gateway::isolated();
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let flush_entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let flush_release = Arc::new(tokio::sync::Semaphore::new(0));
+        let old = gateway.add_via_server(
+            ChannelAddr::Local(2).into(),
+            BoxedMailboxSender::new(PausedRoute {
+                entered: entered.clone(),
+                release: release.clone(),
+                flush_entered: flush_entered.clone(),
+                flush_release: flush_release.clone(),
+            }),
+        );
+        let saved = gateway.forwarder();
+        // Initialize this runtime-backed port before entering a plain thread.
+        let return_handle = monitored_return_handle();
+        let thread = std::thread::spawn(move || {
+            let dest = ProcAddr::instance(ChannelAddr::Local(3), "remote")
+                .actor_addr("recv")
+                .port_addr(Port::from(0u64));
+            saved.post(
+                MessageEnvelope::serialize(
+                    test_actor_id("paused", "sender"),
+                    dest,
+                    &1u64,
+                    Flattrs::new(),
+                )
+                .unwrap(),
+                return_handle,
+            );
+        });
+        entered.wait();
+        let attach = tokio::spawn({
+            let gateway = gateway.clone();
+            let addr = server.default_location().addr().clone();
+            async move { gateway.serve_via(addr).await }
+        });
+        while !gateway.inner.routing.read().unwrap().gated {
+            tokio::task::yield_now().await;
+        }
+        gateway.remove_active_serve(old);
+        assert!(
+            flush_entered.try_acquire().is_err(),
+            "post must finish before flush watermark"
+        );
+        release.wait();
+        thread.join().unwrap();
+        flush_entered.acquire().await.unwrap().forget();
+        assert!(
+            !attach.is_finished(),
+            "removed sender's pending outcome still gates publication"
+        );
+        assert!(gateway.default_location().as_via().is_none());
+        flush_release.add_permits(1);
+        let mut via = attach.await.unwrap().unwrap();
+        assert!(
+            gateway
+                .inner
+                .routing
+                .read()
+                .unwrap()
+                .state
+                .retired_forwarders
+                .is_empty()
+        );
+        via.stop("test complete");
+        via.join().await.unwrap();
+        listener.stop("test complete");
+        listener.join().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_cancelled_replay_cutover_waits_for_prior_selected_post() {
+        struct PauseFirst {
+            entered: Arc<std::sync::Barrier>,
+            release: Arc<std::sync::Barrier>,
+            messages: mpsc::UnboundedSender<MessageEnvelope>,
+        }
+        #[async_trait]
+        impl MailboxSender for PauseFirst {
+            fn post_unchecked(
+                &self,
+                envelope: MessageEnvelope,
+                _: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                if envelope.deserialized::<u64>().unwrap() == 1 {
+                    self.entered.wait();
+                    self.release.wait();
+                }
+                self.messages.send(envelope).unwrap();
+            }
+        }
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let (messages, mut received) = mpsc::unbounded_channel();
+        let gateway = Gateway::configured(
+            ChannelAddr::Local(1).into(),
+            BoxedMailboxSender::new(PauseFirst {
+                entered: entered.clone(),
+                release: release.clone(),
+                messages,
+            }),
+        );
+        let proxy = gateway.forwarder();
+        let first = Cutover::new(gateway.clone());
+        let dest = ProcAddr::instance(ChannelAddr::Local(3), "remote")
+            .actor_addr("recv")
+            .port_addr(Port::from(0u64));
+        for value in 1..=2u64 {
+            proxy.post(
+                MessageEnvelope::serialize(
+                    test_actor_id("replay", "sender"),
+                    dest.clone(),
+                    &value,
+                    Flattrs::new(),
+                )
+                .unwrap(),
+                monitored_return_handle(),
+            );
+        }
+        first.finish();
+        entered.wait();
+        let mut next = Cutover::new(gateway.clone());
+        proxy.post(
+            MessageEnvelope::serialize(
+                test_actor_id("replay", "sender"),
+                dest,
+                &3u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            monitored_return_handle(),
+        );
+        // Prepare the exact rollback queue, then poll its worker directly. This
+        // deterministically proves it suspends behind the prior selected post.
+        let generation = {
+            let mut routing = gateway.inner.routing.write().unwrap();
+            next.prefix.append(&mut routing.pending);
+            routing.pending = std::mem::take(&mut next.prefix);
+            routing.releasing = true;
+            routing.release_generation += 1;
+            routing.release_generation
+        };
+        {
+            let resume = gateway.release_egress(generation);
+            tokio::pin!(resume);
+            assert!(futures::poll!(&mut resume).is_pending());
+            assert!(received.try_recv().is_err());
+        }
+        drop(next);
+        release.wait();
+        for expected in 1..=3u64 {
+            assert_eq!(
+                received
+                    .recv()
+                    .await
+                    .unwrap()
+                    .deserialized::<u64>()
+                    .unwrap(),
+                expected
+            );
+        }
+        gateway.forwarder().flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_next_cutover_fences_finite_prefix_under_continuous_reentrant_posts() {
+        struct Producing {
+            proxy: Arc<OnceLock<BoxedMailboxSender>>,
+            messages: mpsc::UnboundedSender<u64>,
+        }
+        #[async_trait]
+        impl MailboxSender for Producing {
+            fn post_unchecked(
+                &self,
+                envelope: MessageEnvelope,
+                handle: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                let value = envelope.deserialized::<u64>().unwrap();
+                self.messages.send(value).unwrap();
+                self.proxy.get().unwrap().post(
+                    MessageEnvelope::serialize(
+                        envelope.sender().clone(),
+                        envelope.dest().clone(),
+                        &(value + 1),
+                        Flattrs::new(),
+                    )
+                    .unwrap(),
+                    handle,
+                );
+            }
+        }
+        let (old_messages, mut old) = mpsc::unbounded_channel();
+        let (new_messages, mut new) = mpsc::unbounded_channel();
+        let proxy = Arc::new(OnceLock::new());
+        let gateway = Gateway::configured(
+            ChannelAddr::Local(1).into(),
+            BoxedMailboxSender::new(Producing {
+                proxy: proxy.clone(),
+                messages: old_messages,
+            }),
+        );
+        let saved = gateway.forwarder();
+        proxy.set(saved.clone()).unwrap();
+        let first = Cutover::new(gateway.clone());
+        let dest = ProcAddr::instance(ChannelAddr::Local(3), "remote")
+            .actor_addr("recv")
+            .port_addr(Port::from(0u64));
+        saved.post(
+            MessageEnvelope::serialize(
+                test_actor_id("producer", "sender"),
+                dest,
+                &1u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            monitored_return_handle(),
+        );
+        first.finish();
+        assert_eq!(old.recv().await.unwrap(), 1);
+        let mut next = Cutover::new(gateway.clone());
+        next.drain().await.unwrap();
+        gateway.add_via_server(
+            ChannelAddr::Local(2).into(),
+            BoxedMailboxSender::new(RecordingSender(new_messages)),
+        );
+        next.finish();
+        assert!(new.recv().await.unwrap().deserialized::<u64>().unwrap() > 1);
+        saved.flush().await.unwrap();
+        assert!(new.try_recv().is_err());
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cutover_terminal_old_route_failure_returns_original_without_replay() {
+        struct ControlledTx {
+            sends:
+                mpsc::UnboundedSender<(MessageEnvelope, channel::CompletionSink<MessageEnvelope>)>,
+            status: watch::Receiver<channel::TxStatus>,
+        }
+        #[async_trait]
+        impl channel::Tx<MessageEnvelope> for ControlledTx {
+            fn do_post(
+                &self,
+                message: MessageEnvelope,
+                completion: channel::CompletionSink<MessageEnvelope>,
+            ) {
+                self.sends.send((message, completion)).unwrap();
+            }
+            fn addr(&self) -> ChannelAddr {
+                ChannelAddr::Local(1)
+            }
+            fn status(&self) -> &watch::Receiver<channel::TxStatus> {
+                &self.status
+            }
+        }
+        let server = Gateway::isolated();
+        let mut listener = server
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        let proc = Proc::builder()
+            .shared_gateway(server.clone())
+            .build()
+            .unwrap();
+        let recv = proc.client("receiver");
+        let (port, mut received) = recv.bind_handler_port::<u64>();
+        let dest = port.bind().port_addr().clone();
+        let (sends, mut old) = mpsc::unbounded_channel();
+        let (_health, status) = watch::channel(channel::TxStatus::Active);
+        let caller = Gateway::configured(
+            ChannelAddr::Local(1).into(),
+            MailboxClient::new(ControlledTx { sends, status }).into_boxed(),
+        );
+        let scratch = Proc::isolated();
+        let scratch_client = scratch.client("return");
+        let (returned, mut returned_rx) =
+            scratch_client.open_port::<Undeliverable<MessageEnvelope>>();
+        let data = |value| {
+            MessageEnvelope::serialize(
+                test_actor_id("terminal", "sender"),
+                dest.clone(),
+                &value,
+                Flattrs::new(),
+            )
+            .unwrap()
+        };
+        caller.forwarder().post(data(1u64), returned);
+        let (message, completion) = old.recv().await.unwrap();
+        let attach = tokio::spawn({
+            let caller = caller.clone();
+            let addr = server.default_location().addr().clone();
+            async move { caller.serve_via(addr).await }
+        });
+        while !caller.inner.routing.read().unwrap().gated {
+            tokio::task::yield_now().await;
+        }
+        assert!(!attach.is_finished());
+        completion.reject(channel::SendError {
+            error: ChannelError::Closed,
+            message,
+            reason: None,
+        });
+        let Undeliverable::Returned(original) = returned_rx.recv().await.unwrap() else {
+            panic!("expected original failed envelope")
+        };
+        assert_eq!(original.dest(), &dest);
+        assert_eq!(original.deserialized::<u64>().unwrap(), 1);
+        let mut via = attach.await.unwrap().unwrap();
+        caller
+            .forwarder()
+            .post(data(2u64), monitored_return_handle());
+        assert_eq!(received.recv().await.unwrap(), 2);
+        assert!(received.try_recv().unwrap().is_none());
+        via.stop("test complete");
+        via.join().await.unwrap();
+        listener.stop("test complete");
+        listener.join().await.unwrap();
     }
 
     /// Test-only helper that connects two gateways over real

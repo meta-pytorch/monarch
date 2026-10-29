@@ -1099,6 +1099,12 @@ pub trait MailboxSender: Send + Sync + Any {
     async fn flush(&self) -> Result<(), anyhow::Error> {
         Ok(())
     }
+    /// Drain a sender whose owner has fenced further submissions. Routers may
+    /// include replacement generations here without widening ordinary flush
+    /// watermarks to include unrelated concurrent submissions.
+    async fn drain(&self) -> Result<(), anyhow::Error> {
+        self.flush().await
+    }
 }
 
 /// PortSender extends [`MailboxSender`] by providing typed endpoints
@@ -1290,6 +1296,9 @@ impl MailboxSender for BoxedMailboxSender {
 
     async fn flush(&self) -> Result<(), anyhow::Error> {
         self.0.flush().await
+    }
+    async fn drain(&self) -> Result<(), anyhow::Error> {
+        self.0.drain().await
     }
 }
 
@@ -1536,17 +1545,38 @@ pub struct MailboxClient {
     // To cancel monitoring tx health.
     _tx_monitoring: CancellationToken,
 
-    // Flush tracking: counts messages successfully submitted to the buffer.
-    submitted: Arc<AtomicUsize>,
-    // Flush tracking: counts messages whose delivery oneshot has resolved
-    // (acked or failed).
-    completed: Arc<AtomicUsize>,
-    // Notifies flush waiters when `completed` changes.
-    completed_notify: Arc<tokio::sync::Notify>,
+    // Ordinary flush uses this client's submission watermark. Fenced router
+    // drains additionally share an aggregate across every client generation.
+    completions: Arc<MailboxCompletions>,
+    aggregate: Option<Arc<MailboxCompletions>>,
 
     // Watcher exposing the underlying Tx's health. Callers can peek to detect
     // a closed client before submitting, e.g. for routing-cache eviction.
     tx_status: watch::Receiver<TxStatus>,
+}
+
+#[derive(Default)]
+struct MailboxCompletions {
+    submitted: Arc<AtomicUsize>,
+    completed: Arc<AtomicUsize>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl MailboxCompletions {
+    async fn wait(&self, target: Option<usize>) {
+        loop {
+            // Enable before checking: Notify::notify_waiters does not retain a permit.
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let completed = self.completed.load(Ordering::Acquire);
+            let submitted = target.unwrap_or_else(|| self.submitted.load(Ordering::Acquire));
+            if completed >= submitted {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 impl fmt::Debug for MailboxClient {
@@ -1566,7 +1596,7 @@ impl MailboxClient {
     /// Create a new client that sends messages destined for a
     /// [`MailboxServer`] on the provided Tx channel.
     pub fn new(tx: impl channel::Tx<MessageEnvelope> + Send + Sync + 'static) -> Self {
-        Self::new_inner(tx, None)
+        Self::new_inner(tx, None, None)
     }
 
     /// Create a client that hands messages rejected by a stale session to
@@ -1587,23 +1617,27 @@ impl MailboxClient {
     fn with_stale_session_repost(
         tx: impl channel::Tx<MessageEnvelope> + Send + Sync + 'static,
         repost: StaleSessionRepost,
+        completions: Arc<MailboxCompletions>,
     ) -> Self {
-        Self::new_inner(tx, Some(repost))
+        Self::new_inner(tx, Some(repost), Some(completions))
     }
 
     fn new_inner(
         tx: impl channel::Tx<MessageEnvelope> + Send + Sync + 'static,
         repost: Option<StaleSessionRepost>,
+        aggregate: Option<Arc<MailboxCompletions>>,
     ) -> Self {
+        let completions: Arc<MailboxCompletions> = Arc::default();
         let addr = tx.addr();
         let tx = Arc::new(tx);
         let tx_status = tx.status().clone();
         let tx_monitoring = CancellationToken::new();
-        let completed = Arc::new(AtomicUsize::new(0));
-        let completed_notify = Arc::new(tokio::sync::Notify::new());
+        let completed = completions.completed.clone();
+        let completed_notify = completions.notify.clone();
         let buffer = {
             let completed = completed.clone();
             let completed_notify = completed_notify.clone();
+            let aggregate = aggregate.clone();
             let addr = addr.clone();
             Buffer::new(move |envelope, return_handle| {
                 let tx = Arc::clone(&tx);
@@ -1611,8 +1645,14 @@ impl MailboxClient {
                 let repost = repost.clone();
                 // Set up for delivery failure.
                 let return_handle_0 = return_handle.clone();
-                let tracker =
+                let mut tracker =
                     channel::CompletionTracker::new(completed.clone(), completed_notify.clone());
+                if let Some(aggregate) = &aggregate {
+                    tracker = tracker.with_additional(channel::CompletionTracker::new(
+                        aggregate.completed.clone(),
+                        aggregate.notify.clone(),
+                    ));
+                }
                 let completion = CompletionSink::tracked(
                     tracker,
                     move |send_error: SendError<MessageEnvelope>| {
@@ -1666,9 +1706,8 @@ impl MailboxClient {
             addr: addr.clone(),
             buffer,
             _tx_monitoring: tx_monitoring.clone(),
-            submitted: Arc::new(AtomicUsize::new(0)),
-            completed,
-            completed_notify,
+            completions,
+            aggregate,
             tx_status: tx_status.clone(),
         };
         Self::monitor_tx_health(tx_status, tx_monitoring, addr);
@@ -1726,6 +1765,10 @@ impl MailboxSender for MailboxClient {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         tracing::event!(target:"messages", tracing::Level::TRACE,  "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.actor_addr(), "port"= envelope.dest.index(), "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
+        self.completions.submitted.fetch_add(1, Ordering::Release);
+        if let Some(aggregate) = &self.aggregate {
+            aggregate.submitted.fetch_add(1, Ordering::Release);
+        }
         if let Err(err) = self.buffer.send((envelope, return_handle)) {
             let mpsc::error::SendError((envelope, return_handle)) = *err;
             let target = envelope.dest().clone();
@@ -1740,22 +1783,19 @@ impl MailboxSender for MailboxClient {
 
             // Failed to enqueue.
             envelope.undeliverable(failure, return_handle);
-        } else {
-            self.submitted.fetch_add(1, Ordering::Relaxed);
+            self.completions.completed.fetch_add(1, Ordering::Release);
+            self.completions.notify.notify_waiters();
+            if let Some(aggregate) = &self.aggregate {
+                aggregate.completed.fetch_add(1, Ordering::Release);
+                aggregate.notify.notify_waiters();
+            }
         }
     }
 
     async fn flush(&self) -> Result<(), anyhow::Error> {
-        let target = self.submitted.load(Ordering::Relaxed);
-        loop {
-            // Register before checking so a completion cannot notify between
-            // the check and the wait.
-            let notified = self.completed_notify.notified();
-            if self.completed.load(Ordering::Relaxed) >= target {
-                return Ok(());
-            }
-            notified.await;
-        }
+        let target = self.completions.submitted.load(Ordering::Acquire);
+        self.completions.wait(Some(target)).await;
+        Ok(())
     }
 }
 
@@ -3864,6 +3904,11 @@ impl MailboxSender for MailboxRouter {
         futures::future::try_join_all(futs).await?;
         Ok(())
     }
+    async fn drain(&self) -> Result<(), anyhow::Error> {
+        let senders: Vec<_> = self.entries.read().unwrap().values().cloned().collect();
+        futures::future::try_join_all(senders.iter().map(|sender| sender.drain())).await?;
+        Ok(())
+    }
 }
 
 /// A router that first checks a [`MailboxRouter`] for a matching
@@ -3899,6 +3944,13 @@ impl MailboxSender for FallbackMailboxRouter {
         let (r1, r2) = futures::future::join(self.router.flush(), self.default.flush()).await;
         r1?;
         r2?;
+        Ok(())
+    }
+    async fn drain(&self) -> Result<(), anyhow::Error> {
+        let (router, default) =
+            futures::future::join(self.router.drain(), self.default.drain()).await;
+        router?;
+        default?;
         Ok(())
     }
 }
@@ -3947,6 +3999,12 @@ impl MailboxSender for WeakMailboxRouter {
     async fn flush(&self) -> Result<(), anyhow::Error> {
         match self.upgrade() {
             Some(router) => router.flush().await,
+            None => Ok(()),
+        }
+    }
+    async fn drain(&self) -> Result<(), anyhow::Error> {
+        match self.upgrade() {
+            Some(router) => router.drain().await,
             None => Ok(()),
         }
     }
@@ -3999,6 +4057,7 @@ fn is_redialable_close(status: &TxStatus) -> bool {
 pub struct DialMailboxRouter {
     address_book: Arc<RwLock<BTreeMap<Addr, ChannelAddr>>>,
     sender_cache: Arc<DashMap<ChannelAddr, Arc<MailboxClient>>>,
+    completions: Arc<MailboxCompletions>,
 
     // The default sender, to which messages for unknown recipients
     // are sent. (This is like a default route in a routing table.)
@@ -4029,6 +4088,7 @@ impl DialMailboxRouter {
         Self {
             address_book: Arc::new(RwLock::new(BTreeMap::new())),
             sender_cache: Arc::new(DashMap::new()),
+            completions: Arc::default(),
             default,
             direct_addressed_remote_only: false,
         }
@@ -4042,6 +4102,7 @@ impl DialMailboxRouter {
         Self {
             address_book: Arc::new(RwLock::new(BTreeMap::new())),
             sender_cache: Arc::new(DashMap::new()),
+            completions: Arc::default(),
             default,
             direct_addressed_remote_only: true,
         }
@@ -4163,13 +4224,14 @@ impl DialMailboxRouter {
                     return Ok(entry.get().clone());
                 }
                 Entry::Vacant(entry) => {
-                    let sender = dial_router_client(&self.sender_cache, addr).map_err(|err| {
-                        MailboxSenderError::new_unbound_type(
-                            actor_ref.clone(),
-                            MailboxSenderErrorKind::Channel(err),
-                            "unknown",
-                        )
-                    })?;
+                    let sender = dial_router_client(&self.sender_cache, addr, &self.completions)
+                        .map_err(|err| {
+                            MailboxSenderError::new_unbound_type(
+                                actor_ref.clone(),
+                                MailboxSenderErrorKind::Channel(err),
+                                "unknown",
+                            )
+                        })?;
                     return Ok(entry.insert(sender).value().clone());
                 }
             }
@@ -4184,16 +4246,23 @@ impl DialMailboxRouter {
 fn dial_router_client(
     sender_cache: &Arc<DashMap<ChannelAddr, Arc<MailboxClient>>>,
     addr: &ChannelAddr,
+    completions: &Arc<MailboxCompletions>,
 ) -> Result<Arc<MailboxClient>, ChannelError> {
     let tx = channel::dial(addr.clone())?;
     let this_client: Arc<OnceLock<Weak<MailboxClient>>> = Arc::default();
     let repost: StaleSessionRepost = {
-        let sender_cache = Arc::clone(sender_cache);
+        let sender_cache = Arc::downgrade(sender_cache);
         let addr = addr.clone();
         let this_client = Arc::clone(&this_client);
+        let completions = completions.clone();
         Arc::new(move |envelope, return_handle| {
             let stale = this_client.get().and_then(Weak::upgrade);
-            match replace_stale_router_client(&sender_cache, &addr, stale.as_ref()) {
+            match sender_cache
+                .upgrade()
+                .ok_or(ChannelError::Closed)
+                .and_then(|cache| {
+                    replace_stale_router_client(&cache, &addr, stale.as_ref(), &completions)
+                }) {
                 Ok(fresh) => fresh.post(envelope, return_handle),
                 Err(error) => {
                     let failure = DeliveryFailure::new(UndeliverableReason::Transport(
@@ -4210,7 +4279,11 @@ fn dial_router_client(
             }
         })
     };
-    let client = Arc::new(MailboxClient::with_stale_session_repost(tx, repost));
+    let client = Arc::new(MailboxClient::with_stale_session_repost(
+        tx,
+        repost,
+        completions.clone(),
+    ));
     this_client
         .set(Arc::downgrade(&client))
         .expect("client reference should be set once");
@@ -4224,6 +4297,7 @@ fn replace_stale_router_client(
     sender_cache: &Arc<DashMap<ChannelAddr, Arc<MailboxClient>>>,
     addr: &ChannelAddr,
     stale: Option<&Arc<MailboxClient>>,
+    completions: &Arc<MailboxCompletions>,
 ) -> Result<Arc<MailboxClient>, ChannelError> {
     match sender_cache.entry(addr.clone()) {
         Entry::Occupied(mut entry)
@@ -4233,13 +4307,13 @@ fn replace_stale_router_client(
                 ?addr,
                 "replacing stale-session MailboxClient in DialMailboxRouter cache"
             );
-            let fresh = dial_router_client(sender_cache, addr)?;
+            let fresh = dial_router_client(sender_cache, addr, completions)?;
             entry.insert(Arc::clone(&fresh));
             Ok(fresh)
         }
         Entry::Occupied(entry) => Ok(Arc::clone(entry.get())),
         Entry::Vacant(entry) => {
-            let fresh = dial_router_client(sender_cache, addr)?;
+            let fresh = dial_router_client(sender_cache, addr, completions)?;
             Ok(Arc::clone(entry.insert(fresh).value()))
         }
     }
@@ -4281,9 +4355,20 @@ impl MailboxSender for DialMailboxRouter {
             .iter()
             .map(|entry| entry.value().clone())
             .collect();
-        let mut futs: Vec<_> = senders.iter().map(|s| s.flush()).collect();
-        futs.push(self.default.flush());
-        futures::future::try_join_all(futs).await?;
+        let mut futures: Vec<_> = senders.iter().map(|sender| sender.flush()).collect();
+        futures.push(self.default.flush());
+        futures::future::try_join_all(futures).await?;
+        Ok(())
+    }
+
+    async fn drain(&self) -> Result<(), anyhow::Error> {
+        // A stale-session rejection submits its replacement before completing the
+        // old attempt. Waiting for shared quiescence therefore includes retries
+        // and clients already evicted from the cache. A gateway cutover fences
+        // new submissions before entering this barrier.
+        let ((), result) =
+            futures::future::join(self.completions.wait(None), self.default.drain()).await;
+        result?;
         Ok(())
     }
 }
@@ -5450,6 +5535,142 @@ mod tests {
                 assert_eq!(receiver.recv().await.unwrap(), 123u64);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_router_completion_barrier_includes_retired_stale_retry() {
+        struct ControlledTx {
+            messages: mpsc::UnboundedSender<(MessageEnvelope, CompletionSink<MessageEnvelope>)>,
+            status: watch::Receiver<TxStatus>,
+        }
+        #[async_trait]
+        impl channel::Tx<MessageEnvelope> for ControlledTx {
+            fn do_post(
+                &self,
+                message: MessageEnvelope,
+                completion: CompletionSink<MessageEnvelope>,
+            ) {
+                self.messages.send((message, completion)).unwrap();
+            }
+            fn addr(&self) -> ChannelAddr {
+                ChannelAddr::Local(1)
+            }
+            fn status(&self) -> &watch::Receiver<TxStatus> {
+                &self.status
+            }
+        }
+        let router = DialMailboxRouter::new();
+        let (messages, mut receives) = mpsc::unbounded_channel();
+        let (_health, status) = watch::channel(TxStatus::Active);
+        let fresh = Arc::new(MailboxClient::new_inner(
+            ControlledTx {
+                messages: messages.clone(),
+                status: status.clone(),
+            },
+            None,
+            Some(router.completions.clone()),
+        ));
+        let stale = MailboxClient::with_stale_session_repost(
+            ControlledTx { messages, status },
+            Arc::new(move |envelope, handle| fresh.post(envelope, handle)),
+            router.completions.clone(),
+        );
+        let dest = test_port_id("retry_barrier", "dest", 1);
+        stale.post(
+            MessageEnvelope::serialize(
+                test_actor_id("retry_barrier", "sender"),
+                dest,
+                &1u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            monitored_return_handle(),
+        );
+        let (message, first) = receives.recv().await.unwrap();
+        first.reject(SendError {
+            error: ChannelError::Closed,
+            message,
+            reason: Some(SendErrorReason::StaleSession("restart".into())),
+        });
+        // The original attempt has completed and its client is no longer
+        // retained, but the replacement's terminal outcome remains pending.
+        drop(stale);
+        let (_, retry) = receives.recv().await.unwrap();
+        let drain = router.drain();
+        tokio::pin!(drain);
+        assert!(futures::poll!(&mut drain).is_pending());
+        retry.accept();
+        drain.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_router_public_flush_keeps_its_watermark_with_later_pending_sends() {
+        struct ControlledTx {
+            messages: mpsc::UnboundedSender<CompletionSink<MessageEnvelope>>,
+            status: watch::Receiver<TxStatus>,
+        }
+        #[async_trait]
+        impl channel::Tx<MessageEnvelope> for ControlledTx {
+            fn do_post(&self, _: MessageEnvelope, completion: CompletionSink<MessageEnvelope>) {
+                self.messages.send(completion).unwrap();
+            }
+            fn addr(&self) -> ChannelAddr {
+                ChannelAddr::Local(1)
+            }
+            fn status(&self) -> &watch::Receiver<TxStatus> {
+                &self.status
+            }
+        }
+        let router = DialMailboxRouter::new();
+        let (messages, mut received) = mpsc::unbounded_channel();
+        let (_health, status) = watch::channel(TxStatus::Active);
+        let client = Arc::new(MailboxClient::new_inner(
+            ControlledTx { messages, status },
+            None,
+            Some(router.completions.clone()),
+        ));
+        router
+            .sender_cache
+            .insert(ChannelAddr::Local(1), client.clone());
+        let message = || {
+            MessageEnvelope::serialize(
+                test_actor_id("watermark", "sender"),
+                test_port_id("watermark", "dest", 1),
+                &1u64,
+                Flattrs::new(),
+            )
+            .unwrap()
+        };
+        client.post(message(), monitored_return_handle());
+        let first = received.recv().await.unwrap();
+        let flush = router.flush();
+        tokio::pin!(flush);
+        assert!(futures::poll!(&mut flush).is_pending());
+        client.post(message(), monitored_return_handle());
+        let later = received.recv().await.unwrap();
+        first.accept();
+        flush.await.unwrap();
+        let drain = router.drain();
+        tokio::pin!(drain);
+        assert!(futures::poll!(&mut drain).is_pending());
+        later.accept();
+        drain.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_router_cache_is_released_after_drop() {
+        let (addr, _rx) =
+            channel::serve::<MessageEnvelope>(ChannelAddr::any(ChannelTransport::Local)).unwrap();
+        let router = DialMailboxRouter::new();
+        let weak = Arc::downgrade(&router.sender_cache);
+        let actor = test_actor_id("router_drop", "actor");
+        let client = router.dial(&addr, &actor).unwrap();
+        drop(client);
+        drop(router);
+        assert!(
+            weak.upgrade().is_none(),
+            "cached repost callbacks must not own the cache"
+        );
     }
 
     #[test]
