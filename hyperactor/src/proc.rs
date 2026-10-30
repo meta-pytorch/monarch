@@ -97,6 +97,8 @@
 //!   treat the age as best-effort telemetry, not a monotonic
 //!   invariant.
 
+pub(crate) mod control;
+
 use std::any::Any;
 use std::any::TypeId;
 use std::collections::BTreeMap;
@@ -2027,7 +2029,7 @@ impl MailboxSender for Proc {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        if envelope.dest().proc_id() == self.proc_id() {
+        if envelope.dest().proc_id() == self.proc_id() && envelope.permits_local_delivery() {
             self.state().proc_muxer.post(envelope, return_handle);
             return;
         }

@@ -153,6 +153,9 @@ fn into_dial_location(location: Location) -> Location {
     match location {
         Location::Addr(addr) => addr.into_dial_addr().into(),
         Location::Via(uid, inner) => into_dial_location(*inner).with_via(uid),
+        Location::Address(addr, inner) => {
+            Location::Address(addr.into_dial_addr(), Box::new(into_dial_location(*inner)))
+        }
     }
 }
 

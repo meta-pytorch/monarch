@@ -114,6 +114,22 @@ pub(crate) fn service_proc_id() -> ProcId {
     ProcId::instance(Label::strip(SERVICE_PROC_NAME))
 }
 
+/// Resolve the concrete service proc at a frontend location using the caller's
+/// existing actor context and ordinary routing. An existing attachment roots
+/// bare addresses through its upstream endpoint; explicit address paths retain
+/// their hop order. The returned address is usable for ordinary actor traffic.
+pub async fn query_service_proc(
+    cx: &impl context::Actor,
+    location: Location,
+) -> anyhow::Result<ProcAddr> {
+    cx.instance()
+        .proc()
+        .gateway()
+        .resolve_endpoint_proc(cx, location.clone())
+        .await
+        .map_err(|error| anyhow::anyhow!("query service proc at {location}: {error}"))
+}
+
 /// Name of the local client proc on a host.
 ///
 /// See LP-1 (lazy activation) in module doc.
@@ -335,7 +351,7 @@ impl<M: ProcManager> Host<M> {
     /// identity, and its direct location is used to serve the frontend. The
     /// final service proc location comes from the gateway after binding, so it
     /// may differ because of an alias, an ephemeral address, or `via`. A
-    /// source-routed [`Location::Via`] is therefore rejected here.
+    /// source-routed [`Location::Via`] or [`Location::Address`] is rejected here.
     ///
     /// When `via` is `Some`, the gateway attaches to that remote duplex
     /// address with [`Gateway::serve_via`] *after* the local
@@ -360,7 +376,7 @@ impl<M: ProcManager> Host<M> {
         let service_proc_id = addr.id().clone();
         let addr = match addr.location() {
             Location::Addr(addr) => addr.clone(),
-            Location::Via(..) => {
+            Location::Via(..) | Location::Address(..) => {
                 return Err(HostError::InvalidFrontendLocation(addr.location().clone()));
             }
         };
@@ -375,7 +391,8 @@ impl<M: ProcManager> Host<M> {
         // requires a net transport, so we branch on `is_net()` rather than
         // `supports_duplex()` (the in-process `Local` transport supports
         // duplex but is not a kernel socket). Both paths register the bound
-        // address as the gateway's active serve location.
+        // address as the gateway's active serve location. The muxed frontend
+        // owns a listener-scoped runtime control registration.
         let frontend_result: Result<GatewayServeHandle, ChannelError> = if addr.transport().is_net()
         {
             gateway.serve_mux_with_listener(addr, listener)
@@ -442,6 +459,16 @@ impl<M: ProcManager> Host<M> {
             .shared_gateway(gateway.clone())
             .build()
             .map_err(HostError::ProcConstructionFailure)?;
+        if frontend_addr.transport().supports_duplex() {
+            frontend_handle
+                .register_proc_owner(&service_proc)
+                .map_err(HostError::ProcConstructionFailure)?;
+        }
+        if let Some(handle) = &via_handle {
+            handle
+                .register_proc_owner(&service_proc)
+                .map_err(HostError::ProcConstructionFailure)?;
+        }
         assert_eq!(
             service_proc.proc_addr(),
             expected_service_proc_addr,
@@ -2796,23 +2823,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_new_with_gateway_rejects_via_frontend_location() {
-        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
-            Ok(proc.spawn_with_label::<()>("host_agent", ()))
-        });
-        let location = Location::from(ChannelAddr::any(ChannelTransport::Unix))
-            .with_via(Uid::instance(Label::strip("remote")));
-        let service_proc_addr = ProcAddr::new(service_proc_id(), location.clone());
+    async fn test_new_with_gateway_rejects_routed_frontend_location() {
+        let addr = ChannelAddr::any(ChannelTransport::Unix);
+        for location in [
+            Location::from(addr.clone()).with_via(Uid::instance(Label::strip("remote"))),
+            Location::Address(addr.clone(), Box::new(addr.into())),
+        ] {
+            let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+                Ok(proc.spawn_with_label::<()>("host_agent", ()))
+            });
+            let service_proc_addr = ProcAddr::new(service_proc_id(), location.clone());
+            let result =
+                Host::new_with_gateway(proc_manager, service_proc_addr, None, Gateway::new(), None)
+                    .await;
 
-        let result =
-            Host::new_with_gateway(proc_manager, service_proc_addr, None, Gateway::new(), None)
-                .await;
-
-        assert!(matches!(
-            result,
-            Err(HostError::InvalidFrontendLocation(error_location))
-                if error_location == location
-        ));
+            assert!(matches!(
+                result,
+                Err(HostError::InvalidFrontendLocation(error_location))
+                    if error_location == location
+            ));
+        }
     }
 
     #[tokio::test]
@@ -2842,6 +2872,131 @@ mod tests {
         );
 
         host.shutdown_servers().await;
+    }
+
+    #[tokio::test]
+    async fn test_frontend_answers_service_proc_query() {
+        let mut host = Host::new_with_gateway(
+            LocalProcManager::new(|proc: Proc| async move {
+                Ok(proc.spawn_with_label::<()>("host_agent", ()))
+            }),
+            ProcAddr::new(
+                ProcId::instance(Label::strip(SERVICE_PROC_NAME)),
+                ChannelAddr::any(ChannelTransport::Unix).into(),
+            ),
+            None,
+            Gateway::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let caller_gateway = Gateway::new();
+        let mut caller_listener =
+            Gateway::serve(&caller_gateway, ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+        let caller = Proc::builder()
+            .shared_gateway(caller_gateway)
+            .build()
+            .unwrap();
+        let client = caller.client("query");
+        let discovered = query_service_proc(&client, host.addr().clone().into())
+            .await
+            .unwrap();
+
+        assert_eq!(discovered, host.system_proc().proc_addr());
+        host.shutdown_servers().await;
+        caller_listener.stop("test complete");
+        caller_listener.join().await.unwrap();
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_restarted_host_answers_query_with_new_service_proc() {
+        use hyperactor::mailbox::MailboxSender as _;
+        use hyperactor::mailbox::Undeliverable;
+        use hyperactor::testing::pingpong::PingPongActor;
+        use hyperactor::testing::pingpong::PingPongMessage;
+
+        let mut first = Host::new(
+            LocalProcManager::new(|proc: Proc| async move {
+                Ok(proc.spawn_with_label::<()>("host_agent", ()))
+            }),
+            ChannelAddr::from_zmq_url("tcp://127.0.0.1:0").unwrap(),
+        )
+        .await
+        .unwrap();
+        let addr = first.addr().clone();
+        let first_id = first.system_proc().proc_id().clone();
+        let old_actor = first
+            .system_proc()
+            .spawn_with_label("same_actor", PingPongActor::new(None, None, None));
+        let old_ref = old_actor.bind::<PingPongActor>();
+
+        // Reuse one caller and its cached route across the Host replacement.
+        let caller_gateway = Gateway::new();
+        let mut caller_listener =
+            Gateway::serve(&caller_gateway, ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+        let caller = Proc::builder()
+            .shared_gateway(caller_gateway.clone())
+            .build()
+            .unwrap();
+        let client = caller.client("requester");
+        assert_eq!(
+            query_service_proc(&client, addr.clone().into())
+                .await
+                .unwrap()
+                .id(),
+            &first_id
+        );
+        let (failures, mut failed) = client.open_port::<Undeliverable<MessageEnvelope>>();
+        let sender = caller.spawn(PingPongActor::new(Some(failures.bind()), None, None));
+        let sender_ref = sender.bind::<PingPongActor>();
+        let (done, reply) = client.mailbox().open_once_port::<bool>();
+        sender_ref
+            .port::<PingPongMessage>()
+            .post(&client, PingPongMessage(1, old_ref.clone(), done.bind()));
+        assert!(reply.recv().await.unwrap());
+        caller_gateway.forwarder().flush().await.unwrap();
+        first.shutdown_servers().await;
+        old_actor.stop("old Host stopped").unwrap();
+        drop(old_actor);
+        drop(first);
+
+        let mut second = Host::new(
+            LocalProcManager::new(|proc: Proc| async move {
+                Ok(proc.spawn_with_label::<()>("host_agent", ()))
+            }),
+            addr.clone(),
+        )
+        .await
+        .unwrap();
+        let discovered = query_service_proc(&client, addr.into()).await.unwrap();
+        assert_ne!(discovered.id(), &first_id);
+        assert_eq!(discovered.id(), second.system_proc().proc_id());
+        let replacement = second
+            .system_proc()
+            .spawn_with_label("same_actor", PingPongActor::new(None, None, None));
+        let replacement_ref = replacement.bind::<PingPongActor>();
+        let (stale_done, _stale_reply) = client.mailbox().open_once_port::<bool>();
+        sender_ref
+            .port::<PingPongMessage>()
+            .post(&client, PingPongMessage(1, old_ref, stale_done.bind()));
+        let returned = failed.recv().await.unwrap();
+        let Undeliverable::Returned(envelope) = returned else {
+            panic!("expected stale concrete reference to be returned")
+        };
+        assert_eq!(envelope.dest().proc_id(), &first_id);
+        assert!(envelope.root_delivery_failure().is_some());
+
+        let (done, reply) = client.mailbox().open_once_port::<bool>();
+        sender_ref
+            .port::<PingPongMessage>()
+            .post(&client, PingPongMessage(1, replacement_ref, done.bind()));
+        assert!(reply.recv().await.unwrap());
+        second.shutdown_servers().await;
+        replacement.stop("test complete").unwrap();
+        sender.stop("test complete").unwrap();
+        caller_listener.stop("test complete");
+        caller_listener.join().await.unwrap();
     }
 
     #[tokio::test]
@@ -2970,6 +3125,20 @@ mod tests {
             .as_via()
             .expect("service proc must carry the via prefix");
         assert_eq!(svc_inner.addr(), &remote_addr);
+
+        // A peer route reaches the Host over its existing outbound attachment.
+        // Its terminal owner belongs to that receiving connection as well as
+        // the separately served frontend listener.
+        let remote_proc = Proc::builder()
+            .shared_gateway(remote_gw.clone())
+            .build()
+            .unwrap();
+        let remote_client = remote_proc.client("peer_query");
+        let discovered = query_service_proc(&remote_client, default_location.clone())
+            .await
+            .unwrap();
+        assert_eq!(discovered.id(), svc_proc_addr.id());
+        assert_eq!(discovered.location(), &default_location);
 
         let shutdown_handles = host.take_shutdown_handles();
         drop(host);

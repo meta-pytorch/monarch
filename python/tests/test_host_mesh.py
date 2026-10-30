@@ -816,6 +816,281 @@ def test_alias_bootstrap() -> None:
             proc.wait()
 
 
+def _start_bare_address_worker(addr: str) -> subprocess.Popen[bytes]:
+    env = {**os.environ}
+    if "FB_XAR_INVOKED_NAME" in os.environ:
+        env["PYTHONPATH"] = ":".join(sys.path)
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "from monarch.actor import run_worker_loop_forever; "
+            f'run_worker_loop_forever(address={addr!r}, ca="trust_all_connections")',
+        ],
+        env=env,
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+    )
+
+
+def _stop_bare_address_worker(
+    worker: subprocess.Popen[bytes], actor_pids: list[int]
+) -> None:
+    # Native proc launchers put each child in its own process group. Own all
+    # groups created by this test, including children orphaned by a host crash.
+    for pid in [worker.pid, *actor_pids]:
+        with suppress(ProcessLookupError):
+            os.killpg(pid, signal.SIGKILL)
+    worker.wait(timeout=10)
+    actor_pids.clear()
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_attach_to_workers_discovers_bare_address_identity() -> None:
+    """Make two attachments from one caller, then discover a replacement at
+    the same frontend. Observe stale-reference transport failure explicitly."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    addr = f"tcp://127.0.0.1:{port}"
+
+    import monarch.actor
+
+    faults: list[str] = []
+    faulted = threading.Event()
+
+    def capture_stale_delivery(failure: Any) -> None:
+        faults.append(failure.report())
+        faulted.set()
+
+    original_hook = monarch.actor.unhandled_fault_hook
+    worker = _start_bare_address_worker(addr)
+    actor_pids: list[int] = []
+    try:
+        # pyrefly: ignore [bad-argument-type]
+        first = attach_to_workers(ca="trust_all_connections", workers=[addr], name="a")
+        # pyrefly: ignore [bad-argument-type]
+        second = attach_to_workers(ca="trust_all_connections", workers=[addr], name="b")
+        old_actor = first.spawn_procs(per_host={"gpus": 1}, name="first").spawn(
+            "rank", RankActor
+        )
+        other_actor = second.spawn_procs(per_host={"gpus": 1}, name="second").spawn(
+            "rank", RankActor
+        )
+        for actor in [old_actor, other_actor]:
+            assert list(actor.get_rank.call().get(timeout=30).values()) == [0]
+            actor_pids.extend(actor.get_pid.call().get(timeout=30).values())
+
+        # Transport failures reach the root supervision hook, whose default
+        # exits via KeyboardInterrupt. Observe the explicit delivery failure
+        # while keeping this caller alive to reach the replacement.
+        monarch.actor.unhandled_fault_hook = capture_stale_delivery
+        _stop_bare_address_worker(worker, actor_pids)
+        worker = _start_bare_address_worker(addr)
+        # pyrefly: ignore [bad-argument-type]
+        restarted = attach_to_workers(
+            ca="trust_all_connections", workers=[addr], name="restarted"
+        )
+        replacement = restarted.spawn_procs(per_host={"gpus": 1}, name="first").spawn(
+            "rank", RankActor
+        )
+        assert list(replacement.get_rank.call().get(timeout=30).values()) == [0]
+        actor_pids.extend(replacement.get_pid.call().get(timeout=30).values())
+        faulted.clear()
+        first_new_fault = len(faults)
+        # A transport failure is delivered through root supervision, rather
+        # than an ActorError reply. Avoid creating a reply future that cannot
+        # be satisfied by the dead incarnation.
+        old_actor.get_rank.broadcast()
+        assert faulted.wait(timeout=15), "stale transport delivery did not fail"
+        assert any(
+            "undeliverable" in report and addr in report
+            for report in faults[first_new_fault:]
+        ), faults
+        assert list(replacement.get_rank.call().get(timeout=30).values()) == [0]
+        restarted.shutdown().get(timeout=30)
+    finally:
+        _stop_bare_address_worker(worker, actor_pids)
+        monarch.actor.unhandled_fault_hook = original_hook
+
+
+def _deny_new_connects_for_relay_client() -> None:
+    """Test-only Linux boundary: existing duplex stays open; new dials fail.
+
+    TSYNC applies the filter to Tokio's already-running native threads too,
+    so monkeypatching Python socket.connect cannot hide a Rust-side direct dial.
+    Worker/supervisor processes are started before this filter and remain free
+    to communicate within the modeled cluster.
+    """
+    import ctypes
+    import ctypes.util
+    import errno
+
+    library = ctypes.util.find_library("seccomp")
+    if library is None:
+        pytest.skip("relay network-boundary test requires libseccomp")
+    seccomp = ctypes.CDLL(library, use_errno=True)
+    seccomp.seccomp_init.argtypes = [ctypes.c_uint32]
+    seccomp.seccomp_init.restype = ctypes.c_void_p
+    seccomp.seccomp_syscall_resolve_name.argtypes = [ctypes.c_char_p]
+    seccomp.seccomp_syscall_resolve_name.restype = ctypes.c_int
+    seccomp.seccomp_rule_add.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_int,
+        ctypes.c_uint,
+    ]
+    seccomp.seccomp_attr_set.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint32]
+    seccomp.seccomp_load.argtypes = [ctypes.c_void_p]
+    seccomp.seccomp_release.argtypes = [ctypes.c_void_p]
+    policy = seccomp.seccomp_init(0x7FFF0000)  # SCMP_ACT_ALLOW
+    assert policy
+    try:
+        connect = seccomp.seccomp_syscall_resolve_name(b"connect")
+        assert connect >= 0
+        assert seccomp.seccomp_rule_add(policy, 0x50000 | errno.EACCES, connect, 0) == 0
+        assert seccomp.seccomp_attr_set(policy, 4, 1) == 0  # SCMP_FLTATR_CTL_TSYNC
+        assert seccomp.seccomp_load(policy) == 0
+    finally:
+        seccomp.seccomp_release(policy)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux seccomp TSYNC")
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize("explicit_route", [False, True], ids=["bare", "address-route"])
+@isolate_in_subprocess
+def test_worker_rediscovery_through_gateway_without_client_dials(
+    explicit_route: bool,
+) -> None:
+    """C can use its established attachment to A; only A may dial B.
+
+    Restart B with the same address and Pod UID environment. Neither worker
+    identities nor updated launcher metadata are supplied to C at any point.
+    """
+    import errno
+
+    import monarch.actor
+
+    ports = []
+    for _ in range(2):
+        with socket.socket() as reserved:
+            reserved.bind(("127.0.0.1", 0))
+            ports.append(reserved.getsockname()[1])
+    relay_address, worker_address = [f"tcp://127.0.0.1:{port}" for port in ports]
+    worker_location = (
+        "route:" + json.dumps([relay_address, worker_address])
+        if explicit_route
+        else worker_address
+    )
+    # This pre-filter supervisor owns worker restarts, so B2 does not inherit
+    # C's connection-denying filter. All launches use the exact same bare URL.
+    supervisor_script = textwrap.dedent("""\
+        import os, signal, subprocess, sys
+        from contextlib import suppress
+        import psutil
+        addresses = sys.argv[1:]
+        workers = {}
+        def launch(index):
+            env = {**os.environ, "MONARCH_POD_UID": "same-pod-b" if index else "pod-a"}
+            workers[index] = subprocess.Popen([
+                sys.executable, "-c",
+                "from monarch.actor import run_worker_loop_forever; "
+                f"run_worker_loop_forever(address={addresses[index]!r}, ca='trust_all_connections')",
+            ], env=env, start_new_session=True, stdout=sys.stderr)
+        def stop(index):
+            worker = workers.pop(index, None)
+            if worker is None:
+                return
+            with suppress(psutil.NoSuchProcess):
+                for child in reversed(psutil.Process(worker.pid).children(recursive=True)):
+                    with suppress(ProcessLookupError):
+                        os.killpg(child.pid, signal.SIGKILL)
+            with suppress(ProcessLookupError):
+                os.killpg(worker.pid, signal.SIGKILL)
+            worker.wait(timeout=10)
+        try:
+            launch(0)
+            launch(1)
+            print("started", flush=True)
+            for command in sys.stdin:
+                if command.strip() == "restart":
+                    stop(1)
+                    launch(1)
+                    print("restarted", flush=True)
+                else:
+                    break
+        finally:
+            for index in list(workers):
+                stop(index)
+        """)
+    supervisor = subprocess.Popen(
+        [sys.executable, "-u", "-c", supervisor_script, relay_address, worker_address],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    faults: list[str] = []
+    faulted = threading.Event()
+    original_hook = monarch.actor.unhandled_fault_hook
+
+    def capture_stale(failure: Any) -> None:
+        faults.append(failure.report())
+        faulted.set()
+
+    try:
+        assert supervisor.stdout is not None
+        assert supervisor.stdin is not None
+        assert supervisor.stdout.readline().strip() == "started"
+        attach(relay_address)
+        # Bootstrap all caller context before denying every future connect(2).
+        context()
+        _deny_new_connects_for_relay_client()
+        with socket.socket() as blocked:
+            with pytest.raises(OSError) as failure:
+                blocked.connect(("127.0.0.1", ports[1]))
+            assert failure.value.errno == errno.EACCES
+        # A and C have their own service procs. B's environment proves the
+        # response came from B rather than either ambient same-label proc.
+        first = attach_to_workers(
+            ca="trust_all_connections", workers=[worker_location], name="relay-b1"
+        )
+        old_actor = first.spawn_procs(per_host={"gpus": 1}).spawn("echo", EchoActor)
+        assert list(
+            old_actor.getenv.call("MONARCH_POD_UID").get(timeout=30).values()
+        ) == ["same-pod-b"]
+        assert list(old_actor.echo.call("before").get(timeout=30).values()) == ["before"]
+        monarch.actor.unhandled_fault_hook = capture_stale
+        supervisor.stdin.write("restart\n")
+        supervisor.stdin.flush()
+        assert supervisor.stdout.readline().strip() == "restarted"
+        second = attach_to_workers(
+            ca="trust_all_connections", workers=[worker_location], name="relay-b2"
+        )
+        replacement = second.spawn_procs(per_host={"gpus": 1}).spawn("echo", EchoActor)
+        assert list(
+            replacement.getenv.call("MONARCH_POD_UID").get(timeout=30).values()
+        ) == ["same-pod-b"]
+        assert list(replacement.echo.call("after").get(timeout=30).values()) == ["after"]
+        faulted.clear()
+        old_actor.echo.broadcast("stale")
+        assert faulted.wait(15), "old incarnation must fail rather than rebind"
+        assert any("undeliverable" in failure for failure in faults), faults
+        assert list(
+            replacement.echo.call("still live").get(timeout=30).values()
+        ) == ["still live"]
+        second.shutdown().get(timeout=30)
+    finally:
+        monarch.actor.unhandled_fault_hook = original_hook
+        if supervisor.stdin is not None:
+            with suppress(BrokenPipeError):
+                supervisor.stdin.write("stop\n")
+                supervisor.stdin.flush()
+            supervisor.stdin.close()
+        supervisor.wait(timeout=15)
+
+
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_attach_to_workers_accepts_future_addresses() -> None:

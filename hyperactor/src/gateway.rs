@@ -13,13 +13,14 @@
 //! default location, receive inbound traffic through the gateway, and forward
 //! outbound traffic directly through the gateway.
 //!
-//! Gateways route [`Location`]s: if the inbound message is source routed,
-//! the gateway looks up the next hop via its peer table and forwards
-//! accordingly; otherwise the message is delivered if the proc is attached
-//! to the gateway.
+//! Gateways route [`Location`]s through address and peer steps. An explicit
+//! route selects a matching attachment or the configured dialer's exact
+//! endpoint, or a registered peer connection, then peels that action before
+//! transmitting. Empty explicit routes deliver locally or fail at that endpoint.
+//! Legacy Via locations preserve their existing peer-routing semantics.
 //!
-//! Messages with no local proc or peer route are forwarded through the
-//! default forwarder.
+//! Ordinary unresolved destinations may use the default forwarder. Explicit
+//! terminal and missing-hop failures never escape through that fallback.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -54,6 +55,8 @@ use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryFailure;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
+use crate::mailbox::InvalidReference;
+use crate::mailbox::InvalidReferenceReason;
 use crate::mailbox::MailboxClient;
 use crate::mailbox::MailboxSender as _;
 use crate::mailbox::MailboxServer as _;
@@ -84,10 +87,7 @@ use crate::proc::WeakProc;
 /// Label used for attach-control envelopes.
 const ATTACH_CONTROL_LABEL: &str = "attach";
 
-/// Upper bound on how long [`Gateway::serve_via`] waits for the peer's
-/// [`AttachAck`]. A peer that accepts the connection but never replies
-/// (hung, misconfigured, or running an older protocol) would otherwise
-/// block the caller — typically Python `bootstrap_host` — indefinitely.
+/// Deadline for attach acknowledgement and one-shot identity queries.
 const ATTACH_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// First message a gateway sends when attaching to a peer. The peer
@@ -126,16 +126,15 @@ wirevalue::register_type!(AttachAck);
     reason = "wire-protocol enum; boxing Envelope would ripple through channel/networking destructure sites"
 )]
 pub(crate) enum AttachWire {
-    /// First message: the peer accepts or rejects the attach.
+    /// The peer accepts or rejects an attach operation.
     Ack(AttachAck),
-    /// Subsequent messages: routed envelopes.
+    /// Subsequent messages on an attached session: routed envelopes.
     Envelope(MessageEnvelope),
 }
 wirevalue::register_type!(AttachWire);
 
-/// [`Rx<MessageEnvelope>`](channel::Rx) adapter that unwraps
-/// [`AttachWire::Envelope`] from a duplex receiver. Errors if the
-/// peer sends another [`AttachWire::Ack`] after the handshake.
+/// Unwrap ordinary inbound envelopes after attachment. Control replies after
+/// the handshake are protocol errors.
 pub(crate) struct AttachRx(pub(crate) channel::duplex::DuplexRx<AttachWire>);
 
 #[async_trait]
@@ -144,7 +143,7 @@ impl channel::Rx<MessageEnvelope> for AttachRx {
         match self.0.recv().await? {
             AttachWire::Envelope(envelope) => Ok(envelope),
             AttachWire::Ack(_) => Err(ChannelError::Other(anyhow::anyhow!(
-                "unexpected attach ack after handshake"
+                "unexpected control reply after handshake"
             ))),
         }
     }
@@ -403,7 +402,7 @@ impl Routing {
             .rev()
             .find_map(|serve| match &serve.kind {
                 ActiveServeKind::Server => None,
-                ActiveServeKind::Via { forwarder } => Some(forwarder.clone()),
+                ActiveServeKind::Via { forwarder, .. } => Some(forwarder.clone()),
             })
             .unwrap_or_else(|| self.state.base_forwarder.clone());
     }
@@ -420,7 +419,10 @@ struct ActiveServe {
 
 enum ActiveServeKind {
     Server,
-    Via { forwarder: BoxedMailboxSender },
+    Via {
+        endpoint: ChannelAddr,
+        forwarder: BoxedMailboxSender,
+    },
 }
 
 struct GatewayState {
@@ -450,6 +452,8 @@ struct GatewayState {
     /// routes (`Location::Via(uid, ...)`) consult this table to peel
     /// the outermost hop and forward.
     peers: RwLock<HashMap<Uid, BoxedMailboxSender>>,
+    #[cfg(test)]
+    active_duplex_sessions: std::sync::atomic::AtomicUsize,
 }
 
 impl Gateway {
@@ -494,6 +498,8 @@ impl Gateway {
                 procs: RwLock::new(HashMap::new()),
                 next_serve_id: AtomicU64::new(1),
                 peers: RwLock::new(HashMap::new()),
+                #[cfg(test)]
+                active_duplex_sessions: std::sync::atomic::AtomicUsize::new(0),
             }),
         }
     }
@@ -620,6 +626,7 @@ impl Gateway {
             gateway: self.clone(),
             handle,
             stopped: false,
+            endpoint_owner: None,
             kind: HandleKind::Serve {
                 serve_id: Some(serve_id),
             },
@@ -694,8 +701,10 @@ impl Gateway {
         let gateway = self.clone();
         let inner = server.inner;
         let serve_id = self.add_server(location);
+        let endpoint_owner = crate::proc::control::EndpointOwner::default();
+        let loop_owner = endpoint_owner.clone();
         let join_handle = tokio::spawn(async move {
-            duplex_accept_loop(inner, bound_addr, gateway, loop_token).await;
+            duplex_accept_loop(inner, bound_addr, gateway, loop_token, loop_owner).await;
             Ok::<(), MailboxServerError>(())
         });
         // The inner handle exists only so `join()`/`await` can await the
@@ -707,6 +716,7 @@ impl Gateway {
             gateway: self.clone(),
             handle,
             stopped: false,
+            endpoint_owner: Some(endpoint_owner),
             kind: HandleKind::ServeDuplex {
                 serve_id: Some(serve_id),
                 cancel_token,
@@ -739,7 +749,10 @@ impl Gateway {
         let mux =
             channel::serve_mux::<MessageEnvelope, MessageEnvelope, AttachWire>(addr, listener)?;
         let bound_addr = mux.addr().clone();
-        let simplex_gateway = self.clone();
+        let endpoint_owner = crate::proc::control::EndpointOwner::default();
+        let simplex_gateway =
+            crate::proc::control::EndpointIngress::new(self.clone(), endpoint_owner.clone());
+        let duplex_owner = endpoint_owner.clone();
         let duplex_gateway = self.clone();
         let duplex_addr = bound_addr.clone();
         let raw = mux.serve(
@@ -758,14 +771,19 @@ impl Gateway {
                         cancel_token.cancel();
                     }
                 });
-                duplex_accept_loop(duplex_server, duplex_addr, duplex_gateway, loop_token).await;
+                duplex_accept_loop(
+                    duplex_server,
+                    duplex_addr,
+                    duplex_gateway,
+                    loop_token,
+                    duplex_owner,
+                )
+                .await;
             },
         );
-        Ok(GatewayServeHandle::from_mailbox_handle(
-            self.clone(),
-            bound_addr,
-            raw,
-        ))
+        let mut handle = GatewayServeHandle::from_mailbox_handle(self.clone(), bound_addr, raw);
+        handle.endpoint_owner = Some(endpoint_owner);
+        Ok(handle)
     }
 
     /// Serve this gateway on `addr`, optionally using an already-bound
@@ -814,6 +832,7 @@ impl Gateway {
     /// default location, while older active locations remain valid. The
     /// newest active `serve_via` supplies the outbound forwarder.
     pub async fn serve_via(&self, addr: ChannelAddr) -> anyhow::Result<GatewayServeHandle> {
+        let endpoint = addr.clone().into_dial_addr();
         let my_uid = self.inner.uid.clone();
         let mut duplex_client = channel::duplex::dial::<MessageEnvelope, AttachWire>(addr)?;
         let duplex_tx = duplex_client.tx();
@@ -835,20 +854,115 @@ impl Gateway {
             AttachWire::Ack(AttachAck::Rejected { reason }) => {
                 anyhow::bail!("attach rejected by peer: {reason}")
             }
-            AttachWire::Envelope(_) => anyhow::bail!("expected attach ack as first message"),
+            AttachWire::Envelope(_) => {
+                anyhow::bail!("expected attach ack as first message")
+            }
         };
 
-        let serve_id = self.add_via_server(location, MailboxClient::new(duplex_tx).into_boxed());
-        let serve_handle = self.serve_rx(AttachRx(duplex_rx));
+        let serve_id = self.add_via_server(
+            location,
+            endpoint,
+            MailboxClient::new(duplex_tx).into_boxed(),
+        );
+        let endpoint_owner = crate::proc::control::EndpointOwner::default();
+        let serve_handle =
+            crate::proc::control::EndpointIngress::new(self.clone(), endpoint_owner.clone())
+                .serve(AttachRx(duplex_rx));
         Ok(GatewayServeHandle {
             gateway: self.clone(),
             handle: serve_handle,
             stopped: false,
+            endpoint_owner: Some(endpoint_owner),
             kind: HandleKind::ServeVia {
                 serve_id: Some(serve_id),
                 duplex_client: Some(duplex_client),
             },
         })
+    }
+
+    /// Resolve endpoint ownership using an existing mailbox context and ordinary
+    /// source routing. Bare locations in an attached gateway are rooted through
+    /// its newest attachment. The resulting location supports actor traffic too.
+    pub async fn resolve_endpoint_proc(
+        &self,
+        cx: &impl crate::context::Mailbox,
+        location: Location,
+    ) -> anyhow::Result<ProcAddr> {
+        self.resolve_endpoint_proc_with_timeout(cx, location, ATTACH_HANDSHAKE_TIMEOUT)
+            .await
+    }
+
+    async fn resolve_endpoint_proc_with_timeout(
+        &self,
+        cx: &impl crate::context::Mailbox,
+        location: Location,
+        timeout: Duration,
+    ) -> anyhow::Result<ProcAddr> {
+        let attachment = {
+            let routing = self.inner.routing.read().unwrap();
+            // For an explicit path, bind replies to the matching connection.
+            // For a bare input, use the newest attachment and prepend its
+            // actual endpoint; never consume the unvisited worker hop on C->A.
+            let first = location.routing_hops().front().and_then(|hop| match hop {
+                crate::addr::RouteHop::Address(addr) => Some(addr.clone()),
+                _ => None,
+            });
+            let bare = matches!(location, Location::Addr(_));
+            routing
+                .state
+                .active_serves
+                .iter()
+                .rev()
+                .find_map(|serve| match &serve.kind {
+                    ActiveServeKind::Via {
+                        endpoint,
+                        forwarder,
+                    } if bare || first.as_ref() == Some(endpoint) => {
+                        Some((endpoint.clone(), forwarder.clone(), serve.location.clone()))
+                    }
+                    _ => None,
+                })
+        };
+        let (location, reply_location, selected) = match attachment {
+            Some((endpoint, sender, reply_location)) => {
+                let starts_here = matches!(location.routing_hops().front(),
+                    Some(crate::addr::RouteHop::Address(addr)) if addr == &endpoint);
+                let location = if location.has_address_hops() || starts_here {
+                    location
+                } else {
+                    Location::Address(endpoint, Box::new(location))
+                };
+                (location, reply_location, Some(sender))
+            }
+            None => (location, cx.mailbox().actor_addr().location().clone(), None),
+        };
+        tokio::time::timeout(timeout, async {
+            let (reply, receiver) = cx
+                .mailbox()
+                .open_once_port::<crate::proc::control::ResolveProcResult>();
+            let reply = reply.bind().into_port_addr();
+            let mut reply =
+                crate::OncePortRef::attest(PortAddr::new(reply.id().clone(), reply_location));
+            reply.return_undeliverable(false);
+            let mut envelope = crate::proc::control::resolve_envelope(location.clone(), reply)?;
+            envelope.update_sender(cx.mailbox().actor_addr().clone());
+            if let Some(sender) = selected {
+                // Snapshot selection and reply binding survive concurrent serves
+                // or attachment changes. Peel only the selected attachment hop.
+                sender.post(
+                    envelope.advance_explicit(),
+                    crate::mailbox::monitored_return_handle(),
+                );
+            } else {
+                self.post(envelope, crate::mailbox::monitored_return_handle());
+            }
+            Ok(ProcAddr::new(
+                receiver.recv().await?.into_result()?,
+                location,
+            ))
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("endpoint proc query timed out"))?
     }
 
     fn serve_inner(
@@ -884,8 +998,19 @@ impl Gateway {
         self.add_active_serve(location, ActiveServeKind::Server)
     }
 
-    fn add_via_server(&self, location: Location, forwarder: BoxedMailboxSender) -> ServeId {
-        self.add_active_serve(location, ActiveServeKind::Via { forwarder })
+    fn add_via_server(
+        &self,
+        location: Location,
+        endpoint: ChannelAddr,
+        forwarder: BoxedMailboxSender,
+    ) -> ServeId {
+        self.add_active_serve(
+            location,
+            ActiveServeKind::Via {
+                endpoint,
+                forwarder,
+            },
+        )
     }
 
     fn add_active_serve(&self, location: Location, kind: ActiveServeKind) -> ServeId {
@@ -924,7 +1049,7 @@ impl Gateway {
         envelope.with_next_hop(PortAddr::new(dest_id, location))
     }
 
-    fn return_no_route(
+    pub(crate) fn return_no_route(
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
@@ -939,12 +1064,12 @@ impl Gateway {
     /// Flush pending gateway traffic.
     ///
     /// Flushes the muxers for all live attached procs and then the
-    /// gateway's forwarder. Flushing the proc muxers drains local
-    /// delivery and any return paths rooted in attached procs;
-    /// flushing the forwarder drains outbound traffic that the gateway
-    /// routed away from those targets.
+    /// configured base forwarder and every active outbound attachment.
+    /// Flushing proc muxers drains local delivery and return paths; flushing
+    /// outbound senders drains their owned queues, including explicit routes
+    /// through the base dialer's cache while an attachment is the default.
     ///
-    /// Flushing is best-effort: every muxer and the forwarder are
+    /// Flushing is best-effort: every muxer and outbound sender are
     /// flushed even if some fail, and the first error (if any) is
     /// returned afterward. The live proc set is snapshotted before
     /// awaiting, so we do not hold its map while flushing. Procs that
@@ -953,7 +1078,7 @@ impl Gateway {
     /// flushed sender observes its usual sender-level flush semantics
     /// at the time it is flushed.
     pub(crate) async fn flush(&self) -> Result<(), anyhow::Error> {
-        // Flush local procs and the forwarder. We intentionally do
+        // Flush local procs and owned outbound senders. We intentionally do
         // *not* iterate `peers` here:
         // in-process gateway attaches install each peer in the other's
         // peers, so a naive iteration recurses through the peer's
@@ -978,14 +1103,22 @@ impl Gateway {
         .buffer_unordered(concurrency)
         .collect()
         .await;
-        let forwarder = self.inner.routing.read().unwrap().forwarder.clone();
-        let forwarder_result = forwarder.flush().await;
+        let senders = {
+            let routing = self.inner.routing.read().unwrap();
+            let mut senders = vec![routing.state.base_forwarder.clone()];
+            senders.extend(routing.state.active_serves.iter().filter_map(
+                |serve| match &serve.kind {
+                    ActiveServeKind::Via { forwarder, .. } => Some(forwarder.clone()),
+                    ActiveServeKind::Server => None,
+                },
+            ));
+            senders
+        };
+        let forwarder_results =
+            futures::future::join_all(senders.iter().map(|sender| sender.flush())).await;
 
         // Best-effort: all flushes have run; surface the first error.
-        proc_results
-            .into_iter()
-            .chain(std::iter::once(forwarder_result))
-            .collect()
+        proc_results.into_iter().chain(forwarder_results).collect()
     }
 }
 
@@ -1012,6 +1145,7 @@ pub struct GatewayServeHandle {
     handle: MailboxServerHandle,
     stopped: bool,
     kind: HandleKind,
+    endpoint_owner: Option<crate::proc::control::EndpointOwner>,
 }
 
 /// Per-flavor teardown state for a [`GatewayServeHandle`].
@@ -1049,6 +1183,20 @@ impl fmt::Debug for GatewayServeHandle {
 }
 
 impl GatewayServeHandle {
+    /// Register the concrete live proc owning this listener. Registration is
+    /// listener-scoped and weak; conflicting live owners are rejected.
+    pub fn register_proc_owner(&self, proc: &Proc) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.stopped, "cannot register owner on a stopped endpoint");
+        anyhow::ensure!(
+            Arc::ptr_eq(&self.gateway.inner, &proc.gateway().inner),
+            "endpoint owner must be attached to its Gateway"
+        );
+        self.endpoint_owner
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("listener does not support endpoint resolution"))?
+            .register(proc)
+    }
+
     /// [`GatewayServeHandle`] of kind `Serve` for an already-open receiver.
     fn from_simplex(
         gateway: Gateway,
@@ -1059,6 +1207,7 @@ impl GatewayServeHandle {
             gateway,
             handle,
             stopped: false,
+            endpoint_owner: None,
             kind: HandleKind::Serve { serve_id },
         }
     }
@@ -1089,6 +1238,9 @@ impl GatewayServeHandle {
             return;
         }
         self.stopped = true;
+        if let Some(owner) = self.endpoint_owner.take() {
+            owner.clear();
+        }
         // `ServeDuplex` is driven by its cancellation token, not the
         // inner mailbox-server watch (whose receiver is unused), so
         // signal the token here and leave the inner handle alone.
@@ -1158,27 +1310,26 @@ impl Drop for GatewayServeHandle {
     }
 }
 
-/// Accept loop body shared by all duplex servers attached to a
-/// gateway. Each accepted connection is dispatched based on its first
-/// message:
-///
-/// * [`AttachRequest`] control envelope — register the peer in
-///   `peers`, reply with [`AttachAck::Accepted`] carrying the via
-///   location, then serve remaining envelope traffic from the duplex.
-///   If registration fails, reply with [`AttachAck::Rejected`] and
-///   close the connection.
-/// * regular [`MessageEnvelope`] — serve straight through.
+/// Dispatch attachment setup or ordinary inbound traffic. Runtime control is
+/// handled by the endpoint ingress throughout each connection's lifetime.
 async fn duplex_accept_loop(
     mut duplex_server: channel::duplex::DuplexServer<MessageEnvelope, AttachWire>,
     bound_addr: ChannelAddr,
     gateway: Gateway,
     cancel_token: CancellationToken,
+    endpoint_owner: crate::proc::control::EndpointOwner,
 ) {
     let mut tasks: JoinSet<()> = JoinSet::new();
     loop {
         let accept = tokio::select! {
             result = duplex_server.accept() => result,
             () = cancel_token.cancelled() => break,
+            result = tasks.join_next(), if !tasks.is_empty() => {
+                if let Some(Err(error)) = result {
+                    tracing::error!(%error, "duplex connection task failed");
+                }
+                continue;
+            },
         };
         let (duplex_rx, duplex_tx) = match accept {
             Ok(pair) => pair,
@@ -1197,10 +1348,16 @@ async fn duplex_accept_loop(
             duplex_rx,
             duplex_tx,
             cancel_token.clone(),
+            endpoint_owner.clone(),
         ));
     }
 
-    while tasks.join_next().await.is_some() {}
+    endpoint_owner.clear();
+    while let Some(result) = tasks.join_next().await {
+        if let Err(error) = result {
+            tracing::error!(%error, "duplex connection task failed during shutdown");
+        }
+    }
     // Tear down the server now that the accept loop has exited. The loop
     // broke on its own `cancel_token`, which is distinct from the server's
     // listener cancel, so we must signal the listener explicitly: `stop`
@@ -1213,12 +1370,34 @@ async fn duplex_accept_loop(
     duplex_server.join().await;
 }
 
+#[cfg(test)]
+struct ActiveDuplexSession(Weak<GatewayState>);
+#[cfg(test)]
+impl Drop for ActiveDuplexSession {
+    fn drop(&mut self) {
+        if let Some(gateway) = self.0.upgrade() {
+            gateway
+                .active_duplex_sessions
+                .fetch_sub(1, AtomicOrdering::Release);
+        }
+    }
+}
+
 async fn serve_duplex_connection(
     gateway: Gateway,
     mut duplex_rx: channel::duplex::DuplexRx<MessageEnvelope>,
     duplex_tx: channel::duplex::DuplexTx<AttachWire>,
     cancel_token: CancellationToken,
+    endpoint_owner: crate::proc::control::EndpointOwner,
 ) {
+    #[cfg(test)]
+    let _active_session = {
+        gateway
+            .inner
+            .active_duplex_sessions
+            .fetch_add(1, AtomicOrdering::Release);
+        ActiveDuplexSession(Arc::downgrade(&gateway.inner))
+    };
     let first_msg = tokio::select! {
         result = duplex_rx.recv() => match result {
             Ok(msg) => msg,
@@ -1270,7 +1449,9 @@ async fn serve_duplex_connection(
             location: via_location,
         }));
 
-        let mut handle = gateway.serve_rx(duplex_rx);
+        let mut handle =
+            crate::proc::control::EndpointIngress::new(gateway.clone(), endpoint_owner.clone())
+                .serve(duplex_rx);
         tokio::select! {
             _ = &mut handle => {}
             () = cancel_token.cancelled() => {
@@ -1291,7 +1472,8 @@ async fn serve_duplex_connection(
             first: Some(first_msg),
             inner: duplex_rx,
         };
-        let mut handle = gateway.serve_rx(rx);
+        let mut handle =
+            crate::proc::control::EndpointIngress::new(gateway.clone(), endpoint_owner).serve(rx);
         tokio::select! {
             _ = &mut handle => {}
             () = cancel_token.cancelled() => {
@@ -1376,11 +1558,99 @@ impl crate::mailbox::MailboxSender for Gateway {
 }
 
 impl Gateway {
+    fn route_explicit(
+        &self,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        let hop = envelope
+            .explicit_hops()
+            .and_then(|hops| hops.front())
+            .cloned()
+            .expect("nonterminal explicit route");
+        match hop {
+            crate::addr::RouteHop::Peer(uid) => {
+                let sender = self.inner.peers.read().unwrap().get(&uid).cloned();
+                match sender {
+                    Some(sender) => sender.post(envelope.advance_explicit(), return_handle),
+                    None if envelope.explicit_hops().is_some_and(|hops| hops.len() == 1)
+                        && envelope.dest().proc_id().uid().is_instance() =>
+                    {
+                        let failure = DeliveryFailure::new(InvalidReference::new(
+                            envelope.dest().clone(),
+                            InvalidReferenceReason::RouteNotExist,
+                        ));
+                        envelope.undeliverable(failure, return_handle);
+                    }
+                    None => Self::return_no_route(envelope, return_handle),
+                }
+            }
+            crate::addr::RouteHop::Address(addr) => {
+                self.dispatch_address(addr, envelope.advance_explicit(), return_handle);
+            }
+        }
+    }
+
+    fn dispatch_address(
+        &self,
+        addr: ChannelAddr,
+        prepared: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        let addr = addr.into_dial_addr();
+        let (attachment, dialer) = {
+            let routing = self.inner.routing.read().unwrap();
+            let attachment =
+                routing
+                    .state
+                    .active_serves
+                    .iter()
+                    .rev()
+                    .find_map(|serve| match &serve.kind {
+                        ActiveServeKind::Via {
+                            endpoint,
+                            forwarder,
+                        } if endpoint == &addr => Some(forwarder.clone()),
+                        _ => None,
+                    });
+            // Use exactly the configured dialer's cache. Isolated/custom
+            // forwarders cannot silently gain a network escape.
+            let dialer = routing
+                .state
+                .base_forwarder
+                .downcast_ref::<DialMailboxRouter>()
+                .cloned();
+            (attachment, dialer)
+        };
+        if let Some(sender) = attachment {
+            sender.post(prepared, return_handle);
+        } else if let Some(dialer) = dialer {
+            dialer.post_to(addr, prepared, return_handle);
+        } else {
+            Self::return_no_route(prepared, return_handle);
+        }
+    }
+
     fn route_envelope(
         &self,
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
+        let mut envelope = envelope;
+        if !envelope.has_next_hop() && envelope.dest().location().has_address_hops() {
+            let location = envelope.dest().location().clone();
+            envelope = envelope.with_explicit_route(location);
+        }
+        if envelope.is_explicit() && !envelope.is_terminal() {
+            self.route_explicit(envelope, return_handle);
+            return;
+        }
+        if crate::proc::control::is_resolve(&envelope) {
+            // Only listener ingress may answer; reaching terminal here means
+            // there is no endpoint owner scope, and must never use a fallback.
+            Self::return_no_route(envelope, return_handle);
+            return;
+        }
         // A message that reaches a gateway resolves by the
         // next hop's outermost `Via(uid, ...)` hop (if any):
         //
@@ -1396,9 +1666,12 @@ impl Gateway {
         //
         // A foreign via is never silently delivered locally just
         // because its inner proc id happens to match a local proc.
-        let mut envelope = envelope;
-        loop {
+        while !envelope.is_terminal() {
             let dest_location = envelope.next_hop().location().clone();
+            if matches!(dest_location, Location::Address(_, _)) {
+                self.route_explicit(envelope.with_explicit_route(dest_location), return_handle);
+                return;
+            }
             let Ok((via_uid, inner_location)) = dest_location.pop_via() else {
                 break;
             };
@@ -1438,7 +1711,13 @@ impl Gateway {
             return;
         }
 
-        if envelope.has_next_hop() {
+        if envelope.is_terminal() && envelope.dest().proc_id().uid().is_instance() {
+            let failure = DeliveryFailure::new(InvalidReference::new(
+                envelope.dest().clone(),
+                InvalidReferenceReason::ProcNotExist,
+            ));
+            envelope.undeliverable(failure, return_handle);
+        } else if envelope.has_next_hop() {
             Gateway::return_no_route(envelope, return_handle);
         } else {
             let forwarder = self.inner.routing.read().unwrap().forwarder.clone();
@@ -1468,6 +1747,7 @@ mod tests {
     use crate::mailbox::MailboxClient;
     use crate::mailbox::MailboxSender;
     use crate::mailbox::PortLocation;
+    use crate::mailbox::PortSender as _;
     use crate::mailbox::monitored_return_handle;
     use crate::port::Port;
     use crate::proc::Proc;
@@ -1489,6 +1769,653 @@ mod tests {
                 .send(envelope)
                 .expect("recording sender should be open");
         }
+    }
+
+    fn service_proc(gateway: &Gateway) -> Proc {
+        Proc::builder()
+            .proc_id(ProcId::instance(Label::strip("service")))
+            .shared_gateway(gateway.clone())
+            .build()
+            .unwrap()
+    }
+
+    fn endpoint(gateway: &Gateway) -> (Proc, GatewayServeHandle, ChannelAddr) {
+        let owner = service_proc(gateway);
+        let handle = gateway
+            .serve_mux_with_listener(
+                ChannelAddr::from_zmq_url("tcp://127.0.0.1:0").unwrap(),
+                None,
+            )
+            .unwrap();
+        handle.register_proc_owner(&owner).unwrap();
+        (owner, handle, gateway.default_location().addr().clone())
+    }
+
+    fn through(addrs: &[ChannelAddr]) -> Location {
+        let (last, earlier) = addrs.split_last().unwrap();
+        earlier
+            .iter()
+            .rev()
+            .fold(Location::from(last.clone()), |inner, addr| {
+                Location::Address(addr.clone(), Box::new(inner))
+            })
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_endpoint_context_routes_one_two_three_addresses_and_actor_replies() {
+        hyperactor_telemetry::initialize_logging_for_test();
+        let a = Gateway::new();
+        let b = Gateway::new();
+        let d = Gateway::new();
+        let (_a_owner, mut a_listener, a_addr) = endpoint(&a);
+        let (_b_owner, mut b_listener, b_addr) = endpoint(&b);
+        let (d_owner, mut d_listener, d_addr) = endpoint(&d);
+        let caller = Gateway::new();
+        let mut caller_listener =
+            Gateway::serve(&caller, ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+        let caller_proc = service_proc(&caller);
+        let client = caller_proc.client("caller");
+        let locations = [
+            through(&[d_addr.clone()]),
+            through(&[b_addr.clone(), d_addr.clone()]),
+            through(&[a_addr, b_addr, d_addr]),
+        ];
+        let (one, two, three) = tokio::join!(
+            caller.resolve_endpoint_proc(&client, locations[0].clone()),
+            caller.resolve_endpoint_proc(&client, locations[1].clone()),
+            caller.resolve_endpoint_proc(&client, locations[2].clone()),
+        );
+        let ping =
+            d_owner.spawn_with_label::<PingPongActor>("ping", PingPongActor::new(None, None, None));
+        let _: crate::ActorRef<PingPongActor> = ping.bind();
+        for (resolved, location) in [one, two, three].into_iter().zip(locations) {
+            let resolved = resolved.unwrap();
+            assert_eq!(resolved.id(), d_owner.proc_id());
+            assert_eq!(resolved.location(), &location);
+            let remote = crate::ActorRef::<PingPongActor>::attest(crate::ActorAddr::new(
+                ping.actor_addr().id().clone(),
+                resolved.location().clone(),
+            ));
+            // Multiple actor messages use their ordinary sequence stream.
+            for _ in 0..3 {
+                let (reply, receiver) = client.open_once_port();
+                remote.post(&client, PingPongMessage(0, remote.clone(), reply.bind()));
+                assert!(
+                    time::timeout(Duration::from_secs(5), receiver.recv())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                );
+            }
+        }
+        caller.flush().await.unwrap();
+        for listener in [
+            &mut a_listener,
+            &mut b_listener,
+            &mut d_listener,
+            &mut caller_listener,
+        ] {
+            listener.stop("test complete");
+        }
+        a_listener.join().await.unwrap();
+        b_listener.join().await.unwrap();
+        d_listener.join().await.unwrap();
+        caller_listener.join().await.unwrap();
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_endpoint_attachment_reuse_bare_explicit_peer_and_return_route_snapshot() {
+        hyperactor_telemetry::initialize_logging_for_test();
+        let a = Gateway::new();
+        let b = Gateway::new();
+        let (_a_owner, mut a_listener, a_addr) = endpoint(&a);
+        let (b_owner, mut b_listener, b_addr) = endpoint(&b);
+        // Isolated C has no dialer: every request and actor send must reuse C->A.
+        let caller = Gateway::isolated();
+        let mut attachment = caller.serve_via(a_addr.clone()).await.unwrap();
+        let caller_proc = service_proc(&caller);
+        let client = caller_proc.client("caller");
+        let old_location = caller.default_location();
+        // A later local listener must not retarget this request's return port.
+        let mut later_listener =
+            Gateway::serve(&caller, ChannelAddr::any(ChannelTransport::Local)).unwrap();
+        assert_ne!(caller.default_location(), old_location);
+        let explicit = through(&[a_addr.clone(), b_addr.clone()]);
+        let (bare, routed) = tokio::join!(
+            caller.resolve_endpoint_proc(&client, b_addr.clone().into()),
+            caller.resolve_endpoint_proc(&client, explicit.clone()),
+        );
+        assert_eq!(bare.unwrap().location(), &explicit);
+        let resolved = routed.unwrap();
+        assert_eq!(resolved.id(), b_owner.proc_id());
+        // B's peer is a real outbound duplex attachment, with its own owner.
+        let child = Gateway::isolated();
+        let mut child_attachment = child.serve_via(b_addr.clone()).await.unwrap();
+        let child_proc = service_proc(&child);
+        child_attachment.register_proc_owner(&child_proc).unwrap();
+        let child_location = Location::Address(
+            a_addr,
+            Box::new(Location::from(b_addr).with_via(child.uid().clone())),
+        );
+        let discovered = caller
+            .resolve_endpoint_proc(&client, child_location.clone())
+            .await
+            .unwrap();
+        assert_eq!(discovered.id(), child_proc.proc_id());
+        let ping = child_proc
+            .spawn_with_label::<PingPongActor>("ping", PingPongActor::new(None, None, None));
+        let _: crate::ActorRef<PingPongActor> = ping.bind();
+        let remote = crate::ActorRef::<PingPongActor>::attest(crate::ActorAddr::new(
+            ping.actor_addr().id().clone(),
+            child_location,
+        ));
+        let (reply, receiver) = client.open_once_port::<bool>();
+        // Explicitly keep the reply on the established C->A session, as the
+        // later local listener's address is only a process-local transport.
+        let reply = reply.bind().into_port_addr();
+        let reply = crate::OncePortRef::attest(PortAddr::new(reply.id().clone(), old_location));
+        remote.post(&client, PingPongMessage(0, remote.clone(), reply));
+        assert!(
+            time::timeout(Duration::from_secs(5), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        );
+        for listener in [
+            &mut attachment,
+            &mut child_attachment,
+            &mut later_listener,
+            &mut a_listener,
+            &mut b_listener,
+        ] {
+            listener.stop("test complete");
+        }
+        attachment.join().await.unwrap();
+        child_attachment.join().await.unwrap();
+        later_listener.join().await.unwrap();
+        a_listener.join().await.unwrap();
+        b_listener.join().await.unwrap();
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_endpoint_existing_attachment_resolves_itself_without_self_dial() {
+        let server = Gateway::isolated();
+        let (owner, mut listener, address) = endpoint(&server);
+        let caller = Gateway::isolated();
+        let mut attachment = caller.serve_via(address.clone()).await.unwrap();
+        let proc = service_proc(&caller);
+        let client = proc.client("query");
+        let resolved = caller
+            .resolve_endpoint_proc(&client, address.clone().into())
+            .await
+            .unwrap();
+        assert_eq!(resolved.id(), owner.proc_id());
+        assert_eq!(resolved.location(), &Location::from(address));
+        // The other end of an unowned attachment has its own endpoint scope.
+        let server_proc = service_proc(&server);
+        let server_client = server_proc.client("query_peer");
+        let (reply, receiver) = server_client.open_once_port();
+        let request =
+            crate::proc::control::resolve_envelope(caller.default_location(), reply.bind())
+                .unwrap()
+                .advance_explicit();
+        server.post(request, monitored_return_handle());
+        assert!(matches!(
+            receiver.recv().await.unwrap(),
+            crate::proc::control::ResolveProcResult::Unavailable
+        ));
+        attachment.stop("test complete");
+        listener.stop("test complete");
+        attachment.join().await.unwrap();
+        listener.join().await.unwrap();
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_endpoint_owners_are_listener_scoped_weak_and_replaceable() {
+        let server = Gateway::new();
+        let (first, mut first_listener, first_addr) = endpoint(&server);
+        let (second, mut second_listener, second_addr) = endpoint(&server);
+        assert!(first_listener.register_proc_owner(&second).is_err());
+        first_listener.register_proc_owner(&first).unwrap();
+        let foreign = service_proc(&Gateway::isolated());
+        assert!(first_listener.register_proc_owner(&foreign).is_err());
+        let caller = Gateway::new();
+        let mut caller_listener =
+            Gateway::serve(&caller, ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+        let caller_proc = service_proc(&caller);
+        let client = caller_proc.client("caller");
+        let (one, two) = tokio::join!(
+            caller.resolve_endpoint_proc(&client, first_addr.clone().into()),
+            caller.resolve_endpoint_proc(&client, second_addr.clone().into()),
+        );
+        assert_eq!(one.unwrap().id(), first.proc_id());
+        assert_eq!(two.unwrap().id(), second.proc_id());
+        let old_id = first.proc_id().clone();
+        drop(first);
+        assert!(
+            caller
+                .resolve_endpoint_proc(&client, first_addr.clone().into())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("unavailable")
+        );
+        let replacement = service_proc(&server);
+        first_listener.register_proc_owner(&replacement).unwrap();
+        let updated = caller
+            .resolve_endpoint_proc(&client, first_addr.into())
+            .await
+            .unwrap();
+        assert_ne!(updated.id(), &old_id);
+        assert_eq!(updated.id(), replacement.proc_id());
+        for listener in [
+            &mut first_listener,
+            &mut second_listener,
+            &mut caller_listener,
+        ] {
+            listener.stop("test complete");
+        }
+        first_listener.join().await.unwrap();
+        second_listener.join().await.unwrap();
+        caller_listener.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_explicit_terminal_and_missing_peer_never_use_default_or_local_shortcut() {
+        let (tx, mut forwarded) = mpsc::unbounded_channel();
+        let gateway = Gateway::configured(
+            ChannelAddr::Local(123).into(),
+            BoxedMailboxSender::new(RecordingSender(tx)),
+        );
+        let proc = service_proc(&gateway);
+        let client = proc.client("target");
+        let (target, mut receiver) = client.open_port::<u64>();
+        let (returns, mut returned) = client.open_port::<Undeliverable<MessageEnvelope>>();
+        let unknown = PortAddr::new(
+            target.bind().into_port_addr().id().clone(),
+            Location::Address(
+                ChannelAddr::Local(987),
+                Box::new(ChannelAddr::Local(988).into()),
+            ),
+        );
+        // Proc fast path cannot ignore the explicit path even for its own ID.
+        proc.post(
+            MessageEnvelope::new_unknown(unknown, wirevalue::Any::serialize(&1u64).unwrap()),
+            returns.clone(),
+        );
+        assert!(returned.recv().await.is_ok());
+        assert!(receiver.try_recv().unwrap().is_none());
+        let missing = ProcAddr::instance(ChannelAddr::Local(123), "missing")
+            .actor_addr("actor")
+            .port_addr(Port::ephemeral(1));
+        gateway.post(
+            MessageEnvelope::new_unknown(
+                missing.clone(),
+                wirevalue::Any::serialize(&1u64).unwrap(),
+            )
+            .with_terminal_route(),
+            returns.clone(),
+        );
+        let failure = returned.recv().await.unwrap();
+        assert!(matches!(
+            &failure.root_delivery_failure().unwrap().kind,
+            DeliveryFailureKind::InvalidReference(InvalidReference {
+                reason: InvalidReferenceReason::ProcNotExist,
+                ..
+            })
+        ));
+        let peer = Location::from(ChannelAddr::Local(123)).with_via(Uid::anonymous());
+        let request =
+            MessageEnvelope::new_unknown(missing, wirevalue::Any::serialize(&1u64).unwrap())
+                .with_explicit_route(peer)
+                .advance_explicit();
+        gateway.post(request, returns);
+        let failure = returned.recv().await.unwrap();
+        assert!(matches!(
+            &failure.root_delivery_failure().unwrap().kind,
+            DeliveryFailureKind::InvalidReference(InvalidReference {
+                reason: InvalidReferenceReason::RouteNotExist,
+                ..
+            })
+        ));
+        assert!(forwarded.try_recv().is_err());
+        let bound = target.bind().into_port_addr();
+        let legacy = PortAddr::new(
+            bound.id().clone(),
+            bound.location().clone().with_via(Uid::anonymous()),
+        );
+        proc.post(
+            MessageEnvelope::new_unknown(legacy, wirevalue::Any::serialize(&9u64).unwrap()),
+            monitored_return_handle(),
+        );
+        assert_eq!(receiver.recv().await.unwrap(), 9);
+    }
+
+    #[tokio::test]
+    async fn test_endpoint_pending_query_snapshot_cancellation_timeout_and_invalid_identity() {
+        use crate::proc::control::ResolveProc;
+        use crate::proc::control::ResolveProcResult;
+        let caller = Gateway::isolated();
+        let proc = service_proc(&caller);
+        let client = proc.client("query");
+        let a = ChannelAddr::Local(501);
+        let b = ChannelAddr::Local(502);
+        let old_return = Location::from(a.clone()).with_via(caller.uid().clone());
+        let (tx, mut messages) = mpsc::unbounded_channel();
+        let first = caller.add_via_server(
+            old_return.clone(),
+            a.clone(),
+            BoxedMailboxSender::new(RecordingSender(tx)),
+        );
+        let (returns, mut failures) = client.open_port::<Undeliverable<MessageEnvelope>>();
+        // Cancellation drops only the query's port, retaining the attachment.
+        let mut query = Box::pin(caller.resolve_endpoint_proc(&client, b.clone().into()));
+        let request = tokio::select! {
+            request = messages.recv() => request.unwrap().deserialized::<ResolveProc>().unwrap(),
+            result = &mut query => panic!("unexpected early query result {result:?}"),
+        };
+        let cancelled_port = request.reply.port_addr().clone();
+        drop(query);
+        caller.post(
+            MessageEnvelope::new_unknown(
+                cancelled_port,
+                wirevalue::Any::serialize(&ResolveProcResult::Unavailable).unwrap(),
+            ),
+            returns.clone(),
+        );
+        assert!(
+            failures.recv().await.is_ok(),
+            "cancelled reply port must be removed"
+        );
+        assert!(
+            caller
+                .inner
+                .routing
+                .read()
+                .unwrap()
+                .state
+                .active_serves
+                .iter()
+                .any(|serve| serve.id == first)
+        );
+        // Timeout performs the same cleanup, without stopping shared sessions.
+        let query = caller.resolve_endpoint_proc_with_timeout(
+            &client,
+            b.clone().into(),
+            Duration::from_millis(10),
+        );
+        assert!(query.await.unwrap_err().to_string().contains("timed out"));
+        let timed_out = messages
+            .recv()
+            .await
+            .unwrap()
+            .deserialized::<ResolveProc>()
+            .unwrap();
+        caller.post(
+            MessageEnvelope::new_unknown(
+                timed_out.reply.port_addr().clone(),
+                wirevalue::Any::serialize(&ResolveProcResult::Unavailable).unwrap(),
+            ),
+            returns,
+        );
+        assert!(failures.recv().await.is_ok());
+        // A pending query keeps both its chosen sender and accepted reply route.
+        let mut query = Box::pin(caller.resolve_endpoint_proc(&client, b.clone().into()));
+        let request = tokio::select! {
+            request = messages.recv() => request.unwrap().deserialized::<ResolveProc>().unwrap(),
+            result = &mut query => panic!("unexpected early query result {result:?}"),
+        };
+        let (new_tx, mut unexpected) = mpsc::unbounded_channel();
+        let new_endpoint = ChannelAddr::Local(503);
+        let second = caller.add_via_server(
+            new_endpoint.clone().into(),
+            new_endpoint,
+            BoxedMailboxSender::new(RecordingSender(new_tx)),
+        );
+        assert_eq!(request.reply.port_addr().location(), &old_return);
+        let id = ProcId::instance(Label::strip("resolved"));
+        caller
+            .serialize_and_send_once(
+                request.reply,
+                ResolveProcResult::Resolved(id.clone()),
+                monitored_return_handle(),
+            )
+            .unwrap();
+        let resolved = query.await.unwrap();
+        assert_eq!(
+            resolved,
+            ProcAddr::new(id, Location::Address(a.clone(), Box::new(b.clone().into())))
+        );
+        assert!(unexpected.try_recv().is_err());
+        // Complete legacy Via and Via-around-address paths select their
+        // normalized first address even while an unrelated newer session exists.
+        let peer = Uid::anonymous();
+        for location in [
+            Location::from(a.clone()).with_via(peer.clone()),
+            Location::Address(a.clone(), Box::new(b.clone().into())).with_via(peer.clone()),
+        ] {
+            let mut query = Box::pin(caller.resolve_endpoint_proc(&client, location.clone()));
+            let envelope = tokio::select! {
+                request = messages.recv() => request.unwrap(),
+                result = &mut query => panic!("unexpected early query result {result:?}"),
+            };
+            assert_eq!(
+                envelope.explicit_hops().unwrap().front(),
+                Some(&crate::addr::RouteHop::Peer(peer.clone()))
+            );
+            let request = envelope.deserialized::<ResolveProc>().unwrap();
+            assert_eq!(request.reply.port_addr().location(), &old_return);
+            let id = ProcId::instance(Label::strip("peer"));
+            caller
+                .serialize_and_send_once(
+                    request.reply,
+                    ResolveProcResult::Resolved(id.clone()),
+                    monitored_return_handle(),
+                )
+                .unwrap();
+            assert_eq!(query.await.unwrap(), ProcAddr::new(id, location));
+            assert!(unexpected.try_recv().is_err());
+        }
+        caller.remove_active_serve(second);
+        let mut query = Box::pin(caller.resolve_endpoint_proc(&client, b.into()));
+        let request = tokio::select! {
+            request = messages.recv() => request.unwrap().deserialized::<ResolveProc>().unwrap(),
+            result = &mut query => panic!("unexpected early query result {result:?}"),
+        };
+        caller
+            .serialize_and_send_once(
+                request.reply,
+                ResolveProcResult::Resolved(ProcId::singleton(Label::strip("invalid"))),
+                monitored_return_handle(),
+            )
+            .unwrap();
+        assert!(query.await.unwrap_err().to_string().contains("instance id"));
+        caller.remove_active_serve(first);
+    }
+
+    #[tokio::test]
+    async fn test_endpoint_terminal_control_rejects_malformed_and_wrong_selector() {
+        use crate::proc::control::EndpointIngress;
+        use crate::proc::control::EndpointOwner;
+        use crate::proc::control::ResolveProcResult;
+        let gateway = Gateway::isolated();
+        let owner = service_proc(&gateway);
+        let registration = EndpointOwner::default();
+        registration.register(&owner).unwrap();
+        let ingress = EndpointIngress::new(gateway, registration);
+        let client = owner.client("query");
+        let (returns, mut failures) = client.open_port::<Undeliverable<MessageEnvelope>>();
+        let (reply, receiver) = client.open_once_port::<ResolveProcResult>();
+        let query =
+            crate::proc::control::resolve_envelope(ChannelAddr::Local(551).into(), reply.bind())
+                .unwrap();
+        let wrong = ProcAddr::instance(ChannelAddr::Local(551), "wrong")
+            .actor_addr("runtime")
+            .port_addr(Port::control(crate::ControlPort::ResolveProc));
+        let mut query = query.with_dest(wrong).with_terminal_route();
+        query.set_return_undeliverable(true);
+        ingress.post(query, returns.clone());
+        assert!(failures.recv().await.is_ok());
+        let malformed = crate::proc::control::resolve_envelope(ChannelAddr::Local(551).into(), {
+            let (reply, _receiver) = client.open_once_port::<ResolveProcResult>();
+            reply.bind()
+        })
+        .unwrap();
+        let mut malformed = MessageEnvelope::new_unknown(
+            malformed.dest().clone(),
+            wirevalue::Any::serialize(&()).unwrap(),
+        )
+        .with_terminal_route();
+        malformed.set_return_undeliverable(true);
+        ingress.post(malformed, returns);
+        assert!(failures.recv().await.is_ok());
+        assert!(
+            time::timeout(Duration::from_millis(10), receiver.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_endpoint_dns_alias_and_resolution_bypasses_actor_sequence_gap() {
+        let server = Gateway::new();
+        let owner = service_proc(&server);
+        let mut listener = server
+            .serve_mux_with_listener(ChannelAddr::from_zmq_url("tcp://0.0.0.0:0").unwrap(), None)
+            .unwrap();
+        listener.register_proc_owner(&owner).unwrap();
+        let bind = server.default_location().addr().to_zmq_url();
+        let loopback = ChannelAddr::from_zmq_url(&bind.replace("0.0.0.0", "127.0.0.1")).unwrap();
+        let alias = ChannelAddr::Alias {
+            dial_to: Box::new(loopback.clone()),
+            bind_to: Box::new(server.default_location().addr().clone()),
+        };
+        // Resolve the hostname's actual address family before binding, as the
+        // host may resolve localhost to IPv6 while wildcard above is IPv4.
+        let mut dns_listener = server
+            .serve_mux_with_listener(
+                ChannelAddr::from_zmq_url("tcp://localhost:0").unwrap(),
+                None,
+            )
+            .unwrap();
+        dns_listener.register_proc_owner(&owner).unwrap();
+        let ChannelAddr::Tcp(dns_bound) = server.default_location().addr().clone() else {
+            panic!("TCP listener")
+        };
+        let dns =
+            ChannelAddr::from_zmq_url(&format!("tcp://localhost:{}", dns_bound.port())).unwrap();
+        let caller = Gateway::new();
+        let mut caller_listener =
+            Gateway::serve(&caller, ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+        let caller_proc = service_proc(&caller);
+        let client = caller_proc.client("query");
+        for address in [loopback.clone(), alias, dns.clone()] {
+            assert_eq!(
+                caller
+                    .resolve_endpoint_proc(&client, address.into())
+                    .await
+                    .unwrap()
+                    .id(),
+                owner.proc_id()
+            );
+        }
+        let target = owner.client("sequenced_target");
+        let (port, mut pending) = target.open_port::<u64>();
+        let bound = port.bind().into_port_addr();
+        let dest = PortAddr::new(bound.id().clone(), loopback.into());
+        let mut envelope = MessageEnvelope::new(
+            client.self_addr().clone(),
+            dest,
+            wirevalue::Any::serialize(&2u64).unwrap(),
+            Flattrs::new(),
+        );
+        envelope.set_header(
+            crate::ordering::SEQ_INFO,
+            crate::ordering::SeqInfo::Session {
+                session_id: uuid::Uuid::now_v7(),
+                seq: 2,
+            },
+        );
+        caller.post(envelope, monitored_return_handle());
+        caller.flush().await.unwrap();
+        assert!(
+            pending.try_recv().unwrap().is_none(),
+            "seq2 must wait for seq1"
+        );
+        let resolved = caller
+            .resolve_endpoint_proc(&client, dns.clone().into())
+            .await
+            .unwrap();
+        assert_eq!(resolved.id(), owner.proc_id());
+        assert_eq!(resolved.location(), &Location::from(dns));
+        dns_listener.stop("test complete");
+        listener.stop("test complete");
+        caller_listener.stop("test complete");
+        dns_listener.join().await.unwrap();
+        listener.join().await.unwrap();
+        caller_listener.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_gateway_flush_drains_explicit_base_dialer_and_all_attachments() {
+        #[derive(Clone)]
+        struct FlushProbe(Arc<AtomicUsize>);
+        #[async_trait]
+        impl MailboxSender for FlushProbe {
+            fn post_unchecked(
+                &self,
+                _message: MessageEnvelope,
+                _returns: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                panic!(
+                    "explicit address traffic must not use an ambient attachment/default sender"
+                );
+            }
+            async fn flush(&self) -> anyhow::Result<()> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        let base = Arc::new(AtomicUsize::new(0));
+        let old = Arc::new(AtomicUsize::new(0));
+        let newest = Arc::new(AtomicUsize::new(0));
+        let dialer =
+            DialMailboxRouter::new_with_default(BoxedMailboxSender::new(FlushProbe(base.clone())));
+        let gateway = Gateway::configured(
+            ChannelAddr::Local(601).into(),
+            BoxedMailboxSender::new(dialer),
+        );
+        let first = gateway.add_via_server(
+            ChannelAddr::Local(602).into(),
+            ChannelAddr::Local(602),
+            BoxedMailboxSender::new(FlushProbe(old.clone())),
+        );
+        let second = gateway.add_via_server(
+            ChannelAddr::Local(603).into(),
+            ChannelAddr::Local(603),
+            BoxedMailboxSender::new(FlushProbe(newest.clone())),
+        );
+        let (address, mut receiver) =
+            channel::serve::<MessageEnvelope>(ChannelAddr::any(ChannelTransport::Local)).unwrap();
+        let dest = ProcAddr::instance(address.clone(), "remote")
+            .actor_addr("actor")
+            .port_addr(Port::ephemeral(1));
+        gateway.post(
+            MessageEnvelope::new_unknown(dest.clone(), wirevalue::Any::serialize(&1u64).unwrap())
+                .with_explicit_route(address.into()),
+            monitored_return_handle(),
+        );
+        gateway.flush().await.unwrap();
+        let received = receiver.recv().await.unwrap();
+        assert!(received.is_terminal());
+        assert_eq!(received.dest(), &dest);
+        // The dialer's default probe proves Gateway flush traversed its owned
+        // base router; router flush also drains its existing cached clients.
+        assert_eq!(base.load(Ordering::SeqCst), 1);
+        assert_eq!(old.load(Ordering::SeqCst), 1);
+        assert_eq!(newest.load(Ordering::SeqCst), 1);
+        gateway.remove_active_serve(second);
+        gateway.remove_active_serve(first);
     }
 
     /// Test-only helper that connects two gateways over real
