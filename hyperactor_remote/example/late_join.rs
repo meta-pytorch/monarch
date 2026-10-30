@@ -60,12 +60,16 @@
 //! not remote supervision: clients can come and go independently. Multiple
 //! clients can use the token, but it stops working when its creator stops.
 //!
-//! The roles can run on the same machine or on separate hosts. Each proc
-//! listens on a non-loopback TCP address resolved from its machine's hostname.
-//! Each hostname must resolve to such an address, and the two hosts must be
-//! able to reach each other's listeners: requests travel to the trainer, and
-//! replies travel back to the client. Copy the trainer's token file to the
-//! client host, or place it on a shared filesystem, before starting the client.
+//! The roles can run on the same machine or on separate hosts. This example
+//! uses plaintext TCP, which is fine on one machine or within one datacenter;
+//! between hosts in different regions or datacenters, use an encrypted
+//! transport such as `ChannelTransport::MetaTls(TlsMode::Hostname)` instead.
+//! Each proc listens on a non-loopback TCP address resolved from its machine's
+//! hostname. Each hostname must resolve to such an address, and the two hosts
+//! must be able to reach each other's listeners: requests travel to the
+//! trainer, and replies travel back to the client. Copy the trainer's token
+//! file to the client host, or place it on a shared filesystem, before
+//! starting the client.
 //!
 //! It demonstrates late attachment, not authentication or a Python API.
 

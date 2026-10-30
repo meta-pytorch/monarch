@@ -157,8 +157,10 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=0.05)
     args = parser.parse_args()
 
-    # Listen on a non-loopback address resolved from the hostname, so clients
-    # on this machine or other hosts can reach the trainer and its replies.
+    # Plaintext TCP on a non-loopback address resolved from the hostname, so
+    # clients on this machine or another host can reach the trainer. Between
+    # regions or datacenters, use an encrypted transport such as
+    # enable_transport("metatls-hostname") instead.
     enable_transport("tcp")
     try:
         if args.role == "trainer":
