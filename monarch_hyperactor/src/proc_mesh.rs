@@ -135,7 +135,10 @@ impl PyProcMesh {
                 )
                 .await
                 .map_err(anyhow::Error::from)?;
-            Ok::<_, PyErr>(Box::new(PythonActorMeshImpl::new_owned(actor_mesh)))
+            Ok::<_, PyErr>(Box::new(PythonActorMeshImpl::new_owned(
+                actor_mesh,
+                instance.deref().clone_for_py(),
+            )))
         };
         if emulated {
             // we give up on doing mesh spawn async for the emulated old version

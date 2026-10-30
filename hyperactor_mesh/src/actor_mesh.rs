@@ -29,6 +29,9 @@ use std::sync::Arc;
 use std::sync::OnceLock as OnceCell;
 use std::time::Duration;
 
+use futures::StreamExt as _;
+use futures::TryStreamExt as _;
+use futures::stream;
 use hyperactor::ActorAddr;
 use hyperactor::ActorLocal;
 use hyperactor::ActorRef;
@@ -38,6 +41,7 @@ use hyperactor::PortRef;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
+use hyperactor::StatusMessage;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::context;
@@ -131,6 +135,8 @@ enum ActorMeshLifecycle {
     Data {
         stop_handles: Vec<ActorMeshStopHandle>,
         stop_requested: Arc<OnceCell<()>>,
+        /// Set once every rank has started; see [`ActorMesh::wait_started`].
+        started: Arc<OnceCell<()>>,
     },
 }
 
@@ -206,6 +212,7 @@ impl<A: Referable> ActorMesh<A> {
             lifecycle: ActorMeshLifecycle::Data {
                 stop_handles,
                 stop_requested: Arc::new(OnceCell::new()),
+                started: Arc::new(OnceCell::new()),
             },
             stopping_controller: None,
         })
@@ -230,6 +237,7 @@ impl<A: Referable> ActorMesh<A> {
         if let ActorMeshLifecycle::Data {
             stop_handles,
             stop_requested,
+            ..
         } = &mut self.lifecycle
         {
             if stop_requested.set(()).is_err() {
@@ -370,6 +378,110 @@ impl<A: Referable> ActorMesh<A> {
             num_ranks,
         );
         Err(Error::ActorStopError { statuses: legacy })
+    }
+
+    /// Wait until every rank's actor has started, meaning its status is past
+    /// [`ActorStatus::Initializing`]. This does not mean the actor has handled
+    /// its first message, such as a Python actor's `__init__`.
+    ///
+    /// A managed mesh has started once its spawn returns. A data mesh asks each
+    /// rank's proc for the actor's status until it starts, and fails if the
+    /// actor, or the local supervisor proxy for its rank, reaches a terminal
+    /// status first. Once a data mesh has started, later calls return
+    /// immediately.
+    pub async fn wait_started(&self, cx: &impl context::Actor) -> crate::Result<()> {
+        let ActorMeshLifecycle::Data {
+            stop_handles,
+            started,
+            ..
+        } = &self.lifecycle
+        else {
+            return Ok(());
+        };
+        if started.get().is_some() {
+            return Ok(());
+        }
+        let waits: Vec<_> = stop_handles
+            .iter()
+            .enumerate()
+            .map(|(rank, proxy)| {
+                let actor = self
+                    .current_ref
+                    .get(rank)
+                    .expect("data actor mesh has one member per lifecycle handle")
+                    .actor_addr()
+                    .clone();
+                async move {
+                    wait_rank_started(cx, &actor, proxy)
+                        .await
+                        .map_err(|status| Error::ActorSpawnError {
+                            statuses: (rank, status).into(),
+                        })
+                }
+            })
+            .collect();
+        let num_waits = waits.len().max(1);
+        stream::iter(waits)
+            .buffer_unordered(num_waits)
+            .try_collect::<Vec<()>>()
+            .await?;
+        let _ = started.set(());
+        Ok(())
+    }
+}
+
+/// Wait until `actor` has started, or return the status that ended the wait.
+async fn wait_rank_started(
+    cx: &impl context::Actor,
+    actor: &ActorAddr,
+    proxy: &ActorMeshStopHandle,
+) -> Result<(), resource::Status> {
+    fn proxy_failure(
+        status: Result<watch::Ref<'_, ActorStatus>, watch::error::RecvError>,
+    ) -> resource::Status {
+        match status {
+            Ok(status) => resource::Status::Failed(format!("supervisor proxy: {}", *status)),
+            Err(_) => resource::Status::Failed("supervisor proxy gone".to_string()),
+        }
+    }
+
+    let mut proxy_status = proxy.status();
+    let mut delay = Duration::from_millis(10);
+    loop {
+        let (reply, receiver) = cx.mailbox().open_once_port::<Option<ActorStatus>>();
+        actor.status_port().post(
+            cx,
+            StatusMessage::GetStatus {
+                reply: reply.bind(),
+                delivery: None,
+            },
+        );
+        let status = tokio::select! {
+            status = receiver.recv() => status.ok().flatten(),
+            status = proxy_status.wait_for(ActorStatus::is_terminal) => {
+                return Err(proxy_failure(status));
+            }
+        };
+        match status {
+            // The actor has not been created yet, or is still in `Actor::init`.
+            None
+            | Some(ActorStatus::Unknown | ActorStatus::Created | ActorStatus::Initializing) => {}
+            Some(
+                status @ (ActorStatus::Stopping(_)
+                | ActorStatus::Stopped(_)
+                | ActorStatus::Failed(_)),
+            ) => {
+                return Err(resource::Status::Failed(status.to_string()));
+            }
+            Some(_) => return Ok(()),
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {}
+            status = proxy_status.wait_for(ActorStatus::is_terminal) => {
+                return Err(proxy_failure(status));
+            }
+        }
+        delay = (delay * 2).min(Duration::from_secs(1));
     }
 }
 

@@ -2032,6 +2032,59 @@ mod tests {
             .expect("host mesh shutdown should complete");
     }
 
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn spawn_data_wait_started() {
+        let instance = testing::instance();
+        // The failing mesh reports its rank's failure to its owner. This owner
+        // runs no message loop, so the event stays queued instead of failing
+        // the test root.
+        let owner = instance
+            .proc()
+            .actor_instance::<testing::TestRootClient>("wait_started_owner")
+            .expect("create owner instance");
+        let owner = &owner.instance;
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(instance, "wait_started", extent!(gpus = 2), None, None)
+            .await
+            .unwrap();
+
+        let started: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_data(
+                owner,
+                ActorMeshId::instance(Label::strip("started")),
+                &(),
+                None,
+            )
+            .await
+            .unwrap();
+        started
+            .wait_started(owner)
+            .await
+            .expect("constructed data actors start");
+
+        let failed: ActorMesh<testactor::FailingCreateTestActor> = proc_mesh
+            .spawn_data(
+                owner,
+                ActorMeshId::instance(Label::strip("failed")),
+                &(),
+                None,
+            )
+            .await
+            .unwrap();
+        let error = failed
+            .wait_started(owner)
+            .await
+            .expect_err("a failed construction ends the wait");
+        assert!(
+            matches!(error, crate::Error::ActorSpawnError { .. }),
+            "unexpected error: {error}"
+        );
+
+        let _ = hm.shutdown(instance).await;
+    }
+
     #[async_timed_test(timeout_secs = 300)]
     #[cfg(fbcode_build)]
     async fn direct_spawn_shapes_cast_point() {

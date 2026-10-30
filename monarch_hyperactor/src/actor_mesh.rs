@@ -564,17 +564,12 @@ impl ActorMeshProtocol for AsyncActorMesh {
         Ok(async move { rx.await.map_err(anyhow::Error::from)? }.boxed())
     }
 
-    /// Return a future that waits for mesh creation without adding a queue item.
-    /// Creation errors fail the future; success is exposed to Python as None.
+    /// Return a future that waits for mesh creation, then for the created mesh
+    /// to start, without adding a queue item. Creation or start errors fail
+    /// the future; success is exposed to Python as None.
     fn initialized(&self) -> BoxFuture<'static, PyResult<Option<()>>> {
         let mesh = self.mesh.clone();
-        async move {
-            // Wait for creation. If it fails, the future returned by initialized
-            // completes with that error.
-            mesh.await?;
-            Ok(None::<()>)
-        }
-        .boxed()
+        async move { mesh.await?.initialized().await }.boxed()
     }
 
     /// Return a future that waits for mesh creation, then reads its name.
@@ -620,6 +615,8 @@ impl SupervisableActorMesh for AsyncActorMesh {
 )]
 pub(crate) struct PyActorMesh {
     mesh: ActorMesh<PythonActor>,
+    /// The instance that spawned the mesh, used to wait for it to start.
+    instance: Arc<Instance<PythonActor>>,
 }
 
 #[derive(Debug, Clone)]
@@ -643,8 +640,14 @@ pub(crate) enum PythonActorMeshImpl {
 
 impl PythonActorMeshImpl {
     /// Get a new owned [`PythonActorMeshImpl`].
-    pub(crate) fn new_owned(inner: ActorMesh<PythonActor>) -> Self {
-        PythonActorMeshImpl::Owned(PyActorMesh { mesh: inner })
+    pub(crate) fn new_owned(
+        inner: ActorMesh<PythonActor>,
+        instance: Instance<PythonActor>,
+    ) -> Self {
+        PythonActorMeshImpl::Owned(PyActorMesh {
+            mesh: inner,
+            instance: Arc::new(instance),
+        })
     }
 
     /// Get a new ref-based [`PythonActorMeshImpl`].
@@ -739,6 +742,21 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     fn mesh_ref(&self) -> PyResult<ActorMeshRef<PythonActor>> {
         // `self.mesh_ref()` resolves to the inherent borrow-returning method.
         Ok(PythonActorMeshImpl::mesh_ref(self).clone())
+    }
+
+    /// Return a future that waits for every actor of an owned mesh to start.
+    /// A mesh reference does not own its actors and completes immediately.
+    fn initialized(&self) -> BoxFuture<'static, PyResult<Option<()>>> {
+        let PythonActorMeshImpl::Owned(PyActorMesh { mesh, instance }) = self.clone() else {
+            return future::ready(Ok(None)).boxed();
+        };
+        async move {
+            mesh.wait_started(&*instance)
+                .await
+                .map_err(anyhow::Error::from)?;
+            Ok(None)
+        }
+        .boxed()
     }
 
     /// Return the mesh reference's ID as its name, for both owned and
