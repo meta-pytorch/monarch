@@ -589,6 +589,9 @@ pub struct ResourceController<T: Controlled> {
     /// The monitor which continuously runs in the background to refresh
     /// state. If None, the controller has stopped monitoring.
     monitor: Option<()>,
+    /// Whether an explicit `Stop` already sent subscribers a whole-mesh
+    /// stop event, so cleanup does not send another.
+    stop_notified: bool,
 }
 
 /// Controller-side state for an actor mesh.
@@ -651,6 +654,7 @@ impl<T: Controlled> ResourceController<T> {
             supervision_display_name,
             health_state: HealthState::new(initial_statuses.iter().collect(), owner),
             monitor: None,
+            stop_notified: false,
         }
     }
 
@@ -836,6 +840,22 @@ where
         this: &Instance<Self>,
         _err: Option<&ActorError>,
     ) -> Result<(), anyhow::Error> {
+        if !self.stop_notified {
+            let failure = MeshFailure {
+                actor_mesh_name: Some(self.mesh.id().to_string()),
+                event: ActorSupervisionEvent::new(
+                    this.self_addr().clone(),
+                    None,
+                    ActorStatus::Stopped("resource controller stopped".to_string()),
+                    None,
+                ),
+                crashed_ranks: vec![],
+                reporting_controller: Some(this.self_addr().id().clone()),
+            };
+            for subscriber in &self.health_state.subscribers {
+                send_subscriber_message(this, subscriber, failure.clone());
+            }
+        }
         if self.monitor.take().is_some() {
             tracing::info!(
                 actor_id = %this.self_addr(),
@@ -1045,6 +1065,7 @@ where
             );
             return Ok(());
         }
+        self.stop_notified = true;
         let display = self.supervision_display_name();
         self.mesh
             .handle_stop_request(cx, &display, message.reason, &mut self.health_state)
@@ -1663,6 +1684,7 @@ mod tests {
     use std::ops::Deref;
     use std::time::Duration;
 
+    use hyperactor::Actor;
     use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
     use hyperactor::channel::ChannelAddr;
@@ -1671,9 +1693,12 @@ mod tests {
     use ndslice::Extent;
     use ndslice::ViewExt;
     use ndslice::view::CollectMeshExt;
+    use ndslice::view::Ranked;
 
     use super::HealthState;
     use super::PollResult;
+    use super::ProcMeshController;
+    use super::ResourceController;
     #[cfg(fbcode_build)]
     use super::SUPERVISION_POLL_FREQUENCY;
     use super::actor_state_to_supervision_events;
@@ -1681,6 +1706,7 @@ mod tests {
     use super::send_poll_failure;
     use super::send_state_change;
     use crate::ActorMesh;
+    use crate::ValueMesh;
     use crate::bootstrap::ProcStatus;
     #[cfg(fbcode_build)]
     use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
@@ -1696,6 +1722,97 @@ mod tests {
     use crate::test_utils::local_host_mesh;
     use crate::testactor;
     use crate::testing;
+
+    #[tokio::test]
+    async fn controller_cleanup_notifies_subscribers_unless_stop_already_did() {
+        let instance = testing::instance();
+        let mut host_mesh = local_host_mesh(2).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "cleanup", Extent::unity(), None, None)
+            .await
+            .unwrap();
+        let statuses: ValueMesh<resource::Status> =
+            std::iter::repeat_n(resource::Status::Running, 2)
+                .collect_mesh(proc_mesh.region().clone())
+                .unwrap();
+        let controller_instance = instance
+            .proc()
+            .actor_instance::<ProcMeshController>("cleanup_controller")
+            .unwrap();
+        let (owner, mut owner_rx) = instance.open_port::<MeshFailure>();
+
+        for monitor in [None, Some(())] {
+            let mut controller = ResourceController::new(
+                proc_mesh.deref().clone(),
+                None,
+                Some(owner.bind()),
+                statuses.clone(),
+            );
+            controller.monitor = monitor;
+            controller
+                .health_state
+                .crashed_ranks
+                .insert(0, failed_event(0, "rank 0 failed"));
+            let (subscriber, mut subscriber_rx) = instance.open_port::<Option<MeshFailure>>();
+            let (other_subscriber, mut other_rx) = instance.open_port::<Option<MeshFailure>>();
+            controller
+                .health_state
+                .subscribers
+                .insert(subscriber.bind());
+            controller
+                .health_state
+                .subscribers
+                .insert(other_subscriber.bind());
+
+            controller
+                .cleanup(&controller_instance.instance, None)
+                .await
+                .unwrap();
+
+            for receiver in [&mut subscriber_rx, &mut other_rx] {
+                let failure = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+                    .await
+                    .expect("controller cleanup must notify every subscriber")
+                    .unwrap()
+                    .unwrap();
+                assert!(failure.crashed_ranks.is_empty());
+                assert_eq!(failure.actor_mesh_name, Some(proc_mesh.id().to_string()));
+                assert_eq!(
+                    failure.event.actor_status,
+                    ActorStatus::Stopped("resource controller stopped".to_string())
+                );
+                assert_eq!(
+                    failure.reporting_controller,
+                    Some(controller_instance.instance.self_addr().id().clone())
+                );
+            }
+            assert_eq!(owner_rx.try_recv().unwrap(), None);
+        }
+
+        let mut controller = ResourceController::new(
+            proc_mesh.deref().clone(),
+            None,
+            Some(owner.bind()),
+            statuses.clone(),
+        );
+        controller.stop_notified = true;
+        let (subscriber, mut subscriber_rx) = instance.open_port::<Option<MeshFailure>>();
+        controller
+            .health_state
+            .subscribers
+            .insert(subscriber.bind());
+        controller
+            .cleanup(&controller_instance.instance, None)
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), subscriber_rx.recv())
+                .await
+                .is_err(),
+            "cleanup after an explicit stop must not notify subscribers again"
+        );
+        host_mesh.shutdown(instance).await.unwrap();
+    }
 
     #[tokio::test]
     async fn poll_failure_consumes_one_terminal_rank_for_owner_notification_bound() {

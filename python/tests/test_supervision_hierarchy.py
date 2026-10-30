@@ -6,15 +6,18 @@
 
 # pyre-unsafe
 
+import asyncio
 import os
 import re
 from threading import Event
 from typing import Callable, Optional, TypeVar
+from unittest.mock import patch
 
 import monarch.actor
+import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
-from monarch.actor import Actor, endpoint, this_host
+from monarch.actor import Actor, Channel, endpoint, this_host
 
 
 T = TypeVar("T")
@@ -109,6 +112,33 @@ def test_actor_failure():
         actor.run.broadcast(error)
 
     capture.assert_fault_occurred("and all its descendants have failed:")
+
+
+@isolate_in_subprocess
+@pytest.mark.parametrize("once", [False, True])
+@pytest.mark.parametrize("mode", ["get", "await"])
+def test_root_failure_closes_unrelated_receives(once: bool, mode: str) -> None:
+    actor = this_host().spawn_procs().spawn("failed_actor", Lambda)
+    actor.run.call_one(lambda: None).get()
+    _sender, receiver = Channel[int].open(once=once)
+    pending = receiver.recv()
+    with pytest.raises(TimeoutError):
+        pending.get(timeout=0.05)
+
+    interrupted = Event()
+    with patch("_thread.interrupt_main", side_effect=interrupted.set):
+        actor.run.broadcast(error)
+        with pytest.raises(EOFError, match="Port closed: .*client stopped") as exc:
+            if mode == "get":
+                pending.get(timeout=30)
+            else:
+
+                async def receive() -> None:
+                    await asyncio.wait_for(pending, timeout=30)
+
+                asyncio.run(receive())
+        assert "failed_actor" not in str(exc.value)
+        assert interrupted.wait(timeout=30)
 
 
 @isolate_in_subprocess

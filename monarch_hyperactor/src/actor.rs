@@ -1446,6 +1446,7 @@ impl PythonActor {
                     "could not propagate supervision event {} because it reached the global client: signaling KeyboardInterrupt to main thread",
                     event,
                 );
+                instance.close_client("client stopped");
 
                 // This is running in a background thread, and thus cannot run
                 // Py_FinalizeEx when it exits the process to properly shut down
