@@ -483,6 +483,11 @@ struct ProcState {
     /// [`config::TERMINATED_SNAPSHOT_RETENTION`].
     terminated_snapshots: DashMap<ActorId, TerminatedSnapshot>,
 
+    /// Number of non-system actors on this proc that terminated with a
+    /// failure, over the lifetime of the proc. Children of non-system
+    /// actors are excluded; see [`Proc::failed_actor_count`].
+    failed_actor_count: AtomicUsize,
+
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc. Stored as a [`PortRef`] so
     /// the coordinator may live in another proc — e.g. a process monitor
@@ -833,6 +838,7 @@ impl Proc {
                 root_instances: DashMap::new(),
                 queue_stats: Arc::new(ProcQueueStats::new()),
                 terminated_snapshots: DashMap::new(),
+                failed_actor_count: AtomicUsize::new(0),
                 supervision_coordinator_port: OnceLock::new(),
                 supervision_coordinator_actor_id: OnceLock::new(),
                 mailbox_server_handle: std::sync::Mutex::new(None),
@@ -1487,6 +1493,14 @@ impl Proc {
         for cell in self.root_instances() {
             cell.traverse(f);
         }
+    }
+
+    /// Number of non-system actors on this proc that have failed and whose
+    /// parent, if any, is a system actor. A child of a non-system actor
+    /// counts only through its parent: a failure the parent handles is not
+    /// counted, and an unhandled one fails the parent.
+    pub fn failed_actor_count(&self) -> usize {
+        self.state().failed_actor_count.load(Ordering::Relaxed)
     }
 
     /// Proc-wide running total of queued work items.
@@ -4628,6 +4642,16 @@ impl InstanceCell {
                 }
             }
 
+            if new.is_failed()
+                && !self.inner.is_system.load(Ordering::Relaxed)
+                && self.parent().is_none_or(|parent| parent.is_system())
+            {
+                self.inner
+                    .proc
+                    .inner
+                    .failed_actor_count
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             old_status = Some(old);
             *status = new.clone();
             true
@@ -7882,6 +7906,119 @@ mod tests {
             parent.await,
             ActorStatus::Failed(err) if err.to_string().contains("stop failed")
         );
+    }
+
+    #[derive(Debug)]
+    struct SystemStopFailingActor;
+
+    #[async_trait]
+    impl Actor for SystemStopFailingActor {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            this.set_system();
+            Ok(())
+        }
+
+        async fn handle_stop(
+            &mut self,
+            _this: &Instance<Self>,
+            _mode: StopMode,
+            _reason: &str,
+        ) -> Result<(), anyhow::Error> {
+            Err(anyhow::anyhow!("stop failed"))
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn failed_actor_count_excludes_clean_stops_and_system_actors() {
+        let proc = Proc::isolated();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let stopped = proc.spawn(TestActor);
+        stopped.drain_and_stop("test").unwrap();
+        assert_matches!(stopped.await, ActorStatus::Stopped(_));
+
+        let system = proc.spawn(SystemStopFailingActor);
+        system.drain_and_stop("test").unwrap();
+        assert_matches!(system.await, ActorStatus::Failed(_));
+        assert_eq!(
+            proc.failed_actor_count(),
+            0,
+            "clean stops and system actor failures should not count"
+        );
+
+        let failed = proc.spawn(StopFailingActor);
+        failed.drain_and_stop("test").unwrap();
+        assert_matches!(failed.await, ActorStatus::Failed(_));
+        assert_eq!(
+            proc.failed_actor_count(),
+            1,
+            "a failed user actor should count"
+        );
+    }
+
+    #[derive(Debug)]
+    struct HandlingActor(Arc<tokio::sync::Notify>);
+
+    #[async_trait]
+    impl Actor for HandlingActor {
+        async fn handle_supervision_event(
+            &mut self,
+            _this: &Instance<Self>,
+            _event: &ActorSupervisionEvent,
+        ) -> Result<bool, anyhow::Error> {
+            self.0.notify_one();
+            Ok(true)
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn failed_actor_count_counts_children_through_user_parents() {
+        let proc = Proc::isolated();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let handled = Arc::new(tokio::sync::Notify::new());
+        let handling_parent = proc.spawn(HandlingActor(handled.clone()));
+        let child = proc.spawn_child(handling_parent.cell().clone(), StopFailingActor);
+        child.drain_and_stop("test").unwrap();
+        assert_matches!(child.await, ActorStatus::Failed(_));
+        handled.notified().await;
+        assert_eq!(
+            proc.failed_actor_count(),
+            0,
+            "a child failure handled by its user parent should not count"
+        );
+
+        let propagating_parent = proc.spawn(TestActor);
+        let child = proc.spawn_child(propagating_parent.cell().clone(), StopFailingActor);
+        child.drain_and_stop("test").unwrap();
+        assert_matches!(child.await, ActorStatus::Failed(_));
+        assert_matches!(propagating_parent.await, ActorStatus::Failed(_));
+        assert_eq!(
+            proc.failed_actor_count(),
+            1,
+            "an unhandled child failure should count once, through its parent"
+        );
+
+        let system_parent = proc.spawn(SystemStopFailingActor);
+        // The parent marks itself system in `init`.
+        system_parent
+            .status()
+            .wait_for(|status| matches!(status, ActorStatus::Idle))
+            .await
+            .unwrap();
+        let child = proc.spawn_child(system_parent.cell().clone(), StopFailingActor);
+        child.drain_and_stop("test").unwrap();
+        assert_matches!(child.await, ActorStatus::Failed(_));
+        assert_matches!(system_parent.await, ActorStatus::Failed(_));
+        assert_eq!(
+            proc.failed_actor_count(),
+            2,
+            "a child of a system actor should count, and its system parent should not"
+        );
+
+        handling_parent.drain_and_stop("test").unwrap();
+        assert_matches!(handling_parent.await, ActorStatus::Stopped(_));
+        assert_eq!(proc.failed_actor_count(), 2);
     }
 
     #[derive(Debug)]

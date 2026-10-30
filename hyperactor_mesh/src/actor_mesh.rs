@@ -2613,6 +2613,21 @@ mod tests {
             check_failure(failure);
         }
 
+        // The failed child does not prevent new spawns on the same proc.
+        let after_failure: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn(instance, "after_failure", &())
+            .await
+            .expect("a proc with a failed actor should accept new spawns");
+        let (port, mut rx) = mailbox::open_port(instance);
+        after_failure
+            .get(0)
+            .expect("rank 0 exists")
+            .post(instance, testactor::GetActorId(port.bind()));
+        tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("timed out waiting for the new actor to reply")
+            .expect("channel closed before the new actor replied");
+
         let _ = hm.shutdown(instance).await;
     }
 

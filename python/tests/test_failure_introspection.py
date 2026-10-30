@@ -120,8 +120,9 @@ async def test_failed_actor_has_failure_info() -> None:
                 props = proc_data.get("properties", {}).get("Proc")
                 if props and props.get("is_poisoned"):
                     poisoned_proc = proc_data
+                    system = set(props.get("system_children", []))
                     for stopped in props.get("stopped_children", []):
-                        if "worker" in stopped:
+                        if "worker" in stopped and stopped not in system:
                             failed_worker_ref = stopped
                             break
                     break

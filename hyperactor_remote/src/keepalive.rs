@@ -275,6 +275,7 @@ impl Actor for KeepaliveWorker {
     }
 
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        this.set_system();
         self.send_keepalive(this)
     }
 }
@@ -363,6 +364,7 @@ impl Actor for KeepaliveSupervisor {
     }
 
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        this.set_system();
         self.schedule_deadline(this)
     }
 }

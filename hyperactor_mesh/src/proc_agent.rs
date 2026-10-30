@@ -232,13 +232,6 @@ impl ActorInstanceState {
         }
     }
 
-    /// True if the supervision event is an error.
-    fn has_errors(&self) -> bool {
-        self.supervision_event
-            .as_ref()
-            .is_some_and(|e| e.is_error())
-    }
-
     /// Build the `State<ActorState>` for this instance, suitable for
     /// replies and subscriber notifications.
     fn to_state(&self, id: &ResourceId) -> resource::State<ActorState> {
@@ -430,8 +423,11 @@ impl ProcAgent {
             return;
         }
         self.state = ProcState::ShuttingDown;
-        let has_errors = self.actor_states.values().any(|state| state.has_errors());
-        let exit_code = if has_errors { 1 } else { 0 };
+        let exit_code = if self.proc.failed_actor_count() > 0 {
+            1
+        } else {
+            0
+        };
 
         let flush_timeout =
             hyperactor_config::global::get(hyperactor::config::FORWARDER_FLUSH_TIMEOUT);
@@ -510,11 +506,7 @@ impl ProcAgent {
             hyperactor_config::global::get(hyperactor::config::TERMINATED_SNAPSHOT_RETENTION);
 
         // FI-5: is_poisoned iff failed_actor_count > 0.
-        let failed_actor_count = self
-            .actor_states
-            .values()
-            .filter(|s| s.has_errors())
-            .count();
+        let failed_actor_count = self.proc.failed_actor_count();
 
         // Attrs-based introspection.
         let num_live = children.len();
@@ -589,7 +581,6 @@ impl Actor for ProcAgent {
         // Resolve terminated actor snapshots via QueryChild so that
         // dead actors remain directly queryable by reference.
         let proc = self.proc.clone();
-        let self_id = this.self_addr().clone();
         this.set_query_child_handler(move |child_ref| {
             use hyperactor::introspect::IntrospectResult;
 
@@ -636,21 +627,7 @@ impl Actor for ProcAgent {
                     hyperactor::config::TERMINATED_SNAPSHOT_RETENTION,
                 );
 
-                let (is_poisoned, failed_actor_count) = proc
-                    .get_instance(&self_id)
-                    .and_then(|cell| cell.published_attrs())
-                    .map(|attrs| {
-                        let is_poisoned = attrs
-                            .get(crate::introspect::IS_POISONED)
-                            .copied()
-                            .unwrap_or(false);
-                        let failed_actor_count = attrs
-                            .get(crate::introspect::FAILED_ACTOR_COUNT)
-                            .copied()
-                            .unwrap_or(0);
-                        (is_poisoned, failed_actor_count)
-                    })
-                    .unwrap_or((false, 0));
+                let failed_actor_count = proc.failed_actor_count();
 
                 // Build attrs for this proc node.
                 let num_live = children.len();
@@ -670,7 +647,7 @@ impl Actor for ProcAgent {
                     crate::introspect::STOPPED_RETENTION_CAP,
                     stopped_retention_cap,
                 );
-                attrs.set(crate::introspect::IS_POISONED, is_poisoned);
+                attrs.set(crate::introspect::IS_POISONED, failed_actor_count > 0);
                 attrs.set(crate::introspect::FAILED_ACTOR_COUNT, failed_actor_count);
 
                 // PD-*: include proc debug stats in QueryChild
@@ -973,53 +950,44 @@ pub struct ActorState {
 wirevalue::register_type!(ActorState);
 
 impl ProcAgent {
-    /// Create a root-tracked actor and record its state under `id`, returning
-    /// whether the new state should be published.
+    /// Create a root-tracked actor and record its state under `id`.
     ///
-    /// On a poisoned proc (an actor with an error supervision event) it records a
-    /// failed state without spawning and returns `false`. Otherwise it shapes
-    /// the caller's environment with the optional construction point and returns
-    /// `true` whether or not shaping or `gspawn` succeeds; failures are cached in
-    /// `actor_states`, which remains the sole lifecycle authority. Shared by the
-    /// mesh `CreateOrUpdate` path and the client-root ensure path.
+    /// Shapes the caller's environment with the optional construction point
+    /// before spawning. Shaping and `gspawn` failures are cached in
+    /// `actor_states`, which remains the sole lifecycle authority. Earlier
+    /// actor failures on the proc do not prevent the spawn. Shared by the mesh
+    /// `CreateOrUpdate` path and the client-root ensure path.
     async fn create_actor(
         &mut self,
         id: ResourceId,
         create_rank: usize,
         spec: ActorSpec,
         construction_point: Option<ndslice::Point>,
-    ) -> bool {
-        let poisoned = self.actor_states.values().any(|s| s.has_errors());
-        let spawn = if poisoned {
-            Err(anyhow::anyhow!(
-                "Cannot spawn new actors on mesh with supervision events"
-            ))
-        } else {
-            let ActorSpec {
-                actor_type,
-                params_data,
-                mut actor_environment,
-            } = spec;
-            let shape_result = match construction_point {
-                Some(point) => actor_environment
-                    .set(CAST_POINT, point)
-                    .map_err(anyhow::Error::from),
-                None => Ok(()),
-            };
-            match shape_result {
-                Ok(()) => {
-                    self.remote
-                        .gspawn(
-                            &self.proc,
-                            &actor_type,
-                            id.uid().clone(),
-                            params_data,
-                            actor_environment,
-                        )
-                        .await
-                }
-                Err(error) => Err(error),
+    ) {
+        let ActorSpec {
+            actor_type,
+            params_data,
+            mut actor_environment,
+        } = spec;
+        let shape_result = match construction_point {
+            Some(point) => actor_environment
+                .set(CAST_POINT, point)
+                .map_err(anyhow::Error::from),
+            None => Ok(()),
+        };
+        let spawn = match shape_result {
+            Ok(()) => {
+                self.remote
+                    .gspawn(
+                        &self.proc,
+                        &actor_type,
+                        id.uid().clone(),
+                        params_data,
+                        actor_environment,
+                    )
+                    .await
             }
+            Err(error) => Err(error),
         };
         self.actor_states.insert(
             id,
@@ -1034,7 +1002,6 @@ impl ProcAgent {
                 pending_wait_status: Vec::new(),
             },
         );
-        !poisoned
     }
 
     /// Create or reuse the statically named, root-owned service and return its
@@ -1101,7 +1068,7 @@ impl ProcAgent {
         };
         // Root-owned construction uses its fresh environment unchanged; the
         // requester's message headers must not leak into the long-lived service.
-        let publish_state = self.create_actor(id.clone(), 0, spec, None).await;
+        self.create_actor(id.clone(), 0, spec, None).await;
 
         // Record the identity so later ensures reuse it; the spawn result
         // (including a cached failure) lives in `actor_states`.
@@ -1114,10 +1081,8 @@ impl ProcAgent {
             },
         );
         // Reflect the new service in the root's introspect view, matching the
-        // mesh create path whenever creation was processed.
-        if publish_state {
-            let _ = self.publish_introspect_properties(cx);
-        }
+        // mesh create path.
+        let _ = self.publish_introspect_properties(cx);
         Self::service_result(&self.actor_states, &id, &service_name)
     }
 
@@ -1133,8 +1098,7 @@ impl ProcAgent {
                 message: "service actor state is missing".to_string(),
             });
         };
-        // A cached spawn failure (including a poisoned-proc failure) is returned
-        // as-is; proc poisoning is latched, so it is never retried.
+        // A cached spawn failure is returned as-is; it is never retried.
         let addr = state.spawn.as_ref().map_err(|e| ClientRootError::Spawn {
             name: service_name.as_str().to_string(),
             message: e.to_string(),
@@ -1172,19 +1136,15 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
         // value with this actor's assigned point; other request headers remain
         // scoped to this delivery and are not stored on the actor (AENV-4).
         let construction_point = cx.headers().get(CAST_POINT);
-        // Publish introspect whenever creation was processed on a non-poisoned
-        // proc, including when environment shaping or spawning failed.
-        let publish_state = self
-            .create_actor(
-                create_or_update.id.clone(),
-                create_rank,
-                create_or_update.spec,
-                construction_point,
-            )
-            .await;
-        if publish_state {
-            let _ = self.publish_introspect_properties(cx);
-        }
+        self.create_actor(
+            create_or_update.id.clone(),
+            create_rank,
+            create_or_update.spec,
+            construction_point,
+        )
+        .await;
+        // Publish introspect even when environment shaping or spawning failed.
+        let _ = self.publish_introspect_properties(cx);
         Ok(())
     }
 }

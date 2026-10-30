@@ -253,6 +253,7 @@ impl Supervisor {
 #[async_trait]
 impl Actor for Supervisor {
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        this.set_system();
         let (liveness_handle, liveness) = self
             .liveness
             .take()
@@ -490,7 +491,8 @@ impl Worker {
 
 #[async_trait]
 impl Actor for Worker {
-    async fn init(&mut self, _this: &Instance<Self>) -> anyhow::Result<()> {
+    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        this.set_system();
         Ok(())
     }
 

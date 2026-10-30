@@ -1067,8 +1067,10 @@ async def test_actor_mesh_supervision_handling() -> None:
         await e.check.call()
     print("after subsequent endpoint call")
 
-    with pytest.raises(RuntimeError, match="error spawning actor mesh"):
-        await proc.spawn("ex", ExceptionActorSync).initialized
+    # The failed actor does not prevent new spawns on the same proc.
+    healthy = proc.spawn("ex", ExceptionActorSync)
+    await healthy.initialized
+    await healthy.noop.call()
 
     await proc.stop()
 

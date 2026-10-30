@@ -165,7 +165,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
 }
 ```
 
-This handler performs four steps:
+This handler performs three steps:
 
 ---
 
@@ -184,33 +184,7 @@ So the agent simply ignores subsequent requests for the same name.
 
 ---
 
-2. Safety check: reject spawn if the proc has supervision errors
-
-```rust
-if !self.supervision_events.is_empty() {
-    self.actor_states.insert(
-        create_or_update.name.clone(),
-        ActorInstanceState {
-            spawn: Err(anyhow::anyhow!(
-                "Cannot spawn new actors on mesh with supervision events"
-            )),
-            create_rank,
-            stopped: false,
-        },
-    );
-    return Ok(());
-}
-```
-
-If this proc previously recorded **any** supervision events for **any** actor, the proc is considered "poisoned": it may be in a bad state, and spawning new actors would be unsafe.
-
-The agent records the failure in `actor_states` and stops.
-
-Later, when the `ProcMesh::spawn_with_name_inner` calls `GetRankStatus::wait` to aggregate per-rank results, this proc will contribute a `Failed` status for that actor name instead of ever reporting it as `Running`.
-
----
-
-3. Unpack `ActorSpec` and call `remote.gspawn`
+2. Unpack `ActorSpec` and call `remote.gspawn`
 
 ```rust
 let ActorSpec {
@@ -259,9 +233,11 @@ ActorInstanceState {
 ```
 The `actor_states` map is later queried by `GetRankStatus` and `GetState`.
 
+Earlier actor failures on the proc do not prevent the spawn. Introspection reports them through `is_poisoned` and `failed_actor_count`, but the proc keeps accepting new actors.
+
 ---
 
-4. Return success locally (no direct reply)
+3. Return success locally (no direct reply)
 
 Once the agent has updated `actor_states`, the handler simply returns:
 ```rust
