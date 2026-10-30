@@ -19,6 +19,7 @@ use std::os::linux::net::SocketAddrExt;
 use std::os::unix::io::FromRawFd;
 use std::os::unix::io::RawFd;
 use std::panic::Location;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -620,6 +621,89 @@ impl fmt::Display for TlsAddr {
     }
 }
 
+/// A vsock endpoint addressed through the kernel's vsock interface
+/// or through a VMM's Unix socket.
+///
+/// With Firecracker, the guest listens on a `Native` address. The host
+/// reaches that same listener using a `Hybrid` address: it connects to
+/// Firecracker's Unix socket, which forwards to the guest's vsock port.
+///
+/// `Native` and `Hybrid` describe how the connection is made, not
+/// whether the address belongs to the host or guest.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    Ord,
+    PartialOrd
+)]
+pub enum VsockAddr {
+    /// A kernel vsock address, used to listen or connect.
+    /// With Firecracker, the guest listens on this address.
+    Native {
+        /// The context identifier.
+        cid: u32,
+        /// The port.
+        port: u32,
+    },
+    /// The address the host uses to reach a listener in the guest.
+    /// The host connects to the VMM's Unix socket at `uds` and asks
+    /// it to forward the connection to guest port `port`.
+    /// With Firecracker, the guest listens using a `Native` address.
+    Hybrid {
+        /// Absolute path to the VMM's Unix socket on the host.
+        uds: PathBuf,
+        /// The port the guest is listening on.
+        port: u32,
+    },
+}
+
+impl VsockAddr {
+    /// The wildcard context identifier (`VMADDR_CID_ANY`).
+    pub const CID_ANY: u32 = u32::MAX;
+    /// The wildcard port (`VMADDR_PORT_ANY`).
+    pub const PORT_ANY: u32 = u32::MAX;
+}
+
+impl fmt::Display for VsockAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Native { cid, port } => write!(f, "{}:{}", cid, port),
+            Self::Hybrid { uds, port } => write!(f, "{}:{}", uds.display(), port),
+        }
+    }
+}
+
+impl FromStr for VsockAddr {
+    type Err = anyhow::Error;
+
+    fn from_str(addr: &str) -> Result<Self, Self::Err> {
+        let (endpoint, port) = addr
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow::anyhow!("invalid vsock address: {}", addr))?;
+        let port = port
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid vsock port: {}", port))?;
+        if endpoint.starts_with('/') {
+            return Ok(Self::Hybrid {
+                uds: PathBuf::from(endpoint),
+                port,
+            });
+        }
+        let cid = endpoint.parse().map_err(|_| {
+            anyhow::anyhow!(
+                "vsock endpoint must be a cid or an absolute socket path: {}",
+                endpoint
+            )
+        })?;
+        Ok(Self::Native { cid, port })
+    }
+}
+
 /// Types of channel transports.
 #[derive(
     Clone,
@@ -653,6 +737,10 @@ pub enum ChannelTransport {
 
     /// Transport over unix domain socket.
     Unix,
+
+    /// Transport over Linux vsock, either directly or through a hybrid-vsock
+    /// VMM's host socket.
+    Vsock,
 }
 
 impl fmt::Display for ChannelTransport {
@@ -665,6 +753,7 @@ impl fmt::Display for ChannelTransport {
             Self::MetaQuic(mode) => write!(f, "metaquic({:?})", mode),
             Self::Local => write!(f, "local"),
             Self::Unix => write!(f, "unix"),
+            Self::Vsock => write!(f, "vsock"),
         }
     }
 }
@@ -683,6 +772,7 @@ impl FromStr for ChannelTransport {
             }
             "local" => Ok(ChannelTransport::Local),
             "unix" => Ok(ChannelTransport::Unix),
+            "vsock" => Ok(ChannelTransport::Vsock),
             "tls" => Ok(ChannelTransport::Tls),
             "quic" => Ok(ChannelTransport::Quic),
             s if s.starts_with("metatls(") && s.ends_with(")") => {
@@ -729,11 +819,12 @@ impl ChannelTransport {
             ChannelTransport::MetaQuic(_) => true,
             ChannelTransport::Local => false,
             ChannelTransport::Unix => false,
+            ChannelTransport::Vsock => false,
         }
     }
 
     /// Returns true if this transport is served by the `net` module
-    /// (i.e., a kernel-level socket: TCP, Unix, or a TLS variant
+    /// (i.e., a kernel-level socket: TCP, Unix, vsock, or a TLS variant
     /// thereof). The only non-net transport is the in-process
     /// [`Local`](ChannelTransport::Local) channel.
     pub fn is_net(&self) -> bool {
@@ -745,6 +836,7 @@ impl ChannelTransport {
             ChannelTransport::MetaQuic(_) => false,
             ChannelTransport::Unix => true,
             ChannelTransport::Local => false,
+            ChannelTransport::Vsock => true,
         }
     }
 
@@ -769,6 +861,8 @@ impl ChannelTransport {
             ChannelTransport::MetaQuic(_) => false,
             ChannelTransport::Unix => true,
             ChannelTransport::Local => true,
+            // The duplex protocol over vsock is not yet tested.
+            ChannelTransport::Vsock => false,
         }
     }
 }
@@ -875,6 +969,9 @@ pub type Port = u16;
 /// - `quic:example.com:1234` - example.com port 1234 over QUIC
 /// - `local:123` - the (in-process) local port 123
 /// - `unix:/some/path` - the Unix socket at `/some/path`
+/// - `vsock:3:1024` - port 1024 of vsock context 3
+/// - `vsock:/run/fc/v.sock:1024` - guest port 1024 behind the hybrid-vsock
+///   VMM socket `/run/fc/v.sock`
 ///
 /// Both local and TCP ports 0 are reserved to indicate "any available
 /// port" when serving.
@@ -955,6 +1052,9 @@ pub enum ChannelAddr {
         /// The address to which the server should bind to.
         bind_to: Box<ChannelAddr>,
     },
+
+    /// An address to establish vsock channels.
+    Vsock(VsockAddr),
 }
 
 impl From<SocketAddr> for ChannelAddr {
@@ -1065,6 +1165,10 @@ impl ChannelAddr {
             }
             // This works because the file will be deleted but we know we have a unique file by this point.
             ChannelTransport::Unix => Self::Unix(net::unix::SocketAddr::from_str("").unwrap()),
+            ChannelTransport::Vsock => Self::Vsock(VsockAddr::Native {
+                cid: VsockAddr::CID_ANY,
+                port: VsockAddr::PORT_ANY,
+            }),
         }
     }
 
@@ -1095,6 +1199,7 @@ impl ChannelAddr {
             // bind_to's transport is what is actually used in communication.
             // Therefore we use its transport to represent the Alias.
             Self::Alias { bind_to, .. } => bind_to.transport(),
+            Self::Vsock(_) => ChannelTransport::Vsock,
         }
     }
 }
@@ -1122,6 +1227,7 @@ impl fmt::Display for ChannelAddr {
             Self::Alias { dial_to, bind_to } => {
                 write!(f, "alias:dial_to={};bind_to={}", dial_to, bind_to)
             }
+            Self::Vsock(addr) => write!(f, "vsock:{}", addr),
         }
     }
 }
@@ -1144,6 +1250,7 @@ impl FromStr for ChannelAddr {
             Some(("quic", rest)) => TlsAddr::from_str(rest).map(Self::Quic),
             Some(("metaquic", rest)) => TlsAddr::from_str(rest).map(Self::MetaQuic),
             Some(("unix", rest)) => Ok(Self::Unix(net::unix::SocketAddr::from_str(rest)?)),
+            Some(("vsock", rest)) => VsockAddr::from_str(rest).map(Self::Vsock),
             Some(("alias", _)) => Err(anyhow::anyhow!(
                 "detect possible alias address, but we currently do not support \
                 parsing alias' string representation since we only want to \
@@ -1191,6 +1298,7 @@ impl ChannelAddr {
     /// - tcp://hostname:port or tcp://*:port (wildcard binding)
     /// - inproc://endpoint-name (equivalent to local)
     /// - ipc://path (equivalent to unix)
+    /// - vsock://cid:port or vsock:///path/to/vmm.sock:port (hybrid vsock)
     /// - metatls://hostname:port or metatls://*:port
     /// - quic://hostname:port or quic://*:port
     /// - metaquic://hostname:port or metaquic://*:port
@@ -1277,6 +1385,7 @@ impl ChannelAddr {
                 Ok((Self::Local(port), None))
             }
             "ipc" => Ok((Self::Unix(net::unix::SocketAddr::from_str(address)?), None)),
+            "vsock" => Ok((Self::Vsock(VsockAddr::from_str(address)?), None)),
             "metatls" | "tls" | "quic" | "metaquic" => {
                 let (host, port, listener) = Self::parse_host_port_or_fd(address)?;
                 let hostname = if host == "*" {
@@ -1339,6 +1448,7 @@ impl ChannelAddr {
             Self::Alias { dial_to, bind_to } => {
                 format!("{}@{}", dial_to.to_zmq_url(), bind_to.to_zmq_url())
             }
+            Self::Vsock(addr) => format!("vsock://{}", addr),
         }
     }
 
@@ -1866,6 +1976,7 @@ fn serve_inner<M: RemoteMessage>(
         | ChannelAddr::MetaTls(_)
         | ChannelAddr::Quic(_)
         | ChannelAddr::MetaQuic(_)
+        | ChannelAddr::Vsock(_)
         // The `Alias` variant binds on its `bind_to` address but advertises
         // `dial_to`; `listen_with_prebound` resolves this, so it routes through
         // the same net serve path as the other TCP-based transports.
@@ -1954,6 +2065,17 @@ mod tests {
                         .expect("can't make socket from path"),
                 ),
             ),
+            (
+                "vsock<DELIM>3:1024",
+                ChannelAddr::Vsock(VsockAddr::Native { cid: 3, port: 1024 }),
+            ),
+            (
+                "vsock<DELIM>/run/fc/v.sock:1024",
+                ChannelAddr::Vsock(VsockAddr::Hybrid {
+                    uds: "/run/fc/v.sock".into(),
+                    port: 1024,
+                }),
+            ),
         ];
 
         for (raw, parsed) in cases_ok {
@@ -1968,6 +2090,12 @@ mod tests {
             ("xxx:foo", "no such channel type: xxx"),
             ("127.0.0.1", "no channel type specified"),
             ("local:abc", "invalid digit found in string"),
+            ("vsock:3", "invalid vsock address: 3"),
+            ("vsock:3:x", "invalid vsock port: x"),
+            (
+                "vsock:v.sock:1024",
+                "vsock endpoint must be a cid or an absolute socket path: v.sock",
+            ),
         ];
 
         for (raw, error) in cases_err {
@@ -2097,6 +2225,95 @@ mod tests {
         assert_eq!(
             ChannelAddr::from_zmq_url("tls://[::1]:443").unwrap(),
             ChannelAddr::Tls(TlsAddr::new("::1", 443))
+        );
+    }
+
+    #[test]
+    fn test_vsock_addr_text_forms() {
+        let native = ChannelAddr::Vsock(VsockAddr::Native { cid: 3, port: 1024 });
+        let hybrid = ChannelAddr::Vsock(VsockAddr::Hybrid {
+            uds: "/run/fc/v.sock".into(),
+            port: 1024,
+        });
+        for (addr, text, url) in [
+            (&native, "vsock:3:1024", "vsock://3:1024"),
+            (
+                &hybrid,
+                "vsock:/run/fc/v.sock:1024",
+                "vsock:///run/fc/v.sock:1024",
+            ),
+        ] {
+            assert_eq!(addr.to_string(), text);
+            assert_eq!(&text.parse::<ChannelAddr>().unwrap(), addr);
+            assert_eq!(addr.to_zmq_url(), url);
+            assert_eq!(&ChannelAddr::from_zmq_url(url).unwrap(), addr);
+            assert_eq!(addr.transport(), ChannelTransport::Vsock);
+        }
+        assert_eq!(
+            ChannelAddr::any(ChannelTransport::Vsock),
+            ChannelAddr::Vsock(VsockAddr::Native {
+                cid: VsockAddr::CID_ANY,
+                port: VsockAddr::PORT_ANY,
+            })
+        );
+    }
+
+    #[test]
+    fn test_vsock_transport() {
+        let transport = "vsock".parse::<ChannelTransport>().unwrap();
+        assert_eq!(transport, ChannelTransport::Vsock);
+        assert_eq!(transport.to_string(), "vsock");
+        assert!(!transport.is_remote());
+        assert!(transport.is_net());
+        assert!(!transport.supports_duplex());
+    }
+
+    #[test]
+    fn test_vsock_addr_serde() {
+        let config = bincode::config::legacy();
+        for addr in [
+            ChannelAddr::Vsock(VsockAddr::Native { cid: 3, port: 1024 }),
+            ChannelAddr::Vsock(VsockAddr::Hybrid {
+                uds: "/run/fc/v.sock".into(),
+                port: 1024,
+            }),
+        ] {
+            let json = serde_json::to_string(&addr).unwrap();
+            assert_eq!(serde_json::from_str::<ChannelAddr>(&json).unwrap(), addr);
+            let encoded = bincode::serde::encode_to_vec(&addr, config).unwrap();
+            let (decoded, _): (ChannelAddr, usize) =
+                bincode::serde::decode_from_slice(&encoded, config).unwrap();
+            assert_eq!(decoded, addr);
+        }
+
+        // Variant indexes are positional on the wire; new variants must be
+        // appended so that existing encodings do not change.
+        assert_eq!(
+            bincode::serde::encode_to_vec(ChannelTransport::Unix, config).unwrap(),
+            6u32.to_le_bytes()
+        );
+        let alias = ChannelAddr::from_zmq_url("tcp://127.0.0.1:1234@tcp://0.0.0.0:1234").unwrap();
+        assert!(
+            bincode::serde::encode_to_vec(&alias, config)
+                .unwrap()
+                .starts_with(&7u32.to_le_bytes())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_vsock_serve_hybrid_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let addr = ChannelAddr::Vsock(VsockAddr::Hybrid {
+            uds: dir.path().join("v.sock"),
+            port: 1024,
+        });
+        let Err(err) = serve::<u64>(addr) else {
+            panic!("serving a hybrid vsock address should fail");
+        };
+        assert!(
+            err.to_string()
+                .contains("hybrid vsock addresses are dial-only"),
+            "unexpected error: {err}"
         );
     }
 
