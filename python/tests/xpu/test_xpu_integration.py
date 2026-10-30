@@ -144,33 +144,33 @@ class TestEnvBeforeXpu(unittest.IsolatedAsyncioTestCase):
 
 
 class ToyActor(Actor):
-    def __init__(self):
+    def __init__(self) -> None:
         self.rank = current_rank().rank
 
     @endpoint
-    def hello_world(self, msg) -> str:
+    def hello_world(self, msg: str) -> str:
         return f"rank={self.rank}, msg={msg}"
 
 
 class PingPongActor(Actor):
-    def __init__(self, actor_name):
+    def __init__(self, actor_name: str) -> None:
         self.actor_name = actor_name
 
     @endpoint
-    def init(self, other_actor):
+    def init(self, other_actor: Any) -> None:
         self.other_actor = other_actor
         self.other_actor_pair = other_actor.slice(**current_rank())
         self.identity = current_rank().rank
 
     @endpoint
-    def send(self, msg) -> str:
+    def send(self, msg: str) -> str:
         self.other_actor_pair.recv.call(
             f"Sender ({self.actor_name}:{self.identity}) {msg}"
         ).get()
         return "sent"
 
     @endpoint
-    def recv(self, msg) -> str:
+    def recv(self, msg: str) -> str:
         return f"Received: {msg}"
 
 
@@ -228,7 +228,7 @@ class PolicyActor(Actor):
         self.mu = nn.Parameter(torch.zeros((), device=self.device))
         self.opt = torch.optim.SGD([self.mu], lr=0.1)
 
-    def _dist(self):
+    def _dist(self) -> torch.distributions.Normal:
         return torch.distributions.Normal(self.mu, 0.5)
 
     @endpoint
@@ -263,13 +263,13 @@ class PolicyActor(Actor):
 class TestPingPong(unittest.TestCase):
     """Actor spawn + endpoint dispatch + actor-to-actor messaging on XPU."""
 
-    def test_hello_world_broadcast(self):
+    def test_hello_world_broadcast(self) -> None:
         n = min(_num_actors(), 4)
         proc_mesh = this_host().spawn_procs(per_host={"gpus": n})
         actors = proc_mesh.spawn("toy", ToyActor)
         actors.hello_world.call("ping").get()
 
-    def test_ping_pong_messaging(self):
+    def test_ping_pong_messaging(self) -> None:
         proc_mesh_0 = this_host().spawn_procs(per_host={"gpus": 2})
         actor_0 = proc_mesh_0.spawn("a0", PingPongActor, "actor_0")
         proc_mesh_1 = this_host().spawn_procs(per_host={"gpus": 2})
@@ -285,7 +285,7 @@ class TestPingPong(unittest.TestCase):
 class TestSpmdXpu(unittest.TestCase):
     """SPMD actor tests: rank calculation, elastic env, device visibility."""
 
-    def test_spawn_procs_rank_info(self):
+    def test_spawn_procs_rank_info(self) -> None:
         n = _num_actors()
         proc_mesh = this_host().spawn_procs(name="test_rank", per_host={"gpus": n})
         capture = proc_mesh.spawn("cap", EnvCapture)
@@ -297,7 +297,7 @@ class TestSpmdXpu(unittest.TestCase):
             seen_ranks.add(info["rank"])
         self.assertEqual(seen_ranks, set(range(n)))
 
-    def test_setup_torch_elastic_env(self):
+    def test_setup_torch_elastic_env(self) -> None:
         n = _num_actors()
         proc_mesh = this_host().spawn_procs(name="test_elastic", per_host={"gpus": n})
         setup_torch_elastic_env(proc_mesh)
@@ -308,7 +308,7 @@ class TestSpmdXpu(unittest.TestCase):
             self.assertTrue(env["MASTER_PORT"])
             self.assertEqual(env["WORLD_SIZE"], str(n))
 
-    def test_xpu_device_count_in_actors(self):
+    def test_xpu_device_count_in_actors(self) -> None:
         n = _num_actors()
         proc_mesh = this_host().spawn_procs(name="test_devcount", per_host={"gpus": n})
         probe = proc_mesh.spawn("probe", XpuProbe)
@@ -316,7 +316,7 @@ class TestSpmdXpu(unittest.TestCase):
         for _point, c in counts.items():
             self.assertGreater(c, 0)
 
-    def test_fi_env_propagates_to_actors(self):
+    def test_fi_env_propagates_to_actors(self) -> None:
         n = _num_actors()
 
         def set_fi_provider() -> None:
@@ -338,7 +338,7 @@ class TestSpmdXpu(unittest.TestCase):
 class TestSpmdActorXcclFsdp2(unittest.TestCase):
     """End-to-end FSDP2 training across XPU actors via SPMDActor + xccl."""
 
-    def test_fsdp2_training(self):
+    def test_fsdp2_training(self) -> None:
         n = _num_actors()
         proc_mesh = this_host().spawn_procs(name="test_fsdp2", per_host={"gpus": n})
         spmd_actors = proc_mesh.spawn("spmd", SPMDActor)
@@ -414,7 +414,7 @@ if __name__ == "__main__":
 class TestGrpoXpu(unittest.TestCase):
     """Simple GRPO loop on XPU: scalar Gaussian policy converges toward target."""
 
-    def test_grpo_convergence(self):
+    def test_grpo_convergence(self) -> None:
         n = min(_num_actors(), 4)
         target = 0.5
         num_steps = 10

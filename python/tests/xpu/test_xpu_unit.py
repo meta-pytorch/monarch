@@ -11,12 +11,13 @@
 import os
 import sys
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 import torch
 
 
-def _mock_accelerator(accel_type):
+def _mock_accelerator(accel_type: str) -> Any:
     # current_accelerator() returns a torch.device, not a str
     return patch(
         "torch.accelerator.current_accelerator", return_value=torch.device(accel_type)
@@ -24,7 +25,7 @@ def _mock_accelerator(accel_type):
 
 
 class TestXpuAcceleratorEnvVars(unittest.TestCase):
-    def test_xpu_includes_xpu_vars(self):
+    def test_xpu_includes_xpu_vars(self) -> None:
         from monarch._src.actor.proc_mesh import _get_accelerator_env_vars
 
         with _mock_accelerator("xpu"):
@@ -33,7 +34,7 @@ class TestXpuAcceleratorEnvVars(unittest.TestCase):
             self.assertIn("ZE_ENABLE_PCI_ID_DEVICE_ORDER", env_vars)
             self.assertIn("PYTORCH_XPU_ALLOC_CONF", env_vars)
 
-    def test_xpu_snapshot_captures_ze_vars(self):
+    def test_xpu_snapshot_captures_ze_vars(self) -> None:
         from monarch._src.actor.proc_mesh import _accel_env_snapshot
 
         with (
@@ -50,7 +51,7 @@ class TestXpuAcceleratorEnvVars(unittest.TestCase):
             self.assertEqual(snap["ZE_AFFINITY_MASK"], "0,1")
             self.assertEqual(snap["PYTORCH_XPU_ALLOC_CONF"], "expandable_segments:True")
 
-    def test_cuda_is_unchanged(self):
+    def test_cuda_is_unchanged(self) -> None:
         from monarch._src.actor.proc_mesh import (
             _COMMON_CUDA_ENV_VARS,
             _get_accelerator_env_vars,
@@ -59,7 +60,7 @@ class TestXpuAcceleratorEnvVars(unittest.TestCase):
         with _mock_accelerator("cuda"):
             self.assertEqual(_get_accelerator_env_vars(), _COMMON_CUDA_ENV_VARS)
 
-    def test_xpu_dispatches_to_torch_xpu(self):
+    def test_xpu_dispatches_to_torch_xpu(self) -> None:
         from monarch._src.actor.proc_mesh import _torch_accelerator_already_initialized
 
         with (
@@ -75,7 +76,7 @@ class TestXpuAcceleratorEnvVars(unittest.TestCase):
         ):
             self.assertTrue(_torch_accelerator_already_initialized())
 
-    def test_no_torch_returns_cuda_defaults(self):
+    def test_no_torch_returns_cuda_defaults(self) -> None:
         from monarch._src.actor.proc_mesh import (
             _COMMON_CUDA_ENV_VARS,
             _get_accelerator_env_vars,
