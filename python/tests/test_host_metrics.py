@@ -24,6 +24,8 @@ from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner impor
     DatabaseScanner,
 )
 
+pytest_plugins = ["socket_test_utils"]
+
 
 def _registered_schema(table: str) -> pa.Schema:
     scanner = DatabaseScanner(0, retention_secs=0)
@@ -171,7 +173,7 @@ def test_start_is_idempotent(tmp_path) -> None:
 
 
 def test_first_cpu_sample_is_measured_on_the_sampler_thread(
-    monkeypatch, tmp_path
+    monkeypatch, unix_socket_path: str
 ) -> None:
     # Like psutil 7, state is per thread, and a call with no earlier call on
     # its thread, or right after one, measures nothing and returns 0.0.
@@ -187,7 +189,7 @@ def test_first_cpu_sample_is_measured_on_the_sampler_thread(
         return 42.0
 
     monkeypatch.setattr(hma.psutil, "cpu_percent", cpu_percent)
-    path = str(tmp_path / "t.sock")
+    path = unix_socket_path
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.settimeout(5)
     server.bind(path)

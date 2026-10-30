@@ -395,8 +395,9 @@ def test_the_shape_columns_describe_the_graph() -> None:
     assert shape.max_buffers_per_proc == 4, "one outgoing plus three incoming"
 
 
-def test_the_config_columns_record_what_was_asked_for() -> None:
+def test_the_config_columns_record_what_was_asked_for(monkeypatch) -> None:
     cfg = _config("--cpu", "--pattern", "ring", "--verify", "off")
+    monkeypatch.setattr(bd, "get_global_config", lambda: bd._rdma_settings(cfg))
 
     config = bd._config_columns(cfg, _record())
 
@@ -416,9 +417,12 @@ def test_a_check_that_never_ran_is_neither_pass_nor_fail() -> None:
     assert bd._flag(False) == "False"
 
 
-def test_reporting_writes_a_row_per_direction_and_phase(tmp_path, capsys) -> None:
+def test_reporting_writes_a_row_per_direction_and_phase(
+    tmp_path, capsys, monkeypatch
+) -> None:
     output_csv = str(tmp_path / "results.csv")
     cfg = _config("--pattern", "ring", "--num-hosts", "4", "--output-csv", output_csv)
+    monkeypatch.setattr(bd, "get_global_config", lambda: bd._rdma_settings(cfg))
     topo = _topology(cfg)
     records = {bt.READ: _record(submit_ms=400.0), bt.WRITE: _record(submit_ms=200.0)}
 
@@ -895,6 +899,7 @@ def _drivable(tmp_path, monkeypatch, *flags, transferred: bool = True):
         str(tmp_path / "results.csv"),
         *flags,
     )
+    monkeypatch.setattr(bd, "get_global_config", lambda: bd._rdma_settings(cfg))
     return cfg, procs, peers
 
 

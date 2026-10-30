@@ -6,6 +6,7 @@
 
 import asyncio
 import http.client
+import http.server
 import json
 import os
 import pathlib
@@ -1821,6 +1822,20 @@ def test_client_attach_addr_this_host_and_this_proc() -> None:
         assert result == "ping"
 
 
+class _LoopbackHTTPConnection(http.client.HTTPConnection):
+    """Reach the local test server without requiring hostname DNS."""
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection(
+            ("localhost", self.port), timeout=self.timeout
+        )
+
+
+class _LoopbackHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
+        return self.do_open(_LoopbackHTTPConnection, req)
+
+
 class _LoopbackHTTPSConnection(http.client.HTTPSConnection):
     """Connect locally and verify the certificate against the URL's hostname."""
 
@@ -1828,9 +1843,8 @@ class _LoopbackHTTPSConnection(http.client.HTTPSConnection):
     _context: ssl.SSLContext
 
     def connect(self) -> None:
-        # The test binds the admin server to [::], which includes ::1. self.host
-        # stays the URL's hostname, so TLS checks SNI and the certificate against it.
-        sock = socket.create_connection(("::1", self.port), timeout=self.timeout)
+        # Keep the URL's hostname for TLS SNI and certificate verification.
+        sock = socket.create_connection(("localhost", self.port), timeout=self.timeout)
         self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
 
 
@@ -1845,7 +1859,7 @@ class _LoopbackHTTPSHandler(urllib.request.HTTPSHandler):
 
 
 def _admin_get(base: str, ref: str) -> Dict[str, Any]:
-    """Read admin JSON; HTTPS uses loopback and verifies the URL's hostname."""
+    """Read local admin JSON, preserving HTTPS hostname verification."""
     ca = "/var/facebook/rootcanal/ca.pem"
     ctx = ssl.create_default_context(cafile=ca if os.path.exists(ca) else None)
     if base.startswith("https"):
@@ -1853,11 +1867,33 @@ def _admin_get(base: str, ref: str) -> Dict[str, Any]:
         if os.path.exists(cert):
             ctx.load_cert_chain(cert, cert)
     opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}), _LoopbackHTTPSHandler(context=ctx)
+        urllib.request.ProxyHandler({}),
+        _LoopbackHTTPHandler(),
+        _LoopbackHTTPSHandler(context=ctx),
     )
     url = f"{base}/v1/{urllib.parse.quote(ref, safe='')}"
     with opener.open(url, timeout=10) as resp:
         return json.loads(resp.read())
+
+
+def test_admin_http_uses_ipv4_loopback() -> None:
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"ready": true}')
+
+    with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
+        server.timeout = 2
+        worker = threading.Thread(target=server.handle_request)
+        worker.start()
+        try:
+            assert _admin_get(
+                f"http://unresolvable-admin-host.invalid:{server.server_port}", "root"
+            ) == {"ready": True}
+        finally:
+            worker.join(3)
+        assert not worker.is_alive()
 
 
 @pytest.mark.timeout(120)

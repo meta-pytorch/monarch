@@ -20,11 +20,16 @@ import inspect
 from typing import Any, Callable
 
 import pytest
+from monarch import _rust_bindings
 from monarch.config import get_global_config, parametrize_config_pointwise
 from monarch.rdma import is_ibverbs_available
 
-
 RDMA_BACKENDS: list[str] = ["ibverbs", "tcp"]
+
+requires_native_rdma = pytest.mark.skipif(
+    not hasattr(_rust_bindings, "rdma"),
+    reason="requires native RDMA bindings",
+)
 
 
 def skip_if_ibverbs_unavailable() -> None:
@@ -69,7 +74,11 @@ def rdma_backends(fn: Callable[..., Any]) -> Callable[..., Any]:
     The ibverbs case is skipped at runtime on hosts without an ibverbs
     device.
     """
-    return parametrize_config_pointwise(
-        rdma_disable_ibverbs=[True, False],
-        rdma_allow_tcp_fallback=[True, False],
-    )(_skip_ibverbs_case_when_unavailable(fn))
+    # Apply the capability skip outside the configured wrapper: unavailable
+    # builds do not even register the backend configuration keys.
+    return requires_native_rdma(
+        parametrize_config_pointwise(
+            rdma_disable_ibverbs=[True, False],
+            rdma_allow_tcp_fallback=[True, False],
+        )(_skip_ibverbs_case_when_unavailable(fn))
+    )

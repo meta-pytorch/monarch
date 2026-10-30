@@ -29,6 +29,7 @@ import monarch._src.job._job_sidecar_worker as js_worker
 import monarch._src.job.job_components as jc
 import monarch._src.job.job_sidecar as js
 import monarch._src.job.mount_config as mc
+import psutil
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.handle import (
     _new_handle_pair,
@@ -356,18 +357,24 @@ def test_once_daemon_get_timeout_disconnects() -> None:
 
 def test_wait_for_pid_exit_reaps_exited_child() -> None:
     child = subprocess.Popen([sys.executable, "-c", "pass"])
-    while (
-        not os.path.exists(f"/proc/{child.pid}")
-        or open(f"/proc/{child.pid}/stat").read().split()[2] != "Z"
-    ):
-        time.sleep(0.01)
+    try:
+        # poll()/wait() would reap the child and invalidate the precondition.
+        deadline = time.monotonic() + 5
+        process = psutil.Process(child.pid)
+        while process.status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < deadline, "child did not exit within 5 seconds"
+            time.sleep(0.01)
 
-    start = time.monotonic()
-    with patch("monarch._src.job.once_daemon.os.kill", wraps=os.kill) as kill:
-        _wait_for_pid_exit(child.pid)
+        start = time.monotonic()
+        with patch("monarch._src.job.once_daemon.os.kill", wraps=os.kill) as kill:
+            _wait_for_pid_exit(child.pid)
 
-    assert time.monotonic() - start < 5
-    assert signal.SIGKILL not in [c.args[1] for c in kill.call_args_list]
+        assert time.monotonic() - start < 5
+        assert signal.SIGKILL not in [c.args[1] for c in kill.call_args_list]
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=5)
 
 
 def test_create_job_sidecar_spawns_job_sidecar_worker_module():
