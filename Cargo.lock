@@ -3466,11 +3466,13 @@ dependencies = [
  "tokio-stream",
  "tokio-test",
  "tokio-util",
+ "tokio-vsock",
  "tracing",
  "tracing-subscriber",
  "tracing-test",
  "typeuri",
  "uuid",
+ "vsock",
  "wirevalue",
 ]
 
@@ -7932,6 +7934,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-vsock"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b319ef9394889dab2e1b4f0085b45ba11d0c79dc9d1a9d1afc057d009d0f1c7"
+dependencies = [
+ "bytes",
+ "futures 0.3.34",
+ "libc",
+ "tokio",
+ "tonic",
+ "vsock",
+]
+
+[[package]]
 name = "toml_datetime"
 version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7967,8 +7983,10 @@ version = "0.14.6"
 source = "git+https://github.com/grpc/grpc-rust?rev=de65d0a48783869d89b7d8d4a65ce703f1612249#de65d0a48783869d89b7d8d4a65ce703f1612249"
 dependencies = [
  "async-trait",
+ "axum",
  "base64 0.22.1",
  "bytes",
+ "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -7977,6 +7995,7 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "pin-project",
+ "socket2 0.6.5",
  "sync_wrapper",
  "tokio",
  "tokio-stream",
@@ -8493,6 +8512,16 @@ name = "vsimd"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
+
+[[package]]
+name = "vsock"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ba782755fc073877e567c2253c0be48e4aa9a254c232d36d3985dfae0bd5205"
+dependencies = [
+ "libc",
+ "nix 0.31.3",
+]
 
 [[package]]
 name = "vtparse"

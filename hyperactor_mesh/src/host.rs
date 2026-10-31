@@ -1957,7 +1957,8 @@ mod tests {
 
     #[cfg(fbcode_build)]
     async fn assert_bootstrap_child_round_trip(service_proc_id: ProcId) {
-        let manager = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+        let gateway = Gateway::new();
+        let manager = BootstrapProcManager::new(BootstrapCommand::test(), gateway.clone()).unwrap();
         let mut host = Host::new_with_gateway(
             manager,
             ProcAddr::new(
@@ -1965,7 +1966,7 @@ mod tests {
                 ChannelAddr::any(ChannelTransport::Unix).into(),
             ),
             None,
-            Gateway::new(),
+            gateway,
             None,
         )
         .await
