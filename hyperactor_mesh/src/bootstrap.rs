@@ -160,8 +160,9 @@ declare_attrs! {
     pub attr MESH_TAIL_LOG_LINES: usize = 0;
 
     /// If enabled (default), bootstrap child processes install
-    /// `PR_SET_PDEATHSIG(SIGKILL)` so the kernel reaps them if the
-    /// parent dies unexpectedly. This is a **production safety net**
+    /// `PR_SET_PDEATHSIG(SIGKILL)` on Linux so they exit if the
+    /// parent dies unexpectedly. On macOS, they install a parent-exit watcher.
+    /// This is a **production safety net**
     /// against leaked children; tests usually disable it via
     /// `std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG",
     /// "false")`.
@@ -582,10 +583,12 @@ impl Bootstrap {
                 }
 
                 if hyperactor_config::global::get(MESH_BOOTSTRAP_ENABLE_PDEATHSIG) {
-                    // Safety net: normal shutdown is via
-                    // `host_mesh.shutdown(&instance)`; PR_SET_PDEATHSIG
-                    // is a last-resort guard against leaks if that
-                    // protocol is bypassed.
+                    // Safety net when the hosting process dies before it can
+                    // run the normal shutdown protocol. The macOS watcher must
+                    // start after exec, not in a pre_exec callback.
+                    #[cfg(target_os = "macos")]
+                    install_parent_exit_watch().context("installing parent exit watcher")?;
+                    #[cfg(not(target_os = "macos"))]
                     let _ = install_pdeathsig_kill();
                 } else {
                     eprintln!("(bootstrap) PDEATHSIG disabled via config");
@@ -703,6 +706,34 @@ pub fn install_pdeathsig_kill() -> io::Result<()> {
             std::process::exit(0);
         }
     }
+    Ok(())
+}
+
+/// macOS has no PR_SET_PDEATHSIG. Watch the hosting process from a fresh
+/// bootstrap process, independently of its async runtime and orphan reaper.
+#[cfg(target_os = "macos")]
+fn install_parent_exit_watch() -> io::Result<()> {
+    // SAFETY: getppid has no arguments or side effects.
+    let parent = unsafe { libc::getppid() };
+    // Managed procs are spawned by a host, never by launchd. A parent of 1
+    // means the host died before bootstrap could install the watcher.
+    if parent == 1 {
+        // SAFETY: terminate this defunct managed proc without running exit hooks.
+        unsafe { libc::_exit(0) };
+    }
+    std::thread::Builder::new()
+        .name("monarch-parent-watch".to_string())
+        .spawn(move || {
+            loop {
+                // SAFETY: as above. Reparenting means the original host exited.
+                if unsafe { libc::getppid() } != parent {
+                    // SAFETY: terminate without running Rust or Python exit hooks
+                    // on a background thread after the hosting process vanished.
+                    unsafe { libc::_exit(0) };
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        })?;
     Ok(())
 }
 
