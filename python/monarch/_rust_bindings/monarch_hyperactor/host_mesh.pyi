@@ -121,6 +121,7 @@ class HostMesh:
         actor: Type[Any],
         init_args: FrozenBuffer,
         kind: "ActorKind",
+        reachability: str,
     ) -> Handle[None]:
         """
         Install a Python proc launcher on every host of this mesh. The
@@ -133,6 +134,7 @@ class HostMesh:
         - `init_args`: The pickled `(args, kwargs)` of the launcher's
           `Init` message.
         - `kind`: The launcher class's actor kind.
+        - `reachability`: The launcher class's `ProcReachability` value.
         """
         ...
 

@@ -15,7 +15,8 @@ implement to be used with ActorProcLauncher from Rust.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from enum import Enum
+from typing import Any, ClassVar
 
 from monarch._src.actor.actor_mesh import Actor, Port
 from monarch._src.actor.endpoint import endpoint
@@ -45,6 +46,13 @@ class LaunchOptions:
         inherit_env: Whether the child inherits the launcher's
             environment (``os.environ`` of the HostAgent's proc).
         env_remove: Variables to remove from the inherited environment.
+        vsock_uds_path: Unix socket path the bootstrap manager passes to
+            the launcher. The launcher configures the VM manager to use
+            this path (Firecracker's ``uds_path``).
+            None for Unix launches.
+            Monarch listens on ``<path>_10000`` for messages from the proc
+            and ``<path>_10001`` for its readiness report. The proc listens
+            on guest vsock port 10002. These ports are reserved for Monarch.
 
     Launchers build the child environment as follows: start from the
     launcher's environment if ``inherit_env`` is set (otherwise from an
@@ -65,6 +73,28 @@ class LaunchOptions:
     proc_bind: dict[str, str] | None
     inherit_env: bool = True
     env_remove: list[str] = field(default_factory=list)
+    vsock_uds_path: str | None = None
+
+
+class ProcReachability(Enum):
+    """The connection scheme used between the host and a launcher's procs.
+
+    Monarch uses it to prepare listeners and addresses before launch.
+
+    UNIX: the host and proc connect directly to each other's Unix sockets.
+
+    HYBRID_VSOCK: the proc uses vsock inside a VM. The VM manager, such as
+        Firecracker, bridges connections between guest vsock and host
+        Unix sockets:
+        - The proc reaches the host's Unix listeners through vsock.
+        - The host reaches the proc's vsock listener through the VM
+          manager's Unix socket.
+        Monarch supplies that socket path in ``LaunchOptions.vsock_uds_path``.
+        Linux only.
+    """
+
+    UNIX = "unix"
+    HYBRID_VSOCK = "hybrid_vsock"
 
 
 @dataclass
@@ -84,13 +114,18 @@ class ProcExitResult:
 
 
 class ProcLauncher(Actor, ABC):
-    """ABC for Python proc launchers.
+    """Base class for Python actors that start and stop procs for a host.
 
-    Implementations control how procs are spawned (Docker, VMs, custom
-    orchestrators, etc.) while Monarch handles lifecycle wiring.
+    The launcher runs in the same proc as HostAgent. It controls how
+    procs are started; Monarch prepares their connections and tracks
+    readiness and exit.
 
-    The launcher runs in the same proc as HostAgent.
+    ``reachability`` selects the connection scheme. It defaults to
+    ``ProcReachability.UNIX``; launchers using hybrid vsock set it to
+    ``ProcReachability.HYBRID_VSOCK``.
     """
+
+    reachability: ClassVar[ProcReachability] = ProcReachability.UNIX
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         """Initialize the launcher.

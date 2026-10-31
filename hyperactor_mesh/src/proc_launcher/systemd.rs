@@ -1181,6 +1181,7 @@ mod tests {
             tail_lines: 0,
             log_channel: None,
             proc_bind: None,
+            vsock_uds_path: None,
         }
     }
 
@@ -1437,6 +1438,7 @@ mod tests {
             tail_lines: 0,
             log_channel: Some(log_channel.clone()),
             proc_bind: None,
+            vsock_uds_path: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -1540,6 +1542,7 @@ mod tests {
             tail_lines: 0,
             log_channel: None,
             proc_bind: None,
+            vsock_uds_path: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -1588,6 +1591,7 @@ mod tests {
             tail_lines: 0,
             log_channel: None,
             proc_bind: None,
+            vsock_uds_path: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -1656,6 +1660,7 @@ mod tests {
             tail_lines: 0,
             log_channel: None,
             proc_bind: None,
+            vsock_uds_path: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -1838,6 +1843,7 @@ mod tests {
                 tail_lines: 0,
                 log_channel: None,
                 proc_bind: None,
+                vsock_uds_path: None,
             };
 
             let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -1939,6 +1945,7 @@ mod tests {
             tail_lines: 0,
             log_channel: None,
             proc_bind: None,
+            vsock_uds_path: None,
         };
 
         // IMPORTANT: lr must be mutable because we take &mut
