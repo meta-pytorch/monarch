@@ -343,12 +343,13 @@ impl HostMesh {
 
         let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).binding_addr();
 
-        let manager = BootstrapProcManager::new(bootstrap_cmd)?;
+        let gateway = Gateway::new();
+        let manager = BootstrapProcManager::new(bootstrap_cmd, gateway.clone())?;
         let host = Host::new_with_gateway(
             manager,
             ProcAddr::new(service_proc_id(), addr.into()),
             None,
-            Gateway::new(),
+            gateway,
             None,
         )
         .await?;

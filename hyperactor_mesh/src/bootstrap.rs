@@ -11,6 +11,9 @@
 //! - **BS-1 (locking):** Do not acquire other locks from inside
 //!   `transition(...)`. The state lock is held for the duration of
 //!   the transition; acquiring another lock risks deadlock.
+//!
+//! Connection setup and resource lifetime have their own RCH-* registry in
+//! [`reachability`]; tags here identify the manager's part of that contract.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -95,13 +98,23 @@ use crate::proc_launcher::ProcExitKind;
 use crate::proc_launcher::ProcExitResult;
 use crate::proc_launcher::ProcLauncher;
 use crate::proc_launcher::ProcLauncherError;
+use crate::proc_launcher::ProcReachability;
 use crate::proc_launcher::StdioHandling;
 #[cfg(target_os = "linux")]
 use crate::proc_launcher::SystemdProcLauncher;
 use crate::proc_launcher::format_process_name;
 use crate::resource;
 
+mod hybrid_vsock;
 mod mailbox;
+mod reachability;
+
+#[cfg(test)]
+use hybrid_vsock::HybridVsockProc;
+#[cfg(test)]
+use hybrid_vsock::ReleaseOutcome;
+use reachability::ProcConnectionSetup;
+use reachability::ProcResources;
 
 declare_attrs! {
     /// Enable forwarding child stdout/stderr over the mesh log
@@ -335,7 +348,7 @@ pub async fn host(
         Some(command) => command,
         None => BootstrapCommand::current()?,
     };
-    let manager = BootstrapProcManager::new(command)?;
+    let manager = BootstrapProcManager::new(command, gateway.clone())?;
 
     let host = Host::new_with_gateway(manager, addr, listener, gateway, via).await?;
     let addr = host.addr().clone();
@@ -402,6 +415,10 @@ pub enum Bootstrap {
         /// as the `ClientOverride` layer so the parent's effective config
         /// takes precedence over Defaults.
         config: Option<Attrs>,
+        /// The address the proc serves on and reports through the callback.
+        /// When absent, the proc binds `local_proc_addr(socket_dir_path)`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        serve_addr: Option<ChannelAddr>,
     },
 
     /// Bootstrap as a "v1" host bootstrap. This sets up a new `Host`,
@@ -561,6 +578,7 @@ impl Bootstrap {
                 callback_addr,
                 socket_dir_path,
                 config,
+                serve_addr,
             } => {
                 let entered = tracing::span!(
                     Level::INFO,
@@ -592,7 +610,7 @@ impl Bootstrap {
                 }
 
                 let local_addr = proc_id.addr().clone();
-                let (serve_addr, _) = local_proc_addr(&socket_dir_path, proc_id.id())?;
+                let serve_addr = proc_serve_addr(serve_addr, &socket_dir_path, proc_id.id())?;
 
                 // The following is a modified host::spawn_proc to support direct
                 // dialing between spawned sibling procs: 1) we bind each proc to a
@@ -1094,6 +1112,7 @@ impl BootstrapProcHandle {
                 true
             }
             _ => {
+                // RCH-7: a late readiness report cannot revive a terminal proc.
                 tracing::warn!(
                     "illegal transition: {:?} -> Ready; leaving status unchanged",
                     st
@@ -1779,16 +1798,34 @@ pub struct BootstrapProcManager {
     /// sockets in this directory, so that they can be looked up by
     /// other procs for direct transfer.
     socket_dir: TempDir,
+
+    /// The same gateway used by the host's existing message listener.
+    /// New per-VM receive tasks route messages through it too.
+    gateway: Gateway,
+
+    /// Receives each spawned proc's cleanup outcome once its exit monitor
+    /// finishes.
+    #[cfg(test)]
+    cleanup_probe: Option<tokio::sync::mpsc::UnboundedSender<(ProcAddr, ExitCleanup)>>,
+}
+
+/// What a spawned proc's exit monitor observed while cleaning up.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExitCleanup {
+    /// Whether the readiness-callback task finished within the bound.
+    callback_task_joined: bool,
+    /// The hybrid-vsock release outcome, for hybrid-vsock procs.
+    release: Option<ReleaseOutcome>,
 }
 
 impl BootstrapProcManager {
-    /// Construct a new [`BootstrapProcManager`] that will launch
-    /// procs using the given bootstrap command specification.
+    /// Construct a manager using the given bootstrap command and host gateway.
     ///
-    /// This is the general entry point when you want to manage procs
-    /// backed by a specific binary path (e.g. a bootstrap
-    /// trampoline).
-    pub(crate) fn new(command: BootstrapCommand) -> Result<Self, io::Error> {
+    /// Pass the same gateway that the host uses for its message listeners.
+    /// Hybrid-vsock setup uses it to route messages from each VM's new
+    /// host-side receive task.
+    pub(crate) fn new(command: BootstrapCommand, gateway: Gateway) -> Result<Self, io::Error> {
         let file_appender = if hyperactor_config::global::get(MESH_ENABLE_FILE_CAPTURE) {
             match crate::logging::FileAppender::new() {
                 Some(fm) => {
@@ -1810,7 +1847,19 @@ impl BootstrapProcManager {
             children: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             file_appender,
             socket_dir: runtime_dir()?,
+            gateway,
+            #[cfg(test)]
+            cleanup_probe: None,
         })
+    }
+
+    #[cfg(test)]
+    fn with_cleanup_probe(
+        mut self,
+        probe: tokio::sync::mpsc::UnboundedSender<(ProcAddr, ExitCleanup)>,
+    ) -> Self {
+        self.cleanup_probe = Some(probe);
+        self
     }
 
     /// Install a custom launcher.
@@ -1822,6 +1871,11 @@ impl BootstrapProcManager {
     /// Must be called before any spawn operation that would
     /// initialize the default launcher.
     pub fn set_launcher(&self, launcher: Arc<dyn ProcLauncher>) -> Result<(), ProcLauncherError> {
+        if launcher.reachability() == ProcReachability::HybridVsock && !cfg!(target_os = "linux") {
+            return Err(ProcLauncherError::Other(
+                "hybrid vsock reachability requires linux".into(),
+            ));
+        }
         self.launcher.set(launcher).map_err(|_| {
             ProcLauncherError::Other(
                 "launcher already initialized; call set_proc_launcher before first spawn".into(),
@@ -1922,92 +1976,146 @@ impl BootstrapProcManager {
         });
     }
 
+    /// Prepares communication between this host and one proc before launch.
+    ///
+    /// Supplies the existing host message address for Unix, or the host's
+    /// gateway for hybrid vsock. Returns the proc's startup addresses and
+    /// the readiness receiver and resources the manager keeps on the host.
+    fn prepare_connections(
+        &self,
+        reachability: ProcReachability,
+        proc_id: &ProcAddr,
+        host_backend: ChannelAddr,
+    ) -> Result<ProcConnectionSetup, HostError> {
+        match reachability {
+            // Unix procs connect to host_backend; its listener already routes
+            // messages through the host's gateway.
+            ProcReachability::Unix => {
+                ProcConnectionSetup::create_unix(proc_id, self.socket_dir.path(), host_backend)
+            }
+            // A VM cannot connect to host_backend directly. Create a listener it
+            // can reach, supplying the same gateway to route its messages.
+            ProcReachability::HybridVsock => ProcConnectionSetup::create_hybrid_vsock(
+                proc_id,
+                self.socket_dir.path(),
+                &self.gateway,
+            ),
+        }
+    }
+
     fn spawn_exit_monitor(
         &self,
         proc_id: ProcAddr,
         handle: BootstrapProcHandle,
         exit_rx: tokio::sync::oneshot::Receiver<ProcExitResult>,
+        callback_task: tokio::task::JoinHandle<()>,
+        resources: ProcResources,
     ) {
+        #[cfg(test)]
+        let cleanup_probe = self.cleanup_probe.clone();
         tokio::spawn(async move {
-            // Wait for the launcher to report terminal status.
-            let exit_result = match exit_rx.await {
-                Ok(res) => res,
-                Err(_) => {
-                    // exit_rx sender was dropped without sending - launcher error.
-                    let _ = handle.mark_failed("exit_rx sender dropped unexpectedly");
-                    tracing::error!(
-                        name = "ProcStatus",
-                        status = "Exited::ChannelDropped",
-                        %proc_id,
-                        "exit channel closed without result"
-                    );
-                    return;
+            async {
+                // Wait for the launcher to report terminal status.
+                let exit_result = match exit_rx.await {
+                    Ok(res) => res,
+                    Err(_) => {
+                        // exit_rx sender was dropped without sending - launcher error.
+                        let _ = handle.mark_failed("exit_rx sender dropped unexpectedly");
+                        tracing::error!(
+                            name = "ProcStatus",
+                            status = "Exited::ChannelDropped",
+                            %proc_id,
+                            "exit channel closed without result"
+                        );
+                        return;
+                    }
+                };
+
+                // Collect stderr tail from StreamFwder if we captured stdio.
+                // The launcher may also provide stderr_tail in exit_result;
+                // prefer StreamFwder's tail if available (more complete).
+                let mut stderr_tail: Vec<String> = Vec::new();
+                let (stdout_mon, stderr_mon) = handle.take_stream_monitors();
+
+                if let Some(t) = stderr_mon {
+                    let (lines, _bytes) = t.abort().await;
+                    stderr_tail = lines;
                 }
-            };
-
-            // Collect stderr tail from StreamFwder if we captured stdio.
-            // The launcher may also provide stderr_tail in exit_result;
-            // prefer StreamFwder's tail if available (more complete).
-            let mut stderr_tail: Vec<String> = Vec::new();
-            let (stdout_mon, stderr_mon) = handle.take_stream_monitors();
-
-            if let Some(t) = stderr_mon {
-                let (lines, _bytes) = t.abort().await;
-                stderr_tail = lines;
-            }
-            if let Some(t) = stdout_mon {
-                let (_lines, _bytes) = t.abort().await;
-            }
-
-            // Fall back to launcher-provided tail if we didn't capture.
-            if stderr_tail.is_empty()
-                && let Some(tail) = exit_result.stderr_tail
-            {
-                stderr_tail = tail;
-            }
-
-            let tail_str = if stderr_tail.is_empty() {
-                None
-            } else {
-                Some(stderr_tail.join("\n"))
-            };
-
-            match exit_result.kind {
-                ProcExitKind::Exited { code } => {
-                    let _ = handle.mark_stopped(code, stderr_tail);
-                    tracing::info!(
-                        name = "ProcStatus",
-                        status = "Exited::ExitWithCode",
-                        %proc_id,
-                        exit_code = code,
-                        tail = tail_str,
-                        "proc exited with code {code}"
-                    );
+                if let Some(t) = stdout_mon {
+                    let (_lines, _bytes) = t.abort().await;
                 }
-                ProcExitKind::Signaled {
-                    signal,
-                    core_dumped,
-                } => {
-                    let _ = handle.mark_killed(signal, core_dumped);
-                    tracing::info!(
-                        name = "ProcStatus",
-                        status = "Exited::KilledBySignal",
-                        %proc_id,
-                        tail = tail_str,
-                        "killed by signal {signal}"
-                    );
+
+                // Fall back to launcher-provided tail if we didn't capture.
+                if stderr_tail.is_empty()
+                    && let Some(tail) = exit_result.stderr_tail
+                {
+                    stderr_tail = tail;
                 }
-                ProcExitKind::Failed { reason } => {
-                    let _ = handle.mark_failed(&reason);
-                    tracing::info!(
-                        name = "ProcStatus",
-                        status = "Exited::Failed",
-                        %proc_id,
-                        tail = tail_str,
-                        "proc failed: {reason}"
-                    );
+
+                let tail_str = if stderr_tail.is_empty() {
+                    None
+                } else {
+                    Some(stderr_tail.join("\n"))
+                };
+
+                match exit_result.kind {
+                    ProcExitKind::Exited { code } => {
+                        let _ = handle.mark_stopped(code, stderr_tail);
+                        tracing::info!(
+                            name = "ProcStatus",
+                            status = "Exited::ExitWithCode",
+                            %proc_id,
+                            exit_code = code,
+                            tail = tail_str,
+                            "proc exited with code {code}"
+                        );
+                    }
+                    ProcExitKind::Signaled {
+                        signal,
+                        core_dumped,
+                    } => {
+                        let _ = handle.mark_killed(signal, core_dumped);
+                        tracing::info!(
+                            name = "ProcStatus",
+                            status = "Exited::KilledBySignal",
+                            %proc_id,
+                            tail = tail_str,
+                            "killed by signal {signal}"
+                        );
+                    }
+                    ProcExitKind::Failed { reason } => {
+                        let _ = handle.mark_failed(&reason);
+                        tracing::info!(
+                            name = "ProcStatus",
+                            status = "Exited::Failed",
+                            %proc_id,
+                            tail = tail_str,
+                            "proc failed: {reason}"
+                        );
+                    }
                 }
             }
+            .await;
+
+            // RCH-7: bound the readiness-task wait after terminal status.
+            let callback_task_joined = matches!(
+                tokio::time::timeout(ProcConnectionSetup::RELEASE_TIMEOUT, callback_task).await,
+                Ok(Ok(()))
+            );
+            // RCH-5: release resources even when the launcher drops exit_rx.
+            let release = resources.release().await;
+            #[cfg(test)]
+            if let Some(probe) = cleanup_probe {
+                let _ = probe.send((
+                    proc_id.clone(),
+                    ExitCleanup {
+                        callback_task_joined,
+                        release,
+                    },
+                ));
+            }
+            #[cfg(not(test))]
+            let _ = (callback_task_joined, release);
         });
     }
 }
@@ -2074,32 +2182,25 @@ impl ProcManager for BootstrapProcManager {
         ChannelTransport::Unix
     }
 
-    /// Launch a new proc under this [`BootstrapProcManager`].
+    /// Launch a proc through the configured launcher and track its lifecycle.
     ///
-    /// Spawns the configured bootstrap binary (`self.program`) in a
-    /// fresh child process. The environment is populated with
-    /// variables that describe the bootstrap context — most
-    /// importantly `HYPERACTOR_MESH_BOOTSTRAP_MODE`, which carries a
-    /// base64-encoded JSON [`Bootstrap::Proc`] payload (proc id,
-    /// backend addr, callback addr, optional config snapshot).
-    /// Additional variables like `BOOTSTRAP_LOG_CHANNEL` are also set
-    /// up for logging and control.
+    /// Uses [`Self::prepare_connections`] to prepare communication with
+    /// the proc. Puts the proc's addresses in a [`Bootstrap::Proc`] payload
+    /// and passes it, the bootstrap command, and launch options to
+    /// [`ProcLauncher::launch`]. The launcher starts the process or VM.
     ///
-    /// Responsibilities performed here:
-    /// - Create a one-shot callback channel so the child can confirm
-    ///   successful bootstrap and return its mailbox address plus agent
-    ///   reference.
-    /// - Spawn the OS process with stdout/stderr piped.
-    /// - Stamp the new [`BootstrapProcHandle`] as
-    ///   [`ProcStatus::Running`] once a PID is observed.
-    /// - Wire stdout/stderr pipes into local writers and forward them
-    ///   over the logging channel (`BOOTSTRAP_LOG_CHANNEL`).
-    /// - Insert the handle into the manager's children map and start
-    ///   an exit monitor to track process termination.
+    /// After launch, creates a [`BootstrapProcHandle`], records it as
+    /// [`ProcStatus::Running`], and registers it in the manager's children
+    /// map. If the launcher supplies captured output, starts tasks to
+    /// retain or forward it according to the logging configuration.
     ///
-    /// Returns a [`BootstrapProcHandle`] that exposes the child
-    /// process's lifecycle (status, wait/ready, termination). Errors
-    /// are surfaced as [`HostError`].
+    /// A readiness task receives the proc's startup report, records its
+    /// message address and agent reference, and marks the handle ready.
+    /// An exit monitor receives the launcher's exit report, updates the
+    /// handle's status, and releases the retained host-side resources.
+    ///
+    /// Returns the handle after launch and registration, without waiting
+    /// for readiness. Setup and launch errors are returned as [`HostError`].
     #[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string()))]
     async fn spawn(
         &self,
@@ -2107,9 +2208,10 @@ impl ProcManager for BootstrapProcManager {
         backend_addr: ChannelAddr,
         config: BootstrapProcConfig,
     ) -> Result<Self::Handle, HostError> {
-        let (callback_addr, mut callback_rx) = channel::serve::<(ChannelAddr, ActorRef<ProcAgent>)>(
-            ChannelAddr::any(ChannelTransport::Unix),
-        )?;
+        let launcher = Arc::clone(self.launcher());
+        // RCH-4: reject invalid connection paths before invoking the launcher.
+        let connections =
+            self.prepare_connections(launcher.reachability(), &proc_id, backend_addr)?;
 
         // Decide whether we need to capture stdio.
         let overrides = &config.client_config_override;
@@ -2118,12 +2220,14 @@ impl ProcManager for BootstrapProcManager {
         let tail_size = override_or_global(overrides, MESH_TAIL_LOG_LINES);
         let need_stdio = enable_forwarding || enable_file_capture || tail_size > 0;
 
+        // RCH-1, RCH-2: send the prepared addresses without replacing them.
         let mode = Bootstrap::Proc {
             proc_id: proc_id.clone(),
-            backend_addr,
-            callback_addr,
+            backend_addr: connections.proc.backend_addr,
+            callback_addr: connections.proc.readiness_addr,
             socket_dir_path: self.socket_dir.path().to_owned(),
             config: Some(config.client_config_override.clone()),
+            serve_addr: Some(connections.proc.serve_addr),
         };
 
         // Build LaunchOptions for the launcher.
@@ -2147,12 +2251,12 @@ impl ProcManager for BootstrapProcManager {
                 None
             },
             proc_bind: config.proc_bind.clone(),
+            vsock_uds_path: connections.host.resources.vsock_uds_path(),
         };
 
         // Launch via the configured launcher backend.
         tracing::info!(proc_id = %proc_id, "launching proc with opts={opts:?}");
         let ref_proc_id: ProcAddr = proc_id.clone();
-        let launcher = Arc::clone(self.launcher());
         let launch_result = match AssertUnwindSafe(launcher.launch(&ref_proc_id, opts.clone()))
             .catch_unwind()
             .await
@@ -2163,6 +2267,8 @@ impl ProcManager for BootstrapProcManager {
                     ProcLauncherError::Launch(io_err) => io_err,
                     other => std::io::Error::other(other.to_string()),
                 };
+                // RCH-5: an ordinary launch error releases prepared resources.
+                connections.host.resources.release().await;
                 return Err(HostError::ProcessSpawnFailure(
                     proc_id.clone(),
                     format!("{:?}", opts.command),
@@ -2241,23 +2347,39 @@ impl ProcManager for BootstrapProcManager {
             children.insert(proc_id.clone(), handle.clone());
         }
 
-        // Kick off an exit monitor that updates ProcStatus when the
-        // launcher reports terminal status.
-        self.spawn_exit_monitor(proc_id.clone(), handle.clone(), launch_result.exit_rx);
-
-        // Handle callback from child proc when it confirms bootstrap.
+        // RCH-7: handle the proc's readiness report. Stop waiting once the
+        // proc is terminal, so the readiness listener does not outlive it.
         let h = handle.clone();
-        tokio::spawn(async move {
-            match callback_rx.recv().await {
-                Ok((addr, agent)) => {
-                    let _ = h.mark_ready(addr, agent);
-                }
-                Err(e) => {
-                    // Child never called back; record failure.
-                    let _ = h.mark_failed(format!("bootstrap callback failed: {e}"));
-                }
+        let callback_task = tokio::spawn(async move {
+            let mut readiness_rx = connections.host.readiness_rx;
+            let mut status = h.watch();
+            tokio::select! {
+                received = readiness_rx.recv() => match received {
+                    Ok((addr, agent)) => {
+                        let _ = h.mark_ready(addr, agent);
+                    }
+                    Err(e) => {
+                        // Child never called back; record failure.
+                        let _ = h.mark_failed(format!("bootstrap callback failed: {e}"));
+                    }
+                },
+                _ = status.wait_for(ProcStatus::is_exit) => {}
             }
+            let _ = tokio::time::timeout(ProcConnectionSetup::RELEASE_TIMEOUT, readiness_rx.join())
+                .await;
         });
+
+        // Kick off an exit monitor that updates ProcStatus when the
+        // launcher reports terminal status, then releases the proc's
+        // listeners.
+        // RCH-5: move retained resources to the exit monitor only after launch.
+        self.spawn_exit_monitor(
+            proc_id.clone(),
+            handle.clone(),
+            launch_result.exit_rx,
+            callback_task,
+            connections.host.resources,
+        );
 
         // Callers do `handle.read().await` for mesh readiness.
         cleanup.disarm();
@@ -2490,6 +2612,19 @@ impl Write for Debug {
     }
 }
 
+/// The address a bootstrapped proc serves on: `serve_addr` when the manager
+/// supplied one, otherwise its deterministic socket in `socket_dir`.
+pub(crate) fn proc_serve_addr(
+    serve_addr: Option<ChannelAddr>,
+    socket_dir: &Path,
+    proc_id: &hyperactor::id::ProcId,
+) -> anyhow::Result<ChannelAddr> {
+    match serve_addr {
+        Some(addr) => Ok(addr),
+        None => Ok(local_proc_addr(socket_dir, proc_id)?.0),
+    }
+}
+
 /// Build the bind/dial [`ChannelAddr`] for a local proc within `socket_dir`.
 pub(crate) fn local_proc_addr(
     socket_dir: &Path,
@@ -2540,6 +2675,7 @@ mod tests {
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::TcpMode;
+    use hyperactor::channel::VsockAddr;
     use hyperactor::mailbox::MailboxSender;
     use hyperactor::mailbox::MessageEnvelope;
     use hyperactor::mailbox::Undeliverable;
@@ -2604,7 +2740,7 @@ mod tests {
     ) {
         let (killed, killed_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let manager = BootstrapProcManager::new(BootstrapCommand::default())
+        let manager = BootstrapProcManager::new(BootstrapCommand::default(), Gateway::new())
             .expect("bootstrap proc manager should be created");
 
         manager
@@ -2621,6 +2757,595 @@ mod tests {
             proc_bind: None,
             bootstrap_command: None,
         }
+    }
+
+    #[derive(Clone, Copy)]
+    enum RecordingBehavior {
+        Succeed,
+        Fail,
+        Panic,
+    }
+
+    /// Records launch options and holds each launched proc's exit sender, so
+    /// a test can report the proc's exit itself.
+    struct RecordingLauncher {
+        reachability: ProcReachability,
+        behavior: RecordingBehavior,
+        launched: tokio::sync::mpsc::UnboundedSender<LaunchOptions>,
+        exits: std::sync::Mutex<Vec<tokio::sync::oneshot::Sender<ProcExitResult>>>,
+        killed: tokio::sync::mpsc::UnboundedSender<ProcAddr>,
+    }
+
+    #[async_trait]
+    impl ProcLauncher for RecordingLauncher {
+        fn reachability(&self) -> ProcReachability {
+            self.reachability
+        }
+
+        async fn launch(
+            &self,
+            _proc_id: &ProcAddr,
+            opts: LaunchOptions,
+        ) -> Result<LaunchResult, ProcLauncherError> {
+            let _ = self.launched.send(opts);
+            match self.behavior {
+                RecordingBehavior::Fail => Err(ProcLauncherError::Other(
+                    "recording launcher refused".into(),
+                )),
+                RecordingBehavior::Panic => panic!("recording launcher panicked"),
+                RecordingBehavior::Succeed => {
+                    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
+                    self.exits.lock().unwrap().push(exit_tx);
+                    Ok(LaunchResult {
+                        pid: None,
+                        started_at: std::time::SystemTime::now(),
+                        stdio: StdioHandling::ManagedByLauncher,
+                        exit_rx,
+                    })
+                }
+            }
+        }
+
+        async fn terminate(
+            &self,
+            _proc_id: &ProcAddr,
+            _timeout: Duration,
+        ) -> Result<(), ProcLauncherError> {
+            Ok(())
+        }
+
+        async fn kill(&self, proc_id: &ProcAddr) -> Result<(), ProcLauncherError> {
+            let _ = self.killed.send(proc_id.clone());
+            Ok(())
+        }
+    }
+
+    impl RecordingLauncher {
+        fn take_exit(&self) -> tokio::sync::oneshot::Sender<ProcExitResult> {
+            self.exits
+                .lock()
+                .unwrap()
+                .pop()
+                .expect("a launched proc should have an exit sender")
+        }
+
+        fn report_exit(&self) {
+            let _ = self.take_exit().send(ProcExitResult {
+                kind: ProcExitKind::Exited { code: 0 },
+                stderr_tail: None,
+            });
+        }
+    }
+
+    struct HybridFixture {
+        manager: BootstrapProcManager,
+        launcher: Arc<RecordingLauncher>,
+        launched: tokio::sync::mpsc::UnboundedReceiver<LaunchOptions>,
+        killed: tokio::sync::mpsc::UnboundedReceiver<ProcAddr>,
+        cleanups: tokio::sync::mpsc::UnboundedReceiver<(ProcAddr, ExitCleanup)>,
+        /// Owns the gateway the manager serves ingress into.
+        proc: hyperactor::Proc,
+    }
+
+    fn hybrid_fixture(
+        reachability: ProcReachability,
+        behavior: RecordingBehavior,
+    ) -> HybridFixture {
+        let (launched_tx, launched) = tokio::sync::mpsc::unbounded_channel();
+        let (killed_tx, killed) = tokio::sync::mpsc::unbounded_channel();
+        let (cleanup_tx, cleanups) = tokio::sync::mpsc::unbounded_channel();
+        let proc = hyperactor::Proc::isolated();
+        let manager = BootstrapProcManager::new(BootstrapCommand::default(), proc.gateway())
+            .unwrap()
+            .with_cleanup_probe(cleanup_tx);
+        let launcher = Arc::new(RecordingLauncher {
+            reachability,
+            behavior,
+            launched: launched_tx,
+            exits: std::sync::Mutex::new(Vec::new()),
+            killed: killed_tx,
+        });
+        manager.set_launcher(launcher.clone()).unwrap();
+        HybridFixture {
+            manager,
+            launcher,
+            launched,
+            killed,
+            cleanups,
+            proc,
+        }
+    }
+
+    const BOUND: Duration = Duration::from_secs(10);
+
+    async fn bounded<F: std::future::Future>(what: &str, future: F) -> F::Output {
+        tokio::time::timeout(BOUND, future)
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+    }
+
+    fn port_addr(uds: &Path, port: u32) -> ChannelAddr {
+        let mut path = uds.as_os_str().to_owned();
+        path.push(format!("_{port}"));
+        std::os::unix::net::SocketAddr::from_pathname(PathBuf::from(path))
+            .unwrap()
+            .into()
+    }
+
+    fn vm_dirs(socket_dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(socket_dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("vm-"))
+            })
+            .collect()
+    }
+
+    /// Delivers one envelope through the proc's backend ingress to a port on
+    /// the fixture's gateway, and returns the still-open client.
+    async fn deliver_through_ingress(
+        proc: &hyperactor::Proc,
+        uds: &Path,
+    ) -> channel::ChannelTx<MessageEnvelope> {
+        let client = proc.client("capture");
+        let (port, mut rx) = client.open_port::<u64>();
+        let dest = port.bind().port_addr().clone();
+        let tx = channel::dial::<MessageEnvelope>(port_addr(uds, HybridVsockProc::BACKEND_PORT))
+            .unwrap();
+        tx.post(
+            MessageEnvelope::serialize(
+                proc.proc_addr().actor_addr("sender"),
+                dest,
+                &7u64,
+                hyperactor_config::Flattrs::new(),
+            )
+            .unwrap(),
+        );
+        assert_eq!(bounded("ingress delivery", rx.recv()).await.unwrap(), 7);
+        tx
+    }
+
+    async fn wait_closed(tx: &channel::ChannelTx<MessageEnvelope>) {
+        let mut status = tx.status().clone();
+        bounded(
+            "ingress client close",
+            status.wait_for(|s| matches!(s, channel::TxStatus::Closed(_))),
+        )
+        .await
+        .unwrap();
+    }
+
+    fn decode_payload(opts: &LaunchOptions) -> Bootstrap {
+        Bootstrap::from_env_safe_string(&opts.bootstrap_payload).unwrap()
+    }
+
+    /// RCH-2, RCH-3 ([registry](super::reachability)):
+    /// verify hybrid addresses, host routing, and readiness.
+    /// Uses host Unix sockets and a recording launcher, not Firecracker.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_hybrid_vsock_spawn_wiring() {
+        let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Succeed);
+        let proc_id = test_proc_id("hybrid-wiring");
+        let handle = fx
+            .manager
+            .spawn(
+                proc_id.clone(),
+                ChannelAddr::any(ChannelTransport::Unix),
+                cleanup_test_config(),
+            )
+            .await
+            .unwrap();
+        let opts = bounded("launch", fx.launched.recv()).await.unwrap();
+        let uds = opts
+            .vsock_uds_path
+            .clone()
+            .expect("hybrid procs get a uds path");
+        assert_eq!(uds.file_name().unwrap(), "v.sock");
+        let vm_dir = uds.parent().unwrap();
+        assert_eq!(vm_dir.parent().unwrap(), fx.manager.socket_dir());
+        assert!(
+            vm_dir
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("vm-")
+        );
+
+        let Bootstrap::Proc {
+            backend_addr,
+            callback_addr,
+            serve_addr,
+            ..
+        } = decode_payload(&opts)
+        else {
+            panic!("expected a proc payload");
+        };
+        assert_eq!(
+            backend_addr,
+            ChannelAddr::Vsock(VsockAddr::Native {
+                cid: 2,
+                port: 10000
+            })
+        );
+        assert_eq!(
+            callback_addr,
+            ChannelAddr::Vsock(VsockAddr::Native {
+                cid: 2,
+                port: 10001
+            })
+        );
+        assert_eq!(
+            serve_addr,
+            Some(ChannelAddr::Alias {
+                dial_to: Box::new(ChannelAddr::Vsock(VsockAddr::Hybrid {
+                    uds: uds.clone(),
+                    port: 10002,
+                })),
+                bind_to: Box::new(ChannelAddr::Vsock(VsockAddr::Native {
+                    cid: VsockAddr::CID_ANY,
+                    port: 10002,
+                })),
+            })
+        );
+
+        let _ingress = deliver_through_ingress(&fx.proc, &uds).await;
+
+        let reported = ChannelAddr::any(ChannelTransport::Unix);
+        let agent = ActorRef::<ProcAgent>::attest(fx.proc.proc_addr().actor_addr("agent"));
+        let callback = channel::dial::<(ChannelAddr, ActorRef<ProcAgent>)>(port_addr(
+            &uds,
+            HybridVsockProc::READINESS_PORT,
+        ))
+        .unwrap();
+        callback.post((reported.clone(), agent));
+        let mut status = handle.watch();
+        bounded(
+            "ready",
+            status.wait_for(|s| matches!(s, ProcStatus::Ready { addr, .. } if *addr == reported)),
+        )
+        .await
+        .unwrap();
+
+        fx.launcher.report_exit();
+        let (_, cleanup) = bounded("cleanup", fx.cleanups.recv()).await.unwrap();
+        assert_eq!(cleanup.release, Some(ReleaseOutcome::Joined));
+    }
+
+    /// RCH-5, RCH-7 ([registry](super::reachability)):
+    /// exit joins readiness and message tasks, closes ingress, and removes
+    /// the VM directory.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_hybrid_vsock_exit_closes_listeners() {
+        let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Succeed);
+        let _handle = fx
+            .manager
+            .spawn(
+                test_proc_id("hybrid-exit"),
+                ChannelAddr::any(ChannelTransport::Unix),
+                cleanup_test_config(),
+            )
+            .await
+            .unwrap();
+        let uds = bounded("launch", fx.launched.recv())
+            .await
+            .unwrap()
+            .vsock_uds_path
+            .unwrap();
+        let ingress = deliver_through_ingress(&fx.proc, &uds).await;
+
+        fx.launcher.report_exit();
+        let (_, cleanup) = bounded("cleanup", fx.cleanups.recv()).await.unwrap();
+        assert_eq!(
+            cleanup,
+            ExitCleanup {
+                callback_task_joined: true,
+                release: Some(ReleaseOutcome::Joined),
+            }
+        );
+        wait_closed(&ingress).await;
+        assert!(!uds.parent().unwrap().exists());
+    }
+
+    /// RCH-7 ([registry](super::reachability)):
+    /// the readiness listener's path refuses connections after cleanup.
+    /// No report reaches the handle; rejection is tested by
+    /// `proc_handle::mark_ready_after_terminal_is_rejected`.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_hybrid_vsock_callback_after_exit_is_ignored() {
+        let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Succeed);
+        let handle = fx
+            .manager
+            .spawn(
+                test_proc_id("hybrid-late-callback"),
+                ChannelAddr::any(ChannelTransport::Unix),
+                cleanup_test_config(),
+            )
+            .await
+            .unwrap();
+        let uds = bounded("launch", fx.launched.recv())
+            .await
+            .unwrap()
+            .vsock_uds_path
+            .unwrap();
+        fx.launcher.report_exit();
+        bounded("cleanup", fx.cleanups.recv()).await.unwrap();
+        let before = handle.status();
+        assert!(before.is_exit());
+
+        // The callback listener is gone: a connection to its path fails.
+        let callback_path = PathBuf::from(format!(
+            "{}_{}",
+            uds.display(),
+            HybridVsockProc::READINESS_PORT
+        ));
+        assert!(
+            std::os::unix::net::UnixStream::connect(&callback_path).is_err(),
+            "the callback listener should not accept connections after release"
+        );
+        assert_eq!(handle.status(), before);
+    }
+
+    /// RCH-5, RCH-7 ([registry](super::reachability)):
+    /// loss of the exit sender still joins the readiness task and releases
+    /// the VM resources.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_hybrid_vsock_exit_sender_dropped() {
+        let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Succeed);
+        let handle = fx
+            .manager
+            .spawn(
+                test_proc_id("hybrid-exit-dropped"),
+                ChannelAddr::any(ChannelTransport::Unix),
+                cleanup_test_config(),
+            )
+            .await
+            .unwrap();
+        let uds = bounded("launch", fx.launched.recv())
+            .await
+            .unwrap()
+            .vsock_uds_path
+            .unwrap();
+        drop(fx.launcher.take_exit());
+        let (_, cleanup) = bounded("cleanup", fx.cleanups.recv()).await.unwrap();
+        assert_eq!(
+            cleanup,
+            ExitCleanup {
+                callback_task_joined: true,
+                release: Some(ReleaseOutcome::Joined),
+            }
+        );
+        assert!(matches!(handle.status(), ProcStatus::Failed { .. }));
+        assert!(!uds.parent().unwrap().exists());
+    }
+
+    /// RCH-5 ([registry](super::reachability)):
+    /// a refused launch leaves no VM directory or message listener.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_hybrid_vsock_launch_failure_releases_dir() {
+        let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Fail);
+        let result = fx
+            .manager
+            .spawn(
+                test_proc_id("hybrid-launch-fails"),
+                ChannelAddr::any(ChannelTransport::Unix),
+                cleanup_test_config(),
+            )
+            .await;
+        assert!(result.is_err());
+        let uds = bounded("launch", fx.launched.recv())
+            .await
+            .unwrap()
+            .vsock_uds_path
+            .unwrap();
+        assert!(vm_dirs(fx.manager.socket_dir()).is_empty());
+        assert!(
+            std::os::unix::net::UnixStream::connect(PathBuf::from(format!(
+                "{}_{}",
+                uds.display(),
+                HybridVsockProc::BACKEND_PORT
+            )))
+            .is_err()
+        );
+    }
+
+    /// RCH-5 ([registry](super::reachability)):
+    /// unwinding from a launcher panic releases the VM socket directory.
+    /// This does not attest that the receive task drains or joins.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_hybrid_vsock_launcher_panic_releases_dir() {
+        let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Panic);
+        let result = AssertUnwindSafe(fx.manager.spawn(
+            test_proc_id("hybrid-launch-panics"),
+            ChannelAddr::any(ChannelTransport::Unix),
+            cleanup_test_config(),
+        ))
+        .catch_unwind()
+        .await;
+        let panic = result.expect_err("launcher panic must resume unwinding");
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"recording launcher panicked")
+        );
+
+        let uds = bounded("launch", fx.launched.recv())
+            .await
+            .unwrap()
+            .vsock_uds_path
+            .expect("hybrid launch prepares a VM socket directory");
+        assert!(!uds.parent().unwrap().exists());
+        assert!(vm_dirs(fx.manager.socket_dir()).is_empty());
+    }
+
+    /// RCH-5 ([registry](super::reachability)):
+    /// cancellation drops the prepared resources.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_hybrid_vsock_cancelled_spawn_releases_dir() {
+        let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Succeed);
+        let proc_id = test_proc_id("hybrid-cancelled");
+        let children_guard = fx.manager.children.lock().await;
+        let mut spawn = Box::pin(fx.manager.spawn(
+            proc_id.clone(),
+            ChannelAddr::any(ChannelTransport::Unix),
+            cleanup_test_config(),
+        ));
+        assert!(futures::poll!(&mut spawn).is_pending());
+        let uds = bounded("launch", fx.launched.recv())
+            .await
+            .unwrap()
+            .vsock_uds_path
+            .unwrap();
+        let ingress = deliver_through_ingress(&fx.proc, &uds).await;
+
+        drop(spawn);
+        drop(children_guard);
+        assert_eq!(bounded("kill", fx.killed.recv()).await.unwrap(), proc_id);
+        wait_closed(&ingress).await;
+        assert!(vm_dirs(fx.manager.socket_dir()).is_empty());
+    }
+
+    /// RCH-3 ([registry](super::reachability)):
+    /// two launches cannot share their VM socket directory.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_hybrid_vsock_spawns_get_distinct_dirs() {
+        let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Succeed);
+        let mut dirs = Vec::new();
+        for name in ["hybrid-a", "hybrid-b"] {
+            fx.manager
+                .spawn(
+                    test_proc_id(name),
+                    ChannelAddr::any(ChannelTransport::Unix),
+                    cleanup_test_config(),
+                )
+                .await
+                .unwrap();
+            let uds = bounded("launch", fx.launched.recv())
+                .await
+                .unwrap()
+                .vsock_uds_path
+                .unwrap();
+            dirs.push(uds.parent().unwrap().to_owned());
+        }
+        assert_ne!(dirs[0], dirs[1]);
+        for _ in 0..2 {
+            fx.launcher.report_exit();
+            bounded("cleanup", fx.cleanups.recv()).await.unwrap();
+        }
+    }
+
+    /// RCH-1, RCH-7 ([registry](super::reachability)):
+    /// keep the backend, prepare Unix addresses, and retain no VM directory.
+    /// The readiness task finishes when the proc exits without a report.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_unix_spawn_prepares_socket_addresses() {
+        let mut fx = hybrid_fixture(ProcReachability::Unix, RecordingBehavior::Succeed);
+        let proc_id = test_proc_id("unix-spawn");
+        let host_backend = ChannelAddr::any(ChannelTransport::Unix);
+        let expected_serve_addr = local_proc_addr(fx.manager.socket_dir(), proc_id.id())
+            .unwrap()
+            .0;
+        fx.manager
+            .spawn(proc_id, host_backend.clone(), cleanup_test_config())
+            .await
+            .unwrap();
+        let opts = bounded("launch", fx.launched.recv()).await.unwrap();
+        assert_eq!(opts.vsock_uds_path, None);
+        let json: serde_json::Value =
+            serde_json::from_slice(&BASE64_STANDARD.decode(&opts.bootstrap_payload).unwrap())
+                .unwrap();
+        assert!(json["Proc"].get("serve_addr").is_some(), "{json}");
+        let Bootstrap::Proc {
+            backend_addr,
+            callback_addr,
+            serve_addr,
+            ..
+        } = decode_payload(&opts)
+        else {
+            panic!("expected a proc payload");
+        };
+        assert_eq!(backend_addr, host_backend);
+        assert_eq!(serve_addr, Some(expected_serve_addr));
+        assert!(matches!(callback_addr, ChannelAddr::Unix(_)));
+        assert!(vm_dirs(fx.manager.socket_dir()).is_empty());
+
+        // With no callback, the callback task still ends once the proc exits.
+        fx.launcher.report_exit();
+        let (_, cleanup) = bounded("cleanup", fx.cleanups.recv()).await.unwrap();
+        assert_eq!(
+            cleanup,
+            ExitCleanup {
+                callback_task_joined: true,
+                release: None,
+            }
+        );
+    }
+
+    /// RCH-4 ([registry](super::reachability)):
+    /// reject an invalid Unix address before calling the launcher.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_unix_invalid_socket_path_does_not_launch() {
+        let mut fx = hybrid_fixture(ProcReachability::Unix, RecordingBehavior::Succeed);
+        let base = tempfile::tempdir().unwrap();
+        let long_dir = base.path().join("d".repeat(100));
+        tokio::fs::create_dir(&long_dir).await.unwrap();
+        fx.manager.socket_dir = tempfile::tempdir_in(&long_dir).unwrap();
+
+        let result = fx
+            .manager
+            .spawn(
+                test_proc_id("unix-long-path"),
+                ChannelAddr::any(ChannelTransport::Unix),
+                cleanup_test_config(),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(HostError::ProcessConfigurationFailure(..))
+        ));
+        assert!(fx.launched.try_recv().is_err(), "nothing should launch");
+        assert!(fx.manager.children.lock().await.is_empty());
+    }
+
+    /// RCH-4 ([registry](super::reachability)):
+    /// hybrid preparation rejects long paths and releases its directory.
+    /// Checks the constructor, not the manager's before-launch ordering.
+    #[tokio::test]
+    async fn test_hybrid_vsock_rejects_long_path() {
+        let base = tempfile::tempdir().unwrap();
+        let long_dir = base.path().join("d".repeat(100));
+        std::fs::create_dir(&long_dir).unwrap();
+        let proc = hyperactor::Proc::isolated();
+        let result =
+            HybridVsockProc::create(&test_proc_id("hybrid-long"), &long_dir, &proc.gateway());
+        assert!(matches!(
+            result,
+            Err(HostError::ProcessConfigurationFailure(..))
+        ));
+        assert!(vm_dirs(&long_dir).is_empty());
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -2944,6 +3669,70 @@ mod tests {
     }
 
     #[test]
+    fn test_bootstrap_payload_serve_addr_roundtrip() {
+        let alias = ChannelAddr::Alias {
+            dial_to: Box::new(ChannelAddr::Vsock(VsockAddr::Hybrid {
+                uds: "/run/vm/v.sock".into(),
+                port: 10002,
+            })),
+            bind_to: Box::new(ChannelAddr::Vsock(VsockAddr::Native {
+                cid: VsockAddr::CID_ANY,
+                port: 10002,
+            })),
+        };
+        for serve_addr in [Some(alias), None] {
+            let value = Bootstrap::Proc {
+                proc_id: test_proc_id("serve_addr_0"),
+                backend_addr: ChannelAddr::Vsock(VsockAddr::Native {
+                    cid: 2,
+                    port: 10000,
+                }),
+                callback_addr: ChannelAddr::Vsock(VsockAddr::Native {
+                    cid: 2,
+                    port: 10001,
+                }),
+                socket_dir_path: PathBuf::from("notexist"),
+                config: None,
+                serve_addr: serve_addr.clone(),
+            };
+            let json = serde_json::to_value(&value).unwrap();
+            assert_eq!(
+                json["Proc"].get("serve_addr").is_some(),
+                serve_addr.is_some(),
+                "serve_addr is serialized only when present: {json}"
+            );
+            let round =
+                Bootstrap::from_env_safe_string(&value.to_env_safe_string().unwrap()).unwrap();
+            let Bootstrap::Proc {
+                serve_addr: decoded,
+                ..
+            } = round
+            else {
+                panic!("expected Proc");
+            };
+            assert_eq!(decoded, serve_addr);
+        }
+    }
+
+    #[test]
+    fn test_proc_serve_addr() {
+        let dir = tempfile::tempdir().unwrap();
+        let proc_id = test_proc_id("serve_addr_1");
+        let given = ChannelAddr::Vsock(VsockAddr::Native {
+            cid: VsockAddr::CID_ANY,
+            port: 10002,
+        });
+        assert_eq!(
+            proc_serve_addr(Some(given.clone()), dir.path(), proc_id.id()).unwrap(),
+            given
+        );
+        assert_eq!(
+            proc_serve_addr(None, dir.path(), proc_id.id()).unwrap(),
+            local_proc_addr(dir.path(), proc_id.id()).unwrap().0
+        );
+    }
+
+    #[test]
     fn test_bootstrap_mode_env_string_none_config_proc() {
         let value = Bootstrap::Proc {
             proc_id: test_proc_id("foo_0"),
@@ -2951,6 +3740,7 @@ mod tests {
             callback_addr: ChannelAddr::any(ChannelTransport::Unix),
             socket_dir_path: PathBuf::from("notexist"),
             config: None,
+            serve_addr: None,
         };
 
         let safe = value.to_env_safe_string().unwrap();
@@ -3018,6 +3808,7 @@ mod tests {
                 callback_addr: ChannelAddr::any(ChannelTransport::Unix),
                 config: Some(attrs.clone()),
                 socket_dir_path: socket_dir.path().to_owned(),
+                serve_addr: None,
             };
             let env_str = original.to_env_safe_string().expect("encode bootstrap");
             let decoded = Bootstrap::from_env_safe_string(&env_str).expect("decode bootstrap");
@@ -3272,6 +4063,33 @@ mod tests {
             ));
         }
 
+        /// RCH-7 ([registry](super::super::reachability)):
+        /// readiness cannot replace Stopped, Killed, or Failed status.
+        #[tokio::test]
+        async fn mark_ready_after_terminal_is_rejected() {
+            let terminal_transitions: [fn(&BootstrapProcHandle) -> bool; 3] = [
+                |h| {
+                    assert!(h.mark_stopping());
+                    h.mark_stopped(0, Vec::new())
+                },
+                |h| h.mark_killed(9, false),
+                |h| h.mark_failed("test failure"),
+            ];
+            for finish in terminal_transitions {
+                let h = handle_for_test();
+                assert!(h.mark_running(SystemTime::now()));
+                assert!(finish(&h));
+                let before = h.status();
+                assert!(before.is_exit());
+
+                let proc_id = <BootstrapProcHandle as ProcHandle>::proc_addr(&h);
+                let agent =
+                    ActorRef::attest(proc_id.actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME));
+                assert!(!h.mark_ready(ChannelAddr::any(ChannelTransport::Unix), agent));
+                assert_eq!(h.status(), before);
+            }
+        }
+
         #[tokio::test]
         async fn transitions_from_ready_are_legal() {
             let h = handle_for_test();
@@ -3415,10 +4233,13 @@ mod tests {
 
     #[tokio::test]
     async fn status_unknown_proc_is_none() {
-        let manager = BootstrapProcManager::new(BootstrapCommand {
-            program: PathBuf::from("/bin/true"),
-            ..Default::default()
-        })
+        let manager = BootstrapProcManager::new(
+            BootstrapCommand {
+                program: PathBuf::from("/bin/true"),
+                ..Default::default()
+            },
+            Gateway::new(),
+        )
         .unwrap();
         let unknown = test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "nope");
         assert!(manager.status(&unknown).await.is_none());
@@ -3624,7 +4445,7 @@ mod tests {
             hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
         let instance = root.client("client");
 
-        let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+        let mgr = BootstrapProcManager::new(BootstrapCommand::test(), root.gateway()).unwrap();
         let (proc_id, backend_addr) = make_proc_id_and_backend_addr(&instance, "t_term").await;
         let handle = mgr
             .spawn(
@@ -3691,7 +4512,7 @@ mod tests {
             hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
         let instance = root.client("client");
 
-        let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+        let mgr = BootstrapProcManager::new(BootstrapCommand::test(), root.gateway()).unwrap();
 
         // Proc identity + host backend channel the child will dial.
         let (proc_id, backend_addr) = make_proc_id_and_backend_addr(&instance, "t_kill").await;
@@ -3836,11 +4657,70 @@ mod tests {
         }
     }
 
+    /// A launcher that declares hybrid-vsock reachability and launches nothing.
+    struct HybridVsockDeclaringLauncher;
+
+    #[async_trait::async_trait]
+    impl ProcLauncher for HybridVsockDeclaringLauncher {
+        fn reachability(&self) -> ProcReachability {
+            ProcReachability::HybridVsock
+        }
+
+        async fn launch(
+            &self,
+            _proc_id: &ProcAddr,
+            _opts: LaunchOptions,
+        ) -> Result<LaunchResult, ProcLauncherError> {
+            unreachable!("declaration tests do not launch")
+        }
+
+        async fn terminate(
+            &self,
+            _proc_id: &ProcAddr,
+            _timeout: Duration,
+        ) -> Result<(), ProcLauncherError> {
+            unreachable!("declaration tests do not terminate")
+        }
+
+        async fn kill(&self, _proc_id: &ProcAddr) -> Result<(), ProcLauncherError> {
+            unreachable!("declaration tests do not kill")
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_set_launcher_accepts_hybrid_vsock() {
+        let manager =
+            BootstrapProcManager::new(BootstrapCommand::default(), Gateway::new()).unwrap();
+        manager
+            .set_launcher(Arc::new(HybridVsockDeclaringLauncher))
+            .unwrap();
+        assert_eq!(
+            manager.launcher().reachability(),
+            ProcReachability::HybridVsock
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_set_launcher_rejects_hybrid_vsock_off_linux() {
+        let manager =
+            BootstrapProcManager::new(BootstrapCommand::default(), Gateway::new()).unwrap();
+        assert!(
+            manager
+                .set_launcher(Arc::new(HybridVsockDeclaringLauncher))
+                .is_err()
+        );
+        manager
+            .set_launcher(Arc::new(DummyLauncher::new(1)))
+            .expect("a rejected install must leave the host installable");
+    }
+
     // set_launcher() then launcher() returns the same Arc.
     #[test]
     #[cfg(fbcode_build)]
     fn test_set_launcher_then_get() {
-        let manager = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+        let manager = BootstrapProcManager::new(BootstrapCommand::test(), Gateway::new()).unwrap();
 
         let custom: Arc<dyn ProcLauncher> = Arc::new(DummyLauncher::new(42));
         let custom_ptr = Arc::as_ptr(&custom);
@@ -3863,7 +4743,7 @@ mod tests {
     #[test]
     #[cfg(fbcode_build)]
     fn test_get_launcher_then_set_fails() {
-        let manager = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+        let manager = BootstrapProcManager::new(BootstrapCommand::test(), Gateway::new()).unwrap();
 
         // Force default initialization by calling launcher()
         let _ = manager.launcher();
@@ -3891,7 +4771,7 @@ mod tests {
     #[test]
     #[cfg(fbcode_build)]
     fn test_set_launcher_twice_fails() {
-        let manager = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+        let manager = BootstrapProcManager::new(BootstrapCommand::test(), Gateway::new()).unwrap();
 
         let first: Arc<dyn ProcLauncher> = Arc::new(DummyLauncher::new(1));
         let second: Arc<dyn ProcLauncher> = Arc::new(DummyLauncher::new(2));
@@ -3917,7 +4797,7 @@ mod tests {
     #[test]
     #[cfg(fbcode_build)]
     fn test_launcher_initially_empty() {
-        let manager = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+        let manager = BootstrapProcManager::new(BootstrapCommand::test(), Gateway::new()).unwrap();
 
         // At this point, the OnceLock should be empty (not yet
         // initialized) We can verify this by successfully calling
@@ -3935,7 +4815,7 @@ mod tests {
     #[test]
     #[cfg(fbcode_build)]
     fn test_launcher_idempotent() {
-        let manager = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+        let manager = BootstrapProcManager::new(BootstrapCommand::test(), Gateway::new()).unwrap();
 
         // Call launcher() twice
         let first = manager.launcher();

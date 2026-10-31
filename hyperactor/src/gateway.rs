@@ -601,6 +601,17 @@ impl Gateway {
         Arc::downgrade(&self.inner).serve(rx)
     }
 
+    /// Serve inbound traffic arriving on `addr` into this gateway, without
+    /// advertising `addr` or changing the default location. Returns the bound
+    /// address and the server handle; stop and join the handle to shut down.
+    pub fn serve_ingress(
+        &self,
+        addr: ChannelAddr,
+    ) -> Result<(ChannelAddr, MailboxServerHandle), ChannelError> {
+        let (addr, rx) = channel::serve(addr)?;
+        Ok((addr, self.serve_rx(rx)))
+    }
+
     /// Serve this gateway on the provided channel address.
     ///
     /// When serving the first local [`ChannelAddr::any`] address, the gateway
@@ -1813,6 +1824,121 @@ mod tests {
             1,
             "remaining via routes must not deliver locally after peeling this gateway's hop",
         );
+    }
+
+    /// Traffic served through `serve_ingress` takes the same gateway hops as
+    /// traffic served through `Gateway::serve`, and serving it does not move
+    /// the default location. Each probe carries a distinct payload, so every
+    /// capture is attributed to the probe that produced it.
+    #[tokio::test]
+    async fn test_gateway_serve_ingress_preserves_routing() {
+        #[derive(Clone)]
+        struct CapturingSender(Arc<std::sync::Mutex<Vec<(u64, PortAddr, u8)>>>);
+
+        #[async_trait]
+        impl MailboxSender for CapturingSender {
+            fn post_unchecked(
+                &self,
+                envelope: MessageEnvelope,
+                _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                let payload = envelope.deserialized::<u64>().unwrap();
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((payload, envelope.dest().clone(), envelope.ttl()));
+            }
+        }
+
+        let gateway = Gateway::isolated();
+        let proc = Proc::builder()
+            .proc_id(ProcId::instance(Label::strip("ingress")))
+            .shared_gateway(gateway.clone())
+            .build()
+            .unwrap();
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let actor_addr = proc.proc_addr().actor_addr("capture");
+        assert!(
+            proc.muxer()
+                .bind(actor_addr.id().clone(), CapturingSender(captured.clone()))
+        );
+        let dest = actor_addr.port_addr(Port::from(7u64));
+
+        let dir = tempfile::tempdir().unwrap();
+        let unix = |name: &str| -> ChannelAddr {
+            std::os::unix::net::SocketAddr::from_pathname(dir.path().join(name))
+                .unwrap()
+                .into()
+        };
+
+        let before = gateway.default_location();
+        let (ingress_addr, mut ingress) = gateway.serve_ingress(unix("ingress.sock")).unwrap();
+        assert_eq!(gateway.default_location(), before);
+        let served = Gateway::serve(&gateway, unix("served.sock")).unwrap();
+        let served_addr = gateway.default_location().addr().clone();
+
+        let mut clients = Vec::new();
+        let mut probe = |addr: &ChannelAddr, ttl: u8, payload: u64| {
+            let tx = channel::dial::<MessageEnvelope>(addr.clone()).unwrap();
+            tx.post(
+                MessageEnvelope::serialize(
+                    proc.proc_addr().actor_addr("sender"),
+                    dest.clone(),
+                    &payload,
+                    Flattrs::new(),
+                )
+                .unwrap()
+                .set_ttl(ttl),
+            );
+            clients.push(tx);
+        };
+        let remaining = |payload: u64| {
+            let captured = captured.clone();
+            let dest = dest.clone();
+            async move {
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        let hit = captured
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .find(|(p, _, _)| *p == payload)
+                            .cloned();
+                        if let Some((_, hit_dest, ttl)) = hit {
+                            assert_eq!(hit_dest, dest);
+                            return ttl;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| panic!("probe {payload} was not delivered"))
+            }
+        };
+
+        // A generous budget: both routes must consume the same number of hops.
+        const BUDGET: u8 = 32;
+        probe(&served_addr, BUDGET, 1);
+        let served_remaining = remaining(1).await;
+        probe(&ingress_addr, BUDGET, 2);
+        assert_eq!(remaining(2).await, served_remaining);
+
+        // A tight budget: the serve route delivers it with exactly one hop to
+        // spare, and so must the ingress route.
+        let tight = BUDGET - served_remaining + 1;
+        probe(&served_addr, tight, 3);
+        assert_eq!(remaining(3).await, 1);
+        probe(&ingress_addr, tight, 4);
+        assert_eq!(remaining(4).await, 1);
+
+        drop(clients);
+        ingress.stop("test done");
+        tokio::time::timeout(Duration::from_secs(10), &mut ingress)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(10), served.join()).await;
     }
 
     /// A via hop naming this gateway is consumed for routing before local
