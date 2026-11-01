@@ -139,7 +139,9 @@ async def async_main(args: argparse.Namespace) -> None:
             " --cacert /var/facebook/rootcanal/ca.pem"
             " --cert /var/facebook/x509_identities/server.pem"
             " --key /var/facebook/x509_identities/server.pem"
-            if state.admin_url.startswith("https://")
+            if state.admin_url.startswith(  # pyrefly: ignore [missing-attribute]
+                "https://"
+            )  # pyrefly: ignore [missing-attribute]
             else ""
         )
 
