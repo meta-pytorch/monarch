@@ -13,7 +13,7 @@ license = "BSD-3-Clause"
 anyhow = "1.0.104"
 bincode = { version = "2", features = ["serde"] }
 bytes = { version = "1.12.1", features = ["serde"] }
-crc32fast = "1.5.2"
+crc32fast = "1.5.3"
 enum-as-inner = "0.6.1"
 erased-serde = "0.4.10"
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
