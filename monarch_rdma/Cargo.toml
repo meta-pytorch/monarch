@@ -12,7 +12,7 @@ anyhow = "1.0.104"
 async-trait = "0.1.92"
 bytes = { version = "1.12.1", features = ["serde"] }
 dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
-erased-serde = "0.4.10"
+erased-serde = "0.4.11"
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }

@@ -26,7 +26,7 @@ anyhow = "1.0.104"
 async-trait = "0.1.92"
 base64 = { version = "0.23.1", features = ["alloc"] }
 bincode = { version = "2", features = ["serde"] }
-erased-serde = "0.4.10"
+erased-serde = "0.4.11"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 libc = "0.2.186"

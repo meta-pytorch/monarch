@@ -21,7 +21,7 @@ async-once-cell = "0.4.4"
 async-trait = "0.1.92"
 bincode = { version = "2", features = ["serde"] }
 bytes = { version = "1.12.1", features = ["serde"] }
-erased-serde = "0.4.10"
+erased-serde = "0.4.11"
 fastrand = "2.5.0"
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 humantime = "2.4.0"
