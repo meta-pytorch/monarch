@@ -191,6 +191,7 @@ class _PendingActorProbe:
         self._pending = pending
         self._completed = False
         self._handle, self._completer = _new_handle_pair()
+        self.stop_called = False
 
     @property
     def initialized(self) -> Future[None]:
@@ -209,6 +210,10 @@ class _PendingActorProbe:
             self._completer.set_result(None)
         else:
             self._completer.set_exception(self._error)
+
+    def stop(self) -> Future[None]:
+        self.stop_called = True
+        return Future._from_handle(_ready_handle(None))
 
 
 class _LoggingManagerProbe:
@@ -1096,21 +1101,12 @@ async def test_actor_spawn_then_immediate_shutdown() -> None:
         # spawn actor but do NOT await initialized — immediately shutdown
         actor_mesh = proc_mesh.spawn("test_actor", TestActor, 42)
         drain_order: list[str] = []
+        failed = _PendingActorProbe(
+            "failed", drain_order, RuntimeError("pending actor initialization failed")
+        )
+        succeeded = _PendingActorProbe("succeeded", drain_order)
         proc_mesh._pending_actor_spawns.extend(
-            [
-                cast(
-                    ActorMesh,
-                    _PendingActorProbe(
-                        "failed",
-                        drain_order,
-                        RuntimeError("pending actor initialization failed"),
-                    ),
-                ),
-                cast(
-                    ActorMesh,
-                    _PendingActorProbe("succeeded", drain_order),
-                ),
-            ]
+            [cast(ActorMesh, failed), cast(ActorMesh, succeeded)]
         )
 
         with (
@@ -1129,6 +1125,8 @@ async def test_actor_spawn_then_immediate_shutdown() -> None:
 
         assert flush_started
         assert drain_order == ["failed", "succeeded"]
+        assert not failed.stop_called
+        assert not succeeded.stop_called
         assert await actor_mesh.initialized is None
         assert proc_mesh._pending_actor_spawns == []
 
