@@ -496,6 +496,19 @@ impl Actor for Worker {
         Ok(())
     }
 
+    async fn handle_stop(
+        &mut self,
+        this: &Instance<Self>,
+        mode: StopMode,
+        reason: &str,
+    ) -> anyhow::Result<()> {
+        if self.state.child_handle.is_none() {
+            return hyperactor::actor::handle_stop(this, mode, reason);
+        }
+        // Keep the session alive until the child's terminal event is forwarded.
+        self.state.stop_child(mode, reason)
+    }
+
     fn supervision_labels(&self) -> Flattrs {
         self.state.supervision_labels()
     }
@@ -796,11 +809,15 @@ impl SupervisedChild {
         let Some(child) = &self.child_handle else {
             return Ok(());
         };
-        match mode {
-            StopMode::Stop => child.stop(reason)?,
-            StopMode::DrainAndStop => child.drain_and_stop(reason)?,
+        let result = match mode {
+            StopMode::Stop => child.stop(reason),
+            StopMode::DrainAndStop => child.drain_and_stop(reason),
+        };
+        match result {
+            // The child already exited; its terminal event is still on its way.
+            Err(err) if matches!(*err.kind, ActorErrorKind::SignalChannelClosed) => Ok(()),
+            result => Ok(result?),
         }
-        Ok(())
     }
 
     fn is_child_event(&self, event: &ActorSupervisionEvent) -> bool {
@@ -1274,6 +1291,30 @@ mod tests {
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), worker)
             .await
+            .unwrap();
+        coordinator.drain_and_stop("test").unwrap();
+        coordinator.await;
+    }
+
+    #[tokio::test]
+    async fn test_stop_child_after_child_exit_is_ok() {
+        let proc = Proc::isolated();
+        let (_reported, coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let client = proc.client("client");
+        let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
+        let (stopped, _stopped_rx) = client.open_port::<String>();
+        let child = proc.spawn(test_child(ready, stopped, None));
+        ready_rx.recv().await.unwrap();
+        child.stop("child stopped").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), child.clone())
+            .await
+            .unwrap();
+
+        let mut state = SupervisedChild::default();
+        state.set_child(child.into_any(), None).unwrap();
+        state.stop_child(StopMode::Stop, "worker stopped").unwrap();
+        state
+            .stop_child(StopMode::DrainAndStop, "worker stopped")
             .unwrap();
         coordinator.drain_and_stop("test").unwrap();
         coordinator.await;

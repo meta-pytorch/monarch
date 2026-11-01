@@ -222,7 +222,7 @@ class _AwaitRecord:
 
 
 class _PendingActorRecord:
-    """Record when the host drain reaches a pending actor's readiness result."""
+    """Record readiness and explicit stop requests during host teardown."""
 
     def __init__(self, record: list[str]) -> None:
         self._record = record
@@ -231,6 +231,10 @@ class _PendingActorRecord:
     def initialized(self) -> Future[bool]:
         self._record.append("pending_actor")
         return Future._from_handle(_ready_handle(True))
+
+    def stop(self) -> Future[None]:
+        self._record.append("pending_actor_stop")
+        return Future._from_handle(_ready_handle(None))
 
 
 class _HostTeardownCallThrough:
