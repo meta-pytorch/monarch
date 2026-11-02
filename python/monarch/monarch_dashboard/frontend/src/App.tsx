@@ -18,13 +18,16 @@ import {
 import { OverviewView } from "./components/overview/OverviewView";
 import { TopologyView } from "./components/topology/TopologyView";
 import { HierarchyView } from "./components/hierarchy/HierarchyView";
+import { ResourcesView } from "./components/resources/ResourcesView";
+import { IconHost } from "./components/common/icons";
 
-type ViewId = "overview" | "topology" | "hierarchy";
+type ViewId = "overview" | "topology" | "hierarchy" | "resources";
 
 const NAV: Array<{ id: ViewId; label: string; Icon: React.FC<{ className?: string; size?: number }> }> = [
   { id: "overview", label: "Overview", Icon: IconOverview },
   { id: "topology", label: "Topology", Icon: IconTopology },
   { id: "hierarchy", label: "Explorer", Icon: IconHierarchy },
+  { id: "resources", label: "Resources", Icon: IconHost },
 ];
 
 function MonarchLogo() {
@@ -124,6 +127,7 @@ function App() {
           <HierarchyView />
         </main>
       )}
+      {view === "resources" && <main className="content"><ResourcesView /></main>}
     </div>
   );
 }
