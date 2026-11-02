@@ -65,7 +65,13 @@ class AdminDagTest(unittest.TestCase):
                     },
                 ]
             if " FROM host_nodes " in sql:
-                return [{"node_id": host, "addr": "tcp://host:1"}]
+                return [
+                    {
+                        "node_id": host,
+                        "addr": "tcp://host:1",
+                        "hostname": "physical-host",
+                    }
+                ]
             if " FROM proc_nodes " in sql:
                 return [
                     {
@@ -96,6 +102,10 @@ class AdminDagTest(unittest.TestCase):
             unfiltered = admin_dag.build_admin_dag(hide_system=False)
 
         self.assertIn(system, {node["entity_id"] for node in unfiltered["nodes"]})
+        self.assertEqual(
+            next(n for n in result["nodes"] if n["entity_id"] == host)["hostname"],
+            "physical-host",
+        )
         entity_ids = {node["entity_id"] for node in result["nodes"]}
         self.assertEqual(entity_ids, {host, live_proc, actor})
         self.assertNotIn(stale_proc, entity_ids)

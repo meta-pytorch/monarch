@@ -17,6 +17,7 @@ import { actorInstance, actorRole, compact, formatTime, leafName, localTzAbbrev,
 import { EChart } from "../common/echart";
 import { Drawer, EmptyState, ErrorState, Loading } from "../common/ui";
 import { ActorDetail } from "../hierarchy/ActorDetail";
+import { ResourceSummary } from "../resources/ResourceSummary";
 import {
   IconActor,
   IconAlert,
@@ -36,7 +37,7 @@ function windowMinFrom(start: number, end: number): number | null {
   return Math.max(1, Math.round((end - start) / 60_000_000));
 }
 
-export function OverviewView() {
+export function OverviewView({ onResources = () => {} }: { onResources?: () => void }) {
   const { data, loading, error } = useApi<Summary>("/summary");
   const { data: activity } = useApi<MessageActivity>("/message-activity", 8000);
   const stats = useActorStats();
@@ -51,6 +52,7 @@ export function OverviewView() {
   return (
     <div className="stack">
       <KpiRow s={data} stats={stats} ms={msgStats} windowMin={windowMin} />
+      <ResourceSummary onOpen={onResources} />
 
       <div className="grid hero">
         <HealthPanel stats={stats} />
