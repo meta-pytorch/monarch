@@ -18,7 +18,8 @@ RUN python --version
 RUN ls -la ./dist
 
 # Install monarch from input wheels. These were already tested.
-RUN pip install ./dist/torchmonarch-*.whl --break-system-packages
+RUN python -m pip install ./dist/torchmonarch-*.whl "nvidia-ml-py>=13.580.65,<14" --break-system-packages && \
+    python -c "import pynvml"
 
 # Install torchx-nightly w/ kubernetes.
 RUN pip install torchx-nightly[kubernetes] --break-system-packages
