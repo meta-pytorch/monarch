@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useActorStats } from "./lib/actorStats";
 import { healthMeta } from "./lib/status";
 import { relativeTime } from "./lib/format";
@@ -81,7 +81,17 @@ function HealthChip() {
 }
 
 function App() {
-  const [view, setView] = useState<ViewId>("overview");
+  const fromHash = () => NAV.find(n => `#${n.id}` === window.location.hash)?.id ?? "overview";
+  const [view, setView] = useState<ViewId>(fromHash);
+  useEffect(() => {
+    const change = () => setView(fromHash());
+    window.addEventListener("hashchange", change);
+    return () => window.removeEventListener("hashchange", change);
+  }, []);
+  const navigate = (id: ViewId) => {
+    setView(id);
+    window.location.hash = id;
+  };
 
   return (
     <div className="app">
@@ -99,7 +109,7 @@ function App() {
               role="tab"
               aria-selected={view === id}
               className={`nav-item${view === id ? " active" : ""}`}
-              onClick={() => setView(id)}
+              onClick={() => navigate(id)}
             >
               <Icon className="nav-ico" size={15} />
               {label}
@@ -114,7 +124,7 @@ function App() {
 
       {view === "overview" && (
         <main className="content">
-          <OverviewView />
+          <OverviewView onResources={() => navigate("resources")} />
         </main>
       )}
       {view === "topology" && (
