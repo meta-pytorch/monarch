@@ -2481,10 +2481,26 @@ mod tests {
             .await?;
         assert_eq!(ra2rx.recv().await?, Ok(()), "A source stays cached Ready");
 
-        // Self-termination path, error-terminal branch: kill D's own controller
+        // Self-termination path, error-terminal branch: unsubscribe D first so
+        // its controller's cleanup `Stopped` report cannot resolve it through
+        // the subscriber stream as `InitFailed`, then kill D's own controller
         // so it completes as `Failed` (a crash, not a clean stop). The owner gates
         // on `is_terminal()`, so `Failed` drives the same resolution A's clean
         // `Stopped` did; D resolves directly (RMO-14).
+        let (d_ack_tx, d_ack_rx) = oneshot::channel();
+        owner_handle.post(
+            client,
+            UnsubscribeController {
+                controller: ctrl_d.clone(),
+                ack: d_ack_tx,
+            },
+        );
+        d_ack_rx.await?;
+        assert_eq!(
+            owner_subscriber_count(&owner_handle, client, ctrl_d.clone()).await,
+            0,
+            "D unsubscribed before the self-termination proof",
+        );
         let ctrl_d_handle = ctrl_d.downcast_handle(client).expect("local D controller");
         ctrl_d_handle.kill("test: kill D controller")?;
         let d_err = timeout(Duration::from_secs(30), rxd.recv())
