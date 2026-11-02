@@ -11,11 +11,11 @@ import importlib.resources
 import multiprocessing
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
-from typing import cast, Generator, IO, Optional
+from typing import cast, IO, Optional
 from unittest.mock import patch
 
 import monarch.actor
@@ -36,7 +36,7 @@ from monarch._src.actor.actor_mesh import (
     context,
     current_rank,
 )
-from monarch._src.actor.host_mesh import this_host
+from monarch._src.actor.host_mesh import HostMesh, this_host
 from monarch._src.actor.proc_mesh import ProcMesh
 from monarch.actor import (
     Actor,
@@ -2373,73 +2373,69 @@ def test_unhandled_fault_hook_runs_atexit() -> None:
 
 
 def subprocess_with_hard_exit(
-    queue: multiprocessing.Queue, procs_ref: ProcMesh
+    queue: multiprocessing.Queue, host: HostMesh, procs_ref: ProcMesh
 ) -> None:
-    # The actors spawned in this process should exit themselves once the client
-    # is gone.
-    procs = this_host().spawn_procs({"gpus": 1})
-    actors = procs.spawn("error", ErrorActor)
-    actors_on_ref = procs_ref.spawn("error", ErrorActor)
-    # Ensure the procs and actors are spawned with a message.
-    pids = actors.get_pid.call().get()
-    pids = [pid for _, pid in pids]
-    pids_on_ref = actors_on_ref.get_pid.call().get()
-    pids_on_ref = [pid for _, pid in pids_on_ref]
-    # The pids owned by this client will be dead, but the pids on the referenced
-    # proc mesh should be alive. The actors will be gone.
-    queue.put(pids)
-    queue.put(pids_on_ref)
-    # Sleep for a long time so there is time to be interrupted.
-    time.sleep(120)
+    with configured(mesh_orphan_timeout="10s", mesh_bootstrap_enable_pdeathsig=False):
+        # The host must survive the client to reap its orphaned procs.
+        procs = host.spawn_procs({"gpus": 1})
+        actors = procs.spawn("error", ErrorActor)
+        actors_on_ref = procs_ref.spawn("error", ErrorActor)
+        # Ensure the procs and actors are spawned with a message.
+        pids = actors.get_pid.call().get()
+        pids = [pid for _, pid in pids]
+        pids_on_ref = actors_on_ref.get_pid.call().get()
+        pids_on_ref = [pid for _, pid in pids_on_ref]
+        # The pids owned by this client will be dead, but the pids on the referenced
+        # proc mesh should be alive.
+        queue.put(pids)
+        queue.put(pids_on_ref)
+        # Sleep for a long time so there is time to be interrupted.
+        time.sleep(120)
 
 
-@contextmanager
-def set_environment(**kwargs: str) -> Generator[None, None, None]:
-    try:
-        old = dict(os.environ)
-        new_keys = set(kwargs.keys()) - set(old.keys())
-        os.environ.update(kwargs)
-        yield
-    finally:
-        # Make sure to delete any new environments that were added
-        for k in new_keys:
-            del os.environ[k]
-        # Restore the old environment
-        os.environ.update(old)
-
-
+# Supervision polling has no Python config key, so set it before bootstrap.
+# A 1s poll permits a 10s orphan timeout and a 3s keepalive warmup: this test
+# ran in about 23s, while default 10s polling needed longer waits and about 63s.
 @pytest.mark.timeout(120)
-@isolate_in_subprocess
+@isolate_in_subprocess(env={"HYPERACTOR_MESH_SUPERVISION_POLL_FREQUENCY": "1s"})
 def test_client_hard_exit_cleanup() -> None:
-    """Tests that actors and procs exit when client disconnects abruptly without running cleanup"""
-    with configured(mesh_orphan_timeout="10s"):
-        # Set the environment variable as well as the config to ensure the subprocess
-        # client gets the same value.
-        with set_environment(HYPERACTOR_MESH_ORPHAN_TIMEOUT="10s"):
-            # Start some procs from this client to ensure they are not killed if
-            # the subprocess client goes away.
-            procs = this_host().spawn_procs({"gpus": 1})
-            # Start a subprocess that will be a client, and kill the process.
-            # Ensure the process is new and not forked.
-            ctx = multiprocessing.get_context("spawn")
-            q = ctx.Queue()
-            p = ctx.Process(target=subprocess_with_hard_exit, args=(q, procs))
-            p.start()
-            # These pids should be gone because that client spawned the procs.
-            pids = q.get()
-            pids_on_ref = q.get()
-            # Make sure to terminate abnormally (SIGTERM), so we can test that this
-            # works even without any involvement from the user.
+    """A surviving host reaps procs owned by a client that exits without cleanup."""
+    with configured(mesh_orphan_timeout="10s", mesh_bootstrap_enable_pdeathsig=False):
+        host = this_host()
+        procs = host.spawn_procs({"gpus": 1})
+        survivor = procs.spawn("survivor", ErrorActor)
+        survivor.get_pid.call_one().get()
+        ctx = multiprocessing.get_context("spawn")
+        q = ctx.Queue()
+        p = ctx.Process(target=subprocess_with_hard_exit, args=(q, host, procs))
+        p.start()
+        try:
+            pids = q.get(timeout=30)
+            pids_on_ref = q.get(timeout=30)
+            assert pids and pids_on_ref
+            assert all(psutil.Process(pid).ppid() == os.getpid() for pid in pids)
+
+            # Running actors do not prove their controllers sent a keepalive.
+            # Allow several 1s polls to arm the host's orphan expiry first.
+            time.sleep(3)
             p.terminate()
-            # Ensure the processes exit after waiting for the timeout specified.
-            time.sleep(15)
-            processes_exist = [pid for pid in pids if is_process_running(pid)]
-            assert not processes_exist
+            p.join(timeout=10)
+            assert p.exitcode == -signal.SIGTERM
 
-            ref_processes_exist = [
-                pid for pid in pids_on_ref if is_process_running(pid)
-            ]
-            assert ref_processes_exist
+            deadline = time.monotonic() + 60
+            while processes_exist := [pid for pid in pids if is_process_running(pid)]:
+                assert time.monotonic() < deadline, (
+                    f"orphaned procs still running: {processes_exist}"
+                )
+                assert all(is_process_running(pid) for pid in pids_on_ref)
+                time.sleep(1)
 
-            # There is currently no Python API to determine if the actors spawned
-            # by the subprocess are gone other than an undeliverable message.
+            assert all(is_process_running(pid) for pid in pids_on_ref)
+            assert survivor.check.call_one().get() == "this is a healthy check"
+        finally:
+            if p.is_alive():
+                p.kill()
+            p.join(timeout=10)
+            procs.stop().get()
+            q.close()
+            q.join_thread()
