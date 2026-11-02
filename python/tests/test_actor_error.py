@@ -19,6 +19,7 @@ from typing import cast, Generator, IO, Optional
 from unittest.mock import patch
 
 import monarch.actor
+import psutil
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_extension.panic import panicking_function
@@ -818,11 +819,10 @@ def _is_zombie(pid: int) -> bool:
     still exist, so os.kill(pid, 0) alone cannot tell whether they have exited.
     """
     try:
-        with open(f"/proc/{pid}/stat") as f:
-            # The process state follows the parenthesized command name, which
-            # can itself contain spaces or parentheses.
-            return f.read().rsplit(")", 1)[1].split()[0] == "Z"
-    except OSError:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.ZombieProcess:
+        return True
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
 
 
