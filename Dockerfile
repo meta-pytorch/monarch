@@ -11,8 +11,9 @@ SHELL ["/bin/bash", "-c"]
 RUN apt-get update -y && \
     apt-get install curl clang fuse3 liblzma-dev libunwind-dev libibverbs-dev librdmacm-dev protobuf-compiler rsync -y
 
-# Install monarch w/ kubernetes.
-RUN pip install "torchmonarch[kubernetes]==${MONARCH_VERSION}" --break-system-packages
+# Install monarch w/ kubernetes and NVIDIA GPU telemetry.
+RUN python -m pip install "torchmonarch[kubernetes]==${MONARCH_VERSION}" "nvidia-ml-py>=13.580.65,<14" --break-system-packages && \
+    python -c "import pynvml"
 
 # Install torchx-nightly w/ kubernetes.
 RUN pip install torchx-nightly[kubernetes] --break-system-packages
