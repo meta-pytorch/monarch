@@ -11,6 +11,7 @@ import { useApi } from "../../lib/useApi";
 import { ageLabel, bytes, GiB, HostSample, MiB, percent, points, pressure, ResourceHistory, sampleAge } from "../../lib/resources";
 import { EmptyState, ErrorState, Loading } from "../common/ui";
 import { ResourceChart } from "./ResourceChart";
+import { GpuResources } from "./GpuResources";
 
 export function HostResources({ hostname }: { hostname: string }) {
   const { data, loading, error, updatedAt } = useApi<ResourceHistory>(`/resources/history?hostname=${encodeURIComponent(hostname)}`, 5000);
@@ -46,6 +47,7 @@ export function HostResources({ hostname }: { hostname: string }) {
           </div>
         </>
       )}
+      <GpuResources history={data} updatedAt={updatedAt} />
     </div>
   );
 }
