@@ -64,3 +64,4 @@
 .resource-sort { color: inherit; font: inherit; font-weight: 600; background: none; border: 0; cursor: pointer; }
 .resource-search { width: 200px; max-width: 100%; padding: var(--s2); color: var(--text-1); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); }
 .host-resources { min-width: 0; }
+.gpu-charts { grid-template-columns: repeat(auto-fit, minmax(min(100%, max(320px, calc((100% - 16px) / 2))), 1fr)); }

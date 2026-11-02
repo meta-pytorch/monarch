@@ -34,11 +34,11 @@ export function ResourceChart({ title, unit, series, start, end, max }: {
               tooltip: { trigger: "axis", backgroundColor: css.getPropertyValue("--surface-2").trim(), borderColor: border, textStyle: { color: text }, valueFormatter: (v: number | null) => v == null ? "Unavailable" : `${Number(v).toFixed(2)} ${unit}` },
               xAxis: { type: "time", min: start / 1000, max: end / 1000, axisLabel: { color: text, fontSize: 10 }, axisLine: { lineStyle: { color: border } }, splitLine: { show: false } },
               yAxis: { type: "value", min: 0, max, axisLabel: { color: text, fontSize: 10 }, splitLine: { lineStyle: { color: border } } },
-              series: series.map((s, i) => ({ name: s.name, type: "line", data: s.data, showSymbol: false, connectNulls: false, lineStyle: { width: 2, color: colors[i % colors.length] }, itemStyle: { color: colors[i % colors.length] } })),
+              series: series.map((s, i) => ({ name: s.name, type: "line", data: s.data, showSymbol: false, connectNulls: false, lineStyle: { width: 2, color: colors[i % colors.length], type: i < colors.length ? "solid" : "dashed" }, itemStyle: { color: colors[i % colors.length] } })),
             }} />
           </div>
         )}
-        <div className="resource-legend">{series.map((s, i) => <span key={s.name}><i style={{ background: colors[i % colors.length] }} />{s.name}</span>)}</div>
+        <div className="resource-legend">{series.map((s, i) => <span key={s.name}><i style={{ borderTop: `3px ${i < colors.length ? "solid" : "dashed"} ${colors[i % colors.length]}` }} />{s.name}</span>)}</div>
       </div>
     </section>
   );
