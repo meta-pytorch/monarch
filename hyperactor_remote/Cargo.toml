@@ -34,7 +34,7 @@ nix = { version = "0.31.3", features = ["dir", "event", "hostname", "inotify", "
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 thiserror = "2.0.21"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
