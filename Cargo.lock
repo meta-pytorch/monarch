@@ -4944,7 +4944,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "build_utils",
- "derive_more",
  "futures 0.3.34",
  "hyperactor",
  "hyperactor_mesh",

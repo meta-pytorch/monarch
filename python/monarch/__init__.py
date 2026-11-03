@@ -4,10 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
-
 from importlib import import_module as _import_module
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 
 # On ROCm, triton bundles its own LLVM, which collides with the rocm-sdk's libLLVM
@@ -74,30 +72,15 @@ except ImportError:
 # we might not want to also import monarch.common.tensor,
 # which recursively imports torch.
 
-# Instead to expose functionality as part of the
-# monarch.* API, import it inside the TYPE_CHECKING
-# guard (so typechecker works), and then add it
-# to the _public_api dict and __all__ list. These
-# entries will get loaded on demand.
+# Declare public APIs in __init__.pyi, _public_api, and __all__.
 
 
 if TYPE_CHECKING:
-    from monarch import timer
-    from monarch._src.actor.shape import Extent, NDSlice, Shape
-    from monarch.common._coalescing import coalescing
-    from monarch.common.device_mesh import (
-        get_active_mesh,
-        no_mesh,
-        RemoteProcessGroup,
-        slice_mesh,
-        to_mesh,
+    from monarch._rust_bindings.monarch_hyperactor.shape import (
+        Extent,
+        Shape,
+        Slice as NDSlice,
     )
-    from monarch.common.function import resolvers as function_resolvers
-    from monarch.common.opaque_ref import OpaqueRef
-    from monarch.common.remote import remote
-    from monarch.common.selection import Selection
-    from monarch.common.stream import get_active_stream, Stream
-    from monarch.common.tensor import reduce, reduce_, Tensor
     from monarch.config import (  # noqa
         clear_runtime_config,
         configure,
@@ -105,11 +88,6 @@ if TYPE_CHECKING:
         get_global_config,
         get_runtime_config,
     )
-    from monarch.fetch import fetch_shard, inspect, show
-    from monarch.gradient_generator import grad_function, grad_generator
-    from monarch.simulator.config import set_meta  # noqa
-    from monarch.simulator.interface import Simulator
-    from monarch.world_mesh import world_mesh
 
 
 _public_api = {
@@ -153,7 +131,7 @@ _public_api = {
 }
 
 
-def __getattr__(name):
+def __getattr__(name: str) -> Any:
     if name in _public_api:
         module_path, attr_name = _public_api[name]
         module = _import_module(module_path)
