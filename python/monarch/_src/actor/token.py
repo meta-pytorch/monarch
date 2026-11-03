@@ -56,6 +56,9 @@ def publish(mesh: Actor) -> PublishedToken:
     `ValueError`; a failed mesh propagates its creation error. A stopping
     or ended publisher raises `RuntimeError`. A mesh not backed by the native
     Python actor binding raises `TypeError`.
+
+    A mesh returned by `connect()` can be published after its join completes;
+    wait for its `initialized` first.
     """
     inner = cast(ActorMesh, mesh)._inner
     if not isinstance(inner, PythonActorMesh):
@@ -77,12 +80,15 @@ def connect(
     client address when called outside an actor. `name` labels the local mesh
     wrapper; it does not rename the remote actors.
 
-    This call waits synchronously. `timeout` bounds the wait for the connection
-    reply, not later endpoint calls. Invalid tokens or timeouts, and rejected
-    connections, raise `ValueError`. No reply within the deadline raises
-    `TimeoutError`.
+    Return immediately, before the connection completes. Calls on the mesh
+    queue until the publisher replies. `timeout` bounds that join, not later
+    endpoint calls; it starts without waiting for an observation.
+
+    Invalid tokens or timeouts raise `ValueError` here, before sending.
+    A rejected connection raises `ValueError` from `initialized` and
+    reply-bearing calls; no reply within the deadline raises `TimeoutError`
+    there. A receive error or a token whose region disagrees with the published
+    mesh raises `RuntimeError` there. Fire-and-forget broadcasts return no error.
     """
-    inner, region = connect_token(
-        context().actor_instance._as_rust(), token, timeout
-    ).get()
+    inner, region = connect_token(context().actor_instance._as_rust(), token, timeout)
     return cast(TActor, ActorMesh(Class, name, inner, region.as_shape(), None))

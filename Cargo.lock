@@ -4717,6 +4717,7 @@ dependencies = [
  "anyhow",
  "async-once-cell",
  "async-trait",
+ "base64 0.23.1",
  "bincode 2.0.1",
  "build_utils",
  "bytes",
