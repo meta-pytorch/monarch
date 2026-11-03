@@ -75,6 +75,7 @@ pub(super) mod mux;
 pub(crate) mod quic;
 pub(super) mod server;
 pub(super) mod session;
+pub(super) mod vsock;
 pub use server::ServerHandle;
 
 pub(crate) trait Stream:
@@ -962,6 +963,9 @@ pub(crate) enum NetLink {
     Tls(tls::TlsLink),
     Quic(quic::QuicLink),
     Local(local::stream::LocalLink),
+    HybridVsock(vsock::HybridVsockLink),
+    #[cfg(target_os = "linux")]
+    Vsock(vsock::VsockLink),
 }
 
 /// Create a link for the given channel address with the given
@@ -1010,6 +1014,19 @@ pub(crate) fn link(
             stream_id,
             kind,
         )?)),
+        ChannelAddr::Vsock(VsockAddr::Hybrid { uds, port }) => Ok(NetLink::HybridVsock(
+            vsock::hybrid_link(uds, port, session_id, stream_id, kind),
+        )),
+        #[cfg(target_os = "linux")]
+        ChannelAddr::Vsock(VsockAddr::Native { cid, port }) => Ok(NetLink::Vsock(
+            vsock::native_link(cid, port, session_id, stream_id, kind),
+        )),
+        #[cfg(not(target_os = "linux"))]
+        addr @ ChannelAddr::Vsock(VsockAddr::Native { .. }) => Err(ClientError::Connect(
+            addr,
+            std::io::Error::from(std::io::ErrorKind::Unsupported),
+            "vsock requires linux".into(),
+        )),
         other => Err(ClientError::Connect(
             other,
             std::io::Error::other("unsupported transport"),
@@ -1029,6 +1046,9 @@ impl Link for NetLink {
             Self::Tls(l) => l.dest(),
             Self::Quic(l) => l.dest(),
             Self::Local(l) => l.dest(),
+            Self::HybridVsock(l) => l.dest(),
+            #[cfg(target_os = "linux")]
+            Self::Vsock(l) => l.dest(),
         }
     }
 
@@ -1039,6 +1059,9 @@ impl Link for NetLink {
             Self::Tls(l) => l.link_id(),
             Self::Quic(l) => l.link_id(),
             Self::Local(l) => l.link_id(),
+            Self::HybridVsock(l) => l.link_id(),
+            #[cfg(target_os = "linux")]
+            Self::Vsock(l) => l.link_id(),
         }
     }
 
@@ -1049,6 +1072,9 @@ impl Link for NetLink {
             Self::Tls(l) => Ok(Box::new(l.next().await?)),
             Self::Quic(l) => Ok(Box::new(l.next().await?)),
             Self::Local(l) => Ok(Box::new(l.next().await?)),
+            Self::HybridVsock(l) => Ok(Box::new(l.next().await?)),
+            #[cfg(target_os = "linux")]
+            Self::Vsock(l) => Ok(Box::new(l.next().await?)),
         }
     }
 }
@@ -1076,6 +1102,8 @@ pub(crate) enum NetListener {
     Unix(unix::UnixSocketListener),
     Quic(quic::QuicSocketListener),
     Local(local::stream::LocalListener),
+    #[cfg(target_os = "linux")]
+    Vsock(vsock::VsockSocketListener),
 }
 
 #[async_trait]
@@ -1097,6 +1125,11 @@ impl Listener for NetListener {
                 Ok((Box::new(stream), addr))
             }
             Self::Local(l) => {
+                let (stream, addr) = l.accept().await?;
+                Ok((Box::new(stream), addr))
+            }
+            #[cfg(target_os = "linux")]
+            Self::Vsock(l) => {
                 let (stream, addr) = l.accept().await?;
                 Ok((Box::new(stream), addr))
             }
@@ -1244,6 +1277,27 @@ pub(crate) fn listen_with_prebound(
             let (listener, _bound_addr) = listen_with_prebound(*bind_to, prebound)?;
             Ok((listener, *dial_to))
         }
+        addr @ ChannelAddr::Vsock(VsockAddr::Hybrid { .. }) => Err(ServerError::Listen(
+            addr,
+            std::io::Error::other("hybrid vsock addresses are dial-only"),
+        )),
+        addr @ ChannelAddr::Vsock(VsockAddr::Native { .. }) if prebound.is_some() => {
+            Err(ServerError::Listen(
+                addr,
+                std::io::Error::other("pre-opened listener not supported for vsock transport"),
+            ))
+        }
+        #[cfg(target_os = "linux")]
+        addr @ ChannelAddr::Vsock(VsockAddr::Native { cid, port }) => {
+            let (listener, bound) =
+                vsock::listen(cid, port).map_err(|err| ServerError::Listen(addr, err))?;
+            Ok((NetListener::Vsock(listener), ChannelAddr::Vsock(bound)))
+        }
+        #[cfg(not(target_os = "linux"))]
+        addr @ ChannelAddr::Vsock(VsockAddr::Native { .. }) => Err(ServerError::Listen(
+            addr,
+            std::io::Error::other("vsock requires linux"),
+        )),
     }
 }
 
