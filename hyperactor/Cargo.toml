@@ -91,6 +91,10 @@ tokio-test = "0.4.6"
 tracing-subscriber = { version = "0.3.23", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-vsock = { version = "0.7.2", features = ["tonic014"] }
+vsock = "0.5.4"
+
 [features]
 default = []
 stdio-write-probe = []

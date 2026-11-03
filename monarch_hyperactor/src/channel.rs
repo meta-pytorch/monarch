@@ -91,6 +91,9 @@ impl TryFrom<ChannelTransport> for PyChannelTransport {
             ChannelTransport::MetaQuic(TlsMode::IpV6) => Ok(PyChannelTransport::MetaQuicWithIpV6),
             ChannelTransport::Local => Ok(PyChannelTransport::Local),
             ChannelTransport::Unix => Ok(PyChannelTransport::Unix),
+            ChannelTransport::Vsock => Err(PyValueError::new_err(
+                "vsock transport is not supported in python bindings",
+            )),
         }
     }
 }
@@ -237,6 +240,9 @@ impl PyChannelAddr {
             },
             ChannelTransport::Local => Ok(PyChannelTransport::Local),
             ChannelTransport::Unix => Ok(PyChannelTransport::Unix),
+            ChannelTransport::Vsock => Err(PyValueError::new_err(
+                "vsock transport is not supported in python bindings",
+            )),
         }
     }
 }
