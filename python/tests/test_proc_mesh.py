@@ -47,6 +47,7 @@ from monarch._src.actor.proc_mesh import (
     get_or_spawn_controller,
     ProcMesh,
     register_proc_mesh_spawn_callback,
+    SetupActor,
     unregister_proc_mesh_spawn_callback,
 )
 from monarch._src.job.process import ProcessJob
@@ -106,7 +107,11 @@ def test_logging_then_setup_then_user_initialization(logging_failure: bool) -> N
             try:
                 assert raw.get(timeout=30) is not None
                 assert pm._proc_mesh.poll() is None
-                setup_ready = pm._pending_actor_spawns[0].initialized
+                setup_ready = next(
+                    mesh.initialized
+                    for mesh in pm._pending_actor_spawns
+                    if mesh._class is SetupActor
+                )
                 with pytest.raises(TimeoutError):
                     setup_ready.get(timeout=0)
                 assert not pathlib.Path(setup_path).exists()
