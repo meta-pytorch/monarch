@@ -43,6 +43,10 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 )
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch._src.job.host_metrics_actor import GpuMetricsActor, HostMetricsActor
+from monarch._src.job.telemetry_ingest import (
+    telemetry_socket_dir,
+    telemetry_socket_path,
+)
 from monarch.actor import Actor, current_rank, endpoint, HostMesh, ProcMesh, this_proc
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -51,16 +55,6 @@ _SCAN_WORKER_TIMEOUT_SECS: float = 10.0
 
 # `GpuMetricsActor.start` initializes NVML, which can hang.
 _SAMPLER_START_TIMEOUT_SECS: float = 10.0
-
-
-def telemetry_socket_dir(apply_id: str) -> str:
-    """Return the host-local telemetry socket directory for an apply id."""
-    return os.path.join("/tmp", f"monarch_{apply_id}")
-
-
-def telemetry_socket_path(apply_id: str) -> str:
-    """Return the host-local telemetry socket path for an apply id."""
-    return os.path.join(telemetry_socket_dir(apply_id), "telemetry.sock")
 
 
 class TelemetryActor(Actor):

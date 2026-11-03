@@ -59,10 +59,10 @@ from monarch._src.job.job_sidecar import (
     TelemetryInfoRequest,
     TelemetryRequest,
 )
-from monarch._src.job.telemetry_actor import (
+from monarch._src.job.telemetry_actor import TelemetryActor
+from monarch._src.job.telemetry_ingest import (
     telemetry_socket_dir,
     telemetry_socket_path,
-    TelemetryActor,
 )
 from monarch.actor import context, HostMesh, shutdown_context
 from monarch.distributed_telemetry.engine import QueryEngine
