@@ -6393,11 +6393,12 @@ dependencies = [
 
 [[package]]
 name = "rattler_conda_types"
-version = "0.31.5"
+version = "0.31.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ea41e41b171d7185f57c4fa0e19ef145c96604ba151479ec070f928325dbe1a"
+checksum = "1707fa705c9bf60032a12ccd04647ef2ff38b171e383a1f47c035b3f2ee2d646"
 dependencies = [
  "chrono",
+ "core-foundation 0.10.1",
  "dirs",
  "file_url",
  "fs-err",
