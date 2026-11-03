@@ -44,7 +44,6 @@ from scoped_state import scoped_state
 TOKEN_VAR = "MONARCH_TEST_LAUNCH_TOKEN"
 # The guest agent's control port; Monarch reserves 10000-10002 on the same uds.
 CONTROL_PORT = 9000
-AGENT = Path(__file__).with_name("fc_agent.py")
 
 
 def _cache() -> Path:
@@ -89,51 +88,12 @@ def _tree_files(root: Path) -> list[Path]:
     )
 
 
-# Each fbpkg and the file this test needs from it.
-_FBPKGS = {
-    "vm.firecracker": "firecracker/firecracker",
-    "vm.firecracker.kernel": "vmlinux",
-    "vm.firecracker.rootfs": "rootfs.ext3",
-}
-
-
-def _artifacts() -> Path:
-    """Firecracker, the guest kernel and the base rootfs, from fbpkgs."""
-    root = _cache() / "fbpkg"
-    with _cache_lock():
-        for pkg, needed in _FBPKGS.items():
-            if not (root / pkg / needed).exists():
-                shutil.rmtree(root / pkg, ignore_errors=True)
-                (root / pkg).mkdir(parents=True)
-                _run("fbpkg", "fetch", f"{pkg}:latest", "-d", str(root / pkg))
-    return root
-
-
-def _rootfs(artifacts: Path) -> Path:
-    """The base rootfs with the agent as init and the disks' mount points.
-    Shared read-only by every VM. Cached by the agent and the base package's
-    checksums file, which names its version and its files' digests."""
-    pkg = artifacts / "vm.firecracker.rootfs"
-    base = pkg / "rootfs.ext3"
-    (checksums,) = pkg.glob("*.CHECKSUMS")
-    out = _cache() / f"rootfs-{_content_key(files=[AGENT, checksums])}.ext3"
-    with _cache_lock():
-        if out.exists():
-            return out
-        tmp = out.with_suffix(".tmp")
-        tmp.unlink(missing_ok=True)
-        _run("cp", "--reflink=auto", str(base), str(tmp))
-        for cmd in (
-            "mkdir /platform",
-            "mkdir /program",
-            "mkdir /data",
-            "mkdir /usr/local/fbcode",
-            f"write {AGENT} /fc_agent.py",
-            "set_inode_field /fc_agent.py mode 0100755",
-        ):
-            _run("debugfs", "-w", "-R", cmd, str(tmp))
-        tmp.rename(out)
-    return out
+def _built(var: str) -> Path:
+    """The Buck output whose path the test target passes in `var`."""
+    path = Path(os.environ[var]).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"{var}={path} is not a built file")
+    return path
 
 
 def _ext4_from(stage: Path, out: Path) -> None:
@@ -312,8 +272,9 @@ class _FirecrackerLauncher(ProcLauncher):
         self._config: dict[str, Any] = params if params is not None else {}
         self._vms: dict[str, _Vm] = {}
         self._tasks: set[asyncio.Task[None]] = set()
-        self._artifacts = _artifacts()
-        self._rootfs = _rootfs(self._artifacts)
+        self._firecracker = _built("MONARCH_FC_FIRECRACKER")
+        self._kernel = _built("MONARCH_FC_KERNEL")
+        self._rootfs = _built("MONARCH_FC_ROOTFS")
         # Built here, not in `launch`, so image building never counts against
         # the readiness timeout.
         self._platform = _platform_image(self._config["program"])
@@ -400,9 +361,7 @@ class _FirecrackerLauncher(ProcLauncher):
         )
         spec = {
             "boot-source": {
-                "kernel_image_path": str(
-                    self._artifacts / "vm.firecracker.kernel/vmlinux"
-                ),
+                "kernel_image_path": str(self._kernel),
                 "boot_args": "console=ttyS0 reboot=k panic=1 pci=off quiet "
                 "root=/dev/vda ro init=/fc_agent.py",
             },
@@ -432,7 +391,7 @@ class _FirecrackerLauncher(ProcLauncher):
         (vm.workdir / "vm.json").write_text(json.dumps(spec))
         with open(vm.workdir / "console.log", "w") as console:
             vm.fc = await asyncio.create_subprocess_exec(
-                str(self._artifacts / "vm.firecracker/firecracker/firecracker"),
+                str(self._firecracker),
                 "--no-api",
                 "--config-file",
                 str(vm.workdir / "vm.json"),
@@ -635,13 +594,14 @@ def test_expired_preparation_is_reclaimed() -> None:
 @isolate_in_subprocess
 def _expired_preparation_is_reclaimed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        # An fbpkg whose fetch never finishes.
+        # A `du` that never finishes: the first preparation command the
+        # launcher runs from `PATH`.
         bin_dir = Path(tmp, "bin")
         bin_dir.mkdir()
-        pidfile = Path(tmp, "fbpkg.pid")
-        fbpkg = bin_dir / "fbpkg"
-        fbpkg.write_text(f"#!/bin/sh\necho $$ > {pidfile}\nexec sleep 3600\n")
-        fbpkg.chmod(0o755)
+        pidfile = Path(tmp, "du.pid")
+        du = bin_dir / "du"
+        du.write_text(f"#!/bin/sh\necho $$ > {pidfile}\nexec sleep 3600\n")
+        du.chmod(0o755)
         os.environ["PATH"] = f"{bin_dir}:{os.environ['PATH']}"
         os.environ["MONARCH_FC_CACHE"] = os.path.join(tmp, "cache")
         session: int | None = None
@@ -655,8 +615,8 @@ def _expired_preparation_is_reclaimed() -> None:
                 except TimeoutError:
                     pid = int(pidfile.read_text())
                     session = os.getsid(pid)
-                    assert session != os.getsid(0), "fbpkg should run in the worker"
-                    assert pid in _session_members(session), "fbpkg should be running"
+                    assert session != os.getsid(0), "du should run in the worker"
+                    assert pid in _session_members(session), "du should be running"
                     raise
         assert session is not None
         deadline = time.monotonic() + 30
@@ -666,7 +626,8 @@ def _expired_preparation_is_reclaimed() -> None:
 
 
 @pytest.mark.timeout(1500)
-# oss_skip: needs fbpkg and KVM, available on devservers and Sandcastle only.
+# oss_skip: needs KVM and Buck-built Firecracker inputs, available on
+# devservers and Sandcastle only.
 @pytest.mark.oss_skip
 def test_launch_and_exit_in_microvms() -> None:
     if (reason := _kvm_unavailable()) is not None:
@@ -711,7 +672,8 @@ def _launch_and_exit_in_microvms() -> None:
 
 
 @pytest.mark.timeout(1200)
-# oss_skip: needs fbpkg and KVM, available on devservers and Sandcastle only.
+# oss_skip: needs KVM and Buck-built Firecracker inputs, available on
+# devservers and Sandcastle only.
 @pytest.mark.oss_skip
 def test_teardown_in_microvms() -> None:
     if (reason := _kvm_unavailable()) is not None:
