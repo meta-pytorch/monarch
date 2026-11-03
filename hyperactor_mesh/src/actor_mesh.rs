@@ -152,7 +152,39 @@ pub struct DataActorMesh<A: Referable> {
     id: ActorMeshId,
     members: ValueMesh<ActorRef<A>>,
     cast_domain: Arc<ActorMeshCastDomain>,
+    display_name: Option<Arc<DataMeshDisplayName>>,
     monitor: Arc<ActorLocal<Arc<MeshMonitor>>>,
+}
+
+/// Names a spawned data mesh's actors in supervision events synthesized on
+/// the owner's side, as a managed mesh's controller does: by the supervision
+/// display name and each actor's point in the region it was spawned over.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct DataMeshDisplayName {
+    base: String,
+    region: Region,
+}
+
+impl DataMeshDisplayName {
+    /// Name the actors spawned over `region` by `base`.
+    pub(crate) fn new(base: String, region: Region) -> Self {
+        Self { base, region }
+    }
+
+    /// The display name of the actor spawned at `point`.
+    pub(crate) fn at_point(&self, point: &view::Point) -> String {
+        crate::actor_display_name(&self.base, point)
+    }
+
+    /// The display name of the actor at `base_rank` in the base of the spawn
+    /// region.
+    fn at_base_rank(&self, base_rank: usize) -> String {
+        let point = self
+            .region
+            .point_of_base_rank(base_rank)
+            .expect("data mesh members must lie in the region they were spawned over");
+        self.at_point(&point)
+    }
 }
 
 impl<A: Referable> fmt::Debug for DataActorMesh<A> {
@@ -195,6 +227,7 @@ impl<A: Referable> ActorMesh<A> {
         region: Region,
         members: Vec<ActorRef<A>>,
         stop_handles: Vec<ActorMeshStopHandle>,
+        display_name: DataMeshDisplayName,
     ) -> crate::Result<Self> {
         assert!(!stop_handles.is_empty(), "data actor mesh must own actors");
         assert_eq!(
@@ -202,11 +235,13 @@ impl<A: Referable> ActorMesh<A> {
             members.len(),
             "data actor mesh must own one lifecycle handle per member"
         );
-        let current_ref = ActorMeshRef::try_new_data(id, region, members).inspect_err(|_| {
-            stop_handles.iter().for_each(|handle| {
-                let _ = handle.stop("data mesh construction failed");
-            });
-        })?;
+        let current_ref = DataActorMesh::try_new(id, region, members)
+            .map(|data| ActorMeshRef::Data(data.with_display_name(display_name)))
+            .inspect_err(|_| {
+                stop_handles.iter().for_each(|handle| {
+                    let _ = handle.stop("data mesh construction failed");
+                });
+            })?;
         Ok(Self {
             current_ref,
             lifecycle: ActorMeshLifecycle::Data {
@@ -535,6 +570,7 @@ impl<A: Referable> DataActorMesh<A> {
             members,
             CastDomainId::new(),
             default_cast_tiling_policy(),
+            None,
         )
     }
 
@@ -543,6 +579,7 @@ impl<A: Referable> DataActorMesh<A> {
         members: ValueMesh<ActorRef<A>>,
         cast_domain_id: CastDomainId,
         tiling_policy: TilingPolicy,
+        display_name: Option<Arc<DataMeshDisplayName>>,
     ) -> Self {
         let region = members.region().clone();
         let member_addrs = members
@@ -561,8 +598,31 @@ impl<A: Referable> DataActorMesh<A> {
                 ),
                 tiling_policy,
             )),
+            display_name,
             monitor: Arc::new(ActorLocal::new()),
         }
+    }
+
+    /// Name the actors in supervision events synthesized for this mesh.
+    pub(crate) fn with_display_name(mut self, display_name: DataMeshDisplayName) -> Self {
+        self.display_name = Some(Arc::new(display_name));
+        self
+    }
+
+    /// The display name of each member, by rank, when the mesh was spawned with
+    /// one.
+    fn member_display_names(&self) -> Option<ValueMesh<String>> {
+        let display_name = self.display_name.as_ref()?;
+        let region = self.region().clone();
+        let names = region
+            .slice()
+            .iter()
+            .map(|base_rank| display_name.at_base_rank(base_rank))
+            .collect();
+        Some(
+            ValueMesh::new(region, names)
+                .expect("display names collected from a region preserve cardinality"),
+        )
     }
 
     /// Create a data-only actor mesh named `id` from a region and its actor
@@ -719,6 +779,7 @@ impl<A: Referable> Clone for DataActorMesh<A> {
             id: self.id.clone(),
             members: self.members.clone(),
             cast_domain: self.cast_domain.clone(),
+            display_name: self.display_name.clone(),
             // Exact clones share their actor-local monitor slot, even before
             // its key is initialized. Slices use `with_cast_domain_config`
             // instead, so each sliced region gets its own monitor.
@@ -740,6 +801,7 @@ impl<A: Referable> Serialize for DataActorMesh<A> {
             &self.members,
             &self.cast_domain.id,
             self.cast_domain.tiling_policy,
+            &self.display_name,
         )
             .serialize(serializer)
     }
@@ -750,12 +812,14 @@ impl<'de, A: Referable> Deserialize<'de> for DataActorMesh<A> {
     where
         D: Deserializer<'de>,
     {
-        let (id, members, cast_domain_id, tiling_policy) = Deserialize::deserialize(deserializer)?;
+        let (id, members, cast_domain_id, tiling_policy, display_name) =
+            Deserialize::deserialize(deserializer)?;
         Ok(Self::with_cast_domain_config(
             id,
             members,
             cast_domain_id,
             tiling_policy,
+            display_name,
         ))
     }
 }
@@ -779,6 +843,7 @@ impl<A: Referable> view::RankedSliceable for DataActorMesh<A> {
             self.members.sliced(region),
             CastDomainId::new(),
             self.cast_domain.tiling_policy,
+            self.display_name.clone(),
         )
     }
 }
@@ -945,7 +1010,12 @@ impl<A: Referable> ActorMeshRef<A> {
             data.monitor
                 .entry(cx)
                 .or_insert_with(|| {
-                    Arc::new(MeshMonitor::spawn_dormant(cx, self.monitored_actors()))
+                    Arc::new(
+                        MeshMonitor::spawn_dormant(cx, self.monitored_actors())
+                            .with_mesh_id(self.id().clone())
+                            .with_display_names(data.member_display_names())
+                            .expect("display names must share the monitored region"),
+                    )
                 })
                 .get()
                 .clone(),
@@ -968,7 +1038,14 @@ impl<A: Referable> ActorMeshRef<A> {
 
     /// Create a new, independent monitor over every rank.
     pub fn monitor(&self, cx: &impl context::Actor) -> MeshMonitor {
+        let display_names = match self {
+            Self::Managed(_) => None,
+            Self::Data(data) => data.member_display_names(),
+        };
         MeshMonitor::spawn_persistent(cx, self.monitored_actors())
+            .with_mesh_id(self.id().clone())
+            .with_display_names(display_names)
+            .expect("display names must share the monitored region")
     }
 
     fn monitored_actors(&self) -> ValueMesh<ActorAddr> {
@@ -2307,6 +2384,7 @@ mod tests {
             members,
             CastDomainId::new(),
             TilingPolicy::BlockPartitioning,
+            None,
         );
         let slice_region = region
             .range("replicas", 1..2)
@@ -3580,10 +3658,7 @@ mod tests {
         // Each owned mesh has an implicit ref mesh though, so that is what we
         // test here.
         let next_event = actor_mesh.next_supervision_event(instance).await.unwrap();
-        let mesh_id = mesh_ref
-            .as_managed()
-            .expect("owned actor mesh ref should be managed")
-            .id();
+        let mesh_id = mesh_ref.id();
         assert_eq!(next_event.actor_mesh_name, Some(mesh_id.to_string()));
         assert!(matches!(
             next_event.event.actor_status,

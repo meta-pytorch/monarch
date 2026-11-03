@@ -216,6 +216,7 @@ pub trait ActorSpawnerEndpoint {
             None,
             cx.instance().actor_environment().clone(),
             Flattrs::new(),
+            None,
         )
     }
 
@@ -260,6 +261,7 @@ pub trait ActorSpawnerEndpoint {
             Some(ready),
             cx.instance().actor_environment().clone(),
             Flattrs::new(),
+            None,
         )
         .map(|(actor_ref, _supervisor)| actor_ref)
     }
@@ -285,16 +287,19 @@ pub trait ActorSpawnerEndpoint {
             None,
             cx.instance().actor_environment().clone(),
             Flattrs::new(),
+            None,
         )
         .map(|(actor_ref, _supervisor)| actor_ref)
     }
 
     /// Spawn a registered actor with an explicit actor uid, liveness link,
-    /// optional readiness port, persistent environment, and supervision event
-    /// labels. This is the general form behind the other `spawn*` methods,
-    /// which pass the caller's own environment and no labels; see
+    /// optional readiness port, persistent environment, supervision event
+    /// labels, and display name. This is the general form behind the other
+    /// `spawn*` methods, which pass the caller's own environment, no labels,
+    /// and no display name; see
     /// [`spawn_uid_with_ready`](Self::spawn_uid_with_ready) for the readiness
-    /// semantics and [`Supervisor::with_labels`] for the labels.
+    /// semantics, [`Supervisor::with_labels`] for the labels, and
+    /// [`Supervisor::with_display_name`] for the display name.
     fn spawn_uid_with_link_and_ready<A>(
         &self,
         cx: &impl context::Actor,
@@ -304,6 +309,7 @@ pub trait ActorSpawnerEndpoint {
         ready: Option<OncePortHandle<()>>,
         environment: ActorEnvironment,
         labels: Flattrs,
+        display_name: Option<String>,
     ) -> anyhow::Result<(ActorRef<A>, ActorHandle<Supervisor>)>
     where
         A: RemoteSpawn,
@@ -337,7 +343,8 @@ pub trait ActorSpawnerEndpoint {
                     Ok(())
                 },
             )
-            .with_labels(labels),
+            .with_labels(labels)
+            .with_display_name(display_name),
         );
         Ok((actor_ref, supervisor))
     }

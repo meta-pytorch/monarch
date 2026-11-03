@@ -143,6 +143,12 @@ pub enum Error {
     #[error("invalid mesh ref: expected {expected} ranks, but contains {actual} ranks")]
     InvalidRankCardinality { expected: usize, actual: usize },
 
+    #[error("display names region {actual:?} does not match monitored region {expected:?}")]
+    DisplayNamesRegionMismatch {
+        expected: view::Region,
+        actual: view::Region,
+    },
+
     #[error(transparent)]
     ResourceIdParseError(#[from] mesh_id::ResourceIdParseError),
 

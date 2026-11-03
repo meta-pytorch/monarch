@@ -150,6 +150,7 @@ pub struct Supervisor {
     /// Optional one-shot notification posted after the worker links the child.
     ready: Option<OncePortHandle<()>>,
     labels: Flattrs,
+    display_name: Option<String>,
     stop_cause: Option<Box<ActorSupervisionEvent>>,
     observation: Option<SupervisionObservation>,
 }
@@ -237,6 +238,7 @@ impl Supervisor {
             pending_stop: None,
             ready,
             labels: Flattrs::new(),
+            display_name: None,
             stop_cause: None,
             observation: None,
         }
@@ -246,6 +248,13 @@ impl Supervisor {
     /// actor, replacing any labels the event already carries.
     pub fn with_labels(mut self, labels: Flattrs) -> Self {
         self.labels = labels;
+        self
+    }
+
+    /// Name the supervised actor in failures raised before, or without, the
+    /// worker reporting its display name.
+    pub fn with_display_name(mut self, display_name: Option<String>) -> Self {
+        self.display_name = display_name;
         self
     }
 }
@@ -349,7 +358,7 @@ impl Handler<SupervisorEvent> for Supervisor {
                     self.observation =
                         Some(SupervisionObservation::RequestFailed(SupervisionTarget {
                             actor_id: fallback_actor.clone(),
-                            display_name: None,
+                            display_name: self.display_name.clone(),
                         }));
                 }
                 anyhow::bail!(reason)
@@ -416,11 +425,14 @@ impl Supervisor {
         match &self.session {
             Some(session) => SupervisionTarget {
                 actor_id: session.child.clone(),
-                display_name: session.display_name.clone(),
+                display_name: session
+                    .display_name
+                    .clone()
+                    .or_else(|| self.display_name.clone()),
             },
             None => SupervisionTarget {
                 actor_id: self.bootstrap.fallback_actor(),
-                display_name: None,
+                display_name: self.display_name.clone(),
             },
         }
     }
@@ -2010,6 +2022,50 @@ mod tests {
                 .contains("remote supervision request rejected: spawn failed"),
             "unexpected event: {}",
             event
+        );
+
+        parent.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_liveness_loss_before_link_names_fallback_actor() {
+        let proc = Proc::isolated();
+        let inst = proc.client("inst");
+        let child = proc.proc_addr().actor_addr("never_linked");
+        let (events, mut events_rx) = inst.open_port::<ActorSupervisionEvent>();
+        let parent = proc.spawn_with_label(
+            "parent",
+            Parent {
+                supervisor: Some(
+                    Supervisor::bootstrap_uid(
+                        KeepaliveLink::new(Duration::from_millis(5), Duration::from_millis(100)),
+                        SupervisionOptions::default(),
+                        Uid::anonymous(),
+                        child.clone(),
+                        None,
+                        |_cx, _supervise| Ok(()),
+                    )
+                    .with_display_name(Some("child{'gpus': 1/2}".to_string())),
+                ),
+                events,
+            },
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let Some(SupervisionObservation::LinkLost(target)) = &event.observation else {
+            panic!("expected the unlinked actor's lost link: {event:?}");
+        };
+        assert_eq!(target.actor_id, child);
+        assert_eq!(
+            target.display_name.as_deref(),
+            Some("child{'gpus': 1/2}"),
+            "a lost link before the worker reports should keep the requested display name"
         );
 
         parent.stop("test").unwrap();
