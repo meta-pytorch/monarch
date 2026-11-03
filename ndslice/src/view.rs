@@ -28,6 +28,20 @@
 //!               Since it is always rectangular, it also defines its own extent.
 //! - [`View`]: a collection of items indexed by [`Region`]. Views provide standard
 //!             manipulation operations and use ranks as an efficient indexing scheme.
+//!
+//! ## Checked region construction (NDR-*)
+//!
+//! These guarantees apply to [`Region::try_from_parts`]. Existing constructors
+//! and derived deserialization do not enforce this full contract.
+//!
+//! - **NDR-1 (reject invalid parts).** Checked construction rejects inconsistent
+//!   dimension counts, layouts rejected by [`Slice::new`], and arithmetic that
+//!   would overflow `usize`: each size times stride, the element count, and the
+//!   largest rank. Empty regions have no largest rank to check.
+//! - **NDR-2 (preserve the region).** Accepted labels, offset, sizes and strides
+//!   are preserved, including non-contiguous regions, scalar regions, empty
+//!   regions whose layout is accepted by [`Slice::new`], and repeated strides
+//!   for unit-sized dimensions.
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -41,7 +55,8 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::Range;
-use crate::Shape; // exclusively for `impl From<Shape> for Extent`
+use crate::Shape;
+use crate::ShapeError;
 use crate::Slice;
 use crate::SliceError;
 use crate::SliceIterator;
@@ -1064,9 +1079,17 @@ pub enum ViewError {
     },
 }
 
-/// Errors that occur while operating on Region.
+/// Errors that occur while constructing or operating on a region.
 #[derive(Debug, Error)]
 pub enum RegionError {
+    /// The sizes and strides do not describe a valid, representable slice.
+    #[error(transparent)]
+    SliceError(#[from] SliceError),
+
+    /// The number of labels does not match the number of dimensions.
+    #[error(transparent)]
+    ShapeError(#[from] ShapeError),
+
     #[error("invalid point: this point does not belong to this region: {0}")]
     InvalidPoint(String),
 
@@ -1103,6 +1126,57 @@ impl From<Region> for RankSpace {
 }
 
 impl Region {
+    /// Construct a region from labels, an offset, dimension sizes and strides.
+    ///
+    /// Use this when the parts came from outside the program, such as decoded
+    /// JSON. Check dimension counts, slice layout and rank arithmetic before
+    /// returning the region. Keep the supplied offset and strides rather than
+    /// replacing them with a row-major layout.
+    ///
+    /// Empty regions have zero elements and no largest rank. Scalar regions
+    /// have no dimensions and contain the single rank at `offset`.
+    pub fn try_from_parts(
+        labels: Vec<String>,
+        offset: usize,
+        sizes: Vec<usize>,
+        strides: Vec<usize>,
+    ) -> Result<Self, RegionError> {
+        // NDR-1: check dimensions before pairing sizes and strides.
+        if sizes.len() != strides.len() {
+            return Err(SliceError::InvalidDims {
+                expected: sizes.len(),
+                got: strides.len(),
+            }
+            .into());
+        }
+
+        // NDR-1: Slice::new multiplies each size by its stride unchecked.
+        sizes.iter().zip(&strides).try_for_each(|(size, stride)| {
+            size.checked_mul(*stride)
+                .ok_or(SliceError::ArithmeticOverflow)
+                .map(|_| ())
+        })?;
+        if !sizes.contains(&0) {
+            sizes.iter().try_fold(1usize, |count, size| {
+                count
+                    .checked_mul(*size)
+                    .ok_or(SliceError::ArithmeticOverflow)
+            })?;
+            sizes
+                .iter()
+                .zip(&strides)
+                .try_fold(offset, |rank, (size, stride)| {
+                    let span = (size - 1)
+                        .checked_mul(*stride)
+                        .ok_or(SliceError::ArithmeticOverflow)?;
+                    rank.checked_add(span).ok_or(SliceError::ArithmeticOverflow)
+                })?;
+        }
+        let slice = Slice::new(offset, sizes, strides)?;
+        // NDR-2: the constructors retain the supplied labels and slice.
+        Ok(Shape::new(labels, slice)?.region())
+    }
+
     #[allow(dead_code)]
     fn empty() -> Region {
         Region {
@@ -1926,6 +2000,86 @@ mod test {
     use crate::Shape;
     use crate::shape;
     use crate::slice::CartesianIterator;
+
+    // NDR-1: see this module's checked-construction registry. Malformed
+    // dimensions and layouts must return errors, not usable regions.
+    #[test]
+    fn checked_region_rejects_invalid_dimensions_and_layouts() {
+        assert!(matches!(
+            Region::try_from_parts(vec![], 0, vec![1], vec![1]),
+            Err(RegionError::ShapeError(ShapeError::DimSliceMismatch { .. }))
+        ));
+        assert!(matches!(
+            Region::try_from_parts(vec!["gpu".into()], 0, vec![2], vec![]),
+            Err(RegionError::SliceError(SliceError::InvalidDims { .. }))
+        ));
+        assert!(matches!(
+            Region::try_from_parts(vec!["x".into(), "y".into()], 0, vec![2, 2], vec![3, 2]),
+            Err(RegionError::SliceError(SliceError::NonrectangularShape))
+        ));
+        assert!(matches!(
+            Region::try_from_parts(vec!["x".into(), "y".into()], 0, vec![2, 2], vec![1, 1]),
+            Err(RegionError::SliceError(SliceError::NonuniqueStrides))
+        ));
+        assert!(matches!(
+            Region::try_from_parts(vec!["gpu".into()], 0, vec![2], vec![0]),
+            Err(RegionError::SliceError(SliceError::StrideTooSmall { .. }))
+        ));
+    }
+
+    // NDR-1: an intermediate product can overflow even when the largest
+    // rank fits. The final case overflows only when adding the offset.
+    #[test]
+    fn checked_region_rejects_arithmetic_overflow() {
+        for (offset, sizes, strides) in [
+            (0, vec![2], vec![usize::MAX]),
+            (0, vec![usize::MAX, 2], vec![1, 1]),
+            (usize::MAX, vec![2], vec![1]),
+        ] {
+            let labels = (0..sizes.len()).map(|index| format!("d{index}")).collect();
+            assert!(matches!(
+                Region::try_from_parts(labels, offset, sizes, strides),
+                Err(RegionError::SliceError(SliceError::ArithmeticOverflow))
+            ));
+        }
+    }
+
+    // NDR-2: preserve the physical ranks, not just the dimension sizes.
+    #[test]
+    fn checked_region_preserves_offset_and_noncontiguous_strides() {
+        let region = Region::try_from_parts(vec!["gpu".into()], 1, vec![2], vec![2]).unwrap();
+        assert_eq!(region.labels(), &["gpu"]);
+        assert_eq!(region.slice().offset(), 1);
+        assert_eq!(region.slice().sizes(), &[2]);
+        assert_eq!(region.slice().strides(), &[2]);
+        assert_eq!(region.slice().iter().collect::<Vec<_>>(), vec![1, 3]);
+    }
+
+    // NDR-1/NDR-2: zero dimensions must not underflow; scalar and
+    // unit-sized dimensions remain usable without changing their strides.
+    #[test]
+    fn checked_region_accepts_empty_scalar_and_unit_dimensions() {
+        for (labels, offset, sizes, strides, ranks) in [
+            (vec!["gpu".into()], 7, vec![0], vec![1], vec![]),
+            (vec![], 7, vec![], vec![], vec![7]),
+            (
+                vec!["x".into(), "y".into()],
+                7,
+                vec![1, 1],
+                vec![1, 1],
+                vec![7],
+            ),
+        ] {
+            let region =
+                Region::try_from_parts(labels.clone(), offset, sizes.clone(), strides.clone())
+                    .unwrap();
+            assert_eq!(region.labels(), labels);
+            assert_eq!(region.slice().offset(), offset);
+            assert_eq!(region.slice().sizes(), sizes);
+            assert_eq!(region.slice().strides(), strides);
+            assert_eq!(region.slice().iter().collect::<Vec<_>>(), ranks);
+        }
+    }
 
     #[test]
     fn region_to_rankspace_maps_ranks_in_order() {
