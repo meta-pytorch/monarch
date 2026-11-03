@@ -477,7 +477,11 @@ class HostMesh(MeshTrait):
         ).buffer()
         hy_mesh = await self._hy_host_mesh
         await hy_mesh.set_proc_launcher(
-            context().actor_instance._as_rust(), _Actor, init_args, kind
+            context().actor_instance._as_rust(),
+            _Actor,
+            init_args,
+            kind,
+            launcher.reachability.value,
         )
 
     async def __aenter__(self) -> "HostMesh":
