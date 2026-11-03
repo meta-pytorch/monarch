@@ -7,6 +7,7 @@
 import asyncio
 import contextlib
 import importlib
+import math
 import os
 import pathlib
 import pickle
@@ -2709,6 +2710,54 @@ def test_exec_command_returns_max_returncode():
     assert exec_command(host_mesh, ["echo", "hi"]).get() == 7
 
 
+def test_exec_command_reports_signal_failure_and_tags_execution_before_cleanup():
+    from monarch._rust_bindings.monarch_hyperactor.shape import (
+        Extent,
+        Point,
+        Region,
+        Slice,
+    )
+
+    host_mesh, _procs, bash_actors, markers = _exec_env()
+    host_mesh._region = Region(["hosts"], Slice(offset=0, sizes=[1], strides=[1]))
+    _procs._region = host_mesh._region
+    native_rank = Point(0, Extent(["hosts"], [1]))
+    bash_actors.run.call.return_value = _results_future(
+        [(native_rank, {"returncode": -9, "stdout": "", "stderr": "terminated"})]
+    )
+    observed = []
+
+    def report(rank, result):
+        observed.append((rank, result["returncode"], markers["stop_driven"]))
+
+    identifier = "a" * 32
+    assert (
+        exec_command(
+            host_mesh,
+            ["python", "train.py"],
+            _execution_id=identifier,
+            _result_callback=report,
+        ).get()
+        == 137
+    )
+    assert observed == [
+        (
+            {
+                "flat_rank": 0,
+                "coordinates": {"hosts": 0},
+                "host_rank": 0,
+                "label": "rank 0 (hosts=0)",
+            },
+            -9,
+            False,
+        )
+    ]
+    assert markers["stop_driven"]
+    host_mesh.spawn_procs.assert_called_once_with(
+        name=f"exec_{identifier}", per_host=None
+    )
+
+
 def test_direct_exec_command_signal_is_nonzero_without_recording():
     host_mesh, _procs, bash_actors, markers = _exec_env()
     bash_actors.run.call.return_value = _results_future(
@@ -3500,3 +3549,97 @@ def test_exec_command_observer_cancellation_still_cleans_up():
     host_mesh.spawn_procs.assert_called_once_with(per_host=None)
     bash_actors.run.call.assert_called_once()
     procs.stop.assert_called_once()
+
+
+def test_exec_command_optional_rank_reporting_failure_keeps_exit_and_cleanup():
+    host_mesh, _procs, bash_actors, markers = _exec_env()
+    bash_actors.run.call.return_value = _results_future(
+        [("rank0", {"returncode": 7, "stdout": "", "stderr": ""})]
+    )
+
+    def fail_report(*args):
+        raise OSError("telemetry unavailable")
+
+    assert exec_command(host_mesh, ["false"], _result_callback=fail_report).get() == 7
+    assert markers["stop_driven"]
+
+
+@pytest.mark.parametrize(
+    "selected,proc_shape,local_rank,per_host,expected",
+    [
+        ((0, [4], [1]), (["hosts"], [4]), 2, None, (2, {"hosts": 2})),
+        ((2, [], []), ([], []), 0, None, (2, {"hosts": 2})),
+        ((2, [], []), (["gpu"], [2]), 1, {"gpu": 2}, (5, {"hosts": 2, "gpu": 1})),
+        (
+            (0, [4], [1]),
+            (["hosts", "gpu"], [4, 2]),
+            5,
+            {"gpu": 2},
+            (5, {"hosts": 2, "gpu": 1}),
+        ),
+        (
+            (2, [], []),
+            (["gpu", "cpu"], [2, 3]),
+            5,
+            {"gpu": 2, "cpu": 3},
+            (17, {"hosts": 2, "gpu": 1, "cpu": 2}),
+        ),
+        (
+            (0, [2], [2]),
+            (["hosts", "gpu", "cpu"], [2, 2, 3]),
+            11,
+            {"gpu": 2, "cpu": 3},
+            (17, {"hosts": 2, "gpu": 1, "cpu": 2}),
+        ),
+    ],
+)
+def test_original_rank_identity_survives_slices_and_per_host(
+    selected, proc_shape, local_rank, per_host, expected
+):
+    from types import SimpleNamespace
+
+    from monarch._rust_bindings.monarch_hyperactor.shape import (
+        Extent,
+        Point,
+        Region,
+        Slice,
+    )
+    from monarch._src.job.job import _execution_rank_identity
+
+    original = SimpleNamespace(
+        _region=Region(["hosts"], Slice(offset=0, sizes=[4], strides=[1]))
+    )
+    offset, sizes, strides = selected
+    selected_mesh = SimpleNamespace(
+        _region=Region(
+            ["hosts"] if sizes else [],
+            Slice(offset=offset, sizes=sizes, strides=strides),
+        )
+    )
+    labels, proc_sizes = proc_shape
+    proc_strides = [math.prod(proc_sizes[i + 1 :]) for i in range(len(proc_sizes))]
+    procs = SimpleNamespace(
+        _region=Region(labels, Slice(offset=0, sizes=proc_sizes, strides=proc_strides))
+    )
+    result = _execution_rank_identity(
+        original,
+        selected_mesh,
+        procs,
+        Point(local_rank, Extent(labels, proc_sizes)),
+        per_host,
+    )
+    assert (result["flat_rank"], result["coordinates"]) == expected
+    assert result["host_rank"] == 2
+
+
+@pytest.mark.parametrize("per_host", [{"gpu": 0}, {"gpu": 2, "cpu": 0}])
+def test_empty_proc_mesh_has_no_execution_rank_identity(per_host):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from monarch._src.job.job import _execution_rank_identity
+
+    with pytest.raises(ValueError, match="Empty process meshes"):
+        _execution_rank_identity(
+            MagicMock(), MagicMock(), MagicMock(), SimpleNamespace(rank=0), per_host
+        )

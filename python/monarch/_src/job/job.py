@@ -8,6 +8,7 @@
 
 import contextlib
 import logging
+import math
 import os
 import pickle
 import shlex
@@ -37,6 +38,7 @@ from monarch._src.actor.actor_mesh import (
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._batch_env import in_batch_job, MONARCH_BATCH_JOB_ENV
 from monarch._src.job._telemetry_query_client import QueryEngineClient
+from monarch._src.job.execution_config import normalize_exit_code
 from monarch._src.job.job_components import JobComponents, MeshAdminConfig
 from monarch._src.job.job_sidecar import create_job_sidecar, stop_job_sidecar
 from monarch._src.job.service_identity import (
@@ -61,6 +63,8 @@ from monarch.actor import (
 )
 from monarch.distributed_telemetry import profiler
 from typing_extensions import Self
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 
 @contextlib.contextmanager
@@ -1032,6 +1036,44 @@ def _start_exec_command(
     return handle
 
 
+def _execution_rank_identity(
+    original: HostMesh,
+    selected: HostMesh,
+    procs: Any,
+    rank: Any,
+    per_host: dict[str, int] | None,
+) -> dict[str, Any]:
+    """Translate a sliced ProcMesh point into original host/proc coordinates."""
+    # Broadcast results use points relative to the spawned proc mesh.
+    local_proc_rank = rank.rank
+    procs_per_host = math.prod((per_host or {}).values())
+    if procs_per_host == 0:
+        raise ValueError("Empty process meshes have no execution rank identity")
+    local_host_rank = local_proc_rank // procs_per_host
+    base_host_rank = selected._region.slice().get(local_host_rank)
+    original_point = original._region.point_of_base_rank(base_host_rank)
+    host_rank = original_point.rank
+    coordinates = dict(original_point)
+    # Get proc dimensions from the spawned root region, preserving per_host.
+    proc_point = procs._region.point_of_base_rank(
+        procs._region.slice().get(local_proc_rank)
+    )
+    for dimension in per_host or {}:
+        coordinates[dimension] = proc_point[dimension]
+    flat_rank = host_rank * procs_per_host + local_proc_rank % procs_per_host
+    label = (
+        f"rank {flat_rank} ("
+        + ", ".join(f"{k}={v}" for k, v in coordinates.items())
+        + ")"
+    )
+    return {
+        "flat_rank": flat_rank,
+        "coordinates": coordinates,
+        "host_rank": host_rank,
+        "label": label,
+    }
+
+
 def exec_command(
     host_mesh: HostMesh,
     cmd: List[str],
@@ -1041,6 +1083,9 @@ def exec_command(
     rank: Optional[int] = None,
     point: Optional[Dict[str, int]] = None,
     per_host: Optional[Dict[str, int]] = None,
+    *,
+    _execution_id: str | None = None,
+    _result_callback: Callable[[Any, dict[str, Any]], None] | None = None,
 ) -> "Future[int]":
     """Run a command on *host_mesh* and return its maximum rank exit code.
 
@@ -1085,7 +1130,11 @@ def exec_command(
         else:
             host_mesh_s = host_mesh
 
-        procs = host_mesh_s.spawn_procs(per_host=per_host)
+        procs = (
+            host_mesh_s.spawn_procs(name=f"exec_{_execution_id}", per_host=per_host)
+            if _execution_id is not None
+            else host_mesh_s.spawn_procs(per_host=per_host)
+        )
         try:
             bash_actors = procs.spawn("BashActor", BashActor)
 
@@ -1116,8 +1165,27 @@ def exec_command(
             max_rc = 0
             for _rank_key, result in results:
                 rc = int(result.get("returncode", 1))
-                rc = rc if rc >= 0 else min(128 - rc, 255)
+                rc = normalize_exit_code(rc)
                 max_rc = max(max_rc, rc)
+                if _result_callback is not None:
+                    try:
+                        identity = _execution_rank_identity(
+                            host_mesh, host_mesh_s, procs, _rank_key, per_host
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Execution rank identity unavailable", exc_info=True
+                        )
+                        identity = {
+                            "flat_rank": None,
+                            "coordinates": {},
+                            "host_rank": None,
+                            "label": f"Unresolved rank {_rank_key}",
+                        }
+                    try:
+                        _result_callback(identity, result)
+                    except Exception:
+                        logger.warning("Execution rank reporting failed", exc_info=True)
                 if output_dir is None:
                     stdout = result.get("stdout", "")
                     stderr = result.get("stderr", "")
