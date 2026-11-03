@@ -345,6 +345,14 @@ pub enum InvalidReferenceReason {
     /// The envelope was delivered to the wrong mailbox owner.
     #[error("wrong mailbox owner")]
     WrongMailboxOwner,
+
+    /// The concrete proc does not exist at the selected terminal endpoint.
+    #[error("proc does not exist at endpoint")]
+    ProcNotExist,
+
+    /// The final connection in an explicit concrete reference is absent.
+    #[error("destination route does not exist")]
+    RouteNotExist,
 }
 
 /// A delivery failure caused by message expiration.
@@ -481,9 +489,17 @@ impl PortGone {
     }
 }
 
-/// An envelope that carries a message destined to a remote actor.
-/// The envelope contains a serialized message along with its destination
-/// and sender.
+/// Progress along a source route. Terminal arrival never restarts the
+/// canonical destination's route. Legacy peer routes retain their leaf marker.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+enum RouteProgress {
+    #[default]
+    Unset,
+    Legacy(PortAddr),
+    Explicit(std::collections::VecDeque<crate::addr::RouteHop>),
+}
+
+/// An envelope carrying immutable actor identity and routing progress.
 #[derive(Debug, Serialize, Deserialize, Clone, typeuri::Named)]
 pub struct MessageEnvelope {
     /// The sender of this message.
@@ -492,9 +508,9 @@ pub struct MessageEnvelope {
     /// The destination of the message.
     dest: PortAddr,
 
-    /// The next hop used only for gateway routing.
+    /// Routing progress, independent of canonical destination and sequencing.
     #[serde(default)]
-    next_hop: Option<PortAddr>,
+    route: RouteProgress,
 
     /// The serialized message.
     data: wirevalue::Any,
@@ -530,7 +546,7 @@ impl MessageEnvelope {
         Self {
             sender,
             dest,
-            next_hop: None,
+            route: RouteProgress::Unset,
             data,
             delivery_failures: Vec::new(),
             headers,
@@ -620,27 +636,71 @@ impl MessageEnvelope {
         &self.dest
     }
 
-    /// The next hop that gateways use for routing.
+    /// Legacy routing destination, without changing canonical identity.
+    /// Explicit routing uses its normalized action list instead.
     pub(crate) fn next_hop(&self) -> &PortAddr {
-        self.next_hop.as_ref().unwrap_or(&self.dest)
+        match &self.route {
+            RouteProgress::Legacy(next) => next,
+            RouteProgress::Unset | RouteProgress::Explicit(_) => &self.dest,
+        }
     }
 
-    /// Whether this envelope carries a next hop distinct from the
-    /// canonical destination.
     pub(crate) fn has_next_hop(&self) -> bool {
-        self.next_hop.is_some()
+        !matches!(self.route, RouteProgress::Unset)
     }
 
-    /// Return this envelope with its destination replaced by `dest`.
-    pub fn with_dest(mut self, dest: PortAddr) -> Self {
-        self.dest = dest;
-        self.next_hop = None;
+    pub(crate) fn is_terminal(&self) -> bool {
+        matches!(&self.route, RouteProgress::Explicit(hops) if hops.is_empty())
+    }
+
+    pub(crate) fn is_explicit(&self) -> bool {
+        matches!(self.route, RouteProgress::Explicit(_))
+    }
+
+    pub(crate) fn explicit_hops(
+        &self,
+    ) -> Option<&std::collections::VecDeque<crate::addr::RouteHop>> {
+        match &self.route {
+            RouteProgress::Explicit(hops) => Some(hops),
+            _ => None,
+        }
+    }
+
+    /// Call only after selecting the exact connection for the front hop.
+    pub(crate) fn advance_explicit(mut self) -> Self {
+        let RouteProgress::Explicit(hops) = &mut self.route else {
+            panic!("explicit route required")
+        };
+        hops.pop_front().expect("nonterminal route required");
         self
     }
 
-    /// Return this envelope with its next hop replaced by `dest`.
+    /// Local fast paths must not skip an unvisited source route.
+    pub(crate) fn permits_local_delivery(&self) -> bool {
+        self.is_terminal()
+            || (!self.is_explicit() && !self.next_hop().location().has_address_hops())
+    }
+
+    /// Replace the canonical destination and reset routing progress.
+    pub fn with_dest(mut self, dest: PortAddr) -> Self {
+        self.dest = dest;
+        self.route = RouteProgress::Unset;
+        self
+    }
+
     pub(crate) fn with_next_hop(mut self, dest: PortAddr) -> Self {
-        self.next_hop = if dest == self.dest { None } else { Some(dest) };
+        self.route = RouteProgress::Legacy(dest);
+        self
+    }
+
+    pub(crate) fn with_explicit_route(mut self, location: Location) -> Self {
+        self.route = RouteProgress::Explicit(location.routing_hops());
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_terminal_route(mut self) -> Self {
+        self.route = RouteProgress::Explicit(Default::default());
         self
     }
 
@@ -746,7 +806,7 @@ impl MessageEnvelope {
         let Self {
             sender,
             dest,
-            next_hop,
+            route,
             data,
             delivery_failures,
             headers,
@@ -758,7 +818,7 @@ impl MessageEnvelope {
             MessageMetadata {
                 sender,
                 dest,
-                next_hop,
+                route,
                 delivery_failures,
                 headers,
                 ttl,
@@ -772,7 +832,7 @@ impl MessageEnvelope {
         let MessageMetadata {
             sender,
             dest,
-            next_hop,
+            route,
             delivery_failures,
             headers,
             ttl,
@@ -782,7 +842,7 @@ impl MessageEnvelope {
         Self {
             sender,
             dest,
-            next_hop,
+            route,
             data,
             delivery_failures,
             headers,
@@ -823,7 +883,7 @@ impl fmt::Display for MessageEnvelope {
 pub struct MessageMetadata {
     sender: ActorAddr,
     dest: PortAddr,
-    next_hop: Option<PortAddr>,
+    route: RouteProgress,
     /// Structured delivery failures. The first entry is the root delivery
     /// failure; later entries record subsequent failures while returning or
     /// forwarding the same envelope.
@@ -1623,7 +1683,8 @@ impl MailboxClient {
                         } = send_error;
                         if let Some(SendErrorReason::StaleSession(_)) = &reason
                             && let Some(repost) = &repost
-                            && matches!(message.next_hop().location(), Location::Addr(_))
+                            && (message.is_explicit()
+                                || matches!(message.next_hop().location(), Location::Addr(_)))
                             && message
                                 .headers()
                                 .get(headers::REPOSTED_AFTER_STALE_SESSION)
@@ -2382,7 +2443,7 @@ impl MailboxSender for Mailbox {
             mut headers,
             sender,
             dest,
-            next_hop,
+            route,
             delivery_failures,
             ttl,
             return_undeliverable,
@@ -2422,7 +2483,7 @@ impl MailboxSender for Mailbox {
                         headers,
                         sender,
                         dest,
-                        next_hop,
+                        route,
                         delivery_failures,
                         ttl,
                         return_undeliverable,
@@ -2443,7 +2504,7 @@ impl MailboxSender for Mailbox {
                         headers,
                         sender,
                         dest,
-                        next_hop,
+                        route,
                         delivery_failures,
                         ttl,
                         return_undeliverable,
@@ -4112,6 +4173,31 @@ impl DialMailboxRouter {
         }
     }
 
+    /// Dispatch an already prepared envelope to exactly this endpoint.
+    /// Retries capture the endpoint and never route the remaining path again.
+    pub(crate) fn post_to(
+        &self,
+        addr: ChannelAddr,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        let addr = addr.into_dial_addr();
+        match self.dial(&addr, &envelope.dest().actor_addr()) {
+            Ok(sender) => sender.post(envelope, return_handle),
+            Err(error) => {
+                let failure =
+                    DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                        envelope.dest().clone(),
+                        TransportFailureReason::DialFailed {
+                            addr,
+                            error: error.to_string(),
+                        },
+                    )));
+                envelope.undeliverable(failure, return_handle);
+            }
+        }
+    }
+
     /// Return all covering prefixes of this router. That is, all references that are not
     /// prefixed by another reference in the routing table
     pub fn prefixes(&self) -> BTreeSet<Addr> {
@@ -4252,7 +4338,7 @@ impl MailboxSender for DialMailboxRouter {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let dest_actor_ref = envelope.dest().actor_addr();
+        let dest_actor_ref = envelope.next_hop().actor_addr();
         let Some(addr) = self.lookup_addr(&dest_actor_ref) else {
             self.default.post(envelope, return_handle);
             return;
@@ -4329,6 +4415,7 @@ mod tests {
     use crate::accum;
     use crate::accum::ReducerMode;
     use crate::channel::ChannelTransport;
+    use crate::channel::Rx as _;
     use crate::context::Actor as _;
     use crate::context::Mailbox as MailboxContext;
     use crate::context::MailboxExt as _;
@@ -4366,6 +4453,75 @@ mod tests {
             panic!("expected invalid reference, got {root_failure}");
         };
         invalid_reference
+    }
+
+    #[tokio::test]
+    async fn test_explicit_route_progress_survives_metadata_and_wire_roundtrip() {
+        let actor = test_actor_id("route_metadata", "actor");
+        let canonical = test_port_id("route_metadata", "actor", 42);
+        let onward =
+            Location::from(ChannelAddr::Local(54321)).with_via(crate::id::Uid::anonymous());
+        let sequence = SeqInfo::Session {
+            session_id: uuid::Uuid::new_v4(),
+            seq: 17,
+        };
+        for terminal in [false, true] {
+            let mut envelope = MessageEnvelope::serialize(
+                actor.clone(),
+                canonical.clone(),
+                &123u64,
+                Flattrs::new(),
+            )
+            .unwrap();
+            envelope.set_header(SEQ_INFO, sequence.clone());
+            envelope = if terminal {
+                envelope.with_terminal_route()
+            } else {
+                envelope.with_explicit_route(onward.clone())
+            };
+            let expected_hops = envelope.explicit_hops().cloned();
+            let (metadata, data) = envelope.open();
+            let sealed = MessageEnvelope::seal(metadata, data);
+            let encoded: wirevalue::Any = wirevalue::Any::serialize(&sealed).unwrap();
+            let decoded = encoded.deserialized::<MessageEnvelope>().unwrap();
+            assert_eq!(decoded.dest(), &canonical);
+            assert_eq!(decoded.sender(), &actor);
+            assert_eq!(decoded.headers().get(SEQ_INFO), Some(sequence.clone()));
+            assert!(decoded.has_next_hop());
+            assert!(decoded.is_explicit());
+            assert_eq!(decoded.is_terminal(), terminal);
+            assert_eq!(decoded.deserialized::<u64>().unwrap(), 123);
+            assert_eq!(decoded.explicit_hops(), expected_hops.as_ref());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_terminal_route_survives_serialized_delivery_failure() {
+        let mbox = Mailbox::new(test_actor_id("route_delivery_failure", "actor"));
+        let (port, _receiver) = mbox.open_port::<u64>();
+        let canonical = port.bind().port_addr().clone();
+        // Unit encodes no bytes, forcing u64 deserialization to fail after
+        // the mailbox opens the envelope into MessageMetadata.
+        let envelope = MessageEnvelope::serialize(
+            mbox.actor_addr().clone(),
+            canonical.clone(),
+            &(),
+            Flattrs::new(),
+        )
+        .unwrap()
+        .with_terminal_route();
+        let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
+        mbox.post(envelope, return_handle);
+        let returned = tokio::time::timeout(Duration::from_secs(5), return_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .into_message()
+            .unwrap();
+        assert!(returned.is_terminal());
+        assert!(returned.has_next_hop());
+        assert_eq!(returned.dest(), &canonical);
+        assert!(returned.root_delivery_failure().is_some());
     }
 
     struct ClosedChannelTx {
@@ -5648,6 +5804,71 @@ mod tests {
             !Arc::ptr_eq(&stale_client, &fresh_client),
             "the stale-session client should be replaced in the cache"
         );
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_dial_router_explicit_retry_preserves_selected_endpoint_and_remainder() {
+        // The canonical destination and remaining route deliberately name
+        // addresses other than the selected transport. Replaying through the
+        // general router would dial the wrong endpoint or consume another hop.
+        for terminal in [false, true] {
+            let actor = test_actor_id("prepared_retry", "actor");
+            let canonical = test_port_id("prepared_retry", "actor", 42);
+            let onward =
+                Location::from(ChannelAddr::Local(54322)).with_via(crate::id::Uid::anonymous());
+            let (first_addr, mut first_rx) =
+                channel::serve::<MessageEnvelope>(tcp_loopback()).unwrap();
+            let (second_addr, mut second_rx) =
+                channel::serve::<MessageEnvelope>(tcp_loopback()).unwrap();
+            let mut relay = TcpRelay::start(&first_addr).await;
+            let router = DialMailboxRouter::new();
+            let stale_client = router.dial(&relay.addr, &actor).unwrap();
+            let envelope =
+                MessageEnvelope::serialize(actor.clone(), canonical.clone(), &1u64, Flattrs::new())
+                    .unwrap()
+                    .with_terminal_route();
+            router.post_to(relay.addr.clone(), envelope, monitored_return_handle());
+            first_rx.recv().await.unwrap();
+            router.flush().await.unwrap();
+
+            relay.restart_peer_at(&second_addr);
+            relay.reconnected().await;
+
+            let sequence = SeqInfo::Session {
+                session_id: uuid::Uuid::new_v4(),
+                seq: 23,
+            };
+            let mut prepared =
+                MessageEnvelope::serialize(actor.clone(), canonical.clone(), &2u64, Flattrs::new())
+                    .unwrap();
+            prepared.set_header(SEQ_INFO, sequence.clone());
+            prepared = if terminal {
+                prepared.with_terminal_route()
+            } else {
+                prepared.with_explicit_route(onward.clone())
+            };
+            let expected_hops = prepared.explicit_hops().cloned();
+            router.post_to(relay.addr.clone(), prepared, monitored_return_handle());
+            let received = second_rx.recv().await.unwrap();
+            router.flush().await.unwrap();
+
+            assert_eq!(received.dest(), &canonical);
+            assert_eq!(received.sender(), &actor);
+            assert_eq!(received.headers().get(SEQ_INFO), Some(sequence));
+            assert_eq!(received.is_terminal(), terminal);
+            assert!(received.is_explicit());
+            assert_eq!(received.deserialized::<u64>().unwrap(), 2);
+            assert_eq!(
+                received
+                    .headers()
+                    .get(headers::REPOSTED_AFTER_STALE_SESSION),
+                Some(true),
+            );
+            assert_eq!(received.explicit_hops(), expected_hops.as_ref());
+            let fresh_client = router.dial(&relay.addr, &actor).unwrap();
+            assert!(!Arc::ptr_eq(&stale_client, &fresh_client));
+            assert_eq!(router.sender_cache.len(), 1);
+        }
     }
 
     #[tokio::test]

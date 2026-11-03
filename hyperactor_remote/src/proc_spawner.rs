@@ -163,10 +163,7 @@ fn spawned_actor_spawner(
 }
 
 fn append_inner_via(location: Location, uid: Uid) -> Location {
-    match location {
-        Location::Addr(addr) => Location::Addr(addr).with_via(uid),
-        Location::Via(via, inner) => Location::Via(via, Box::new(append_inner_via(*inner, uid))),
-    }
+    location.append_via(uid)
 }
 
 #[cfg(test)]

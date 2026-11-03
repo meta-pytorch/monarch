@@ -57,31 +57,25 @@ use crate::ref_::PortRef;
 
 /// A network location.
 ///
-/// Two variants: a terminal [`ChannelAddr`], or a "via" hop carrying
-/// the [`Uid`] of a gateway through which the inner location is
-/// reachable. The via form is a source route — a message addressed to
-/// `Via(uid, inner)` is forwarded by the gateway holding that `uid` and
-/// then routed by the inner location.
+/// `Addr` is a channel address and `Via(uid, inner)` preserves the legacy
+/// peer source-route form. `Address(addr, inner)` adds an explicit address
+/// step before continuing with `inner`.
 ///
-/// Display syntax:
+/// Ordinary locations keep their existing display syntax (`uid.tcp://host:1`).
+/// Explicit paths use a prefixed JSON array of channel URL strings; the final
+/// string may itself be a location:
 ///
 /// ```text
-/// location := via* zmq-url
-/// via      := uid "."
-/// uid      := label | "<" base58 ">" | label "<" base58 ">"
+/// route:["tcp://gateway:1","tcp://worker:2"]
+/// route:["tcp://gateway:1","child.tcp://worker:2"]
+/// child.route:["tcp://gateway:1","tcp://worker:2"]
 /// ```
 ///
-/// The parser sniffs the ZMQ URL scheme (`<scheme>://`) to split the
-/// via list from the URL — so any uid form accepted by [`Uid`]
-/// (singleton label, unlabeled instance, or labeled instance) is
-/// admitted in via position.
-///
-/// Examples:
-///
-/// * `<2MuAHeDjLCEd>.tcp://[::1]:2345` — one unlabeled instance via.
-/// * `host<7PDmJtQJB5S>.tcp://[::1]:2345` — labeled instance via.
-/// * `client.host<7PDmJtQJB5S>.tcp://[::1]:2345` — a singleton via
-///   stacked on a labeled instance via.
+/// A legacy Via prefix is applied after reaching the address immediately
+/// underneath it. The second example traverses gateway, worker, then worker's
+/// child peer. The third traverses gateway, gateway's child peer, then worker.
+/// JSON escaping preserves URL punctuation, including `>` in Unix socket paths.
+/// The prefix makes these routes unambiguous with existing channel URLs.
 #[derive(
     Clone,
     EnumAsInner,
@@ -100,14 +94,58 @@ pub enum Location {
     /// gateway holding `Uid`, which peels this prefix off the
     /// destination before routing the inner location.
     Via(Uid, Box<Location>),
+    /// Select this address at the sender, then continue with the inner route.
+    /// The final Addr is also selected and consumed at its sender.
+    Address(ChannelAddr, Box<Location>),
+}
+
+/// A normalized sender-side routing action. Peer keys select connections,
+/// while legacy Via leaf addresses are reached before their peer prefixes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum RouteHop {
+    Address(ChannelAddr),
+    Peer(Uid),
 }
 
 impl Location {
-    /// Returns the innermost channel address, peeling all via hops.
+    pub(crate) fn has_address_hops(&self) -> bool {
+        match self {
+            Self::Addr(_) => false,
+            Self::Via(_, inner) => inner.has_address_hops(),
+            Self::Address(_, _) => true,
+        }
+    }
+
+    pub(crate) fn routing_hops(&self) -> std::collections::VecDeque<RouteHop> {
+        let mut hops = std::collections::VecDeque::new();
+        self.append_routing_hops(&mut hops);
+        hops
+    }
+
+    fn append_routing_hops(&self, hops: &mut std::collections::VecDeque<RouteHop>) {
+        let mut location = self;
+        let mut peers = Vec::new();
+        while let Self::Via(uid, inner) = location {
+            peers.push(uid.clone());
+            location = inner;
+        }
+        let (addr, onward) = match location {
+            Self::Addr(addr) => (addr, None),
+            Self::Address(addr, inner) => (addr, Some(inner)),
+            Self::Via(_, _) => unreachable!(),
+        };
+        hops.push_back(RouteHop::Address(addr.clone().into_dial_addr()));
+        hops.extend(peers.into_iter().map(RouteHop::Peer));
+        if let Some(onward) = onward {
+            onward.append_routing_hops(hops);
+        }
+    }
+
+    /// Returns the innermost channel address, peeling all routing prefixes.
     pub fn addr(&self) -> &ChannelAddr {
         match self {
             Location::Addr(addr) => addr,
-            Location::Via(_, inner) => inner.addr(),
+            Location::Via(_, inner) | Location::Address(_, inner) => inner.addr(),
         }
     }
 
@@ -123,6 +161,9 @@ impl Location {
     pub fn append_via(self, uid: Uid) -> Self {
         match self {
             Location::Addr(addr) => Location::Addr(addr).with_via(uid),
+            Location::Address(addr, inner) => {
+                Location::Address(addr, Box::new(inner.append_via(uid)))
+            }
             Location::Via(outer_uid, inner) => {
                 Location::Via(outer_uid, Box::new(inner.append_via(uid)))
             }
@@ -135,7 +176,7 @@ impl Location {
     pub fn pop_via(self) -> Result<(Uid, Location), Location> {
         match self {
             Location::Via(uid, inner) => Ok((uid, *inner)),
-            addr @ Location::Addr(_) => Err(addr),
+            other => Err(other),
         }
     }
 }
@@ -151,6 +192,20 @@ impl fmt::Display for Location {
         match self {
             Location::Addr(addr) => f.write_str(&addr.to_zmq_url()),
             Location::Via(uid, inner) => write!(f, "{uid}.{inner}"),
+            Location::Address(_, _) => {
+                let mut parts = Vec::new();
+                let mut location = self;
+                while let Location::Address(addr, inner) = location {
+                    parts.push(addr.to_zmq_url());
+                    location = inner;
+                }
+                parts.push(location.to_string());
+                write!(
+                    f,
+                    "route:{}",
+                    serde_json::to_string(&parts).map_err(|_| fmt::Error)?
+                )
+            }
         }
     }
 }
@@ -870,6 +925,64 @@ impl From<PortAddr> for Addr {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_address_routes_roundtrip_and_preserve_legacy_urls() {
+        use super::*;
+        let ipc = ChannelAddr::from_zmq_url("ipc:///tmp/path>with,[punctuation]").unwrap();
+        let first = ChannelAddr::from_zmq_url("tcp://127.0.0.1:9876").unwrap();
+        let peer = Uid::anonymous();
+        let location = Location::Address(
+            first.clone(),
+            Box::new(Location::from(ipc.clone()).with_via(peer.clone())),
+        );
+        assert_eq!(location.to_string().parse::<Location>().unwrap(), location);
+        assert_eq!(
+            ipc.to_zmq_url().parse::<Location>().unwrap(),
+            Location::Addr(ipc.clone())
+        );
+        let prefixed = location.clone().with_via(peer.clone());
+        assert_eq!(prefixed.to_string().parse::<Location>().unwrap(), prefixed);
+        let nested = Location::Address(first, Box::new(location));
+        assert_eq!(nested.to_string().parse::<Location>().unwrap(), nested);
+        for bad in [
+            "route:[]",
+            "route:[\"tcp://127.0.0.1:1\"]",
+            "route:[1,2]",
+            "route:[\"tcp://127.0.0.1:1\",\"bad\"]",
+        ] {
+            assert!(bad.parse::<Location>().is_err(), "accepted {bad}");
+        }
+        // Existing serialized enum names remain unchanged.
+        assert!(
+            serde_json::to_value(Location::Addr(ipc))
+                .unwrap()
+                .get("Addr")
+                .is_some()
+        );
+        assert!(serde_json::to_value(prefixed).unwrap().get("Via").is_some());
+    }
+
+    #[test]
+    fn test_address_routes_normalize_legacy_peer_order_and_child_append() {
+        use super::*;
+        let a = ChannelAddr::Local(71);
+        let b = ChannelAddr::Local(72);
+        let first_peer = Uid::anonymous();
+        let child = Uid::anonymous();
+        let location = Location::Address(a.clone(), Box::new(Location::from(b.clone())))
+            .with_via(first_peer.clone())
+            .append_via(child.clone());
+        assert_eq!(
+            location.routing_hops().into_iter().collect::<Vec<_>>(),
+            vec![
+                RouteHop::Address(a),
+                RouteHop::Peer(first_peer),
+                RouteHop::Address(b),
+                RouteHop::Peer(child),
+            ]
+        );
+    }
+
     use std::hash::Hash;
 
     use super::*;
