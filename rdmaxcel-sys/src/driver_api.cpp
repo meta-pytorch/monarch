@@ -137,7 +137,7 @@ namespace {
 CUresult clear_sticky_error(CUresult rc) {
 #ifdef USE_ROCM
   if (rc != CUDA_SUCCESS) {
-    hipGetLastError();
+    (void)hipGetLastError();
   }
 #endif
   return rc;
