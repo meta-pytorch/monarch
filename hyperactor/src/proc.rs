@@ -544,6 +544,31 @@ impl ActorEntry {
 struct TerminatedSnapshot {
     actor_addr: ActorAddr,
     payload: crate::introspect::IntrospectResult,
+    /// Cache for [`TerminatedSnapshot::failure_occurred_at`].
+    failure_occurred_at: OnceLock<Option<SystemTime>>,
+}
+
+impl TerminatedSnapshot {
+    fn new(actor_addr: ActorAddr, payload: crate::introspect::IntrospectResult) -> Self {
+        Self {
+            actor_addr,
+            payload,
+            failure_occurred_at: OnceLock::new(),
+        }
+    }
+
+    /// When the actor failed, or `None` if it stopped cleanly. Parsed
+    /// from the payload attrs on first use; eviction consults every
+    /// retained snapshot on each insert past the retention cap.
+    fn failure_occurred_at(&self) -> Option<SystemTime> {
+        *self.failure_occurred_at.get_or_init(|| {
+            let attrs =
+                serde_json::from_str::<hyperactor_config::Attrs>(&self.payload.attrs).ok()?;
+            // Presence of FAILURE_ERROR_MESSAGE means the actor failed.
+            attrs.get(crate::introspect::FAILURE_ERROR_MESSAGE)?;
+            attrs.get(crate::introspect::FAILURE_OCCURRED_AT).copied()
+        })
+    }
 }
 
 /// Actor status control-plane message.
@@ -4384,14 +4409,14 @@ impl InstanceCellState {
 ///    newest-first (descending `occurred_at`), preserving the
 ///    earliest failures which are closest to the root cause.
 fn select_eviction_candidates(
-    entries: &[(ActorAddr, Option<String>)],
+    entries: &[(ActorAddr, Option<SystemTime>)],
     excess: usize,
 ) -> Vec<ActorAddr> {
     let mut clean: Vec<&ActorAddr> = Vec::new();
-    let mut failed: Vec<(&ActorAddr, &str)> = Vec::new();
+    let mut failed: Vec<(&ActorAddr, SystemTime)> = Vec::new();
     for (id, occurred_at) in entries {
         match occurred_at {
-            Some(ts) => failed.push((id, ts.as_str())),
+            Some(ts) => failed.push((id, *ts)),
             None => clean.push(id),
         }
     }
@@ -4410,13 +4435,32 @@ fn select_eviction_candidates(
 
     // If still over cap, evict most-recent failures first.
     if remaining > 0 {
-        failed.sort_by(|a, b| b.1.cmp(a.1));
+        failed.sort_by_key(|&(_, ts)| std::cmp::Reverse(ts));
         for (id, _) in failed.into_iter().take(remaining) {
             to_remove.push(id.clone());
         }
     }
 
     to_remove
+}
+
+/// Evict terminated snapshots, chosen by [`select_eviction_candidates`],
+/// until at most `max` remain.
+fn evict_terminated_snapshots(snapshots: &DashMap<ActorId, TerminatedSnapshot>, max: usize) {
+    let excess = snapshots.len().saturating_sub(max);
+    if excess == 0 {
+        return;
+    }
+    let entries: Vec<_> = snapshots
+        .iter()
+        .map(|entry| {
+            let snapshot = entry.value();
+            (snapshot.actor_addr.clone(), snapshot.failure_occurred_at())
+        })
+        .collect();
+    for key in select_eviction_candidates(&entries, excess) {
+        snapshots.remove(key.id());
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -5062,40 +5106,12 @@ impl InstanceCell {
         let snapshots = &self.inner.proc.inner.terminated_snapshots;
         snapshots.insert(
             self.actor_addr().id().clone(),
-            TerminatedSnapshot {
-                actor_addr: self.actor_addr().clone(),
-                payload,
-            },
+            TerminatedSnapshot::new(self.actor_addr().clone(), payload),
         );
-        let max = hyperactor_config::global::get(crate::config::TERMINATED_SNAPSHOT_RETENTION);
-        let excess = snapshots.len().saturating_sub(max);
-        if excess > 0 {
-            // Build entries for the eviction selector.
-            let entries: Vec<_> = snapshots
-                .iter()
-                .map(|entry| {
-                    let occurred_at = serde_json::from_str::<hyperactor_config::Attrs>(
-                        &entry.value().payload.attrs,
-                    )
-                    .ok()
-                    .and_then(|attrs| {
-                        // Presence of FAILURE_ERROR_MESSAGE means the actor failed.
-                        attrs
-                            .get(crate::introspect::FAILURE_ERROR_MESSAGE)
-                            .cloned()?;
-                        // Extract occurred_at timestamp for sorting.
-                        attrs
-                            .get(crate::introspect::FAILURE_OCCURRED_AT)
-                            .map(|t| humantime::format_rfc3339(*t).to_string())
-                    });
-                    (entry.value().actor_addr.clone(), occurred_at)
-                })
-                .collect();
-
-            for key in select_eviction_candidates(&entries, excess) {
-                snapshots.remove(key.id());
-            }
-        }
+        evict_terminated_snapshots(
+            snapshots,
+            hyperactor_config::global::get(crate::config::TERMINATED_SNAPSHOT_RETENTION),
+        );
     }
 
     /// This is temporary so that we can share binding code between handle and instance.
@@ -9199,6 +9215,56 @@ mod tests {
         assert!(
             !failure.is_propagated,
             "direct failure must not be marked propagated"
+        );
+    }
+
+    // Verifies retention eviction: cleanly-stopped snapshots go first,
+    // then the most recent failures, so the earliest failures survive.
+    #[test]
+    fn test_evict_terminated_snapshots() {
+        let snapshots: DashMap<ActorId, TerminatedSnapshot> = DashMap::new();
+        let insert = |name: &str, failed_at: Option<SystemTime>| {
+            let actor_addr = test_actor_id("proc", name);
+            let mut attrs = hyperactor_config::Attrs::new();
+            if let Some(t) = failed_at {
+                attrs.set(crate::introspect::FAILURE_ERROR_MESSAGE, "boom".to_string());
+                attrs.set(crate::introspect::FAILURE_OCCURRED_AT, t);
+            }
+            let payload = IntrospectResult {
+                identity: crate::introspect::IntrospectRef::Actor(actor_addr.clone()),
+                attrs: serde_json::to_string(&attrs).unwrap(),
+                children: Vec::new(),
+                parent: None,
+                as_of: SystemTime::now(),
+            };
+            let id = actor_addr.id().clone();
+            snapshots.insert(id.clone(), TerminatedSnapshot::new(actor_addr, payload));
+            id
+        };
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        insert("clean0", None);
+        let late = insert("late", Some(t0 + Duration::from_secs(2)));
+        let early = insert("early", Some(t0));
+        insert("clean1", None);
+        let mid = insert("mid", Some(t0 + Duration::from_secs(1)));
+
+        let retained =
+            || -> HashSet<ActorId> { snapshots.iter().map(|e| e.key().clone()).collect() };
+
+        evict_terminated_snapshots(&snapshots, 5);
+        assert_eq!(snapshots.len(), 5);
+
+        evict_terminated_snapshots(&snapshots, 3);
+        assert_eq!(
+            retained(),
+            HashSet::from([early.clone(), mid.clone(), late.clone()])
+        );
+
+        evict_terminated_snapshots(&snapshots, 1);
+        assert_eq!(retained(), HashSet::from([early.clone()]));
+        assert_eq!(
+            snapshots.get(&early).unwrap().failure_occurred_at.get(),
+            Some(&Some(t0)),
         );
     }
 
