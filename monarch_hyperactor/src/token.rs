@@ -16,10 +16,32 @@
 //! and receives each connecting actor's address. It need not be an actor
 //! in the published mesh. Once the publishing actor stops, the token no
 //! longer accepts connections.
+//!
+//! `connect()` returns a pending mesh with the region advertised in the token.
+//! Its calls wait for the rendezvous to supply the actual mesh reference.
+//!
+//! ## Token invariants (PYTK-*)
+//!
+//! - **PYTK-1 (parse before sending).** An invalid timeout or mesh token,
+//!   including an invalid region, raises `ValueError` before opening a reply
+//!   port or sending a join. Parsing preserves a valid region's offset and strides.
+//! - **PYTK-2 (reference only through join).** The token supplies the region,
+//!   not the mesh reference. `connect()` returns without waiting; queued calls
+//!   wait for a joined reference whose region matches the token's region.
+//! - **PYTK-3 (connection failures stay local).** A failed join is shared by
+//!   initialization and reply-bearing endpoint calls. A reply timeout closes
+//!   the reply port, not the caller's actor, and does not retract the request.
+//!   Fire-and-forget calls return no failure outcome.
+//! - **PYTK-4 (publisher owns rendezvous).** Publication neither changes mesh
+//!   ownership nor permits the rendezvous to outlive its publishing actor.
 
+use std::fmt;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::prelude::BASE64_STANDARD;
 use hyperactor::Actor;
 use hyperactor::ActorAddr;
 use hyperactor::Endpoint as _;
@@ -31,24 +53,100 @@ use hyperactor_mesh::actor_mesh::ActorMeshRef;
 use hyperactor_remote::Token;
 use hyperactor_remote::TokenOptions;
 use hyperactor_remote::token;
+use ndslice::Region;
 use ndslice::view::Ranked;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyTimeoutError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::actor::PythonActor;
-use crate::actor_mesh::AsyncActorMesh;
 use crate::actor_mesh::PythonActorMesh;
 use crate::actor_mesh::PythonActorMeshImpl;
+use crate::actor_mesh::SupervisableActorMesh;
 use crate::context::PyInstance;
 use crate::handle::PyHandle;
 use crate::runtime::get_tokio_runtime;
 use crate::shape::PyRegion;
 
-/// The publishing actor gives each connecting actor a Python actor mesh
-/// reference and receives that actor's address in return.
-type ActorMeshToken = Token<ActorMeshRef<PythonActor>, ActorAddr>;
+/// A token for connecting to an existing Python actor mesh.
+///
+/// The region lets `connect()` construct the mesh before the rendezvous replies.
+/// Calls wait for that reply to supply the published actors' mesh reference.
+#[derive(Clone, Debug)]
+struct ActorMeshToken {
+    /// The token used to contact the publisher's rendezvous actor.
+    /// A join returns the published mesh reference and reports the connecting
+    /// actor's address to the publisher.
+    rendezvous_token: Token<ActorMeshRef<PythonActor>, ActorAddr>,
+    /// The published mesh's dimensions and selected ranks.
+    /// Used to construct the pending mesh, then checked against the reference
+    /// returned by the join.
+    region: Region,
+}
+
+/// The JSON representation stored inside an actor-mesh token string.
+///
+/// This enum has one case so serde writes a `kind` field and rejects a
+/// missing or different kind when reading. The tag identifies a Python
+/// actor-mesh token, not a bare rendezvous token.
+///
+/// Decoding this payload does not validate its region. `ActorMeshToken`'s
+/// parser checks the region before constructing the usable token.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind")]
+enum ActorMeshTokenPayload {
+    #[serde(rename = "monarch_hyperactor::token::ActorMeshToken")]
+    Mesh {
+        /// The generic rendezvous token, encoded as its canonical string.
+        token: Token<ActorMeshRef<PythonActor>, ActorAddr>,
+        /// The published mesh's region, still unchecked after decoding.
+        region: Region,
+    },
+}
+
+impl FromStr for ActorMeshToken {
+    type Err = anyhow::Error;
+
+    /// Read either the compact token or its display form with a `#JSON` suffix.
+    ///
+    /// Only the base64 text before `#` is decoded; the suffix is for people to read.
+    /// Reject invalid encoding, the wrong token kind, or an invalid rendezvous
+    /// token or region before constructing `ActorMeshToken`.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let encoded = text.split_once('#').map_or(text, |(encoded, _)| encoded);
+        let json = BASE64_STANDARD.decode(encoded)?;
+        let ActorMeshTokenPayload::Mesh {
+            token: rendezvous_token,
+            region,
+        } = serde_json::from_slice(&json)?;
+        // PYTK-1: serde's Region/Slice derives bypass their constructors.
+        let (labels, slice) = region.into_inner();
+        let (offset, sizes, strides) = slice.into_inner();
+        let region = Region::try_from_parts(labels, offset, sizes, strides)?;
+        Ok(Self {
+            rendezvous_token,
+            region,
+        })
+    }
+}
+
+impl fmt::Display for ActorMeshToken {
+    /// Write the token as base64 JSON followed by `#` and that same JSON.
+    ///
+    /// The base64 part is the compact token; the suffix lets people inspect its
+    /// contents. The parser accepts either the compact part or the full string.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let payload = ActorMeshTokenPayload::Mesh {
+            token: self.rendezvous_token.clone(),
+            region: self.region.clone(),
+        };
+        let json = serde_json::to_string(&payload).map_err(|_| fmt::Error)?;
+        write!(f, "{}#{}", BASE64_STANDARD.encode(&json), json)
+    }
+}
 
 /// The result of publishing: a token string and its connection notifications.
 ///
@@ -110,8 +208,9 @@ fn accepts_children(status: &ActorStatus) -> bool {
 /// supplies in return is sent to `connection_notifications`.
 ///
 /// Generic over the owner's actor type and the two exchanged values.
-/// The Python binding uses `ActorMeshToken`; Rust lifecycle tests exchange
-/// actor addresses instead, testing ownership without building a Python mesh.
+/// The Python binding exchanges a mesh reference and the connecting actor's
+/// address; Rust lifecycle tests exchange actor addresses instead, testing
+/// ownership without building a Python mesh.
 ///
 /// Reject publication if the owner is stopping or has ended. Otherwise,
 /// hold its status read lock until the new child is linked to it. This
@@ -120,7 +219,7 @@ fn accepts_children(status: &ActorStatus) -> bool {
 ///
 /// `before_create` lets tests request a stop inside that protected interval.
 /// Production callers pass a no-op.
-fn create_owned<A, C, J>(
+fn create_owned_rendezvous<A, C, J>(
     owner: &Instance<A>,
     value_from_owner: C,
     connection_notifications: PortRef<token::Joined<J>>,
@@ -134,6 +233,7 @@ where
     let status_receiver = owner.status();
     // Read the current status and hold its read lock until this function returns.
     let status_guard = status_receiver.borrow();
+    // PYTK-4: hold this status guard until the rendezvous is linked as a child.
     anyhow::ensure!(
         accepts_children(&status_guard),
         "the token owner {} is {}",
@@ -187,11 +287,20 @@ fn create_token(instance: &PyInstance, mesh: &PythonActorMesh) -> PyResult<PyPub
     let (notification_port, connection_notifications) =
         instance.open_port::<token::Joined<ActorAddr>>();
 
-    // Publish under this actor instance's status lock. The no-op is the
-    // test hook; production needs no action between check and spawn.
-    let token: ActorMeshToken =
-        create_owned(&**instance, mesh_ref, notification_port.bind(), || {})
+    let region = mesh_ref.region().clone();
+
+    // Create the rendezvous as a child of the publishing actor (`instance`).
+    // It gives each connecting actor `mesh_ref` and sends that actor's address
+    // to `notification_port`. Hold the owner's status lock through child creation
+    // so shutdown cannot miss the rendezvous. The empty closure is a test hook
+    // left unused here. Report creation failures to Python as `RuntimeError`.
+    let rendezvous_token =
+        create_owned_rendezvous(&**instance, mesh_ref, notification_port.bind(), || {})
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let token = ActorMeshToken {
+        rendezvous_token,
+        region,
+    };
 
     // Return the shareable token string and retain the notification receiver.
     // `next_peer()` tasks share this receiver and serialize access to it.
@@ -206,16 +315,19 @@ fn create_token(instance: &PyInstance, mesh: &PythonActorMesh) -> PyResult<PyPub
 /// Called by Python's `connect(token, Class, ...)` on the connecting side.
 /// `instance` represents that caller's actor or root client, not the actor
 /// that published the token. Send its address to the token's rendezvous
-/// actor and return a `PyHandle` for the published mesh and its region.
-/// Python's `connect()` waits on this Handle and wraps the mesh using `Class`.
+/// actor and return a pending mesh and the region advertised in the token.
+/// Python's `connect()` wraps them using `Class` without waiting for the reply.
 ///
-/// Raise `ValueError` for an invalid timeout or token, or a rejected
-/// connection. If no answer arrives within `timeout_secs`, including when the
-/// token's owner has stopped, close the reply port and raise `TimeoutError`
-/// through the Handle.
+/// Raise `ValueError` for an invalid timeout or token before sending. A rejected
+/// join, timeout, receive error or region mismatch fails mesh initialization and
+/// its reply-bearing calls. The timeout bounds the join, not endpoint calls.
 #[pyfunction]
-fn connect_token(instance: &PyInstance, token: &str, timeout_secs: f64) -> PyResult<PyHandle> {
-    // Reject invalid durations before opening a port or sending a request.
+fn connect_token(
+    instance: &PyInstance,
+    token: &str,
+    timeout_secs: f64,
+) -> PyResult<(PythonActorMesh, PyRegion)> {
+    // PYTK-1: both checks precede port creation and sending.
     let timeout = Duration::try_from_secs_f64(timeout_secs)
         .map_err(|e| PyValueError::new_err(format!("invalid timeout {timeout_secs}: {e}")))?;
 
@@ -230,22 +342,24 @@ fn connect_token(instance: &PyInstance, token: &str, timeout_secs: f64) -> PyRes
 
     // Open a reply port on the connecting actor. `result.bind()` gives the
     // rendezvous an address to reply to; `results` receives its answer here.
-    let (result, mut results) =
-        instance.open_port::<token::JoinResult<ActorMeshRef<PythonActor>>>();
+    let (result, results) = instance.open_port::<token::JoinResult<ActorMeshRef<PythonActor>>>();
 
     // Send the connecting actor's address and the reply-port reference now,
     // without waiting for the answer. If the token's owner has stopped, its
     // rendezvous actor is gone: drop the request rather than return it to
-    // `instance`, where it would fail the caller's root actor and end its
-    // process. The caller then times out, as when the owner's process exits.
+    // `instance`, where it would fail the connecting actor (the root client
+    // outside an actor). The caller then times out, as when the owner's
+    // process exits.
     //
     // TODO: `Token::join` returns an undeliverable request to the caller, so
     // this posts `Join` on the rendezvous's port directly. Give `join` a
     // policy for undeliverable requests (or make dropping them its only
     // behavior) and call it here instead.
     let mut join_port = token
+        .rendezvous_token
         .rendezvous()
         .port::<token::Join<ActorMeshRef<PythonActor>, ActorAddr>>();
+    // PYTK-3: a stopped rendezvous must not fault the connecting actor.
     join_port.return_undeliverable(false);
     join_port.post(
         &**instance,
@@ -255,33 +369,46 @@ fn connect_token(instance: &PyInstance, token: &str, timeout_secs: f64) -> PyRes
         },
     );
 
-    // Start a Tokio task waiting for the answer and return its `PyHandle`.
-    // Dropping the Handle does not cancel this task.
-    Ok(PyHandle::spawn(async move {
-        // This deadline bounds the connection's reply wait, independently
-        // of any later `Handle.get()` timeout. Returning drops `results`
-        // and closes the reply port; it does not retract the sent request.
-        let reply = tokio::time::timeout(timeout, results.recv())
-            .await
-            .map_err(|_| {
-                PyTimeoutError::new_err("no answer from the token's owner; is it running?")
-            })?
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        match reply {
-            token::JoinResult::Joined { peer } => {
-                // `peer` is the mesh reference supplied by the publishing actor,
-                // not that actor's address. Recover its shape from the region
-                // and build local wrappers; no actors are spawned here.
-                let region = PyRegion::from(peer.region().clone());
-                let mesh = AsyncActorMesh::from_impl(Arc::new(PythonActorMeshImpl::new_ref(peer)));
-                Ok((PythonActorMesh::from_impl(Arc::new(mesh)), region))
+    let region = PyRegion::from(token.region.clone());
+    // PYTK-2: the existing queue drives this shared future and holds calls
+    // until the join supplies the reference. No observation starts another join.
+    let joined_mesh = await_joined_mesh(results, token.region, timeout);
+    let mesh = PythonActorMesh::new(joined_mesh, true);
+    Ok((mesh, region))
+}
+
+/// Finish a pending connection from the rendezvous's reply.
+///
+/// The returned reference must have exactly the region advertised in the token.
+/// A timeout, rejection, receive error or region mismatch fails the connection
+/// instead of producing a usable mesh.
+async fn await_joined_mesh(
+    mut results: PortReceiver<token::JoinResult<ActorMeshRef<PythonActor>>>,
+    expected_region: Region,
+    timeout: Duration,
+) -> PyResult<Box<dyn SupervisableActorMesh>> {
+    // This deadline bounds the connection's reply wait, independently
+    // of any later `Handle.get()` timeout. Returning drops `results`
+    // and closes the reply port; it does not retract the sent request.
+    let reply = tokio::time::timeout(timeout, results.recv())
+        .await
+        .map_err(|_| PyTimeoutError::new_err("no answer from the token's owner; is it running?"))?
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    match reply {
+        token::JoinResult::Joined { peer } => {
+            // PYTK-2: never dispatch using an unconfirmed advertised region.
+            if peer.region() != &expected_region {
+                return Err(PyRuntimeError::new_err(
+                    "the published mesh's region does not match the token",
+                ));
             }
-            // Report an explicit rejection as this Handle's stored exception.
-            token::JoinResult::Rejected { reason } => Err(PyValueError::new_err(format!(
-                "the token's owner rejected the connection: {reason}"
-            ))),
+            Ok(Box::new(PythonActorMeshImpl::new_ref(peer)))
         }
-    }))
+        // PYTK-3: the creation future shares failures with mesh observers.
+        token::JoinResult::Rejected { reason } => Err(PyValueError::new_err(format!(
+            "the token's owner rejected the connection: {reason}"
+        ))),
+    }
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -304,11 +431,86 @@ mod tests {
     use std::sync::mpsc;
 
     use async_trait::async_trait;
+    use hyperactor::ActorRef;
     use hyperactor::Proc;
+    use hyperactor::channel::ChannelAddr;
+    use hyperactor::id::ActorId;
+    use hyperactor::id::Label;
+    use hyperactor::id::ProcId;
+    use serde_json::json;
 
     use super::*;
 
     const WAIT: Duration = Duration::from_secs(30);
+
+    fn sample_token(region: Region) -> ActorMeshToken {
+        let proc = ProcId::singleton(Label::new("token-test").unwrap());
+        let actor = ActorId::singleton(Label::new("rendezvous").unwrap(), proc);
+        let addr = ActorAddr::new(actor, ChannelAddr::Local(42).into());
+        ActorMeshToken {
+            rendezvous_token: Token::new(ActorRef::attest(addr)),
+            region,
+        }
+    }
+
+    fn sample_payload() -> serde_json::Value {
+        let display = sample_token(ndslice::shape!(gpu = 2).region()).to_string();
+        serde_json::from_str(display.split_once('#').unwrap().1).unwrap()
+    }
+
+    fn encode_payload(payload: &serde_json::Value) -> String {
+        BASE64_STANDARD.encode(serde_json::to_vec(payload).unwrap())
+    }
+
+    // PYTK-1/PYTK-2: see this module's registry. The complete region, not
+    // just its extent, must survive both accepted string forms.
+    #[test]
+    fn mesh_token_round_trip_preserves_offset_and_strides() {
+        let region = Region::try_from_parts(vec!["gpu".into()], 1, vec![2], vec![2]).unwrap();
+        let original = sample_token(region);
+        let display = original.to_string();
+        let (canonical, json) = display.split_once('#').unwrap();
+        assert_eq!(BASE64_STANDARD.decode(canonical).unwrap(), json.as_bytes());
+        let payload: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert!(!payload["token"].as_str().unwrap().contains('#'));
+        for text in [canonical, &display, &format!("{canonical}#ignored")] {
+            let parsed: ActorMeshToken = text.parse().unwrap();
+            assert_eq!(parsed.rendezvous_token, original.rendezvous_token);
+            assert_eq!(parsed.region, original.region);
+            assert_eq!(parsed.region.slice().iter().collect::<Vec<_>>(), vec![1, 3]);
+        }
+    }
+
+    // PYTK-1: malformed encoding, wrong derived kind and bare tokens fail
+    // at parsing; none can become an ActorMeshToken.
+    #[test]
+    fn mesh_token_rejects_invalid_encoding_and_kind() {
+        let valid = sample_token(ndslice::shape!(gpu = 2).region());
+        for text in [
+            "not base64".into(),
+            BASE64_STANDARD.encode(b"{"),
+            valid.rendezvous_token.to_string(),
+        ] {
+            assert!(text.parse::<ActorMeshToken>().is_err(), "{text}");
+        }
+        let mut missing_kind = sample_payload();
+        missing_kind.as_object_mut().unwrap().remove("kind");
+        let mut wrong_kind = sample_payload();
+        wrong_kind["kind"] = json!("another::DerivedToken");
+        for payload in [missing_kind, wrong_kind] {
+            assert!(encode_payload(&payload).parse::<ActorMeshToken>().is_err());
+        }
+    }
+
+    // PYTK-1: token parsing must use ndslice's checked constructor, whose
+    // guarantees and detailed layout/arithmetic witnesses live in ndslice::view.
+    #[test]
+    fn mesh_token_rejects_a_malformed_region() {
+        let mut payload = sample_payload();
+        payload["region"] =
+            json!({"labels": [], "slice": {"offset": 0, "sizes": [1], "strides": [1]}});
+        assert!(encode_payload(&payload).parse::<ActorMeshToken>().is_err());
+    }
 
     /// Hands a clone of its instance to the test, the way the root client's
     /// instance is used from a thread outside its serving loop, and reports
@@ -340,6 +542,7 @@ mod tests {
 
     #[test]
     fn stopping_and_stopped_owners_accept_no_children() {
+        // PYTK-4: see this module's publisher-ownership invariant.
         assert!(accepts_children(&ActorStatus::Idle));
         assert!(accepts_children(&ActorStatus::Client));
         assert!(!accepts_children(&ActorStatus::stopping()));
@@ -350,6 +553,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_stopped_owner_gets_no_token() {
+        // PYTK-4: a terminal publisher cannot leave a new rendezvous alive.
         let proc = Proc::isolated();
         let client = proc.client("client");
         let (instance_tx, mut instance_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -369,7 +573,7 @@ mod tests {
 
         let (peer_port, _peers) = client.open_port::<token::Joined<ActorAddr>>();
         let created: anyhow::Result<Token<ActorAddr, ActorAddr>> =
-            create_owned(&owner, client.self_addr().clone(), peer_port.bind(), || {});
+            create_owned_rendezvous(&owner, client.self_addr().clone(), peer_port.bind(), || {});
         let error = created.expect_err("a stopped owner must not get a token");
         assert!(error.to_string().contains("is stopped"), "{error}");
     }
@@ -380,6 +584,7 @@ mod tests {
     // the rendezvous outlives its owner.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_stop_racing_publication_still_stops_the_token() {
+        // PYTK-4: the status lock connects publication to owner teardown.
         let proc = Proc::isolated();
         let client = proc.client("client");
         let (instance_tx, mut instance_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -399,7 +604,7 @@ mod tests {
         let (token, cleaned_up_during_create) = tokio::task::spawn_blocking(move || {
             let mut cleaned_up_during_create = false;
             let token: Token<ActorAddr, ActorAddr> =
-                create_owned(&owner, creator, peer_port.bind(), || {
+                create_owned_rendezvous(&owner, creator, peer_port.bind(), || {
                     stopper.drain_and_stop("racing publication").unwrap();
                     // Do not read the owner's status here: that read would
                     // queue behind the stop's pending status write.

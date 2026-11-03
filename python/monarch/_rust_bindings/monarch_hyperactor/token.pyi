@@ -53,17 +53,18 @@ def create_token(instance: Instance, mesh: PythonActorMesh) -> PublishedToken:
 
 def connect_token(
     instance: Instance, token: str, timeout_secs: float
-) -> Handle[Tuple[PythonActorMesh, Region]]:
-    """Request the published mesh and return a `Handle` for `(mesh, region)`.
+) -> Tuple[PythonActorMesh, Region]:
+    """Send a join and return a pending mesh and its advertised region at once.
 
     Called by Python's `connect(token, Class, ...)`. Here `instance` is the
     connecting actor or root client, not the publishing actor. Send its
-    address to the rendezvous and wait for the published mesh reference.
-    The region describes that mesh's ranks and dimensions; `connect()`
-    uses it and `Class` to build the Python mesh wrapper.
+    address to the rendezvous without waiting for the published mesh reference.
+    The token carries the region; `connect()` uses it and `Class` to build
+    the Python wrapper. Endpoint calls wait for the join to complete.
 
     Invalid token text or timeout raises `ValueError` before sending.
-    The `Handle` fails with `ValueError` if the connection is rejected, or
-    `TimeoutError` if no answer arrives within `timeout_secs` seconds.
+    Initialization and reply-bearing calls fail with `ValueError` if the join
+    is rejected, `TimeoutError` if no answer arrives within `timeout_secs`,
+    or `RuntimeError` on a receive error or a region mismatch.
     """
     ...
