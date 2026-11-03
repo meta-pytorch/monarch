@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
-
 """Unit tests for the telemetry socket ingest helpers."""
 
 import socket
@@ -66,3 +64,49 @@ def test_frame_writer_reconnects(unix_socket_path: str) -> None:
     assert _recv_exact(conn, 3) == b"two"
     conn.close()
     second.close()
+
+
+@pytest.mark.parametrize("table", ["", "x" * (ti.MAX_TABLE_NAME_LEN + 1)])
+def test_encode_frame_rejects_invalid_table_names(table: str) -> None:
+    with pytest.raises(ValueError, match="table name length"):
+        ti.encode_frame(table, pa.RecordBatch.from_pylist([{"value": 1}]))
+
+
+def test_encode_frame_rejects_oversized_payload(monkeypatch) -> None:
+    monkeypatch.setattr(ti, "MAX_FRAME_LEN", 1)
+    with pytest.raises(ValueError, match="exceeds ingest limit"):
+        ti.encode_frame("example", pa.RecordBatch.from_pylist([{"value": 1}]))
+
+
+def test_writer_resends_initial_frame_after_connect_failure(
+    unix_socket_path: str,
+) -> None:
+    writer = ti.FrameWriter(unix_socket_path, timeout=1, initial_frame=b"metadata")
+    with pytest.raises(OSError):
+        writer.send(b"result")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        server.bind(unix_socket_path)
+        server.listen(1)
+        writer.send(b"result")
+        connection, _ = server.accept()
+        with connection:
+            assert _recv_exact(connection, 14) == b"metadataresult"
+        writer.close()
+        writer.send(b"second")
+        connection, _ = server.accept()
+        with connection:
+            assert _recv_exact(connection, 14) == b"metadatasecond"
+    finally:
+        writer.close()
+        server.close()
+
+
+def test_frame_writer_import_does_not_require_arrow(monkeypatch) -> None:
+    import importlib
+    import sys
+
+    monkeypatch.setitem(sys.modules, "pyarrow", None)
+    reloaded = importlib.reload(ti)
+    writer = reloaded.FrameWriter("/tmp/unused-telemetry.sock")
+    assert writer._sock is None
