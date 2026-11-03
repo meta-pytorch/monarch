@@ -3616,6 +3616,7 @@ impl<A: Actor> Instance<A> {
                     match signal {
                         Signal::Stop(reason) => {
                             stop_mode = StopMode::Stop;
+                            self.inner.cell.set_stop_began();
                             self.change_status(ActorStatus::stopping());
                             self.inner
                                 .proc
@@ -3625,6 +3626,7 @@ impl<A: Actor> Instance<A> {
                         },
                         Signal::DrainAndStop(reason) => {
                             stop_mode = StopMode::DrainAndStop;
+                            self.inner.cell.set_stop_began();
                             self.change_status(ActorStatus::stopping());
                             self.inner
                                 .proc
@@ -3636,6 +3638,7 @@ impl<A: Actor> Instance<A> {
                             assert!(self.inner.cell.get_child(&uid).is_none());
                         },
                         Signal::ExitRequested(reason) => {
+                            self.inner.cell.set_stop_began();
                             break 'messages reason;
                         }
                         Signal::Kill(reason) => {
@@ -4319,6 +4322,10 @@ struct InstanceCellState {
     /// `Instance::set_system()`.
     is_system: AtomicBool,
 
+    /// Whether the actor began stopping: it handled a stop signal or an exit
+    /// request. A failure after this point happened while stopping.
+    stop_began: AtomicBool,
+
     /// A type-erased reference to HandlerPorts<A>, which allows us to
     /// recover an ActorHandle<A> by downcasting.
     ports: Arc<dyn Any + Send + Sync>,
@@ -4496,6 +4503,7 @@ impl InstanceCell {
                 query_child_handler: RwLock::new(None),
                 supervision_event: std::sync::Mutex::new(None),
                 is_system: AtomicBool::new(false),
+                stop_began: AtomicBool::new(false),
                 ports,
                 inbound_ordering_snapshot,
                 actor_attrs_snapshot: RwLock::new(None),
@@ -5047,6 +5055,17 @@ impl InstanceCell {
     /// Whether this actor is infrastructure/system.
     pub fn is_system(&self) -> bool {
         self.inner.is_system.load(Ordering::Relaxed)
+    }
+
+    /// Whether the actor began stopping: it handled a stop signal or an exit
+    /// request. A failure after this point, for example in `handle_stop` or
+    /// `cleanup`, happened while stopping.
+    pub fn stop_began(&self) -> bool {
+        self.inner.stop_began.load(Ordering::Relaxed)
+    }
+
+    fn set_stop_began(&self) {
+        self.inner.stop_began.store(true, Ordering::Relaxed);
     }
 
     /// Store a post-mortem snapshot for this actor in the proc's
@@ -7905,6 +7924,34 @@ mod tests {
         assert_matches!(
             parent.await,
             ActorStatus::Failed(err) if err.to_string().contains("stop failed")
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn stop_began_marks_failures_while_stopping() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let stop_failing = proc.spawn(StopFailingActor);
+        stop_failing.drain_and_stop("test").unwrap();
+        let cell = stop_failing.cell().clone();
+        assert_matches!(stop_failing.await, ActorStatus::Failed(_));
+        assert!(
+            cell.stop_began(),
+            "a failure in handle_stop happened while stopping"
+        );
+
+        let failing = proc.spawn(TestActor);
+        failing.post(
+            &client,
+            TestActorMessage::Fail(anyhow::anyhow!("handler failure")),
+        );
+        let cell = failing.cell().clone();
+        assert_matches!(failing.await, ActorStatus::Failed(_));
+        assert!(
+            !cell.stop_began(),
+            "a failure in an ordinary handler did not happen while stopping"
         );
     }
 

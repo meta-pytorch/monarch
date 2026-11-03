@@ -515,15 +515,21 @@ async fn test_token_join_worker_proc_stop_notifies_parent() -> anyhow::Result<()
 }
 
 #[tokio::test]
-async fn test_token_join_worker_stop_preserves_child_failure() -> anyhow::Result<()> {
+async fn test_token_join_worker_stop_reports_child_stop_failure_as_stop() -> anyhow::Result<()> {
     let mut harness = Harness::new_with_child_action(Some(ChildAction::FailOnStop)).await?;
 
     harness.worker_root.stop("worker stopped")?;
 
     let event = recv(&mut harness.parent_events_rx).await?;
-    assert!(event.is_error());
+    assert!(
+        !event.is_error(),
+        "a failure while stopping is not a supervision event: {event}"
+    );
     assert_eq!(event.caused_by().actor_id, harness.child_addr);
-    assert!(event.to_string().contains("child stop failed"));
+    assert!(
+        event.caused_by().to_string().contains("child stop failed"),
+        "the child's stop records the failure: {event}"
+    );
     tokio::time::timeout(Duration::from_secs(5), harness.worker_root).await?;
     harness.parent_root.stop("test")?;
     tokio::time::timeout(Duration::from_secs(5), harness.parent_root).await?;

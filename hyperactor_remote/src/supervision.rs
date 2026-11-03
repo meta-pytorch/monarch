@@ -17,6 +17,11 @@
 //! actor, accepts one active remote supervision session, starts the worker-side
 //! liveness actor, and reports child or liveness lifecycle events to the supervisor
 //! session.
+//!
+//! A failure after the child begins stopping, for example in its `handle_stop`
+//! or `cleanup`, is not a supervision event. Whether the supervisor, the child
+//! itself, or the worker's proc requested the stop, the worker reports the
+//! child as stopped. A request that loses a race with a stop does nothing.
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -36,7 +41,12 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::actor::StopMode;
 use hyperactor::context;
 use hyperactor::context::Actor as _;
+use hyperactor::mailbox::DeliveryFailureKind;
+use hyperactor::mailbox::InvalidReference;
+use hyperactor::mailbox::InvalidReferenceReason;
 use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::TransportFailure;
+use hyperactor::mailbox::TransportFailureReason;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::supervision::ActorSupervisionEvent;
@@ -326,6 +336,41 @@ impl Actor for Supervisor {
 
     fn supervision_observation(&self) -> Option<SupervisionObservation> {
         self.observation.clone()
+    }
+
+    async fn handle_delivery_failure_event(
+        &mut self,
+        this: &Instance<Self>,
+        undeliverable: Undeliverable<MessageEnvelope>,
+    ) -> anyhow::Result<()> {
+        // A linked worker received the bootstrap request, but a channel that
+        // closes before acknowledging it still returns it. Once linked, the
+        // liveness link alone decides reachability.
+        if self.session.is_some() {
+            return Ok(());
+        }
+        // A bootstrap request that reaches a stopped recipient, or is in flight
+        // when the channel to its proc closes, lost a race with a stop, such as
+        // its proc stopping. The stop wins: the actor was never spawned, so exit
+        // without a failure, and monitors of the actor find it gone.
+        if let Some(failure) = undeliverable.root_delivery_failure()
+            && matches!(
+                &failure.kind,
+                DeliveryFailureKind::InvalidReference(InvalidReference {
+                    reason: InvalidReferenceReason::ActorStopped,
+                    ..
+                }) | DeliveryFailureKind::Undeliverable(UndeliverableReason::Transport(
+                    TransportFailure {
+                        reason: TransportFailureReason::ChannelClosed { .. },
+                        ..
+                    }
+                ))
+            )
+        {
+            this.exit("supervision request lost a race with a stop")?;
+            return Ok(());
+        }
+        hyperactor::actor::handle_delivery_failure_event(self, this, undeliverable).await
     }
 }
 
@@ -715,6 +760,7 @@ impl SupervisedChild {
             return Ok(true);
         }
         if self.is_child_event(event) {
+            let event = &self.child_outcome(event);
             if !event.is_error() {
                 self.stop_cause = Some(Box::new(
                     event.clone().with_labels(self.supervision_labels()),
@@ -832,6 +878,29 @@ impl SupervisedChild {
         }
     }
 
+    /// The child's terminal event as the supervisor sees it. A failure after
+    /// the child began stopping, however the stop began, is not a supervision
+    /// event: the child's own status records it, and the supervisor sees the
+    /// child stopped.
+    fn child_outcome(&self, event: &ActorSupervisionEvent) -> ActorSupervisionEvent {
+        let ActorStatus::Failed(err) = &event.actor_status else {
+            return event.clone();
+        };
+        if !self
+            .child_handle
+            .as_ref()
+            .is_some_and(AnyActorHandle::stop_began)
+        {
+            return event.clone();
+        }
+        ActorSupervisionEvent::new(
+            event.actor_id.clone(),
+            event.display_name.clone(),
+            ActorStatus::Stopped(format!("failed while stopping: {}", err)),
+            None,
+        )
+    }
+
     fn is_child_event(&self, event: &ActorSupervisionEvent) -> bool {
         self.child_handle
             .as_ref()
@@ -906,6 +975,8 @@ mod tests {
     use hyperactor::PortHandle;
     use hyperactor::Proc;
     use hyperactor::Uid;
+    use hyperactor::actor::ActorError;
+    use hyperactor::mailbox::DeliveryFailure;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
     use hyperactor_config::attrs::declare_attrs;
@@ -930,6 +1001,7 @@ mod tests {
     enum TestChildCommand {
         Fail,
         Drain(String),
+        Exit(String),
     }
     wirevalue::register_type!(TestChildCommand);
 
@@ -941,6 +1013,10 @@ mod tests {
     enum TestChildAction {
         FailAfter(Duration),
         DrainAfter(Duration, String),
+        /// Fail in `cleanup`, after exiting by itself if `exit_after` is set.
+        FailCleanup {
+            exit_after: Option<Duration>,
+        },
     }
 
     #[derive(Debug)]
@@ -950,6 +1026,7 @@ mod tests {
         stopped: PortHandle<String>,
         action: Option<TestChildAction>,
         drain_observer: Option<PortHandle<String>>,
+        fail_cleanup: bool,
     }
 
     impl TestChild {
@@ -970,7 +1047,23 @@ mod tests {
                 Some(TestChildAction::DrainAfter(delay, tag)) => {
                     this.post_after(this, TestChildCommand::Drain(tag), delay);
                 }
-                None => {}
+                Some(TestChildAction::FailCleanup {
+                    exit_after: Some(delay),
+                }) => {
+                    this.post_after(this, TestChildCommand::Exit("child exited".into()), delay);
+                }
+                Some(TestChildAction::FailCleanup { exit_after: None }) | None => {}
+            }
+            Ok(())
+        }
+
+        async fn cleanup(
+            &mut self,
+            _this: &Instance<Self>,
+            _err: Option<&ActorError>,
+        ) -> anyhow::Result<()> {
+            if self.fail_cleanup {
+                anyhow::bail!("child cleanup failed");
             }
             Ok(())
         }
@@ -1005,6 +1098,7 @@ mod tests {
                         port.post(cx, tag);
                     }
                 }
+                TestChildCommand::Exit(reason) => cx.exit(&reason)?,
             }
             Ok(())
         }
@@ -1089,11 +1183,13 @@ mod tests {
         stopped: PortHandle<String>,
         action: Option<TestChildAction>,
     ) -> TestChild {
+        let fail_cleanup = matches!(action, Some(TestChildAction::FailCleanup { .. }));
         TestChild {
             ready,
             stopped,
             action,
             drain_observer: None,
+            fail_cleanup,
         }
     }
 
@@ -1446,6 +1542,305 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), worker)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_local_worker_stop_reports_child_stop() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+
+        let (child_addr, worker, parent, mut stopped_rx, mut event_rx) = spawn_supervised_pair(
+            &proc,
+            &client,
+            Uid::anonymous(),
+            SupervisionOptions::default(),
+            None,
+        )
+        .await;
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        worker.stop("proc stopping").unwrap();
+
+        let reason = tokio::time::timeout(Duration::from_secs(5), stopped_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reason, "proc stopping");
+        let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event.actor_status,
+            ActorStatus::Stopped("supervised child stopped".to_string()),
+            "a local worker stop reports the child's stop: {event}"
+        );
+        assert_eq!(event.caused_by().actor_id, child_addr);
+        assert_eq!(
+            event.observation, None,
+            "a local worker stop should not be reported as a lost link"
+        );
+
+        tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap();
+        parent.stop("test complete").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+    }
+
+    /// Spawn a supervised child whose cleanup fails, stop it with `stop`, and
+    /// return the event its supervisor's parent observes, if `expect_event`,
+    /// and the worker's terminal status.
+    async fn stop_with_failing_cleanup(
+        exit_after: Option<Duration>,
+        stop: impl FnOnce(&ActorHandle<Worker>, &ActorHandle<Parent>),
+        expect_event: bool,
+    ) -> (ActorAddr, Option<ActorSupervisionEvent>, ActorStatus) {
+        let proc = Proc::isolated();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let client = proc.client("client");
+
+        let (child_addr, worker, parent, _stopped_rx, mut event_rx) = spawn_supervised_pair(
+            &proc,
+            &client,
+            Uid::anonymous(),
+            SupervisionOptions::default(),
+            Some(TestChildAction::FailCleanup { exit_after }),
+        )
+        .await;
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        stop(&worker, &parent);
+
+        let event = if expect_event {
+            Some(
+                tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        let worker_status = tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap();
+        let _ = parent.stop("test complete");
+        tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+        (child_addr, event, worker_status)
+    }
+
+    fn assert_child_cleanup_failure_reported_as_stop(
+        child_addr: &ActorAddr,
+        event: &ActorSupervisionEvent,
+    ) {
+        assert_eq!(
+            event.actor_status,
+            ActorStatus::Stopped("supervised child stopped".to_string()),
+            "a child that fails while stopping is reported as stopped: {event}"
+        );
+        let cause = event.caused_by();
+        assert_eq!(&cause.actor_id, child_addr);
+        assert!(
+            matches!(&cause.actor_status, ActorStatus::Stopped(reason) if reason.contains("child cleanup failed")),
+            "the child's stop records the cleanup failure: {cause}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_child_self_stop_cleanup_failure_is_reported_as_stop() {
+        let (child_addr, event, worker_status) =
+            stop_with_failing_cleanup(Some(Duration::from_millis(100)), |_, _| (), true).await;
+        assert_child_cleanup_failure_reported_as_stop(&child_addr, &event.unwrap());
+        assert!(
+            worker_status.is_stopped(),
+            "the worker stops cleanly: {worker_status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_local_worker_stop_cleanup_failure_is_reported_as_stop() {
+        let (child_addr, event, worker_status) = stop_with_failing_cleanup(
+            None,
+            |worker, _| worker.stop("proc stopping").unwrap(),
+            true,
+        )
+        .await;
+        assert_child_cleanup_failure_reported_as_stop(&child_addr, &event.unwrap());
+        assert!(
+            worker_status.is_stopped(),
+            "the worker stops cleanly: {worker_status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remote_stop_cleanup_failure_stays_local() {
+        // The supervisor exits after forwarding the stop, so the parent
+        // observes nothing further; the worker must not fail either.
+        let (_child_addr, _event, worker_status) = stop_with_failing_cleanup(
+            None,
+            |_, parent| parent.stop("test parent stopping").unwrap(),
+            false,
+        )
+        .await;
+        assert!(
+            worker_status.is_stopped(),
+            "the worker stops cleanly: {worker_status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_linked_supervisor_ignores_returned_bootstrap_request() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let requested = proc.proc_addr().actor_addr_uid(Uid::anonymous());
+        let (worker_port, _worker_rx) = client.open_port::<WorkerCommand>();
+        let worker = worker_port.bind();
+        let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
+        let child = requested.clone();
+        let supervisor = Supervisor::bootstrap_uid(
+            KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+            SupervisionOptions::default(),
+            Uid::anonymous(),
+            requested,
+            None,
+            move |this, request| {
+                let envelope = MessageEnvelope::serialize(
+                    this.self_addr().clone(),
+                    request.supervisor.port_addr().clone(),
+                    &request,
+                    Flattrs::new(),
+                )?;
+                request.supervisor.post(
+                    this,
+                    SupervisorEvent::Linked {
+                        session_id: request.session_id.clone(),
+                        worker,
+                        child,
+                        display_name: None,
+                    },
+                );
+                this.port::<Undeliverable<MessageEnvelope>>()
+                    .post(this, Undeliverable::Returned(envelope));
+                Ok(())
+            },
+        );
+        let parent = proc.spawn(Parent {
+            supervisor: Some(supervisor),
+            events,
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), event_rx.recv())
+                .await
+                .is_err(),
+            "a returned bootstrap request after linking should not fail the supervisor"
+        );
+        parent.stop("test complete").unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+        assert!(
+            !status.is_failed(),
+            "the parent and its supervisor should stop cleanly: {status}"
+        );
+    }
+
+    /// Return the event a parent observes when its supervisor's bootstrap
+    /// request bounces, before linking, with the failure `failure` makes for
+    /// the request's envelope.
+    async fn bounced_bootstrap_event(
+        failure: impl FnOnce(&MessageEnvelope) -> DeliveryFailure + Send + 'static,
+    ) -> ActorSupervisionEvent {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let requested = proc.proc_addr().actor_addr_uid(Uid::anonymous());
+        let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
+        let supervisor = Supervisor::bootstrap_uid(
+            KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+            SupervisionOptions::default(),
+            Uid::anonymous(),
+            requested,
+            None,
+            move |this, request| {
+                let mut envelope = MessageEnvelope::serialize(
+                    this.self_addr().clone(),
+                    request.supervisor.port_addr().clone(),
+                    &request,
+                    Flattrs::new(),
+                )?;
+                let failure = failure(&envelope);
+                envelope.push_delivery_failure(failure);
+                this.port::<Undeliverable<MessageEnvelope>>()
+                    .post(this, Undeliverable::Returned(envelope));
+                Ok(())
+            },
+        );
+        let parent = proc.spawn(Parent {
+            supervisor: Some(supervisor),
+            events,
+        });
+        let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        parent.stop("test complete").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+        event
+    }
+
+    fn invalid_reference(
+        reason: InvalidReferenceReason,
+    ) -> impl FnOnce(&MessageEnvelope) -> DeliveryFailure + Send + 'static {
+        move |envelope| DeliveryFailure::new(InvalidReference::new(envelope.dest().clone(), reason))
+    }
+
+    fn assert_spawn_lost_race_with_stop(event: &ActorSupervisionEvent) {
+        assert!(
+            matches!(event.actor_status, ActorStatus::Stopped(_)),
+            "a spawn that loses a race with a stop should end cleanly: {event}"
+        );
+        assert_eq!(
+            event.observation, None,
+            "a spawn that loses a race with a stop should not be reported as a failed request"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_to_stopped_recipient_does_nothing() {
+        let event =
+            bounced_bootstrap_event(invalid_reference(InvalidReferenceReason::ActorStopped)).await;
+        assert_spawn_lost_race_with_stop(&event);
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_in_flight_when_channel_closes_does_nothing() {
+        let event = bounced_bootstrap_event(|envelope| {
+            DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                envelope.dest().clone(),
+                TransportFailureReason::ChannelClosed {
+                    addr: hyperactor::channel::ChannelTransport::Local.any(),
+                },
+            )))
+        })
+        .await;
+        assert_spawn_lost_race_with_stop(&event);
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_to_failed_recipient_fails() {
+        let event =
+            bounced_bootstrap_event(invalid_reference(InvalidReferenceReason::ActorFailed)).await;
+        assert!(
+            event.is_error(),
+            "a bootstrap request that reaches a failed recipient should fail: {event}"
+        );
     }
 
     // proc

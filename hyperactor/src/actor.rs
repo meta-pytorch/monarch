@@ -1150,6 +1150,11 @@ impl AnyActorHandle {
         self.cell.status().clone()
     }
 
+    /// Whether the actor began stopping. See [`InstanceCell::stop_began`].
+    pub fn stop_began(&self) -> bool {
+        self.cell.stop_began()
+    }
+
     /// Attempt to recover a typed actor handle.
     pub fn downcast<A: Actor>(&self) -> Option<ActorHandle<A>> {
         self.cell.downcast_handle()
