@@ -33,6 +33,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import cast, Literal, TypedDict
 
+import psutil
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._src.actor.actor_mesh import Actor, Port, shutdown_context
@@ -681,17 +682,20 @@ def _exited(params: _LauncherParams, proc_ids: set[str]) -> list[_LauncherEvent]
 
 
 def _wait_until_stopped(pid: int, timeout: float = 10.0) -> None:
-    """Wait until Linux reports that this OS process is suspended, not exited.
+    """Wait until this OS process is suspended, not exited.
 
-    Read /proc/<pid>/stat from the test process every 0.05 seconds. Its state
-    `T` confirms that SIGSTOP took effect before the test requests teardown.
+    Poll its status every 0.05 seconds to confirm that SIGSTOP took effect
+    before the test requests teardown.
     `pid` is an OS PID, not a Monarch proc ID. Fail the test if the deadline
     expires without seeing the suspended state.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-        if state == "T":
+        try:
+            state = psutil.Process(pid).status()
+        except psutil.NoSuchProcess:
+            pytest.fail(f"process {pid} exited before stopping")
+        if state == psutil.STATUS_STOPPED:
             return
         time.sleep(0.05)
     pytest.fail(f"process {pid} did not stop within {timeout}s")
@@ -752,8 +756,9 @@ def test_launch_and_exit_are_delegated() -> None:
             procs.stop().get(timeout=60)
             events = _wait_for_events(
                 event_log,
-                lambda ev: launched
-                <= {e["proc_id"] for e in ev if e["event"] == "exit"},
+                lambda ev: (
+                    launched <= {e["proc_id"] for e in ev if e["event"] == "exit"}
+                ),
                 "an exit report for every launched proc",
             )
             exit_codes = {
