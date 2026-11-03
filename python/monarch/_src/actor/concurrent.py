@@ -9,39 +9,19 @@
 import asyncio
 import functools
 import inspect
-import weakref
-from dataclasses import dataclass, field
-from traceback import TracebackException
 from typing import Any, Awaitable, Callable, cast
 
 from monarch._rust_bindings.monarch_hyperactor.logging import log_endpoint_exception
 from monarch._src.actor.actor_mesh import ActorError, context
 from monarch._src.actor.endpoint import endpoint, EndpointProperty, Propagator
+from monarch._src.actor.tasks import (
+    _fail_actor,
+    _spawn_actor_task,
+    _TaskRecord,
+)
 from monarch._src.actor.telemetry import span
 
 _WRAPPER_ATTR = "_monarch_concurrent_endpoint_wrapper"
-_CLEANUP_WRAPPER_ATTR = "_monarch_concurrent_endpoint_cleanup_wrapper"
-
-
-@dataclass
-class _TaskRecord:
-    cancel_for_cleanup: bool = False
-
-
-@dataclass
-class _ConcurrentState:
-    records: dict[asyncio.Task[None], _TaskRecord] = field(default_factory=dict)
-
-
-_states: weakref.WeakKeyDictionary[Any, _ConcurrentState] = weakref.WeakKeyDictionary()
-
-
-def _state(instance: Any) -> _ConcurrentState:
-    state = _states.get(instance)
-    if state is None:
-        state = _ConcurrentState()
-        _states[instance] = state
-    return state
 
 
 def _send_exception(port: Any, actor_error: ActorError) -> None:
@@ -55,16 +35,6 @@ def _cancelled_for_cleanup(record: _TaskRecord | None) -> bool:
     # True when cleanup cancelled this task because the actor is stopping;
     # callers skip failing the actor so a graceful stop is not escalated.
     return record is not None and record.cancel_for_cleanup
-
-
-def _fail_actor(actor_instance: Any, exception: BaseException) -> None:
-    reason = "".join(TracebackException.from_exception(exception).format())
-    try:
-        actor_instance.kill(reason)
-    except Exception:
-        # The actor's signal channel may already be closed if it has finished
-        # stopping; there is then nothing left to fail.
-        pass
 
 
 async def _run_endpoint(
@@ -129,11 +99,10 @@ def _spawn_task(
     should_instrument: bool,
     forwards_exception: bool,
 ) -> None:
-    _install_cleanup_wrapper(instance)
-    state = _state(instance)
     record = _TaskRecord()
     actor_instance = context().actor_instance
-    task = asyncio.create_task(
+    _spawn_actor_task(
+        instance,
         _run_endpoint(
             actor_instance,
             port,
@@ -142,50 +111,11 @@ def _spawn_task(
             should_instrument=should_instrument,
             forwards_exception=forwards_exception,
             record=record,
-        )
+        ),
+        name=method_name,
+        _record=record,
+        _instrument=False,
     )
-    state.records[task] = record
-
-    def finish_task(done: asyncio.Task[None]) -> None:
-        state.records.pop(done, None)
-
-    task.add_done_callback(finish_task)
-
-
-async def _cancel_tasks(instance: Any) -> None:
-    state = _states.get(instance)
-    if state is None:
-        return
-    while state.records:
-        tasks = tuple(state.records)
-        for task in tasks:
-            record = state.records.get(task)
-            if record is not None and not task.done():
-                record.cancel_for_cleanup = True
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-
-def _has_attr(method: Any, name: str) -> bool:
-    return bool(getattr(method, name, False))
-
-
-def _install_cleanup_wrapper(instance: Any) -> None:
-    cleanup = getattr(instance, "__cleanup__", None)
-    if _has_attr(cleanup, _CLEANUP_WRAPPER_ATTR):
-        return
-
-    cleanup_fn: Callable[[Exception | None], Awaitable[None]] | None = None
-    if cleanup is not None and inspect.iscoroutinefunction(cleanup):
-        cleanup_fn = cast(Callable[[Exception | None], Awaitable[None]], cleanup)
-
-    async def cleanup_wrapper(exc: Exception | None) -> None:
-        await _cancel_tasks(instance)
-        if cleanup_fn is not None:
-            await cleanup_fn(exc)
-
-    setattr(cleanup_wrapper, _CLEANUP_WRAPPER_ATTR, True)
-    instance.__cleanup__ = cleanup_wrapper
 
 
 def _explicit_response_signature(
@@ -252,6 +182,7 @@ class _ConcurrentEndpointProperty(EndpointProperty[Any, Any]):
             )
 
         # pyre-ignore[16]: function attributes are dynamic
+        # pyrefly: ignore [missing-attribute]
         wrapper.__signature__ = _explicit_response_signature(
             method, already_explicit=has_explicit_response_port
         )
@@ -333,7 +264,8 @@ def concurrent_endpoint(
         )
     if isinstance(method, EndpointProperty):
         raise ValueError(
-            "concurrent_endpoint does not wrap @endpoint; pass endpoint options to @concurrent_endpoint"
+            "concurrent_endpoint does not wrap @endpoint; "
+            "pass endpoint options to @concurrent_endpoint"
         )
     endpoint_property = cast(
         EndpointProperty[Any, Any],
