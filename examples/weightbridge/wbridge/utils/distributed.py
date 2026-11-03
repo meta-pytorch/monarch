@@ -16,7 +16,6 @@ from torch.distributed.distributed_c10d import (
     _new_process_group_helper,
     _world,
     Backend,
-    default_pg_timeout,
     PrefixStore,
 )
 
