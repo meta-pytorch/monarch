@@ -20,6 +20,8 @@ mod switch;
 mod udp;
 #[cfg(unix)]
 mod unix;
+#[cfg(target_os = "linux")]
+mod vsock;
 
 pub use chrysalis_transport_core::ReceiveOptions;
 pub use chrysalis_transport_core::ReceiveStatus;
@@ -59,3 +61,13 @@ pub use switch::SwitchSocket;
 pub use udp::UdpSocket;
 #[cfg(unix)]
 pub use unix::UnixDatagramSocket;
+#[cfg(target_os = "linux")]
+pub use vsock::VMADDR_CID_ANY;
+#[cfg(target_os = "linux")]
+pub use vsock::VMADDR_CID_HOST;
+#[cfg(target_os = "linux")]
+pub use vsock::VSOCK_SCHEME;
+#[cfg(target_os = "linux")]
+pub use vsock::VsockDatagramAddr;
+#[cfg(target_os = "linux")]
+pub use vsock::VsockDatagramSocket;
