@@ -6,8 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#![feature(once_cell_try)]
-
 pub mod diff;
 pub mod hash_utils;
 pub mod pack_meta_history;
