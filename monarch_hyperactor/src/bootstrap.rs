@@ -109,20 +109,8 @@ fn parse_service_proc_addr_for_serve(
 #[pyfunction]
 #[pyo3(signature = ())]
 pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
-    #[cfg(fbcode_build)]
-    // SAFETY: this is a correct use of this function.
-    unsafe {
-        fbinit::perform_init();
-    };
-
     hyperactor::internal_macro_support::tracing::debug!("entering async bootstrap");
     crate::runtime::future_into_py::<_, i32>(py, async move {
-        // SAFETY:
-        // - Only one of these is ever created.
-        // - This is the entry point of this program, so this will be dropped when
-        // no more FB C++ code is running.
-        #[cfg(fbcode_build)]
-        let _destroy_guard = unsafe { fbinit::DestroyGuard::new() };
         bootstrap()
             .await
             .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))

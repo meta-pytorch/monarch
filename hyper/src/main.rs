@@ -10,12 +10,6 @@ mod commands;
 
 use clap::Parser;
 use clap::Subcommand;
-// tokio is used by #[tokio::main] in OSS builds
-// (cfg(not(fbcode_build))). In fbcode builds fbinit-tokio provides
-// the runtime, so the compiler doesn't see a direct reference. This
-// import suppresses the unused_extern warning while keeping tokio
-// explicit in the generated Cargo.toml.
-use tokio as _;
 
 use crate::commands::list::ListCommand;
 use crate::commands::resolve::ResolveCommand;
@@ -40,13 +34,6 @@ enum Command {
     Resolve(ResolveCommand),
 }
 
-#[cfg(fbcode_build)]
-#[fbinit::main]
-async fn main(_fb: fbinit::FacebookInit) -> Result<(), anyhow::Error> {
-    run().await
-}
-
-#[cfg(not(fbcode_build))]
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     run().await
