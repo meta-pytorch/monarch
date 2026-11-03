@@ -114,6 +114,27 @@ pub(crate) fn service_proc_id() -> ProcId {
     ProcId::instance(Label::strip(SERVICE_PROC_NAME))
 }
 
+/// Discover the service proc of the host whose frontend is served at `addr`.
+///
+/// A host answers [`channel::query`] on its frontend with its service proc
+/// id. The id is fixed for the life of the host process, so a host restarted
+/// at the same address answers with a different id. Only net transports
+/// serve a muxed frontend that answers queries.
+pub async fn query_service_proc(addr: ChannelAddr) -> anyhow::Result<ProcAddr> {
+    let reply = channel::query(addr.clone())
+        .await
+        .map_err(|error| anyhow::anyhow!("query service proc at {addr}: {error}"))?;
+    let proc_id = std::str::from_utf8(&reply)
+        .map_err(|error| anyhow::anyhow!("query service proc at {addr}: invalid reply: {error}"))?
+        .parse::<ProcId>()
+        .map_err(|error| anyhow::anyhow!("query service proc at {addr}: invalid reply: {error}"))?;
+    anyhow::ensure!(
+        proc_id.uid().is_instance(),
+        "query service proc at {addr}: {proc_id} is not an instance id"
+    );
+    Ok(ProcAddr::new(proc_id, addr.into()))
+}
+
 /// Name of the local client proc on a host.
 ///
 /// See LP-1 (lazy activation) in module doc.
@@ -375,10 +396,16 @@ impl<M: ProcManager> Host<M> {
         // requires a net transport, so we branch on `is_net()` rather than
         // `supports_duplex()` (the in-process `Local` transport supports
         // duplex but is not a kernel socket). Both paths register the bound
-        // address as the gateway's active serve location.
+        // address as the gateway's active serve location. A muxed frontend
+        // answers `channel::query` with the service proc id, so clients that
+        // know only this address can discover the host's identity.
         let frontend_result: Result<GatewayServeHandle, ChannelError> = if addr.transport().is_net()
         {
-            gateway.serve_mux_with_listener(addr, listener)
+            gateway.serve_mux_with_listener(
+                addr,
+                listener,
+                Some(service_proc_id.to_string().into()),
+            )
         } else {
             gateway.serve_with_listener(addr, listener)
         };
@@ -2842,6 +2869,81 @@ mod tests {
         );
 
         host.shutdown_servers().await;
+    }
+
+    #[tokio::test]
+    async fn test_frontend_answers_service_proc_query() {
+        let mut host = Host::new_with_gateway(
+            LocalProcManager::new(|proc: Proc| async move {
+                Ok(proc.spawn_with_label::<()>("host_agent", ()))
+            }),
+            ProcAddr::new(
+                ProcId::instance(Label::strip(SERVICE_PROC_NAME)),
+                ChannelAddr::any(ChannelTransport::Unix).into(),
+            ),
+            None,
+            Gateway::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let discovered = query_service_proc(host.addr().clone()).await.unwrap();
+
+        assert_eq!(discovered, host.system_proc().proc_addr());
+        host.shutdown_servers().await;
+    }
+
+    #[tokio::test]
+    async fn test_restarted_host_answers_query_with_new_service_proc() {
+        let first_id = ProcId::instance(Label::strip(SERVICE_PROC_NAME));
+        let mut first = Host::new_with_gateway(
+            LocalProcManager::new(|proc: Proc| async move {
+                Ok(proc.spawn_with_label::<()>("host_agent", ()))
+            }),
+            ProcAddr::new(
+                first_id.clone(),
+                ChannelAddr::from_zmq_url("tcp://127.0.0.1:0")
+                    .unwrap()
+                    .into(),
+            ),
+            None,
+            Gateway::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        let addr = first.addr().clone();
+        assert_eq!(
+            query_service_proc(addr.clone()).await.unwrap().id(),
+            &first_id
+        );
+        first.shutdown_servers().await;
+        drop(first);
+
+        // A restarted worker mints a fresh service proc id for the same address.
+        let second_id = ProcId::instance(Label::strip(SERVICE_PROC_NAME));
+        let mut second = Host::new_with_gateway(
+            LocalProcManager::new(|proc: Proc| async move {
+                Ok(proc.spawn_with_label::<()>("host_agent", ()))
+            }),
+            ProcAddr::new(second_id.clone(), addr.clone().into()),
+            None,
+            Gateway::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let discovered = query_service_proc(addr).await.unwrap();
+
+        assert_eq!(discovered.id(), &second_id);
+        assert_ne!(
+            discovered.id(),
+            &first_id,
+            "a host restarted at the same address should answer with a new identity"
+        );
+        second.shutdown_servers().await;
     }
 
     #[tokio::test]

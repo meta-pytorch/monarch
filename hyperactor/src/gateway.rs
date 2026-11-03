@@ -674,7 +674,7 @@ impl Gateway {
         // transport is not a kernel socket and cannot be muxed, so it
         // keeps the plain duplex accept path.
         if addr.transport().is_net() {
-            return self.serve_mux_with_listener(addr, listener);
+            return self.serve_mux_with_listener(addr, listener, None);
         }
         let server = PreboundAcceptServer::duplex(addr, listener)
             .map_err(|e| ChannelError::Other(anyhow::anyhow!("{e}")))?;
@@ -731,13 +731,20 @@ impl Gateway {
     /// registers the bound address as an active serve location (so the
     /// gateway delivers frontend-addressed traffic in-process and adopts
     /// it as the default location).
+    ///
+    /// [`channel::query`] clients receive `query_reply`; the gateway does
+    /// not interpret it.
     pub fn serve_mux_with_listener(
         &self,
         addr: ChannelAddr,
         listener: Option<std::net::TcpListener>,
+        query_reply: Option<bytes::Bytes>,
     ) -> Result<GatewayServeHandle, ChannelError> {
-        let mux =
-            channel::serve_mux::<MessageEnvelope, MessageEnvelope, AttachWire>(addr, listener)?;
+        let mux = channel::serve_mux::<MessageEnvelope, MessageEnvelope, AttachWire>(
+            addr,
+            listener,
+            query_reply,
+        )?;
         let bound_addr = mux.addr().clone();
         let simplex_gateway = self.clone();
         let duplex_gateway = self.clone();

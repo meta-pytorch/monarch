@@ -114,14 +114,23 @@ pub(crate) const ACCEPTOR_TO_INITIATOR: u8 = 1;
 /// duplex (bidirectional byte stream carrying both `0x00` and
 /// `0x01` frames) so a server listening on a single address can
 /// demultiplex both styles without peeking at application payloads.
+///
+/// A query connection carries no session: the server answers with a
+/// single `0x01` frame holding its configured query reply and closes
+/// the connection (see [`query`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProtocolKind {
     Simplex,
     Duplex,
+    Query,
 }
 
 const SIMPLEX_MAGIC: [u8; 4] = *b"SMP\0";
 const DUPLEX_MAGIC: [u8; 4] = *b"DPX\0";
+const QUERY_MAGIC: [u8; 4] = *b"QRY\0";
+
+/// Upper bound on the size of a query reply.
+const QUERY_REPLY_MAX_LEN: usize = 64 * 1024;
 
 /// Fixed-size header sent at the start of every physical connection.
 /// Written/read directly on the wire (not framed), before any session
@@ -129,7 +138,7 @@ const DUPLEX_MAGIC: [u8; 4] = *b"DPX\0";
 ///
 /// Wire format (13 bytes, big-endian):
 /// ```text
-/// [magic: 4B ("SMP\0" | "DPX\0")] [session_id: 8B u64 BE] [stream_id: 1B u8]
+/// [magic: 4B ("SMP\0" | "DPX\0" | "QRY\0")] [session_id: 8B u64 BE] [stream_id: 1B u8]
 /// ```
 const LINK_INIT_SIZE: usize = 4 + 8 + 1;
 
@@ -152,6 +161,7 @@ pub(crate) async fn write_link_init<S: AsyncWrite + Unpin>(
     let magic = match kind {
         ProtocolKind::Simplex => &SIMPLEX_MAGIC,
         ProtocolKind::Duplex => &DUPLEX_MAGIC,
+        ProtocolKind::Query => &QUERY_MAGIC,
     };
     buf[0..4].copy_from_slice(magic);
     buf[4..12].copy_from_slice(&session_id.0.to_be_bytes());
@@ -167,12 +177,13 @@ async fn read_link_init<S: AsyncRead + Unpin>(stream: &mut S) -> Result<LinkInit
     let kind = match &buf[0..4] {
         m if m == SIMPLEX_MAGIC => ProtocolKind::Simplex,
         m if m == DUPLEX_MAGIC => ProtocolKind::Duplex,
+        m if m == QUERY_MAGIC => ProtocolKind::Query,
         other => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "invalid LinkInit magic: expected {:?} or {:?}, got {:?}",
-                    SIMPLEX_MAGIC, DUPLEX_MAGIC, other
+                    "invalid LinkInit magic: expected {:?}, {:?}, or {:?}, got {:?}",
+                    SIMPLEX_MAGIC, DUPLEX_MAGIC, QUERY_MAGIC, other
                 ),
             ));
         }
@@ -184,6 +195,70 @@ async fn read_link_init<S: AsyncRead + Unpin>(stream: &mut S) -> Result<LinkInit
         stream_id,
         kind,
     })
+}
+
+/// Answer a query connection with `reply` and close it. With no reply
+/// configured, the connection is closed without writing, which the
+/// client observes as an error.
+pub(super) async fn answer_query(
+    stream: Box<dyn Stream>,
+    reply: Option<Bytes>,
+    source: &ChannelAddr,
+) {
+    let Some(reply) = reply else {
+        tracing::debug!(%source, "closing query connection: no query reply configured");
+        return;
+    };
+    match framed::FrameWrite::write_frame(stream, reply, QUERY_REPLY_MAX_LEN, ACCEPTOR_TO_INITIATOR)
+        .await
+    {
+        Ok(mut stream) => {
+            if let Err(error) = stream.shutdown().await {
+                tracing::debug!(%source, %error, "query connection: shutdown failed");
+            }
+        }
+        Err((_, error)) => {
+            tracing::debug!(%source, %error, "query connection: reply write failed");
+        }
+    }
+}
+
+/// Query the server at `addr` for its configured query reply.
+///
+/// The query uses its own short-lived connection: it shares no state
+/// with message links to the same address, and any number of clients
+/// may query concurrently. Connecting retries for up to
+/// [`config::CHANNEL_RECONNECT_TIMEOUT`], and the reply must arrive
+/// within the same bound. A server that does not support queries, or
+/// that has no reply configured, closes the connection, which is
+/// reported as an error.
+pub(crate) async fn query(addr: ChannelAddr) -> Result<Bytes, ClientError> {
+    let timeout = hyperactor_config::global::get(config::CHANNEL_RECONNECT_TIMEOUT);
+    let mut link = link(addr.clone(), SessionId::random(), 0, ProtocolKind::Query)?;
+    let stream = link.next().await?;
+    let mut reader = framed::FrameReader::new(stream, QUERY_REPLY_MAX_LEN);
+    let next = tokio::time::timeout(timeout, reader.next())
+        .await
+        .map_err(|_| {
+            ClientError::Io(
+                addr.clone(),
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("no query reply within {timeout:?}"),
+                ),
+            )
+        })?;
+    match next {
+        Ok(Some((_, reply))) => Ok(reply),
+        Ok(None) => Err(ClientError::Io(
+            addr,
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "server closed the query connection without a reply",
+            ),
+        )),
+        Err(error) => Err(ClientError::Io(addr, error)),
+    }
 }
 
 /// Prepare an accepted byte stream for dispatch: optionally negotiate
@@ -5163,7 +5238,7 @@ mod tests {
         };
 
         let mut parts =
-            super::mux::serve_with_listener::<u64, u64, u64, _>(listener, addr).unwrap();
+            super::mux::serve_with_listener::<u64, u64, u64, _>(listener, addr, None).unwrap();
 
         // Accept the duplex session and drain the inbound messages.
         // Hold `_server_tx` alive across the shutdown so the dispatch
@@ -5258,7 +5333,7 @@ mod tests {
         };
 
         let mut parts =
-            super::mux::serve_with_listener::<u64, u64, u64, _>(listener, addr).unwrap();
+            super::mux::serve_with_listener::<u64, u64, u64, _>(listener, addr, None).unwrap();
 
         let (mut server_rx, _server_tx) = parts.duplex.accept().await.unwrap();
         for _ in &messages {
@@ -5338,7 +5413,7 @@ mod tests {
         };
 
         let mut parts =
-            super::mux::serve_with_listener::<u64, u64, u64, _>(listener, addr).unwrap();
+            super::mux::serve_with_listener::<u64, u64, u64, _>(listener, addr, None).unwrap();
 
         // Drain inbound through the simplex half.
         for _ in &messages {

@@ -9,11 +9,13 @@
 //! A single listener that accepts both simplex and duplex clients on
 //! the same address. Incoming connections are demultiplexed by the
 //! [`ProtocolKind`] byte in the `LinkInit` header; simplex sessions
-//! feed a [`ChannelRx<M>`], duplex sessions feed a [`DuplexServer<In, Out>`].
+//! feed a [`ChannelRx<M>`], duplex sessions feed a [`DuplexServer<In, Out>`],
+//! and query connections receive the listener's query reply.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -54,10 +56,12 @@ where
 /// returned alongside the per-kind halves and the shared cancellation
 /// token so callers can build a true awaitable shutdown handle on top
 /// — see [`MuxServer`](super::super::MuxServer) for the public
-/// wrapper.
+/// wrapper. Query connections are answered with `query_reply`, or
+/// closed when it is `None`.
 pub(crate) fn serve<M, In, Out>(
     addr: ChannelAddr,
     prebound_listener: Option<std::net::TcpListener>,
+    query_reply: Option<Bytes>,
 ) -> Result<MuxServeParts<M, In, Out>, ServerError>
 where
     M: RemoteMessage,
@@ -68,7 +72,7 @@ where
     // None: the muxed listener accepts both kinds and dispatches by
     // `link_init.kind` after the header is read.
     let prepare = super::preparer_for(channel_addr.clone(), None);
-    serve_with_prepare(listener, channel_addr, prepare)
+    serve_with_prepare(listener, channel_addr, prepare, query_reply)
 }
 
 /// Shared implementation for the muxed listener. Wires up the
@@ -81,6 +85,7 @@ fn serve_with_prepare<M, In, Out, L, F, Fut>(
     mut listener: L,
     channel_addr: ChannelAddr,
     prepare: F,
+    query_reply: Option<Bytes>,
 ) -> Result<MuxServeParts<M, In, Out>, ServerError>
 where
     M: RemoteMessage,
@@ -138,6 +143,7 @@ where
             let s_cancel = simplex_cancel.child_token();
             let d_cancel = duplex_cancel.child_token();
             let dest = dest.clone();
+            let query_reply = query_reply.clone();
             async move {
                 match link_init.kind {
                     ProtocolKind::Simplex => {
@@ -163,6 +169,9 @@ where
                             d_cancel,
                         )
                         .await;
+                    }
+                    ProtocolKind::Query => {
+                        super::answer_query(stream, query_reply, &dest).await;
                     }
                 }
             }
@@ -266,6 +275,7 @@ fn drain_aware_handle(
 pub(super) fn serve_with_listener<M, In, Out, L>(
     listener: L,
     channel_addr: ChannelAddr,
+    query_reply: Option<Bytes>,
 ) -> Result<MuxServeParts<M, In, Out>, ServerError>
 where
     M: RemoteMessage,
@@ -284,11 +294,12 @@ where
             .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
         Ok((link_init, boxed))
     };
-    serve_with_prepare(listener, channel_addr, prepare)
+    serve_with_prepare(listener, channel_addr, prepare, query_reply)
 }
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use timed_test::async_timed_test;
 
     use crate::channel;
@@ -301,9 +312,12 @@ mod tests {
     /// frontend's simplex half.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_mux_routes_simplex_to_net_rx() {
-        let mut frontend =
-            channel::serve_mux::<u64, u64, u64>(ChannelAddr::any(ChannelTransport::Unix), None)
-                .unwrap();
+        let mut frontend = channel::serve_mux::<u64, u64, u64>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            None,
+        )
+        .unwrap();
 
         let tx = channel::dial::<u64>(frontend.addr().clone()).unwrap();
         tx.post(42);
@@ -320,9 +334,12 @@ mod tests {
     /// of the link.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_mux_routes_duplex_to_duplex_server() {
-        let mut frontend =
-            channel::serve_mux::<u64, u64, String>(ChannelAddr::any(ChannelTransport::Unix), None)
-                .unwrap();
+        let mut frontend = channel::serve_mux::<u64, u64, String>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            None,
+        )
+        .unwrap();
 
         // Client side: dials as duplex.
         let mut client = channel::duplex::dial::<u64, String>(frontend.addr().clone()).unwrap();
@@ -358,9 +375,12 @@ mod tests {
     /// half by [`ProtocolKind`].
     #[async_timed_test(timeout_secs = 30)]
     async fn test_mux_simplex_and_duplex_share_address() {
-        let mut frontend =
-            channel::serve_mux::<u64, u64, u64>(ChannelAddr::any(ChannelTransport::Unix), None)
-                .unwrap();
+        let mut frontend = channel::serve_mux::<u64, u64, u64>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            None,
+        )
+        .unwrap();
 
         let simplex_tx = channel::dial::<u64>(frontend.addr().clone()).unwrap();
         simplex_tx.post(1);
@@ -394,9 +414,12 @@ mod tests {
     /// terminates the simplex half's `recv`.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_mux_split_shutdown_drops_listener() {
-        let frontend =
-            channel::serve_mux::<u64, u64, u64>(ChannelAddr::any(ChannelTransport::Unix), None)
-                .unwrap();
+        let frontend = channel::serve_mux::<u64, u64, u64>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            None,
+        )
+        .unwrap();
         let (_addr, mut simplex, _duplex, shutdown) = frontend.split();
 
         // Drop the shutdown guard; the simplex receiver should observe
@@ -456,9 +479,12 @@ mod tests {
     /// hang.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_mux_shutdown_completes_with_active_sessions() {
-        let mut frontend =
-            channel::serve_mux::<u64, u64, u64>(ChannelAddr::any(ChannelTransport::Unix), None)
-                .unwrap();
+        let mut frontend = channel::serve_mux::<u64, u64, u64>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            None,
+        )
+        .unwrap();
         let addr = frontend.addr().clone();
 
         // Open both kinds of sessions and route at least one message
@@ -502,9 +528,12 @@ mod tests {
     /// handle then completes promptly.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_mux_drop_simplex_cancels_shutdown() {
-        let frontend =
-            channel::serve_mux::<u64, u64, u64>(ChannelAddr::any(ChannelTransport::Unix), None)
-                .unwrap();
+        let frontend = channel::serve_mux::<u64, u64, u64>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            None,
+        )
+        .unwrap();
         let (_addr, simplex, _duplex, shutdown) = frontend.split();
 
         drop(simplex);
@@ -522,9 +551,12 @@ mod tests {
     /// handle then completes promptly.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_mux_drop_duplex_cancels_shutdown() {
-        let frontend =
-            channel::serve_mux::<u64, u64, u64>(ChannelAddr::any(ChannelTransport::Unix), None)
-                .unwrap();
+        let frontend = channel::serve_mux::<u64, u64, u64>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            None,
+        )
+        .unwrap();
         let (_addr, _simplex, duplex, shutdown) = frontend.split();
 
         drop(duplex);
@@ -541,9 +573,12 @@ mod tests {
     /// with no resource ownership. Both halves remain usable.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_mux_drop_addr_alone_does_not_shut_down() {
-        let frontend =
-            channel::serve_mux::<u64, u64, u64>(ChannelAddr::any(ChannelTransport::Unix), None)
-                .unwrap();
+        let frontend = channel::serve_mux::<u64, u64, u64>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            None,
+        )
+        .unwrap();
         let (addr, mut simplex, _duplex, shutdown) = frontend.split();
 
         let dial_addr = addr.clone();
@@ -603,9 +638,12 @@ mod tests {
             MailboxServerHandle::from_parts(join_handle, stopped_tx)
         }
 
-        let frontend =
-            channel::serve_mux::<u64, u64, u64>(ChannelAddr::any(ChannelTransport::Unix), None)
-                .unwrap();
+        let frontend = channel::serve_mux::<u64, u64, u64>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            None,
+        )
+        .unwrap();
         let addr = frontend.addr().clone();
 
         let mut client = channel::duplex::dial::<u64, u64>(addr).unwrap();
@@ -667,5 +705,91 @@ mod tests {
             "client_rx should observe a terminal close after mux shutdown, got {:?}",
             result,
         );
+    }
+
+    /// A query connection receives the listener's query reply, while a
+    /// simplex client on the same address keeps delivering normally.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_mux_answers_query_alongside_simplex() {
+        // IPv4 loopback: `TcpMode::Localhost` is IPv6, which OSS CI hosts do
+        // not provide.
+        for listen_addr in [
+            ChannelAddr::any(ChannelTransport::Unix),
+            ChannelAddr::Tcp(std::net::SocketAddr::from((
+                std::net::Ipv4Addr::LOCALHOST,
+                0,
+            ))),
+        ] {
+            let mut frontend = channel::serve_mux::<u64, u64, u64>(
+                listen_addr,
+                None,
+                Some(Bytes::from_static(b"identity")),
+            )
+            .unwrap();
+            let addr = frontend.addr().clone();
+
+            let reply = channel::query(addr.clone()).await.unwrap();
+            assert_eq!(reply, Bytes::from_static(b"identity"));
+
+            let tx = channel::dial::<u64>(addr).unwrap();
+            tx.post(42);
+            let received =
+                tokio::time::timeout(Duration::from_secs(5), frontend.simplex_mut().recv())
+                    .await
+                    .expect("simplex recv timed out")
+                    .expect("simplex recv failed");
+            assert_eq!(
+                received, 42,
+                "simplex delivery should be unaffected by queries"
+            );
+        }
+    }
+
+    /// Queries are independent connections: many clients can query the
+    /// same listener concurrently and each receives the full reply.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_mux_answers_concurrent_queries() {
+        let frontend = channel::serve_mux::<u64, u64, u64>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            Some(Bytes::from_static(b"identity")),
+        )
+        .unwrap();
+        let addr = frontend.addr().clone();
+
+        let replies = futures::future::try_join_all((0..16).map(|_| channel::query(addr.clone())))
+            .await
+            .unwrap();
+
+        assert_eq!(replies.len(), 16);
+        assert!(
+            replies
+                .iter()
+                .all(|reply| reply == &Bytes::from_static(b"identity")),
+            "every concurrent query should receive the reply"
+        );
+    }
+
+    /// A listener without a query reply closes query connections, and
+    /// the client reports an error instead of hanging.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_mux_query_without_reply_fails() {
+        let frontend = channel::serve_mux::<u64, u64, u64>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(channel::query(frontend.addr().clone()).await.is_err());
+    }
+
+    /// A server that only speaks simplex rejects the query kind during
+    /// the link handshake, so the client fails fast.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_query_to_simplex_server_fails() {
+        let (addr, _rx) = channel::serve::<u64>(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+
+        assert!(channel::query(addr).await.is_err());
     }
 }
