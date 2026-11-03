@@ -2926,7 +2926,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5c95b673b8f6f7235229ae11c5642d81b04c2e64c1e2fb417bc0cf73ca45f29"
 dependencies = [
  "autocfg",
- "tokio",
 ]
 
 [[package]]
@@ -3376,11 +3375,9 @@ dependencies = [
  "hyper 1.11.0",
  "hyper-util",
  "rustls",
- "rustls-native-certs",
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots",
 ]
 
 [[package]]
@@ -3598,7 +3595,7 @@ dependencies = [
  "pin-project",
  "preempt_rwlock",
  "rand 0.10.3",
- "reqwest 0.13.5",
+ "reqwest",
  "rustls-pemfile",
  "schemars 1.2.3",
  "serde",
@@ -3639,7 +3636,7 @@ dependencies = [
  "hyperactor_mesh",
  "indicatif",
  "ratatui",
- "reqwest 0.13.5",
+ "reqwest",
  "serde_json",
  "tokio",
  "urlencoding",
@@ -4155,7 +4152,7 @@ dependencies = [
  "percent-encoding",
  "referencing",
  "regex",
- "reqwest 0.13.5",
+ "reqwest",
  "rustls",
  "serde",
  "serde_json",
@@ -4779,7 +4776,7 @@ dependencies = [
  "monarch_distributed_telemetry",
  "monarch_record_batch",
  "ndslice",
- "reqwest 0.13.5",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
@@ -4859,7 +4856,7 @@ dependencies = [
  "arrow",
  "clap",
  "prost",
- "reqwest 0.13.5",
+ "reqwest",
  "serde",
  "serde_json",
  "tracing",
@@ -5364,7 +5361,7 @@ dependencies = [
  "bytes",
  "http",
  "opentelemetry",
- "reqwest 0.13.5",
+ "reqwest",
 ]
 
 [[package]]
@@ -5378,7 +5375,7 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost",
- "reqwest 0.13.5",
+ "reqwest",
  "thiserror 2.0.21",
  "tokio",
  "tonic",
@@ -6396,9 +6393,9 @@ dependencies = [
 
 [[package]]
 name = "rattler_conda_types"
-version = "0.30.3"
+version = "0.31.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d52bc8c582e96cf777fd5ae74de7e247aff99608ed1ba54b8afd918254a180f"
+checksum = "0ea41e41b171d7185f57c4fa0e19ef145c96604ba151479ec070f928325dbe1a"
 dependencies = [
  "chrono",
  "dirs",
@@ -6435,9 +6432,9 @@ dependencies = [
 
 [[package]]
 name = "rattler_digest"
-version = "1.0.6"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da135964124c18d81b9b02864e027e4f993881fa782c876c443bafb2e35ebc2f"
+checksum = "5b25a80b1e35f1dd1a85b199a3f5096eb02768ac9bff512db209851e75af3514"
 dependencies = [
  "blake2",
  "digest",
@@ -6465,7 +6462,6 @@ version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40a5b2b5dc702c69f60fbf9ebf6bfe751854069918b24c48f64873ae31b72b84"
 dependencies = [
- "reqwest 0.12.28",
  "url",
 ]
 
@@ -6605,45 +6601,6 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
-
-[[package]]
-name = "reqwest"
-version = "0.12.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "futures-core",
- "http",
- "http-body",
- "http-body-util",
- "hyper 1.11.0",
- "hyper-rustls",
- "hyper-util",
- "js-sys",
- "log",
- "percent-encoding",
- "pin-project-lite",
- "quinn",
- "rustls",
- "rustls-native-certs",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sync_wrapper",
- "tokio",
- "tokio-rustls",
- "tower",
- "tower-http",
- "tower-service",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "webpki-roots",
-]
 
 [[package]]
 name = "reqwest"
@@ -8740,15 +8697,6 @@ name = "webpki-root-certs"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e49d0e65abc00c142e8f9428da991da9f1a250c39be97459901eb12b9b49f62a"
-dependencies = [
- "rustls-pki-types",
-]
-
-[[package]]
-name = "webpki-roots"
-version = "1.0.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
 dependencies = [
  "rustls-pki-types",
 ]
