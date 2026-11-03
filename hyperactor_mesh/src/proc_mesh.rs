@@ -57,6 +57,7 @@ use crate::HostMeshRef;
 use crate::ValueMesh;
 use crate::actor_mesh::ACTOR_MESH_ID;
 use crate::actor_mesh::ActorMeshStopHandle;
+use crate::actor_mesh::DataMeshDisplayName;
 use crate::actor_mesh::notify_mesh_created;
 use crate::casting::CAST_POINT;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
@@ -866,6 +867,12 @@ impl ProcMeshRef {
         let mut members = Vec::with_capacity(self.ranks.len());
         let mut stop_handles = Vec::with_capacity(self.ranks.len());
         let serialized_params = bincode::serde::encode_to_vec(params, bincode::config::legacy())?;
+        let display_name = DataMeshDisplayName::new(
+            supervision_display_name
+                .clone()
+                .unwrap_or_else(|| actor_mesh_id.to_string()),
+            region.clone(),
+        );
 
         let stop_spawned = |handles: &[ActorMeshStopHandle], reason: &str| {
             for handle in handles {
@@ -898,6 +905,7 @@ impl ProcMeshRef {
             // The actor's own environment carries its point, but supervision
             // events are raised on the spawner's side, so they need a copy.
             // TODO: unify the actor environment and supervision labels.
+            let actor_display_name = display_name.at_point(&point);
             let mut labels = Flattrs::new();
             labels.set(CAST_POINT, point);
             labels.set(ACTOR_MESH_ID, actor_mesh_id.clone());
@@ -910,6 +918,7 @@ impl ProcMeshRef {
                 None,
                 environment,
                 labels,
+                Some(actor_display_name),
             ) {
                 Ok(spawned) => spawned,
                 Err(error) => {
@@ -921,7 +930,13 @@ impl ProcMeshRef {
             stop_handles.push(stop_handle.into_any());
         }
 
-        let mesh = ActorMesh::try_new_data(actor_mesh_id.clone(), region, members, stop_handles)?;
+        let mesh = ActorMesh::try_new_data(
+            actor_mesh_id.clone(),
+            region,
+            members,
+            stop_handles,
+            display_name,
+        )?;
         self.notify_actor_mesh_created(
             telemetry_data_actor_mesh_id(actor_mesh_id.uid()),
             &actor_mesh_id,
@@ -1648,6 +1663,59 @@ mod tests {
         hm.shutdown(instance)
             .await
             .expect("host mesh shutdown should complete");
+    }
+
+    /// A data mesh names an actor whose process died the way a managed
+    /// controller does: by the supervision display name and the actor's point
+    /// in the mesh it was spawned over, also when observed through a slice.
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn spawn_data_names_actors_lost_with_their_process() {
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(instance, "named_data", extent!(gpus = 2), None, None)
+            .await
+            .expect("spawn proc mesh");
+        let mut actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_data(
+                instance,
+                ActorMeshId::instance(Label::strip("named_data")),
+                &(),
+                Some("client.<testactor.TestActor named_data>".to_string()),
+            )
+            .await
+            .expect("spawn data actor mesh");
+        let rank1 = actor_mesh
+            .range("gpus", 1..2)
+            .expect("rank 1 slice should be valid");
+
+        rank1
+            .cast(
+                instance,
+                testactor::CauseSupervisionEvent {
+                    kind: testactor::SupervisionEventType::ProcessExit(1),
+                    send_to_children: false,
+                },
+            )
+            .expect("cast process exit");
+        let failure = tokio::time::timeout(
+            Duration::from_secs(60),
+            rank1.next_supervision_event(instance),
+        )
+        .await
+        .expect("timed out waiting for the lost actor's failure")
+        .expect("supervision event should be available");
+        assert_eq!(
+            failure.event.display_name.as_deref(),
+            Some("client.<testactor.TestActor named_data{'hosts': 0/1, 'gpus': 1/2}>"),
+            "the failure should name the actor by its point in the spawned mesh"
+        );
+
+        actor_mesh
+            .stop(instance, "test complete".to_string())
+            .expect("stop data actor mesh");
+        let _ = hm.shutdown(instance).await;
     }
 
     #[cfg(fbcode_build)]
