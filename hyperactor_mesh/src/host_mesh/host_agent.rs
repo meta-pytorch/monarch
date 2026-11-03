@@ -2740,6 +2740,7 @@ mod tests {
 
     use hyperactor::ActorAddr;
     use hyperactor::Client;
+    use hyperactor::Gateway;
     use hyperactor::PortReceiver;
     use hyperactor::Proc;
     use hyperactor::accum::IdleFlushReducerOpts;
@@ -3941,7 +3942,7 @@ mod tests {
         let bootstrap_command = BootstrapCommand::test();
         let expected_bootstrap_command = bootstrap_command.clone();
         let host = Host::new(
-            BootstrapProcManager::new(bootstrap_command).unwrap(),
+            BootstrapProcManager::new(bootstrap_command, Gateway::global().clone()).unwrap(),
             ChannelTransport::Unix.any(),
         )
         .await
@@ -4184,7 +4185,7 @@ mod tests {
     #[tokio::test]
     async fn test_wait_rank_status_already_running() {
         let host = Host::new(
-            BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
+            BootstrapProcManager::new(BootstrapCommand::test(), Gateway::global().clone()).unwrap(),
             ChannelTransport::Unix.any(),
         )
         .await
@@ -4281,7 +4282,7 @@ mod tests {
     #[tokio::test]
     async fn test_wait_rank_status_stop() {
         let host = Host::new(
-            BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
+            BootstrapProcManager::new(BootstrapCommand::test(), Gateway::global().clone()).unwrap(),
             ChannelTransport::Unix.any(),
         )
         .await
@@ -4537,7 +4538,7 @@ mod tests {
     #[tokio::test]
     async fn test_wait_rank_status_before_proc_exists() {
         let host = Host::new(
-            BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
+            BootstrapProcManager::new(BootstrapCommand::test(), Gateway::global().clone()).unwrap(),
             ChannelTransport::Unix.any(),
         )
         .await
@@ -4768,7 +4769,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_drain_scoped_to_host_mesh_id() {
         let host = Host::new(
-            BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
+            BootstrapProcManager::new(BootstrapCommand::test(), Gateway::global().clone()).unwrap(),
             ChannelTransport::Unix.any(),
         )
         .await
@@ -4895,7 +4896,7 @@ mod tests {
     #[tokio::test]
     async fn test_drain_none_drains_all() {
         let host = Host::new(
-            BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
+            BootstrapProcManager::new(BootstrapCommand::test(), Gateway::global().clone()).unwrap(),
             ChannelTransport::Unix.any(),
         )
         .await
@@ -4980,7 +4981,7 @@ mod tests {
         use hyperactor::introspect::IntrospectResult;
 
         let host = Host::new(
-            BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
+            BootstrapProcManager::new(BootstrapCommand::test(), Gateway::global().clone()).unwrap(),
             ChannelTransport::Unix.any(),
         )
         .await
@@ -5073,7 +5074,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_procs_many_per_host() {
         let host = Host::new(
-            BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
+            BootstrapProcManager::new(BootstrapCommand::test(), Gateway::global().clone()).unwrap(),
             ChannelTransport::Unix.any(),
         )
         .await
@@ -5184,7 +5185,7 @@ mod tests {
 
     async fn spawn_process_host_agent() -> (ActorHandle<HostAgent>, Client) {
         let host = Host::new(
-            BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
+            BootstrapProcManager::new(BootstrapCommand::test(), Gateway::global().clone()).unwrap(),
             ChannelTransport::Unix.any(),
         )
         .await

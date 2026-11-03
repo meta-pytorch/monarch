@@ -753,6 +753,7 @@ mod tests {
                 tail_lines: 0,
                 log_channel: None,
                 proc_bind: None,
+                vsock_uds_path: None,
             };
 
             let result = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -830,6 +831,7 @@ mod tests {
             tail_lines: 0,
             log_channel: Some(log_channel.clone()),
             proc_bind: None,
+            vsock_uds_path: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -926,6 +928,7 @@ mod tests {
                 tail_lines: 0,
                 log_channel: None,
                 proc_bind: None,
+                vsock_uds_path: None,
             };
             let lr = launcher.launch(&proc_id, opts).await.expect("launch");
             let (lines, stderr_bytes) = read_captured_lines(lr.stdio).await;
@@ -969,6 +972,7 @@ mod tests {
                 tail_lines: 0,
                 log_channel: None,
                 proc_bind: None,
+                vsock_uds_path: None,
             };
             let lr = launcher.launch(&proc_id, opts).await.expect("launch");
 
@@ -1013,6 +1017,7 @@ mod tests {
             tail_lines: 0,
             log_channel: None,
             proc_bind: None,
+            vsock_uds_path: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -1058,6 +1063,7 @@ mod tests {
             tail_lines: 0,
             log_channel: None,
             proc_bind: None,
+            vsock_uds_path: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -1137,6 +1143,7 @@ mod tests {
             tail_lines: 0,
             log_channel: None,
             proc_bind: None,
+            vsock_uds_path: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -1230,6 +1237,7 @@ while True:
             tail_lines: 0,
             log_channel: None,
             proc_bind: None,
+            vsock_uds_path: None,
         };
 
         // Keep stdout in outer scope so we can read after launcher
