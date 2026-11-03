@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 
 import pytest
 import torch
@@ -21,7 +21,6 @@ from wbridge.utils.specgen import (
     _plan_worker_slices,
     _prefix_sum_2d,
     _select_probe_build_device,
-    DEFAULT_MAX_HF_BYTES,
     HFWeightFetcher,
     infer_load_spec,
     SPECGEN_PROBE_DEVICE_ENV,
