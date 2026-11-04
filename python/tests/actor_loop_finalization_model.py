@@ -42,7 +42,14 @@ import threading
 import time
 from typing import Any, Callable, TypeVar
 
-from monarch.python.tests import actor_loop_finalization_timeouts as timeouts
+# Register before importing Monarch. atexit is LIFO, so this runs after
+# shutdown_context and shutdown_tokio_runtime at the final pre-finalization
+# boundary that the production failure races.
+atexit.register(lambda: _exercise_finalization_boundary())
+
+timeouts = importlib.import_module(
+    "monarch.python.tests.actor_loop_finalization_timeouts"
+)
 
 
 _ACTOR_EVENT_LOOP_ATTRIBUTE = "_monarch_actor_event_loop"
@@ -224,11 +231,6 @@ def _exercise_finalization_boundary() -> None:
     sys.setswitchinterval(_FINALIZATION_SWITCH_INTERVAL_S)
     release.set()
 
-
-# Register before importing Monarch. atexit is LIFO, so this runs after
-# shutdown_context and shutdown_tokio_runtime at the final pre-finalization
-# boundary that the production failure races.
-atexit.register(_exercise_finalization_boundary)
 
 _runtime = importlib.import_module("monarch._rust_bindings.monarch_hyperactor.runtime")
 _wait_on_event_for_exit_test = _runtime._wait_on_event_for_exit_test
