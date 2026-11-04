@@ -105,6 +105,7 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
+use std::hash::Hash;
 use std::ops::Deref;
 use std::panic;
 use std::panic::AssertUnwindSafe;
@@ -616,6 +617,16 @@ pub enum StatusMessage {
 wirevalue::register_type!(StatusMessage);
 
 const MAX_TERMINAL_STATUS_SUBSCRIBERS: usize = 100;
+
+/// Shard count for maps owned by a single actor. These maps are small and
+/// rarely contended, but `DashMap::new` sizes shards by core count (512 on a
+/// 96-core host), so each map would cost a large zeroed allocation per actor.
+const ACTOR_MAP_SHARDS: usize = 16;
+
+/// Create an empty map owned by a single actor; see [`ACTOR_MAP_SHARDS`].
+pub(crate) fn actor_map<K: Eq + Hash, V>() -> DashMap<K, V> {
+    DashMap::with_shard_amount(ACTOR_MAP_SHARDS)
+}
 
 /// An actor's terminal-status subscriptions.
 #[derive(Default)]
@@ -4527,9 +4538,9 @@ impl InstanceCell {
                 status,
                 terminal_status_subscriptions: Mutex::new(TerminalSubscriptions::default()),
                 parent: parent.map_or_else(WeakInstanceCell::new, |cell| cell.downgrade()),
-                children: DashMap::new(),
+                children: actor_map(),
                 actor_task_handle: OnceLock::new(),
-                exported_named_ports: DashMap::new(),
+                exported_named_ports: actor_map(),
                 num_processed_messages: AtomicU64::new(0),
                 created_at: std::time::SystemTime::now(),
                 last_message_handler: RwLock::new(None),
@@ -5236,8 +5247,8 @@ impl<A: Actor> HandlerPorts<A> {
         proc_stats: Arc<ProcQueueStats>,
     ) -> Self {
         Self {
-            ports: DashMap::new(),
-            bound: DashMap::new(),
+            ports: actor_map(),
+            bound: actor_map(),
             mailbox,
             workq,
             enable_buffering,
