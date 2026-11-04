@@ -6393,9 +6393,9 @@ dependencies = [
 
 [[package]]
 name = "rattler_conda_types"
-version = "0.32.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21c2ed99f2fc8044499c63c65db265f6ec3e0333cdf15bb442d5063187449d51"
+checksum = "dc8dfc4019dba3522879f8c09dcb0e27c3cffe9697f441bb2ffccc061be612d2"
 dependencies = [
  "chrono",
  "core-foundation 0.10.1",
@@ -6450,9 +6450,9 @@ dependencies = [
 
 [[package]]
 name = "rattler_macros"
-version = "1.3.0"
+version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5411dbe875bed62113e04eb4006d78b4570dac1038a009186eb7ccfc14e0006a"
+checksum = "7c9b25725cedeef8dee22c41dee138daf76ebd70da50fe210aa5e50288036816"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -6460,9 +6460,9 @@ dependencies = [
 
 [[package]]
 name = "rattler_redaction"
-version = "0.1.15"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40a5b2b5dc702c69f60fbf9ebf6bfe751854069918b24c48f64873ae31b72b84"
+checksum = "a9d46116e48405681feb0c0c9938ecb6751825eb9bde353069e516784ca983e9"
 dependencies = [
  "url",
 ]
