@@ -25,7 +25,7 @@ globset = { version = "0.4.20", features = ["serde1"] }
 ignore = "0.4.33"
 itertools = "0.15.0"
 memmap2 = "0.9.12"
-rattler_conda_types = "=0.56.2"
+rattler_conda_types = "=0.57.1"
 rattler_digest = "=2.1.0"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
