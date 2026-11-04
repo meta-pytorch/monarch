@@ -2785,9 +2785,9 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "file_url"
-version = "0.2.5"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6e6bbcc80ea90b1924156b36e41b1ac75170580fff3b26fb6724c306538312b"
+checksum = "765662dc0b26e038099a5a1529f5d48443111eea45377c312be892997651710e"
 dependencies = [
  "itertools 0.14.0",
  "percent-encoding",
@@ -5112,6 +5112,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nom-language"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2de2bc5b451bfedaef92c90b8939a8fff5770bdcc1fafd6239d086aab8fa6b29"
+dependencies = [
+ "nom 8.0.0",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5648,7 +5657,6 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd6780a80ae0c52cc120a26a1a42c1ae51b247a253e4e06113d23d2c2edd078"
 dependencies = [
- "phf_macros",
  "phf_shared 0.11.3",
 ]
 
@@ -5682,27 +5690,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "phf_macros"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f84ac04429c13a7ff43785d75ad27569f2951ce0ffd30a3321230db2fc727216"
-dependencies = [
- "phf_generator",
- "phf_shared 0.11.3",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
- "unicase",
-]
-
-[[package]]
 name = "phf_shared"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
 dependencies = [
  "siphasher",
- "unicase",
 ]
 
 [[package]]
@@ -5991,11 +5984,8 @@ checksum = "60ebe4262ae91ddd28c8721111a0a6e9e58860e211fc92116c4bb85c98fd96ad"
 dependencies = [
  "hex",
  "percent-encoding",
- "phf 0.11.3",
  "serde",
- "smartstring",
  "thiserror 2.0.21",
- "unicase",
 ]
 
 [[package]]
@@ -6391,9 +6381,9 @@ dependencies = [
 
 [[package]]
 name = "rattler_conda_types"
-version = "0.34.0"
+version = "0.40.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c956574a51e94f0c74e7b40bae9ab46ef516b889ed720ff65cb8b0e30c913187"
+checksum = "c6fa6244d54b84269d3121d463db4e154c5664936e98817ef44e4fba1f575c3a"
 dependencies = [
  "chrono",
  "core-foundation 0.10.1",
@@ -6406,7 +6396,9 @@ dependencies = [
  "indexmap 2.14.2",
  "itertools 0.14.0",
  "lazy-regex",
- "nom 7.1.3",
+ "memmap2",
+ "nom 8.0.0",
+ "nom-language",
  "purl",
  "rattler_digest",
  "rattler_macros",
@@ -6431,9 +6423,9 @@ dependencies = [
 
 [[package]]
 name = "rattler_digest"
-version = "1.1.2"
+version = "1.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45545350983320f57f435adeee4dfa90cb1dee57490a9eb276e4f2870c084bc5"
+checksum = "886e9a6254e74a830c2b8555e14862d6b2f4cc498b43767d4adf1c71421a4796"
 dependencies = [
  "blake2",
  "digest",
@@ -6441,6 +6433,7 @@ dependencies = [
  "hex",
  "md-5",
  "serde",
+ "serde_bytes",
  "serde_with",
  "sha2",
  "url",
@@ -6448,9 +6441,9 @@ dependencies = [
 
 [[package]]
 name = "rattler_macros"
-version = "1.0.9"
+version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b07dbc3008a2a0e6f6bc6645ea976b365f97ab29bf696b91f6e377d81733f61"
+checksum = "988d5d7ace4fb1d7549008236cf08de95e8ea2f1f80754109324a08c31e6dc6a"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -6458,9 +6451,9 @@ dependencies = [
 
 [[package]]
 name = "rattler_redaction"
-version = "0.1.10"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9d46116e48405681feb0c0c9938ecb6751825eb9bde353069e516784ca983e9"
+checksum = "3aa5057629aeb20861919e9ae56875985d58028f3c6f433a20b5ded086e1cec5"
 dependencies = [
  "url",
 ]
@@ -7298,17 +7291,6 @@ dependencies = [
  "bincode 2.0.1",
  "serde",
  "unty",
-]
-
-[[package]]
-name = "smartstring"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fb72c633efbaa2dd666986505016c32c3044395ceaf881518399d2f4127ee29"
-dependencies = [
- "autocfg",
- "static_assertions",
- "version_check",
 ]
 
 [[package]]
