@@ -2756,9 +2756,9 @@ dependencies = [
 
 [[package]]
 name = "fancy-regex"
-version = "0.16.2"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f"
+checksum = "72cf461f865c862bb7dc573f643dd6a2b6842f7c30b07882b56bd148cc2761b8"
 dependencies = [
  "bit-set 0.8.0",
  "regex-automata",
@@ -2796,9 +2796,9 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "file_url"
-version = "0.2.7"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81d37aab514a05a249a5b15408dc74d716f5745a2c5daf22e40a245ffd38fa84"
+checksum = "77b3f3f3326607002e13f1b44a624279f5ca21afce4259730aa619c420cca73b"
 dependencies = [
  "itertools 0.14.0",
  "percent-encoding",
@@ -3473,7 +3473,7 @@ dependencies = [
  "signal-hook-tokio",
  "smol_str",
  "socket2 0.6.5",
- "strum 0.28.0",
+ "strum",
  "tempfile",
  "thiserror 2.0.21",
  "timed_test",
@@ -3609,7 +3609,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "serde_multipart",
- "strum 0.28.0",
+ "strum",
  "tempfile",
  "thiserror 2.0.21",
  "timed_test",
@@ -4163,7 +4163,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "strum 0.28.0",
+ "strum",
  "unicode-general-category",
  "uuid-simd",
 ]
@@ -6307,7 +6307,7 @@ dependencies = [
  "lru",
  "palette",
  "serde",
- "strum 0.28.0",
+ "strum",
  "thiserror 2.0.21",
  "unicode-segmentation",
  "unicode-truncate",
@@ -6382,7 +6382,7 @@ dependencies = [
  "line-clipping",
  "ratatui-core",
  "serde",
- "strum 0.28.0",
+ "strum",
  "time",
  "unicode-segmentation",
  "unicode-width",
@@ -6390,15 +6390,15 @@ dependencies = [
 
 [[package]]
 name = "rattler_conda_types"
-version = "0.43.5"
+version = "0.44.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7ca62ce5fb125421f001d8f1551eb4fb8c75544bb55ae9f266f1cd46dc76078"
+checksum = "809c0147f00c67143f90a1e01870a8856b68d3072dbe91cdf78c4dbab44a944e"
 dependencies = [
  "ahash",
  "chrono",
  "core-foundation 0.10.1",
  "dirs",
- "fancy-regex 0.16.2",
+ "fancy-regex 0.17.0",
  "file_url",
  "fs-err",
  "glob",
@@ -6423,7 +6423,7 @@ dependencies = [
  "serde_yaml",
  "simd-json",
  "smallvec",
- "strum 0.27.2",
+ "strum",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
@@ -6433,9 +6433,9 @@ dependencies = [
 
 [[package]]
 name = "rattler_digest"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4109fd4ea54f1e34812f9db9166013325418ba92ff5693136afe681a56039fe"
+checksum = "fa6239d5be357419ba579b1cda7fe0e140a22134ebc999adb62b818989fbc7c7"
 dependencies = [
  "blake2",
  "digest",
@@ -7436,32 +7436,11 @@ dependencies = [
 
 [[package]]
 name = "strum"
-version = "0.27.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
-dependencies = [
- "strum_macros 0.27.2",
-]
-
-[[package]]
-name = "strum"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
 dependencies = [
- "strum_macros 0.28.0",
-]
-
-[[package]]
-name = "strum_macros"
-version = "0.27.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
+ "strum_macros",
 ]
 
 [[package]]
@@ -9080,7 +9059,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_multipart",
- "strum 0.28.0",
+ "strum",
  "thiserror 2.0.21",
  "typeuri",
 ]
