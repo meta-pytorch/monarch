@@ -289,6 +289,50 @@ async fn addresses_round_trip() {
     );
 }
 
+#[test]
+fn addresses_parse_from_text() {
+    for (text, expected) in [
+        ("node:a", VsockDatagramAddr::Node("a".to_owned())),
+        (
+            "native:2:5001",
+            VsockDatagramAddr::Native {
+                cid: VMADDR_CID_HOST,
+                port: 5001,
+            },
+        ),
+        (
+            "hybrid:5000:/tmp/a.sock",
+            VsockDatagramAddr::Hybrid {
+                port: 5000,
+                uds: PathBuf::from("/tmp/a.sock"),
+            },
+        ),
+        (
+            "unix:/tmp/v.sock",
+            VsockDatagramAddr::Unix(PathBuf::from("/tmp/v.sock")),
+        ),
+    ] {
+        assert_eq!(
+            text.parse::<VsockDatagramAddr>().expect("parse address"),
+            expected
+        );
+    }
+
+    for text in [
+        "native:x:1",
+        "native:1",
+        "hybrid:1:",
+        "unix:",
+        "node:",
+        "bogus:1",
+    ] {
+        let error = text
+            .parse::<VsockDatagramAddr>()
+            .expect_err("malformed address must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{text}");
+    }
+}
+
 #[tokio::test]
 async fn unix_dial_reply_uses_symmetric_labels() {
     let path = socket_path("a");

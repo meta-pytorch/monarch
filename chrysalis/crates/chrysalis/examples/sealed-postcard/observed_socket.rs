@@ -40,18 +40,29 @@ pub(crate) struct ObservedDatagram {
     pub(crate) bytes: Vec<u8>,
 }
 
+/// Datagrams retained since the application last took a snapshot.
+///
+/// Storage stops growing at [`MAX_OBSERVATIONS`]. `truncated` remembers that
+/// later datagrams could not be retained.
 #[derive(Debug, Default)]
 struct ObservationLog {
     datagrams: Vec<ObservedDatagram>,
     truncated: bool,
 }
 
+/// One drained batch of recorded datagrams and whether any were omitted.
 #[derive(Debug)]
 pub(crate) struct ObservationSnapshot {
     pub(crate) datagrams: Vec<ObservedDatagram>,
     pub(crate) truncated: bool,
 }
 
+/// A datagram socket wrapper that records the traffic passing through it.
+///
+/// Relay uses this wrapper around its real carrier. Every successful send and
+/// receive is delegated unchanged, then copied into a bounded in-memory log.
+/// Relay periodically drains that log to count traffic and search the encrypted
+/// datagrams for postcard plaintext.
 #[derive(Debug)]
 pub(crate) struct ObservedSocket<T> {
     inner: Arc<T>,
@@ -59,6 +70,7 @@ pub(crate) struct ObservedSocket<T> {
 }
 
 impl<T> ObservedSocket<T> {
+    /// Wraps `inner` with an initially empty observation log.
     pub(crate) fn new(inner: Arc<T>) -> Self {
         Self {
             inner,
@@ -66,6 +78,10 @@ impl<T> ObservedSocket<T> {
         }
     }
 
+    /// Removes and returns every currently recorded datagram.
+    ///
+    /// The returned `truncated` flag reports whether the bounded log filled
+    /// before this drain. The wrapper can immediately record another batch.
     pub(crate) fn take_observations(&self) -> ObservationSnapshot {
         let mut observations = self
             .observations
