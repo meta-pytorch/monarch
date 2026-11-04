@@ -6381,16 +6381,16 @@ dependencies = [
 
 [[package]]
 name = "rattler_conda_types"
-version = "0.40.3"
+version = "0.40.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6fa6244d54b84269d3121d463db4e154c5664936e98817ef44e4fba1f575c3a"
+checksum = "0c4a129c8b0f43f700b43af71fcbf17fae058e0840c8a610d354355a552eb36e"
 dependencies = [
+ "ahash",
  "chrono",
  "core-foundation 0.10.1",
  "dirs",
  "file_url",
  "fs-err",
- "fxhash",
  "glob",
  "hex",
  "indexmap 2.14.2",
