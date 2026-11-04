@@ -3150,7 +3150,6 @@ version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
- "serde",
  "typenum",
  "version_check",
 ]
@@ -6469,9 +6468,9 @@ dependencies = [
 
 [[package]]
 name = "rattler_conda_types"
-version = "0.54.0"
+version = "0.55.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1a8e11d491d4322beaf10bc96c42585ec6a6e56958e1132fc0e5568ffcaeedd"
+checksum = "608417ef675180a85a179e94d604b3540aa1431991e33b23be34e39d6886e229"
 dependencies = [
  "ahash",
  "core-foundation 0.10.1",
@@ -6526,13 +6525,12 @@ dependencies = [
 
 [[package]]
 name = "rattler_digest"
-version = "1.4.0"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "430007d60208c5a5aa46461052dd998066b61fd6b66bb95c858f249d9607568c"
+checksum = "e8ef7b5419c3e3ebb69ff4b9bfc9e255cdc8db9ca335caabe4f91db2531ab06c"
 dependencies = [
  "blake2 0.11.0",
  "digest 0.11.3",
- "generic-array",
  "hex",
  "md-5 0.11.0",
  "serde",
