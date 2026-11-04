@@ -279,7 +279,7 @@ uv build --no-build-isolation --wheel
 # "monarch-wheels" named build context, which the Dockerfile copies from.
 docker build -f Dockerfile.nightly \
   -t $USER/monarch:local-tag \
-  --build-arg PYTORCH_TAG=2.16.0.dev20261010-cuda13.2-cudnn9-runtime \
+  --build-arg PYTORCH_TAG=2.16.0.dev20261102-cuda13.2-cudnn9-runtime \
   --build-context monarch-wheels=dist \
   .
 
