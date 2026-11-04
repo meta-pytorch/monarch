@@ -3139,6 +3139,7 @@ version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
+ "serde",
  "typenum",
  "version_check",
 ]
@@ -4687,6 +4688,7 @@ dependencies = [
  "digest 0.10.7",
  "filetime",
  "futures 0.3.34",
+ "generic-array",
  "globset",
  "ignore",
  "itertools 0.15.0",

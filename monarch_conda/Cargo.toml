@@ -21,6 +21,7 @@ dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
 digest = { version = "0.10", features = ["rand_core"] }
 filetime = "0.2.29"
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
+generic-array = { version = "0.14.7", features = ["serde"] }
 globset = { version = "0.4.20", features = ["serde1"] }
 ignore = "0.4.33"
 itertools = "0.15.0"
