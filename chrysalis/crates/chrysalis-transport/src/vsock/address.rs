@@ -9,6 +9,7 @@
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use super::frame::MAX_PAYLOAD;
 use super::invalid_input;
@@ -136,6 +137,15 @@ impl TryFrom<&DatagramAddr> for VsockDatagramAddr {
             return Ok(Self::Unix(checked_path(path)?));
         }
         Err(invalid_input("unknown vsock address kind"))
+    }
+}
+
+impl FromStr for VsockDatagramAddr {
+    type Err = io::Error;
+
+    /// Parses the address text used inside a `vsock` [`DatagramAddr`].
+    fn from_str(text: &str) -> io::Result<Self> {
+        Self::try_from(&DatagramAddr::new(VSOCK_SCHEME, text.as_bytes()))
     }
 }
 

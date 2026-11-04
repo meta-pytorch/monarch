@@ -6,13 +6,59 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+//! The sealed-postcard walkthrough and separate-process entry point.
+//!
+//! With no subcommand, this binary creates Alice, Relay, and Bob in one process
+//! over an in-memory carrier. Alice sends Bob a postcard through Relay, receives
+//! an acknowledgement, and checks 32 additional echo streams. A role
+//! subcommand instead runs only Alice, Relay, or Bob, so separate invocations
+//! can form the same process tree over real carrier sockets.
+//!
+//! The separate processes form this namespace tree:
+//!
+//! ```text
+//! Alice (root; listens for Relay)
+//! └── Relay (connects to Alice; listens for Bob)
+//!     └── Bob (connects to Relay)
+//! ```
+//!
+//! Alice and Bob are the application endpoints. Their authenticated QUIC
+//! streams pass through Relay, which forwards encrypted carrier datagrams but
+//! does not terminate the application connection.
+//!
+//! This module owns command-line parsing, user-facing reports, and exit status.
+//! [`roles`] owns the Chrysalis nodes and their application-stream behavior.
+//!
+//! ```text
+//! main.rs
+//! ├── parse command line
+//! ├── no mode → run the original in-process walkthrough
+//! └── role mode
+//!     ├── identities → roles::write_identities
+//!     ├── alice      → roles::run_alice
+//!     ├── relay      → roles::Relay::start(...).serve(...)
+//!     └── bob        → roles::Bob::start(...).serve(...)
+//! ```
+
+// Generates the ephemeral, mutually trusted identities used by both the
+// in-process walkthrough and the separate role modes.
 mod identity;
 // Keep Relay's raw-datagram observation layer separate from the
 // postcard application logic.
 mod observed_socket;
+// The role modes use VsockDatagramSocket, whose native-vsock implementation
+// and public exports are Linux-only. The no-mode in-process walkthrough stays
+// available on other platforms.
+#[cfg(target_os = "linux")]
+mod roles;
 
+#[cfg(target_os = "linux")]
+use std::env;
 use std::io;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
+use std::process;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,10 +69,18 @@ use chrysalis::Node;
 use chrysalis::NodeConfig;
 use chrysalis::ParentEndpoint;
 use chrysalis::Pid;
+use chrysalis::PidPrefix;
+// Role commands load their PEM bundle into a QuicIdentity before starting a
+// node. Those commands are Linux-only because they use VsockDatagramSocket;
+// the in-process walkthrough constructs its identities in `identity.rs`.
+#[cfg(target_os = "linux")]
+use chrysalis::QuicIdentity;
 use chrysalis::RecvStream;
 use chrysalis::Resolution;
 use chrysalis::ResolveConsistency;
 use chrysalis::TransportConfig;
+use clap::Parser;
+use clap::Subcommand;
 use observed_socket::DatagramDirection;
 use observed_socket::ObservedSocket;
 use tokio::io::AsyncReadExt;
@@ -66,11 +120,274 @@ async fn read_bounded(recv: &mut RecvStream, limit: usize) -> io::Result<Vec<u8>
     Ok(bytes)
 }
 
-#[tokio::main]
-async fn main() {
-    run().await;
+/// Chooses between the in-process walkthrough and one separate-process role.
+#[derive(Debug, Parser)]
+#[command(name = "sealed-postcard")]
+struct Cli {
+    /// Optional role command. Absence selects the in-process walkthrough.
+    #[command(subcommand)]
+    role: Option<Command>,
 }
 
+/// A complete certificate-derived PID parsed at the command-line boundary.
+#[derive(Clone, Copy, Debug)]
+struct RolePid(Pid);
+
+impl RolePid {
+    /// Returns the validated complete PID.
+    const fn pid(self) -> Pid {
+        self.0
+    }
+}
+
+impl FromStr for RolePid {
+    type Err = io::Error;
+
+    fn from_str(text: &str) -> io::Result<Self> {
+        let prefix = PidPrefix::from_str(text)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        prefix
+            .as_pid()
+            .map(Self)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "PID must have 32 digits"))
+    }
+}
+
+/// Identity setup and the three separate-process roles.
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Write mutually trusted identity bundles for Alice, Relay, and Bob.
+    Identities {
+        /// Directory in which to create `alice.pem`, `relay.pem`, and `bob.pem`.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Run root Alice until the postcard and echo-stream exchange completes.
+    Alice {
+        /// Text-form carrier address where Alice listens, such as
+        /// `unix:/tmp/sealed-postcard/a` or `native:4294967295:5000`.
+        #[arg(long)]
+        listen: String,
+        /// Bob's certificate-derived PID from the `identities` output. Bob's
+        /// parent link publishes this PID through Relay; Alice waits for that
+        /// namespace entry, then opens an authenticated end-to-end stream to it.
+        #[arg(long)]
+        bob_pid: RolePid,
+    },
+    /// Run Relay until Ctrl-C or SIGTERM.
+    Relay {
+        /// Alice's PID. Relay uses it to authenticate its parent connection.
+        #[arg(long)]
+        parent_pid: RolePid,
+        /// Text-form carrier address where Relay connects to Alice, such as
+        /// `unix:/tmp/sealed-postcard/a` or `hybrid:5000:/tmp/vm-a.sock`.
+        #[arg(long)]
+        parent: String,
+        /// Text-form carrier addresses where children can connect, such as
+        /// `unix:/tmp/sealed-postcard/r` or `native:4294967295:5001`.
+        #[arg(long, required = true)]
+        listen: Vec<String>,
+    },
+    /// Run Bob until Ctrl-C or SIGTERM.
+    Bob {
+        /// Relay's PID. Bob uses it to authenticate its parent connection.
+        #[arg(long)]
+        parent_pid: RolePid,
+        /// Carrier destination for Bob's parent link to Relay. Locally this
+        /// names Relay's Unix listener; in a VM, `native:2:5001` reaches Relay
+        /// on the host.
+        #[arg(long)]
+        parent: String,
+        /// Alice's PID. Bob checks that every application stream came from her.
+        #[arg(long)]
+        alice_pid: RolePid,
+    },
+}
+
+#[tokio::main]
+async fn main() {
+    let result = match Cli::parse().role {
+        Some(command) => run_role(command).await,
+        None => {
+            run().await;
+            Ok(())
+        }
+    };
+    if let Err(error) = result {
+        eprintln!("sealed-postcard: {error}");
+        process::exit(1);
+    }
+}
+
+/// Rejects role modes when the Linux-only `VsockDatagramSocket` is unavailable.
+///
+/// The no-mode in-process walkthrough does not call this function and remains
+/// available on other platforms.
+#[cfg(not(target_os = "linux"))]
+async fn run_role(_command: Command) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "sealed-postcard roles require Linux",
+    ))
+}
+
+/// Dispatches one Linux role command.
+#[cfg(target_os = "linux")]
+async fn run_role(command: Command) -> io::Result<()> {
+    match command {
+        Command::Identities { out } => run_identities_mode(&out),
+        Command::Alice { listen, bob_pid } => run_alice_mode(listen, bob_pid).await,
+        Command::Relay {
+            parent_pid,
+            parent,
+            listen,
+        } => run_relay_mode(parent_pid, parent, listen).await,
+        Command::Bob {
+            parent_pid,
+            parent,
+            alice_pid,
+        } => run_bob_mode(parent_pid, parent, alice_pid).await,
+    }
+}
+
+/// Writes the three identity bundles and prints their PIDs.
+#[cfg(target_os = "linux")]
+fn run_identities_mode(out: &std::path::Path) -> io::Result<()> {
+    for identity in roles::write_identities(out)? {
+        println!("{} {}", identity.name, PidPrefix::from(identity.pid));
+    }
+    Ok(())
+}
+
+/// Runs Alice until the postcard and echo-stream exchange completes.
+#[cfg(target_os = "linux")]
+async fn run_alice_mode(listen: String, bob_pid: RolePid) -> io::Result<()> {
+    let listen = listen.parse()?;
+    let bob = bob_pid.pid();
+    // `run_alice` owns Alice's complete lifecycle: it binds the parsed carrier
+    // address, waits for Bob's PID to be published through Relay, opens an
+    // authenticated stream to that PID, performs every application exchange,
+    // and waits for Alice's background work to finish before returning.
+    // It also returns Alice's advertised carrier address so the role test can
+    // verify that the address is named after her PID. The CLI does not print it.
+    let roles::AliceReport {
+        advertised: _advertised,
+    } = roles::run_alice(role_identity()?, listen, bob).await?;
+    Ok(())
+}
+
+/// Runs the middle node between Alice and Bob.
+///
+/// Relay connects to Alice at `parent`, requiring Alice's `parent_pid`, and
+/// listens for Bob on each address in `listen`. It forwards their encrypted
+/// datagrams until Ctrl-C or SIGTERM, then stops its background work and prints
+/// whether its complete traffic record contained any postcard plaintext.
+#[cfg(target_os = "linux")]
+async fn run_relay_mode(
+    parent_pid: RolePid,
+    parent: String,
+    listen: Vec<String>,
+) -> io::Result<()> {
+    // Relay may listen on more than one carrier endpoint. The local and VM
+    // demos use Unix addresses here. Parse them as VsockDatagramAddr values;
+    // binding accepts only the Unix and Native variants.
+    let listen = listen
+        .into_iter()
+        .map(|address| address.parse())
+        .collect::<io::Result<Vec<_>>>()?;
+    let parent = parent.parse()?;
+    let parent_pid = parent_pid.pid();
+    // Install both signal handlers before starting Relay. If either handler
+    // cannot be installed, no node or background task has been created yet.
+    let stop = roles::stop_signal()?;
+
+    // `start` binds Relay's listeners and creates its authenticated parent link
+    // to Alice. `serve` forwards traffic until Ctrl-C or SIGTERM, then stops and
+    // waits for Relay's background work before returning the complete report.
+    let roles::RelayReport {
+        advertised: _advertised,
+        observed,
+        plaintext_seen,
+        complete,
+    } = roles::Relay::start(role_identity()?, parent_pid, parent, listen)?
+        .serve(stop)
+        .await?;
+
+    // Report how much encrypted carrier traffic Relay recorded, whether any
+    // datagram exposed the postcard text, and whether the bounded log retained
+    // every observation. The advertised address is returned for the role test;
+    // Relay's CLI report does not include it.
+    println!(
+        "relay observed {observed} datagrams, postcard plaintext seen: {plaintext_seen}, \
+         log complete: {complete}"
+    );
+    // Print the report even on failure, then use the exit status to make every
+    // condition machine-checkable by the process and VM tests.
+    if observed == 0 || plaintext_seen || !complete {
+        return Err(io::Error::other("Relay's observation check failed"));
+    }
+    Ok(())
+}
+
+/// Runs Alice's application peer as Relay's child.
+///
+/// Bob connects to Relay at `parent`, requiring Relay's `parent_pid`. He accepts
+/// the postcard and 32 echo streams, requiring every stream to authenticate as
+/// Alice's `alice_pid`. On Ctrl-C or SIGTERM, he stops his background work and
+/// reports the streams he served.
+#[cfg(target_os = "linux")]
+async fn run_bob_mode(parent_pid: RolePid, parent: String, alice_pid: RolePid) -> io::Result<()> {
+    let parent = parent.parse()?;
+    let parent_pid = parent_pid.pid();
+    let alice = alice_pid.pid();
+    // Install both signal handlers before starting Bob. If either handler
+    // cannot be installed, no node or background task has been created yet.
+    let stop = roles::stop_signal()?;
+
+    // `start` creates Bob's authenticated parent link to Relay. `serve` accepts
+    // Alice's streams until Ctrl-C or SIGTERM, then stops and waits for Bob's
+    // background work before returning the complete report.
+    let roles::BobReport {
+        advertised: _advertised,
+        served,
+        all_from_alice,
+    } = roles::Bob::start(role_identity()?, parent_pid, parent, alice)?
+        .serve(stop)
+        .await?;
+
+    // One postcard stream plus 32 numbered streams must all authenticate as
+    // Alice. The advertised address is returned for the role test; Bob's CLI
+    // report does not include it.
+    println!("bob served {served} streams, all from alice: {all_from_alice}");
+    // Print the report even on failure, then make both checks part of the exit
+    // status consumed by the process and VM tests.
+    if served != STREAM_COUNT + 1 || !all_from_alice {
+        return Err(io::Error::other("Bob's stream check failed"));
+    }
+    Ok(())
+}
+
+/// Loads the identity assigned to this role by the process launcher.
+///
+/// `SEALED_POSTCARD_IDENTITY` contains the PEM bundle text itself, not a file
+/// path. The generated role certificates authenticate the name `localhost`.
+#[cfg(target_os = "linux")]
+fn role_identity() -> io::Result<QuicIdentity> {
+    // Treat a missing or non-Unicode environment value as invalid command
+    // input. `from_pem_bundle` reports malformed bundle contents separately.
+    let bundle = env::var("SEALED_POSTCARD_IDENTITY").map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("SEALED_POSTCARD_IDENTITY is not set: {error}"),
+        )
+    })?;
+    QuicIdentity::from_pem_bundle(&bundle, "localhost")
+}
+
+/// Runs Alice, Relay, and Bob together over one in-memory carrier.
+///
+/// This is the no-subcommand walkthrough. A role subcommand is dispatched
+/// above and returns without entering this path.
 async fn run() {
     // Use an in-memory datagram carrier so we can exercise Chrysalis
     // without configuring UDP. Endpoint 1 will be Alice's location in
@@ -112,7 +429,7 @@ async fn run() {
     // moved into it.
     let node_pid_matches_certificate = alice.pid() == certificate_pid;
     println!("sealed-postcard, checkpoint 1: Alice exists");
-    println!("certificate-derived PID: {}", format_pid(alice.pid()));
+    println!("certificate-derived PID: {}", PidPrefix::from(alice.pid()));
     println!("node PID matches certificate: {node_pid_matches_certificate}");
     assert!(
         node_pid_matches_certificate,
@@ -678,15 +995,6 @@ async fn run() {
     alice.shutdown();
     alice.join().await;
     println!("Bob, Relay, and Alice shut down cleanly");
-}
-
-// Render the 16-byte PID as 32 lowercase hexadecimal digits: two
-// digits per byte.
-fn format_pid(pid: Pid) -> String {
-    pid.as_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 // Wait until a PID appears in one node's local nameserver, failing
