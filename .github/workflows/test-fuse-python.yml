@@ -17,7 +17,7 @@ on:
       python-version:
         description: 'Python version to build and test with'
         type: string
-        default: '3.10'
+        default: '3.11'
 
 concurrency:
   group: test-fuse-python-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
@@ -35,7 +35,7 @@ jobs:
       timeout: 60
       runner: linux.4xlarge
       submodules: recursive
-      upload-artifact: monarch-cpu-rdma-fuse-${{ github.sha }}-py3.10
+      upload-artifact: monarch-cpu-rdma-fuse-${{ github.sha }}-py3.11
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
@@ -117,7 +117,7 @@ jobs:
       - name: Download wheel artifact
         uses: actions/download-artifact@v4
         with:
-          name: monarch-cpu-rdma-fuse-${{ github.sha }}-py3.10
+          name: monarch-cpu-rdma-fuse-${{ github.sha }}-py3.11
           path: ${{ runner.temp }}/wheel-artifact
 
       - name: Install wheel

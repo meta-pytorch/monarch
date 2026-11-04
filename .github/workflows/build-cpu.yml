@@ -6,11 +6,11 @@ on:
       artifact-name:
         description: 'Wheel artifact name to upload'
         type: string
-        default: 'monarch-cpu-py3.10'
+        default: 'monarch-cpu-py3.11'
       python-version:
         description: 'Python version to build with'
         type: string
-        default: '3.10'
+        default: '3.11'
       runner:
         description: 'Linux runner to use for the build'
         type: string

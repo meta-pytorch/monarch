@@ -4,9 +4,9 @@ on:
   workflow_call:
     inputs:
       python-versions:
-        description: 'JSON array of Python versions to build (e.g., ["3.10", "3.11", "3.12", "3.13"])'
+        description: 'JSON array of Python versions to build (e.g., ["3.11", "3.12", "3.13", "3.14"])'
         type: string
-        default: '["3.10", "3.11", "3.12", "3.13"]'
+        default: '["3.11", "3.12", "3.13", "3.14"]'
       torch-spec:
         description: 'Torch installation specification'
         type: string

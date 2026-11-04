@@ -31,9 +31,9 @@ initialize_conda() {
     source /opt/conda/etc/profile.d/conda.sh
 }
 
-# Setup conda environment. Defaults to Python 3.10.
+# Setup conda environment. Defaults to Python 3.11.
 setup_conda_environment() {
-    local python_version=${1:-3.10}
+    local python_version=${1:-3.11}
     echo "Setting up conda environment with Python ${python_version}..."
     initialize_conda
     conda create -n venv python="${python_version}" -y
@@ -271,7 +271,7 @@ setup_cuda_toolkit() {
 
 # Common setup for build workflows (environment + system deps + rust)
 setup_build_environment() {
-    local python_version=${1:-3.10}
+    local python_version=${1:-3.11}
     setup_conda_environment "${python_version}"
     install_system_dependencies
     install_node
@@ -328,7 +328,7 @@ setup_rocm_environment() {
 
 # Common setup for test workflows (environment only)
 setup_test_environment() {
-    local python_version=${1:-3.10}
+    local python_version=${1:-3.11}
     setup_conda_environment "${python_version}"
     install_python_test_dependencies
 }

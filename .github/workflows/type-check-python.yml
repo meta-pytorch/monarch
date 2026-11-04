@@ -10,7 +10,7 @@ on:
       python-version:
         description: 'Python version to type-check with'
         type: string
-        default: '3.10'
+        default: '3.11'
       runner:
         description: 'Linux runner to use for type checking (small by default; bump if pyright OOMs indexing torch)'
         type: string
