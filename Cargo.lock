@@ -6381,9 +6381,9 @@ dependencies = [
 
 [[package]]
 name = "rattler_conda_types"
-version = "0.40.4"
+version = "0.41.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c4a129c8b0f43f700b43af71fcbf17fae058e0840c8a610d354355a552eb36e"
+checksum = "418a1c6c147e3a80a4db6589f1a6a0737c0321e467d351ac99ba599b34a76c09"
 dependencies = [
  "ahash",
  "chrono",
@@ -6423,9 +6423,9 @@ dependencies = [
 
 [[package]]
 name = "rattler_digest"
-version = "1.1.7"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "886e9a6254e74a830c2b8555e14862d6b2f4cc498b43767d4adf1c71421a4796"
+checksum = "3dd76e371c2abd364cde7172105fdb6036d8d09df9cddeda5153846e2e964959"
 dependencies = [
  "blake2",
  "digest",
