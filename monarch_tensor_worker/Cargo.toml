@@ -41,6 +41,7 @@ build_utils = { version = "0.0.0", path = "../build_utils" }
 [features]
 cuda = ["monarch_messages/cuda", "torch-sys-cuda/cuda"]
 default = []
+rocm = ["monarch_messages/rocm", "torch-sys-cuda/rocm"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fbcode_build)"]}

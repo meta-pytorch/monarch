@@ -60,6 +60,7 @@ extension-module = ["pyo3/extension-module"]
 rdma = ["dep:monarch_cpp_static_libs", "dep:monarch_rdma_extension"]
 tensor_engine = ["dep:monarch_messages", "dep:monarch_tensor_worker", "dep:torch-sys-cuda"]
 tensor_engine_gpu = ["dep:nccl-sys", "dep:rdmaxcel-sys", "monarch_messages/cuda", "monarch_tensor_worker/cuda", "rdma", "tensor_engine", "torch-sys-cuda/cuda"]
+tensor_engine_gpu_rocm = ["monarch_messages/rocm", "monarch_tensor_worker/rocm", "rdma", "tensor_engine", "torch-sys-cuda/rocm"]
 
 [lints]
 workspace = true
