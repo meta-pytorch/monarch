@@ -27,7 +27,28 @@ on:
         value: ${{ jobs.set.outputs.build-matrix }}
 
 jobs:
+  # Source ROCm/Python versions from pytorch/test-infra when a ciflow/rocm tag
+  # run needs them, instead of hardcoding rocm7.14 / rocm10.0 here.
+  generate-rocm-matrix:
+    if: ${{ startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
+    uses: pytorch/test-infra/.github/workflows/generate_binary_build_matrix.yml@main
+    with:
+      package-type: wheel
+      channel: nightly
+      os: linux
+      test-infra-repository: pytorch/test-infra
+      test-infra-ref: main
+      with-cpu: disable
+      with-xpu: disable
+      with-cuda: disable
+      with-rocm: enable
+      build-python-only: "disable"
+
   set:
+    if: >-
+      always() && !cancelled() &&
+      (needs.generate-rocm-matrix.result == 'success' || needs.generate-rocm-matrix.result == 'skipped')
+    needs: generate-rocm-matrix
     runs-on: ubuntu-latest
     outputs:
       test-matrix: ${{ steps.set.outputs.test-matrix }}
@@ -37,6 +58,7 @@ jobs:
       IS_SCHEDULE: ${{ github.event_name == 'schedule' }}
       IS_ROCM_TAG: ${{ startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
       HAS_ROCM_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ciflow/rocm') }}
+      ROCM_BINARY_MATRIX: ${{ needs.generate-rocm-matrix.outputs.matrix }}
 
     steps:
       - id: set
@@ -49,16 +71,10 @@ jobs:
           # check against cuda13.2 containers. Release/nightly wheels still
           # ship cu132 via publish_release.yml on a CPU runner.
 
-          # Define test matrices (py3.10 only)
+          # Define CUDA test/build matrices
           CUDA='{"name": "cuda", "runner": "${{ inputs.runner-cuda }}", "gpu-arch-type": "cuda", "gpu-arch-version": "13.0", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
-          ROCM_714='{"name": "rocm7.14", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "7.14", "docker-image": "pytorch/manylinux2_28-builder:rocm7.14", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.14/"}'
-          ROCM_100='{"name": "rocm10.0", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "10.0", "docker-image": "pytorch/manylinux2_28-builder:rocm10.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm10.0/"}'
-
-          # Define build matrices (includes python-version)
           CUDA_PY310='{"name": "cuda", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
           CUDA_PY312='{"name": "cuda", "python-version": "3.12", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
-          ROCM_714_PY310='{"name": "rocm7.14", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm7.14", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.14/"}'
-          ROCM_100_PY310='{"name": "rocm10.0", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm10.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm10.0/"}'
 
           # Build matrix:
           # - ROCm tag: ROCm only (manual opt-in; CUDA already built in PR run)
@@ -67,16 +83,45 @@ jobs:
           # ciflow/rocm tag to build and test ROCm manually. See
           # https://github.com/meta-pytorch/monarch/issues/4145 for re-enabling.
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
-            BUILD_MATRIX="[$ROCM_714_PY310, $ROCM_100_PY310]"
+            if [[ -z "${ROCM_BINARY_MATRIX}" ]]; then
+              echo "::error::ROCm binary matrix from test-infra is empty" >&2
+              exit 1
+            fi
+            # One entry per unique ROCm version; first Python from the matrix.
+            BUILD_MATRIX=$(echo "${ROCM_BINARY_MATRIX}" | jq -c '
+              (.include | map(.python_version) | unique | .[0]) as $py
+              | [
+                  .include[]
+                  | select(.python_version == $py)
+                  | {
+                      name: ("rocm" + .gpu_arch_version),
+                      "python-version": .python_version,
+                      "docker-image": ("pytorch/manylinux2_28-builder:rocm" + .gpu_arch_version),
+                      "torch-spec": ("--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm" + .gpu_arch_version + "/")
+                    }
+                ]
+                | unique_by(.name)
+            ')
+            TEST_MATRIX=$(echo "${ROCM_BINARY_MATRIX}" | jq -c --arg runner "${{ inputs.runner-rocm }}" '
+              (.include | map(.python_version) | unique | .[0]) as $py
+              | [
+                  .include[]
+                  | select(.python_version == $py)
+                  | {
+                      name: ("rocm" + .gpu_arch_version),
+                      runner: $runner,
+                      "gpu-arch-type": "rocm",
+                      "gpu-arch-version": .gpu_arch_version,
+                      "docker-image": ("pytorch/manylinux2_28-builder:rocm" + .gpu_arch_version),
+                      "torch-spec": ("--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm" + .gpu_arch_version + "/")
+                    }
+                ]
+                | unique_by(."gpu-arch-version")
+            ')
+            echo "ROCm build matrix from test-infra: ${BUILD_MATRIX}"
+            echo "ROCm test matrix from test-infra: ${TEST_MATRIX}"
           else
             BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312]"
-          fi
-
-          # Test matrix: ROCm tested only on a manual ciflow/rocm tag; CUDA
-          # otherwise. ROCm is disabled in normal CI while it is broken.
-          if [[ "$IS_ROCM_TAG" == "true" ]]; then
-            TEST_MATRIX="[$ROCM_714, $ROCM_100]"
-          else
             TEST_MATRIX="[$CUDA]"
           fi
 
