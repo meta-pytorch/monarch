@@ -234,6 +234,82 @@ impl QuicIdentity {
         }
     }
 
+    /// Creates a node identity from certificates and a private key stored as
+    /// PEM.
+    ///
+    /// PEM stores certificates and keys in labeled text blocks. The bundle
+    /// must contain, in order:
+    ///
+    /// 1. the node's certificate;
+    /// 2. one or more additional certificates, used as both the rest of its
+    ///    certificate chain and the certificates it trusts;
+    /// 3. the node's private key.
+    ///
+    /// This function checks only the block labels, count, and order. It does
+    /// not check that the certificates sign one another or that the private
+    /// key belongs to the node's certificate. TLS reports those problems when
+    /// the TLS configuration is built or during the handshake.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::InvalidData`] if the text cannot be parsed as
+    /// PEM or does not contain at least two `CERTIFICATE` blocks followed by
+    /// exactly one `PRIVATE KEY` block.
+    pub fn from_pem_bundle(bundle: &str, server_name: impl Into<Arc<str>>) -> io::Result<Self> {
+        let blocks = pem::parse_many(bundle).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid PEM bundle: {error}"),
+            )
+        })?;
+        let mut certificate_count = 0;
+        let mut key_index = None;
+        for (index, block) in blocks.iter().enumerate() {
+            match block.tag() {
+                "CERTIFICATE" if key_index.is_some() => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "PEM bundle contains a certificate after its private key",
+                    ));
+                }
+                "CERTIFICATE" => certificate_count += 1,
+                "PRIVATE KEY" if key_index.is_some() => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "PEM bundle contains more than one private key",
+                    ));
+                }
+                "PRIVATE KEY" => key_index = Some(index),
+                tag => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("PEM bundle contains unsupported {tag} block"),
+                    ));
+                }
+            }
+        }
+        if certificate_count < 2 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "PEM bundle must contain a leaf and at least one trust certificate",
+            ));
+        }
+        let Some(key_index) = key_index else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "PEM bundle must contain one private key",
+            ));
+        };
+        let certificates = &blocks[..key_index];
+        Ok(Self::new(
+            certificates[0].contents(),
+            pem::encode_many(certificates).into_bytes(),
+            pem::encode(&blocks[key_index]).into_bytes(),
+            pem::encode_many(&certificates[1..]).into_bytes(),
+            server_name,
+        ))
+    }
+
     /// Verifies UDP peers against their destination IP, retaining the configured name elsewhere.
     pub fn with_udp_destination_server_name(mut self) -> Self {
         let fallback = match self.server_name {
@@ -1124,4 +1200,130 @@ impl PemFile {
 
 fn driver_io_error(error: chrysalis_transport_tokio::Error) -> io::Error {
     io::Error::new(io::ErrorKind::ConnectionAborted, error)
+}
+
+#[cfg(test)]
+mod tests {
+    use rcgen::BasicConstraints;
+    use rcgen::CertificateParams;
+    use rcgen::CertifiedIssuer;
+    use rcgen::ExtendedKeyUsagePurpose;
+    use rcgen::IsCa;
+    use rcgen::KeyPair;
+    use rcgen::KeyUsagePurpose;
+
+    use super::QuicIdentity;
+
+    struct BundleParts {
+        leaf_der: Vec<u8>,
+        leaf_pem: String,
+        ca_pem: String,
+        key_pem: String,
+    }
+
+    fn bundle(parts: &[&str]) -> String {
+        parts
+            .iter()
+            .map(|part| part.trim())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn bundle_parts() -> BundleParts {
+        let mut issuer_params = CertificateParams::default();
+        issuer_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        issuer_params.key_usages = vec![
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::CrlSign,
+        ];
+        let issuer = CertifiedIssuer::self_signed(
+            issuer_params,
+            KeyPair::generate().expect("generate test issuer key"),
+        )
+        .expect("generate test issuer");
+        let key = KeyPair::generate().expect("generate test key");
+        let mut params = CertificateParams::new(vec!["localhost".to_owned()])
+            .expect("construct test certificate parameters");
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![
+            ExtendedKeyUsagePurpose::ClientAuth,
+            ExtendedKeyUsagePurpose::ServerAuth,
+        ];
+        let certificate = params
+            .signed_by(&key, &issuer)
+            .expect("sign test certificate");
+        BundleParts {
+            leaf_der: certificate.der().as_ref().to_vec(),
+            leaf_pem: certificate.pem(),
+            ca_pem: issuer.pem(),
+            key_pem: key.serialize_pem(),
+        }
+    }
+
+    #[test]
+    fn pem_bundle_round_trips_the_pid() {
+        let parts = bundle_parts();
+        let identity = QuicIdentity::from_pem_bundle(
+            &bundle(&[&parts.leaf_pem, &parts.ca_pem, &parts.key_pem]),
+            "localhost",
+        )
+        .expect("load PEM bundle");
+        let expected = QuicIdentity::new(
+            &parts.leaf_der,
+            bundle(&[&parts.leaf_pem, &parts.ca_pem]).into_bytes(),
+            parts.key_pem.into_bytes(),
+            parts.ca_pem.into_bytes(),
+            "localhost",
+        );
+        assert_eq!(identity.pid(), expected.pid());
+    }
+
+    #[test]
+    fn pem_bundle_rejects_structurally_malformed_input() {
+        let parts = bundle_parts();
+        let public_key = pem::encode(&pem::Pem::new("PUBLIC KEY", b"public key"));
+        let mismatched_tags = concat!(
+            "-----BEGIN CERTIFICATE-----\n",
+            "YQ==\n",
+            "-----END PRIVATE KEY-----\n",
+        );
+        let cases = [
+            ("non-PEM text", "not PEM".to_owned()),
+            ("mismatched PEM tags", mismatched_tags.to_owned()),
+            (
+                "no second certificate",
+                bundle(&[&parts.leaf_pem, &parts.key_pem]),
+            ),
+            ("no private key", bundle(&[&parts.leaf_pem, &parts.ca_pem])),
+            (
+                "two private keys",
+                bundle(&[
+                    &parts.leaf_pem,
+                    &parts.ca_pem,
+                    &parts.key_pem,
+                    &parts.key_pem,
+                ]),
+            ),
+            (
+                "unexpected tag",
+                bundle(&[&parts.leaf_pem, &parts.ca_pem, &public_key, &parts.key_pem]),
+            ),
+            (
+                "certificate after private key",
+                bundle(&[
+                    &parts.leaf_pem,
+                    &parts.ca_pem,
+                    &parts.key_pem,
+                    &parts.ca_pem,
+                ]),
+            ),
+        ];
+        for (case, bundle) in cases {
+            let Err(error) = QuicIdentity::from_pem_bundle(&bundle, "localhost") else {
+                panic!("{case} should be rejected");
+            };
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{case}");
+        }
+    }
 }

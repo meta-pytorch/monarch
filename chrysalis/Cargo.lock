@@ -441,7 +441,9 @@ dependencies = [
  "chrysalis-transport-tokio",
  "chrysalis-transport-uring",
  "libc",
+ "pem 3.0.6",
  "quiche",
+ "rcgen",
  "thiserror 2.0.20",
  "tokio",
 ]
