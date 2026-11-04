@@ -125,6 +125,7 @@ use hyperactor_config::Flattrs;
 
 use crate::Gspawn;
 use crate::KeepaliveLink;
+use crate::SerializedParams;
 use crate::SpawnActor as SpawnActorMessage;
 use crate::SupervisionOptions;
 use crate::Supervisor;
@@ -211,7 +212,7 @@ pub trait ActorSpawnerEndpoint {
         self.spawn_uid_with_link_and_ready::<A>(
             cx,
             Uid::anonymous(),
-            params,
+            SerializedParams::new(&params)?,
             KeepaliveLink::default(),
             None,
             cx.instance().actor_environment().clone(),
@@ -256,7 +257,7 @@ pub trait ActorSpawnerEndpoint {
         self.spawn_uid_with_link_and_ready::<A>(
             cx,
             uid,
-            params,
+            SerializedParams::new(&params)?,
             KeepaliveLink::default(),
             Some(ready),
             cx.instance().actor_environment().clone(),
@@ -282,7 +283,7 @@ pub trait ActorSpawnerEndpoint {
         self.spawn_uid_with_link_and_ready::<A>(
             cx,
             uid,
-            params,
+            SerializedParams::new(&params)?,
             liveness,
             None,
             cx.instance().actor_environment().clone(),
@@ -292,11 +293,13 @@ pub trait ActorSpawnerEndpoint {
         .map(|(actor_ref, _supervisor)| actor_ref)
     }
 
-    /// Spawn a registered actor with an explicit actor uid, liveness link,
-    /// optional readiness port, persistent environment, supervision event
-    /// labels, and display name. This is the general form behind the other
-    /// `spawn*` methods, which pass the caller's own environment, no labels,
-    /// and no display name; see
+    /// Spawn a registered actor with an explicit actor uid, pre-serialized
+    /// params, liveness link, optional readiness port, persistent environment,
+    /// supervision event labels, and display name. This is the general form
+    /// behind the other `spawn*` methods, which serialize their params and
+    /// pass the caller's own environment, no labels, and no display name.
+    /// Callers that spawn many actors with the same params serialize them
+    /// once; see
     /// [`spawn_uid_with_ready`](Self::spawn_uid_with_ready) for the readiness
     /// semantics, [`Supervisor::with_labels`] for the labels, and
     /// [`Supervisor::with_display_name`] for the display name.
@@ -304,7 +307,7 @@ pub trait ActorSpawnerEndpoint {
         &self,
         cx: &impl context::Actor,
         uid: Uid,
-        params: A::Params,
+        params: SerializedParams<A>,
         liveness: KeepaliveLink,
         ready: Option<OncePortHandle<()>>,
         environment: ActorEnvironment,
@@ -330,7 +333,7 @@ pub trait ActorSpawnerEndpoint {
                 .actor_addr_uid(uid.clone()),
         );
         let actor_spawner = self.clone();
-        let gspawn = Gspawn::for_actor_uid_in_environment::<A>(uid, params, environment)?;
+        let gspawn = Gspawn::for_actor_uid_in_environment::<A>(uid, params, environment);
         let supervisor = cx.instance().spawn(
             Supervisor::bootstrap_uid(
                 liveness,

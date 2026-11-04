@@ -18,6 +18,8 @@
 //! worker as [`WorkerCommand`] messages and carry the same `session_id`; the
 //! worker accepts only the active session.
 
+use std::marker::PhantomData;
+
 use hyperactor::ActorAddr;
 use hyperactor::ActorEnvironment;
 use hyperactor::Data;
@@ -42,10 +44,39 @@ use crate::link::LinkSpec;
 pub struct Gspawn {
     actor_type: String,
     uid: Uid,
+    // Encoded as a byte string rather than a sequence of `u8`s. This is
+    // the same bincode encoding, but avoids per-byte serde calls.
+    #[serde(with = "serde_bytes")]
     params: Data,
     environment: ActorEnvironment,
 }
 wirevalue::register_type!(Gspawn);
+
+/// Spawn parameters for actor type `A`, serialized once so that many spawn
+/// requests can reuse them without re-encoding.
+pub struct SerializedParams<A> {
+    data: Data,
+    _actor: PhantomData<fn() -> A>,
+}
+
+impl<A: RemoteSpawn> SerializedParams<A> {
+    /// Serialize `params` for spawning actors of type `A`.
+    pub fn new(params: &A::Params) -> anyhow::Result<Self> {
+        Ok(Self {
+            data: bincode::serde::encode_to_vec(params, bincode::config::legacy())?,
+            _actor: PhantomData,
+        })
+    }
+}
+
+impl<A> Clone for SerializedParams<A> {
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            _actor: PhantomData,
+        }
+    }
+}
 
 impl Gspawn {
     /// Create a spawn specification for the registered actor type with a fresh
@@ -67,29 +98,24 @@ impl Gspawn {
     where
         A: RemoteSpawn + Named,
     {
-        Self::for_actor_uid_in_environment::<A>(
+        Ok(Self::for_actor_uid_in_environment::<A>(
             uid,
-            params,
+            SerializedParams::new(&params)?,
             cx.instance().actor_environment().clone(),
-        )
+        ))
     }
 
     /// Create a spawn specification for the registered actor type with an
     /// explicit uid and a caller-shaped persistent environment (AENV-4).
     pub(crate) fn for_actor_uid_in_environment<A>(
         uid: Uid,
-        params: A::Params,
+        params: SerializedParams<A>,
         environment: ActorEnvironment,
-    ) -> anyhow::Result<Self>
+    ) -> Self
     where
         A: RemoteSpawn + Named,
     {
-        Ok(Self::with_uid(
-            A::typename(),
-            uid,
-            bincode::serde::encode_to_vec(params, bincode::config::legacy())?,
-            environment,
-        ))
+        Self::with_uid(A::typename(), uid, params.data, environment)
     }
 
     pub(crate) fn with_uid(
@@ -326,3 +352,61 @@ pub enum RemoteActorDisposition {
     Unreachable,
 }
 wirevalue::register_type!(RemoteActorDisposition);
+
+#[cfg(test)]
+mod tests {
+    use wirevalue::Encoding;
+
+    use super::*;
+
+    /// [`Gspawn`] as encoded before its params were marked as bytes.
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct SeqGspawn {
+        actor_type: String,
+        uid: Uid,
+        params: Vec<u8>,
+        environment: ActorEnvironment,
+    }
+
+    #[test]
+    fn gspawn_params_wire_compatible() {
+        let params: Vec<u8> = (0..=255).collect();
+        let gspawn = Gspawn::with_uid(
+            "test",
+            Uid::anonymous(),
+            params.clone(),
+            ActorEnvironment::default(),
+        );
+        let seq = SeqGspawn {
+            actor_type: gspawn.actor_type.clone(),
+            uid: gspawn.uid.clone(),
+            params,
+            environment: gspawn.environment.clone(),
+        };
+
+        let bytes = bincode::serde::encode_to_vec(&gspawn, bincode::config::legacy()).unwrap();
+        assert_eq!(
+            bytes,
+            bincode::serde::encode_to_vec(&seq, bincode::config::legacy()).unwrap()
+        );
+        let (decoded, _): (SeqGspawn, _) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy()).unwrap();
+        assert_eq!(decoded, seq);
+
+        assert_eq!(
+            serde_json::to_vec(&gspawn).unwrap(),
+            serde_json::to_vec(&seq).unwrap()
+        );
+
+        for encoding in [Encoding::Bincode, Encoding::Json, Encoding::Multipart] {
+            let old =
+                wirevalue::Any::serialize_with_encoding_as::<Gspawn, _>(encoding, &seq).unwrap();
+            assert_eq!(
+                old,
+                wirevalue::Any::serialize_with_encoding(encoding, &gspawn).unwrap(),
+                "{encoding}"
+            );
+            assert_eq!(old.deserialized::<Gspawn>().unwrap(), gspawn, "{encoding}");
+        }
+    }
+}

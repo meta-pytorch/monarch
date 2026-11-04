@@ -38,6 +38,7 @@ use hyperactor_config::attrs::declare_attrs;
 use hyperactor_remote::ActorSpawner;
 use hyperactor_remote::ActorSpawnerEndpoint;
 use hyperactor_remote::KeepaliveLink;
+use hyperactor_remote::SerializedParams;
 use hyperactor_remote::proc_spawner::actor_spawner_uid;
 use hyperactor_telemetry::hash_to_u64;
 use ndslice::Extent;
@@ -866,7 +867,7 @@ impl ProcMeshRef {
             .to_string();
         let mut members = Vec::with_capacity(self.ranks.len());
         let mut stop_handles = Vec::with_capacity(self.ranks.len());
-        let serialized_params = bincode::serde::encode_to_vec(params, bincode::config::legacy())?;
+        let serialized_params = SerializedParams::<A>::new(params)?;
         let display_name = DataMeshDisplayName::new(
             supervision_display_name
                 .clone()
@@ -883,16 +884,6 @@ impl ProcMeshRef {
         // Each call only schedules a local supervisor that sends a one-way spawn
         // request. No rank waits for another rank's remote actor initialization.
         for (rank, proc_ref) in self.ranks.iter().enumerate() {
-            let params = match bincode::serde::decode_from_slice(
-                &serialized_params,
-                bincode::config::legacy(),
-            ) {
-                Ok((params, _)) => params,
-                Err(error) => {
-                    stop_spawned(&stop_handles, "data mesh spawn failed");
-                    return Err(error.into());
-                }
-            };
             let point = region
                 .extent()
                 .point_of_rank(rank)
@@ -913,7 +904,7 @@ impl ProcMeshRef {
             let (actor_ref, stop_handle) = match actor_spawner.spawn_uid_with_link_and_ready(
                 cx,
                 actor_mesh_id.uid().clone(),
-                params,
+                serialized_params.clone(),
                 KeepaliveLink::default(),
                 None,
                 environment,
@@ -1660,6 +1651,44 @@ mod tests {
             "every rank should be stopped once wait_for_terminal returns: {outcomes:?}"
         );
 
+        hm.shutdown(instance)
+            .await
+            .expect("host mesh shutdown should complete");
+    }
+
+    #[async_timed_test(timeout_secs = 300)]
+    #[cfg(fbcode_build)]
+    async fn spawn_data_serializes_params_once() {
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(instance, "serialize_once", extent!(gpus = 4), None, None)
+            .await
+            .expect("spawn proc mesh");
+
+        let before = testactor::SerializeCountingParams::times_serialized();
+        let mut actor_mesh: ActorMesh<testactor::SerializeCountingActor> = proc_mesh
+            .spawn_data(
+                instance,
+                ActorMeshId::instance(Label::strip("serialize_once")),
+                &testactor::SerializeCountingParams,
+                None,
+            )
+            .await
+            .expect("spawn data actor mesh");
+        assert_eq!(
+            testactor::SerializeCountingParams::times_serialized() - before,
+            1,
+            "spawning on 4 ranks should serialize the params once, not once per rank"
+        );
+
+        actor_mesh
+            .stop(instance, "test complete".to_string())
+            .expect("stop data actor mesh");
+        actor_mesh
+            .wait_for_terminal(instance)
+            .await
+            .expect("wait for data actor mesh to stop");
         hm.shutdown(instance)
             .await
             .expect("host mesh shutdown should complete");
