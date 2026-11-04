@@ -314,6 +314,26 @@ async fn unix_dial_reply_uses_symmetric_labels() {
 }
 
 #[tokio::test]
+async fn sends_from_a_thread_without_a_runtime() {
+    let path = socket_path("a");
+    let a = Arc::new(
+        VsockDatagramSocket::bind("a", &[VsockDatagramAddr::Unix(path.clone())]).expect("bind a"),
+    );
+    let b = Arc::new(VsockDatagramSocket::bind("b", &[]).expect("bind b"));
+    let destination = unix(&path);
+
+    let sender = b.clone();
+    std::thread::spawn(move || sender.try_send_to(b"ping", &destination))
+        .join()
+        .expect("sending thread must not panic")
+        .expect("send ping");
+    assert_eq!(recv(&a).await, (b"ping".to_vec(), node("b")));
+
+    a.try_send_to(b"pong", &node("b")).expect("reply to b");
+    assert_eq!(recv(&b).await, (b"pong".to_vec(), unix(&path)));
+}
+
+#[tokio::test]
 async fn hybrid_dial_speaks_connect_handshake() {
     let path = socket_path("a");
     let a =

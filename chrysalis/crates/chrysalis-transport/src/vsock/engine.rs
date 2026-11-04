@@ -21,6 +21,7 @@ use std::sync::atomic::Ordering;
 use bytes::Bytes;
 use tokio::io::unix::AsyncFd;
 use tokio::net::UnixListener;
+use tokio::runtime::Handle;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -78,6 +79,9 @@ pub(super) const QUEUE_CAPACITY: usize = 1_024;
 /// [`VsockDatagramSocket`]: super::VsockDatagramSocket
 #[derive(Debug)]
 pub(super) struct VsockDatagramEngine {
+    /// Runtime that owns every task started by this engine.
+    runtime: Handle,
+
     /// The socket's logical `node:<name>` address.
     pub(super) local_addr: DatagramAddr,
 
@@ -170,13 +174,18 @@ pub(super) enum TaskCancellation {
 impl VsockDatagramEngine {
     /// Initializes shared queues, lifecycle tracking, and cleanup metadata
     /// before any engine-owned task starts.
-    pub(super) fn new(local_addr: DatagramAddr, listener_paths: Vec<PathBuf>) -> Self {
+    pub(super) fn new(
+        runtime: Handle,
+        local_addr: DatagramAddr,
+        listener_paths: Vec<PathBuf>,
+    ) -> Self {
         let hello = encode_frame(FrameKind::Hello, local_addr.opaque());
 
         // One bounded queue merges datagrams received from every connection.
         let (receive_tx, receive_rx) = mpsc::channel(QUEUE_CAPACITY);
 
         Self {
+            runtime,
             local_addr,
             hello,
             shutdown: ShutdownState::default(),
@@ -217,7 +226,7 @@ impl VsockDatagramEngine {
         // The supervisor is deliberately not counted as an engine-owned task:
         // it waits for that count to reach zero. Start it only after every
         // accept task has been counted, so it cannot observe a false zero.
-        tokio::spawn(supervise(self.clone()));
+        self.runtime.spawn(supervise(self.clone()));
     }
 
     /// Allocates an ID for one connection attempt.
@@ -350,7 +359,7 @@ impl VsockDatagramEngine {
         }
 
         // Tokio owns both the task future and its counting guard from here.
-        tokio::spawn(async move {
+        self.runtime.spawn(async move {
             let engine = guard.0.clone();
             match cancellation {
                 TaskCancellation::ShutdownOnly => {
