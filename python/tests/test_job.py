@@ -775,6 +775,45 @@ def test_stop_job_sidecar_preserves_daemon_when_mount_cleanup_fails():
     daemon.shutdown.assert_not_called()
 
 
+def _dead_sidecar(tmp_path: pathlib.Path) -> OnceDaemon:
+    child = subprocess.Popen(["true"])
+    child.wait()
+    return OnceDaemon(str(tmp_path / "cmd.sock"), child.pid)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [FileNotFoundError(), ConnectionResetError(), BrokenPipeError(), EOFError()],
+)
+def test_stop_job_sidecar_treats_dead_sidecar_as_stopped(tmp_path, error) -> None:
+    """A sidecar killed by the same Ctrl-C as the client holds no mounts."""
+    with (
+        patch.object(js, "find_job_sidecar", return_value=_dead_sidecar(tmp_path)),
+        patch.object(OnceDaemon, "send", side_effect=error),
+    ):
+        js.stop_job_sidecar("apply_id")
+
+
+def test_stop_job_sidecar_raises_when_live_sidecar_is_unreachable(tmp_path) -> None:
+    daemon = OnceDaemon(str(tmp_path / "cmd.sock"), os.getpid())
+    with (
+        patch.object(js, "find_job_sidecar", return_value=daemon),
+        patch.object(js, "_SIDECAR_EXIT_GRACE_S", 0.0),
+        pytest.raises(FileNotFoundError),
+    ):
+        js.stop_job_sidecar("apply_id")
+
+
+def test_kill_reaps_workers_when_sidecar_is_dead(tmp_path) -> None:
+    job = MockJobTrait()
+    job.apply()
+    with patch.object(js, "find_job_sidecar", return_value=_dead_sidecar(tmp_path)):
+        job.kill()
+
+    assert job.kill_called
+    assert not job.active
+
+
 @pytest.mark.parametrize("reuse_handle", [False, True])
 def test_stop_job_sidecar_retries_with_retained_exception(reuse_handle: bool) -> None:
     tempdir = tempfile.TemporaryDirectory(prefix="monarch_sidecar_", dir="/tmp")
