@@ -6469,9 +6469,9 @@ dependencies = [
 
 [[package]]
 name = "rattler_conda_types"
-version = "0.49.1"
+version = "0.50.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "058c739d6ea6b3f429443f9d7117022330049bdb1cdde7b46622662463bd5cc0"
+checksum = "2becf7d5e10e770b597acc91de1c0b79d2a5ff83a5acabe3480f2eb71bdd865c"
 dependencies = [
  "ahash",
  "core-foundation 0.10.1",
