@@ -260,11 +260,12 @@ impl VsockDatagramSocket {
     /// one later when needed.
     ///
     /// This function starts listener tasks and must be called inside a Tokio
-    /// runtime.
+    /// runtime. The socket keeps that runtime for work started by later sends,
+    /// which may come from threads without a runtime of their own.
     pub fn bind(name: &str, listen: &[VsockDatagramAddr]) -> io::Result<Self> {
         // Validate the logical address and runtime before acquiring listeners.
         let local_addr = DatagramAddr::try_from(&VsockDatagramAddr::Node(name.to_owned()))?;
-        tokio::runtime::Handle::try_current().map_err(io::Error::other)?;
+        let runtime = tokio::runtime::Handle::try_current().map_err(io::Error::other)?;
 
         // Bind every listener before starting tasks. If any bind fails, release
         // every Unix path created earlier in this call.
@@ -294,7 +295,11 @@ impl VsockDatagramSocket {
         }
 
         // Create the shared queues and shutdown tracking before tasks start.
-        let engine = Arc::new(VsockDatagramEngine::new(local_addr, listener_paths));
+        let engine = Arc::new(VsockDatagramEngine::new(
+            runtime,
+            local_addr,
+            listener_paths,
+        ));
         // Move each bound listener into a task that accepts peer connections.
         engine.start_tasks(unix_listeners, native_listeners);
         // The socket owns the original Arc; its tasks hold only engine clones.
