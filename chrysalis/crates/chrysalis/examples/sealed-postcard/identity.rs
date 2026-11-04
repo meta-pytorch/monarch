@@ -15,7 +15,7 @@ use rcgen::IsCa;
 use rcgen::KeyPair;
 use rcgen::KeyUsagePurpose;
 
-pub(crate) fn mutually_trusted_identities<const N: usize>() -> [QuicIdentity; N] {
+pub(crate) fn mutually_trusted_bundles<const N: usize>() -> [String; N] {
     let mut issuer_params = CertificateParams::default();
     issuer_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     issuer_params.key_usages = vec![
@@ -41,12 +41,17 @@ pub(crate) fn mutually_trusted_identities<const N: usize>() -> [QuicIdentity; N]
         let certificate = params
             .signed_by(&key, &issuer)
             .expect("sign test certificate");
-        QuicIdentity::new(
-            certificate.der().as_ref(),
-            format!("{}\n{}", certificate.pem().trim_end(), trust_roots).into_bytes(),
-            key.serialize_pem().into_bytes(),
-            trust_roots.as_bytes().to_vec(),
-            "localhost",
+        format!(
+            "{}\n{}\n{}",
+            certificate.pem().trim_end(),
+            trust_roots.trim_end(),
+            key.serialize_pem().trim_end(),
         )
+    })
+}
+
+pub(crate) fn mutually_trusted_identities<const N: usize>() -> [QuicIdentity; N] {
+    mutually_trusted_bundles::<N>().map(|bundle| {
+        QuicIdentity::from_pem_bundle(&bundle, "localhost").expect("load generated identity bundle")
     })
 }
