@@ -2414,7 +2414,9 @@ mod tests {
     use hyperactor::id::Label;
     use hyperactor::testing::ids::test_port_id;
     use hyperactor_mesh::Error as MeshError;
+    use hyperactor_mesh::host_mesh::HostMeshRef;
     use hyperactor_mesh::host_mesh::host_agent::ProcState;
+    use hyperactor_mesh::mesh_id::HostMeshId;
     use hyperactor_mesh::mesh_id::ResourceId;
     use hyperactor_mesh::resource::Status;
     use hyperactor_mesh::resource::{self};
@@ -2542,11 +2544,16 @@ mod tests {
                 hyperactor::ActorRef::attest(
                     proc_addr.actor_addr(hyperactor_mesh::proc_agent::PROC_AGENT_ACTOR_NAME),
                 );
-            let proc_ref = hyperactor_mesh::proc_mesh::ProcRef::new(proc_addr, 0, agent);
+            let proc_ref = hyperactor_mesh::proc_mesh::ProcRef::new(proc_addr.clone(), 0, agent);
+            let host_mesh = HostMeshRef::from_hosts(
+                HostMeshId::singleton(Label::new("host").unwrap()),
+                vec![proc_addr],
+            );
             MeshRef::Proc(Box::new(
                 hyperactor_mesh::proc_mesh::ProcMeshRef::new_singleton(
                     hyperactor_mesh::mesh_id::ProcMeshId::singleton(Label::new(label).unwrap()),
                     proc_ref,
+                    &host_mesh,
                 )
                 .unwrap(),
             ))
