@@ -485,3 +485,168 @@ def test_failed_send_drops_frame_and_next_send_reconnects(monkeypatch, caplog):
     assert rows[-1][1]["status"] == "succeeded"
     assert rows[-1][1]["error"] == "Telemetry incomplete: 1 rank reports unavailable"
     assert sum("telemetry unavailable" in r.message for r in caplog.records) == 1
+
+
+def test_cli_records_one_invocation_across_meshes_with_rank_results(
+    collector, monkeypatch
+):
+    from unittest.mock import MagicMock
+
+    from monarch._src.job import job
+    from monarch._src.tools import commands
+
+    apply_id, frames, done = collector
+    spec = MagicMock()
+    spec.apply_id = apply_id
+    spec.state.return_value._hosts = {"first": MagicMock(), "second": MagicMock()}
+    spec._components.mounts.python_executable_for_mesh.return_value = None
+    monkeypatch.setattr(commands, "load_current_job", lambda: spec)
+    monkeypatch.setattr(
+        commands, "_output_dir_for_job", lambda job: ("/tmp/output", "Output directory")
+    )
+    calls = []
+
+    def execute(mesh, cmd, **kwargs):
+        calls.append(kwargs["_execution_id"])
+        code = 7 if len(calls) == 1 else 0
+        kwargs["_result_callback"](
+            "rank0", {"returncode": code, "stdout": "", "stderr": ""}
+        )
+        future = MagicMock()
+        future.get.return_value = code
+        return future
+
+    monkeypatch.setattr(job, "exec_command", execute)
+    assert commands.exec_on_job(["python", "train.py"], run_all=True) == 7
+    assert done.wait(3)
+    assert len(calls) == 2 and calls[0] == calls[1]
+    assert len([batch for table, batch in frames if table == "executions"]) == 1
+    ranks = [
+        row
+        for table, batch in frames
+        if table == "execution_rank_results"
+        for row in batch.to_pylist()
+    ]
+    assert {row["mesh"] for row in ranks} == {"first", "second"}
+    assert frames[-1][1].to_pylist()[0]["status"] == "failed"
+
+
+def test_cli_cleanup_error_is_preserved_in_execution_history(collector, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from monarch._src.job import job
+    from monarch._src.tools import commands
+
+    apply_id, frames, done = collector
+    spec = MagicMock()
+    spec.apply_id = apply_id
+    spec.state.return_value._hosts = {"workers": MagicMock()}
+    spec._components.mounts.python_executable_for_mesh.return_value = None
+    monkeypatch.setattr(commands, "load_current_job", lambda: spec)
+
+    def execute(*args, **kwargs):
+        future = MagicMock()
+        future.get.side_effect = RuntimeError("process cleanup failed")
+        return future
+
+    monkeypatch.setattr(job, "exec_command", execute)
+    with pytest.raises(RuntimeError, match="process cleanup failed"):
+        commands.exec_on_job(["true"])
+    assert done.wait(3)
+    result = frames[-1][1].to_pylist()[0]
+    assert result["status"] == "failed"
+    assert "process cleanup failed" in result["error"]
+
+
+def test_cli_interrupt_records_terminal_interruption(collector, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from monarch._src.job import job
+    from monarch._src.tools import commands
+
+    apply_id, frames, done = collector
+    started, released = threading.Event(), threading.Event()
+    spec = MagicMock()
+    spec.apply_id = apply_id
+    spec.state.return_value._hosts = {
+        "first": MagicMock(),
+        "second": MagicMock(),
+    }
+    spec._components.mounts.python_executable_for_mesh.return_value = None
+    monkeypatch.setattr(commands, "load_current_job", lambda: spec)
+    monkeypatch.setattr(history, "HEARTBEAT_SECS", 0.01)
+
+    calls = []
+
+    def execute(mesh, *args, **kwargs):
+        calls.append(mesh)
+        future = MagicMock()
+
+        def observe():
+            started.set()
+            assert released.wait(3)
+            kwargs["_result_callback"]("rank0", {"returncode": 7})
+            return 7
+
+        future.get.side_effect = observe
+        return future
+
+    monkeypatch.setattr(job, "exec_command", execute)
+    import os
+    import signal
+
+    def interrupt_observer():
+        assert started.wait(3)
+        time.sleep(0.02)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    # Tool execution can inherit a blocked SIGINT mask; emulate a normal terminal.
+    old_mask = signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGINT])
+    interrupter = threading.Thread(target=interrupt_observer, daemon=True)
+    interrupter.start()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            commands.exec_on_job(["sleep", "1"])
+        assert done.wait(3)
+        events = [
+            row
+            for table, batch in frames
+            if table == "execution_status_events"
+            for row in batch.to_pylist()
+        ]
+        assert events[-1]["status"] == "interrupted"
+        assert events[-1]["returncode"] is None
+        assert "KeyboardInterrupt" in events[-1]["error"]
+        assert calls == [spec.state.return_value._hosts["first"]]
+    finally:
+        released.set()
+        interrupter.join(3)
+        assert done.wait(3)
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+
+
+def test_command_cleanup_failure_is_recorded(collector, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from monarch._src.job import job
+    from monarch._src.tools import commands
+
+    apply_id, frames, done = collector
+    spec = MagicMock()
+    spec.apply_id = apply_id
+    spec.state.return_value._hosts = {"workers": MagicMock()}
+    spec._components.mounts.python_executable_for_mesh.return_value = None
+    monkeypatch.setattr(commands, "load_current_job", lambda: spec)
+
+    def execute(*args, **kwargs):
+        kwargs["_result_callback"]("rank0", {"returncode": 0})
+        future = MagicMock()
+        future.get.side_effect = RuntimeError("command cleanup failed")
+        return future
+
+    monkeypatch.setattr(job, "exec_command", execute)
+    with pytest.raises(RuntimeError, match="command cleanup failed"):
+        commands.exec_on_job(["true"])
+    assert done.wait(3)
+    assert frames[-1][1].to_pylist()[0]["status"] == "failed"
+    assert "command cleanup failed" in frames[-1][1].to_pylist()[0]["error"]

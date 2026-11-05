@@ -25,9 +25,11 @@ import sys
 import tempfile
 import time
 from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, TYPE_CHECKING, Union
 
+from monarch._src.job.execution_history import ExecutionRecorder
 from monarch.tools.colors import CYAN, ENDC
 from monarch.tools.utils import MONARCH_HOME
 
@@ -655,6 +657,10 @@ def exec_on_job(
     shell commands still run as subprocesses. The interpreter's environment
     must have Monarch installed.
 
+    With telemetry enabled, command arguments, directories, and error messages
+    are retained as plaintext for the sidecar lifetime. Pass credentials through
+    environment variables or files instead of command arguments.
+
     Returns the process exit code (max across targeted ranks).
     """
     from monarch._src.job.job import exec_command  # pyre-ignore[21]
@@ -707,35 +713,50 @@ def exec_on_job(
         print(report)
 
     # ── Execute ────────────────────────────────────────────────────────────
+    recorder = ExecutionRecorder(
+        job.apply_id, cmd, workdir, output_dir, script, script_text
+    )
     max_rc = 0
-    for name, host_mesh in target_meshes:
-        # Use --python-executable if given, else the mesh's configured python_exe.
-        # Prepend its directory to PATH so "python" resolves to the same one.
-        mesh_env = dict(env_dict)
-        exe = python_executable
-        if exe is not None:
-            host_mesh = host_mesh.with_python_executable(exe)
-        else:
-            exe = job._components.mounts.python_executable_for_mesh(name)
-        if exe is not None:
-            bin_dir = os.path.dirname(exe)
-            existing_path = mesh_env.get("PATH", os.environ.get("PATH", ""))
-            mesh_env["PATH"] = f"{bin_dir}:{existing_path}"
-        rc = exec_command(
-            host_mesh,
-            cmd,
-            env=mesh_env,
-            workdir=workdir,
-            output_dir=output_dir,
-            rank=rank,
-            point=point,
-            per_host=per_host,
-        ).get()
-        max_rc = max(max_rc, rc)
+    error: BaseException | None = None
+    try:
+        for name, host_mesh in target_meshes:
+            # Use --python-executable if given, else the configured interpreter.
+            mesh_env = dict(env_dict)
+            exe = python_executable
+            if exe is not None:
+                host_mesh = host_mesh.with_python_executable(exe)
+            else:
+                exe = job._components.mounts.python_executable_for_mesh(name)
+            if exe is not None:
+                bin_dir = os.path.dirname(exe)
+                existing_path = mesh_env.get("PATH", os.environ.get("PATH", ""))
+                mesh_env["PATH"] = f"{bin_dir}:{existing_path}"
+            reporting: dict[str, Any] = {}
+            if recorder.id is not None:
+                reporting = {
+                    "_execution_id": recorder.id,
+                    "_result_callback": partial(recorder.record_rank, name),
+                }
+            rc = exec_command(
+                host_mesh,
+                cmd,
+                env=mesh_env,
+                workdir=workdir,
+                output_dir=output_dir,
+                rank=rank,
+                point=point,
+                per_host=per_host,
+                **reporting,
+            ).get()
+            max_rc = max(max_rc, rc)
+    except BaseException as caught:  # noqa: B036
+        error = caught
+        raise
+    finally:
+        recorder.finish(None if error is not None else max_rc, error)
 
     if kill:
         _kill_job(job, state._hosts.values())
-
     return max_rc
 
 
