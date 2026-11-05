@@ -34,6 +34,7 @@ pub use proc_spawner::ProcSpawnerEndpoint;
 pub use proto::Gspawn;
 pub use proto::OrphanPolicy;
 pub use proto::RemoteActorDisposition;
+pub use proto::SerializedParams;
 pub use proto::SpawnActor;
 pub use proto::SpawnProc;
 pub use proto::Supervise;
