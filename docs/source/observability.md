@@ -12,7 +12,7 @@ and can independently export metrics, logs, and spans to external backends.
 | Use case | Surface | What it provides |
 |----------|---------|------------------|
 | Query actor, mesh, message, trace, metric, and host resource history | [Distributed telemetry](distributed-telemetry) | DataFusion SQL across host-local collectors |
-| Monitor topology, status, failures, and traffic in a browser | [Monarch Dashboard](monarch-dashboard) | Live summaries, hierarchy views, and a job DAG |
+| Monitor topology, status, failures, traffic, and resources in a browser | [Monarch Dashboard](monarch-dashboard) | Live summaries, hierarchy views, host and GPU resources, and a job DAG |
 | Trace endpoint calls and handler execution across a job | [Actor profiling](profiling) | Perfetto traces grouped by process and actor, with call-to-handler links |
 | Diagnose a running mesh from a terminal | [Mesh Admin TUI](admin-tui) | Live topology, health checks, and py-spy stack traces |
 | Export metrics, logs, and spans to an external backend | [OpenTelemetry](opentelemetry) | OTLP export to systems such as Prometheus and Loki |
