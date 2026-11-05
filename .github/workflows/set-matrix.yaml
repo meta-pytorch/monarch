@@ -50,15 +50,17 @@ jobs:
           # ship cu132 via publish_release.yml on a CPU runner.
 
           # Define test matrices. python-version picks the build artifact to
-          # test. ROCm uses 3.12: the rocm10.1 nightly has no cp310 torch, so
-          # on 3.10 pip silently falls back to PyPI's CUDA torch.
-          CUDA='{"name": "cuda", "python-version": "3.10", "runner": "${{ inputs.runner-cuda }}", "gpu-arch-type": "cuda", "gpu-arch-version": "13.0", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
+          # test. ROCm uses 3.12: the rocm10.1 nightly has no cp310/cp311
+          # torch for current nightlies, so an older python can silently fall
+          # back to PyPI's CUDA torch via --extra-index-url.
+          CUDA='{"name": "cuda", "python-version": "3.11", "runner": "${{ inputs.runner-cuda }}", "gpu-arch-type": "cuda", "gpu-arch-version": "13.0", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
           ROCM_100='{"name": "rocm10.0", "python-version": "3.12", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "10.0", "docker-image": "pytorch/manylinux2_28-builder:rocm10.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm10.0/"}'
           ROCM_101='{"name": "rocm10.1", "python-version": "3.12", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "10.1", "docker-image": "pytorch/manylinux2_28-builder:rocm10.1", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm10.1/"}'
 
           # Define build matrices (includes python-version)
-          CUDA_PY310='{"name": "cuda", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
+          CUDA_PY311='{"name": "cuda", "python-version": "3.11", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
           CUDA_PY312='{"name": "cuda", "python-version": "3.12", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
+          CUDA_PY314='{"name": "cuda", "python-version": "3.14", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
           ROCM_100_PY312='{"name": "rocm10.0", "python-version": "3.12", "docker-image": "pytorch/manylinux2_28-builder:rocm10.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm10.0/"}'
           ROCM_101_PY312='{"name": "rocm10.1", "python-version": "3.12", "docker-image": "pytorch/manylinux2_28-builder:rocm10.1", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm10.1/"}'
 
@@ -72,9 +74,9 @@ jobs:
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
             BUILD_MATRIX="[$ROCM_100_PY312, $ROCM_101_PY312]"
           elif [[ "$IS_PUSH" == "true" ]]; then
-            BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312, $ROCM_100_PY312, $ROCM_101_PY312]"
+            BUILD_MATRIX="[$CUDA_PY311, $CUDA_PY312, $CUDA_PY314, $ROCM_100_PY312, $ROCM_101_PY312]"
           else
-            BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312]"
+            BUILD_MATRIX="[$CUDA_PY311, $CUDA_PY312, $CUDA_PY314]"
           fi
 
           # Test matrix: ROCm tested on a manual ciflow/rocm tag and on pushes
