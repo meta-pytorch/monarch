@@ -1243,3 +1243,236 @@ fn reset_fences_later_sends_and_stop_is_a_terminal_receive_control() {
         },
     );
 }
+
+/// quiche must deliver a FIN that is written as a separate, empty STREAM frame
+/// after all of the stream's data is acknowledged, even when a late
+/// acknowledgement of a retransmitted copy of that data follows it.
+///
+/// quiche 0.29.3 counts such a send half complete before its FIN is
+/// acknowledged and collects the stream on the late acknowledgement, so the FIN
+/// is never sent, or never resent if its packet is lost
+/// (<https://github.com/cloudflare/quiche/issues/2525>). The Reindeer overlay in
+/// `third-party/rust/fixups/quiche` carries the upstream fix, cloudflare/quiche
+/// `af8788e0`. These tests drive two `quiche::Connection`s directly, so they
+/// fail if a quiche without that fix is vendored.
+mod empty_fin_after_acknowledged_data {
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    use tempfile::TempDir;
+
+    use super::configure_quic;
+    use super::write_certificate;
+
+    const CLIENT: &str = "127.0.0.1:1000";
+    const SERVER: &str = "127.0.0.1:2000";
+    const STREAM: u64 = 0;
+    const MAX_ROUNDS: usize = 20;
+
+    /// What happens after Bob writes his empty FIN.
+    #[derive(Clone, Copy, Debug)]
+    enum Schedule {
+        /// The FIN packet reaches Alice; A2 never reaches Bob.
+        FinDelivered,
+        /// The FIN packet is emitted, A2 reaches Bob while it is in flight,
+        /// then the FIN packet reaches Alice.
+        LateAckWhileFinInFlight,
+        /// The FIN packet is emitted and lost, then A2 reaches Bob.
+        LateAckAfterFinLost,
+        /// A2 reaches Bob before the FIN packet is emitted.
+        LateAckBeforeFinEmitted,
+    }
+
+    fn address(address: &str) -> SocketAddr {
+        address.parse().unwrap()
+    }
+
+    fn emit(connection: &mut quiche::Connection) -> Vec<Vec<u8>> {
+        let mut packets = Vec::new();
+        let mut buffer = [0; 1500];
+        loop {
+            match connection.send(&mut buffer) {
+                Ok((length, _)) => packets.push(buffer[..length].to_vec()),
+                Err(quiche::Error::Done) => return packets,
+                Err(error) => panic!("quiche send failed: {error:?}"),
+            }
+        }
+    }
+
+    fn deliver(connection: &mut quiche::Connection, packets: Vec<Vec<u8>>, from: &str, to: &str) {
+        let info = quiche::RecvInfo {
+            from: address(from),
+            to: address(to),
+        };
+        for mut packet in packets {
+            connection
+                .recv(&mut packet, info)
+                .expect("quiche should accept the packet");
+        }
+    }
+
+    fn fire_timer(connection: &mut quiche::Connection) {
+        let timeout = connection
+            .timeout()
+            .expect("an open connection should have a timer");
+        std::thread::sleep(timeout + Duration::from_millis(1));
+        connection.on_timeout();
+    }
+
+    /// Exchanges packets in both directions until neither side has anything to
+    /// send without a timer firing.
+    fn settle(client: &mut quiche::Connection, server: &mut quiche::Connection) {
+        for _ in 0..MAX_ROUNDS {
+            let to_server = emit(client);
+            let to_client = emit(server);
+            if to_server.is_empty() && to_client.is_empty() {
+                return;
+            }
+            deliver(server, to_server, CLIENT, SERVER);
+            deliver(client, to_client, SERVER, CLIENT);
+        }
+        panic!("packet exchange did not settle in {MAX_ROUNDS} rounds");
+    }
+
+    /// Returns the packets `connection` sends next, firing its timer until it
+    /// has some.
+    fn next_flight(connection: &mut quiche::Connection) -> Vec<Vec<u8>> {
+        for _ in 0..MAX_ROUNDS {
+            let packets = emit(connection);
+            if !packets.is_empty() {
+                return packets;
+            }
+            fire_timer(connection);
+        }
+        panic!("no packet after {MAX_ROUNDS} timer rounds");
+    }
+
+    fn run(schedule: Schedule) {
+        let directory = TempDir::new().unwrap();
+        let (certificate, key, _) = write_certificate(directory.path());
+        let mut client_config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
+        configure_quic(&mut client_config);
+        client_config.verify_peer(false);
+        client_config.enable_pacing(false);
+        let mut server_config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
+        configure_quic(&mut server_config);
+        server_config
+            .load_cert_chain_from_pem_file(&certificate)
+            .unwrap();
+        server_config.load_priv_key_from_pem_file(&key).unwrap();
+        server_config.enable_pacing(false);
+        let mut alice = quiche::connect(
+            Some("localhost"),
+            &quiche::ConnectionId::from_ref(&[1; 16]),
+            address(CLIENT),
+            address(SERVER),
+            &mut client_config,
+        )
+        .unwrap();
+        let mut bob = quiche::accept(
+            &quiche::ConnectionId::from_ref(&[2; 16]),
+            None,
+            address(SERVER),
+            address(CLIENT),
+            &mut server_config,
+        )
+        .unwrap();
+        settle(&mut alice, &mut bob);
+        assert!(
+            alice.is_established() && bob.is_established(),
+            "handshake did not complete"
+        );
+
+        // Alice sends one byte and her FIN; Bob reads both.
+        let mut buffer = [0; 16];
+        alice.stream_send(STREAM, b"x", true).unwrap();
+        settle(&mut alice, &mut bob);
+        assert_eq!(bob.stream_recv(STREAM, &mut buffer).unwrap(), (1, true));
+        settle(&mut alice, &mut bob);
+
+        // Bob echoes one byte in P1. Alice reads it and acknowledges it in A1,
+        // which is held back.
+        bob.stream_send(STREAM, b"y", false).unwrap();
+        let p1 = emit(&mut bob);
+        assert!(!p1.is_empty(), "Bob sent no packet for his byte");
+        deliver(&mut alice, p1, SERVER, CLIENT);
+        assert_eq!(alice.stream_recv(STREAM, &mut buffer).unwrap(), (1, false));
+        let a1 = next_flight(&mut alice);
+
+        // Bob's probe timer fires and P2 resends the byte. Alice acknowledges
+        // P1 and P2 in A2, which is also held back.
+        fire_timer(&mut bob);
+        let p2 = emit(&mut bob);
+        assert!(!p2.is_empty(), "Bob's probe timer sent no packet");
+        deliver(&mut alice, p2, SERVER, CLIENT);
+        let a2 = next_flight(&mut alice);
+
+        // A1 acknowledges Bob's byte, so his FIN is an empty frame.
+        deliver(&mut bob, a1, CLIENT, SERVER);
+        assert_eq!(bob.stream_send(STREAM, &[], true).unwrap(), 0);
+
+        match schedule {
+            Schedule::FinDelivered => {
+                let fin = emit(&mut bob);
+                deliver(&mut alice, fin, SERVER, CLIENT);
+            }
+            Schedule::LateAckWhileFinInFlight => {
+                let fin = emit(&mut bob);
+                deliver(&mut bob, a2, CLIENT, SERVER);
+                deliver(&mut alice, fin, SERVER, CLIENT);
+            }
+            Schedule::LateAckAfterFinLost => {
+                let _lost = emit(&mut bob);
+                deliver(&mut bob, a2, CLIENT, SERVER);
+            }
+            Schedule::LateAckBeforeFinEmitted => {
+                deliver(&mut bob, a2, CLIENT, SERVER);
+            }
+        }
+
+        for _ in 0..MAX_ROUNDS {
+            settle(&mut alice, &mut bob);
+            match alice.stream_recv(STREAM, &mut buffer) {
+                Ok((0, true)) => return,
+                Err(quiche::Error::Done) => {}
+                other => panic!("{schedule:?}: Alice read {other:?} instead of Bob's FIN"),
+            }
+            assert!(
+                !alice.is_closed() && !bob.is_closed(),
+                "{schedule:?}: the connection closed before Bob's FIN arrived; Bob's stats: {:?}",
+                bob.stats()
+            );
+            fire_timer(&mut bob);
+        }
+        panic!(
+            "{schedule:?}: Bob's FIN did not arrive in {MAX_ROUNDS} rounds; Bob's stats: {:?}",
+            bob.stats()
+        );
+    }
+
+    #[test]
+    fn fin_arrives_when_its_packet_is_delivered() {
+        run(Schedule::FinDelivered);
+    }
+
+    #[test]
+    fn fin_arrives_when_a_late_ack_finds_it_in_flight() {
+        run(Schedule::LateAckWhileFinInFlight);
+    }
+
+    #[test]
+    // TODO: OSS: the Cargo build pins quiche without cloudflare/quiche
+    // af8788e0, which only the Buck overlay carries, so this fails there.
+    #[cfg_attr(not(fbcode_build), ignore)]
+    fn fin_is_resent_when_a_late_ack_follows_its_lost_packet() {
+        run(Schedule::LateAckAfterFinLost);
+    }
+
+    #[test]
+    // TODO: OSS: the Cargo build pins quiche without cloudflare/quiche
+    // af8788e0, which only the Buck overlay carries, so this fails there.
+    #[cfg_attr(not(fbcode_build), ignore)]
+    fn fin_is_sent_when_a_late_ack_precedes_its_packet() {
+        run(Schedule::LateAckBeforeFinEmitted);
+    }
+}
