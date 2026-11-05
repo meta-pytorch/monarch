@@ -77,6 +77,7 @@ if TYPE_CHECKING:
             prefix_with_rank: NotRequired[bool]
             actor_spawn_max_idle: NotRequired[str]
             get_actor_state_max_idle: NotRequired[str]
+            use_direct_spawn: NotRequired[bool]
             supervision_watchdog_timeout: NotRequired[str]
             proc_stop_max_idle: NotRequired[str]
             get_proc_state_max_idle: NotRequired[str]
@@ -171,6 +172,7 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
         Proc mesh timeouts:
             actor_spawn_max_idle: Maximum idle time while spawning actors (humantime).
             get_actor_state_max_idle: Maximum idle time for actor state queries (humantime).
+            use_direct_spawn: Use data-backed actor meshes for ordinary instance actor mesh spawns.
             supervision_watchdog_timeout: Watchdog timeout for the actor-mesh supervision stream; prolonged
                 silence is interpreted as the controller being unreachable (humantime).
 

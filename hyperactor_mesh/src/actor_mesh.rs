@@ -265,9 +265,10 @@ impl<A: Referable> ActorMesh<A> {
     ///
     /// A managed mesh posts `Stop` to its controller, which stops the actors
     /// and records their final statuses. A data mesh signals each rank's local
-    /// supervisor proxy, which forwards the stop and exits. Either way the mesh
-    /// is no longer usable once this returns. The shared stop fence makes a
-    /// data mesh stop one-shot across owner clones.
+    /// supervisor proxy, which forwards the stop and exits; a rank whose proxy
+    /// has already exited, for example because its actor failed, is skipped.
+    /// Either way the mesh is no longer usable once this returns. The shared
+    /// stop fence makes a data mesh stop one-shot across owner clones.
     pub fn stop(&mut self, cx: &impl context::Actor, reason: String) -> crate::Result<()> {
         if let ActorMeshLifecycle::Data {
             stop_handles,
@@ -283,18 +284,10 @@ impl<A: Referable> ActorMesh<A> {
                 !stop_handles.is_empty(),
                 "live data actor mesh must own actors"
             );
-            let mut stop_error = None;
             for handle in &stop_handles {
-                if let Err(error) = handle.stop(&reason)
-                    && stop_error.is_none()
-                {
-                    stop_error = Some(error);
-                }
+                let _ = handle.stop(&reason);
             }
-            return match stop_error {
-                Some(error) => Err(Error::Other(anyhow::Error::new(error))),
-                None => Ok(()),
-            };
+            return Ok(());
         }
         // Remove the controller so all future meshes
         // created from this one (such as slices) know they are already stopped.

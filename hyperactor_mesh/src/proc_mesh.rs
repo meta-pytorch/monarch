@@ -38,7 +38,9 @@ use hyperactor_config::attrs::declare_attrs;
 use hyperactor_remote::ActorSpawner;
 use hyperactor_remote::ActorSpawnerEndpoint;
 use hyperactor_remote::KeepaliveLink;
+use hyperactor_remote::OrphanPolicy;
 use hyperactor_remote::SerializedParams;
+use hyperactor_remote::SupervisionOptions;
 use hyperactor_remote::proc_spawner::actor_spawner_uid;
 use hyperactor_telemetry::hash_to_u64;
 use ndslice::Extent;
@@ -72,6 +74,7 @@ use crate::mesh_id::ProcMeshId;
 use crate::mesh_id::ResourceId;
 use crate::proc_agent;
 use crate::proc_agent::ActorState;
+use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
 use crate::proc_agent::ProcAgent;
 use crate::resource;
 use crate::resource::GetRankStatus;
@@ -847,20 +850,12 @@ impl ProcMeshRef {
                 "data-backed actor meshes require instance ids"
             )));
         }
-        self.spawn_data_mesh_inner(cx, params, actor_mesh_id, supervision_display_name)
-    }
-
-    fn spawn_data_mesh_inner<A: RemoteSpawn, C: context::Actor>(
-        &self,
-        cx: &C,
-        params: &A::Params,
-        actor_mesh_id: ActorMeshId,
-        supervision_display_name: Option<String>,
-    ) -> crate::Result<ActorMesh<A>>
-    where
-        A::Params: RemoteMessage,
-    {
         let region = self.region().clone();
+        if self.ranks.is_empty() {
+            return Err(Error::ConfigurationError(anyhow::anyhow!(
+                "cannot spawn an empty actor mesh"
+            )));
+        }
         let actor_type = Remote::collect()
             .name_of::<A>()
             .ok_or(Error::ActorTypeNotRegistered(type_name::<A>().to_string()))?
@@ -868,6 +863,7 @@ impl ProcMeshRef {
         let mut members = Vec::with_capacity(self.ranks.len());
         let mut stop_handles = Vec::with_capacity(self.ranks.len());
         let serialized_params = SerializedParams::<A>::new(params)?;
+        let (liveness, options) = data_mesh_supervision();
         let display_name = DataMeshDisplayName::new(
             supervision_display_name
                 .clone()
@@ -905,7 +901,8 @@ impl ProcMeshRef {
                 cx,
                 actor_mesh_id.uid().clone(),
                 serialized_params.clone(),
-                KeepaliveLink::default(),
+                liveness.clone(),
+                options.clone(),
                 None,
                 environment,
                 labels,
@@ -1061,7 +1058,8 @@ impl ProcMeshRef {
             && actor_mesh_id.uid().is_instance()
         {
             return self
-                .spawn_data_mesh_inner(cx, params, actor_mesh_id, supervision_display_name)
+                .spawn_data(cx, actor_mesh_id, params, supervision_display_name)
+                .await
                 .map(SpawnedActorMesh::Data);
         }
 
@@ -1071,7 +1069,7 @@ impl ProcMeshRef {
         Ok(SpawnedActorMesh::Managed { mesh, statuses })
     }
 
-    /// The managed spawn path used by singleton services and by ordinary
+    /// The managed spawn path used by singleton services and ordinary instance
     /// spawns when [`USE_DIRECT_SPAWN`] is disabled: the create/update cast,
     /// the accumulator port, the bounded
     /// `GetRankStatus::wait` with terminal / timeout mapping, mesh
@@ -1432,6 +1430,26 @@ impl view::RankedSliceable for ProcMeshRef {
     }
 }
 
+/// The keepalive link and supervision options for data mesh workers, derived
+/// from [`MESH_ORPHAN_TIMEOUT`]. Without an orphan timeout, the keepalive still
+/// detects failures for the owner, but a worker that loses its owner leaves
+/// the actor running.
+fn data_mesh_supervision() -> (KeepaliveLink, SupervisionOptions) {
+    let Some(timeout) = hyperactor_config::global::get(MESH_ORPHAN_TIMEOUT) else {
+        return (
+            KeepaliveLink::default(),
+            SupervisionOptions {
+                orphan_policy: OrphanPolicy::Detach,
+            },
+        );
+    };
+    let interval = (timeout / 2).max(Duration::from_millis(1));
+    (
+        KeepaliveLink::new(interval, timeout),
+        SupervisionOptions::default(),
+    )
+}
+
 /// Extract a Python class display name from a supervision display name.
 ///
 /// The supervision display name format is `{instance}.<{module}.{ClassName} {mesh_name}>`.
@@ -1468,7 +1486,6 @@ mod tests {
     use std::net::SocketAddr;
     #[cfg(fbcode_build)]
     use std::ops::Deref;
-    #[cfg(fbcode_build)]
     use std::time::Duration;
 
     #[cfg(fbcode_build)]
@@ -1496,6 +1513,9 @@ mod tests {
     use hyperactor_config::Flattrs;
     #[cfg(fbcode_build)]
     use hyperactor_config::NonZeroUsize;
+    use hyperactor_remote::KeepaliveLink;
+    use hyperactor_remote::OrphanPolicy;
+    use hyperactor_remote::SupervisionOptions;
     #[cfg(fbcode_build)]
     use hyperactor_telemetry::EntityEvent;
     #[cfg(fbcode_build)]
@@ -1527,6 +1547,7 @@ mod tests {
     use super::ProcRef;
     #[cfg(fbcode_build)]
     use super::USE_DIRECT_SPAWN;
+    use super::data_mesh_supervision;
     #[cfg(fbcode_build)]
     use super::telemetry_data_actor_mesh_id;
     #[cfg(fbcode_build)]
@@ -1547,6 +1568,7 @@ mod tests {
     use crate::mesh_id::ActorMeshId;
     #[cfg(fbcode_build)]
     use crate::mesh_id::ProcMeshId;
+    use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
     #[cfg(fbcode_build)]
     use crate::proc_agent::PROC_AGENT_ACTOR_NAME;
     #[cfg(fbcode_build)]
@@ -1561,6 +1583,32 @@ mod tests {
     use crate::testing;
     #[cfg(fbcode_build)]
     use crate::transport::DEFAULT_TRANSPORT;
+
+    #[test]
+    fn data_mesh_supervision_follows_orphan_timeout() {
+        let config = hyperactor_config::global::lock();
+        {
+            let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, Some(Duration::from_secs(10)));
+            assert_eq!(
+                data_mesh_supervision(),
+                (
+                    KeepaliveLink::new(Duration::from_secs(5), Duration::from_secs(10)),
+                    SupervisionOptions {
+                        orphan_policy: OrphanPolicy::Stop,
+                    },
+                ),
+                "an orphan timeout should stop actors whose owner is lost"
+            );
+        }
+
+        let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, None);
+        let (_, options) = data_mesh_supervision();
+        assert_eq!(
+            options.orphan_policy,
+            OrphanPolicy::Detach,
+            "disabling the orphan timeout should leave actors running when their owner is lost"
+        );
+    }
 
     #[cfg(fbcode_build)]
     async fn execute_spawn_actor() {
@@ -1631,10 +1679,26 @@ mod tests {
             "every rank should receive the message sent before it started"
         );
 
+        let actor_mesh_ref = actor_mesh.deref().clone();
+        let mut supervision = Box::pin(actor_mesh_ref.next_supervision_event(instance));
+        tokio::select! {
+            failure = &mut supervision => {
+                panic!("data mesh ref failed before owner stop: {failure:?}")
+            }
+            _ = tokio::task::yield_now() => {}
+        }
         let mut actor_mesh_clone = actor_mesh.clone();
         actor_mesh
             .stop(instance, "test complete".to_string())
             .expect("stop data actor mesh");
+        let failure = tokio::time::timeout(Duration::from_secs(10), supervision)
+            .await
+            .expect("timed out waiting for the data mesh ref to observe owner stop")
+            .expect("data mesh ref supervision should remain available");
+        assert!(
+            failure.event.actor_status.is_terminal(),
+            "owner stop should remain visible as a terminal status to refs"
+        );
         actor_mesh_clone
             .stop(instance, "test complete".to_string())
             .expect("stopping a data actor mesh clone should be idempotent");
@@ -1931,14 +1995,14 @@ mod tests {
         assert_eq!(
             actor_mesh.region().num_ranks(),
             2,
-            "direct spawn should cover all proc mesh ranks"
+            "spawn should cover all proc mesh ranks"
         );
         assert!(
             actor_mesh.values().all(|actor| {
                 actor.actor_addr().label().map(|label| label.as_str())
                     == Some("configured_data_actor")
             }),
-            "direct spawn should preserve the requested actor label"
+            "spawn should preserve the requested actor label"
         );
 
         let service: ActorMesh<testactor::TestActor> = proc_mesh
@@ -2186,8 +2250,6 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn direct_spawn_shapes_cast_point() {
         const SENTINEL: u64 = 0xD1EC;
-        let config = hyperactor_config::global::lock();
-        let _mode = config.override_key(USE_DIRECT_SPAWN, true);
 
         let base = testing::instance();
         let persistent_point = extent!(persistent = 3).point_of_rank(2).unwrap();
@@ -2234,7 +2296,7 @@ mod tests {
             .instance
             .open_port::<testactor::ActorEnvironmentObservation>();
         let mut actor_mesh: ActorMesh<testactor::ActorEnvironmentProbe> = proc_mesh
-            .spawn_with_name(
+            .spawn_data(
                 &root.instance,
                 ActorMeshId::instance(Label::strip("direct_spawn_probe")),
                 &testactor::ActorEnvironmentProbeParams {
@@ -2243,14 +2305,9 @@ mod tests {
                     nested: None,
                 },
                 None,
-                false,
             )
             .await
             .expect("spawn direct environment probes");
-        assert!(
-            actor_mesh.as_managed().is_none(),
-            "configured instance spawn should return a data mesh"
-        );
 
         let mut seen = HashSet::new();
         for _ in 0..expected.len() {
@@ -2806,7 +2863,7 @@ mod tests {
             .spawn(&instance, "test", extent!(gpus = 1), None, None)
             .await
             .unwrap();
-        // The controllerless path shares spawn_mesh_inner, so it must still run
+        // The controllerless path shares spawn_managed_mesh_inner, so it must still run
         // the bounded spawn wait and surface the same ActorSpawnError shape on a
         // terminal init failure — identical to spawn/spawn_service.
         let err = proc_mesh
