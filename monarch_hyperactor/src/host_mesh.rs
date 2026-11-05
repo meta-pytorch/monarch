@@ -702,6 +702,7 @@ fn bootstrap_host(
                 0,
                 local_proc_agent.bind(),
             ),
+            &host_mesh,
         )
         .map_err(|e| PyException::new_err(e.to_string()))?;
 
