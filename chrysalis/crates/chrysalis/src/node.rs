@@ -598,9 +598,12 @@ pub enum NodeError {
 
 #[cfg(test)]
 mod tests {
+    use std::future::poll_fn;
+    use std::io::ErrorKind;
     use std::num::NonZeroUsize;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
+    use std::task::Poll;
     use std::time::Duration;
 
     use chrysalis_nameserver::ParentManagerError;
@@ -825,6 +828,103 @@ mod tests {
         timeout(TEST_TIMEOUT, parent.join())
             .await
             .expect("parent shutdown timed out");
+    }
+
+    #[tokio::test]
+    async fn peer_transport_shutdown_before_finish_fails_the_pending_read() {
+        let network = InprocNetwork::new(NonZeroUsize::new(1024).expect("nonzero capacity"));
+        let parent_socket = Arc::new(network.bind(1).expect("bind parent"));
+        let child_socket = Arc::new(network.bind(2).expect("bind child"));
+        let parent_address = parent_socket.local_addr().clone();
+        let mut identities = test_node_identities(2).into_iter();
+        // A short idle timeout bounds how long the parent waits for a peer
+        // that has gone silent.
+        let parent = Arc::new(
+            Node::create(NodeConfig::new(
+                TransportConfig::new(parent_socket, identities.next().expect("parent identity"))
+                    .with_quic_config(
+                        QuicConfig::default().with_max_idle_timeout(Duration::from_secs(2)),
+                    ),
+            ))
+            .expect("create parent node"),
+        );
+        let child = Arc::new(
+            Node::create(
+                NodeConfig::new(TransportConfig::new(
+                    child_socket,
+                    identities.next().expect("child identity"),
+                ))
+                .with_parent(
+                    NamespaceConfig::try_new(
+                        parent.pid(),
+                        vec![chrysalis_nameserver::ParentEndpoint::new(parent_address)],
+                    )
+                    .expect("construct parent config")
+                    .with_retry_delay(Duration::from_millis(10)),
+                ),
+            )
+            .expect("create child node"),
+        );
+        wait_for_publication(&parent, child.pid()).await;
+
+        // The request's bytes make the stream visible to the child's accept.
+        let mut stream = timeout(
+            TEST_TIMEOUT,
+            parent.dial(child.pid(), ResolveConsistency::Cached),
+        )
+        .await
+        .expect("application dial timed out")
+        .expect("dial child");
+        timeout(TEST_TIMEOUT, stream.send_mut().write_all(b"ping"))
+            .await
+            .expect("request write timed out")
+            .expect("write request");
+        let mut incoming = timeout(TEST_TIMEOUT, child.accept())
+            .await
+            .expect("accept timed out")
+            .expect("accept application stream");
+        let mut request = [0; 4];
+        timeout(
+            TEST_TIMEOUT,
+            incoming.stream_mut().recv_mut().read_exact(&mut request),
+        )
+        .await
+        .expect("request read timed out")
+        .expect("read request");
+        assert_eq!(&request, b"ping");
+
+        let mut response = Vec::new();
+        let read = stream.recv_mut().read_to_end(&mut response);
+        tokio::pin!(read);
+        let first_poll = poll_fn(|context| Poll::Ready(read.as_mut().poll(context))).await;
+        assert!(first_poll.is_pending(), "response read finished early");
+
+        // The child's transport shuts down while its node's link-local
+        // streams still have receives posted, so it abandons the connection
+        // without a peer-visible close and the parent's idle timeout closes it.
+        timeout(TEST_TIMEOUT, child.transport().join())
+            .await
+            .expect("child transport shutdown timed out");
+        let outcome = timeout(TEST_TIMEOUT, read).await;
+
+        drop(incoming);
+        child.shutdown();
+        parent.shutdown();
+        timeout(TEST_TIMEOUT, child.join())
+            .await
+            .expect("child shutdown timed out");
+        timeout(TEST_TIMEOUT, parent.join())
+            .await
+            .expect("parent shutdown timed out");
+
+        let error = outcome
+            .expect("response read timed out")
+            .expect_err("a connection closed before the response finished must fail the read");
+        assert_eq!(error.kind(), ErrorKind::ConnectionAborted);
+        assert_eq!(
+            error.to_string(),
+            "QUIC connection closed before the stream finished"
+        );
     }
 
     #[tokio::test]

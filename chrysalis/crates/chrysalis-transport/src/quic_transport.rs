@@ -71,6 +71,7 @@ const DEFAULT_QUEUE_CAPACITY: usize = 4_096;
 const DEFAULT_RETAINED_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_COMPLETION_CAPACITY: usize = 8_192;
 const STREAM_RECEIVE_CAPACITY: usize = 64 * 1024;
+const CLOSED_BEFORE_FIN: &str = "QUIC connection closed before the stream finished";
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 
 static NEXT_DRIVER: AtomicU16 = AtomicU16::new(1);
@@ -619,13 +620,81 @@ type ReceiveFuture = Pin<
     >,
 >;
 
+/// Why reading a [`RecvStream`] ended, if it has.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReadEnd {
+    /// More completions may arrive.
+    Open,
+    /// The peer finished its send half, or the local receive half was stopped.
+    Finished,
+    /// The connection closed before the peer finished its send half.
+    Aborted,
+}
+
+/// Received bytes not yet returned by `AsyncRead`, and why reading ended.
+struct ReadState {
+    buffered: BytesMut,
+    offset: usize,
+    end: ReadEnd,
+}
+
+impl ReadState {
+    fn new() -> Self {
+        Self {
+            buffered: BytesMut::new(),
+            offset: 0,
+            end: ReadEnd::Open,
+        }
+    }
+
+    /// Records a completed receive's bytes and status.
+    fn complete(&mut self, status: ReceiveStatus, buffer: BytesMut) -> io::Result<()> {
+        self.end = match status {
+            ReceiveStatus::Data | ReceiveStatus::Cancelled => ReadEnd::Open,
+            ReceiveStatus::Fin | ReceiveStatus::Stopped(_) => ReadEnd::Finished,
+            ReceiveStatus::Closed => ReadEnd::Aborted,
+            ReceiveStatus::Reset(code) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    format!("QUIC stream reset: {code}"),
+                ));
+            }
+        };
+        self.buffered = buffer;
+        self.offset = 0;
+        Ok(())
+    }
+
+    /// Answers a read from buffered bytes or the end state, or returns `None`
+    /// when another receive is needed.
+    fn read(&mut self, output: &mut ReadBuf<'_>) -> Option<io::Result<()>> {
+        if self.offset < self.buffered.len() {
+            let count = output.remaining().min(self.buffered.len() - self.offset);
+            output.put_slice(&self.buffered[self.offset..self.offset + count]);
+            self.offset += count;
+            return Some(Ok(()));
+        }
+        match self.end {
+            ReadEnd::Open => None,
+            ReadEnd::Finished => Some(Ok(())),
+            ReadEnd::Aborted => Some(Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                CLOSED_BEFORE_FIN,
+            ))),
+        }
+    }
+}
+
 /// Owned receive half with caller-allocated and Tokio compatibility APIs.
+///
+/// Through `AsyncRead`, reading reaches end of stream only after the peer's FIN
+/// or a local stop. If the connection closes first, reads fail with
+/// `ConnectionAborted` once the bytes already received are returned; if the
+/// peer resets the stream, they fail with `ConnectionReset`.
 pub struct RecvStream {
     inner: chrysalis_transport_tokio::Stream,
     pending: Option<ReceiveFuture>,
-    buffered: BytesMut,
-    offset: usize,
-    eof: bool,
+    state: ReadState,
 }
 
 impl RecvStream {
@@ -633,9 +702,7 @@ impl RecvStream {
         Self {
             inner,
             pending: None,
-            buffered: BytesMut::new(),
-            offset: 0,
-            eof: false,
+            state: ReadState::new(),
         }
     }
 
@@ -667,16 +734,8 @@ impl AsyncRead for RecvStream {
         output: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         loop {
-            if self.offset < self.buffered.len() {
-                let count = output
-                    .remaining()
-                    .min(self.buffered.len().saturating_sub(self.offset));
-                output.put_slice(&self.buffered[self.offset..self.offset + count]);
-                self.offset += count;
-                return Poll::Ready(Ok(()));
-            }
-            if self.eof {
-                return Poll::Ready(Ok(()));
+            if let Some(result) = self.state.read(output) {
+                return Poll::Ready(result);
             }
             if self.pending.is_none() {
                 let stream = self.inner.clone();
@@ -699,18 +758,10 @@ impl AsyncRead for RecvStream {
                 }
             };
             self.pending = None;
-            self.eof = match completion.status() {
-                ReceiveStatus::Data | ReceiveStatus::Cancelled => false,
-                ReceiveStatus::Fin | ReceiveStatus::Closed | ReceiveStatus::Stopped(_) => true,
-                ReceiveStatus::Reset(code) => {
-                    return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::ConnectionReset,
-                        format!("QUIC stream reset: {code}"),
-                    )));
-                }
-            };
-            self.buffered = completion.into_buffer();
-            self.offset = 0;
+            let status = completion.status();
+            if let Err(error) = self.state.complete(status, completion.into_buffer()) {
+                return Poll::Ready(Err(error));
+            }
         }
     }
 }
@@ -1204,6 +1255,10 @@ fn driver_io_error(error: chrysalis_transport_tokio::Error) -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::io::ErrorKind;
+
+    use bytes::BytesMut;
+    use chrysalis_transport_core::ReceiveStatus;
     use rcgen::BasicConstraints;
     use rcgen::CertificateParams;
     use rcgen::CertifiedIssuer;
@@ -1211,8 +1266,11 @@ mod tests {
     use rcgen::IsCa;
     use rcgen::KeyPair;
     use rcgen::KeyUsagePurpose;
+    use tokio::io::ReadBuf;
 
+    use super::CLOSED_BEFORE_FIN;
     use super::QuicIdentity;
+    use super::ReadState;
 
     struct BundleParts {
         leaf_der: Vec<u8>,
@@ -1324,6 +1382,62 @@ mod tests {
                 panic!("{case} should be rejected");
             };
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{case}");
+        }
+    }
+
+    /// Reads `chunks` two-byte pieces, each of which must be answered from
+    /// buffered bytes.
+    fn read_two_byte_chunks(state: &mut ReadState, chunks: usize) -> Vec<u8> {
+        (0..chunks)
+            .flat_map(|_| {
+                let mut storage = [0; 2];
+                let mut output = ReadBuf::new(&mut storage);
+                state
+                    .read(&mut output)
+                    .expect("buffered bytes should answer the read")
+                    .expect("buffered bytes should read successfully");
+                output.filled().to_vec()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn closed_completion_returns_its_bytes_then_fails_every_read() {
+        let mut state = ReadState::new();
+        state
+            .complete(ReceiveStatus::Closed, BytesMut::from(&b"abcdef"[..]))
+            .expect("a closed completion is recorded");
+        assert_eq!(read_two_byte_chunks(&mut state, 3), b"abcdef");
+
+        for attempt in 0..2 {
+            let mut storage = [0; 2];
+            let mut output = ReadBuf::new(&mut storage);
+            let error = state
+                .read(&mut output)
+                .expect("an aborted stream should answer from its state")
+                .expect_err("reads after the bytes should fail");
+            assert_eq!(error.kind(), ErrorKind::ConnectionAborted, "read {attempt}");
+            assert_eq!(error.to_string(), CLOSED_BEFORE_FIN, "read {attempt}");
+            assert!(output.filled().is_empty(), "read {attempt} returned bytes");
+        }
+    }
+
+    #[test]
+    fn finished_completion_returns_its_bytes_then_ends_every_read() {
+        let mut state = ReadState::new();
+        state
+            .complete(ReceiveStatus::Fin, BytesMut::from(&b"abcdef"[..]))
+            .expect("a finished completion is recorded");
+        assert_eq!(read_two_byte_chunks(&mut state, 3), b"abcdef");
+
+        for attempt in 0..2 {
+            let mut storage = [0; 2];
+            let mut output = ReadBuf::new(&mut storage);
+            state
+                .read(&mut output)
+                .expect("a finished stream should answer from its state")
+                .expect("reads after the bytes should end the stream");
+            assert!(output.filled().is_empty(), "read {attempt} returned bytes");
         }
     }
 }
