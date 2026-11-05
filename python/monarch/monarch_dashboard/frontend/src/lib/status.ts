@@ -28,6 +28,7 @@ export const STATUS_META: Record<string, StatusMeta> = {
   stopped: { color: "#a371f7", kind: "neutral", glyph: "■" },
   unknown: { color: "#8b949e", kind: "neutral", glyph: "?" },
   system: { color: "#6e7681", kind: "neutral", glyph: "⚙" },
+  execution: { color: "#3b82f6", kind: "neutral", glyph: "›" },
   "n/a": { color: "#6e7681", kind: "neutral", glyph: "·" },
 };
 

@@ -379,12 +379,14 @@ def list_actors(mesh_id: int | None = None) -> list[dict[str, Any]]:
         " latest.new_status AS latest_status,"
         " latest.max_ts AS status_timestamp_us,"
         f" {_actor_system_sql()} AS is_system"
+        ", ownership.execution_id"
         " FROM actors a"
         " LEFT JOIN meshes m ON a.mesh_id = m.id"
         f" LEFT JOIN ({_LATEST_ACTOR_STATUS_SQL}) latest"
         " ON a.id = latest.actor_id"
         " LEFT JOIN (SELECT DISTINCT id FROM meshes WHERE class IN ('Host', 'Proc')) agent ON a.mesh_id=agent.id"
         f" LEFT JOIN ({_actor_classification_sql()}) role ON a.full_name = role.node_id"
+        f" LEFT JOIN ({_execution_ownership_sql()}) ownership ON ownership.actor_id=a.id"
     )
     if mesh_id is not None:
         rows = _query(f"{base} WHERE a.mesh_id = ? ORDER BY a.id", (mesh_id,))
@@ -596,14 +598,16 @@ def get_summary() -> dict[str, Any]:
     # status, not one row per actor. The inner GROUP BY collapses same-timestamp
     # ties to a single status per actor. Normalise to lowercase so both fake
     # data ("idle") and real DataFusion telemetry ("Idle") match.
+    ownership_sql = _execution_ownership_sql()
     actor_status_rows = _query(
-        f"SELECT latest.new_status, {_actor_system_sql()} AS is_system, COUNT(*) AS n FROM actors a"
+        f"SELECT latest.new_status, {_actor_system_sql()} AS is_system, CASE WHEN ownership.execution_id IS NOT NULL THEN 1 ELSE 0 END AS is_execution, COUNT(*) AS n FROM actors a"
         " LEFT JOIN (SELECT actor_id, MIN(new_status) AS new_status"
         f" FROM ({_LATEST_ACTOR_STATUS_SQL}) GROUP BY actor_id) latest"
         " ON a.id = latest.actor_id"
         " LEFT JOIN (SELECT DISTINCT id FROM meshes WHERE class IN ('Host', 'Proc')) agent ON a.mesh_id=agent.id"
         f" LEFT JOIN ({_actor_classification_sql()}) role ON a.full_name = role.node_id"
-        f" GROUP BY latest.new_status, {_actor_system_sql()}"
+        f" LEFT JOIN ({ownership_sql}) ownership ON ownership.actor_id=a.id"
+        f" GROUP BY latest.new_status, {_actor_system_sql()}, CASE WHEN ownership.execution_id IS NOT NULL THEN 1 ELSE 0 END"
     )
     actor_by_status: dict[str, int] = {}
     health_by_status: dict[str, int] = {}
@@ -612,7 +616,7 @@ def get_summary() -> dict[str, Any]:
         count = int(row["n"] or 0)
         if row["new_status"] is not None:
             actor_by_status[status] = actor_by_status.get(status, 0) + count
-        if not row["is_system"]:
+        if not row["is_system"] and not row["is_execution"]:
             health_by_status[status] = health_by_status.get(status, 0) + count
 
     # -- Message counts --
@@ -652,12 +656,13 @@ def get_summary() -> dict[str, Any]:
     # Single query for both failed and stopped actors.
     _error_actor_sql = (
         "SELECT ase.actor_id, a.full_name, ase.reason, ase.timestamp_us, a.mesh_id,"
-        " ase.new_status"
+        " ase.new_status, ownership.execution_id"
         " FROM actor_status_events ase"
         " JOIN actors a ON ase.actor_id = a.id"
         f" INNER JOIN ({_LATEST_ACTOR_STATUS_SQL}) latest"
         " ON ase.actor_id = latest.actor_id"
         "   AND ase.timestamp_us = latest.max_ts"
+        f" LEFT JOIN ({ownership_sql}) ownership ON ownership.actor_id=a.id"
         " WHERE LOWER(ase.new_status) IN ('failed', 'stopped')"
         " ORDER BY ase.timestamp_us"
     )
@@ -665,6 +670,8 @@ def get_summary() -> dict[str, Any]:
     failed_actors = []
     stopped_actors = []
     for r in error_actors:
+        if r.pop("execution_id", None):
+            continue
         status = (r.pop("new_status", None) or "").lower()
         if status == "failed":
             failed_actors.append(r)
