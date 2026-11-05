@@ -43,6 +43,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -264,6 +265,16 @@ pub struct LaunchOptions {
     /// unit properties for systemd). Launchers that do not support
     /// it may ignore this field.
     pub proc_bind: Option<ProcBind>,
+
+    /// The VM manager's Unix socket path, supplied by the bootstrap manager.
+    /// For [`ProcReachability::HybridVsock`], the launcher configures the
+    /// VM manager to use this path (Firecracker's `uds_path`).
+    /// `None` for Unix launches.
+    ///
+    /// Monarch listens on `<path>_10000` for messages from the proc and
+    /// `<path>_10001` for its readiness report. The proc listens on guest
+    /// vsock port `10002`. These three ports are reserved for Monarch.
+    pub vsock_uds_path: Option<PathBuf>,
 }
 
 /// Format a human-readable process name for diagnostics and logs.
@@ -297,12 +308,44 @@ pub fn format_process_name(proc_id: &hyperactor::ProcAddr) -> String {
     format!("{} @ {}", who, host)
 }
 
-/// Strategy interface for launching and stopping a proc.
+/// The connection scheme used between the host and a launcher's procs.
+/// The bootstrap manager uses it to prepare listeners and addresses
+/// before launch.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    strum::EnumString,
+    strum::Display
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum ProcReachability {
+    /// The host and proc connect directly to each other's Unix sockets.
+    #[default]
+    Unix,
+    /// The proc uses vsock inside a VM. The VM manager, such as
+    /// Firecracker, bridges connections between guest vsock and host
+    /// Unix sockets:
+    /// - The proc reaches the host's Unix listeners through vsock.
+    /// - The host reaches the proc's vsock listener through the VM
+    ///   manager's Unix socket.
+    ///
+    /// Linux only.
+    HybridVsock,
+}
+
+/// Interface for starting and stopping procs and declaring their
+/// connection scheme.
 ///
-/// This trait is internal to `hyperactor_mesh`:
-/// `BootstrapProcManager` uses it to delegate the mechanics of
-/// starting and stopping a proc while keeping lifecycle tracking
-/// (readiness and terminal status) centralized in the manager.
+/// Before launch, `BootstrapProcManager` uses [`Self::reachability`]
+/// to prepare communication between the host and proc. The launcher
+/// starts the proc using the supplied [`LaunchOptions`]; the manager
+/// tracks readiness and exit.
 ///
 /// Contract:
 /// - **Readiness is determined by the bootstrap callback mechanism
@@ -328,6 +371,12 @@ pub fn format_process_name(proc_id: &hyperactor::ProcAddr) -> String {
 /// terminating.
 #[async_trait]
 pub trait ProcLauncher: Send + Sync + 'static {
+    /// Declares which connection scheme the bootstrap manager prepares.
+    /// Defaults to Unix; launchers using hybrid vsock override this method.
+    fn reachability(&self) -> ProcReachability {
+        ProcReachability::Unix
+    }
+
     /// Launch a proc using the provided bootstrap payload and config.
     ///
     /// Implementations must:
@@ -387,4 +436,31 @@ pub trait ProcLauncher: Send + Sync + 'static {
     /// should not be treated as an error unless the backend cannot
     /// determine state.
     async fn kill(&self, proc_id: &hyperactor::ProcAddr) -> Result<(), ProcLauncherError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    #[test]
+    fn test_proc_reachability_text() {
+        for (text, reachability) in [
+            ("unix", ProcReachability::Unix),
+            ("hybrid_vsock", ProcReachability::HybridVsock),
+        ] {
+            assert_eq!(ProcReachability::from_str(text).unwrap(), reachability);
+            assert_eq!(reachability.to_string(), text);
+        }
+        assert!(ProcReachability::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn test_native_launcher_reachability_is_unix() {
+        assert_eq!(
+            NativeProcLauncher::new().reachability(),
+            ProcReachability::Unix
+        );
+    }
 }

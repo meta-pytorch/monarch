@@ -10,7 +10,6 @@ license = "BSD-3-Clause"
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.92"
-derive_more = { version = "2.1.1", features = ["full"] }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
@@ -20,11 +19,11 @@ monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 monarch_messages = { version = "0.0.0", path = "../monarch_messages", default-features = false }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 pyo3 = { version = "0.27", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 sorted-vec = "0.8.11"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda", default-features = false }
 torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
@@ -42,6 +41,7 @@ build_utils = { version = "0.0.0", path = "../build_utils" }
 [features]
 cuda = ["monarch_messages/cuda", "torch-sys-cuda/cuda"]
 default = []
+rocm = ["monarch_messages/rocm", "torch-sys-cuda/rocm"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fbcode_build)"]}

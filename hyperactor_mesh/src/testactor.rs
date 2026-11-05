@@ -15,6 +15,8 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::ops::Deref;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 #[cfg(test)]
 use std::time::Duration;
 
@@ -38,7 +40,9 @@ use ndslice::Point;
 #[cfg(test)]
 use ndslice::ViewExt as _;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
 use typeuri::Named;
 #[cfg(test)]
 use uuid::Uuid;
@@ -281,6 +285,52 @@ impl hyperactor::RemoteSpawn for FailingCreateTestActor {
         _environment: &ActorEnvironment,
     ) -> Result<Self, hyperactor::internal_macro_support::anyhow::Error> {
         Err(anyhow::anyhow!("test failure"))
+    }
+}
+
+/// Spawn params for [`SerializeCountingActor`] that count, process-wide, how
+/// many times they have been serialized.
+#[derive(Debug, Named)]
+pub struct SerializeCountingParams;
+
+static SERIALIZE_COUNTING_PARAMS_SERIALIZED: AtomicUsize = AtomicUsize::new(0);
+
+impl SerializeCountingParams {
+    /// How many times any `SerializeCountingParams` has been serialized in
+    /// this process.
+    pub fn times_serialized() -> usize {
+        SERIALIZE_COUNTING_PARAMS_SERIALIZED.load(Ordering::SeqCst)
+    }
+}
+
+impl Serialize for SerializeCountingParams {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        SERIALIZE_COUNTING_PARAMS_SERIALIZED.fetch_add(1, Ordering::SeqCst);
+        serializer.serialize_unit()
+    }
+}
+
+impl<'de> Deserialize<'de> for SerializeCountingParams {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        <()>::deserialize(deserializer).map(|()| Self)
+    }
+}
+
+/// An actor whose spawn params count their serializations.
+#[derive(Debug)]
+#[hyperactor::export]
+#[hyperactor::spawnable]
+pub struct SerializeCountingActor;
+
+#[async_trait]
+impl Actor for SerializeCountingActor {}
+
+#[async_trait]
+impl hyperactor::RemoteSpawn for SerializeCountingActor {
+    type Params = SerializeCountingParams;
+
+    async fn new(_params: Self::Params, _environment: &ActorEnvironment) -> anyhow::Result<Self> {
+        Ok(Self)
     }
 }
 

@@ -105,6 +105,7 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
+use std::hash::Hash;
 use std::ops::Deref;
 use std::panic;
 use std::panic::AssertUnwindSafe;
@@ -483,6 +484,11 @@ struct ProcState {
     /// [`config::TERMINATED_SNAPSHOT_RETENTION`].
     terminated_snapshots: DashMap<ActorId, TerminatedSnapshot>,
 
+    /// Number of non-system actors on this proc that terminated with a
+    /// failure, over the lifetime of the proc. Children of non-system
+    /// actors are excluded; see [`Proc::failed_actor_count`].
+    failed_actor_count: AtomicUsize,
+
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc. Stored as a [`PortRef`] so
     /// the coordinator may live in another proc — e.g. a process monitor
@@ -539,6 +545,31 @@ impl ActorEntry {
 struct TerminatedSnapshot {
     actor_addr: ActorAddr,
     payload: crate::introspect::IntrospectResult,
+    /// Cache for [`TerminatedSnapshot::failure_occurred_at`].
+    failure_occurred_at: OnceLock<Option<SystemTime>>,
+}
+
+impl TerminatedSnapshot {
+    fn new(actor_addr: ActorAddr, payload: crate::introspect::IntrospectResult) -> Self {
+        Self {
+            actor_addr,
+            payload,
+            failure_occurred_at: OnceLock::new(),
+        }
+    }
+
+    /// When the actor failed, or `None` if it stopped cleanly. Parsed
+    /// from the payload attrs on first use; eviction consults every
+    /// retained snapshot on each insert past the retention cap.
+    fn failure_occurred_at(&self) -> Option<SystemTime> {
+        *self.failure_occurred_at.get_or_init(|| {
+            let attrs =
+                serde_json::from_str::<hyperactor_config::Attrs>(&self.payload.attrs).ok()?;
+            // Presence of FAILURE_ERROR_MESSAGE means the actor failed.
+            attrs.get(crate::introspect::FAILURE_ERROR_MESSAGE)?;
+            attrs.get(crate::introspect::FAILURE_OCCURRED_AT).copied()
+        })
+    }
 }
 
 /// Actor status control-plane message.
@@ -586,6 +617,16 @@ pub enum StatusMessage {
 wirevalue::register_type!(StatusMessage);
 
 const MAX_TERMINAL_STATUS_SUBSCRIBERS: usize = 100;
+
+/// Shard count for maps owned by a single actor. These maps are small and
+/// rarely contended, but `DashMap::new` sizes shards by core count (512 on a
+/// 96-core host), so each map would cost a large zeroed allocation per actor.
+const ACTOR_MAP_SHARDS: usize = 16;
+
+/// Create an empty map owned by a single actor; see [`ACTOR_MAP_SHARDS`].
+pub(crate) fn actor_map<K: Eq + Hash, V>() -> DashMap<K, V> {
+    DashMap::with_shard_amount(ACTOR_MAP_SHARDS)
+}
 
 /// An actor's terminal-status subscriptions.
 #[derive(Default)]
@@ -833,6 +874,7 @@ impl Proc {
                 root_instances: DashMap::new(),
                 queue_stats: Arc::new(ProcQueueStats::new()),
                 terminated_snapshots: DashMap::new(),
+                failed_actor_count: AtomicUsize::new(0),
                 supervision_coordinator_port: OnceLock::new(),
                 supervision_coordinator_actor_id: OnceLock::new(),
                 mailbox_server_handle: std::sync::Mutex::new(None),
@@ -1487,6 +1529,14 @@ impl Proc {
         for cell in self.root_instances() {
             cell.traverse(f);
         }
+    }
+
+    /// Number of non-system actors on this proc that have failed and whose
+    /// parent, if any, is a system actor. A child of a non-system actor
+    /// counts only through its parent: a failure the parent handles is not
+    /// counted, and an unhandled one fails the parent.
+    pub fn failed_actor_count(&self) -> usize {
+        self.state().failed_actor_count.load(Ordering::Relaxed)
     }
 
     /// Proc-wide running total of queued work items.
@@ -3339,40 +3389,26 @@ impl<A: Actor> Instance<A> {
                     status.clone(),
                     None,
                 );
-                (status, Some(event))
+                (
+                    status,
+                    Some(
+                        event
+                            .with_labels(actor.supervision_labels())
+                            .with_transparent(actor.supervision_is_transparent())
+                            .with_stop_cause(actor.supervision_stop_cause())
+                            .with_observation(actor.supervision_observation()),
+                    ),
+                )
             }
-            Err(err) => match *err.kind {
-                ActorErrorKind::UnhandledSupervisionEvent(box event) => {
-                    // We use the event's actor_status as this actor's terminal status.
-                    assert!(event.actor_status.is_terminal());
-                    let status = event.actor_status.clone();
-                    (status, Some(event))
-                }
-                ActorErrorKind::SyntheticSupervision(synthetic) => {
-                    let local_fence = synthetic.local_fence.clone();
-                    let error_kind = ActorErrorKind::SyntheticSupervision(synthetic);
-                    let status = ActorStatus::Failed(error_kind);
-                    let event = ActorSupervisionEvent::new(
-                        self.inner.cell.actor_addr().clone(),
-                        actor.display_name(),
-                        status.clone(),
-                        None,
-                    )
-                    .with_local_fence(local_fence);
-                    (status, Some(event))
-                }
-                _ => {
-                    let error_kind = ActorErrorKind::Generic(err.kind.to_string());
-                    let status = ActorStatus::Failed(error_kind);
-                    let event = ActorSupervisionEvent::new(
-                        self.inner.cell.actor_addr().clone(),
-                        actor.display_name(),
-                        status.clone(),
-                        None,
-                    );
-                    (status, Some(event))
-                }
-            },
+            Err(err) => {
+                let event = (*err.kind)
+                    .into_supervision_event(self.inner.cell.actor_addr(), || actor.display_name())
+                    .with_labels(actor.supervision_labels())
+                    .with_transparent(actor.supervision_is_transparent())
+                    .with_observation(actor.supervision_observation());
+                assert!(event.actor_status.is_terminal());
+                (event.actor_status.clone(), Some(event))
+            }
         };
 
         let current_status = self.inner.cell.status().borrow().clone();
@@ -3721,8 +3757,6 @@ impl<A: Actor> Instance<A> {
                 Err(ActorError::new(self.self_addr(), kind))
             }
             Err(err) => {
-                // The actor failed to handle the supervision event, it should die.
-                // Create a new supervision event for this failure and propagate it.
                 let kind = ActorErrorKind::ErrorDuringHandlingSupervision(
                     err.to_string(),
                     Box::new(supervision_event),
@@ -4386,14 +4420,14 @@ impl InstanceCellState {
 ///    newest-first (descending `occurred_at`), preserving the
 ///    earliest failures which are closest to the root cause.
 fn select_eviction_candidates(
-    entries: &[(ActorAddr, Option<String>)],
+    entries: &[(ActorAddr, Option<SystemTime>)],
     excess: usize,
 ) -> Vec<ActorAddr> {
     let mut clean: Vec<&ActorAddr> = Vec::new();
-    let mut failed: Vec<(&ActorAddr, &str)> = Vec::new();
+    let mut failed: Vec<(&ActorAddr, SystemTime)> = Vec::new();
     for (id, occurred_at) in entries {
         match occurred_at {
-            Some(ts) => failed.push((id, ts.as_str())),
+            Some(ts) => failed.push((id, *ts)),
             None => clean.push(id),
         }
     }
@@ -4412,13 +4446,32 @@ fn select_eviction_candidates(
 
     // If still over cap, evict most-recent failures first.
     if remaining > 0 {
-        failed.sort_by(|a, b| b.1.cmp(a.1));
+        failed.sort_by_key(|&(_, ts)| std::cmp::Reverse(ts));
         for (id, _) in failed.into_iter().take(remaining) {
             to_remove.push(id.clone());
         }
     }
 
     to_remove
+}
+
+/// Evict terminated snapshots, chosen by [`select_eviction_candidates`],
+/// until at most `max` remain.
+fn evict_terminated_snapshots(snapshots: &DashMap<ActorId, TerminatedSnapshot>, max: usize) {
+    let excess = snapshots.len().saturating_sub(max);
+    if excess == 0 {
+        return;
+    }
+    let entries: Vec<_> = snapshots
+        .iter()
+        .map(|entry| {
+            let snapshot = entry.value();
+            (snapshot.actor_addr.clone(), snapshot.failure_occurred_at())
+        })
+        .collect();
+    for key in select_eviction_candidates(&entries, excess) {
+        snapshots.remove(key.id());
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -4485,9 +4538,9 @@ impl InstanceCell {
                 status,
                 terminal_status_subscriptions: Mutex::new(TerminalSubscriptions::default()),
                 parent: parent.map_or_else(WeakInstanceCell::new, |cell| cell.downgrade()),
-                children: DashMap::new(),
+                children: actor_map(),
                 actor_task_handle: OnceLock::new(),
-                exported_named_ports: DashMap::new(),
+                exported_named_ports: actor_map(),
                 num_processed_messages: AtomicU64::new(0),
                 created_at: std::time::SystemTime::now(),
                 last_message_handler: RwLock::new(None),
@@ -4644,6 +4697,16 @@ impl InstanceCell {
                 }
             }
 
+            if new.is_failed()
+                && !self.inner.is_system.load(Ordering::Relaxed)
+                && self.parent().is_none_or(|parent| parent.is_system())
+            {
+                self.inner
+                    .proc
+                    .inner
+                    .failed_actor_count
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             old_status = Some(old);
             *status = new.clone();
             true
@@ -5054,40 +5117,12 @@ impl InstanceCell {
         let snapshots = &self.inner.proc.inner.terminated_snapshots;
         snapshots.insert(
             self.actor_addr().id().clone(),
-            TerminatedSnapshot {
-                actor_addr: self.actor_addr().clone(),
-                payload,
-            },
+            TerminatedSnapshot::new(self.actor_addr().clone(), payload),
         );
-        let max = hyperactor_config::global::get(crate::config::TERMINATED_SNAPSHOT_RETENTION);
-        let excess = snapshots.len().saturating_sub(max);
-        if excess > 0 {
-            // Build entries for the eviction selector.
-            let entries: Vec<_> = snapshots
-                .iter()
-                .map(|entry| {
-                    let occurred_at = serde_json::from_str::<hyperactor_config::Attrs>(
-                        &entry.value().payload.attrs,
-                    )
-                    .ok()
-                    .and_then(|attrs| {
-                        // Presence of FAILURE_ERROR_MESSAGE means the actor failed.
-                        attrs
-                            .get(crate::introspect::FAILURE_ERROR_MESSAGE)
-                            .cloned()?;
-                        // Extract occurred_at timestamp for sorting.
-                        attrs
-                            .get(crate::introspect::FAILURE_OCCURRED_AT)
-                            .map(|t| humantime::format_rfc3339(*t).to_string())
-                    });
-                    (entry.value().actor_addr.clone(), occurred_at)
-                })
-                .collect();
-
-            for key in select_eviction_candidates(&entries, excess) {
-                snapshots.remove(key.id());
-            }
-        }
+        evict_terminated_snapshots(
+            snapshots,
+            hyperactor_config::global::get(crate::config::TERMINATED_SNAPSHOT_RETENTION),
+        );
     }
 
     /// This is temporary so that we can share binding code between handle and instance.
@@ -5212,8 +5247,8 @@ impl<A: Actor> HandlerPorts<A> {
         proc_stats: Arc<ProcQueueStats>,
     ) -> Self {
         Self {
-            ports: DashMap::new(),
-            bound: DashMap::new(),
+            ports: actor_map(),
+            bound: actor_map(),
             mailbox,
             workq,
             enable_buffering,
@@ -5373,6 +5408,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc as std_mpsc;
 
+    use anyhow::Context as _;
     use hyperactor_macros::export;
     use hyperactor_telemetry::EntityEvent;
     use hyperactor_telemetry::TraceEvent;
@@ -7900,6 +7936,119 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct SystemStopFailingActor;
+
+    #[async_trait]
+    impl Actor for SystemStopFailingActor {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            this.set_system();
+            Ok(())
+        }
+
+        async fn handle_stop(
+            &mut self,
+            _this: &Instance<Self>,
+            _mode: StopMode,
+            _reason: &str,
+        ) -> Result<(), anyhow::Error> {
+            Err(anyhow::anyhow!("stop failed"))
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn failed_actor_count_excludes_clean_stops_and_system_actors() {
+        let proc = Proc::isolated();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let stopped = proc.spawn(TestActor);
+        stopped.drain_and_stop("test").unwrap();
+        assert_matches!(stopped.await, ActorStatus::Stopped(_));
+
+        let system = proc.spawn(SystemStopFailingActor);
+        system.drain_and_stop("test").unwrap();
+        assert_matches!(system.await, ActorStatus::Failed(_));
+        assert_eq!(
+            proc.failed_actor_count(),
+            0,
+            "clean stops and system actor failures should not count"
+        );
+
+        let failed = proc.spawn(StopFailingActor);
+        failed.drain_and_stop("test").unwrap();
+        assert_matches!(failed.await, ActorStatus::Failed(_));
+        assert_eq!(
+            proc.failed_actor_count(),
+            1,
+            "a failed user actor should count"
+        );
+    }
+
+    #[derive(Debug)]
+    struct HandlingActor(Arc<tokio::sync::Notify>);
+
+    #[async_trait]
+    impl Actor for HandlingActor {
+        async fn handle_supervision_event(
+            &mut self,
+            _this: &Instance<Self>,
+            _event: &ActorSupervisionEvent,
+        ) -> Result<bool, anyhow::Error> {
+            self.0.notify_one();
+            Ok(true)
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn failed_actor_count_counts_children_through_user_parents() {
+        let proc = Proc::isolated();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let handled = Arc::new(tokio::sync::Notify::new());
+        let handling_parent = proc.spawn(HandlingActor(handled.clone()));
+        let child = proc.spawn_child(handling_parent.cell().clone(), StopFailingActor);
+        child.drain_and_stop("test").unwrap();
+        assert_matches!(child.await, ActorStatus::Failed(_));
+        handled.notified().await;
+        assert_eq!(
+            proc.failed_actor_count(),
+            0,
+            "a child failure handled by its user parent should not count"
+        );
+
+        let propagating_parent = proc.spawn(TestActor);
+        let child = proc.spawn_child(propagating_parent.cell().clone(), StopFailingActor);
+        child.drain_and_stop("test").unwrap();
+        assert_matches!(child.await, ActorStatus::Failed(_));
+        assert_matches!(propagating_parent.await, ActorStatus::Failed(_));
+        assert_eq!(
+            proc.failed_actor_count(),
+            1,
+            "an unhandled child failure should count once, through its parent"
+        );
+
+        let system_parent = proc.spawn(SystemStopFailingActor);
+        // The parent marks itself system in `init`.
+        system_parent
+            .status()
+            .wait_for(|status| matches!(status, ActorStatus::Idle))
+            .await
+            .unwrap();
+        let child = proc.spawn_child(system_parent.cell().clone(), StopFailingActor);
+        child.drain_and_stop("test").unwrap();
+        assert_matches!(child.await, ActorStatus::Failed(_));
+        assert_matches!(system_parent.await, ActorStatus::Failed(_));
+        assert_eq!(
+            proc.failed_actor_count(),
+            2,
+            "a child of a system actor should count, and its system parent should not"
+        );
+
+        handling_parent.drain_and_stop("test").unwrap();
+        assert_matches!(handling_parent.await, ActorStatus::Stopped(_));
+        assert_eq!(proc.failed_actor_count(), 2);
+    }
+
+    #[derive(Debug)]
     struct DeferredStopActor {
         stop_started: Arc<tokio::sync::Notify>,
         release_stop: Arc<tokio::sync::Notify>,
@@ -8264,6 +8413,7 @@ mod tests {
 
         // fail `root_2_1`, the supervision msg should be propagated to
         // ProcSupervisionCoordinator.
+        let root_2_id = root_2.actor_addr().clone();
         let root_2_1_id = root_2_1.actor_addr().clone();
         root_2_1.post(&client, "some random failure".to_string());
 
@@ -8274,8 +8424,10 @@ mod tests {
 
         // Wait for the supervision event from root_2_1's failure to
         // reach the ProcSupervisionCoordinator.
+        // `root_2` declined, so it reports as itself, caused by `root_2_1`.
         let event = reported_event.recv().await;
-        assert_eq!(event.actor_id, root_2_1_id);
+        assert_eq!(event.actor_id, root_2_id);
+        assert_eq!(event.caused_by().actor_id, root_2_1_id);
 
         assert!(!root_state.load(Ordering::SeqCst));
         assert!(root_1_state.load(Ordering::SeqCst));
@@ -8283,6 +8435,241 @@ mod tests {
         assert!(!root_1_1_1_state.load(Ordering::SeqCst));
         assert!(!root_2_state.load(Ordering::SeqCst));
         assert!(!root_2_1_state.load(Ordering::SeqCst));
+    }
+
+    /// Fails a child of an actor whose supervision handler is `decide`, and
+    /// returns the child's id and the event that reaches the proc.
+    async fn supervise_child_failure(
+        decide: fn(&ActorSupervisionEvent) -> anyhow::Result<bool>,
+    ) -> (ActorAddr, ActorAddr, ActorSupervisionEvent) {
+        #[derive(Debug)]
+        struct DecidingActor(fn(&ActorSupervisionEvent) -> anyhow::Result<bool>);
+
+        #[async_trait]
+        impl Actor for DecidingActor {
+            async fn handle_supervision_event(
+                &mut self,
+                _this: &Instance<Self>,
+                event: &ActorSupervisionEvent,
+            ) -> Result<bool, anyhow::Error> {
+                (self.0)(event)
+            }
+        }
+
+        #[async_trait]
+        impl Handler<String> for DecidingActor {
+            async fn handle(
+                &mut self,
+                _cx: &crate::Context<Self>,
+                message: String,
+            ) -> anyhow::Result<()> {
+                Err(anyhow::anyhow!(message))
+            }
+        }
+
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (mut reported_event, _coordinator) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let parent = proc.spawn_with_label::<DecidingActor>("parent", DecidingActor(decide));
+        let child = proc.spawn_child::<DecidingActor>(parent.cell().clone(), DecidingActor(decide));
+        let child_id = child.actor_addr().clone();
+        child.post(&client, "child failure".to_string());
+
+        let event = reported_event.recv().await;
+        (parent.actor_addr().clone(), child_id, event)
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_decline_appends_frame() {
+        let (parent_id, child_id, event) = supervise_child_failure(|_| Ok(false)).await;
+
+        assert_eq!(event.actor_id, parent_id);
+        let root_cause = event.caused_by();
+        assert_eq!(
+            root_cause.actor_id, child_id,
+            "the parent's event should chain to the child's failure"
+        );
+        assert_eq!(
+            root_cause.actor_status,
+            ActorStatus::generic_failure("child failure")
+        );
+        assert!(
+            !Arc::ptr_eq(&event.local_fence, &root_cause.local_fence),
+            "the parent's frame must not share the child's local fence"
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_handler_structured_errors_retain_child() {
+        for decide in [
+            (|_: &ActorSupervisionEvent| {
+                Err(anyhow::Error::new(ActorErrorKind::Generic(
+                    "handler failed".to_string(),
+                )))
+            }) as fn(&ActorSupervisionEvent) -> anyhow::Result<bool>,
+            |event: &ActorSupervisionEvent| {
+                Err(anyhow::Error::new(
+                    ActorErrorKind::UnhandledSupervisionEvent(Box::new(
+                        ActorSupervisionEvent::new(
+                            event.actor_id.clone(),
+                            None,
+                            ActorStatus::generic_failure("replaced"),
+                            None,
+                        ),
+                    )),
+                ))
+                .context("while supervising")
+            },
+        ] {
+            let (parent_id, child_id, event) = supervise_child_failure(decide).await;
+            assert_eq!(event.actor_id, parent_id);
+            let ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(_, cause)) =
+                &event.actor_status
+            else {
+                panic!("expected an error while handling supervision: {event}");
+            };
+            assert_eq!(cause.actor_id, child_id);
+            assert_eq!(
+                cause.actor_status,
+                ActorStatus::generic_failure("child failure")
+            );
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_handler_error_chains_to_cause() {
+        let (parent_id, child_id, event) = supervise_child_failure(|_| {
+            Err(anyhow::anyhow!("handler failed")).context("while supervising")
+        })
+        .await;
+
+        // Context on the handler's error changes only the message, not the
+        // attribution.
+        assert_eq!(event.actor_id, parent_id);
+        let ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(message, cause)) =
+            &event.actor_status
+        else {
+            panic!(
+                "expected ErrorDuringHandlingSupervision, got {:?}",
+                event.actor_status
+            );
+        };
+        assert!(message.contains("while supervising"), "{message}");
+        assert_eq!(cause.actor_id, child_id);
+        assert_eq!(
+            cause.actor_status,
+            ActorStatus::generic_failure("child failure")
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_handler_error_on_clean_stop_has_failure_report() {
+        #[derive(Debug)]
+        struct FailingSupervisor(&'static str);
+
+        #[async_trait]
+        impl Actor for FailingSupervisor {
+            fn display_name(&self) -> Option<String> {
+                Some(self.0.to_string())
+            }
+
+            async fn handle_supervision_event(
+                &mut self,
+                _this: &Instance<Self>,
+                _event: &ActorSupervisionEvent,
+            ) -> anyhow::Result<bool> {
+                anyhow::bail!("handler failed")
+            }
+        }
+
+        let proc = Proc::isolated();
+        let (mut reported_event, _coordinator) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let parent = proc.spawn(FailingSupervisor("parent"));
+        let child = proc.spawn_child(parent.cell().clone(), FailingSupervisor("child"));
+        child.drain_and_stop("done").unwrap();
+
+        let event = reported_event.recv().await;
+        assert_eq!(event.actor_id, *parent.actor_addr());
+        assert_eq!(
+            event.failure_report().unwrap(),
+            "The actor parent and all its descendants have failed:\n\
+             \x20 handler failed\n\
+             This error occurred while handling a supervision event:\n\
+             \x20 Supervision event: actor child has status:\n\
+             \x20   stopped: done"
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_handler_returns_supervision_cause_with_context() {
+        #[derive(Debug)]
+        struct FailingActor;
+
+        impl Actor for FailingActor {
+            fn display_name(&self) -> Option<String> {
+                Some("failing actor".to_string())
+            }
+        }
+
+        #[async_trait]
+        impl Handler<String> for FailingActor {
+            async fn handle(
+                &mut self,
+                cx: &crate::Context<Self>,
+                message: String,
+            ) -> anyhow::Result<()> {
+                if message == "ignore" {
+                    return Ok(());
+                }
+                let cause = ActorSupervisionEvent::new(
+                    cx.self_addr().proc_addr().actor_addr("child"),
+                    None,
+                    if message == "idle" {
+                        ActorStatus::Idle
+                    } else {
+                        ActorStatus::generic_failure(message)
+                    },
+                    None,
+                );
+                Err(anyhow::Error::new(
+                    ActorErrorKind::UnhandledSupervisionEvent(Box::new(cause)),
+                ))
+                .context("while handling a mesh failure")
+            }
+        }
+
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (mut reported_event, _coordinator) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let actor = proc.spawn_with_label::<FailingActor>("failing", FailingActor);
+        let actor_id = actor.actor_addr().clone();
+        actor.post(&client, "ignore".to_string());
+        actor.post(&client, "cause".to_string());
+
+        let event = reported_event.recv().await;
+        assert_eq!(event.actor_id, actor_id);
+        assert_eq!(event.display_name.as_deref(), Some("failing actor"));
+        let ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(cause)) =
+            &event.actor_status
+        else {
+            panic!(
+                "expected UnhandledSupervisionEvent, got {:?}",
+                event.actor_status
+            );
+        };
+        assert_eq!(cause.actor_status, ActorStatus::generic_failure("cause"));
+
+        let actor = proc.spawn(FailingActor);
+        actor.post(&client, "idle".to_string());
+        let event = reported_event.recv().await;
+        assert_eq!(event.actor_id, actor.actor_addr().clone());
+        assert!(event.actor_status.is_terminal());
+        assert_eq!(event.caused_by().actor_status, ActorStatus::Idle);
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -8325,9 +8712,6 @@ mod tests {
         assert_matches!(*status.borrow(), ActorStatus::Stopped(_));
     }
 
-    // Tokio's I/O driver is not fork-safe on macOS, and this test intentionally
-    // validates process termination by forking without a coordinator.
-    #[cfg_attr(target_os = "macos", ignore = "tokio runtime fork assertion on macOS")]
     #[tokio::test]
     async fn test_proc_terminate_without_coordinator() {
         if std::env::var("CARGO_TEST").is_ok() {
@@ -8842,6 +9226,56 @@ mod tests {
         assert!(
             !failure.is_propagated,
             "direct failure must not be marked propagated"
+        );
+    }
+
+    // Verifies retention eviction: cleanly-stopped snapshots go first,
+    // then the most recent failures, so the earliest failures survive.
+    #[test]
+    fn test_evict_terminated_snapshots() {
+        let snapshots: DashMap<ActorId, TerminatedSnapshot> = DashMap::new();
+        let insert = |name: &str, failed_at: Option<SystemTime>| {
+            let actor_addr = test_actor_id("proc", name);
+            let mut attrs = hyperactor_config::Attrs::new();
+            if let Some(t) = failed_at {
+                attrs.set(crate::introspect::FAILURE_ERROR_MESSAGE, "boom".to_string());
+                attrs.set(crate::introspect::FAILURE_OCCURRED_AT, t);
+            }
+            let payload = IntrospectResult {
+                identity: crate::introspect::IntrospectRef::Actor(actor_addr.clone()),
+                attrs: serde_json::to_string(&attrs).unwrap(),
+                children: Vec::new(),
+                parent: None,
+                as_of: SystemTime::now(),
+            };
+            let id = actor_addr.id().clone();
+            snapshots.insert(id.clone(), TerminatedSnapshot::new(actor_addr, payload));
+            id
+        };
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        insert("clean0", None);
+        let late = insert("late", Some(t0 + Duration::from_secs(2)));
+        let early = insert("early", Some(t0));
+        insert("clean1", None);
+        let mid = insert("mid", Some(t0 + Duration::from_secs(1)));
+
+        let retained =
+            || -> HashSet<ActorId> { snapshots.iter().map(|e| e.key().clone()).collect() };
+
+        evict_terminated_snapshots(&snapshots, 5);
+        assert_eq!(snapshots.len(), 5);
+
+        evict_terminated_snapshots(&snapshots, 3);
+        assert_eq!(
+            retained(),
+            HashSet::from([early.clone(), mid.clone(), late.clone()])
+        );
+
+        evict_terminated_snapshots(&snapshots, 1);
+        assert_eq!(retained(), HashSet::from([early.clone()]));
+        assert_eq!(
+            snapshots.get(&early).unwrap().failure_occurred_at.get(),
+            Some(&Some(t0)),
         );
     }
 

@@ -964,24 +964,6 @@ pub fn initialize_logging_with_log_prefix(
         }
     }
 
-    #[cfg(all(fbcode_build, target_os = "linux"))]
-    tracing::info!(
-        target: "execution",
-        execution_id = env::execution_id(),
-        environment = %env::Env::current(),
-        args = ?std::env::args(),
-        build_mode = build_info::BuildInfo::get_build_mode(),
-        compiler = build_info::BuildInfo::get_compiler(),
-        compiler_version = build_info::BuildInfo::get_compiler_version(),
-        buck_rule = build_info::BuildInfo::get_rule(),
-        package_name = build_info::BuildInfo::get_package_name(),
-        package_release = build_info::BuildInfo::get_package_release(),
-        upstream_revision = build_info::BuildInfo::get_upstream_revision(),
-        revision = build_info::BuildInfo::get_revision(),
-        process_name = process_name,
-        "logging_initialized",
-    );
-    #[cfg(not(all(fbcode_build, target_os = "linux")))]
     tracing::info!(
         target: "execution",
         execution_id = env::execution_id(),

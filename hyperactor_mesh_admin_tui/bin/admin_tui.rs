@@ -17,10 +17,6 @@ use clap::Parser;
 use hyperactor_mesh_admin_tui_lib::LangName;
 use hyperactor_mesh_admin_tui_lib::ThemeName;
 use hyperactor_mesh_admin_tui_lib::TuiConfig;
-// tokio is the async runtime on the OSS path (#[tokio::main]);
-// fbcode uses fbinit::main. Explicit use suppresses the unused-deps
-// linter while keeping tokio in BUCK deps for autocargo.
-use tokio as _;
 
 /// Command-line arguments for the admin TUI.
 #[derive(Debug, Parser)]
@@ -68,13 +64,6 @@ struct Args {
     plaintext: bool,
 }
 
-#[cfg(fbcode_build)]
-#[fbinit::main]
-async fn main(_fb: fbinit::FacebookInit) -> io::Result<()> {
-    run().await
-}
-
-#[cfg(not(fbcode_build))]
 #[tokio::main]
 async fn main() -> io::Result<()> {
     run().await

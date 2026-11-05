@@ -119,3 +119,116 @@ From `fbcode/monarch`, run:
 ```sh
 cargo run -p chrysalis --example sealed-postcard
 ```
+
+## Run the roles as separate processes
+
+The same binary can run each node as its own operating-system process. These
+role modes currently require Linux because they use `VsockDatagramSocket`,
+whose native-vsock implementation is Linux-only. The no-mode walkthrough above
+uses `InprocNetwork` and remains available on other platforms.
+
+Alice is the namespace root. Relay listens for Bob at `…/r` and connects to
+Alice at `…/a`. Bob has no listener; he connects to Relay.
+
+```text
+Alice (root, listens at …/a)
+└── Relay (listens at …/r)
+    └── Bob (connects to …/r)
+```
+
+### Prepare the identities
+
+Create a short run directory so its Unix socket paths fit the operating
+system's limit. Generate one private identity bundle per role and save the
+printed PIDs:
+
+```sh
+cd ~/fbsource/fbcode/monarch/chrysalis/crates/chrysalis/examples/sealed-postcard
+sealed_postcard_dir=$(mktemp -d /tmp/sealed-postcard.XXXXXX)
+
+cargo run --example sealed-postcard -- \
+  identities --out "$sealed_postcard_dir/ids" \
+  > "$sealed_postcard_dir/pids"
+
+alice_pid=$(awk '$1 == "alice" { print $2 }' "$sealed_postcard_dir/pids")
+relay_pid=$(awk '$1 == "relay" { print $2 }' "$sealed_postcard_dir/pids")
+bob_pid=$(awk '$1 == "bob" { print $2 }' "$sealed_postcard_dir/pids")
+```
+
+Each bundle contains that role's certificate, the CA certificate all three
+roles trust, and the role's private key. The files are readable only by their
+owner and are never overwritten. A PID is the first 128 bits of the SHA-256 of
+the role's certificate, printed as 32 hexadecimal digits. Role commands reject
+a shorter PID.
+
+The examples below use `/tmp/sealed-postcard.ab12cd` as the run directory and
+these sample PIDs:
+
+```text
+alice 11111111111111111111111111111111
+relay 22222222222222222222222222222222
+bob 33333333333333333333333333333333
+```
+
+### Alice
+
+```sh
+SEALED_POSTCARD_IDENTITY=$(cat /tmp/sealed-postcard.ab12cd/ids/alice.pem) \
+  cargo run --example sealed-postcard -- alice \
+    --listen unix:/tmp/sealed-postcard.ab12cd/a \
+    --bob-pid 33333333333333333333333333333333
+```
+
+`SEALED_POSTCARD_IDENTITY` is the text of Alice's own bundle, not its path.
+`--listen` is the Unix socket where Relay connects to Alice. `--bob-pid` is
+Bob's PID from the `bob` line of `pids`; Alice uses it to find and authenticate
+Bob. Alice exits successfully after the postcard and 32 echo streams complete.
+
+### Relay
+
+```sh
+SEALED_POSTCARD_IDENTITY=$(cat /tmp/sealed-postcard.ab12cd/ids/relay.pem) \
+  cargo run --example sealed-postcard -- relay \
+    --parent-pid 11111111111111111111111111111111 \
+    --parent unix:/tmp/sealed-postcard.ab12cd/a \
+    --listen unix:/tmp/sealed-postcard.ab12cd/r
+```
+
+`SEALED_POSTCARD_IDENTITY` is the text of Relay's own bundle. `--listen` is
+where Relay waits for Bob, so Bob uses the same address as `--parent`.
+`--parent` is Alice's `--listen` address. `--parent-pid` is Alice's PID from
+the `alice` line of `pids`; Relay accepts only a parent whose certificate
+matches it.
+
+### Bob
+
+```sh
+SEALED_POSTCARD_IDENTITY=$(cat /tmp/sealed-postcard.ab12cd/ids/bob.pem) \
+  cargo run --example sealed-postcard -- bob \
+    --parent-pid 22222222222222222222222222222222 \
+    --parent unix:/tmp/sealed-postcard.ab12cd/r \
+    --alice-pid 11111111111111111111111111111111
+```
+
+`SEALED_POSTCARD_IDENTITY` is the text of Bob's own bundle. `--parent` is
+Relay's `--listen` address. `--parent-pid` is Relay's PID from `pids`, and Bob
+accepts only a parent whose certificate matches it. `--alice-pid` is Alice's
+PID; Bob checks that every application stream came from Alice.
+
+The roles can start in any order. Children keep retrying their parent, and
+Alice waits up to 120 seconds for Bob. Bob and Relay print reports when they
+receive Ctrl-C or SIGTERM:
+
+```text
+bob served 33 streams, all from alice: true
+relay observed 123 datagrams, postcard plaintext seen: false, log complete: true
+```
+
+They exit successfully only when those checks pass. A complete Relay report
+means it recorded every datagram its socket sent or received, and none
+contained the postcard's plaintext. Bob has no listening socket, so everything
+between Alice and Bob crosses Relay. After stopping the roles, deleting the run
+directory removes their private keys.
+
+Continue with [`separate-processes.md`](separate-processes.md) for a copyable
+three-pane tmux walkthrough.

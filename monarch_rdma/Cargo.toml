@@ -12,7 +12,7 @@ anyhow = "1.0.104"
 async-trait = "0.1.92"
 bytes = { version = "1.12.1", features = ["serde"] }
 dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
-erased-serde = "0.4.10"
+erased-serde = "0.4.11"
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
@@ -25,7 +25,7 @@ rand = "0.10.3"
 rdmaxcel-sys = { version = "0.0.1", path = "../rdmaxcel-sys" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tokio-util = { version = "0.7.20", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
@@ -37,4 +37,5 @@ timed_test = { version = "0.0.0", path = "../timed_test" }
 [features]
 cuda = []
 default = []
+rocm = []
 test-utils = []

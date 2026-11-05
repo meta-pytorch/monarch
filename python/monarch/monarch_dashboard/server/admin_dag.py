@@ -159,7 +159,7 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
             (snap_id,),
         )
         host_rows = db._query(
-            "SELECT node_id, addr FROM host_nodes WHERE snapshot_id = ?",
+            "SELECT node_id, addr, hostname FROM host_nodes WHERE snapshot_id = ?",
             (snap_id,),
         )
         proc_rows = db._query(
@@ -279,6 +279,8 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
             "subtitle": tier.capitalize(),
             "status": status,
         }
+        if ntype == "host":
+            node_data["hostname"] = host_info.get(ref, {}).get("hostname")
         nodes.append(node_data)
 
         if parent_ref is not None and parent_ref in ref_to_node_id:

@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -37,6 +38,7 @@ use hyperactor_mesh::mesh_id::ActorMeshId;
 use hyperactor_mesh::mesh_id::HostMeshId;
 use hyperactor_mesh::mesh_id::ProcMeshId;
 use hyperactor_mesh::proc_agent::GetProcClient;
+use hyperactor_mesh::proc_launcher::ProcReachability;
 use hyperactor_mesh::proc_mesh::ProcRef;
 use hyperactor_mesh::proc_mesh::telemetry_actor_mesh_id;
 use hyperactor_mesh::shared_cell::SharedCell;
@@ -514,7 +516,8 @@ impl PyHostMesh {
     /// Install a Python proc launcher on every host of this mesh.
     ///
     /// `actor` is the `_Actor` wrapper class and `init_args` the pickled
-    /// `(args, kwargs)` of the launcher's `Init` message. Return a Handle
+    /// `(args, kwargs)` of the launcher's `Init` message, and `reachability`
+    /// the launcher class's declared `ProcReachability`. Return a Handle
     /// that resolves once every host has installed the launcher, or raises
     /// an error naming each host that failed.
     fn set_proc_launcher(
@@ -524,7 +527,11 @@ impl PyHostMesh {
         actor: Py<PyType>,
         init_args: FrozenBuffer,
         kind: ActorKind,
+        reachability: &str,
     ) -> PyResult<PyHandle> {
+        let reachability = ProcReachability::from_str(reachability).map_err(|_| {
+            PyValueError::new_err(format!("unknown proc reachability: {reachability}"))
+        })?;
         let hosts = self.mesh_ref()?;
         let actor_type = PickledPyObject::pickle(actor.bind(py).as_any())?;
         let init_message = PythonMessage::new_from_buf(
@@ -538,7 +545,7 @@ impl PyHostMesh {
         let launcher = PythonActorParams::new(actor_type, Some(init_message), kind);
         let instance = instance.clone();
         Ok(PyHandle::spawn(async move {
-            install_proc_launcher(instance.deref(), &hosts, launcher).await?;
+            install_proc_launcher(instance.deref(), &hosts, launcher, reachability).await?;
             Ok(())
         }))
     }

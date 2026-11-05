@@ -18,7 +18,7 @@ from monarch._rust_bindings.monarch_extension.snapshot_integration import (
     _snapshot_table_names,
 )
 
-from . import db
+from . import db, resources
 from .admin_dag import build_admin_dag
 from .cache import cached
 from .pyspy_client import capture_pyspy_dump, mesh_admin_base_url
@@ -86,6 +86,19 @@ def message_stats():
     already JS-safe strings, so no sanitize pass is needed.
     """
     return jsonify(cached("message-stats", db.get_message_stats))
+
+
+@api.route("/resources")
+def resource_inventory():
+    return jsonify(cached("resources", resources.inventory))
+
+
+@api.route("/resources/history")
+def resource_history():
+    hostname = request.args.get("hostname", "")
+    if not hostname or len(hostname) > 253:
+        return jsonify({"error": "hostname must contain 1–253 characters"}), 400
+    return jsonify(resources.history(hostname))
 
 
 @api.route("/message-activity")

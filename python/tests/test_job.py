@@ -7,6 +7,7 @@
 import asyncio
 import contextlib
 import importlib
+import math
 import os
 import pathlib
 import pickle
@@ -29,6 +30,7 @@ import monarch._src.job._job_sidecar_worker as js_worker
 import monarch._src.job.job_components as jc
 import monarch._src.job.job_sidecar as js
 import monarch._src.job.mount_config as mc
+import psutil
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.handle import (
     _new_handle_pair,
@@ -356,18 +358,24 @@ def test_once_daemon_get_timeout_disconnects() -> None:
 
 def test_wait_for_pid_exit_reaps_exited_child() -> None:
     child = subprocess.Popen([sys.executable, "-c", "pass"])
-    while (
-        not os.path.exists(f"/proc/{child.pid}")
-        or open(f"/proc/{child.pid}/stat").read().split()[2] != "Z"
-    ):
-        time.sleep(0.01)
+    try:
+        # poll()/wait() would reap the child and invalidate the precondition.
+        deadline = time.monotonic() + 5
+        process = psutil.Process(child.pid)
+        while process.status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < deadline, "child did not exit within 5 seconds"
+            time.sleep(0.01)
 
-    start = time.monotonic()
-    with patch("monarch._src.job.once_daemon.os.kill", wraps=os.kill) as kill:
-        _wait_for_pid_exit(child.pid)
+        start = time.monotonic()
+        with patch("monarch._src.job.once_daemon.os.kill", wraps=os.kill) as kill:
+            _wait_for_pid_exit(child.pid)
 
-    assert time.monotonic() - start < 5
-    assert signal.SIGKILL not in [c.args[1] for c in kill.call_args_list]
+        assert time.monotonic() - start < 5
+        assert signal.SIGKILL not in [c.args[1] for c in kill.call_args_list]
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=5)
 
 
 def test_create_job_sidecar_spawns_job_sidecar_worker_module():
@@ -765,6 +773,45 @@ def test_stop_job_sidecar_preserves_daemon_when_mount_cleanup_fails():
         js.stop_job_sidecar("apply_id")
 
     daemon.shutdown.assert_not_called()
+
+
+def _dead_sidecar(tmp_path: pathlib.Path) -> OnceDaemon:
+    child = subprocess.Popen(["true"])
+    child.wait()
+    return OnceDaemon(str(tmp_path / "cmd.sock"), child.pid)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [FileNotFoundError(), ConnectionResetError(), BrokenPipeError(), EOFError()],
+)
+def test_stop_job_sidecar_treats_dead_sidecar_as_stopped(tmp_path, error) -> None:
+    """A sidecar killed by the same Ctrl-C as the client holds no mounts."""
+    with (
+        patch.object(js, "find_job_sidecar", return_value=_dead_sidecar(tmp_path)),
+        patch.object(OnceDaemon, "send", side_effect=error),
+    ):
+        js.stop_job_sidecar("apply_id")
+
+
+def test_stop_job_sidecar_raises_when_live_sidecar_is_unreachable(tmp_path) -> None:
+    daemon = OnceDaemon(str(tmp_path / "cmd.sock"), os.getpid())
+    with (
+        patch.object(js, "find_job_sidecar", return_value=daemon),
+        patch.object(js, "_SIDECAR_EXIT_GRACE_S", 0.0),
+        pytest.raises(FileNotFoundError),
+    ):
+        js.stop_job_sidecar("apply_id")
+
+
+def test_kill_reaps_workers_when_sidecar_is_dead(tmp_path) -> None:
+    job = MockJobTrait()
+    job.apply()
+    with patch.object(js, "find_job_sidecar", return_value=_dead_sidecar(tmp_path)):
+        job.kill()
+
+    assert job.kill_called
+    assert not job.active
 
 
 @pytest.mark.parametrize("reuse_handle", [False, True])
@@ -2702,6 +2749,64 @@ def test_exec_command_returns_max_returncode():
     assert exec_command(host_mesh, ["echo", "hi"]).get() == 7
 
 
+def test_exec_command_reports_signal_failure_and_tags_execution_before_cleanup():
+    from monarch._rust_bindings.monarch_hyperactor.shape import (
+        Extent,
+        Point,
+        Region,
+        Slice,
+    )
+
+    host_mesh, _procs, bash_actors, markers = _exec_env()
+    host_mesh._region = Region(["hosts"], Slice(offset=0, sizes=[1], strides=[1]))
+    _procs._region = host_mesh._region
+    native_rank = Point(0, Extent(["hosts"], [1]))
+    bash_actors.run.call.return_value = _results_future(
+        [(native_rank, {"returncode": -9, "stdout": "", "stderr": "terminated"})]
+    )
+    observed = []
+
+    def report(rank, result):
+        observed.append((rank, result["returncode"], markers["stop_driven"]))
+
+    identifier = "a" * 32
+    assert (
+        exec_command(
+            host_mesh,
+            ["python", "train.py"],
+            _execution_id=identifier,
+            _result_callback=report,
+        ).get()
+        == 137
+    )
+    assert observed == [
+        (
+            {
+                "flat_rank": 0,
+                "coordinates": {"hosts": 0},
+                "host_rank": 0,
+                "label": "rank 0 (hosts=0)",
+            },
+            -9,
+            False,
+        )
+    ]
+    assert markers["stop_driven"]
+    host_mesh.spawn_procs.assert_called_once_with(
+        name=f"exec_{identifier}", per_host=None
+    )
+
+
+def test_direct_exec_command_signal_is_nonzero_without_recording():
+    host_mesh, _procs, bash_actors, markers = _exec_env()
+    bash_actors.run.call.return_value = _results_future(
+        [("rank0", {"returncode": -9, "stdout": "", "stderr": "killed"})]
+    )
+    assert exec_command(host_mesh, ["sleep", "60"]).get() == 137
+    assert markers["stop_driven"]
+    host_mesh.spawn_procs.assert_called_once_with(per_host=None)
+
+
 def test_exec_command_drives_cleanup_on_success():
     """procs.stop() is driven to completion on the happy path."""
     host_mesh, procs, bash_actors, markers = _exec_env()
@@ -3483,3 +3588,97 @@ def test_exec_command_observer_cancellation_still_cleans_up():
     host_mesh.spawn_procs.assert_called_once_with(per_host=None)
     bash_actors.run.call.assert_called_once()
     procs.stop.assert_called_once()
+
+
+def test_exec_command_optional_rank_reporting_failure_keeps_exit_and_cleanup():
+    host_mesh, _procs, bash_actors, markers = _exec_env()
+    bash_actors.run.call.return_value = _results_future(
+        [("rank0", {"returncode": 7, "stdout": "", "stderr": ""})]
+    )
+
+    def fail_report(*args):
+        raise OSError("telemetry unavailable")
+
+    assert exec_command(host_mesh, ["false"], _result_callback=fail_report).get() == 7
+    assert markers["stop_driven"]
+
+
+@pytest.mark.parametrize(
+    "selected,proc_shape,local_rank,per_host,expected",
+    [
+        ((0, [4], [1]), (["hosts"], [4]), 2, None, (2, {"hosts": 2})),
+        ((2, [], []), ([], []), 0, None, (2, {"hosts": 2})),
+        ((2, [], []), (["gpu"], [2]), 1, {"gpu": 2}, (5, {"hosts": 2, "gpu": 1})),
+        (
+            (0, [4], [1]),
+            (["hosts", "gpu"], [4, 2]),
+            5,
+            {"gpu": 2},
+            (5, {"hosts": 2, "gpu": 1}),
+        ),
+        (
+            (2, [], []),
+            (["gpu", "cpu"], [2, 3]),
+            5,
+            {"gpu": 2, "cpu": 3},
+            (17, {"hosts": 2, "gpu": 1, "cpu": 2}),
+        ),
+        (
+            (0, [2], [2]),
+            (["hosts", "gpu", "cpu"], [2, 2, 3]),
+            11,
+            {"gpu": 2, "cpu": 3},
+            (17, {"hosts": 2, "gpu": 1, "cpu": 2}),
+        ),
+    ],
+)
+def test_original_rank_identity_survives_slices_and_per_host(
+    selected, proc_shape, local_rank, per_host, expected
+):
+    from types import SimpleNamespace
+
+    from monarch._rust_bindings.monarch_hyperactor.shape import (
+        Extent,
+        Point,
+        Region,
+        Slice,
+    )
+    from monarch._src.job.job import _execution_rank_identity
+
+    original = SimpleNamespace(
+        _region=Region(["hosts"], Slice(offset=0, sizes=[4], strides=[1]))
+    )
+    offset, sizes, strides = selected
+    selected_mesh = SimpleNamespace(
+        _region=Region(
+            ["hosts"] if sizes else [],
+            Slice(offset=offset, sizes=sizes, strides=strides),
+        )
+    )
+    labels, proc_sizes = proc_shape
+    proc_strides = [math.prod(proc_sizes[i + 1 :]) for i in range(len(proc_sizes))]
+    procs = SimpleNamespace(
+        _region=Region(labels, Slice(offset=0, sizes=proc_sizes, strides=proc_strides))
+    )
+    result = _execution_rank_identity(
+        original,
+        selected_mesh,
+        procs,
+        Point(local_rank, Extent(labels, proc_sizes)),
+        per_host,
+    )
+    assert (result["flat_rank"], result["coordinates"]) == expected
+    assert result["host_rank"] == 2
+
+
+@pytest.mark.parametrize("per_host", [{"gpu": 0}, {"gpu": 2, "cpu": 0}])
+def test_empty_proc_mesh_has_no_execution_rank_identity(per_host):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from monarch._src.job.job import _execution_rank_identity
+
+    with pytest.raises(ValueError, match="Empty process meshes"):
+        _execution_rank_identity(
+            MagicMock(), MagicMock(), MagicMock(), SimpleNamespace(rank=0), per_host
+        )

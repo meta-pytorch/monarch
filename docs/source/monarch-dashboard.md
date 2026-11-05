@@ -3,9 +3,9 @@
 The **Monarch Dashboard** is a web-based GUI for monitoring Monarch actor systems
 in real time. It connects to the distributed telemetry system and renders the
 full mesh topology — hosts, processes, actor meshes, and individual actors —
-across three tabs: **Overview** for live metrics and message traffic,
-**Topology** for an interactive job graph, and **Explorer** for drilling into a
-single entity.
+across four tabs: **Overview** for live metrics and message traffic,
+**Topology** for an interactive job graph, **Explorer** for drilling into a
+single entity, and **Resources** for host and GPU utilization.
 
 See the [observability overview](observability) for how the dashboard uses
 [distributed telemetry](distributed-telemetry) and complements the
@@ -77,6 +77,9 @@ The tab is organized into panels:
   system actors.
 - **Topology Breakdown** — counts and proportions of host, proc, and actor
   meshes.
+- **Resources** — a snapshot of physical-host health: fresh host samples,
+  weighted CPU, available RAM, and GPU memory used. **View Resources →**
+  opens the Resources tab.
 
 System roles come from the runtime's `actor_nodes.is_system` snapshot flag,
 matched to telemetry by canonical actor id. Host/Proc mesh membership also identifies runtime agents, including processes
@@ -174,6 +177,32 @@ Selecting an actor shows a breadcrumb of its ancestors and four sections:
 - **Status timeline** — the most recent status transitions, with timestamps.
 - **Messages** — incoming and outgoing messages with peer, endpoint, and
   status. Click a row to expand its status event history.
+
+## Resources
+
+The Resources tab reports physical-host CPU, memory, network, disk, and GPU
+utilization from the `host_metrics` and `gpu_metrics` telemetry tables. Use it
+to line up actor and message activity with what the machines were doing at the
+time. See [Distributed telemetry](distributed-telemetry) to query the same
+samples as SQL.
+
+The **host inventory** lists one row per observed physical host, deduplicated
+across logical host units, with sortable CPU, RAM pressure, available RAM, GPU
+count, and sample-age columns plus host search. The inventory may include the
+controller host. Select a host for its recent history:
+
+- **Host detail** — current CPU, RAM pressure, available RAM, swap, and free
+  space on `/` and `/tmp`, with five-minute charts for CPU activity, RAM
+  pressure, load average, network traffic, disk I/O, and free disk space.
+- **GPUs** — one row per NVML-visible device with utilization, memory used and
+  total, temperature, and power, plus five-minute charts for each. When a host
+  has more than eight devices, the charts cover the first eight by device
+  index while the table lists all of them.
+
+Readings are whole-host and include other jobs and the controller. Only fresh
+samples are counted; missing or stale samples are excluded rather than shown
+as zero. When sampling is disabled or collectors are unavailable, the tab says
+so instead of showing an empty table.
 
 ## Programmatic Usage
 

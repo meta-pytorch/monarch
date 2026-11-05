@@ -23,6 +23,7 @@ use hyperactor::Handler;
 use hyperactor::ProcAddr;
 use hyperactor::RemoteMessage;
 use hyperactor::RemoteSpawn;
+use hyperactor::Uid;
 use hyperactor::accum::IdleFlushReducerOpts;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
@@ -37,6 +38,7 @@ use hyperactor_config::attrs::declare_attrs;
 use hyperactor_remote::ActorSpawner;
 use hyperactor_remote::ActorSpawnerEndpoint;
 use hyperactor_remote::KeepaliveLink;
+use hyperactor_remote::SerializedParams;
 use hyperactor_remote::proc_spawner::actor_spawner_uid;
 use hyperactor_telemetry::hash_to_u64;
 use ndslice::Extent;
@@ -56,6 +58,8 @@ use crate::HostMeshRef;
 use crate::ValueMesh;
 use crate::actor_mesh::ACTOR_MESH_ID;
 use crate::actor_mesh::ActorMeshStopHandle;
+use crate::actor_mesh::DataMeshDisplayName;
+use crate::actor_mesh::notify_mesh_created;
 use crate::casting::CAST_POINT;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::host_mesh::host_agent::GetHostProcStates;
@@ -102,6 +106,12 @@ declare_attrs! {
 /// Returns the telemetry `meshes.id` value for an actor mesh.
 pub fn telemetry_actor_mesh_id(proc_mesh_id: &ProcMeshId, actor_mesh_id: &ActorMeshId) -> u64 {
     hash_to_u64(&(proc_mesh_id, actor_mesh_id))
+}
+
+/// Returns the telemetry `meshes.id` value for a data actor mesh whose
+/// members share `uid`.
+pub fn telemetry_data_actor_mesh_id(uid: &Uid) -> u64 {
+    hash_to_u64(uid)
 }
 
 /// A reference to a single [`hyperactor::Proc`].
@@ -189,36 +199,27 @@ impl ProcMesh {
             let parent_view_json = serde_json::to_string(hm.region())
                 .unwrap_or_else(|e| format!("encountered error when serializing region: {}", e));
 
-            hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
-                id: mesh_id_hash,
-                timestamp: std::time::SystemTime::now(),
-                class: "Proc".to_string(),
-                given_name: id
-                    .display_label()
-                    .map(|l| l.as_str())
-                    .unwrap_or("unnamed")
-                    .to_string(),
-                full_name: name_str,
-                shape_json: serde_json::to_string(&current_ref.region.extent()).unwrap_or_default(),
-                parent_mesh_id: Some(parent_mesh_id),
-                parent_view_json: Some(parent_view_json),
-            });
-
-            // Notify telemetry of each ProcAgent actor in this mesh.
-            // These are skipped in Proc::spawn_inner. mesh_id directly points to proc mesh.
-            let now = std::time::SystemTime::now();
-            for rank in current_ref.ranks.iter() {
-                let actor_addr = rank.agent.actor_addr();
-
-                hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                    id: hyperactor_telemetry::hash_to_u64(actor_addr.id()),
-                    timestamp: now,
-                    mesh_id: mesh_id_hash,
-                    rank: rank.create_rank as u64,
-                    full_name: actor_addr.to_string(),
-                    display_name: None,
-                });
-            }
+            notify_mesh_created(
+                hyperactor_telemetry::MeshEvent {
+                    id: mesh_id_hash,
+                    timestamp: std::time::SystemTime::now(),
+                    class: "Proc".to_string(),
+                    given_name: id
+                        .display_label()
+                        .map(|l| l.as_str())
+                        .unwrap_or("unnamed")
+                        .to_string(),
+                    full_name: name_str,
+                    shape_json: serde_json::to_string(&current_ref.region.extent())
+                        .unwrap_or_default(),
+                    parent_mesh_id: Some(parent_mesh_id),
+                    parent_view_json: Some(parent_view_json),
+                },
+                current_ref
+                    .ranks
+                    .iter()
+                    .map(|rank| (rank.create_rank, rank.agent.actor_addr().clone(), None)),
+            );
         }
 
         Ok(Self {
@@ -818,7 +819,7 @@ impl ProcMeshRef {
 
     /// Spawn an actor on all procs in this mesh using the new data-only mesh API.
     /// `actor_mesh_id` identifies the mesh and its members, and must be an
-    /// instance id.
+    /// instance id. `supervision_display_name` names the actors in telemetry.
     ///
     /// This initiates an actor spawn on each proc and constructs a stoppable
     /// data mesh from the actor refs and local supervisor handles without
@@ -836,6 +837,7 @@ impl ProcMeshRef {
         cx: &C,
         actor_mesh_id: ActorMeshId,
         params: &A::Params,
+        supervision_display_name: Option<String>,
     ) -> crate::Result<ActorMesh<A>>
     where
         A::Params: RemoteMessage,
@@ -845,7 +847,7 @@ impl ProcMeshRef {
                 "data-backed actor meshes require instance ids"
             )));
         }
-        self.spawn_data_mesh_inner(cx, params, actor_mesh_id)
+        self.spawn_data_mesh_inner(cx, params, actor_mesh_id, supervision_display_name)
     }
 
     fn spawn_data_mesh_inner<A: RemoteSpawn, C: context::Actor>(
@@ -853,14 +855,25 @@ impl ProcMeshRef {
         cx: &C,
         params: &A::Params,
         actor_mesh_id: ActorMeshId,
+        supervision_display_name: Option<String>,
     ) -> crate::Result<ActorMesh<A>>
     where
         A::Params: RemoteMessage,
     {
         let region = self.region().clone();
+        let actor_type = Remote::collect()
+            .name_of::<A>()
+            .ok_or(Error::ActorTypeNotRegistered(type_name::<A>().to_string()))?
+            .to_string();
         let mut members = Vec::with_capacity(self.ranks.len());
         let mut stop_handles = Vec::with_capacity(self.ranks.len());
-        let serialized_params = bincode::serde::encode_to_vec(params, bincode::config::legacy())?;
+        let serialized_params = SerializedParams::<A>::new(params)?;
+        let display_name = DataMeshDisplayName::new(
+            supervision_display_name
+                .clone()
+                .unwrap_or_else(|| actor_mesh_id.to_string()),
+            region.clone(),
+        );
 
         let stop_spawned = |handles: &[ActorMeshStopHandle], reason: &str| {
             for handle in handles {
@@ -871,16 +884,6 @@ impl ProcMeshRef {
         // Each call only schedules a local supervisor that sends a one-way spawn
         // request. No rank waits for another rank's remote actor initialization.
         for (rank, proc_ref) in self.ranks.iter().enumerate() {
-            let params = match bincode::serde::decode_from_slice(
-                &serialized_params,
-                bincode::config::legacy(),
-            ) {
-                Ok((params, _)) => params,
-                Err(error) => {
-                    stop_spawned(&stop_handles, "data mesh spawn failed");
-                    return Err(error.into());
-                }
-            };
             let point = region
                 .extent()
                 .point_of_rank(rank)
@@ -893,6 +896,7 @@ impl ProcMeshRef {
             // The actor's own environment carries its point, but supervision
             // events are raised on the spawner's side, so they need a copy.
             // TODO: unify the actor environment and supervision labels.
+            let actor_display_name = display_name.at_point(&point);
             let mut labels = Flattrs::new();
             labels.set(CAST_POINT, point);
             labels.set(ACTOR_MESH_ID, actor_mesh_id.clone());
@@ -900,11 +904,12 @@ impl ProcMeshRef {
             let (actor_ref, stop_handle) = match actor_spawner.spawn_uid_with_link_and_ready(
                 cx,
                 actor_mesh_id.uid().clone(),
-                params,
+                serialized_params.clone(),
                 KeepaliveLink::default(),
                 None,
                 environment,
                 labels,
+                Some(actor_display_name),
             ) {
                 Ok(spawned) => spawned,
                 Err(error) => {
@@ -916,7 +921,20 @@ impl ProcMeshRef {
             stop_handles.push(stop_handle.into_any());
         }
 
-        ActorMesh::try_new_data(actor_mesh_id, region, members, stop_handles)
+        let mesh = ActorMesh::try_new_data(
+            actor_mesh_id.clone(),
+            region,
+            members,
+            stop_handles,
+            display_name,
+        )?;
+        self.notify_actor_mesh_created(
+            telemetry_data_actor_mesh_id(actor_mesh_id.uid()),
+            &actor_mesh_id,
+            actor_type,
+            supervision_display_name.as_deref(),
+        );
+        Ok(mesh)
     }
 
     /// Spawn an actor on all procs in this mesh under the given
@@ -1043,7 +1061,7 @@ impl ProcMeshRef {
             && actor_mesh_id.uid().is_instance()
         {
             return self
-                .spawn_data_mesh_inner(cx, params, actor_mesh_id)
+                .spawn_data_mesh_inner(cx, params, actor_mesh_id, supervision_display_name)
                 .map(SpawnedActorMesh::Data);
         }
 
@@ -1193,19 +1211,39 @@ impl ProcMeshRef {
             None,
             actor_mesh_members,
         );
-        // Notify telemetry that an actor mesh was created.
-        {
-            let id_str = actor_mesh_id.to_string();
+        self.notify_actor_mesh_created(
+            telemetry_actor_mesh_id(self.id(), &actor_mesh_id),
+            &actor_mesh_id,
+            actor_type,
+            supervision_display_name.as_deref(),
+        );
 
-            // Hash the proc mesh id for parent_mesh_id.
-            let parent_mesh_id_hash = hash_to_u64(self.id());
-            let mesh_id_hash = telemetry_actor_mesh_id(self.id(), &actor_mesh_id);
+        Ok((mesh, statuses))
+    }
 
-            hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
-                id: mesh_id_hash,
+    /// Record an actor mesh and each of its actors in telemetry under
+    /// `telemetry_mesh_id`.
+    fn notify_actor_mesh_created(
+        &self,
+        telemetry_mesh_id: u64,
+        actor_mesh_id: &ActorMeshId,
+        actor_type: String,
+        supervision_display_name: Option<&str>,
+    ) {
+        // The rank is the actor's position within the actor mesh (not the
+        // proc's create_rank, which reflects the original unsliced mesh).
+        let actors = self.ranks.iter().enumerate().map(|(rank, proc_ref)| {
+            let display_name = supervision_display_name.map(|sdn| {
+                let point = self.region().extent().point_of_rank(rank).unwrap();
+                crate::actor_display_name(sdn, &point)
+            });
+            (rank, proc_ref.actor_addr(actor_mesh_id), display_name)
+        });
+        notify_mesh_created(
+            hyperactor_telemetry::MeshEvent {
+                id: telemetry_mesh_id,
                 timestamp: std::time::SystemTime::now(),
                 class: supervision_display_name
-                    .as_deref()
                     .and_then(python_class_from_supervision_name)
                     .unwrap_or(actor_type),
                 given_name: actor_mesh_id
@@ -1213,34 +1251,13 @@ impl ProcMeshRef {
                     .map(|l| l.as_str())
                     .unwrap_or("unnamed")
                     .to_string(),
-                full_name: id_str,
+                full_name: actor_mesh_id.to_string(),
                 shape_json: serde_json::to_string(&self.region().extent()).unwrap_or_default(),
-                parent_mesh_id: Some(parent_mesh_id_hash),
+                parent_mesh_id: Some(hash_to_u64(self.id())),
                 parent_view_json: serde_json::to_string(self.region()).ok(),
-            });
-
-            // Notify telemetry of each actor in this mesh. The rank is
-            // the actor's position within the actor mesh (not the proc's
-            // create_rank, which reflects the original unsliced mesh).
-            let now = std::time::SystemTime::now();
-            for (rank, proc_ref) in self.ranks.iter().enumerate() {
-                let display_name = supervision_display_name.as_ref().map(|sdn| {
-                    let point = self.region().extent().point_of_rank(rank).unwrap();
-                    crate::actor_display_name(sdn, &point)
-                });
-                let actor_addr = proc_ref.actor_addr(&actor_mesh_id);
-                hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                    id: hyperactor_telemetry::hash_to_u64(actor_addr.id()),
-                    timestamp: now,
-                    mesh_id: mesh_id_hash,
-                    rank: rank as u64,
-                    full_name: actor_addr.to_string(),
-                    display_name,
-                });
-            }
-        }
-
-        Ok((mesh, statuses))
+            },
+            actors,
+        );
     }
 
     /// Cast `Stop` for an actor mesh to all proc agents without waiting for
@@ -1476,7 +1493,17 @@ mod tests {
     use hyperactor::id::Label;
     use hyperactor::monitor::MonitorFailure;
     #[cfg(fbcode_build)]
+    use hyperactor_config::Flattrs;
+    #[cfg(fbcode_build)]
     use hyperactor_config::NonZeroUsize;
+    #[cfg(fbcode_build)]
+    use hyperactor_telemetry::EntityEvent;
+    #[cfg(fbcode_build)]
+    use hyperactor_telemetry::TraceEvent;
+    #[cfg(fbcode_build)]
+    use hyperactor_telemetry::TraceEventSink;
+    #[cfg(fbcode_build)]
+    use hyperactor_telemetry::hash_to_u64;
     #[cfg(fbcode_build)]
     use ndslice::ViewExt as _;
     #[cfg(fbcode_build)]
@@ -1487,6 +1514,8 @@ mod tests {
     use timed_test::assert_no_process_leak;
     #[cfg(fbcode_build)]
     use timed_test::async_timed_test;
+    #[cfg(fbcode_build)]
+    use tokio::task::spawn_blocking;
     #[cfg(fbcode_build)]
     use uuid::Uuid;
 
@@ -1499,7 +1528,15 @@ mod tests {
     #[cfg(fbcode_build)]
     use super::USE_DIRECT_SPAWN;
     #[cfg(fbcode_build)]
+    use super::telemetry_data_actor_mesh_id;
+    #[cfg(fbcode_build)]
     use crate::ActorMesh;
+    #[cfg(fbcode_build)]
+    use crate::ActorMeshRef;
+    #[cfg(fbcode_build)]
+    use crate::ValueMesh;
+    #[cfg(fbcode_build)]
+    use crate::actor_mesh::notify_mesh_created;
     #[cfg(fbcode_build)]
     use crate::casting::CAST_POINT;
     #[cfg(fbcode_build)]
@@ -1557,6 +1594,7 @@ mod tests {
                 instance,
                 ActorMeshId::instance(Label::strip("default_spawner")),
                 &(),
+                None,
             )
             .await
             .expect("spawn data actor mesh through default spawner");
@@ -1613,6 +1651,252 @@ mod tests {
             "every rank should be stopped once wait_for_terminal returns: {outcomes:?}"
         );
 
+        hm.shutdown(instance)
+            .await
+            .expect("host mesh shutdown should complete");
+    }
+
+    #[async_timed_test(timeout_secs = 300)]
+    #[cfg(fbcode_build)]
+    async fn spawn_data_serializes_params_once() {
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(instance, "serialize_once", extent!(gpus = 4), None, None)
+            .await
+            .expect("spawn proc mesh");
+
+        let before = testactor::SerializeCountingParams::times_serialized();
+        let mut actor_mesh: ActorMesh<testactor::SerializeCountingActor> = proc_mesh
+            .spawn_data(
+                instance,
+                ActorMeshId::instance(Label::strip("serialize_once")),
+                &testactor::SerializeCountingParams,
+                None,
+            )
+            .await
+            .expect("spawn data actor mesh");
+        assert_eq!(
+            testactor::SerializeCountingParams::times_serialized() - before,
+            1,
+            "spawning on 4 ranks should serialize the params once, not once per rank"
+        );
+
+        actor_mesh
+            .stop(instance, "test complete".to_string())
+            .expect("stop data actor mesh");
+        actor_mesh
+            .wait_for_terminal(instance)
+            .await
+            .expect("wait for data actor mesh to stop");
+        hm.shutdown(instance)
+            .await
+            .expect("host mesh shutdown should complete");
+    }
+
+    /// A data mesh names an actor whose process died the way a managed
+    /// controller does: by the supervision display name and the actor's point
+    /// in the mesh it was spawned over, also when observed through a slice.
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn spawn_data_names_actors_lost_with_their_process() {
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(instance, "named_data", extent!(gpus = 2), None, None)
+            .await
+            .expect("spawn proc mesh");
+        let mut actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_data(
+                instance,
+                ActorMeshId::instance(Label::strip("named_data")),
+                &(),
+                Some("client.<testactor.TestActor named_data>".to_string()),
+            )
+            .await
+            .expect("spawn data actor mesh");
+        let rank1 = actor_mesh
+            .range("gpus", 1..2)
+            .expect("rank 1 slice should be valid");
+
+        rank1
+            .cast(
+                instance,
+                testactor::CauseSupervisionEvent {
+                    kind: testactor::SupervisionEventType::ProcessExit(1),
+                    send_to_children: false,
+                },
+            )
+            .expect("cast process exit");
+        let failure = tokio::time::timeout(
+            Duration::from_secs(60),
+            rank1.next_supervision_event(instance),
+        )
+        .await
+        .expect("timed out waiting for the lost actor's failure")
+        .expect("supervision event should be available");
+        assert_eq!(
+            failure.event.display_name.as_deref(),
+            Some("client.<testactor.TestActor named_data{'hosts': 0/1, 'gpus': 1/2}>"),
+            "the failure should name the actor by its point in the spawned mesh"
+        );
+
+        actor_mesh
+            .stop(instance, "test complete".to_string())
+            .expect("stop data actor mesh");
+        let _ = hm.shutdown(instance).await;
+    }
+
+    #[cfg(fbcode_build)]
+    struct EntityEventSink(std::sync::mpsc::Sender<EntityEvent>);
+
+    #[cfg(fbcode_build)]
+    impl TraceEventSink for EntityEventSink {
+        fn consume(&mut self, event: &TraceEvent) -> anyhow::Result<()> {
+            if let TraceEvent::Entity(event) = event {
+                let _ = self.0.send(event.clone());
+            }
+            Ok(())
+        }
+
+        fn flush(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn empty_actor_mesh_casts_emit_no_telemetry() {
+        hyperactor_telemetry::initialize_logging_for_test();
+        let (sender, events) = std::sync::mpsc::channel();
+        hyperactor_telemetry::register_sink(Box::new(EntityEventSink(sender)));
+
+        let instance = testing::instance();
+        let region: ndslice::Region = extent!(ranks = 0).into();
+        let data_id = ActorMeshId::instance(Label::strip("empty_data"));
+        let managed_id = ActorMeshId::instance(Label::strip("empty_managed"));
+        let data_mesh = ActorMeshRef::<testactor::TestActor>::try_new_data(
+            data_id.clone(),
+            region.clone(),
+            Vec::new(),
+        )
+        .unwrap();
+        let managed_mesh = ActorMeshRef::<testactor::TestActor>::new_managed(
+            managed_id.clone(),
+            None,
+            region.clone(),
+            None,
+            std::sync::Arc::new(ValueMesh::new(region, Vec::new()).unwrap()),
+        );
+        let mesh_ids = [
+            telemetry_data_actor_mesh_id(data_id.uid()),
+            hash_to_u64(&managed_id),
+        ];
+        let (port, _replies) = instance.open_port();
+        let message = testactor::GetActorId(port.bind());
+        for mesh in [data_mesh, managed_mesh] {
+            mesh.cast(instance, message.clone()).unwrap();
+            match mesh {
+                ActorMeshRef::Data(data) => {
+                    data.cast_choose_with_headers(instance, Flattrs::new(), message.clone());
+                }
+                ActorMeshRef::Managed(managed) => {
+                    managed
+                        .cast_choose_with_headers(instance, &Flattrs::new(), message.clone())
+                        .unwrap();
+                }
+            }
+        }
+
+        // The marker shares the event queue with sent messages, so receiving it
+        // confirms that all preceding cast telemetry has been consumed.
+        let marker_id = hash_to_u64(&hyperactor::Uid::anonymous());
+        notify_mesh_created(
+            hyperactor_telemetry::MeshEvent {
+                id: marker_id,
+                timestamp: std::time::SystemTime::now(),
+                class: "marker".to_string(),
+                given_name: "marker".to_string(),
+                full_name: "marker".to_string(),
+                shape_json: "{}".to_string(),
+                parent_mesh_id: None,
+                parent_view_json: None,
+            },
+            std::iter::empty(),
+        );
+        spawn_blocking(move || {
+            loop {
+                match events.recv_timeout(Duration::from_secs(30)).unwrap() {
+                    EntityEvent::Mesh(event) if event.id == marker_id => break,
+                    EntityEvent::SentMessage(event) => assert!(
+                        !mesh_ids.contains(&event.actor_mesh_id),
+                        "empty cast emitted a sent message: {event:?}"
+                    ),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[async_timed_test(timeout_secs = 300)]
+    #[cfg(fbcode_build)]
+    async fn spawn_data_emits_mesh_telemetry() {
+        hyperactor_telemetry::initialize_logging_for_test();
+        let (sender, events) = std::sync::mpsc::channel();
+        hyperactor_telemetry::register_sink(Box::new(EntityEventSink(sender)));
+
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(instance, "telemetry", extent!(gpus = 2), None, None)
+            .await
+            .expect("spawn proc mesh");
+        let mut actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_data(
+                instance,
+                ActorMeshId::instance(Label::strip("telemetry_mesh")),
+                &(),
+                Some("telemetry_mesh<test.TelemetryActor>".to_string()),
+            )
+            .await
+            .expect("spawn data actor mesh");
+        let (port, _replies) = instance.open_port();
+        actor_mesh
+            .cast(instance, testactor::GetActorId(port.bind()))
+            .expect("cast to data actor mesh");
+
+        let mesh_id =
+            telemetry_data_actor_mesh_id(actor_mesh.get(0).expect("rank 0").actor_addr().uid());
+        let mut mesh = None;
+        let mut actor_ranks = HashSet::new();
+        let mut sent = false;
+        while mesh.is_none() || actor_ranks.len() < 2 || !sent {
+            match events
+                .recv_timeout(Duration::from_secs(30))
+                .expect("timed out waiting for data mesh telemetry")
+            {
+                EntityEvent::Mesh(event) if event.id == mesh_id => mesh = Some(event),
+                EntityEvent::Actor(event) if event.mesh_id == mesh_id => {
+                    actor_ranks.insert(event.rank);
+                }
+                EntityEvent::SentMessage(event) if event.actor_mesh_id == mesh_id => sent = true,
+                _ => {}
+            }
+        }
+        let mesh = mesh.unwrap();
+        assert_eq!(mesh.class, "Python<TelemetryActor>");
+        assert_eq!(mesh.given_name, "telemetry_mesh");
+        assert_eq!(mesh.parent_mesh_id, Some(hash_to_u64(proc_mesh.id())));
+
+        actor_mesh
+            .stop(instance, "test complete".to_string())
+            .expect("stop data actor mesh");
+        actor_mesh
+            .wait_for_terminal(instance)
+            .await
+            .expect("wait for data actor mesh to stop");
         hm.shutdown(instance)
             .await
             .expect("host mesh shutdown should complete");
@@ -1843,6 +2127,59 @@ mod tests {
         hm.shutdown(&root.instance)
             .await
             .expect("host mesh shutdown should complete");
+    }
+
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn spawn_data_wait_started() {
+        let instance = testing::instance();
+        // The failing mesh reports its rank's failure to its owner. This owner
+        // runs no message loop, so the event stays queued instead of failing
+        // the test root.
+        let owner = instance
+            .proc()
+            .actor_instance::<testing::TestRootClient>("wait_started_owner")
+            .expect("create owner instance");
+        let owner = &owner.instance;
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(instance, "wait_started", extent!(gpus = 2), None, None)
+            .await
+            .unwrap();
+
+        let started: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_data(
+                owner,
+                ActorMeshId::instance(Label::strip("started")),
+                &(),
+                None,
+            )
+            .await
+            .unwrap();
+        started
+            .wait_started(owner)
+            .await
+            .expect("constructed data actors start");
+
+        let failed: ActorMesh<testactor::FailingCreateTestActor> = proc_mesh
+            .spawn_data(
+                owner,
+                ActorMeshId::instance(Label::strip("failed")),
+                &(),
+                None,
+            )
+            .await
+            .unwrap();
+        let error = failed
+            .wait_started(owner)
+            .await
+            .expect_err("a failed construction ends the wait");
+        assert!(
+            matches!(error, crate::Error::ActorSpawnError { .. }),
+            "unexpected error: {error}"
+        );
+
+        let _ = hm.shutdown(instance).await;
     }
 
     #[async_timed_test(timeout_secs = 300)]

@@ -146,6 +146,8 @@ export interface ApiDagNode {
   rank?: number;
   telemetry_actor_id?: number | string;
   mesh_name?: string;
+  /** Physical hostname reported by the host snapshot. */
+  hostname?: string | null;
   /** Synthetic mesh-view nodes only: number of underlying units/actors. */
   memberCount?: number;
 }

@@ -40,6 +40,8 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor::supervision::SupervisionObservation;
+use hyperactor::supervision::SupervisionTarget;
 use hyperactor_config::Flattrs;
 
 use crate::Gspawn;
@@ -148,6 +150,9 @@ pub struct Supervisor {
     /// Optional one-shot notification posted after the worker links the child.
     ready: Option<OncePortHandle<()>>,
     labels: Flattrs,
+    display_name: Option<String>,
+    stop_cause: Option<Box<ActorSupervisionEvent>>,
+    observation: Option<SupervisionObservation>,
 }
 
 impl Supervisor {
@@ -189,7 +194,8 @@ impl Supervisor {
     /// accepts the supervise request and reports [`SupervisorEvent::Linked`], this
     /// supervisor has no worker control endpoint; stop requests are therefore
     /// held pending. `fallback_actor` is used only to synthesize a supervision
-    /// event if liveness fails before the worker reports the supervised child.
+    /// event if liveness fails or the worker rejects the request before it
+    /// reports the supervised child.
     /// When `ready` is set, it is posted once the worker reports `Linked` — the
     /// earliest point at which messages to the child are guaranteed to route.
     pub(crate) fn bootstrap_uid<F>(
@@ -232,6 +238,9 @@ impl Supervisor {
             pending_stop: None,
             ready,
             labels: Flattrs::new(),
+            display_name: None,
+            stop_cause: None,
+            observation: None,
         }
     }
 
@@ -241,11 +250,19 @@ impl Supervisor {
         self.labels = labels;
         self
     }
+
+    /// Name the supervised actor in failures raised before, or without, the
+    /// worker reporting its display name.
+    pub fn with_display_name(mut self, display_name: Option<String>) -> Self {
+        self.display_name = display_name;
+        self
+    }
 }
 
 #[async_trait]
 impl Actor for Supervisor {
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        this.set_system();
         let (liveness_handle, liveness) = self
             .liveness
             .take()
@@ -289,10 +306,26 @@ impl Actor for Supervisor {
             .as_ref()
             .is_some_and(|handle| handle.actor_addr() == &event.actor_id)
         {
-            let event = self.synthesize_unreachable_event("supervision liveness failed");
-            return self.propagate_event(event);
+            self.observation = Some(SupervisionObservation::LinkLost(self.supervision_target()));
+            return Ok(false);
         }
         Ok(!event.is_error())
+    }
+
+    fn supervision_labels(&self) -> Flattrs {
+        self.labels.clone()
+    }
+
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
+    fn supervision_stop_cause(&self) -> Option<Box<ActorSupervisionEvent>> {
+        self.stop_cause.clone()
+    }
+
+    fn supervision_observation(&self) -> Option<SupervisionObservation> {
+        self.observation.clone()
     }
 }
 
@@ -320,7 +353,15 @@ impl Handler<SupervisorEvent> for Supervisor {
             }
             SupervisorEvent::SuperviseRejected { session_id, reason } => {
                 self.ensure_session(&session_id)?;
-                anyhow::bail!("remote supervision request rejected: {}", reason)
+                let reason = format!("remote supervision request rejected: {}", reason);
+                if let SupervisorBootstrap::Callback { fallback_actor, .. } = &self.bootstrap {
+                    self.observation =
+                        Some(SupervisionObservation::RequestFailed(SupervisionTarget {
+                            actor_id: fallback_actor.clone(),
+                            display_name: self.display_name.clone(),
+                        }));
+                }
+                anyhow::bail!(reason)
             }
             SupervisorEvent::SupervisionEvent {
                 session_id,
@@ -328,7 +369,14 @@ impl Handler<SupervisorEvent> for Supervisor {
                 disposition: _,
             } => {
                 self.ensure_session(&session_id)?;
-                self.propagate_event(event)
+                match &event.actor_status {
+                    ActorStatus::Stopped(reason) => {
+                        cx.exit(reason)?;
+                        self.stop_cause = Some(Box::new(event));
+                        Ok(())
+                    }
+                    _ => Err(ActorErrorKind::UnhandledSupervisionEvent(Box::new(event)).into()),
+                }
             }
             SupervisorEvent::Unlinked { session_id, reason } => {
                 self.ensure_session(&session_id)?;
@@ -373,30 +421,20 @@ impl Supervisor {
         Ok(())
     }
 
-    fn synthesize_unreachable_event(&self, reason: &str) -> ActorSupervisionEvent {
-        if let Some(session) = &self.session {
-            ActorSupervisionEvent::new(
-                session.child.clone(),
-                session.display_name.clone(),
-                ActorStatus::generic_failure(reason),
-                None,
-            )
-        } else {
-            ActorSupervisionEvent::new(
-                self.bootstrap.fallback_actor(),
-                None,
-                ActorStatus::generic_failure(reason),
-                None,
-            )
+    fn supervision_target(&self) -> SupervisionTarget {
+        match &self.session {
+            Some(session) => SupervisionTarget {
+                actor_id: session.child.clone(),
+                display_name: session
+                    .display_name
+                    .clone()
+                    .or_else(|| self.display_name.clone()),
+            },
+            None => SupervisionTarget {
+                actor_id: self.bootstrap.fallback_actor(),
+                display_name: self.display_name.clone(),
+            },
         }
-    }
-
-    fn propagate_event<T>(&self, event: ActorSupervisionEvent) -> anyhow::Result<T> {
-        Err(anyhow::Error::new(
-            ActorErrorKind::UnhandledSupervisionEvent(Box::new(
-                event.with_labels(self.labels.clone()),
-            )),
-        ))
     }
 }
 
@@ -445,6 +483,11 @@ impl GspawnAndSupervise {
 }
 
 /// Worker-side container for one remotely supervised child actor.
+///
+/// A child failure is reported to the remote supervisor and also fails this
+/// worker with the child as its cause. Spawn it beneath a parent that handles
+/// that failure, or install a process supervision coordinator before spawning
+/// it at the process root. [`crate::ActorSpawner`] provides such a parent.
 #[derive(Debug, Default)]
 #[hyperactor::export(Supervise, WorkerCommand)]
 pub struct Worker {
@@ -460,8 +503,34 @@ impl Worker {
 
 #[async_trait]
 impl Actor for Worker {
-    async fn init(&mut self, _this: &Instance<Self>) -> anyhow::Result<()> {
+    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        this.set_system();
         Ok(())
+    }
+
+    async fn handle_stop(
+        &mut self,
+        this: &Instance<Self>,
+        mode: StopMode,
+        reason: &str,
+    ) -> anyhow::Result<()> {
+        if self.state.child_handle.is_none() {
+            return hyperactor::actor::handle_stop(this, mode, reason);
+        }
+        // Keep the session alive until the child's terminal event is forwarded.
+        self.state.stop_child(mode, reason)
+    }
+
+    fn supervision_labels(&self) -> Flattrs {
+        self.state.supervision_labels()
+    }
+
+    fn supervision_stop_cause(&self) -> Option<Box<ActorSupervisionEvent>> {
+        self.state.stop_cause.clone()
+    }
+
+    fn supervision_is_transparent(&self) -> bool {
+        true
     }
 
     async fn handle_supervision_event(
@@ -555,11 +624,19 @@ impl Handler<GspawnAndSupervise> for Worker {
 #[derive(Debug, Default)]
 pub(crate) struct SupervisedChild {
     child_handle: Option<AnyActorHandle>,
+    stop_cause: Option<Box<ActorSupervisionEvent>>,
     child_display_name: Option<String>,
     session: Option<WorkerSession>,
 }
 
 impl SupervisedChild {
+    fn supervision_labels(&self) -> Flattrs {
+        self.session
+            .as_ref()
+            .map(|session| session.labels.clone())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn set_child(
         &mut self,
         child_handle: AnyActorHandle,
@@ -638,6 +715,11 @@ impl SupervisedChild {
             return Ok(true);
         }
         if self.is_child_event(event) {
+            if !event.is_error() {
+                self.stop_cause = Some(Box::new(
+                    event.clone().with_labels(self.supervision_labels()),
+                ));
+            }
             if let Some(session) = &self.session {
                 let supervisor = session.supervisor.clone();
                 let session_id = session.session_id.clone();
@@ -645,12 +727,33 @@ impl SupervisedChild {
                     this,
                     SupervisorEvent::SupervisionEvent {
                         session_id: session_id.into_uid(),
-                        event: event.clone().with_labels(session.labels.clone()),
+                        event: if event.is_error() {
+                            ActorSupervisionEvent::unhandled(
+                                this.self_addr().clone(),
+                                None,
+                                event.clone(),
+                            )
+                            .with_labels(self.supervision_labels())
+                            .with_transparent(true)
+                        } else {
+                            ActorSupervisionEvent::new(
+                                this.self_addr().clone(),
+                                None,
+                                ActorStatus::Stopped("supervised child stopped".to_string()),
+                                None,
+                            )
+                            .with_stop_cause(self.stop_cause.clone())
+                            .with_labels(self.supervision_labels())
+                            .with_transparent(true)
+                        },
                         disposition: RemoteActorDisposition::Terminal,
                     },
                 );
             }
             self.child_handle = None;
+            if event.is_error() {
+                return Ok(false);
+            }
             this.exit("supervised child stopped")?;
             return Ok(true);
         }
@@ -718,11 +821,15 @@ impl SupervisedChild {
         let Some(child) = &self.child_handle else {
             return Ok(());
         };
-        match mode {
-            StopMode::Stop => child.stop(reason)?,
-            StopMode::DrainAndStop => child.drain_and_stop(reason)?,
+        let result = match mode {
+            StopMode::Stop => child.stop(reason),
+            StopMode::DrainAndStop => child.drain_and_stop(reason),
+        };
+        match result {
+            // The child already exited; its terminal event is still on its way.
+            Err(err) if matches!(*err.kind, ActorErrorKind::SignalChannelClosed) => Ok(()),
+            result => Ok(result?),
         }
-        Ok(())
     }
 
     fn is_child_event(&self, event: &ActorSupervisionEvent) -> bool {
@@ -766,16 +873,15 @@ impl SupervisedChild {
                 cx,
                 SupervisorEvent::SupervisionEvent {
                     session_id: session_id.into_uid(),
-                    event: ActorSupervisionEvent::new(
-                        child.actor_id().clone(),
-                        self.child_display_name.clone(),
-                        ActorStatus::generic_failure(format!(
-                            "supervision liveness failed: {}",
-                            event
-                        )),
-                        None,
-                    )
-                    .with_labels(session.labels.clone()),
+                    event: event
+                        .clone()
+                        .with_observation(Some(SupervisionObservation::LinkLost(
+                            SupervisionTarget {
+                                actor_id: child.actor_id().clone(),
+                                display_name: self.child_display_name.clone(),
+                            },
+                        )))
+                        .with_labels(session.labels.clone()),
                     disposition: RemoteActorDisposition::Unreachable,
                 },
             );
@@ -801,6 +907,7 @@ mod tests {
     use hyperactor::Proc;
     use hyperactor::Uid;
     use hyperactor::mailbox::PortReceiver;
+    use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
     use hyperactor_config::attrs::declare_attrs;
     use serde::Deserialize;
     use serde::Serialize;
@@ -1101,6 +1208,7 @@ mod tests {
     #[tokio::test]
     async fn test_child_failure_propagates_to_parent() {
         let proc = Proc::isolated();
+        let (mut reported, coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
         let client = proc.client("client");
         let session_id = Uid::anonymous();
 
@@ -1118,8 +1226,19 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(event.actor_id, child_addr);
-        assert!(matches!(event.actor_status, ActorStatus::Failed(_)));
+        let ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(worker_event)) =
+            &event.actor_status
+        else {
+            panic!("expected supervisor failure caused by the worker");
+        };
+        assert_eq!(worker_event.actor_id, *worker.actor_addr());
+        assert_eq!(event.caused_by().actor_id, child_addr);
+        assert_ne!(event.actor_id, child_addr);
+        assert_ne!(event.actor_id, *worker.actor_addr());
+        let local_event = tokio::time::timeout(Duration::from_secs(5), reported.recv())
+            .await
+            .unwrap();
+        assert_eq!(local_event, **worker_event);
 
         parent.stop("test").unwrap();
         tokio::time::timeout(Duration::from_secs(5), parent)
@@ -1128,6 +1247,8 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), worker)
             .await
             .unwrap();
+        coordinator.drain_and_stop("test").unwrap();
+        coordinator.await;
     }
 
     // Same harness as `test_child_failure_propagates_to_parent`, except the
@@ -1137,6 +1258,7 @@ mod tests {
     #[tokio::test]
     async fn test_supervisor_labels_replace_child_event_labels() {
         let proc = Proc::isolated();
+        let (_reported, coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
         let client = proc.client("client");
         let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
         let (stopped, _stopped_rx) = client.open_port::<String>();
@@ -1168,7 +1290,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(event.actor_id, child_addr);
+        assert_eq!(event.caused_by().actor_id, child_addr);
         assert_eq!(
             event.labels.get(TEST_LABEL),
             Some(7),
@@ -1182,6 +1304,32 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), worker)
             .await
             .unwrap();
+        coordinator.drain_and_stop("test").unwrap();
+        coordinator.await;
+    }
+
+    #[tokio::test]
+    async fn test_stop_child_after_child_exit_is_ok() {
+        let proc = Proc::isolated();
+        let (_reported, coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let client = proc.client("client");
+        let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
+        let (stopped, _stopped_rx) = client.open_port::<String>();
+        let child = proc.spawn(test_child(ready, stopped, None));
+        ready_rx.recv().await.unwrap();
+        child.stop("child stopped").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), child.clone())
+            .await
+            .unwrap();
+
+        let mut state = SupervisedChild::default();
+        state.set_child(child.into_any(), None).unwrap();
+        state.stop_child(StopMode::Stop, "worker stopped").unwrap();
+        state
+            .stop_child(StopMode::DrainAndStop, "worker stopped")
+            .unwrap();
+        coordinator.drain_and_stop("test").unwrap();
+        coordinator.await;
     }
 
     // The client stands in for the Supervisor and sends `Supervise` with
@@ -1190,6 +1338,7 @@ mod tests {
     #[tokio::test]
     async fn test_worker_labels_child_event() {
         let proc = Proc::isolated();
+        let (_reported, coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
         let client = proc.client("client");
         let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
         let (stopped, _stopped_rx) = client.open_port::<String>();
@@ -1233,7 +1382,7 @@ mod tests {
         let SupervisorEvent::SupervisionEvent { event, .. } = reported else {
             panic!("expected a supervision event, got {reported:?}");
         };
-        assert_eq!(event.actor_id, child_addr);
+        assert_eq!(event.caused_by().actor_id, child_addr);
         assert!(matches!(event.actor_status, ActorStatus::Failed(_)));
         assert_eq!(
             event.labels.get(TEST_LABEL),
@@ -1248,6 +1397,8 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), liveness_handle)
             .await
             .unwrap();
+        coordinator.drain_and_stop("test").unwrap();
+        coordinator.await;
     }
 
     // proc
@@ -1821,6 +1972,104 @@ mod tests {
 
         parent2.stop("test").unwrap();
         tokio::time::timeout(Duration::from_secs(5), parent2)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_rejection_reports_fallback_actor() {
+        let proc = Proc::isolated();
+        let inst = proc.client("inst");
+        let child = proc.proc_addr().actor_addr("never_spawned");
+        let (events, mut events_rx) = inst.open_port::<ActorSupervisionEvent>();
+        let parent = proc.spawn_with_label(
+            "parent",
+            Parent {
+                supervisor: Some(Supervisor::bootstrap_uid(
+                    KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+                    SupervisionOptions::default(),
+                    Uid::anonymous(),
+                    child.clone(),
+                    None,
+                    |cx, supervise| {
+                        supervise.supervisor.post(
+                            cx,
+                            SupervisorEvent::SuperviseRejected {
+                                session_id: supervise.session_id,
+                                reason: "spawn failed".to_string(),
+                            },
+                        );
+                        Ok(())
+                    },
+                )),
+                events,
+            },
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(event.actor_id, child);
+        let Some(SupervisionObservation::RequestFailed(target)) = &event.observation else {
+            panic!("expected the rejected request's target: {event:?}");
+        };
+        assert_eq!(target.actor_id, child);
+        assert!(matches!(event.actor_status, ActorStatus::Failed(_)));
+        assert!(
+            event
+                .to_string()
+                .contains("remote supervision request rejected: spawn failed"),
+            "unexpected event: {}",
+            event
+        );
+
+        parent.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_liveness_loss_before_link_names_fallback_actor() {
+        let proc = Proc::isolated();
+        let inst = proc.client("inst");
+        let child = proc.proc_addr().actor_addr("never_linked");
+        let (events, mut events_rx) = inst.open_port::<ActorSupervisionEvent>();
+        let parent = proc.spawn_with_label(
+            "parent",
+            Parent {
+                supervisor: Some(
+                    Supervisor::bootstrap_uid(
+                        KeepaliveLink::new(Duration::from_millis(5), Duration::from_millis(100)),
+                        SupervisionOptions::default(),
+                        Uid::anonymous(),
+                        child.clone(),
+                        None,
+                        |_cx, _supervise| Ok(()),
+                    )
+                    .with_display_name(Some("child{'gpus': 1/2}".to_string())),
+                ),
+                events,
+            },
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let Some(SupervisionObservation::LinkLost(target)) = &event.observation else {
+            panic!("expected the unlinked actor's lost link: {event:?}");
+        };
+        assert_eq!(target.actor_id, child);
+        assert_eq!(
+            target.display_name.as_deref(),
+            Some("child{'gpus': 1/2}"),
+            "a lost link before the worker reports should keep the requested display name"
+        );
+
+        parent.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent)
             .await
             .unwrap();
     }

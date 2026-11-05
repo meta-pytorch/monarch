@@ -79,8 +79,7 @@ jobs:
     needs: prepare-release
     uses: ./.github/workflows/build-dist.yml
     with:
-      # TODO add 3.14 once we figure out py03 issue
-      python-versions: '["3.10", "3.11", "3.12", "3.13"]'
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       # Published wheels ship cu132 even though PR CI tests at cu130 (see
       # set-matrix.yaml): pytorch core does the same split — publish cu132
       # binaries, GPU-test only at cu130 — because no g4dn-fleet AMI yet
@@ -96,7 +95,7 @@ jobs:
       # of auto-suffixing it from gpu-arch-type/version.
       runner: linux.c7i.2xlarge
       docker-image: 'pytorch/manylinux2_28-builder:cuda13.2'
-      torch-spec: ${{ needs.prepare-release.outputs.release_type != 'nightly' && 'torch==2.14.1 --extra-index-url https://download.pytorch.org/whl/cu132' || '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132' }}
+      torch-spec: ${{ needs.prepare-release.outputs.release_type != 'nightly' && 'torch==2.15.0 --extra-index-url https://download.pytorch.org/whl/cu132' || '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132' }}
       gpu-arch-type: cpu
       gpu-arch-version: ''
       arch-label: cuda13.2
@@ -107,10 +106,10 @@ jobs:
     needs: prepare-release
     uses: ./.github/workflows/build-dist.yml
     with:
-      python-versions: '["3.10", "3.11", "3.12", "3.13"]'
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       runner: linux.arm64.2xlarge
       docker-image: 'pytorch/manylinuxaarch64-builder:cuda13.2'
-      torch-spec: ${{ needs.prepare-release.outputs.release_type != 'nightly' && 'torch==2.14.1 --extra-index-url https://download.pytorch.org/whl/cu132' || '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132' }}
+      torch-spec: ${{ needs.prepare-release.outputs.release_type != 'nightly' && 'torch==2.15.0 --extra-index-url https://download.pytorch.org/whl/cu132' || '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132' }}
       gpu-arch-type: cuda
       gpu-arch-version: '13.2'
       version: ${{ needs.prepare-release.outputs.version }}
@@ -120,9 +119,9 @@ jobs:
     needs: prepare-release
     uses: ./.github/workflows/build-macos.yml
     with:
-      python-versions: '["3.10", "3.11", "3.12", "3.13"]'
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       runner: macos-latest
-      torch-spec: ${{ needs.prepare-release.outputs.release_type != 'nightly' && 'torch==2.14.1 --extra-index-url https://download.pytorch.org/whl/cpu' || '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu' }}
+      torch-spec: ${{ needs.prepare-release.outputs.release_type != 'nightly' && 'torch==2.15.0 --extra-index-url https://download.pytorch.org/whl/cpu' || '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu' }}
       version: ${{ needs.prepare-release.outputs.version }}
 
   publish-to-pypi:
@@ -207,7 +206,7 @@ jobs:
             ghcr.io/${{ github.repository }}-nightly:latest
           # TODO: find docker tag that gets updated automatically.
           build-args: |
-            PYTORCH_TAG=2.16.0.dev20261010-cuda13.2-cudnn9-runtime
+            PYTORCH_TAG=2.16.0.dev20261102-cuda13.2-cudnn9-runtime
           build-contexts: |
             monarch-wheels=${{ runner.temp }}/monarch_wheels
 
@@ -259,7 +258,7 @@ jobs:
           push: true
           tags: ${{ steps.determine-tags.outputs.tags }}
           build-args: |
-            PYTORCH_TAG=2.14.1-cuda13.2-cudnn9-runtime
+            PYTORCH_TAG=2.15.0-cuda13.2-cudnn9-runtime
             MONARCH_VERSION=${{ needs.prepare-release.outputs.version }}
 
   create-docs-branch:

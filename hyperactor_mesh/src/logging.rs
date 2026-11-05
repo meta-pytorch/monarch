@@ -994,6 +994,10 @@ pub struct LogForwardActor {
 
 #[async_trait]
 impl Actor for LogForwardActor {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
         this.post_after(this, LogForwardMessage::Forward {}, Duration::from_secs(0));
@@ -1202,6 +1206,10 @@ impl Default for LogClientActor {
 
 #[async_trait]
 impl Actor for LogClientActor {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
         Ok(())

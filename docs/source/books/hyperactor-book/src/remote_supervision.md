@@ -83,7 +83,7 @@ The worker side fails if an acknowledgment is not received before its timeout. T
 
 ## Child and link failures
 
-When the child `C` fails or stops, `Worker<C>` reports the event to the supervisor side with `RemoteActorDisposition::Terminal`, clears its child handle, and exits.
+When the child `C` fails, `Worker<C>` reports its own failure caused by the child's event, with `RemoteActorDisposition::Terminal`, and fails as itself. Its local parent must handle this reported failure; `ActorSpawner` does so for remotely spawned actors. A standalone `Worker` needs such a parent or a process supervision coordinator. The token supervision example uses a parent that handles the worker's failure. A clean child stop is reported as a lifecycle event, and the worker exits normally.
 
 ```text
 Child C fails
@@ -93,17 +93,19 @@ Worker<C>::handle_supervision_event
     |
     | WorkerSupervisor::SupervisionEvent {
     |   disposition: Terminal,
-    |   event: child event
+    |   event: worker failure caused by child event
     | }
     v
 Supervisor
     |
-    | returns ActorErrorKind::UnhandledSupervisionEvent
+    | returns Err(ActorErrorKind::UnhandledSupervisionEvent(Box::new(event)).into())
     v
 Parent actor receives an ordinary supervision event
 ```
 
-When the worker-side link actor fails, `Worker<C>` reports a synthesized child event with `RemoteActorDisposition::Unreachable`. The child may still be running, because the failure only proves that the supervision channel is broken. The worker then applies its `OrphanPolicy`.
+Each failure adds the actor that observed it: the parent's event names `Supervisor`, caused by `Worker`, caused by the child. The Python supervision boundary skips transparent causal wrappers while retaining user actors and their errors. Clean stops retain the `Supervisor -> Worker -> child` stop causes, and the Python view derives the child lifecycle event from that chain.
+
+When the worker-side link actor fails, `Worker<C>` reports the link actor's actual event with `RemoteActorDisposition::Unreachable` and an observation identifying the affected child. The child may still be running, because the failure only proves that the supervision channel is broken. The worker then applies its `OrphanPolicy`.
 
 ```text
 Worker-side link fails
@@ -119,7 +121,7 @@ Worker<C>
     +-- LeaveRunning -> keep Child C alive
 ```
 
-When the parent-side link actor fails, `Supervisor` synthesizes an unreachable supervision event for the remote child if it already knows the child address. If the session was not linked yet, the event names the worker.
+When the parent-side link actor fails, `Supervisor` fails with that link event as its cause. It records the affected remote child as a `LinkLost` observation when the child address is known, otherwise the worker or requested actor address. The Python supervision boundary derives the compatible unreachable-resource report from this observation and the actual failure; the event carries no alternate report.
 
 ## Stop and unlink
 

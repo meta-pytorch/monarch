@@ -41,6 +41,7 @@ pub mod shape;
 pub mod supervision;
 pub mod telemetry;
 pub mod testing;
+pub mod token;
 pub mod traceback;
 pub mod value_mesh;
 

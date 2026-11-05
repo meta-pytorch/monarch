@@ -28,7 +28,7 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ciflow/macos')
     uses: ./.github/workflows/build-cpu-macos.yml
     with:
-      artifact-name: monarch-cpu-macos-${{ github.sha }}-py3.10
+      artifact-name: monarch-cpu-macos-${{ github.sha }}-py3.11
       runner: macos-latest
 
   test-cpu-python-macos:
@@ -36,7 +36,7 @@ jobs:
     needs: build-cpu-macos
     uses: ./.github/workflows/test-cpu-python-macos.yml
     with:
-      artifact-name: monarch-cpu-macos-${{ github.sha }}-py3.10
+      artifact-name: monarch-cpu-macos-${{ github.sha }}-py3.11
       runner: macos-latest
 
   test-cpu-rust-macos:

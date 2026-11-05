@@ -786,7 +786,7 @@ async fn serve(mut stream: TcpStream, server: &NfsServer) -> io::Result<()> {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "monarch._rust_bindings.monarch_extension.readonly_nfs")]
 struct NfsMount {
     mountpoint: String,
     listener: Option<JoinHandle<()>>,

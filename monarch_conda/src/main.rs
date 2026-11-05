@@ -6,8 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#![feature(exit_status_error)]
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 

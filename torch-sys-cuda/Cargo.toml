@@ -23,6 +23,7 @@ build_utils = { version = "0.0.0", path = "../build_utils" }
 [features]
 cuda = ["dep:nccl-sys"]
 default = []
+rocm = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fbcode_build)"]}

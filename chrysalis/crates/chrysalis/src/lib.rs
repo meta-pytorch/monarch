@@ -89,6 +89,16 @@ pub use chrysalis_transport::SwitchSocket;
 pub use chrysalis_transport::UdpSocket;
 #[cfg(unix)]
 pub use chrysalis_transport::UnixDatagramSocket;
+#[cfg(target_os = "linux")]
+pub use chrysalis_transport::VMADDR_CID_ANY;
+#[cfg(target_os = "linux")]
+pub use chrysalis_transport::VMADDR_CID_HOST;
+#[cfg(target_os = "linux")]
+pub use chrysalis_transport::VSOCK_SCHEME;
+#[cfg(target_os = "linux")]
+pub use chrysalis_transport::VsockDatagramAddr;
+#[cfg(target_os = "linux")]
+pub use chrysalis_transport::VsockDatagramSocket;
 pub use chrysalis_transport::certificate_pid;
 pub use node::Node;
 pub use node::NodeConfig;

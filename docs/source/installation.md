@@ -6,7 +6,7 @@ Before installing Monarch, ensure you have:
 
 - Linux or macOS.
   - The CPU-only tensor engine builds on both; GPU features require Linux with a supported GPU toolchain
-- Python 3.10 or later
+- Python 3.11 or later
 - Optional: CUDA-compatible GPU(s) for distributed tensor and RDMA features
 - Basic familiarity with PyTorch
 

@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import os
 import platform
-
-pytest_plugins = ["crash_recovery_plugin"]
 import sys
 from pathlib import Path
 
 import pytest
+
+pytest_plugins = ["crash_recovery_plugin", "socket_test_utils"]
 
 _THIS_DIR = Path(__file__).parent
 

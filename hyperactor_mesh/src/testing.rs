@@ -28,7 +28,6 @@ use hyperactor::Instance;
 use hyperactor::Proc;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
-use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::proc::ActorWorkReceiver;
@@ -234,18 +233,8 @@ impl TestRootClient {
                     }
                 };
             };
-            let event = match *err.kind {
-                ActorErrorKind::UnhandledSupervisionEvent(event) => *event,
-                _ => {
-                    let status = ActorStatus::generic_failure(err.kind.to_string());
-                    ActorSupervisionEvent::new(
-                        instance.self_addr().clone(),
-                        Some("testclient".into()),
-                        status,
-                        None,
-                    )
-                }
-            };
+            let event = (*err.kind)
+                .into_supervision_event(instance.self_addr(), || Some("testclient".into()));
             instance
                 .proc()
                 .handle_unhandled_supervision_event(instance, event);

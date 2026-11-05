@@ -19,6 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
+import psutil
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.endpoint import Remote
 from monarch._rust_bindings.monarch_hyperactor.handle import _after, WouldBlockRuntime
@@ -575,17 +576,14 @@ def test_call_remote_exceptions_keep_rank_order(ranked_reply_actor: Any) -> None
 
 
 def _caller_trace_log() -> Path:
-    """Locate this Linux test process's actual open tracing file.
+    """Locate this test process's actual open tracing file.
 
     Inspect the sink's descriptor rather than guessing its user, suffix or
     environment-dependent directory. Peer processes have separate fd tables.
     """
     paths: set[Path] = set()
-    for descriptor in Path("/proc/self/fd").iterdir():
-        try:
-            path = descriptor.readlink()
-        except FileNotFoundError:
-            continue  # The iterator's own descriptor may have closed.
+    for opened in psutil.Process().open_files():
+        path = Path(opened.path)
         if path.name.startswith(("monarch_log", "dedicated_log_monarch")) and (
             path.suffix == ".log"
         ):
@@ -598,34 +596,42 @@ def _caller_trace_log() -> Path:
 def test_ignored_call_error_is_logged_after_its_observer_is_dropped(
     reply_actor: Any,
 ) -> None:
-    release = reply_actor.prepare_reply_gate.call_one().get(timeout=10)
-    started, receiver = Channel[int].open()
-    message = f"ignored call remote error {uuid.uuid4().hex}"
-    result = reply_actor.delayed_mesh_reply.call(started, "remote_error", message)
-    assert receiver.recv().get(timeout=10) == 1, (
-        "the peer must wait until its observer has been dropped"
-    )
-    del result
-    gc.collect()
     # Glog emits one header per event; its message may contain newlines.
     # Require this call's marker in the Handle's background-error event,
     # not in an unrelated event or the peer's own exception report.
     event_header = re.compile(r"(?m)^\[[^\]\n]*\][EWIDT]\d{4} ")
     with _caller_trace_log().open(encoding="utf-8") as log:
-        log.seek(0, 2)
-        release.send(1)
-        output = ""
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            output += log.read()
-            if any(
-                "src/handle.rs:" in event
-                and "background task errored" in event
-                and message in event
-                for event in event_header.split(output)
-            ):
-                return
-            time.sleep(0.01)
+        release = reply_actor.prepare_reply_gate.call_one().get(timeout=10)
+        released = False
+        try:
+            started, receiver = Channel[int].open()
+            message = f"ignored call remote error {uuid.uuid4().hex}"
+            result = reply_actor.delayed_mesh_reply.call(
+                started, "remote_error", message
+            )
+            assert receiver.recv().get(timeout=10) == 1, (
+                "the peer must wait until its observer has been dropped"
+            )
+            del result
+            gc.collect()
+            log.seek(0, 2)
+            release.send(1)
+            released = True
+            output = ""
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                output += log.read()
+                if any(
+                    "src/handle.rs:" in event
+                    and "background task errored" in event
+                    and message in event
+                    for event in event_header.split(output)
+                ):
+                    return
+                time.sleep(0.01)
+        finally:
+            if not released:
+                release.send(1)
     pytest.fail(f"the caller did not log its unobserved batch error: {message}")
 
 

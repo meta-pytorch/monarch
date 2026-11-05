@@ -59,10 +59,10 @@ from monarch._src.job.job_sidecar import (
     TelemetryInfoRequest,
     TelemetryRequest,
 )
-from monarch._src.job.telemetry_actor import (
+from monarch._src.job.telemetry_actor import TelemetryActor
+from monarch._src.job.telemetry_ingest import (
     telemetry_socket_dir,
     telemetry_socket_path,
-    TelemetryActor,
 )
 from monarch.actor import context, HostMesh, shutdown_context
 from monarch.distributed_telemetry.engine import QueryEngine
@@ -84,9 +84,10 @@ class TelemetryConfig:
     called.
 
     Args:
-        retention_secs: Retention window in seconds for message and trace
-            history. Trace tables are filtered independently by row timestamp.
-            0 disables retention.
+        retention_secs: Retention window in seconds for message and trace data
+            and command heartbeats. Final command outcomes, metadata, and rank
+            results follow actor history for the sidecar lifetime. 0 disables
+            time expiry.
         include_dashboard: Whether to start the monarch dashboard web server.
         dashboard_port: Preferred port for the dashboard.
         snapshot_interval_secs: Interval in seconds between periodic mesh

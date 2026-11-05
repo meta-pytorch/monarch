@@ -26,7 +26,10 @@ use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::PortHandle;
 use hyperactor::Proc;
+use hyperactor::actor::ActorErrorKind;
+use hyperactor::actor::ActorStatus;
 use hyperactor::actor::StopMode;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
@@ -179,6 +182,39 @@ impl Actor for DemoChild {
     }
 }
 
+#[derive(Debug)]
+struct WorkerOwner {
+    child: Option<DemoChild>,
+    ready: PortHandle<ActorRef<WorkerLike>>,
+}
+
+#[async_trait]
+impl Actor for WorkerOwner {
+    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        let worker = this.spawn(Worker::new());
+        worker.post(this, Spawn::new(self.child.take().unwrap()));
+        self.ready.post(this, worker.bind::<WorkerLike>());
+        Ok(())
+    }
+
+    async fn handle_supervision_event(
+        &mut self,
+        this: &Instance<Self>,
+        event: &ActorSupervisionEvent,
+    ) -> anyhow::Result<bool> {
+        if event.is_error()
+            && !matches!(
+                event.actor_status,
+                ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(_))
+            )
+        {
+            return Ok(false);
+        }
+        this.exit("worker stopped")?;
+        Ok(true)
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let role = parse_args()?;
@@ -214,16 +250,17 @@ async fn run_joiner(args: JoinerArgs) -> anyhow::Result<()> {
         "token_supervision_joiner".to_string(),
     )?;
     let joiner = proc.client("joiner");
-    let worker = proc.spawn(Worker::new());
-    worker.post(
-        &joiner,
-        Spawn::new(DemoChild {
+    let (worker_port, mut worker_rx) = joiner.open_port();
+    let owner = proc.spawn(WorkerOwner {
+        child: Some(DemoChild {
             stopped_file: args.stopped_file,
         }),
-    );
+        ready: worker_port,
+    });
+    let worker = worker_rx.recv().await?;
     let (result_port, mut result_rx) = joiner.open_port::<token::JoinResult<ActorAddr>>();
 
-    token.join(&joiner, worker.bind::<WorkerLike>(), result_port.bind())?;
+    token.join(&joiner, worker, result_port.bind())?;
     match result_rx.recv().await? {
         token::JoinResult::Joined { peer } => {
             println!("joiner linked to parent {peer}");
@@ -236,7 +273,7 @@ async fn run_joiner(args: JoinerArgs) -> anyhow::Result<()> {
         }
     }
 
-    worker.await;
+    owner.await;
     if let Some(path) = &args.exited_file {
         write_text(path, "exited").await?;
     }

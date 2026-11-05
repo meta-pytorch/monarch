@@ -33,12 +33,18 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import cast, Literal, TypedDict
 
+import psutil
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._src.actor.actor_mesh import Actor, Port, shutdown_context
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.host_mesh import HostMesh
-from monarch._src.actor.proc_launcher import LaunchOptions, ProcExitResult, ProcLauncher
+from monarch._src.actor.proc_launcher import (
+    LaunchOptions,
+    ProcExitResult,
+    ProcLauncher,
+    ProcReachability,
+)
 from monarch._src.actor.proc_mesh import ProcMesh
 from monarch._src.job.process import ProcessJob
 from monarch.actor import this_host
@@ -81,6 +87,7 @@ class _EventFields(TypedDict, total=False):
     signal: int | None
     proc_ids: list[str]
     exit_codes: dict[str, int | None]
+    vsock_uds_path: str | None
 
 
 class _LauncherEvent(_EventFields):
@@ -167,7 +174,7 @@ class _SubprocessLauncher(ProcLauncher):
             self._record("launch_failed", proc_id)
             raise _LauncherCrash("injected launcher failure")
         try:
-            self._record("launch", proc_id)
+            self._record("launch", proc_id, vsock_uds_path=opts.vsock_uds_path)
             argv, executable, env = self._child_command(opts)
             env[TOKEN_VAR] = self._config["token"]
             env[PROC_ID_VAR] = proc_id
@@ -675,17 +682,20 @@ def _exited(params: _LauncherParams, proc_ids: set[str]) -> list[_LauncherEvent]
 
 
 def _wait_until_stopped(pid: int, timeout: float = 10.0) -> None:
-    """Wait until Linux reports that this OS process is suspended, not exited.
+    """Wait until this OS process is suspended, not exited.
 
-    Read /proc/<pid>/stat from the test process every 0.05 seconds. Its state
-    `T` confirms that SIGSTOP took effect before the test requests teardown.
+    Poll its status every 0.05 seconds to confirm that SIGSTOP took effect
+    before the test requests teardown.
     `pid` is an OS PID, not a Monarch proc ID. Fail the test if the deadline
     expires without seeing the suspended state.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-        if state == "T":
+        try:
+            state = psutil.Process(pid).status()
+        except psutil.NoSuchProcess:
+            pytest.fail(f"process {pid} exited before stopping")
+        if state == psutil.STATUS_STOPPED:
             return
         time.sleep(0.05)
     pytest.fail(f"process {pid} did not stop within {timeout}s")
@@ -746,8 +756,9 @@ def test_launch_and_exit_are_delegated() -> None:
             procs.stop().get(timeout=60)
             events = _wait_for_events(
                 event_log,
-                lambda ev: launched
-                <= {e["proc_id"] for e in ev if e["event"] == "exit"},
+                lambda ev: (
+                    launched <= {e["proc_id"] for e in ev if e["event"] == "exit"}
+                ),
                 "an exit report for every launched proc",
             )
             exit_codes = {
@@ -1006,6 +1017,11 @@ def _wait_for_no_containers(token: str, timeout: float = 30.0) -> None:
     assert not remaining, f"containers outlived their procs: {remaining}"
 
 
+def test_proc_launcher_reachability_defaults_to_unix() -> None:
+    assert ProcLauncher.reachability is ProcReachability.UNIX
+    assert _SubprocessLauncher.reachability is ProcReachability.UNIX
+
+
 @pytest.mark.timeout(240)
 def test_launch_and_exit_in_containers() -> None:
     if (reason := _podman_unavailable()) is not None:
@@ -1082,3 +1098,48 @@ def _teardown_in_containers() -> None:
         finally:
             for name in _containers(params["token"]):
                 _run_podman("rm", "--force", name)
+
+
+class _HybridVsockLauncher(_SubprocessLauncher):
+    """A subprocess launcher that declares its procs run behind a hybrid-vsock VMM."""
+
+    reachability = ProcReachability.HYBRID_VSOCK
+
+
+def test_hybrid_vsock_launch_options() -> None:
+    if sys.platform != "linux":
+        pytest.skip("hybrid vsock reachability is Linux only")
+    _hybrid_vsock_launch_options()
+
+
+@isolate_in_subprocess
+def _hybrid_vsock_launch_options() -> None:
+    with (
+        configured(host_spawn_ready_timeout="10s"),
+        tempfile.TemporaryDirectory() as tmp,
+    ):
+        params = _launcher_params(tmp, plain_child=True)
+        with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+            hosts = state.hosts
+            hosts.set_proc_launcher(_HybridVsockLauncher, dict(params)).get(timeout=60)
+
+            procs = hosts.spawn_procs(per_host={"procs": 1})
+            with pytest.raises(Exception) as spawn_failure:
+                procs.initialized.get(timeout=60)
+            assert not isinstance(spawn_failure.value, TimeoutError), (
+                "the spawn should fail on its readiness timeout, not outlast the wait"
+            )
+            events = _wait_for_events(
+                params["event_log"],
+                lambda ev: [e["event"] for e in ev] == ["launch", "kill", "exit"],
+                "launch, kill and exit for the program that never became a proc",
+            )
+            uds = events[0].get("vsock_uds_path")
+            assert uds is not None and uds.endswith("/v.sock"), events[0]
+            vm_dir = Path(uds).parent
+            assert vm_dir.name.startswith("vm-"), uds
+
+            deadline = time.monotonic() + 30
+            while vm_dir.exists() and time.monotonic() < deadline:
+                time.sleep(0.1)
+            assert not vm_dir.exists(), f"{vm_dir} outlived its proc"

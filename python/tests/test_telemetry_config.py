@@ -29,6 +29,8 @@ from monarch._src.job.telemetry_actor import telemetry_socket_dir, telemetry_soc
 from monarch.config import ChannelTransport, configured
 from monarch.job import TelemetryConfig
 
+pytest_plugins = ["socket_test_utils"]
+
 
 def _new_apply_id() -> str:
     return f"test_{uuid.uuid4().hex}"
@@ -140,10 +142,12 @@ class _FakeTelemetryHandle:
 
 
 @pytest.mark.timeout(30)
-def test_run_job_sidecar_survives_broken_connection(tmp_path, capsys) -> None:
+def test_run_job_sidecar_survives_broken_connection(
+    unix_socket_path: str, capsys
+) -> None:
     """A connection that sends garbage (or breaks mid-request) must drop only
     that connection, not tear down the job sidecar."""
-    socket_path = str(tmp_path / "cmd.sock")
+    socket_path = unix_socket_path
     fake = _FakeTelemetryHandle()
 
     with patch.object(tc, "_TelemetryHandle", return_value=fake):

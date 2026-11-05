@@ -176,6 +176,15 @@ class OnceDaemon:
         self.send(_Shutdown())
         _wait_for_pid_exit(self._pid)
 
+    def exited(self, timeout: float = 0.0) -> bool:
+        """Whether the process has exited, waiting up to ``timeout`` seconds."""
+        deadline = time.monotonic() + timeout
+        while _pid_alive(self._pid):
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+        return True
+
 
 def daemon_log_path(lock_path: str) -> str:
     """Return the file that the daemon locked by *lock_path* logs to."""

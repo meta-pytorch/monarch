@@ -69,17 +69,47 @@ pub struct ActorSupervisionEvent {
     #[derivative(PartialEq = "ignore")]
     pub message_headers: Option<Flattrs>,
     /// Semantic labels that describe the actor, such as its point in a mesh.
-    /// hyperactor does not interpret them. A remote supervision proxy replaces
-    /// them with its own labels, so they describe the actor as of the most
-    /// recent remote hop.
+    /// Each frame carries its actor's labels.
     #[serde(default)]
     #[derivative(PartialEq = "ignore")]
     pub labels: Flattrs,
+    /// Whether this frame is a causal wrapper in the Python view.
+    #[serde(default)]
+    #[derivative(PartialEq = "ignore")]
+    pub transparent: bool,
+    /// The child event that caused a normal stop. Failure causes are retained
+    /// in `actor_status`; [`Self::cause`] traverses both forms.
+    #[serde(default)]
+    pub(crate) stop_cause: Option<Box<ActorSupervisionEvent>>,
+    /// Information about another actor affected by this event. That actor need
+    /// not have failed or even have been created.
+    #[serde(default)]
+    pub observation: Option<SupervisionObservation>,
     #[serde(skip, default = "local_fence")]
     #[derivative(PartialEq = "ignore")]
     pub(crate) local_fence: Arc<AtomicBool>,
 }
 wirevalue::register_type!(ActorSupervisionEvent);
+
+/// An actor affected by a supervision failure or a failed request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisionTarget {
+    /// The affected actor's address.
+    pub actor_id: ActorAddr,
+    /// The affected actor's display name, when known.
+    pub display_name: Option<String>,
+}
+
+/// An observation that accompanies the actual actor's terminal event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SupervisionObservation {
+    /// The supervision link to this actor was lost. The actor may still run.
+    LinkLost(SupervisionTarget),
+    /// The supervision link to this actor's process was lost.
+    ProcLinkLost(SupervisionTarget),
+    /// A request concerning this actor failed. The actor may not exist yet.
+    RequestFailed(SupervisionTarget),
+}
 
 pub(crate) fn local_fence() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
@@ -100,14 +130,90 @@ impl ActorSupervisionEvent {
             actor_status,
             message_headers,
             labels: Flattrs::new(),
+            transparent: false,
+            stop_cause: None,
+            observation: None,
             local_fence: local_fence(),
         }
+    }
+
+    /// The event for an actor that fails because it did not handle `cause`.
+    pub fn unhandled(
+        actor_id: impl Into<ActorAddr>,
+        display_name: Option<String>,
+        cause: ActorSupervisionEvent,
+    ) -> Self {
+        Self::new(
+            actor_id,
+            display_name,
+            ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(cause))),
+            None,
+        )
+    }
+
+    /// The event for an actor that fails with `message` while handling `cause`.
+    pub fn error_during_handling(
+        actor_id: impl Into<ActorAddr>,
+        display_name: Option<String>,
+        message: String,
+        cause: ActorSupervisionEvent,
+    ) -> Self {
+        Self::new(
+            actor_id,
+            display_name,
+            ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(
+                message,
+                Box::new(cause),
+            )),
+            None,
+        )
     }
 
     /// Replace the event's labels.
     pub fn with_labels(mut self, labels: Flattrs) -> Self {
         self.labels = labels;
         self
+    }
+
+    /// Set whether this frame is a causal wrapper in the Python view.
+    pub fn with_transparent(mut self, transparent: bool) -> Self {
+        self.transparent = transparent;
+        self
+    }
+
+    /// Set the child event that caused this actor to stop normally.
+    pub fn with_stop_cause(mut self, cause: Option<Box<Self>>) -> Self {
+        assert!(self.actor_status.is_stopped());
+        self.stop_cause = cause;
+        self
+    }
+
+    /// Set information about another actor affected by this event.
+    pub fn with_observation(mut self, observation: Option<SupervisionObservation>) -> Self {
+        self.observation = observation;
+        self
+    }
+
+    /// Take the event that caused this actor to stop normally.
+    pub fn take_stop_cause(&mut self) -> Option<Box<Self>> {
+        self.stop_cause.take()
+    }
+
+    /// The direct cause of this event, including causes of normal stops.
+    pub fn cause(&self) -> Option<&Self> {
+        match &self.actor_status {
+            ActorStatus::Failed(
+                ActorErrorKind::UnhandledSupervisionEvent(cause)
+                | ActorErrorKind::ErrorDuringHandlingSupervision(_, cause),
+            ) => Some(cause),
+            ActorStatus::Stopped(_) => self.stop_cause.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Iterate over this event and all its physical causes.
+    pub fn causal_chain(&self) -> impl Iterator<Item = &Self> {
+        std::iter::successors(Some(self), |event| event.cause())
     }
 
     pub(crate) fn with_local_fence(mut self, local_fence: Arc<AtomicBool>) -> Self {
@@ -129,17 +235,21 @@ impl ActorSupervisionEvent {
         })
     }
 
-    /// Walk the `UnhandledSupervisionEvent` chain to the root-cause
-    /// event — the first event whose status is not
-    /// `UnhandledSupervisionEvent`.
-    pub fn caused_by(&self) -> &ActorSupervisionEvent {
+    /// Find the root cause through unhandled failures and caused normal stops.
+    /// An error raised while handling supervision remains its own root cause.
+    pub fn caused_by(&self) -> &Self {
         let mut event = self;
-        while let ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(inner)) =
-            &event.actor_status
-        {
-            event = inner;
+        loop {
+            match &event.actor_status {
+                ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(cause)) => {
+                    event = cause;
+                }
+                ActorStatus::Stopped(_) if event.stop_cause.is_some() => {
+                    event = event.stop_cause.as_deref().unwrap();
+                }
+                _ => return event,
+            }
         }
-        event
     }
 
     /// Walk the `UnhandledSupervisionEvent` chain to find the root-cause
@@ -204,10 +314,11 @@ impl ActorSupervisionEvent {
         match &current.actor_status {
             ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(msg, child)) => {
                 writeln!(indented(f).with_str("  "), "{}", msg.trim_end())?;
-                writeln!(f, "This error occurred while handling another failure:")?;
-                let child_report = child
-                    .failure_report()
-                    .expect("child of ErrorDuringHandlingSupervision is always a failure");
+                let (description, child_report) = match child.failure_report() {
+                    Some(report) => ("another failure", report),
+                    None => ("a supervision event", child.to_string()),
+                };
+                writeln!(f, "This error occurred while handling {}:", description)?;
                 write!(indented(f).with_str("  "), "{}", child_report)
             }
             ActorStatus::Failed(err) => write!(indented(f).with_str("  "), "{}", err),
@@ -246,6 +357,15 @@ impl fmt::Display for ActorSupervisionEvent {
                      its child. The event was:"
                 )?;
                 write!(indented(f).with_str("  "), "{}", child)
+            }
+            ActorStatus::Stopped(reason) if self.stop_cause.is_some() => {
+                writeln!(f, "Supervision event: actor {} stopped: {}", name, reason)?;
+                writeln!(f, "This actor stopped because of its child's event:")?;
+                write!(
+                    indented(f).with_str("  "),
+                    "{}",
+                    self.stop_cause.as_deref().unwrap()
+                )
             }
             ActorStatus::Stopped(_)
                 if self
@@ -330,6 +450,54 @@ mod tests {
 
     fn stopped(name: &str, reason: &str) -> ActorSupervisionEvent {
         test_event(name, ActorStatus::Stopped(reason.to_string()))
+    }
+
+    #[test]
+    fn test_supervision_structure_survives_serialization() {
+        let child = stopped("remote_child", "done");
+        let stopped_chain = stopped("supervisor", "worker stopped")
+            .with_transparent(true)
+            .with_stop_cause(Some(Box::new(
+                stopped("worker", "child stopped")
+                    .with_transparent(true)
+                    .with_stop_cause(Some(Box::new(child.clone()))),
+            )));
+        let lost_link = unhandled("supervisor", generic("keepalive", "link failed"))
+            .with_transparent(true)
+            .with_observation(Some(SupervisionObservation::LinkLost(SupervisionTarget {
+                actor_id: child.actor_id.clone(),
+                display_name: child.display_name.clone(),
+            })));
+        for event in [stopped_chain, lost_link] {
+            let bytes = bincode::serde::encode_to_vec(&event, bincode::config::legacy()).unwrap();
+            let (restored, _): (ActorSupervisionEvent, _) =
+                bincode::serde::decode_from_slice(&bytes, bincode::config::legacy()).unwrap();
+            assert_eq!(restored, event);
+            assert!(restored.transparent);
+            assert_eq!(
+                restored.causal_chain().count(),
+                event.causal_chain().count()
+            );
+            assert_eq!(restored.to_string(), event.to_string());
+        }
+    }
+
+    #[test]
+    fn test_causal_chain_includes_handler_errors_and_stops() {
+        let child = stopped("child", "done");
+        let worker = stopped("worker", "child stopped").with_stop_cause(Some(Box::new(child)));
+        let handler = error_during("handler", "handler failed", worker);
+        let event = unhandled("parent", handler);
+        let names: Vec<_> = event
+            .causal_chain()
+            .map(|event| event.display_name.as_deref().unwrap())
+            .collect();
+        assert_eq!(names, ["parent", "handler", "worker", "child"]);
+        assert_eq!(event.caused_by().display_name.as_deref(), Some("handler"));
+        let report = event.failure_report().unwrap();
+        assert!(report.contains("handler failed"));
+        assert!(report.contains("actor worker stopped: child stopped"));
+        assert!(report.contains("actor child has status:"));
     }
 
     // Display tests

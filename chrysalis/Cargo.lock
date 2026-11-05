@@ -332,6 +332,7 @@ dependencies = [
  "chrysalis-core",
  "chrysalis-nameserver",
  "chrysalis-transport",
+ "clap",
  "rcgen",
  "thiserror 2.0.20",
  "tokio",
@@ -441,7 +442,9 @@ dependencies = [
  "chrysalis-transport-tokio",
  "chrysalis-transport-uring",
  "libc",
+ "pem 3.0.6",
  "quiche",
+ "rcgen",
  "thiserror 2.0.20",
  "tokio",
 ]
@@ -2235,9 +2238,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
  "bytes",
  "libc",

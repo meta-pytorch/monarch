@@ -281,7 +281,16 @@ mod tests {
 
         let mut stream = tokio::net::UnixStream::connect(path).await.unwrap();
         stream.write_all(&frame).await.unwrap();
-        stream.shutdown().await.unwrap();
+        if let Err(error) = stream.shutdown().await {
+            // A rejected frame can cause the server to close before we shut down.
+            assert!(
+                matches!(
+                    error.kind(),
+                    ErrorKind::NotConnected | ErrorKind::BrokenPipe | ErrorKind::ConnectionReset
+                ),
+                "unexpected shutdown error: {error:?}"
+            );
+        }
     }
 
     fn append_frame_header(buf: &mut Vec<u8>, table_name: &str, payload_len: usize) {

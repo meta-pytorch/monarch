@@ -28,6 +28,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 from monarch._src.rdma import rdma as rdma_mod
+from rdma_test_utils import requires_native_rdma
+
+pytestmark = requires_native_rdma
 
 
 @pytest.fixture(autouse=True)

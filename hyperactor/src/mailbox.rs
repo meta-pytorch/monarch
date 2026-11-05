@@ -174,6 +174,7 @@ use crate::ordering::SEQ_INFO;
 use crate::ordering::SeqInfo;
 use crate::port::ControlPort;
 use crate::port::Port;
+use crate::proc::actor_map;
 use crate::sequenced::SequencedEnvelope;
 use crate::sequenced::SequencedReceiver;
 use crate::sequenced::sequenced_unbounded;
@@ -3553,8 +3554,8 @@ impl State {
     fn new(actor_id: ActorAddr) -> Self {
         Self {
             actor_id,
-            ports: DashMap::new(),
-            ordering_snapshots: DashMap::new(),
+            ports: actor_map(),
+            ordering_snapshots: actor_map(),
             next_ephemeral_port: AtomicU64::new(0),
             closed: RwLock::new(None),
             closed_notify: tokio::sync::Notify::new(),

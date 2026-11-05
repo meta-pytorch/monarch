@@ -448,11 +448,11 @@ declare_attrs! {
     })
     pub attr STOPPED_RETENTION_CAP: usize = 0;
 
-    /// Whether this proc is refusing new spawns due to actor
-    /// failures.
+    /// Whether any non-system actor on this proc has failed. A poisoned
+    /// proc still accepts new spawns.
     @meta(INTROSPECT = IntrospectAttr {
         name: "is_poisoned".into(),
-        desc: "Whether this proc is poisoned (refusing new spawns)".into(),
+        desc: "Whether any non-system actor on this proc has failed".into(),
     })
     pub attr IS_POISONED: bool = false;
 

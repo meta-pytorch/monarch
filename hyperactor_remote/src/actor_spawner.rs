@@ -117,11 +117,15 @@ use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::RemoteSpawn;
 use hyperactor::Uid;
+use hyperactor::actor::ActorErrorKind;
+use hyperactor::actor::ActorStatus;
 use hyperactor::context;
+use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 
 use crate::Gspawn;
 use crate::KeepaliveLink;
+use crate::SerializedParams;
 use crate::SpawnActor as SpawnActorMessage;
 use crate::SupervisionOptions;
 use crate::Supervisor;
@@ -139,9 +143,26 @@ pub struct ActorSpawner;
 
 #[async_trait]
 impl Actor for ActorSpawner {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         this.set_system();
         Ok(())
+    }
+
+    async fn handle_supervision_event(
+        &mut self,
+        _this: &Instance<Self>,
+        event: &ActorSupervisionEvent,
+    ) -> anyhow::Result<bool> {
+        // Workers report child failures to the remote owner, which decides recovery.
+        Ok(!event.is_error()
+            || matches!(
+                event.actor_status,
+                ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(_))
+            ))
     }
 }
 
@@ -191,11 +212,12 @@ pub trait ActorSpawnerEndpoint {
         self.spawn_uid_with_link_and_ready::<A>(
             cx,
             Uid::anonymous(),
-            params,
+            SerializedParams::new(&params)?,
             KeepaliveLink::default(),
             None,
             cx.instance().actor_environment().clone(),
             Flattrs::new(),
+            None,
         )
     }
 
@@ -235,11 +257,12 @@ pub trait ActorSpawnerEndpoint {
         self.spawn_uid_with_link_and_ready::<A>(
             cx,
             uid,
-            params,
+            SerializedParams::new(&params)?,
             KeepaliveLink::default(),
             Some(ready),
             cx.instance().actor_environment().clone(),
             Flattrs::new(),
+            None,
         )
         .map(|(actor_ref, _supervisor)| actor_ref)
     }
@@ -260,30 +283,36 @@ pub trait ActorSpawnerEndpoint {
         self.spawn_uid_with_link_and_ready::<A>(
             cx,
             uid,
-            params,
+            SerializedParams::new(&params)?,
             liveness,
             None,
             cx.instance().actor_environment().clone(),
             Flattrs::new(),
+            None,
         )
         .map(|(actor_ref, _supervisor)| actor_ref)
     }
 
-    /// Spawn a registered actor with an explicit actor uid, liveness link,
-    /// optional readiness port, persistent environment, and supervision event
-    /// labels. This is the general form behind the other `spawn*` methods,
-    /// which pass the caller's own environment and no labels; see
+    /// Spawn a registered actor with an explicit actor uid, pre-serialized
+    /// params, liveness link, optional readiness port, persistent environment,
+    /// supervision event labels, and display name. This is the general form
+    /// behind the other `spawn*` methods, which serialize their params and
+    /// pass the caller's own environment, no labels, and no display name.
+    /// Callers that spawn many actors with the same params serialize them
+    /// once; see
     /// [`spawn_uid_with_ready`](Self::spawn_uid_with_ready) for the readiness
-    /// semantics and [`Supervisor::with_labels`] for the labels.
+    /// semantics, [`Supervisor::with_labels`] for the labels, and
+    /// [`Supervisor::with_display_name`] for the display name.
     fn spawn_uid_with_link_and_ready<A>(
         &self,
         cx: &impl context::Actor,
         uid: Uid,
-        params: A::Params,
+        params: SerializedParams<A>,
         liveness: KeepaliveLink,
         ready: Option<OncePortHandle<()>>,
         environment: ActorEnvironment,
         labels: Flattrs,
+        display_name: Option<String>,
     ) -> anyhow::Result<(ActorRef<A>, ActorHandle<Supervisor>)>
     where
         A: RemoteSpawn,
@@ -304,7 +333,7 @@ pub trait ActorSpawnerEndpoint {
                 .actor_addr_uid(uid.clone()),
         );
         let actor_spawner = self.clone();
-        let gspawn = Gspawn::for_actor_uid_in_environment::<A>(uid, params, environment)?;
+        let gspawn = Gspawn::for_actor_uid_in_environment::<A>(uid, params, environment);
         let supervisor = cx.instance().spawn(
             Supervisor::bootstrap_uid(
                 liveness,
@@ -317,7 +346,8 @@ pub trait ActorSpawnerEndpoint {
                     Ok(())
                 },
             )
-            .with_labels(labels),
+            .with_labels(labels)
+            .with_display_name(display_name),
         );
         Ok((actor_ref, supervisor))
     }
@@ -667,7 +697,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(event.is_error());
-        assert_eq!(event.actor_id, spawned_actor);
+        assert_eq!(event.caused_by().actor_id, spawned_actor);
 
         actor_spawner.stop("test").unwrap();
         tokio::time::timeout(Duration::from_secs(5), spawner)
@@ -881,12 +911,20 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let (session_id, child) = match linked {
+        let (session_id, worker, child) = match linked {
             SupervisorEvent::Linked {
-                session_id, child, ..
-            } => (session_id, child),
+                session_id,
+                worker,
+                child,
+                ..
+            } => (session_id, worker, child),
             message => panic!("expected linked message, got {:?}", message),
         };
+        let mut worker_status = proc
+            .get_instance(&worker.port_addr().actor_addr())
+            .unwrap()
+            .status()
+            .clone();
         PortRef::<Fail>::attest_handler_port(&child).post(&client, Fail);
 
         let event = tokio::time::timeout(Duration::from_secs(5), supervisor_rx.recv())
@@ -896,11 +934,34 @@ mod tests {
         match event {
             SupervisorEvent::SupervisionEvent {
                 session_id: event_session_id,
-                event: ActorSupervisionEvent { actor_id, .. },
+                event,
                 disposition: RemoteActorDisposition::Terminal,
-            } if event_session_id == session_id && actor_id == child => {}
+            } if event_session_id == session_id && event.caused_by().actor_id == child => {}
             message => panic!("expected terminal supervision event, got {:?}", message),
         }
+
+        let terminal = tokio::time::timeout(
+            Duration::from_secs(5),
+            worker_status.wait_for(ActorStatus::is_terminal),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(terminal.is_failed());
+
+        let (next_supervisor, mut next_supervisor_rx) = client.open_port::<SupervisorEvent>();
+        spawn_test_child(
+            &actor_spawner,
+            &client,
+            next_supervisor.bind(),
+            Uid::anonymous(),
+        )
+        .await;
+        let next_linked = tokio::time::timeout(Duration::from_secs(5), next_supervisor_rx.recv())
+            .await
+            .expect("actor spawner must accept spawns after a child fails")
+            .unwrap();
+        assert!(matches!(next_linked, SupervisorEvent::Linked { .. }));
 
         actor_spawner.stop("test").unwrap();
         tokio::time::timeout(Duration::from_secs(5), actor_spawner)

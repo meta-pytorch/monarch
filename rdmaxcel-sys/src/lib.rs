@@ -35,6 +35,10 @@ mod inner {
     #[cfg(use_rocm)]
     mod rocm_compat {
         use super::*;
+        // Buck bindgen emits the HIP bindings at the crate root rather
+        // than inside `inner` (where Cargo includes them).
+        #[cfg(not(cargo))]
+        use crate::*;
 
         // Basic types
         pub type CUdevice = hipDevice_t;

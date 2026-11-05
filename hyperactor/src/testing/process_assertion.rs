@@ -7,37 +7,58 @@
  */
 
 use std::future::Future;
+use std::process::Command;
 
-use nix::sys::wait::WaitStatus;
-use nix::sys::wait::waitpid;
-use nix::unistd::ForkResult;
-use nix::unistd::fork;
+const CHILD_TEST: &str = "HYPERACTOR_TERMINATION_TEST_CHILD";
 
-/// Fork a child process, execute the given function in that process, and verify
-/// that the process exits with the given exit code.
+/// Re-run the current libtest test in a fresh process and verify its exit code.
+///
+/// The child executes `f` with its own Tokio runtime. Forking an existing runtime
+/// would inherit invalid I/O driver state on macOS. Call this once per test;
+/// setup before this call is repeated in the child process.
+/// Returning from `f` instead of terminating the process fails the assertion.
 pub async fn assert_termination<F, Fut>(f: F, expected_code: i32) -> anyhow::Result<()>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = ()>,
 {
-    // SAFETY: for unit test process assertion.
-    unsafe {
-        match fork() {
-            Ok(ForkResult::Parent { child, .. }) => match waitpid(child, None)? {
-                WaitStatus::Exited(_, exit_code) => {
-                    anyhow::ensure!(exit_code == expected_code);
-                    Ok(())
-                }
-                status => Err(anyhow::anyhow!(
-                    "didn't receive expected status, got: {:?}",
-                    status
-                )),
-            },
-            Ok(ForkResult::Child) => {
-                let _: () = f().await;
-                Ok(())
-            }
-            Err(_) => Err(anyhow::anyhow!("fork failed")),
+    let thread = std::thread::current();
+    let test_name = thread
+        .name()
+        .ok_or_else(|| anyhow::anyhow!("termination assertion requires a named libtest thread"))?;
+    if std::env::var(CHILD_TEST).ok().as_deref() == Some(test_name) {
+        f().await;
+        eprintln!("termination callback returned without exiting");
+        std::process::exit(if expected_code == 0 { 1 } else { 0 });
+    }
+
+    let status = Command::new(std::env::current_exe()?)
+        .args(["--exact", test_name, "--nocapture"])
+        .env(CHILD_TEST, test_name)
+        .status()?;
+    anyhow::ensure!(
+        status.code() == Some(expected_code),
+        "expected exit code {expected_code}, got {status}"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_return_without_termination_is_rejected() {
+        let result = assert_termination(|| async {}, 0).await;
+        if std::env::var(CHILD_TEST).is_err() {
+            assert!(result.is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn test_explicit_zero_exit_succeeds() {
+        assert_termination(|| async { std::process::exit(0) }, 0)
+            .await
+            .unwrap();
     }
 }

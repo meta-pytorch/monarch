@@ -237,18 +237,8 @@ impl GlobalClientActor {
                     }
                 };
             };
-            let event = match *err.kind {
-                ActorErrorKind::UnhandledSupervisionEvent(event) => *event,
-                _ => {
-                    let status = ActorStatus::generic_failure(err.kind.to_string());
-                    ActorSupervisionEvent::new(
-                        instance.self_addr().clone(),
-                        Some("testclient".into()),
-                        status,
-                        None,
-                    )
-                }
-            };
+            let event = (*err.kind)
+                .into_supervision_event(instance.self_addr(), || Some("testclient".into()));
             instance
                 .proc()
                 .handle_unhandled_supervision_event(instance, event);
@@ -336,6 +326,10 @@ impl GlobalClientActor {
 /// `ProcMesh` allocation completes), we log and drop the event.
 #[async_trait]
 impl Actor for GlobalClientActor {
+    fn supervision_is_transparent(&self) -> bool {
+        true
+    }
+
     /// The global root client is the root of the supervision tree:
     /// there is no parent to escalate to. Child-actor failures (e.g.
     /// ActorMeshControllers detecting dead procs after mesh teardown)

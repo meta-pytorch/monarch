@@ -12,7 +12,7 @@ license = "BSD-3-Clause"
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.92"
-erased-serde = "0.4.10"
+erased-serde = "0.4.11"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
@@ -26,4 +26,4 @@ wirevalue = { version = "0.0.0", path = "../wirevalue" }
 inventory = "0.3.25"
 proptest = "1.12.0"
 timed_test = { version = "0.0.0", path = "../timed_test" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }

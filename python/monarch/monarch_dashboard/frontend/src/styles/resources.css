@@ -1,0 +1,67 @@
+/**
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+.resource-heading {
+  display: flex;
+  gap: var(--s3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+.resource-heading h2 {
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+.resource-note {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.resource-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: var(--s3);
+}
+.resource-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-0);
+  min-width: 0;
+}
+.resource-kpi span, .resource-kpi small { color: var(--text-2); font-size: 11px; }
+.resource-kpi strong { font-size: 20px; font-variant-numeric: tabular-nums; }
+.resource-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(320px, calc((100% - 32px) / 3))), 1fr));
+  gap: var(--s4);
+}
+.resource-chart { min-width: 0; }
+.resource-chart .panel-head { flex-wrap: wrap; }
+.resource-chart-empty {
+  height: 170px;
+  display: grid;
+  place-items: center;
+  color: var(--text-3);
+}
+.resource-legend { display: flex; gap: var(--s3); flex-wrap: wrap; font-size: 11px; color: var(--text-2); }
+.resource-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.resource-legend i { width: 12px; height: 3px; border-radius: 2px; }
+.resource-table-scroll { overflow: auto; max-height: 320px; }
+.resource-table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+.resource-table th, .resource-table td { text-align: left; padding: var(--s3); border-bottom: 1px solid var(--border); }
+.resource-table th { color: var(--text-2); background: var(--surface-1); position: sticky; top: 0; }
+.resource-table .selected { background: var(--accent-soft); }
+.resource-host-link { color: var(--accent); background: none; border: 0; cursor: pointer; text-align: left; }
+.resource-host-link:hover { text-decoration: underline; }
+.resource-sort { color: inherit; font: inherit; font-weight: 600; background: none; border: 0; cursor: pointer; }
+.resource-search { width: 200px; max-width: 100%; padding: var(--s2); color: var(--text-1); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); }
+.host-resources { min-width: 0; }
+.gpu-charts { grid-template-columns: repeat(auto-fit, minmax(min(100%, max(320px, calc((100% - 16px) / 2))), 1fr)); }

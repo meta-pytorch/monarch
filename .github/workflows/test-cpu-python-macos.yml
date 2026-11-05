@@ -10,7 +10,7 @@ on:
       python-version:
         description: 'Python version to test with'
         type: string
-        default: '3.10'
+        default: '3.11'
       runner:
         description: 'macOS runner to use for the test'
         type: string

@@ -16,6 +16,7 @@ import { statusMeta } from "../../lib/status";
 import { EmptyState, Loading, PartialSnapshotWarning, StatusPill } from "../common/ui";
 import { ActorDetail } from "./ActorDetail";
 import { PySpyPanel } from "./PySpyPanel";
+import { HostResources } from "../resources/HostResources";
 import {
   IconActor,
   IconChevron,
@@ -389,6 +390,9 @@ function ContainerDetail({
 
       {node.tier.startsWith("proc") && (
         <PySpyPanel procRef={String(node.entity_id)} procLabel={nodeLabel(node)} />
+      )}
+      {node.tier === "host" && node.hostname && (
+        <section className="drawer-section"><HostResources key={node.hostname} hostname={node.hostname} /></section>
       )}
 
       {statusEntries.length > 0 && (

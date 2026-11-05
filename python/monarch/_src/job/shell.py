@@ -62,6 +62,14 @@ _ShellOutput: TypeAlias = _ShellOutputData | _ShellOutputReturncode | _ShellOutp
 _CHUNK_SIZE = 16 * 1024
 _PROCESS_GRACE_SECONDS = 1
 
+# Run after exec, rather than a Python preexec_fn in the threaded actor process.
+# start_new_session creates the session; the child acquires the PTY before exec.
+_PTY_EXEC = (
+    "import fcntl, os, sys, termios\n"
+    "fcntl.ioctl(0, termios.TIOCSCTTY, 0)\n"
+    "os.execvpe(sys.argv[1], sys.argv[1:], os.environ)\n"
+)
+
 
 def _set_window_size(fd: int, window_size: tuple[int, int]) -> None:
     rows, columns = window_size
@@ -248,8 +256,11 @@ class _ShellActor(Actor):
         shell_executable = child_env.get("SHELL", "/bin/bash")
         try:
             process = await asyncio.create_subprocess_exec(
-                "/usr/bin/setsid",
-                "--ctty",
+                sys.executable,
+                "-I",
+                "-S",
+                "-c",
+                _PTY_EXEC,
                 shell_executable,
                 "-i",
                 stdin=slave_fd,
@@ -257,6 +268,7 @@ class _ShellActor(Actor):
                 stderr=slave_fd,
                 cwd=effective_workdir,
                 env=child_env,
+                start_new_session=True,
             )
         except (OSError, ValueError):
             os.close(master_fd)

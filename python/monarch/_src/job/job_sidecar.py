@@ -28,6 +28,7 @@ from monarch.config import get_runtime_config
 
 _JOB_SIDECAR_WORKER_MODULE = "monarch._src.job._job_sidecar_worker"
 _MOUNT_CLEAR_TIMEOUT_S = 30.0
+_SIDECAR_EXIT_GRACE_S = 2.0
 
 try:
     from __manifest__ import fbmake  # noqa
@@ -104,13 +105,21 @@ def stop_job_sidecar(apply_id: str) -> None:
 
     Mount cleanup is an acknowledged operation so an unmount failure leaves the
     sidecar alive and retryable instead of destroying the only process holding
-    the mount handle and leaking a stale filesystem.
+    the mount handle and leaking a stale filesystem. A sidecar that has already
+    died holds no mounts, so losing the connection to it counts as stopped.
     """
     daemon = find_job_sidecar(apply_id)
-    if daemon is not None:
+    if daemon is None:
+        return
+    try:
         response = daemon.send(ClearMountsRequest()).get(timeout=_MOUNT_CLEAR_TIMEOUT_S)
         raise_for_sidecar_error(response, "clear job mounts")
         daemon.shutdown()
+    except (OSError, EOFError):
+        # The sidecar shares the client's process group, so a terminal Ctrl-C
+        # can kill it while we are talking to it.
+        if not daemon.exited(timeout=_SIDECAR_EXIT_GRACE_S):
+            raise
 
 
 def raise_for_sidecar_error(response: object, operation: str) -> None:

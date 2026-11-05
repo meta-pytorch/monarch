@@ -56,6 +56,7 @@ use hyperactor_mesh::proc_launcher::ProcExitKind;
 use hyperactor_mesh::proc_launcher::ProcExitResult;
 use hyperactor_mesh::proc_launcher::ProcLauncher;
 use hyperactor_mesh::proc_launcher::ProcLauncherError;
+use hyperactor_mesh::proc_launcher::ProcReachability;
 use hyperactor_mesh::proc_launcher::StdioHandling;
 use ndslice::ViewExt;
 use ndslice::extent;
@@ -606,6 +607,10 @@ pub struct ActorProcLauncher {
     /// Not used for correctness; used for diagnostics and sanity
     /// checks.
     active_procs: Arc<Mutex<HashSet<hyperactor::ProcAddr>>>,
+
+    /// How the host and the Python launcher's procs reach each other, as
+    /// declared by its class.
+    reachability: ProcReachability,
 }
 
 impl ActorProcLauncher {
@@ -621,22 +626,30 @@ impl ActorProcLauncher {
     ///   capability is sufficient; it need not be
     ///   `Instance<PythonActor>`. Must remain valid for the
     ///   launcher's lifetime.
+    /// * `reachability` - How the host and the launcher's procs reach each
+    ///   other.
     pub fn new(
         spawner: ActorHandle<PythonActor>,
         mailbox: Mailbox,
         instance: Instance<()>,
+        reachability: ProcReachability,
     ) -> Self {
         Self {
             spawner,
             mailbox,
             instance,
             active_procs: Arc::new(Mutex::new(HashSet::new())),
+            reachability,
         }
     }
 }
 
 #[async_trait]
 impl ProcLauncher for ActorProcLauncher {
+    fn reachability(&self) -> ProcReachability {
+        self.reachability
+    }
+
     /// Spawn a proc by delegating to the Python spawner actor.
     ///
     /// This method:
@@ -686,6 +699,15 @@ impl ProcLauncher for ActorProcLauncher {
                 let program = opts.command.program.to_str().ok_or_else(|| {
                     ProcLauncherError::Other("program path is not valid UTF-8".into())
                 })?;
+                let vsock_uds_path = opts
+                    .vsock_uds_path
+                    .as_deref()
+                    .map(|path| {
+                        path.to_str().ok_or_else(|| {
+                            ProcLauncherError::Other("vsock uds path is not valid UTF-8".into())
+                        })
+                    })
+                    .transpose()?;
 
                 let env = pyo3::types::PyDict::new(py);
                 for (k, v) in &opts.command.env {
@@ -710,21 +732,28 @@ impl ProcLauncher for ActorProcLauncher {
                     d
                 });
 
+                let launch_kwargs = pyo3::types::PyDict::new(py);
+                launch_kwargs
+                    .set_item("vsock_uds_path", vsock_uds_path)
+                    .map_err(|e| ProcLauncherError::Other(format!("set vsock_uds_path: {e}")))?;
                 let py_opts = launch_opts_cls
-                    .call1((
-                        &opts.bootstrap_payload,
-                        &opts.process_name,
-                        program,
-                        opts.command.arg0.as_deref(),
-                        &opts.command.args,
-                        env,
-                        opts.want_stdio,
-                        opts.tail_lines,
-                        opts.log_channel.as_ref().map(|a| a.to_string()),
-                        py_proc_bind,
-                        opts.command.inherit_env,
-                        opts.command.env_remove.iter().collect::<Vec<_>>(),
-                    ))
+                    .call(
+                        (
+                            &opts.bootstrap_payload,
+                            &opts.process_name,
+                            program,
+                            opts.command.arg0.as_deref(),
+                            &opts.command.args,
+                            env,
+                            opts.want_stdio,
+                            opts.tail_lines,
+                            opts.log_channel.as_ref().map(|a| a.to_string()),
+                            py_proc_bind,
+                            opts.command.inherit_env,
+                            opts.command.env_remove.iter().collect::<Vec<_>>(),
+                        ),
+                        Some(&launch_kwargs),
+                    )
                     .map_err(|e| {
                         ProcLauncherError::Other(format!("construct LaunchOptions: {e}"))
                     })?;
@@ -926,6 +955,7 @@ pub(crate) async fn install_proc_launcher(
     cx: &impl context::Actor,
     hosts: &HostMeshRef,
     launcher: PythonActorParams,
+    reachability: ProcReachability,
 ) -> anyhow::Result<()> {
     let installer_type = Remote::global()
         .name_of::<ProcLauncherInstaller>()
@@ -939,7 +969,7 @@ pub(crate) async fn install_proc_launcher(
             let params = params.clone();
             async move {
                 let host = agent.actor_addr().proc_addr().clone();
-                install_on_host(cx, agent, installer_type, params, launcher)
+                install_on_host(cx, agent, installer_type, params, launcher, reachability)
                     .await
                     .map_err(|e| format!("host rank {rank} ({host}): {e:#}"))
             }
@@ -968,6 +998,7 @@ async fn install_on_host(
     installer_type: &str,
     params: Vec<u8>,
     launcher: PythonActorParams,
+    reachability: ProcReachability,
 ) -> anyhow::Result<()> {
     let installer = agent
         .gspawn_system_actor(
@@ -979,7 +1010,7 @@ async fn install_on_host(
         .await?
         .map_err(|e| anyhow::anyhow!("failed to spawn the installer: {e}"))?;
     ActorRef::<ProcLauncherInstaller>::attest(installer)
-        .install_proc_launcher(cx, launcher, agent)
+        .install_proc_launcher(cx, launcher, reachability, agent)
         .await?
         .map_err(anyhow::Error::msg)
 }
@@ -1029,6 +1060,8 @@ impl Actor for ProcLauncherInstaller {
 pub struct InstallProcLauncher {
     /// Spawn parameters of the Python launcher actor.
     pub launcher: PythonActorParams,
+    /// How the host and the launcher's procs reach each other.
+    pub reachability: ProcReachability,
     /// The host agent on the installer's system proc.
     pub host_agent: ActorRef<HostAgent>,
     /// Receives `Ok(())` once installed, or why installation failed.
@@ -1044,11 +1077,12 @@ impl Handler<InstallProcLauncher> for ProcLauncherInstaller {
         cx: &Context<Self>,
         InstallProcLauncher {
             launcher,
+            reachability,
             host_agent,
             result,
         }: InstallProcLauncher,
     ) -> anyhow::Result<()> {
-        let outcome = install(cx, launcher, &host_agent).await;
+        let outcome = install(cx, launcher, reachability, &host_agent).await;
         let failed = outcome.is_err();
         result.post(cx, outcome);
         if failed && let Err(e) = cx.stop("proc launcher installation failed") {
@@ -1063,6 +1097,7 @@ impl Handler<InstallProcLauncher> for ProcLauncherInstaller {
 async fn install(
     cx: &Context<'_, ProcLauncherInstaller>,
     launcher: PythonActorParams,
+    reachability: ProcReachability,
     host_agent: &ActorRef<HostAgent>,
 ) -> Result<(), String> {
     let (actor_type, init_message, kind) = launcher.into_parts();
@@ -1099,6 +1134,7 @@ async fn install(
         launcher_actor,
         mailbox,
         send_context,
+        reachability,
     ));
     let agent = host_agent
         .downcast_handle(cx)

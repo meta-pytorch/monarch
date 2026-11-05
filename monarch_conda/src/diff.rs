@@ -14,7 +14,6 @@ use std::time::UNIX_EPOCH;
 use anyhow::Result;
 use anyhow::ensure;
 use digest::Digest;
-use digest::Output;
 use serde::Deserialize;
 use serde::Serialize;
 use sha2::Sha256;
@@ -30,7 +29,7 @@ pub struct CondaMetaFingerprint {
     // TODO(agallagher): It might be worth storing more information of installed
     // packages, so that we could print better error messages when we detect two
     // envs are not equivalent.
-    hash: Output<Sha256>,
+    hash: [u8; 32],
 }
 
 impl CondaMetaFingerprint {
@@ -38,7 +37,7 @@ impl CondaMetaFingerprint {
         let mut hasher = Sha256::new();
         hash_utils::hash_directory_tree(&path.join("conda-meta"), &mut hasher).await?;
         Ok(Self {
-            hash: hasher.finalize(),
+            hash: hasher.finalize().into(),
         })
     }
 }
@@ -46,7 +45,7 @@ impl CondaMetaFingerprint {
 /// Fingerprint of the pack-meta directory, used by `CondaFingerprint` below.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PackMetaFingerprint {
-    offsets: Output<Sha256>,
+    offsets: [u8; 32],
     pub history: History,
 }
 
@@ -70,7 +69,7 @@ impl PackMetaFingerprint {
             hasher.update(contents.len().to_le_bytes());
             hasher.update(&contents);
         }
-        let offsets = hasher.finalize();
+        let offsets = hasher.finalize().into();
 
         Ok(Self { history, offsets })
     }

@@ -71,6 +71,8 @@ pub use view::Point;
 pub use view::PointError;
 /// Represents a logical view or projection.
 pub use view::Region;
+/// Errors that can occur during checked region construction or rank access.
+pub use view::RegionError;
 /// Trait for data structures from which views can be created.
 pub use view::View;
 /// Extension methods for view construction.

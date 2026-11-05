@@ -12,10 +12,14 @@ Run by ``test_actor_loop_finalization``. Two arms:
 
 ``unmitigated``
     suppress the loop marker so the production reaper cannot see the loops,
-    and the loops' ``stop`` so root-client cleanup cannot stop them, then hold
-    one of them inside a PyO3 call across interpreter finalization.
+    then hold one of them inside a PyO3 call across interpreter finalization.
     CPython <= 3.12 force-exits that daemon thread with ``pthread_exit``; the
     forced unwind crosses PyO3's ``catch_unwind`` and glibc aborts.
+
+Both arms spawn a user actor on the client proc whose ``__cleanup__``
+never returns, so shutdown's cleanup bound (``CLEANUP_TIMEOUT``) gives
+up on it and leaves its loop running: the survival the reaper exists
+for. ``fixed`` lets the reaper stop it; ``unmitigated`` hides it.
 
 ``fixed``
     leave the marker in place and let the reaper run. Version-independent.
@@ -36,9 +40,16 @@ import resource
 import sys
 import threading
 import time
-from typing import Callable, TypeVar
+from typing import Any, Callable, TypeVar
 
-from monarch.python.tests import actor_loop_finalization_timeouts as timeouts
+# Register before importing Monarch. atexit is LIFO, so this runs after
+# shutdown_context and shutdown_tokio_runtime at the final pre-finalization
+# boundary that the production failure races.
+atexit.register(lambda: _exercise_finalization_boundary())
+
+timeouts = importlib.import_module(
+    "monarch.python.tests.actor_loop_finalization_timeouts"
+)
 
 
 _ACTOR_EVENT_LOOP_ATTRIBUTE = "_monarch_actor_event_loop"
@@ -46,8 +57,9 @@ _ACTOR_DRIVER_ATTRIBUTE = "_monarch_actor_driver"
 
 # `context()` bootstraps the root client actor, an async actor with one asyncio
 # loop on its own thread, and the `controller_controller` actor, a sync actor
-# with one driver thread.
-_EXPECTED_ACTOR_LOOPS = 1
+# with one driver thread. The wedged-cleanup actor spawned on the client proc
+# adds a second async loop.
+_EXPECTED_ACTOR_LOOPS = 2
 _EXPECTED_ACTOR_DRIVERS = 1
 
 # Deadlines live in a side-effect-free module so the test can assert they nest
@@ -75,10 +87,6 @@ def _note(message: str) -> None:
 def _fail_model(message: str, exit_code: int) -> None:
     _note(f"finalization model failed: {message}")
     os._exit(exit_code)
-
-
-def _ignore_loop_stop() -> None:
-    pass
 
 
 def _gil_enabled() -> bool:
@@ -224,15 +232,28 @@ def _exercise_finalization_boundary() -> None:
     release.set()
 
 
-# Register before importing Monarch. atexit is LIFO, so this runs after
-# shutdown_context and shutdown_tokio_runtime at the final pre-finalization
-# boundary that the production failure races.
-atexit.register(_exercise_finalization_boundary)
-
 _runtime = importlib.import_module("monarch._rust_bindings.monarch_hyperactor.runtime")
 _wait_on_event_for_exit_test = _runtime._wait_on_event_for_exit_test
 _actor = importlib.import_module("monarch.actor")
 context = _actor.context
+
+
+class _WedgedCleanupActor(_actor.Actor):
+    """User actor whose ``__cleanup__`` never returns.
+
+    Shutdown gives up on it at ``CLEANUP_TIMEOUT`` and leaves its loop
+    running. Keeping its mesh referenced keeps the actor alive until then.
+    """
+
+    @_actor.endpoint
+    async def ping(self) -> None:
+        pass
+
+    async def __cleanup__(self, _exc: Exception | None) -> None:
+        await asyncio.Event().wait()
+
+
+_wedged_meshes: list[Any] = []
 
 
 def main() -> None:
@@ -252,6 +273,10 @@ def main() -> None:
     )
 
     context()
+    _wedged_meshes.append(
+        _actor.this_proc().spawn("wedged_cleanup", _WedgedCleanupActor)
+    )
+    _wedged_meshes[0].ping.call().get(timeout=30)
     _actor_loops.extend(
         _wait_for_actor_threads(
             _actor_event_loops, _EXPECTED_ACTOR_LOOPS, "actor event-loop"
@@ -266,7 +291,7 @@ def main() -> None:
     _note(f"{mode} captured {len(_actor_drivers)} actor drivers")
 
     if mode == "unmitigated":
-        for loop, thread in _actor_loops:
+        for _loop, thread in _actor_loops:
             # Strict: if production stopped marking actor-loop threads, this
             # arm would silently become a second copy of `fixed`.
             if not hasattr(thread, _ACTOR_EVENT_LOOP_ATTRIBUTE):
@@ -275,7 +300,6 @@ def main() -> None:
                     f"{_ACTOR_EVENT_LOOP_ATTRIBUTE} marker to suppress"
                 )
             delattr(thread, _ACTOR_EVENT_LOOP_ATTRIBUTE)
-            loop.stop = _ignore_loop_stop
 
 
 if __name__ == "__main__":

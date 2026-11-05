@@ -18,6 +18,8 @@ The `handle` method is invoked by the runtime whenever a message of type `M` arr
 - `cx` gives access to the actor's runtime context, including its identity, mailbox, and any capabilities exposed by the `Context` type (such as spawning or reference resolution).
 - The return value indicates whether the message was handled successfully.
 
+Returning `Err` fails the actor. Return an `ActorErrorKind` through `anyhow::Error` to preserve a structured failure, including through `anyhow::Context`. For example, `ActorErrorKind::UnhandledSupervisionEvent(Box::new(event))` retains `event` as the cause; the runtime adds this actor's frame.
+
 An actor may implement `Handler<M>` multiple times — once for each message type `M` it supports.
 
 ## Built-in Handlers

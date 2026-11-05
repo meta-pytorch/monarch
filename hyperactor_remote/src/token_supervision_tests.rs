@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -18,14 +19,17 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortHandle;
 use hyperactor::Proc;
+use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::StopMode;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor::supervision::SupervisionObservation;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::Notify;
 use typeuri::Named;
 
 use crate::KeepaliveLink;
@@ -64,6 +68,11 @@ wirevalue::register_type!(ChildControl);
 #[derive(Debug)]
 enum ChildAction {
     StopAfter(Duration),
+    FailOnStop,
+    BlockCleanup {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    },
 }
 
 #[derive(Debug)]
@@ -178,8 +187,8 @@ struct SupervisedChild {
 impl Actor for SupervisedChild {
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         self.ready.post(this, this.self_addr().clone());
-        if let Some(ChildAction::StopAfter(delay)) = self.action.take() {
-            this.post_after(this, ChildControl::Stop, delay);
+        if let Some(ChildAction::StopAfter(delay)) = &self.action {
+            this.post_after(this, ChildControl::Stop, *delay);
         }
         Ok(())
     }
@@ -191,10 +200,25 @@ impl Actor for SupervisedChild {
         reason: &str,
     ) -> anyhow::Result<()> {
         self.stopped.post(this, reason.to_string());
+        if matches!(self.action, Some(ChildAction::FailOnStop)) {
+            anyhow::bail!("child stop failed");
+        }
         this.close();
         match mode {
             StopMode::Stop => this.exit(reason)?,
             StopMode::DrainAndStop => this.exit_after_drain(reason)?,
+        }
+        Ok(())
+    }
+
+    async fn cleanup(
+        &mut self,
+        _this: &Instance<Self>,
+        _err: Option<&ActorError>,
+    ) -> anyhow::Result<()> {
+        if let Some(ChildAction::BlockCleanup { started, release }) = &self.action {
+            started.notify_one();
+            release.notified().await;
         }
         Ok(())
     }
@@ -258,8 +282,11 @@ impl Handler<WorkerControl> for WorkerRoot {
 
 struct Harness {
     observer: hyperactor::Client,
+    worker_proc: Proc,
     parent_root: hyperactor::ActorHandle<ParentRoot>,
     worker_root: hyperactor::ActorHandle<WorkerRoot>,
+    child_addr: ActorAddr,
+    worker_addr: ActorAddr,
     child_stopped_rx: PortReceiver<String>,
     parent_events_rx: PortReceiver<ActorSupervisionEvent>,
 }
@@ -314,14 +341,17 @@ impl Harness {
                 anyhow::bail!("token join rejected: {}", reason)
             }
         }
-        let _worker_addr = recv(&mut parent_linked_rx).await?;
-        let _child_addr = recv(&mut child_ready_rx).await?;
+        let worker_addr = recv(&mut parent_linked_rx).await?;
+        let child_addr = recv(&mut child_ready_rx).await?;
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         Ok(Self {
             observer,
+            worker_proc,
             parent_root,
             worker_root,
+            child_addr,
+            worker_addr,
             child_stopped_rx,
             parent_events_rx,
         })
@@ -450,11 +480,84 @@ async fn test_token_join_worker_kill_notifies_parent() -> anyhow::Result<()> {
 
     let event = recv(&mut harness.parent_events_rx).await?;
     assert!(matches!(event.actor_status, ActorStatus::Failed(_)));
-    assert!(
-        event.to_string().contains("supervision liveness failed"),
-        "parent event should describe the failed supervision link"
-    );
+    assert_ne!(event.actor_id, harness.child_addr);
+    let Some(SupervisionObservation::LinkLost(target)) = &event.observation else {
+        panic!("expected the lost link's affected actor: {event:?}");
+    };
+    assert_eq!(target.actor_id, harness.child_addr);
+    let cause = event.caused_by();
+    assert_ne!(cause.actor_id, event.actor_id);
+    assert!(cause.is_error());
     harness.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_token_join_worker_proc_stop_notifies_parent() -> anyhow::Result<()> {
+    let mut harness = Harness::new().await?;
+
+    let (_, timed_out) = harness
+        .worker_proc
+        .destroy_and_wait(Duration::from_secs(5), "worker proc stopped")
+        .await?;
+    assert!(timed_out.is_empty(), "worker proc did not finish stopping");
+
+    let event = recv(&mut harness.parent_events_rx).await?;
+    assert_eq!(
+        event.actor_status,
+        ActorStatus::Stopped("supervised child stopped".to_string()),
+    );
+    assert_eq!(event.caused_by().actor_id, harness.child_addr);
+    assert!(!event.is_error());
+    harness.parent_root.stop("test")?;
+    tokio::time::timeout(Duration::from_secs(5), harness.parent_root).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_token_join_worker_stop_preserves_child_failure() -> anyhow::Result<()> {
+    let mut harness = Harness::new_with_child_action(Some(ChildAction::FailOnStop)).await?;
+
+    harness.worker_root.stop("worker stopped")?;
+
+    let event = recv(&mut harness.parent_events_rx).await?;
+    assert!(event.is_error());
+    assert_eq!(event.caused_by().actor_id, harness.child_addr);
+    assert!(event.to_string().contains("child stop failed"));
+    tokio::time::timeout(Duration::from_secs(5), harness.worker_root).await?;
+    harness.parent_root.stop("test")?;
+    tokio::time::timeout(Duration::from_secs(5), harness.parent_root).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_token_join_worker_stop_keeps_link_alive_during_cleanup() -> anyhow::Result<()> {
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let mut harness = Harness::new_with_child_action(Some(ChildAction::BlockCleanup {
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+    }))
+    .await?;
+
+    harness.worker_root.stop("worker stopped")?;
+    tokio::time::timeout(Duration::from_secs(5), started.notified()).await?;
+
+    // The keepalive deadline is 300 ms; cleanup must keep the session alive.
+    let premature =
+        tokio::time::timeout(Duration::from_millis(600), harness.parent_events_rx.recv()).await;
+    release.notify_one();
+    assert!(
+        premature.is_err(),
+        "worker reported before child cleanup finished"
+    );
+
+    let event = recv(&mut harness.parent_events_rx).await?;
+    assert!(!event.is_error());
+    assert_eq!(event.caused_by().actor_id, harness.child_addr);
+    tokio::time::timeout(Duration::from_secs(5), harness.worker_root).await?;
+    harness.parent_root.stop("test")?;
+    tokio::time::timeout(Duration::from_secs(5), harness.parent_root).await?;
     Ok(())
 }
 
@@ -473,10 +576,19 @@ async fn test_token_join_child_stop_notifies_parent() -> anyhow::Result<()> {
     assert_eq!(reason, "child finished");
 
     let event = recv(&mut harness.parent_events_rx).await?;
-    match event.actor_status {
-        ActorStatus::Stopped(reason) => assert_eq!(reason, "child finished"),
-        status => panic!("expected stopped child event, got {:?}", status),
-    }
+    assert_eq!(
+        event.actor_status,
+        ActorStatus::Stopped("supervised child stopped".to_string()),
+    );
+    let worker = event.cause().unwrap();
+    assert_eq!(worker.actor_id, harness.worker_addr);
+    let child = worker.cause().unwrap();
+    assert_eq!(child.actor_id, harness.child_addr);
+    assert_eq!(
+        child.actor_status,
+        ActorStatus::Stopped("child finished".to_string())
+    );
+    assert_eq!(event.causal_chain().count(), 3);
     harness.stop().await?;
     Ok(())
 }

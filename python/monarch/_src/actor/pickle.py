@@ -12,9 +12,7 @@ import pickle
 import sys
 import types
 from collections import ChainMap
-from collections.abc import Generator
-from contextlib import contextmanager, ExitStack
-from contextvars import ContextVar
+from contextlib import ExitStack
 from typing import Any, Callable, Iterable, List, Tuple
 
 import cloudpickle

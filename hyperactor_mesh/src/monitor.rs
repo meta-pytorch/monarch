@@ -39,6 +39,7 @@ use ndslice::view::Region;
 
 use crate::ActorMeshRef;
 use crate::ValueMesh;
+use crate::mesh_id::ActorMeshId;
 use crate::supervision::MeshFailure;
 
 /// A liveness monitor over a set of ranked actors.
@@ -51,6 +52,9 @@ use crate::supervision::MeshFailure;
 /// names the rank; use [`MeshMonitor::guard`] to run a future until it completes
 /// or a rank fails.
 pub struct MeshMonitor {
+    mesh_id: Option<ActorMeshId>,
+    /// The display name of each rank's actor, keyed by the mesh's region.
+    display_names: Option<ValueMesh<String>>,
     /// One monitor per rank, keyed by the mesh's region.
     monitors: ValueMesh<ActorMonitor>,
 }
@@ -76,8 +80,38 @@ impl MeshMonitor {
 
     fn spawn_with(actors: ValueMesh<ActorAddr>, spawn: impl Fn(ActorAddr) -> ActorMonitor) -> Self {
         Self {
+            mesh_id: None,
+            display_names: None,
             monitors: actors.map_into(|actor| spawn(actor.clone())),
         }
+    }
+
+    /// Identify the mesh in every failure reported by this monitor.
+    pub fn with_mesh_id(mut self, mesh_id: ActorMeshId) -> Self {
+        self.mesh_id = Some(mesh_id);
+        self
+    }
+
+    /// Name each rank's actor in the failures reported by this monitor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::DisplayNamesRegionMismatch`] if
+    /// `display_names` does not share the monitored region.
+    pub fn with_display_names(
+        mut self,
+        display_names: Option<ValueMesh<String>>,
+    ) -> crate::Result<Self> {
+        if let Some(display_names) = &display_names
+            && display_names.region() != self.region()
+        {
+            return Err(crate::Error::DisplayNamesRegionMismatch {
+                expected: self.region().clone(),
+                actual: display_names.region().clone(),
+            });
+        }
+        self.display_names = display_names;
+        Ok(self)
     }
 
     /// Keep every rank active until the returned activation is dropped.
@@ -130,7 +164,14 @@ impl MeshMonitor {
             })
         });
         let ((rank, failure), _index, _rest) = select_all(waits).await;
-        monitor_failure_to_mesh_failure(rank, &failure)
+        let mut failure = monitor_failure_to_mesh_failure(rank, &failure);
+        failure.actor_mesh_name = self.mesh_id.as_ref().map(ToString::to_string);
+        failure.event.display_name = self
+            .display_names
+            .as_ref()
+            .and_then(|names| names.get(rank))
+            .cloned();
+        failure
     }
 
     /// Wait until every monitored rank is terminal, returning each rank's
@@ -226,8 +267,8 @@ impl<'a> IntoFuture for &'a MeshMonitor {
 fn monitor_failure_to_mesh_failure(rank: usize, failure: &MonitorFailure) -> MeshFailure {
     let actor_id = failure.actor_id().clone();
     let actor_status = monitor_failure_to_actor_status(failure);
-    // The failed actor is identified by `event.actor_id` and the rank; the mesh
-    // itself has no name to carry.
+    // The failed actor is identified by `event.actor_id` and the rank; the
+    // monitor adds the mesh and display names it was given.
     MeshFailure {
         actor_mesh_name: None,
         event: ActorSupervisionEvent::new(actor_id, None, actor_status, None),
@@ -261,8 +302,53 @@ mod tests {
     use tokio::time::Duration;
 
     use super::*;
-    use crate::mesh_id::ActorMeshId;
     use crate::testactor;
+
+    #[tokio::test]
+    async fn test_mesh_monitor_names_failed_rank() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let alive = client.spawn_with_label("rank0", testactor::TestActor);
+        let stopped = client.spawn_with_label("rank1", testactor::TestActor);
+        let region: Region = extent!(replicas = 2).into();
+        let actors = ValueMesh::new(
+            region.clone(),
+            vec![alive.actor_addr().clone(), stopped.actor_addr().clone()],
+        )
+        .unwrap();
+        let display_names = ValueMesh::new(
+            region,
+            vec![
+                "workers{'replicas': 0/2}".to_string(),
+                "workers{'replicas': 1/2}".to_string(),
+            ],
+        )
+        .unwrap();
+        let monitor = MeshMonitor::spawn_persistent(&client, actors)
+            .with_display_names(Some(display_names))
+            .expect("display names must share the monitored region");
+
+        stopped
+            .drain_and_stop("rank complete")
+            .expect("target should accept stop");
+        let failure = tokio::time::timeout(Duration::from_secs(10), &monitor)
+            .await
+            .expect("timed out waiting for mesh monitor failure");
+        assert_eq!(failure.crashed_ranks, vec![1]);
+        assert_eq!(
+            failure.event.display_name.as_deref(),
+            Some("workers{'replicas': 1/2}"),
+            "the failure should carry the stopped rank's display name"
+        );
+        assert!(
+            failure
+                .event
+                .to_string()
+                .contains("workers{'replicas': 1/2}"),
+            "the rendered failure should name the actor by display name: {}",
+            failure.event
+        );
+    }
 
     #[tokio::test]
     async fn test_mesh_monitor_reports_rank_failure() {
@@ -365,6 +451,7 @@ mod tests {
             .expect("timed out waiting for a rank failure")
             .expect("cast should initiate")
             .expect_err("rank failure should win before all replies arrive");
+        assert_eq!(failure.actor_mesh_name, Some(actor_mesh.id().to_string()));
         assert_eq!(failure.crashed_ranks, vec![1]);
         assert!(matches!(
             failure.event.actor_status,

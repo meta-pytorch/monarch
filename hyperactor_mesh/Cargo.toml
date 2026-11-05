@@ -29,7 +29,7 @@ bitmaps = "3.2.1"
 chrono = { version = "0.4.45", features = ["clock", "serde", "std"], default-features = false }
 dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.1"
-erased-serde = "0.4.10"
+erased-serde = "0.4.11"
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 hostname = "0.4.2"
 humantime = "2.4.0"
@@ -56,7 +56,7 @@ serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 strum = { version = "0.28.0", features = ["derive"] }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26.6", features = ["logging", "ring", "tls12"], default-features = false }
 tokio-util = { version = "0.7.20", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
@@ -66,13 +66,13 @@ urlencoding = "2.1.0"
 uuid = { version = "1.28.0", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 x509-parser = "0.18.1"
-zbus = { version = "5.14.0", features = ["async-executor", "async-fs", "async-io", "async-lock", "async-process", "async-task", "p2p", "tokio"], default-features = false }
+zbus = { version = "5.19.0", features = ["async-executor", "async-fs", "async-io", "async-lock", "async-process", "async-task", "p2p", "tokio"], default-features = false }
 
 [dev-dependencies]
 buck-resources = "1"
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 criterion = { version = "0.8.2", features = ["async_tokio", "csv_output"] }
-jsonschema = "0.25.1"
+jsonschema = "0.60.1"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
 

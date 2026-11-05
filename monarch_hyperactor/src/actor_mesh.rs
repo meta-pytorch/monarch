@@ -19,7 +19,6 @@ use futures::future::BoxFuture;
 use futures::future::FutureExt;
 use futures::future::Shared;
 use hyperactor::Instance;
-use hyperactor::RemoteEndpoint as _;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMeshRef;
@@ -34,7 +33,6 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyTuple;
-use rand::RngExt as _;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::Instrument;
@@ -145,6 +143,14 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     /// table. Required so every impl chooses: hold a resolved ref and return
     /// it, or (a pending mesh) have none and error explicitly.
     fn mesh_ref(&self) -> PyResult<ActorMeshRef<PythonActor>>;
+
+    /// The serializable reference for a mesh that already exists, without
+    /// waiting. The default returns [`Self::mesh_ref`]. A pending mesh returns
+    /// its created mesh's reference, its creation error, or `ValueError` while
+    /// it is still being created.
+    fn ready_mesh_ref(&self) -> PyResult<ActorMeshRef<PythonActor>> {
+        self.mesh_ref()
+    }
 
     /// Return a future that completes when the mesh has stopped.
     ///
@@ -511,6 +517,15 @@ impl ActorMeshProtocol for AsyncActorMesh {
         ))
     }
 
+    fn ready_mesh_ref(&self) -> PyResult<ActorMeshRef<PythonActor>> {
+        match self.mesh.peek().cloned() {
+            Some(mesh) => mesh?.mesh_ref(),
+            None => Err(PyValueError::new_err(
+                "the actor mesh is still being created; wait for `initialized` first",
+            )),
+        }
+    }
+
     /// Queue the stop after work already queued for this mesh, and return a
     /// future for its result.
     ///
@@ -549,17 +564,12 @@ impl ActorMeshProtocol for AsyncActorMesh {
         Ok(async move { rx.await.map_err(anyhow::Error::from)? }.boxed())
     }
 
-    /// Return a future that waits for mesh creation without adding a queue item.
-    /// Creation errors fail the future; success is exposed to Python as None.
+    /// Return a future that waits for mesh creation, then for the created mesh
+    /// to start, without adding a queue item. Creation or start errors fail
+    /// the future; success is exposed to Python as None.
     fn initialized(&self) -> BoxFuture<'static, PyResult<Option<()>>> {
         let mesh = self.mesh.clone();
-        async move {
-            // Wait for creation. If it fails, the future returned by initialized
-            // completes with that error.
-            mesh.await?;
-            Ok(None::<()>)
-        }
-        .boxed()
+        async move { mesh.await?.initialized().await }.boxed()
     }
 
     /// Return a future that waits for mesh creation, then reads its name.
@@ -605,6 +615,8 @@ impl SupervisableActorMesh for AsyncActorMesh {
 )]
 pub(crate) struct PyActorMesh {
     mesh: ActorMesh<PythonActor>,
+    /// The instance that spawned the mesh, used to wait for it to start.
+    instance: Arc<Instance<PythonActor>>,
 }
 
 #[derive(Debug, Clone)]
@@ -628,8 +640,14 @@ pub(crate) enum PythonActorMeshImpl {
 
 impl PythonActorMeshImpl {
     /// Get a new owned [`PythonActorMeshImpl`].
-    pub(crate) fn new_owned(inner: ActorMesh<PythonActor>) -> Self {
-        PythonActorMeshImpl::Owned(PyActorMesh { mesh: inner })
+    pub(crate) fn new_owned(
+        inner: ActorMesh<PythonActor>,
+        instance: Instance<PythonActor>,
+    ) -> Self {
+        PythonActorMeshImpl::Owned(PyActorMesh {
+            mesh: inner,
+            instance: Arc::new(instance),
+        })
     }
 
     /// Get a new ref-based [`PythonActorMeshImpl`].
@@ -726,6 +744,21 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         Ok(PythonActorMeshImpl::mesh_ref(self).clone())
     }
 
+    /// Return a future that waits for every actor of an owned mesh to start.
+    /// A mesh reference does not own its actors and completes immediately.
+    fn initialized(&self) -> BoxFuture<'static, PyResult<Option<()>>> {
+        let PythonActorMeshImpl::Owned(PyActorMesh { mesh, instance }) = self.clone() else {
+            return future::ready(Ok(None)).boxed();
+        };
+        async move {
+            mesh.wait_started(&*instance)
+                .await
+                .map_err(anyhow::Error::from)?;
+            Ok(None)
+        }
+        .boxed()
+    }
+
     /// Return the mesh reference's ID as its name, for both owned and
     /// reference meshes. The delegated method reads the ID immediately
     /// and returns an already-completed future.
@@ -783,13 +816,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
                     .cast_choose_with_headers(instance, &caller_headers, message)
                     .map_err(cast_error_to_py_error),
                 ActorMeshRef::Data(mesh) => {
-                    let num_ranks = mesh.region().num_ranks();
-                    if num_ranks > 0 {
-                        let actor = mesh
-                            .get(rand::rng().random_range(0..num_ranks))
-                            .expect("selected rank should exist in dense data mesh");
-                        actor.post_with_headers(instance, caller_headers, message);
-                    }
+                    mesh.cast_choose_with_headers(instance, caller_headers, message);
                     Ok(())
                 }
             },
@@ -2598,5 +2625,79 @@ mod tests {
             panic!("the Ref arm must reject rather than return a future");
         };
         assert_exact_error::<PyNotImplementedError>(&err, REF_STOP_REJECTION, "Ref stop rejection");
+    }
+
+    // A pending mesh offers no reference until its creation future has been
+    // computed, and then offers the created mesh's reference or its error.
+    #[tokio::test]
+    async fn ready_mesh_ref_follows_creation() {
+        pyo3::Python::initialize();
+        let (queue, driver) = test_queue();
+        let (unused_entered, _) = signal();
+        let (gate, _) = Gate::new(unused_entered);
+        let mut teardown = Teardown::new(gate, driver);
+
+        let pending = AsyncActorMesh::new(
+            queue.clone(),
+            true,
+            future::pending::<Result<Arc<dyn SupervisableActorMesh>, ClonePyErr>>()
+                .boxed()
+                .shared(),
+        );
+        let still_creating = pending
+            .ready_mesh_ref()
+            .expect_err("a mesh still being created has no reference");
+
+        let created_ref = managed_mesh_ref(&fixture_mesh_id());
+        let created_result = created_ref.clone();
+        let created = AsyncActorMesh::new(
+            queue.clone(),
+            true,
+            async move {
+                Ok::<Arc<dyn SupervisableActorMesh>, ClonePyErr>(Arc::new(
+                    PythonActorMeshImpl::new_ref(created_result),
+                ))
+            }
+            .boxed()
+            .shared(),
+        );
+        created
+            .initialized()
+            .await
+            .expect("creation should succeed");
+
+        let failed = AsyncActorMesh::new(
+            queue,
+            true,
+            future::ready(Err::<Arc<dyn SupervisableActorMesh>, ClonePyErr>(
+                PyRuntimeError::new_err("creation failed").into(),
+            ))
+            .boxed()
+            .shared(),
+        );
+        failed
+            .initialized()
+            .await
+            .expect_err("creation should fail");
+
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            assert!(still_creating.is_instance_of::<PyValueError>(py));
+            assert_eq!(
+                created
+                    .ready_mesh_ref()
+                    .expect("a created mesh has a reference"),
+                created_ref
+            );
+            let error = failed
+                .ready_mesh_ref()
+                .expect_err("a failed creation has no reference");
+            assert!(error.is_instance_of::<PyRuntimeError>(py));
+            assert!(error.to_string().contains("creation failed"), "{error}");
+        });
+
+        drop(pending);
+        drop(created);
+        drop(failed);
+        assert!(teardown.join_async().await, "the queue driver must exit");
     }
 }

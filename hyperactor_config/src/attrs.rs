@@ -865,11 +865,6 @@ impl<'de> Visitor<'de> for AttrsVisitor {
             });
         let keys_by_name = &*KEYS_BY_NAME;
 
-        let exe_name = std::env::current_exe()
-            .ok()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "<unknown-exe>".to_string());
-
         let mut attrs = Attrs::new();
         while let Some(key_name) = access.next_key::<String>()? {
             let Some(&key) = keys_by_name.get(key_name.as_str()) else {
@@ -893,6 +888,10 @@ impl<'de> Visitor<'de> for AttrsVisitor {
                 // we abort here and surface which key caused it, and
                 // the caller must strip it before sending.
                 access.next_value::<serde::de::IgnoredAny>().map_err(|_| {
+                    let exe_name = std::env::current_exe()
+                        .ok()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "<unknown-exe>".to_string());
                     serde::de::Error::custom(format!(
                         "unknown attr key '{}' on binary '{}'; \
                          this binary doesn't know this key and cannot skip its value safely under bincode",

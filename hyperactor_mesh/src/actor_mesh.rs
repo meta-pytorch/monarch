@@ -29,6 +29,9 @@ use std::sync::Arc;
 use std::sync::OnceLock as OnceCell;
 use std::time::Duration;
 
+use futures::StreamExt as _;
+use futures::TryStreamExt as _;
+use futures::stream;
 use hyperactor::ActorAddr;
 use hyperactor::ActorLocal;
 use hyperactor::ActorRef;
@@ -38,6 +41,7 @@ use hyperactor::PortRef;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
+use hyperactor::StatusMessage;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::context;
@@ -80,6 +84,7 @@ use crate::mesh_id::ProcMeshId;
 use crate::monitor::MeshMonitor;
 use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
 use crate::proc_mesh::telemetry_actor_mesh_id;
+use crate::proc_mesh::telemetry_data_actor_mesh_id;
 use crate::resource;
 use crate::supervision::MeshFailure;
 use crate::supervision::Unhealthy;
@@ -130,6 +135,8 @@ enum ActorMeshLifecycle {
     Data {
         stop_handles: Vec<ActorMeshStopHandle>,
         stop_requested: Arc<OnceCell<()>>,
+        /// Set once every rank has started; see [`ActorMesh::wait_started`].
+        started: Arc<OnceCell<()>>,
     },
 }
 
@@ -145,7 +152,39 @@ pub struct DataActorMesh<A: Referable> {
     id: ActorMeshId,
     members: ValueMesh<ActorRef<A>>,
     cast_domain: Arc<ActorMeshCastDomain>,
+    display_name: Option<Arc<DataMeshDisplayName>>,
     monitor: Arc<ActorLocal<Arc<MeshMonitor>>>,
+}
+
+/// Names a spawned data mesh's actors in supervision events synthesized on
+/// the owner's side, as a managed mesh's controller does: by the supervision
+/// display name and each actor's point in the region it was spawned over.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct DataMeshDisplayName {
+    base: String,
+    region: Region,
+}
+
+impl DataMeshDisplayName {
+    /// Name the actors spawned over `region` by `base`.
+    pub(crate) fn new(base: String, region: Region) -> Self {
+        Self { base, region }
+    }
+
+    /// The display name of the actor spawned at `point`.
+    pub(crate) fn at_point(&self, point: &view::Point) -> String {
+        crate::actor_display_name(&self.base, point)
+    }
+
+    /// The display name of the actor at `base_rank` in the base of the spawn
+    /// region.
+    fn at_base_rank(&self, base_rank: usize) -> String {
+        let point = self
+            .region
+            .point_of_base_rank(base_rank)
+            .expect("data mesh members must lie in the region they were spawned over");
+        self.at_point(&point)
+    }
 }
 
 impl<A: Referable> fmt::Debug for DataActorMesh<A> {
@@ -188,6 +227,7 @@ impl<A: Referable> ActorMesh<A> {
         region: Region,
         members: Vec<ActorRef<A>>,
         stop_handles: Vec<ActorMeshStopHandle>,
+        display_name: DataMeshDisplayName,
     ) -> crate::Result<Self> {
         assert!(!stop_handles.is_empty(), "data actor mesh must own actors");
         assert_eq!(
@@ -195,16 +235,19 @@ impl<A: Referable> ActorMesh<A> {
             members.len(),
             "data actor mesh must own one lifecycle handle per member"
         );
-        let current_ref = ActorMeshRef::try_new_data(id, region, members).inspect_err(|_| {
-            stop_handles.iter().for_each(|handle| {
-                let _ = handle.stop("data mesh construction failed");
-            });
-        })?;
+        let current_ref = DataActorMesh::try_new(id, region, members)
+            .map(|data| ActorMeshRef::Data(data.with_display_name(display_name)))
+            .inspect_err(|_| {
+                stop_handles.iter().for_each(|handle| {
+                    let _ = handle.stop("data mesh construction failed");
+                });
+            })?;
         Ok(Self {
             current_ref,
             lifecycle: ActorMeshLifecycle::Data {
                 stop_handles,
                 stop_requested: Arc::new(OnceCell::new()),
+                started: Arc::new(OnceCell::new()),
             },
             stopping_controller: None,
         })
@@ -229,6 +272,7 @@ impl<A: Referable> ActorMesh<A> {
         if let ActorMeshLifecycle::Data {
             stop_handles,
             stop_requested,
+            ..
         } = &mut self.lifecycle
         {
             if stop_requested.set(()).is_err() {
@@ -370,6 +414,110 @@ impl<A: Referable> ActorMesh<A> {
         );
         Err(Error::ActorStopError { statuses: legacy })
     }
+
+    /// Wait until every rank's actor has started, meaning its status is past
+    /// [`ActorStatus::Initializing`]. This does not mean the actor has handled
+    /// its first message, such as a Python actor's `__init__`.
+    ///
+    /// A managed mesh has started once its spawn returns. A data mesh asks each
+    /// rank's proc for the actor's status until it starts, and fails if the
+    /// actor, or the local supervisor proxy for its rank, reaches a terminal
+    /// status first. Once a data mesh has started, later calls return
+    /// immediately.
+    pub async fn wait_started(&self, cx: &impl context::Actor) -> crate::Result<()> {
+        let ActorMeshLifecycle::Data {
+            stop_handles,
+            started,
+            ..
+        } = &self.lifecycle
+        else {
+            return Ok(());
+        };
+        if started.get().is_some() {
+            return Ok(());
+        }
+        let waits: Vec<_> = stop_handles
+            .iter()
+            .enumerate()
+            .map(|(rank, proxy)| {
+                let actor = self
+                    .current_ref
+                    .get(rank)
+                    .expect("data actor mesh has one member per lifecycle handle")
+                    .actor_addr()
+                    .clone();
+                async move {
+                    wait_rank_started(cx, &actor, proxy)
+                        .await
+                        .map_err(|status| Error::ActorSpawnError {
+                            statuses: (rank, status).into(),
+                        })
+                }
+            })
+            .collect();
+        let num_waits = waits.len().max(1);
+        stream::iter(waits)
+            .buffer_unordered(num_waits)
+            .try_collect::<Vec<()>>()
+            .await?;
+        let _ = started.set(());
+        Ok(())
+    }
+}
+
+/// Wait until `actor` has started, or return the status that ended the wait.
+async fn wait_rank_started(
+    cx: &impl context::Actor,
+    actor: &ActorAddr,
+    proxy: &ActorMeshStopHandle,
+) -> Result<(), resource::Status> {
+    fn proxy_failure(
+        status: Result<watch::Ref<'_, ActorStatus>, watch::error::RecvError>,
+    ) -> resource::Status {
+        match status {
+            Ok(status) => resource::Status::Failed(format!("supervisor proxy: {}", *status)),
+            Err(_) => resource::Status::Failed("supervisor proxy gone".to_string()),
+        }
+    }
+
+    let mut proxy_status = proxy.status();
+    let mut delay = Duration::from_millis(10);
+    loop {
+        let (reply, receiver) = cx.mailbox().open_once_port::<Option<ActorStatus>>();
+        actor.status_port().post(
+            cx,
+            StatusMessage::GetStatus {
+                reply: reply.bind(),
+                delivery: None,
+            },
+        );
+        let status = tokio::select! {
+            status = receiver.recv() => status.ok().flatten(),
+            status = proxy_status.wait_for(ActorStatus::is_terminal) => {
+                return Err(proxy_failure(status));
+            }
+        };
+        match status {
+            // The actor has not been created yet, or is still in `Actor::init`.
+            None
+            | Some(ActorStatus::Unknown | ActorStatus::Created | ActorStatus::Initializing) => {}
+            Some(
+                status @ (ActorStatus::Stopping(_)
+                | ActorStatus::Stopped(_)
+                | ActorStatus::Failed(_)),
+            ) => {
+                return Err(resource::Status::Failed(status.to_string()));
+            }
+            Some(_) => return Ok(()),
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {}
+            status = proxy_status.wait_for(ActorStatus::is_terminal) => {
+                return Err(proxy_failure(status));
+            }
+        }
+        delay = (delay * 2).min(Duration::from_secs(1));
+    }
 }
 
 declare_attrs! {
@@ -422,6 +570,7 @@ impl<A: Referable> DataActorMesh<A> {
             members,
             CastDomainId::new(),
             default_cast_tiling_policy(),
+            None,
         )
     }
 
@@ -430,6 +579,7 @@ impl<A: Referable> DataActorMesh<A> {
         members: ValueMesh<ActorRef<A>>,
         cast_domain_id: CastDomainId,
         tiling_policy: TilingPolicy,
+        display_name: Option<Arc<DataMeshDisplayName>>,
     ) -> Self {
         let region = members.region().clone();
         let member_addrs = members
@@ -448,8 +598,31 @@ impl<A: Referable> DataActorMesh<A> {
                 ),
                 tiling_policy,
             )),
+            display_name,
             monitor: Arc::new(ActorLocal::new()),
         }
+    }
+
+    /// Name the actors in supervision events synthesized for this mesh.
+    pub(crate) fn with_display_name(mut self, display_name: DataMeshDisplayName) -> Self {
+        self.display_name = Some(Arc::new(display_name));
+        self
+    }
+
+    /// The display name of each member, by rank, when the mesh was spawned with
+    /// one.
+    fn member_display_names(&self) -> Option<ValueMesh<String>> {
+        let display_name = self.display_name.as_ref()?;
+        let region = self.region().clone();
+        let names = region
+            .slice()
+            .iter()
+            .map(|base_rank| display_name.at_base_rank(base_rank))
+            .collect();
+        Some(
+            ValueMesh::new(region, names)
+                .expect("display names collected from a region preserve cardinality"),
+        )
     }
 
     /// Create a data-only actor mesh named `id` from a region and its actor
@@ -514,6 +687,7 @@ impl<A: Referable> DataActorMesh<A> {
         if self.region().num_ranks() == 0 {
             return Ok(());
         }
+        self.emit_sent_message_telemetry(cx, self.region());
 
         let mut headers = caller_headers.clone();
         headers.set(
@@ -529,6 +703,74 @@ impl<A: Referable> DataActorMesh<A> {
             })
             .map_err(Error::Other)
     }
+
+    /// Post `message` to one randomly chosen member, merging `caller_headers`
+    /// into the envelope.
+    pub fn cast_choose_with_headers<M>(
+        &self,
+        cx: &impl context::Actor,
+        caller_headers: Flattrs,
+        message: M,
+    ) where
+        A: RemoteHandles<M>,
+        M: RemoteMessage,
+    {
+        let num_ranks = self.region().num_ranks();
+        if num_ranks == 0 {
+            return;
+        }
+        self.emit_sent_message_telemetry(
+            cx,
+            &Region::new(
+                Vec::new(),
+                ndslice::Slice::new(0, Vec::new(), Vec::new())
+                    .expect("zero-dimensional slice is valid"),
+            ),
+        );
+        let actor = self
+            .get(rand::random::<u64>() as usize % num_ranks)
+            .expect("selected rank should exist in dense data mesh");
+        actor.post_with_headers(cx, caller_headers, message);
+    }
+
+    /// Record a sent message in telemetry.
+    fn emit_sent_message_telemetry(&self, cx: &impl context::Actor, region: &Region) {
+        notify_sent_message(cx, telemetry_data_actor_mesh_id(self.id.uid()), region);
+    }
+}
+
+/// Record a mesh and its actors with their mesh ranks and display names.
+pub(crate) fn notify_mesh_created(
+    mesh: hyperactor_telemetry::MeshEvent,
+    actors: impl IntoIterator<Item = (usize, ActorAddr, Option<String>)>,
+) {
+    let mesh_id = mesh.id;
+    hyperactor_telemetry::notify_mesh_created(mesh);
+    let timestamp = std::time::SystemTime::now();
+    for (rank, actor_addr, display_name) in actors {
+        hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
+            id: hyperactor_telemetry::hash_to_u64(actor_addr.id()),
+            timestamp,
+            mesh_id,
+            rank: rank as u64,
+            full_name: actor_addr.to_string(),
+            display_name,
+        });
+    }
+}
+
+/// Record a message sent to `region` of the telemetry mesh `actor_mesh_id`.
+fn notify_sent_message(cx: &impl context::Actor, actor_mesh_id: u64, region: &Region) {
+    hyperactor_telemetry::notify_sent_message(hyperactor_telemetry::SentMessageEvent {
+        timestamp: std::time::SystemTime::now(),
+        sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_addr().id()),
+        actor_mesh_id,
+        view_json: serde_json::to_string(region).unwrap_or_default(),
+        shape_json: {
+            let shape: ndslice::Shape = region.into();
+            serde_json::to_string(&shape).unwrap_or_default()
+        },
+    });
 }
 
 impl<A: Referable> Clone for DataActorMesh<A> {
@@ -537,6 +779,7 @@ impl<A: Referable> Clone for DataActorMesh<A> {
             id: self.id.clone(),
             members: self.members.clone(),
             cast_domain: self.cast_domain.clone(),
+            display_name: self.display_name.clone(),
             // Exact clones share their actor-local monitor slot, even before
             // its key is initialized. Slices use `with_cast_domain_config`
             // instead, so each sliced region gets its own monitor.
@@ -558,6 +801,7 @@ impl<A: Referable> Serialize for DataActorMesh<A> {
             &self.members,
             &self.cast_domain.id,
             self.cast_domain.tiling_policy,
+            &self.display_name,
         )
             .serialize(serializer)
     }
@@ -568,12 +812,14 @@ impl<'de, A: Referable> Deserialize<'de> for DataActorMesh<A> {
     where
         D: Deserializer<'de>,
     {
-        let (id, members, cast_domain_id, tiling_policy) = Deserialize::deserialize(deserializer)?;
+        let (id, members, cast_domain_id, tiling_policy, display_name) =
+            Deserialize::deserialize(deserializer)?;
         Ok(Self::with_cast_domain_config(
             id,
             members,
             cast_domain_id,
             tiling_policy,
+            display_name,
         ))
     }
 }
@@ -597,6 +843,7 @@ impl<A: Referable> view::RankedSliceable for DataActorMesh<A> {
             self.members.sliced(region),
             CastDomainId::new(),
             self.cast_domain.tiling_policy,
+            self.display_name.clone(),
         )
     }
 }
@@ -763,7 +1010,12 @@ impl<A: Referable> ActorMeshRef<A> {
             data.monitor
                 .entry(cx)
                 .or_insert_with(|| {
-                    Arc::new(MeshMonitor::spawn_dormant(cx, self.monitored_actors()))
+                    Arc::new(
+                        MeshMonitor::spawn_dormant(cx, self.monitored_actors())
+                            .with_mesh_id(self.id().clone())
+                            .with_display_names(data.member_display_names())
+                            .expect("display names must share the monitored region"),
+                    )
                 })
                 .get()
                 .clone(),
@@ -786,7 +1038,14 @@ impl<A: Referable> ActorMeshRef<A> {
 
     /// Create a new, independent monitor over every rank.
     pub fn monitor(&self, cx: &impl context::Actor) -> MeshMonitor {
+        let display_names = match self {
+            Self::Managed(_) => None,
+            Self::Data(data) => data.member_display_names(),
+        };
         MeshMonitor::spawn_persistent(cx, self.monitored_actors())
+            .with_mesh_id(self.id().clone())
+            .with_display_names(display_names)
+            .expect("display names must share the monitored region")
     }
 
     fn monitored_actors(&self) -> ValueMesh<ActorAddr> {
@@ -1331,6 +1590,9 @@ impl<A: Referable> ManagedActorMeshRef<A> {
         A: RemoteHandles<M>,
         M: RemoteMessage + Clone,
     {
+        if self.len() == 0 {
+            return Ok(());
+        }
         self.emit_sent_message_telemetry(cx, self.region());
 
         let mut headers = caller_headers.clone();
@@ -1340,15 +1602,11 @@ impl<A: Referable> ManagedActorMeshRef<A> {
         );
         headers.set(crate::casting::CAST_ACTOR_MESH_ID, self.id.clone());
 
-        if self.len() == 0 {
-            Ok(())
-        } else {
-            self.cast_domain
-                .ensure_materialized(cx, &headers)
-                .map_err(|e| Error::CastingError(self.id.clone(), e))?
-                .cast_with_return_undeliverable(cx, headers, message, return_undeliverable)
-                .map_err(|e| Error::CastingError(self.id.clone(), e))
-        }
+        self.cast_domain
+            .ensure_materialized(cx, &headers)
+            .map_err(|e| Error::CastingError(self.id.clone(), e))?
+            .cast_with_return_undeliverable(cx, headers, message, return_undeliverable)
+            .map_err(|e| Error::CastingError(self.id.clone(), e))
     }
 
     /// Cast a message to one randomly chosen actor in this mesh, merging
@@ -1364,6 +1622,10 @@ impl<A: Referable> ManagedActorMeshRef<A> {
         A: RemoteHandles<M>,
         M: RemoteMessage + Clone,
     {
+        let num_ranks = self.cast_domain.region().num_ranks();
+        if num_ranks == 0 {
+            return Ok(());
+        }
         self.emit_sent_message_telemetry(
             cx,
             &Region::new(
@@ -1372,12 +1634,6 @@ impl<A: Referable> ManagedActorMeshRef<A> {
                     .expect("zero-dimensional slice is valid"),
             ),
         );
-
-        let num_ranks = self.cast_domain.region().num_ranks();
-
-        if num_ranks == 0 {
-            return Ok(());
-        }
 
         let rank_index = rand::random::<u64>() as usize % num_ranks;
 
@@ -1399,21 +1655,13 @@ impl<A: Referable> ManagedActorMeshRef<A> {
     }
 
     fn emit_sent_message_telemetry(&self, cx: &impl context::Actor, region: &Region) {
-        hyperactor_telemetry::notify_sent_message(hyperactor_telemetry::SentMessageEvent {
-            timestamp: std::time::SystemTime::now(),
-            sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_addr().id()),
-            actor_mesh_id: match &self.proc_mesh_id {
-                Some(proc_mesh_id) => telemetry_actor_mesh_id(proc_mesh_id, &self.id),
-                // No backing proc mesh (e.g. the host-agent mesh): key telemetry
-                // on the actor mesh id alone.
-                None => hyperactor_telemetry::hash_to_u64(&self.id),
-            },
-            view_json: serde_json::to_string(region).unwrap_or_default(),
-            shape_json: {
-                let shape: ndslice::Shape = region.into();
-                serde_json::to_string(&shape).unwrap_or_default()
-            },
-        });
+        let actor_mesh_id = match &self.proc_mesh_id {
+            Some(proc_mesh_id) => telemetry_actor_mesh_id(proc_mesh_id, &self.id),
+            // No backing proc mesh (e.g. the host-agent mesh): key telemetry
+            // on the actor mesh id alone.
+            None => hyperactor_telemetry::hash_to_u64(&self.id),
+        };
+        notify_sent_message(cx, actor_mesh_id, region);
     }
 
     #[allow(clippy::result_large_err)]
@@ -2136,6 +2384,7 @@ mod tests {
             members,
             CastDomainId::new(),
             TilingPolicy::BlockPartitioning,
+            None,
         );
         let slice_region = region
             .range("replicas", 1..2)
@@ -2553,6 +2802,21 @@ mod tests {
                     .unwrap();
             check_failure(failure);
         }
+
+        // The failed child does not prevent new spawns on the same proc.
+        let after_failure: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn(instance, "after_failure", &())
+            .await
+            .expect("a proc with a failed actor should accept new spawns");
+        let (port, mut rx) = mailbox::open_port(instance);
+        after_failure
+            .get(0)
+            .expect("rank 0 exists")
+            .post(instance, testactor::GetActorId(port.bind()));
+        tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("timed out waiting for the new actor to reply")
+            .expect("channel closed before the new actor replied");
 
         let _ = hm.shutdown(instance).await;
     }
@@ -3394,10 +3658,7 @@ mod tests {
         // Each owned mesh has an implicit ref mesh though, so that is what we
         // test here.
         let next_event = actor_mesh.next_supervision_event(instance).await.unwrap();
-        let mesh_id = mesh_ref
-            .as_managed()
-            .expect("owned actor mesh ref should be managed")
-            .id();
+        let mesh_id = mesh_ref.id();
         assert_eq!(next_event.actor_mesh_name, Some(mesh_id.to_string()));
         assert!(matches!(
             next_event.event.actor_status,

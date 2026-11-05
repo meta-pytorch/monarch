@@ -5,7 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
-from collections.abc import Callable
 
 import torch
 from wbridge.utils.specgen import HFWeightFetcher

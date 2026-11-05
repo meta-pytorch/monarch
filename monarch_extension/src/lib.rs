@@ -170,6 +170,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_hyperactor.handle",
     )?)?;
 
+    monarch_hyperactor::token::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.token",
+    )?)?;
+
     monarch_hyperactor::pywaker::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.pywaker",
