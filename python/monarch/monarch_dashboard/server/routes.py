@@ -10,6 +10,7 @@ Registers a Flask Blueprint with all REST endpoints for querying meshes,
 actors, status events, messages, and sent messages.
 """
 
+import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -64,6 +65,47 @@ def _sanitize_for_js(obj: Any, _key: str | None = None) -> Any:
 def health():
     """Simple liveness check."""
     return jsonify({"status": "ok"})
+
+
+@api.route("/executions")
+def executions():
+    """List active commands and a searchable, paginated completion history."""
+    try:
+        limit = int(request.args.get("limit", 25))
+        before = request.args.get("before")
+        if not 1 <= limit <= 100:
+            raise ValueError()
+        if before is not None:
+            if (
+                not re.fullmatch(r"[0-9]{1,19}:[0-9a-f]{32}", before)
+                or int(before.split(":")[0]) > 2**63 - 1
+            ):
+                raise ValueError()
+        status = request.args.get("status") or None
+        if status not in (None, "succeeded", "failed", "interrupted", "unknown"):
+            raise ValueError()
+    except ValueError:
+        return jsonify({"error": "Invalid execution pagination or status"}), 400
+    return jsonify(
+        db.list_executions(limit, before, status, request.args.get("search", ""))
+    )
+
+
+@api.route("/executions/<execution_id>")
+def execution_detail(execution_id: str):
+    """Return command metadata, outcomes and a bounded rank page."""
+    try:
+        offset = int(request.args.get("rank_offset", 0))
+        if not 0 <= offset <= 2**63 - 1:
+            raise ValueError()
+    except ValueError:
+        return jsonify({"error": "Invalid rank offset"}), 400
+    result = db.get_execution(execution_id, offset)
+    return (
+        jsonify(result)
+        if result is not None
+        else (jsonify({"error": "Execution not found"}), 404)
+    )
 
 
 @api.route("/summary")

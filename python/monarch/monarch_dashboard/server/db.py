@@ -15,11 +15,14 @@ Module-level functions (init, _query, etc.) provide backward compatibility
 by delegating to a module-level SQLiteAdapter instance.
 """
 
+import json
 import sqlite3
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from typing import Any
 
+from monarch._src.job.execution_config import HEARTBEAT_TIMEOUT_US
 
 # ---------------------------------------------------------------------------
 # Abstract adapter interface
@@ -348,6 +351,23 @@ def _actor_system_sql() -> str:
         "CASE WHEN role.is_system IS NOT NULL THEN role.is_system"
         " WHEN agent.id IS NOT NULL"
         " THEN TRUE ELSE NULL END"
+    )
+
+
+def _execution_ownership_sql() -> str:
+    """Ownership requires an exact proc-mesh relation and retained metadata.
+
+    A reserved-looking name or a successful unacknowledged socket write is
+    insufficient. Without schemas/metadata these actors remain in the fleet.
+    """
+    if "executions" not in _get_adapter().table_names():
+        return "SELECT id AS actor_id,CAST(NULL AS VARCHAR) AS execution_id FROM actors WHERE 1=0"
+    return (
+        "SELECT a.id AS actor_id,MIN(e.id) AS execution_id FROM actors a "
+        "JOIN meshes am ON a.mesh_id=am.id "
+        "JOIN meshes pm ON am.parent_mesh_id=pm.id "
+        "JOIN executions e ON pm.given_name='exec_' || e.id "
+        "WHERE pm.class='Proc' GROUP BY a.id"
     )
 
 
@@ -810,3 +830,148 @@ def get_message_activity(num_buckets: int = 44) -> dict[str, Any]:
             buckets[b] += int(row["n"] or 0)
 
     return {"start_us": start, "end_us": end, "total": total, "buckets": buckets}
+
+
+# Execution lifecycle queries. The CLI authors these tables on the job's query
+# root; polling uses bounded result pages and aggregate counts, never full logs.
+def _owned_execution_failures_sql() -> str:
+    return (
+        "SELECT ownership.execution_id,COUNT(DISTINCT s.actor_id) AS runtime_faults "
+        f"FROM ({_execution_ownership_sql()}) ownership "
+        f"JOIN ({_LATEST_ACTOR_STATUS_SQL}) s ON s.actor_id=ownership.actor_id "
+        "WHERE LOWER(s.new_status)='failed' GROUP BY ownership.execution_id"
+    )
+
+
+def _execution_query(now_us: int) -> str:
+    return (
+        "SELECT e.id,e.timestamp_us AS seq,e.command,e.timestamp_us AS started_us,"
+        "CASE WHEN s.status='running' THEN NULL ELSE s.timestamp_us END AS finished_us,"
+        f"CASE WHEN s.status='running' AND s.timestamp_us<{now_us - HEARTBEAT_TIMEOUT_US} "
+        "THEN 'unknown' ELSE COALESCE(s.status,'unknown') END AS status,"
+        "s.returncode,CASE WHEN s.status IS NULL THEN 'No execution outcome was recorded' "
+        f"WHEN s.status='running' AND s.timestamp_us<{now_us - HEARTBEAT_TIMEOUT_US} "
+        "THEN 'Controller heartbeat is missing; the worker command may still be running' "
+        "ELSE s.error END AS error,e.workdir,e.output_dir,COALESCE(f.runtime_faults,0) AS runtime_faults FROM "
+        "(SELECT id,MIN(timestamp_us) AS timestamp_us,MIN(command) AS command,"
+        "MIN(workdir) AS workdir,MIN(output_dir) AS output_dir FROM executions GROUP BY id) e "
+        "LEFT JOIN (SELECT execution_id,timestamp_us,status,returncode,error FROM "
+        "(SELECT *,ROW_NUMBER() OVER(PARTITION BY execution_id ORDER BY "
+        "CASE WHEN status IN ('succeeded','failed','interrupted') THEN 2 "
+        "WHEN status='unknown' THEN 1 ELSE 0 END DESC,"
+        "timestamp_us DESC,CASE status WHEN 'failed' THEN 4 WHEN 'interrupted' THEN 3 "
+        "WHEN 'succeeded' THEN 2 WHEN 'unknown' THEN 1 ELSE 0 END DESC) AS rn "
+        "FROM execution_status_events) ordered WHERE rn=1) s ON e.id=s.execution_id "
+        f"LEFT JOIN ({_owned_execution_failures_sql()}) f ON e.id=f.execution_id"
+    )
+
+
+def list_executions(
+    limit: int = 25,
+    before: str | None = None,
+    status: str | None = None,
+    search: str = "",
+) -> dict[str, Any]:
+    """List independent active commands and paginated retained outcomes.
+
+    Counts and attention/runtime-fault totals cover all retained commands,
+    including active commands, independently of history filters and page limits.
+    """
+    tables = _get_adapter().table_names()
+    required = {"executions", "execution_status_events", "execution_rank_results"}
+    if not required.issubset(tables):
+        return {
+            "available": False,
+            "active": [],
+            "history": [],
+            "counts": {},
+            "retained_failures": 0,
+            "needs_attention": 0,
+            "runtime_faulted": 0,
+            "next_before": None,
+        }
+    base = _execution_query(time.time_ns() // 1000)
+    grouped = _query(
+        f"SELECT status,COUNT(*) AS n, SUM(CASE WHEN status IN ('failed','unknown','interrupted') "
+        f"OR runtime_faults>0 THEN 1 ELSE 0 END) AS attention, "
+        f"SUM(CASE WHEN runtime_faults>0 THEN 1 ELSE 0 END) AS faulted FROM ({base}) e GROUP BY status"
+    )
+    counts = {r["status"]: r["n"] for r in grouped}
+    active = _query(
+        f"SELECT * FROM ({base}) e WHERE status='running' ORDER BY started_us DESC,id DESC LIMIT 100"
+    )
+    clauses = ["status<>'running'"]
+    params: list[Any] = []
+    if before is not None:
+        timestamp, identifier = before.split(":", 1)
+        clauses.append("(started_us < ? OR (started_us = ? AND id < ?))")
+        params.extend([int(timestamp), int(timestamp), identifier])
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if search:
+        clauses.append("LOWER(command) LIKE LOWER(?) ESCAPE '\\'")
+        params.append(
+            "%"
+            + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            + "%"
+        )
+    history = _query(
+        f"SELECT * FROM ({base}) e WHERE {' AND '.join(clauses)} ORDER BY started_us DESC,id DESC LIMIT {limit + 1}",
+        tuple(params),
+    )
+    more = len(history) > limit
+    history = history[:limit]
+    cursor = f"{history[-1]['started_us']}:{history[-1]['id']}" if more else None
+    return {
+        "available": True,
+        "active": active,
+        "history": history,
+        "counts": counts,
+        "retained_failures": counts.get("failed", 0),
+        "needs_attention": sum(r["attention"] or 0 for r in grouped),
+        "runtime_faulted": sum(r["faulted"] or 0 for r in grouped),
+        "next_before": cursor,
+    }
+
+
+def get_execution(execution_id: str, rank_offset: int = 0) -> dict[str, Any] | None:
+    """Fetch command details and at most 100 rank outcomes."""
+    required = {"executions", "execution_status_events", "execution_rank_results"}
+    if not required.issubset(_get_adapter().table_names()):
+        return None
+    row = _query_one(
+        f"SELECT * FROM ({_execution_query(time.time_ns() // 1000)}) e WHERE id=?",
+        (execution_id,),
+    )
+    if row is None:
+        return None
+    ranks = _query(
+        "SELECT DISTINCT id AS seq,mesh,rank,flat_rank,coordinates,host_rank,returncode "
+        "FROM execution_rank_results WHERE execution_id=? ORDER BY mesh,flat_rank,rank,id LIMIT 100 OFFSET "
+        + str(rank_offset),
+        (execution_id,),
+    )
+    count = _query_one(
+        "SELECT COUNT(DISTINCT id) AS n FROM execution_rank_results WHERE execution_id=?",
+        (execution_id,),
+    )
+    assert count is not None
+    for rank in ranks:
+        rank["coordinates"] = (
+            json.loads(rank["coordinates"]) if rank.get("coordinates") else None
+        )
+    faults = _query(
+        "SELECT DISTINCT CAST(a.id AS VARCHAR) AS actor_id,a.full_name,s.max_ts AS timestamp_us,e.reason "
+        f"FROM actors a JOIN ({_execution_ownership_sql()}) ownership ON a.id=ownership.actor_id "
+        f"JOIN ({_LATEST_ACTOR_STATUS_SQL}) s ON s.actor_id=a.id "
+        "LEFT JOIN actor_status_events e ON e.actor_id=a.id AND e.timestamp_us=s.max_ts "
+        "WHERE ownership.execution_id=? AND LOWER(s.new_status)='failed' ORDER BY s.max_ts DESC LIMIT 100",
+        (execution_id,),
+    )
+    return {
+        **row,
+        "ranks": ranks,
+        "rank_count": count["n"],
+        "runtime_actor_failures": faults,
+    }
