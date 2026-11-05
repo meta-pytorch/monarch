@@ -103,6 +103,7 @@ export const IconAlert = svg(
 );
 
 export const IconClose = svg(<path d="M6 6l12 12M18 6 6 18" />);
+export const IconTerminal = svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m7 9 3 3-3 3M13 15h4" /></>);
 export const IconFit = svg(
   <>
     <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />

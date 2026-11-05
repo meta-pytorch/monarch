@@ -115,6 +115,7 @@ test("an execution-looking name without record-backed ownership stays in fleet h
   const stats = computeActorHealth([failed, actor(1, "Idle")]);
   assert.equal(stats.health, "unhealthy");
   assert.equal(stats.down, 1);
+  assert.equal(stats.execution, 0);
 });
 
 test("fleet KPI describes lifecycle history and normal transitions truthfully", () => {

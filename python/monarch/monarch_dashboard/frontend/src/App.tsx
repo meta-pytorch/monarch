@@ -14,17 +14,22 @@ import {
   IconOverview,
   IconTopology,
   IconHierarchy,
+  IconTerminal,
 } from "./components/common/icons";
 import { OverviewView } from "./components/overview/OverviewView";
 import { TopologyView } from "./components/topology/TopologyView";
 import { HierarchyView } from "./components/hierarchy/HierarchyView";
 import { ResourcesView } from "./components/resources/ResourcesView";
 import { IconHost } from "./components/common/icons";
+import { ExecutionsPanel } from "./components/overview/ExecutionsPanel";
+import { useApi } from "./lib/useApi";
+import type { ExecutionPage } from "./types";
 
-type ViewId = "overview" | "topology" | "hierarchy" | "resources";
+type ViewId = "overview" | "executions" | "topology" | "hierarchy" | "resources";
 
 const NAV: Array<{ id: ViewId; label: string; Icon: React.FC<{ className?: string; size?: number }> }> = [
   { id: "overview", label: "Overview", Icon: IconOverview },
+  { id: "executions", label: "Executions", Icon: IconTerminal },
   { id: "topology", label: "Topology", Icon: IconTopology },
   { id: "hierarchy", label: "Explorer", Icon: IconHierarchy },
   { id: "resources", label: "Resources", Icon: IconHost },
@@ -80,6 +85,20 @@ function HealthChip() {
   );
 }
 
+function ExecutionChip({ onClick }: { onClick: () => void }) {
+  const { data } = useApi<ExecutionPage>("/executions?limit=3");
+  if (!data?.available) return null;
+  const active = data.counts.running ?? 0;
+  const attention = data.needs_attention ?? 0;
+  const details = `${data.counts.failed ?? 0} failed, ${data.counts.unknown ?? 0} unknown, ${data.counts.interrupted ?? 0} interrupted, ${data.runtime_faulted ?? 0} with runtime faults`;
+  if (!active && !attention) return null;
+  return <button className="execution-chip" onClick={onClick} title={details} aria-label={`Executions: ${active} active, ${attention} need attention; ${details}`}>
+    <IconTerminal size={14} />
+    {active > 0 && <span>{active} active</span>}
+    {attention > 0 && <span className="has-failures">{attention} need attention</span>}
+  </button>;
+}
+
 function App() {
   const fromHash = () => NAV.find(n => `#${n.id}` === window.location.hash)?.id ?? "overview";
   const [view, setView] = useState<ViewId>(fromHash);
@@ -118,15 +137,20 @@ function App() {
         </nav>
         <div className="topbar-spacer" />
         <div className="topbar-right">
+          <ExecutionChip onClick={() => navigate("executions")} />
           <HealthChip />
         </div>
       </header>
 
       {view === "overview" && (
         <main className="content">
-          <OverviewView onResources={() => navigate("resources")} />
+          <OverviewView
+            onResources={() => navigate("resources")}
+            onExecutions={() => navigate("executions")}
+          />
         </main>
       )}
+      {view === "executions" && <main className="content"><ExecutionsPanel /></main>}
       {view === "topology" && (
         <main className="content full">
           <TopologyView />

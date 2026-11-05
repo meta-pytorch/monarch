@@ -41,6 +41,48 @@ export interface Actor {
   mesh_name?: string | null;
   latest_status?: string | null;
   status_timestamp_us?: number | null;
+  execution_id?: string | null;
+}
+
+export interface Execution {
+  seq: number;
+  id: string;
+  command: string;
+  started_us: number;
+  finished_us: number | null;
+  status: "running" | "succeeded" | "failed" | "interrupted" | "unknown";
+  returncode: number | null;
+  error: string | null;
+  workdir: string | null;
+  output_dir: string | null;
+  runtime_faults?: number;
+}
+
+export interface ExecutionPage {
+  available: boolean;
+  active: Execution[];
+  history: Execution[];
+  counts: Partial<Record<Execution["status"], number>>;
+  retained_failures: number;
+  needs_attention: number;
+  runtime_faulted: number;
+  next_before: string | null;
+}
+
+export interface ExecutionRank {
+  seq: string;
+  mesh: string;
+  rank: string;
+  flat_rank: number | null;
+  coordinates: Record<string, number> | null;
+  host_rank: number | null;
+  returncode: number;
+}
+
+export interface ExecutionDetail extends Execution {
+  ranks: ExecutionRank[];
+  rank_count: number;
+  runtime_actor_failures: { actor_id: string; full_name: string; timestamp_us: number; reason: string | null }[];
 }
 
 export interface ActorStatusEvent {

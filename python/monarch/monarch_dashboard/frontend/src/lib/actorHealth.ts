@@ -25,6 +25,7 @@ export interface ActorHealth {
   system: number;
   workload: number;
   stopped: number;
+  execution: number;
 }
 
 /** Classify reported workload states, preserving normal shutdowns as lifecycle data. */
@@ -37,7 +38,13 @@ export function computeActorHealth(actors: readonly Actor[]): ActorHealth {
   let system = 0;
   let workload = 0;
   let stopped = 0;
+  let execution = 0;
   for (const actor of actors) {
+    if (actor.execution_id) {
+      byStatus.execution = (byStatus.execution ?? 0) + 1;
+      execution++;
+      continue;
+    }
     if (actor.is_system === true) {
       byStatus.system = (byStatus.system ?? 0) + 1;
       system++;
@@ -72,6 +79,7 @@ export function computeActorHealth(actors: readonly Actor[]): ActorHealth {
     system,
     workload,
     stopped,
+    execution,
   };
 }
 

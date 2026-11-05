@@ -18,6 +18,7 @@ import { EChart } from "../common/echart";
 import { Drawer, EmptyState, ErrorState, Loading } from "../common/ui";
 import { ActorDetail } from "../hierarchy/ActorDetail";
 import { ResourceSummary } from "../resources/ResourceSummary";
+import { ExecutionsPanel } from "./ExecutionsPanel";
 import {
   IconActor,
   IconAlert,
@@ -37,7 +38,13 @@ function windowMinFrom(start: number, end: number): number | null {
   return Math.max(1, Math.round((end - start) / 60_000_000));
 }
 
-export function OverviewView({ onResources = () => {} }: { onResources?: () => void }) {
+export function OverviewView({
+  onResources = () => {},
+  onExecutions,
+}: {
+  onResources?: () => void;
+  onExecutions?: () => void;
+}) {
   const { data, loading, error } = useApi<Summary>("/summary");
   const { data: activity } = useApi<MessageActivity>("/message-activity", 8000);
   const stats = useActorStats();
@@ -53,6 +60,7 @@ export function OverviewView({ onResources = () => {} }: { onResources?: () => v
     <div className="stack">
       <KpiRow s={data} stats={stats} ms={msgStats} windowMin={windowMin} />
       <ResourceSummary onOpen={onResources} />
+      <ExecutionsPanel compact onViewAll={onExecutions} />
 
       <div className="grid hero">
         <HealthPanel stats={stats} />
@@ -65,7 +73,7 @@ export function OverviewView({ onResources = () => {} }: { onResources?: () => v
         <MessageTrafficPanel counts={data.message_counts} ms={msgStats} windowMin={windowMin} />
       </div>
 
-      <FleetPanel actors={stats.actors} onSelect={setDrawerActor} />
+      <FleetPanel actors={stats.actors.filter(a => !a.execution_id)} onSelect={setDrawerActor} />
 
       <HierarchyPanel s={data} stats={stats} />
 
@@ -106,7 +114,7 @@ function KpiRow({ s, stats, ms, windowMin }: { s: Summary; stats: ActorStats; ms
   const tiles = [
     { label: "Hosts", val: s.hierarchy_counts.host_meshes, sub: "host meshes", Icon: IconHost, color: "var(--chart-2)" },
     { label: "Procs", val: s.hierarchy_counts.proc_meshes, sub: "proc meshes", Icon: IconProc, color: "var(--chart-4)" },
-    { label: "Actors", val: stats.total, sub: actorsSub, Icon: IconActor, color: band.color },
+    { label: "Fleet actors", val: stats.total - stats.execution, sub: actorsSub, Icon: IconActor, color: band.color },
     { label: "Messages", val: msgVal, sub: msgSub, Icon: IconMessage, color: "var(--chart-3)" },
     { label: "Success", val: okVal, sub: okSub, Icon: IconDelivery, color: okColor },
     { label: "Fleet health", val: band.label, sub: stats.health === "inactive" ? "no live workload" : stats.health === "unknown" ? `${stats.unknown} unknown states` : `${stats.down} reported actor failures`, Icon: IconHealth, color: band.color },
@@ -288,7 +296,7 @@ function SessionTimeline({
 
 /* --------------------------- Status donut --------------------------- */
 function StatusDonutPanel({ stats }: { stats: ActorStats }) {
-  const entries = Object.entries(stats.byStatus).sort((a, b) => b[1] - a[1]);
+  const entries = Object.entries(stats.byStatus).filter(([status]) => status !== "execution").sort((a, b) => b[1] - a[1]);
   const option = useMemo(
     () => ({
       tooltip: {
@@ -314,10 +322,10 @@ function StatusDonutPanel({ stats }: { stats: ActorStats }) {
         type: "text",
         left: "center",
         top: "center",
-        style: { text: `${stats.total}\nactors`, textAlign: "center", fill: "#e9edf3", fontSize: 22, fontWeight: 700, lineHeight: 22 },
+        style: { text: `${stats.total - stats.execution}\nactors`, textAlign: "center", fill: "#e9edf3", fontSize: 22, fontWeight: 700, lineHeight: 22 },
       },
     }),
-    [entries, stats.total]
+    [entries, stats.total, stats.execution]
   );
   return (
     <div className="panel">
@@ -417,7 +425,7 @@ function ErrorsPanel({ errors, stats }: { errors: Summary["errors"]; stats: Acto
   // deriving down actors from current state so the panel is never inconsistent
   // with the "N down" shown elsewhere.
   const derivedDown = stats.actors.filter(
-    (a) => (a.latest_status ?? "").toLowerCase() === "failed"
+    (a) => !a.execution_id && (a.latest_status ?? "").toLowerCase() === "failed"
   );
   const failed = errors.failed_actors;
   const stopped = errors.stopped_actors;

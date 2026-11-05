@@ -220,6 +220,130 @@ def test_unavailable_history_is_explicit(tmp_path):
     assert client.get("/api/executions/missing").status_code == 404
 
 
+@pytest.mark.parametrize("expired", [False, True])
+def test_missing_or_expired_metadata_preserves_failed_actor_in_fleet(history, expired):
+    path, _ = history
+    actors = [a for a in db.list_actors() if a["is_system"] is not True]
+    identifier = f"{1:032x}"
+    own_actor(path, actors[0]["id"], identifier)
+    with sqlite3.connect(path) as conn:
+        conn.execute("DELETE FROM actor_status_events")
+    insert(
+        path,
+        "actor_status_events",
+        {
+            "id": 1,
+            "timestamp_us": 1,
+            "actor_id": actors[0]["id"],
+            "new_status": "Failed",
+            "reason": "unreported command actor failure",
+        },
+    )
+    insert(
+        path,
+        "actor_status_events",
+        {"id": 2, "timestamp_us": 2, "actor_id": actors[1]["id"], "new_status": "Idle"},
+    )
+    if expired:
+        execution(path, 1, "failed", code=7)
+        assert (
+            next(a for a in db.list_actors() if a["id"] == actors[0]["id"])[
+                "execution_id"
+            ]
+            == identifier
+        )
+        with sqlite3.connect(path) as conn:
+            conn.execute("DELETE FROM executions")
+    summary = db.get_summary()
+    assert summary["health_status"] == "unhealthy"
+    assert len(summary["errors"]["failed_actors"]) == 1
+    assert (
+        next(a for a in db.list_actors() if a["id"] == actors[0]["id"])["execution_id"]
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "identifier,suffix",
+    [("a" * 32, ""), ("a" * 32, "-0"), ("a" * 32, "-15"), ("g" * 32, "-15")],
+)
+@pytest.mark.parametrize("status", ["Failed", "Stopped"])
+def test_execution_actor_history_is_separate_from_fleet(
+    history, identifier, suffix, status
+):
+    path, _ = history
+    actors = [a for a in db.list_actors() if a["is_system"] is not True]
+    if identifier != "g" * 32:
+        insert(
+            path, "executions", {"id": identifier, "timestamp_us": 1, "command": "test"}
+        )
+        own_actor(path, actors[0]["id"], identifier)
+    with sqlite3.connect(path) as conn:
+        conn.execute("DELETE FROM actor_status_events")
+        conn.execute(
+            "UPDATE actors SET full_name=? WHERE id=?",
+            (
+                f"bashactor<actor>.exec_{identifier}{suffix}<proc>@tcp://worker",
+                actors[0]["id"],
+            ),
+        )
+    insert(
+        path,
+        "actor_status_events",
+        {
+            "id": 1,
+            "timestamp_us": 1,
+            "actor_id": actors[0]["id"],
+            "new_status": status,
+            "reason": "exec ended",
+        },
+    )
+    insert(
+        path,
+        "actor_status_events",
+        {"id": 2, "timestamp_us": 2, "actor_id": actors[1]["id"], "new_status": "Idle"},
+    )
+    if identifier == "g" * 32:
+        summary = db.get_summary()
+        assert summary["health_status"] == (
+            "unhealthy" if status == "Failed" else "unknown"
+        )
+        error_key = "failed_actors" if status == "Failed" else "stopped_actors"
+        assert len(summary["errors"][error_key]) == 1
+        assert (
+            next(a for a in db.list_actors() if a["id"] == actors[0]["id"])[
+                "execution_id"
+            ]
+            is None
+        )
+        return
+    summary = db.get_summary()
+    assert summary["health_status"] == "unknown"
+    assert summary["health_coverage"]["unknown"] == len(actors) - 2
+    assert summary["errors"]["failed_actors"] == []
+    assert summary["errors"]["stopped_actors"] == []
+    assert (
+        next(a for a in db.list_actors() if a["id"] == actors[0]["id"])["execution_id"]
+        == identifier
+    )
+    assert (
+        db.list_actor_status_events(actor_id=actors[0]["id"])[0]["new_status"] == status
+    )
+    insert(
+        path,
+        "actor_status_events",
+        {
+            "id": 3,
+            "timestamp_us": 3,
+            "actor_id": actors[1]["id"],
+            "new_status": "Failed",
+            "reason": "live worker failed",
+        },
+    )
+    assert db.get_summary()["health_status"] == "unhealthy"
+    assert len(db.get_summary()["errors"]["failed_actors"]) == 1
+
+
 @pytest.mark.parametrize(
     "outcome,code", [("succeeded", 0), ("failed", 7), ("interrupted", 130)]
 )
