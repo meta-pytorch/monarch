@@ -89,6 +89,18 @@ declare_attrs! {
     ))
     pub attr USE_DIRECT_SPAWN: bool = false;
 
+    /// Maximum gap between worker keepalives before its data mesh owner is
+    /// notified. Workers send keepalives every 5s, so the owner does not
+    /// report a worker whose process freezes for this timeout less 5s. Remote
+    /// orphan cleanup still uses `MESH_ORPHAN_TIMEOUT`, which should be at
+    /// least this long, so that a worker tolerates a frozen owner as long as
+    /// the owner tolerates a frozen worker.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_DATA_SUPERVISION_TIMEOUT".to_string()),
+        Some("data_supervision_timeout".to_string()),
+    ))
+    pub attr DATA_SUPERVISION_TIMEOUT: Duration = Duration::from_secs(30);
+
     /// The maximum idle time between updates while spawning actor
     /// meshes.
     @meta(CONFIG = ConfigAttr::new(
@@ -1430,24 +1442,34 @@ impl view::RankedSliceable for ProcMeshRef {
     }
 }
 
-/// The keepalive link and supervision options for data mesh workers, derived
-/// from [`MESH_ORPHAN_TIMEOUT`]. Without an orphan timeout, the keepalive still
-/// detects failures for the owner, but a worker that loses its owner leaves
-/// the actor running.
+/// How often data mesh workers send keepalives, independent of the timeouts
+/// unless a timeout is shorter than twice this.
+const DATA_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// The keepalive link and supervision options for data mesh workers. The
+/// owner detects failures after [`DATA_SUPERVISION_TIMEOUT`]; workers clean up
+/// orphaned actors after [`MESH_ORPHAN_TIMEOUT`]. Without an orphan timeout,
+/// the keepalive still detects failures for the owner, but a worker that loses
+/// its owner leaves the actor running. Workers send keepalives every
+/// [`DATA_KEEPALIVE_INTERVAL`], or every half of the shorter timeout if that
+/// is shorter, so that each keepalive supersedes the supervisor's deadline
+/// before it expires.
 fn data_mesh_supervision() -> (KeepaliveLink, SupervisionOptions) {
-    let Some(timeout) = hyperactor_config::global::get(MESH_ORPHAN_TIMEOUT) else {
-        return (
-            KeepaliveLink::default(),
-            SupervisionOptions {
-                orphan_policy: OrphanPolicy::Detach,
-            },
-        );
+    let orphan_timeout = hyperactor_config::global::get(MESH_ORPHAN_TIMEOUT);
+    let supervision_timeout = hyperactor_config::global::get(DATA_SUPERVISION_TIMEOUT);
+    let options = SupervisionOptions {
+        orphan_policy: match orphan_timeout {
+            Some(_) => OrphanPolicy::Stop,
+            None => OrphanPolicy::Detach,
+        },
     };
-    let interval = (timeout / 2).max(Duration::from_millis(1));
-    (
-        KeepaliveLink::new(interval, timeout),
-        SupervisionOptions::default(),
-    )
+    let orphan_timeout = orphan_timeout.unwrap_or(Duration::from_secs(60));
+    let interval = DATA_KEEPALIVE_INTERVAL
+        .min(orphan_timeout.min(supervision_timeout) / 2)
+        .max(Duration::from_millis(1));
+    let liveness =
+        KeepaliveLink::new(interval, orphan_timeout).with_supervisor_timeout(supervision_timeout);
+    (liveness, options)
 }
 
 /// Extract a Python class display name from a supervision display name.
@@ -1541,6 +1563,7 @@ mod tests {
 
     #[cfg(fbcode_build)]
     use super::ACTOR_SPAWN_MAX_IDLE;
+    use super::DATA_SUPERVISION_TIMEOUT;
     #[cfg(fbcode_build)]
     use super::ProcMeshRef;
     #[cfg(fbcode_build)]
@@ -1587,12 +1610,14 @@ mod tests {
     #[test]
     fn data_mesh_supervision_follows_orphan_timeout() {
         let config = hyperactor_config::global::lock();
+        let _supervision = config.override_key(DATA_SUPERVISION_TIMEOUT, Duration::from_secs(4));
         {
             let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, Some(Duration::from_secs(10)));
             assert_eq!(
                 data_mesh_supervision(),
                 (
-                    KeepaliveLink::new(Duration::from_secs(5), Duration::from_secs(10)),
+                    KeepaliveLink::new(Duration::from_secs(2), Duration::from_secs(10))
+                        .with_supervisor_timeout(Duration::from_secs(4)),
                     SupervisionOptions {
                         orphan_policy: OrphanPolicy::Stop,
                     },
@@ -1607,6 +1632,29 @@ mod tests {
             options.orphan_policy,
             OrphanPolicy::Detach,
             "disabling the orphan timeout should leave actors running when their owner is lost"
+        );
+    }
+
+    #[test]
+    fn data_mesh_supervision_keeps_the_keepalive_interval() {
+        assert_eq!(
+            DATA_SUPERVISION_TIMEOUT.default(),
+            Some(&Duration::from_secs(30))
+        );
+        assert_eq!(
+            MESH_ORPHAN_TIMEOUT.default(),
+            Some(&Some(Duration::from_secs(60))),
+            "workers must tolerate a frozen owner as long as owners tolerate a frozen worker"
+        );
+        let config = hyperactor_config::global::lock();
+        let _supervision = config.override_key(DATA_SUPERVISION_TIMEOUT, Duration::from_secs(30));
+        let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, Some(Duration::from_secs(60)));
+        let (liveness, _) = data_mesh_supervision();
+        assert_eq!(
+            liveness,
+            KeepaliveLink::new(Duration::from_secs(5), Duration::from_secs(60))
+                .with_supervisor_timeout(Duration::from_secs(30)),
+            "longer timeouts must not send keepalives less often"
         );
     }
 

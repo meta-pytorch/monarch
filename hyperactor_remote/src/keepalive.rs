@@ -30,9 +30,16 @@
 //!
 //! The worker uses two internal self messages. [`SendKeepalive`] advances the
 //! stream after `interval` if its generation is still current. [`AckDeadline`]
-//! checks after `timeout` whether the corresponding generation was acknowledged.
-//! The supervisor uses [`Deadline`] to check whether a newer generation arrived
-//! before its `timeout`.
+//! checks whether the corresponding generation was acknowledged. The supervisor
+//! uses [`Deadline`] to check whether a newer generation arrived.
+//!
+//! Each side splits its `timeout` into a deadline, three quarters of it, and a
+//! grace period. An expired deadline fails the link only if the grace period,
+//! which starts when the actor handles the deadline, also passes without
+//! progress. A side that was itself stalled past its deadline, for example
+//! because its process was suspended, thus handles the messages that queued
+//! during the stall before it can fail the link: its own stall does not count
+//! against its peer.
 
 use std::time::Duration;
 
@@ -56,6 +63,14 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::LinkSpec;
+
+/// Split a failure-detection `timeout` into a deadline and a grace period that
+/// together span it. On a link whose interval is at most half its timeout, a
+/// newer keepalive supersedes each supervisor deadline before it expires.
+fn detection_phases(timeout: Duration) -> (Duration, Duration) {
+    let grace = timeout / 4;
+    (timeout - grace, grace)
+}
 
 /// Keepalive timing parameters.
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
@@ -84,12 +99,16 @@ impl KeepaliveParams {
 
 /// Keepalive link configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KeepaliveLink(KeepaliveParams);
+pub struct KeepaliveLink {
+    params: KeepaliveParams,
+    supervisor_timeout: Duration,
+}
 
 impl Default for KeepaliveLink {
-    /// A 60-second keepalive interval and 60-second timeout.
+    /// A 30-second keepalive interval and 60-second timeout.
     fn default() -> Self {
-        Self::new(Duration::from_secs(60), Duration::from_secs(60))
+        let timeout = Duration::from_secs(60);
+        Self::new(timeout / 2, timeout)
     }
 }
 
@@ -100,12 +119,26 @@ impl KeepaliveLink {
     /// acknowledged within `timeout`, and the supervisor side also uses
     /// `timeout` as the maximum accepted gap between keepalives.
     pub fn new(interval: Duration, timeout: Duration) -> Self {
-        Self(KeepaliveParams::new(interval, timeout))
+        Self {
+            params: KeepaliveParams::new(interval, timeout),
+            supervisor_timeout: timeout,
+        }
     }
 
     /// Create a keepalive link configuration from timing parameters.
     pub fn from_params(params: KeepaliveParams) -> Self {
-        Self(params)
+        let supervisor_timeout = params.timeout;
+        Self {
+            params,
+            supervisor_timeout,
+        }
+    }
+
+    /// Set the supervisor's failure-detection timeout independently of the
+    /// worker's acknowledgment timeout and orphan-cleanup policy.
+    pub fn with_supervisor_timeout(mut self, timeout: Duration) -> Self {
+        self.supervisor_timeout = timeout;
+        self
     }
 
     /// Spawn the supervisor side and return the worker-side link spec.
@@ -127,11 +160,11 @@ impl KeepaliveLink {
         this: &C,
         uid: Uid,
     ) -> anyhow::Result<(ActorHandle<KeepaliveSupervisor>, LinkSpec)> {
-        let params = self.0;
+        let params = self.params;
         let supervisor =
             this.instance()
                 .spawn(KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(
-                    params.timeout,
+                    self.supervisor_timeout,
                 )));
         let worker = KeepaliveWorkerParams::new(supervisor.port::<Keepalive>().bind(), params)
             .link_spec_uid(uid)?;
@@ -216,12 +249,13 @@ wirevalue::register_type!(KeepaliveAck);
 ///
 /// `generation` is the supervisor's current generation when the deadline is
 /// scheduled. If the supervisor still has the same current generation when this
-/// message is handled, no newer keepalive arrived before the deadline, and the
-/// supervisor fails the link. If the current generation is larger, this message
-/// is stale.
+/// message is handled, no newer keepalive arrived before the deadline: the
+/// supervisor starts the grace period, or, if `grace` is set, fails the link.
+/// If the current generation is larger, this message is stale.
 #[derive(Clone, Debug, Serialize, Deserialize, Named)]
 struct Deadline {
     generation: u64,
+    grace: bool,
 }
 wirevalue::register_type!(Deadline);
 
@@ -240,11 +274,13 @@ wirevalue::register_type!(SendKeepalive);
 ///
 /// `generation` is the keepalive generation that scheduled this deadline. If
 /// the worker has not recorded an acknowledgment for this generation, or any
-/// later generation, when the message is handled, the worker fails the link. If
-/// the acknowledged generation is equal or larger, this deadline is satisfied.
+/// later generation, when the message is handled, the worker starts the grace
+/// period, or, if `grace` is set, fails the link. If the acknowledged
+/// generation is equal or larger, this deadline is satisfied.
 #[derive(Clone, Debug, Serialize, Deserialize, Named)]
 struct AckDeadline {
     generation: u64,
+    grace: bool,
 }
 wirevalue::register_type!(AckDeadline);
 
@@ -255,15 +291,16 @@ wirevalue::register_type!(AckDeadline);
 /// 1 and schedules [`SendKeepalive`] and [`AckDeadline`] for that generation.
 /// Each live [`SendKeepalive`] advances to the next generation, sends a new
 /// [`Keepalive`], and schedules the next pair of timers. Each [`KeepaliveAck`]
-/// records progress. Each [`AckDeadline`] proves that the matching generation
-/// failed to receive an acknowledgment before `timeout`, unless a same-or-newer
-/// acknowledgment has already been recorded.
+/// records progress. An [`AckDeadline`] and its grace period together prove
+/// that the matching generation failed to receive an acknowledgment before
+/// `timeout`, unless a same-or-newer acknowledgment has been recorded.
 #[derive(Debug)]
 #[hyperactor::export]
 pub struct KeepaliveWorker {
     supervisor: PortRef<Keepalive>,
     interval: Duration,
-    timeout: Duration,
+    deadline: Duration,
+    grace: Duration,
     generation: u64,
     acked_generation: u64,
 }
@@ -288,10 +325,12 @@ impl RemoteSpawn for KeepaliveWorker {
         params: KeepaliveWorkerParams,
         _environment: &ActorEnvironment,
     ) -> anyhow::Result<Self> {
+        let (deadline, grace) = detection_phases(params.keepalive.timeout);
         Ok(Self {
             supervisor: params.supervisor,
             interval: params.keepalive.interval,
-            timeout: params.keepalive.timeout,
+            deadline,
+            grace,
             generation: 0,
             acked_generation: 0,
         })
@@ -319,9 +358,21 @@ impl Handler<KeepaliveAck> for KeepaliveWorker {
 #[async_trait]
 impl Handler<AckDeadline> for KeepaliveWorker {
     async fn handle(&mut self, cx: &Context<Self>, message: AckDeadline) -> anyhow::Result<()> {
-        if self.acked_generation < message.generation {
-            cx.kill("keepalive acknowledgment missed")?;
+        if self.acked_generation >= message.generation {
+            return Ok(());
         }
+        if !message.grace {
+            cx.post_after(
+                cx,
+                AckDeadline {
+                    generation: message.generation,
+                    grace: true,
+                },
+                self.grace,
+            );
+            return Ok(());
+        }
+        cx.kill("keepalive acknowledgment missed")?;
         Ok(())
     }
 }
@@ -339,7 +390,14 @@ impl KeepaliveWorker {
         );
 
         this.post_after(this, SendKeepalive { generation }, self.interval);
-        this.post_after(this, AckDeadline { generation }, self.timeout);
+        this.post_after(
+            this,
+            AckDeadline {
+                generation,
+                grace: false,
+            },
+            self.deadline,
+        );
         Ok(())
     }
 }
@@ -353,7 +411,8 @@ impl KeepaliveWorker {
 /// keepalive has arrived, the deadline is stale.
 #[derive(Debug)]
 pub struct KeepaliveSupervisor {
-    timeout: Duration,
+    deadline: Duration,
+    grace: Duration,
     generation: u64,
 }
 
@@ -390,10 +449,22 @@ impl Handler<Deadline> for KeepaliveSupervisor {
         // time. Equality means no newer keepalive arrived before the deadline.
         // A smaller deadline generation is stale. A larger deadline generation
         // cannot be produced by this actor before it observes that generation.
-        if message.generation == self.generation {
-            let reason = format!("keepalive missed for generation {}", message.generation);
-            cx.kill(&reason)?;
+        if message.generation != self.generation {
+            return Ok(());
         }
+        if !message.grace {
+            cx.post_after(
+                cx,
+                Deadline {
+                    generation: message.generation,
+                    grace: true,
+                },
+                self.grace,
+            );
+            return Ok(());
+        }
+        let reason = format!("keepalive missed for generation {}", message.generation);
+        cx.kill(&reason)?;
         Ok(())
     }
 }
@@ -401,8 +472,10 @@ impl Handler<Deadline> for KeepaliveSupervisor {
 impl KeepaliveSupervisor {
     /// Create a supervisor-side keepalive actor.
     pub fn new(params: KeepaliveSupervisorParams) -> Self {
+        let (deadline, grace) = detection_phases(params.timeout);
         Self {
-            timeout: params.timeout,
+            deadline,
+            grace,
             generation: 0,
         }
     }
@@ -412,8 +485,9 @@ impl KeepaliveSupervisor {
             this,
             Deadline {
                 generation: self.generation,
+                grace: false,
             },
-            self.timeout,
+            self.deadline,
         );
         Ok(())
     }
@@ -424,6 +498,7 @@ hyperactor::register_spawnable!(KeepaliveWorker);
 #[cfg(test)]
 mod tests {
     use hyperactor::Actor;
+    use hyperactor::PortReceiver;
     use hyperactor::PortRef;
     use hyperactor::Proc;
     use hyperactor::actor::ActorErrorKind;
@@ -436,6 +511,10 @@ mod tests {
     enum ParentSpawn {
         Link(LinkSpec),
         Supervisor(KeepaliveSupervisor),
+        ExposedSupervisor(
+            KeepaliveSupervisor,
+            tokio::sync::oneshot::Sender<ActorHandle<KeepaliveSupervisor>>,
+        ),
     }
 
     #[derive(Debug)]
@@ -453,6 +532,9 @@ mod tests {
                 }
                 ParentSpawn::Supervisor(supervisor) => {
                     this.spawn(supervisor);
+                }
+                ParentSpawn::ExposedSupervisor(supervisor, handle) => {
+                    handle.send(this.spawn(supervisor)).unwrap();
                 }
             }
             Ok(())
@@ -480,6 +562,19 @@ mod tests {
         async fn handle(&mut self, _cx: &Context<Self>, _message: Keepalive) -> anyhow::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn test_default_keepalive_interval_leaves_delivery_margin() {
+        let link = KeepaliveLink::default();
+        let shortest_timeout = link.params.timeout.min(link.supervisor_timeout);
+        assert!(link.params.interval > Duration::ZERO);
+        assert!(
+            link.params.interval <= shortest_timeout / 2,
+            "default keepalive interval must leave at least one interval of delivery margin"
+        );
+        let (deadline, _) = detection_phases(link.supervisor_timeout);
+        assert!(link.params.interval < deadline);
     }
 
     #[tokio::test]
@@ -592,6 +687,119 @@ mod tests {
         parent.await;
         supervisor.stop("test").unwrap();
         supervisor.await;
+    }
+
+    #[tokio::test]
+    async fn test_keepalive_supervisor_detects_silent_worker_within_timeout() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
+        let timeout = Duration::from_millis(400);
+        let start = tokio::time::Instant::now();
+        let parent: ActorHandle<ParentActor> = proc.spawn(ParentActor {
+            spawn: Some(ParentSpawn::Supervisor(KeepaliveSupervisor::new(
+                KeepaliveSupervisorParams::new(timeout),
+            ))),
+            events: events.bind(),
+        });
+
+        let event = event_rx.recv().await.unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(event.actor_status.is_failed());
+        assert!(elapsed >= timeout, "detected after {elapsed:?}");
+        assert!(
+            elapsed < timeout + Duration::from_millis(300),
+            "detected after {elapsed:?}"
+        );
+
+        parent.stop("test").unwrap();
+        parent.await;
+    }
+
+    fn assert_no_event(events: &mut PortReceiver<ActorSupervisionEvent>) {
+        if let Some(event) = events.try_recv().unwrap() {
+            panic!("link failed: {event}");
+        }
+    }
+
+    // A suspended process resumes with its expired deadlines and the messages
+    // that queued during the suspension both ready. Blocking the test's
+    // single-threaded runtime suspends every actor in it; a message posted
+    // after the actor handles its expired deadline stands in for one that
+    // queued in a socket while the actor's process was stopped.
+    #[tokio::test]
+    async fn test_keepalive_supervisor_survives_own_stall() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
+        let (handle_tx, handle_rx) = tokio::sync::oneshot::channel();
+        let timeout = Duration::from_secs(1);
+        let parent: ActorHandle<ParentActor> = proc.spawn(ParentActor {
+            spawn: Some(ParentSpawn::ExposedSupervisor(
+                KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(timeout)),
+                handle_tx,
+            )),
+            events: events.bind(),
+        });
+        let supervisor = handle_rx.await.unwrap();
+        let keepalive = |generation| {
+            let (reply, ack_rx) = client.open_once_port::<KeepaliveAck>();
+            supervisor.post(
+                &client,
+                Keepalive {
+                    generation,
+                    reply: reply.bind(),
+                },
+            );
+            ack_rx.recv()
+        };
+        assert_eq!(keepalive(1).await.unwrap().generation, 1);
+
+        std::thread::sleep(timeout + Duration::from_millis(200));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_no_event(&mut event_rx);
+        assert_eq!(keepalive(2).await.unwrap().generation, 2);
+        tokio::time::sleep(timeout / 2).await;
+
+        assert_no_event(&mut event_rx);
+        parent.stop("test").unwrap();
+        parent.await;
+    }
+
+    #[tokio::test]
+    async fn test_keepalive_worker_survives_own_stall() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
+        let (keepalives, mut keepalive_rx) = client.open_port::<Keepalive>();
+        let timeout = Duration::from_secs(1);
+        let link = KeepaliveWorkerParams::new(
+            keepalives.bind(),
+            KeepaliveParams::new(Duration::from_secs(60), timeout),
+        )
+        .link_spec()
+        .unwrap();
+        let parent: ActorHandle<ParentActor> = proc.spawn(ParentActor {
+            spawn: Some(ParentSpawn::Link(link)),
+            events: events.bind(),
+        });
+        let keepalive = keepalive_rx.recv().await.unwrap();
+
+        std::thread::sleep(timeout + Duration::from_millis(200));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_no_event(&mut event_rx);
+        keepalive.reply.post(
+            &client,
+            KeepaliveAck {
+                generation: keepalive.generation,
+            },
+        );
+        tokio::time::sleep(timeout / 2).await;
+
+        assert_no_event(&mut event_rx);
+        parent.stop("test").unwrap();
+        parent.await;
     }
 
     #[tokio::test]

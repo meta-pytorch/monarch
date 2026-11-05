@@ -74,6 +74,7 @@ def configure(
     actor_spawn_max_idle: str = ...,
     get_actor_state_max_idle: str = ...,
     use_direct_spawn: bool = ...,
+    data_supervision_timeout: str = ...,
     supervision_watchdog_timeout: str = ...,
     proc_stop_max_idle: str = ...,
     get_proc_state_max_idle: str = ...,
@@ -169,6 +170,10 @@ def configure(
             queries (humantime)
         use_direct_spawn: Use data-backed actor meshes for ordinary instance
             actor mesh spawns
+        data_supervision_timeout: Maximum data worker keepalive gap before
+            notifying the owner (humantime, default 30s); workers send
+            keepalives every 5s; independent of mesh_orphan_timeout, which
+            should be at least as long
         supervision_watchdog_timeout: Liveness timeout for the
             actor-mesh supervision stream; prolonged silence is
             interpreted as the controller being unreachable
