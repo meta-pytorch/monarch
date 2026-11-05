@@ -23,6 +23,7 @@ use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
+use hyperactor::actor::handle_delivery_failure_event;
 use hyperactor::actor::handle_undeliverable_message;
 use hyperactor::context;
 use hyperactor::kv_pairs;
@@ -868,34 +869,39 @@ where
         Ok(())
     }
 
+    async fn handle_delivery_failure_event(
+        &mut self,
+        cx: &Instance<Self>,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(returned) = envelope.as_message()
+            && returned.headers().get(ACTOR_MESH_SUBSCRIBER_MESSAGE) == Some(true)
+        {
+            let port = hyperactor::PortRef::<Option<MeshFailure>>::attest(returned.dest().clone());
+            if self.health_state.subscribers.remove(&port) {
+                tracing::debug!(
+                    actor_id = %cx.self_addr(),
+                    num_subscribers = self.health_state.subscribers.len(),
+                    "removed subscriber {} from mesh controller",
+                    port.port_addr()
+                );
+            }
+            return Ok(());
+        }
+        handle_delivery_failure_event(self, cx, envelope).await
+    }
+
     async fn handle_undeliverable_message(
         &mut self,
         cx: &Instance<Self>,
         reason: UndeliverableReason,
-        mut envelope: Undeliverable<MessageEnvelope>,
+        envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        envelope = update_undeliverable_envelope_for_casting(envelope);
+        let envelope = update_undeliverable_envelope_for_casting(envelope);
         let Some(returned) = envelope.as_message() else {
             return handle_undeliverable_message(cx, reason, envelope);
         };
-        if let Some(true) = returned.headers().get(ACTOR_MESH_SUBSCRIBER_MESSAGE) {
-            // Remove from the subscriber list (if it existed) so we don't
-            // send to this subscriber again.
-            // NOTE: The only part of the port that is used for equality checks is
-            // the port id, so create a new one just for the comparison.
-            let dest_port_id = returned.dest().clone();
-            let port = hyperactor::PortRef::<Option<MeshFailure>>::attest(dest_port_id);
-            let did_exist = self.health_state.subscribers.remove(&port);
-            if did_exist {
-                tracing::debug!(
-                    actor_id = %cx.self_addr(),
-                    num_subscribers = self.health_state.subscribers.len(),
-                    "ResourceController: removed subscriber {} from mesh controller",
-                    port.port_addr()
-                );
-            }
-            Ok(())
-        } else if returned.headers().get(CAST_ACTOR_MESH_ID).is_some() {
+        if returned.headers().get(CAST_ACTOR_MESH_ID).is_some() {
             // A cast message we sent (e.g. StreamState or KeepaliveGetState)
             // was returned by cast routing because it could not be forwarded.
             // This is expected when the network session is broken. Log and
@@ -921,20 +927,7 @@ where
         let Some(returned) = envelope.as_message() else {
             return hyperactor::actor::handle_invalid_reference(cx, invalid, envelope);
         };
-        if let Some(true) = returned.headers().get(ACTOR_MESH_SUBSCRIBER_MESSAGE) {
-            let dest_port_id = returned.dest().clone();
-            let port = hyperactor::PortRef::<Option<MeshFailure>>::attest(dest_port_id);
-            let did_exist = self.health_state.subscribers.remove(&port);
-            if did_exist {
-                tracing::debug!(
-                    actor_id = %cx.self_addr(),
-                    num_subscribers = self.health_state.subscribers.len(),
-                    "ResourceController: removed subscriber {} from mesh controller",
-                    port.port_addr()
-                );
-            }
-            Ok(())
-        } else if returned.headers().get(CAST_ACTOR_MESH_ID).is_some() {
+        if returned.headers().get(CAST_ACTOR_MESH_ID).is_some() {
             tracing::warn!(
                 actor_id = %cx.self_addr(),
                 dest = %returned.dest(),
@@ -1685,16 +1678,28 @@ mod tests {
     use std::time::Duration;
 
     use hyperactor::Actor;
+    use hyperactor::PortHandle;
     use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::id::Label;
+    use hyperactor::mailbox::DeliveryFailure;
+    use hyperactor::mailbox::DeliveryFailureKind;
+    use hyperactor::mailbox::InvalidReference;
+    use hyperactor::mailbox::InvalidReferenceReason;
+    use hyperactor::mailbox::MailboxSender;
+    use hyperactor::mailbox::MessageEnvelope;
+    use hyperactor::mailbox::PortGone;
+    use hyperactor::mailbox::Undeliverable;
+    use hyperactor::mailbox::UndeliverableReason;
     use hyperactor::supervision::ActorSupervisionEvent;
+    use hyperactor_config::Flattrs;
     use ndslice::Extent;
     use ndslice::ViewExt;
     use ndslice::view::CollectMeshExt;
     use ndslice::view::Ranked;
 
+    use super::ACTOR_MESH_SUBSCRIBER_MESSAGE;
     use super::HealthState;
     use super::PollResult;
     use super::ProcMeshController;
@@ -1703,11 +1708,13 @@ mod tests {
     use super::SUPERVISION_POLL_FREQUENCY;
     use super::actor_state_to_supervision_events;
     use super::proc_status_to_actor_status;
+    use super::send_heartbeat;
     use super::send_poll_failure;
     use super::send_state_change;
     use crate::ActorMesh;
     use crate::ValueMesh;
     use crate::bootstrap::ProcStatus;
+    use crate::casting::CAST_ACTOR_MESH_ID;
     #[cfg(fbcode_build)]
     use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
     use crate::mesh_id::ActorMeshId;
@@ -1722,6 +1729,143 @@ mod tests {
     use crate::test_utils::local_host_mesh;
     use crate::testactor;
     use crate::testing;
+
+    struct RoutingLoop;
+
+    impl MailboxSender for RoutingLoop {
+        fn post_unchecked(
+            &self,
+            envelope: MessageEnvelope,
+            return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        ) {
+            self.post(envelope, return_handle);
+        }
+    }
+
+    #[tokio::test]
+    async fn subscriber_ttl_expiry_drops_only_tagged_subscribers() {
+        let instance = testing::instance();
+        let mut host_mesh = local_host_mesh(1).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "subscriber_ttl", Extent::unity(), None, None)
+            .await
+            .unwrap();
+        let statuses: ValueMesh<resource::Status> = std::iter::once(resource::Status::Running)
+            .collect_mesh(proc_mesh.region().clone())
+            .unwrap();
+        let mut controller =
+            ResourceController::new(proc_mesh.deref().clone(), None, None, statuses);
+        let controller_instance = instance
+            .proc()
+            .actor_instance::<ProcMeshController>("subscriber_ttl_controller")
+            .unwrap();
+        let cx = &controller_instance.instance;
+        let (subscriber_port, _subscriber_rx) = instance.open_port::<Option<MeshFailure>>();
+        let subscriber = subscriber_port.bind();
+        let (healthy_port, mut healthy_rx) = instance.open_port::<Option<MeshFailure>>();
+        let healthy_subscriber = healthy_port.bind();
+        controller
+            .health_state
+            .subscribers
+            .insert(subscriber.clone());
+        controller
+            .health_state
+            .subscribers
+            .insert(healthy_subscriber.clone());
+
+        for (tag, cast) in [
+            (None, false),
+            (Some(false), false),
+            (None, true),
+            (Some(true), false),
+        ] {
+            let mut headers = Flattrs::new();
+            if let Some(tag) = tag {
+                headers.set(ACTOR_MESH_SUBSCRIBER_MESSAGE, tag);
+            }
+            if cast {
+                headers.set(
+                    CAST_ACTOR_MESH_ID,
+                    ActorMeshId::instance(Label::new("cast").unwrap()),
+                );
+            }
+            let envelope = MessageEnvelope::serialize(
+                cx.self_addr().clone(),
+                subscriber.port_addr().clone(),
+                &None::<MeshFailure>,
+                headers.clone(),
+            )
+            .unwrap();
+            let (return_handle, mut return_rx) =
+                instance.open_port::<Undeliverable<MessageEnvelope>>();
+            RoutingLoop.post(envelope, return_handle);
+            let returned = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+                .await
+                .expect("routing loop must return the expired heartbeat")
+                .unwrap();
+            assert!(matches!(
+                returned.root_delivery_failure().unwrap().kind,
+                DeliveryFailureKind::Expired(_),
+            ));
+
+            if tag == Some(true) {
+                let mut failures = vec![returned.clone(), returned];
+                for failure in [
+                    DeliveryFailure::new(InvalidReference::new(
+                        subscriber.port_addr().clone(),
+                        InvalidReferenceReason::ActorNotExist,
+                    )),
+                    DeliveryFailure::new(UndeliverableReason::PortGone(PortGone::new(
+                        subscriber.port_addr().clone(),
+                        None,
+                    ))),
+                ] {
+                    let mut envelope = MessageEnvelope::serialize(
+                        cx.self_addr().clone(),
+                        subscriber.port_addr().clone(),
+                        &None::<MeshFailure>,
+                        headers.clone(),
+                    )
+                    .unwrap();
+                    envelope.push_delivery_failure(failure);
+                    failures.push(Undeliverable::Returned(envelope));
+                }
+                for returned in failures {
+                    controller
+                        .health_state
+                        .subscribers
+                        .insert(subscriber.clone());
+                    controller
+                        .handle_delivery_failure_event(cx, returned.clone())
+                        .await
+                        .expect("a failed subscriber heartbeat must not fail the controller");
+                    assert!(!controller.health_state.subscribers.contains(&subscriber));
+                    controller
+                        .handle_delivery_failure_event(cx, returned)
+                        .await
+                        .unwrap();
+                }
+            } else {
+                let error = controller
+                    .handle_delivery_failure_event(cx, returned)
+                    .await
+                    .unwrap_err();
+                assert!(error.to_string().contains("ttl expired"));
+                assert!(controller.health_state.subscribers.contains(&subscriber));
+            }
+            assert!(
+                controller
+                    .health_state
+                    .subscribers
+                    .contains(&healthy_subscriber)
+            );
+        }
+
+        send_heartbeat(cx, &controller.health_state);
+        assert_eq!(healthy_rx.recv().await.unwrap(), None);
+        controller.cleanup(cx, None).await.unwrap();
+        host_mesh.shutdown(instance).await.unwrap();
+    }
 
     #[tokio::test]
     async fn controller_cleanup_notifies_subscribers_unless_stop_already_did() {
