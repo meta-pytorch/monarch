@@ -13,6 +13,7 @@ use std::fmt;
 use std::hash::Hash;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use hyperactor::ActorAddr;
@@ -30,6 +31,7 @@ use hyperactor::actor::remote::Remote;
 use hyperactor::context;
 use hyperactor::id::Label;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_cast::cast_actor::CastActor;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
@@ -357,6 +359,9 @@ pub struct ProcMeshRef {
     ranks: Arc<Vec<ProcRef>>,
     /// Host proc for each proc rank in this mesh view.
     host_procs: Arc<ValueMesh<ProcAddr>>,
+    /// Lazily derived host CastActor for each proc rank in this mesh view.
+    #[serde(skip)]
+    host_cast_actors: OnceLock<Arc<ValueMesh<ActorRef<CastActor>>>>,
     /// Actor mesh for the `ProcAgent`s backing this proc mesh view.
     ///
     /// `ProcMeshRef::sliced` derives a sliced agent mesh with a lazy cast
@@ -397,6 +402,25 @@ impl std::hash::Hash for ProcMeshRef {
 }
 
 impl ProcMeshRef {
+    /// Return the host CastActor mesh aligned with this proc mesh.
+    ///
+    /// Input host procs: `[host_0, host_0, host_1]`.
+    /// Output CastActors: `[host_0::cast, host_0::cast, host_1::cast]`.
+    pub(crate) fn host_cast_actors(&self) -> Arc<ValueMesh<ActorRef<CastActor>>> {
+        Arc::clone(self.host_cast_actors.get_or_init(|| {
+            Arc::new(
+                ValueMesh::from_dense(
+                    self.region.clone(),
+                    self.host_procs
+                        .values()
+                        .map(CastActor::ref_for_proc)
+                        .collect(),
+                )
+                .expect("host proc mesh must match the proc mesh region"),
+            )
+        }))
+    }
+
     /// Create a new ProcMeshRef from the given id, region, ranks, and so on.
     #[allow(clippy::result_large_err)]
     fn new_host_mesh_backed(
@@ -444,14 +468,18 @@ impl ProcMeshRef {
         )?);
 
         let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks)?;
-        Ok(Self {
+        let proc_mesh_ref = Self {
             id,
             region,
             ranks,
             host_procs,
+            host_cast_actors: OnceLock::new(),
             proc_agent_mesh,
             host_mesh: Some(host_mesh),
-        })
+        };
+        proc_mesh_ref.host_cast_actors();
+
+        Ok(proc_mesh_ref)
     }
 
     /// Create a local singleton ProcMeshRef from its ProcRef and host mesh.
@@ -484,14 +512,18 @@ impl ProcMeshRef {
         let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks)?;
         let host_procs = Arc::new(ValueMesh::from_single(region.clone(), host_proc_addr));
 
-        Ok(Self {
+        let proc_mesh_ref = Self {
             id,
             region,
             ranks,
             host_procs,
+            host_cast_actors: OnceLock::new(),
             proc_agent_mesh,
             host_mesh: None,
-        })
+        };
+        proc_mesh_ref.host_cast_actors();
+
+        Ok(proc_mesh_ref)
     }
 
     pub fn id(&self) -> &ProcMeshId {
@@ -1482,6 +1514,7 @@ impl view::RankedSliceable for ProcMeshRef {
             id: self.id.clone(),
             proc_agent_mesh: self.proc_agent_mesh.sliced(region.clone()),
             host_procs: Arc::new(self.host_procs.sliced(region.clone())),
+            host_cast_actors: OnceLock::new(),
             region,
             ranks: Arc::new(ranks),
             host_mesh: self.host_mesh.clone(),
