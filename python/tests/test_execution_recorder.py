@@ -445,7 +445,7 @@ def test_rank_queue_stays_bounded_while_sender_is_blocked(monkeypatch):
     assert recorder._queue.empty()
 
 
-def test_failed_send_drops_frame_and_next_send_reconnects(monkeypatch, caplog):
+def test_failed_send_drops_frame_and_next_send_reconnects(monkeypatch):
     from unittest.mock import MagicMock
 
     first, second = MagicMock(), MagicMock()
@@ -465,12 +465,15 @@ def test_failed_send_drops_frame_and_next_send_reconnects(monkeypatch, caplog):
     monkeypatch.setattr(history.Path, "exists", lambda _: True)
     monkeypatch.setattr(ingest.socket, "socket", lambda *args: next(sockets))
     monkeypatch.setattr(history, "HEARTBEAT_SECS", 3600)
+    warnings = []
+    monkeypatch.setattr(
+        history.logger, "warning", lambda msg, *args, **kwargs: warnings.append(msg)
+    )
     recorder = history.ExecutionRecorder(uuid.uuid4().hex, ["true"], None, None)
     wait_until(lambda: writes == 2)
-    with caplog.at_level("WARNING", logger=history.__name__):
-        recorder.record_rank("workers", "rank0", {"returncode": 0})
-        wait_until(lambda: recorder._dropped_ranks == 1)
-        recorder.finish(0)
+    recorder.record_rank("workers", "rank0", {"returncode": 0})
+    wait_until(lambda: recorder._dropped_ranks == 1)
+    recorder.finish(0)
     rows = []
     for frame in frames:
         size = struct.unpack("!H", frame[:2])[0]
@@ -484,7 +487,7 @@ def test_failed_send_drops_frame_and_next_send_reconnects(monkeypatch, caplog):
     assert not [row for table, row in rows if table == "execution_rank_results"]
     assert rows[-1][1]["status"] == "succeeded"
     assert rows[-1][1]["error"] == "Telemetry incomplete: 1 rank reports unavailable"
-    assert sum("telemetry unavailable" in r.message for r in caplog.records) == 1
+    assert sum("telemetry unavailable" in m for m in warnings) == 1
 
 
 def test_cli_records_one_invocation_across_meshes_with_rank_results(
