@@ -27,9 +27,10 @@ import logging
 import os
 import threading
 import time
-from typing import Any, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 from monarch._rust_bindings.monarch_distributed_telemetry import (
+    _post_scan_counts,
     _register_telemetry_schemas,
     _start_socket_ingest,
 )
@@ -52,6 +53,7 @@ from monarch._src.job.telemetry_ingest import (
 )
 from monarch.actor import (
     Actor,
+    context,
     current_rank,
     endpoint,
     Future,
@@ -318,6 +320,46 @@ class TelemetryActor(Actor):
         collector tags the batches it sends to `dest` with its address, so the
         caller can tell when each one has fully arrived.
         """
+        self._scan(
+            port.send, port.exception, dest, table_name, projection, limit, filter_expr
+        )
+
+    @endpoint(explicit_response_port=True)
+    def query_scan(
+        self,
+        port: Port[None],
+        dest: PortId,
+        table_name: str,
+        projection: Optional[List[int]],
+        limit: Optional[int],
+        filter_expr: Optional[str],
+    ) -> None:
+        """Scan like `scan`, for the query engine that owns `dest`.
+
+        Rather than replying with the batch counts, posts them to `dest` as
+        the scan's final message, so the engine reads them without Python.
+        Replies once they are posted.
+        """
+        instance = context().actor_instance._as_rust()
+
+        def post(batch_counts: List[Tuple[ActorAddr, int]]) -> None:
+            _post_scan_counts(instance, dest, batch_counts)
+            port.send(None)
+
+        self._scan(
+            post, port.exception, dest, table_name, projection, limit, filter_expr
+        )
+
+    def _scan(
+        self,
+        reply: Callable[[List[Tuple[ActorAddr, int]]], None],
+        fail: Callable[[Exception], None],
+        dest: PortId,
+        table_name: str,
+        projection: Optional[List[int]],
+        limit: Optional[int],
+        filter_expr: Optional[str],
+    ) -> None:
         # The client collector is the singleton query root: it fans out flat to
         # worker collector meshes, then scans its local store while they run.
         # Worker collectors have an empty `_worker_collectors` registry, so the
@@ -326,7 +368,7 @@ class TelemetryActor(Actor):
         if scanner is None:
             # An inactive worker shares a host with the collector that owns
             # its socket, such as the client's host, so it holds no rows.
-            port.send([])
+            reply([])
             return
 
         deadline = time.monotonic() + _SCAN_WORKER_TIMEOUT_SECS
@@ -357,13 +399,13 @@ class TelemetryActor(Actor):
                 dest, table_name, projection, limit, filter_expr
             )
             if not child_futures:
-                port.send([local_counts])
+                reply([local_counts])
                 return
             # Waiting off the actor's thread lets the root start other scans
             # while these workers answer.
             threading.Thread(
                 target=self._reply_with_worker_counts,
-                args=(port, [local_counts], child_futures, deadline),
+                args=(reply, fail, [local_counts], child_futures, deadline),
                 name="telemetry-scan-reply",
                 daemon=True,
             ).start()
@@ -371,11 +413,12 @@ class TelemetryActor(Actor):
             # An exception escaping an explicit-port endpoint fails the actor,
             # so send it to the caller instead. Unlike a plain endpoint, the
             # caller gets the bare exception, without the remote traceback.
-            port.exception(error)
+            fail(error)
 
     def _reply_with_worker_counts(
         self,
-        port: Port[List[Tuple[ActorAddr, int]]],
+        reply: Callable[[List[Tuple[ActorAddr, int]]], None],
+        fail: Callable[[Exception], None],
         batch_counts: List[Tuple[ActorAddr, int]],
         child_futures: List[Tuple[str, Future[Any]]],
         deadline: float,
@@ -402,4 +445,8 @@ class TelemetryActor(Actor):
                     error,
                 )
                 self._worker_collectors.pop(mesh_name, None)
-        port.send(batch_counts)
+        try:
+            reply(batch_counts)
+        except Exception as error:
+            # Nothing else answers the caller once this thread gives up.
+            fail(error)

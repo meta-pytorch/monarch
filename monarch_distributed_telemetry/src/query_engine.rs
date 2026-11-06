@@ -46,13 +46,13 @@ use hyperactor::config::MESSAGE_DELIVERY_TIMEOUT;
 use hyperactor::context::Mailbox as MailboxTrait;
 use hyperactor::mailbox::PortReceiver;
 use monarch_gil::GilSite;
+use monarch_gil::monarch_with_gil;
 use monarch_gil::monarch_with_gil_blocking;
 use monarch_hyperactor::actor::PythonActor;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::endpoint::ActorEndpoint;
 use monarch_hyperactor::endpoint::ReplyFuture;
 use monarch_hyperactor::mailbox::PyPortId;
-use monarch_hyperactor::proc::PyActorAddr;
 use monarch_hyperactor::runtime::get_tokio_runtime;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -137,16 +137,16 @@ type BatchSender = mpsc::UnboundedSender<DFResult<RecordBatch>>;
 
 /// Forwards one distributed scan's batches to its output stream.
 ///
-/// A collector reports how many batches it posted only when the scan endpoint
-/// returns, so the stream ends once every collector in the root's reply has
-/// delivered its reported count. Batches from collectors the reply leaves out
-/// (timed out or failed) are dropped from then on: a late collector can neither
-/// stand in for batches another collector still owes nor add rows after the
-/// stream ends.
+/// A collector knows how many batches it posted only once its scan finishes,
+/// and the root posts every collector's count in one [`QueryResponse::Counts`],
+/// so the stream ends once every collector in it has delivered its count.
+/// Batches from collectors the counts leave out (timed out or failed) are
+/// dropped from then on: a late collector can neither stand in for batches
+/// another collector still owes nor add rows after the stream ends.
 ///
 /// Otherwise, a batch that cannot be read, or one more batch than a collector
 /// reported, fails the query: either way the result no longer matches what the
-/// collectors scanned. A malformed reply fails it too rather than panicking: a
+/// collectors scanned. Malformed counts fail it too rather than panicking: a
 /// panic would only end this task, which the reader sees as a normal end of
 /// stream.
 struct ScanTracker {
@@ -154,11 +154,11 @@ struct ScanTracker {
     counts: Counts,
 }
 
-/// Per-collector batch counts, before and after the root's reply.
+/// Per-collector batch counts, before and after the root's counts arrive.
 enum Counts {
     /// Batches received from each collector so far.
     Received(HashMap<ActorAddr, usize>),
-    /// Batches each collector in the reply still owes.
+    /// Batches each collector in the root's counts still owes.
     Outstanding(HashMap<ActorAddr, usize>),
 }
 
@@ -172,7 +172,7 @@ impl ScanTracker {
 
     fn on_batch(&mut self, source: &ActorAddr, batch: DFResult<RecordBatch>) {
         let batch = match (&self.counts, batch) {
-            // The reply left this collector out: it timed out or failed.
+            // The root's counts left this collector out: it timed out or failed.
             (Counts::Outstanding(outstanding), _) if !outstanding.contains_key(source) => return,
             (_, Err(error)) => {
                 self.fail(&format!("unreadable batch from {source}: {error}"));
@@ -186,7 +186,7 @@ impl ScanTracker {
             Counts::Outstanding(outstanding) => {
                 let remaining = outstanding
                     .get_mut(source)
-                    .expect("should be outstanding: sources left out of the reply return above");
+                    .expect("should be outstanding: sources left out of the counts return above");
                 if *remaining == 0 {
                     self.fail(&format!("{source} sent more batches than it reported"));
                     return;
@@ -203,9 +203,9 @@ impl ScanTracker {
         self.close_if_finished();
     }
 
-    fn on_reply(&mut self, batch_counts: Vec<(ActorAddr, usize)>) {
+    fn on_counts(&mut self, batch_counts: Vec<(ActorAddr, usize)>) {
         let Counts::Received(received) = &self.counts else {
-            self.fail("received a second scan reply");
+            self.fail("received the root's counts twice");
             return;
         };
         let mut outstanding = HashMap::new();
@@ -218,7 +218,7 @@ impl ScanTracker {
                 return;
             };
             if outstanding.contains_key(&source) {
-                self.fail(&format!("the reply lists {source} more than once"));
+                self.fail(&format!("the counts list {source} more than once"));
                 return;
             }
             outstanding.insert(source, remaining);
@@ -227,8 +227,8 @@ impl ScanTracker {
         self.close_if_finished();
     }
 
-    /// Fail the scan because the reply's collectors did not deliver every
-    /// batch they reported within `timeout`.
+    /// Fail the scan because the query root's counts, or the batches they
+    /// report, did not arrive within `timeout`.
     fn expire(&mut self, timeout: Duration) {
         let message = match &self.counts {
             Counts::Received(_) => {
@@ -267,27 +267,12 @@ impl ScanTracker {
     }
 }
 
-/// Read each collector's `(source, batch count)` from the root's scan reply: a
-/// `ValueMesh` of `(rank, [(source, count), ...])` items.
-fn scan_batch_counts(reply: &Py<PyAny>) -> PyResult<Vec<(ActorAddr, usize)>> {
-    monarch_with_gil_blocking(GilSite::Convert, |py| {
-        let per_rank = reply
-            .bind(py)
-            .try_iter()?
-            .map(|item| item?.get_item(1)?.extract::<Vec<(PyActorAddr, usize)>>())
-            .collect::<PyResult<Vec<_>>>()?;
-        Ok(per_rank
-            .into_iter()
-            .flatten()
-            .map(|(source, count)| (source.into(), count))
-            .collect())
-    })
-}
-
 /// Spawns a task that forwards the scan's batches from `port_receiver` until
-/// every collector in the scan's reply has delivered the batches it reported.
-/// If they have not all arrived within twice [`MESSAGE_DELIVERY_TIMEOUT`] of
-/// the reply, the scan fails.
+/// every collector in the root's [`QueryResponse::Counts`] has delivered the
+/// batches it reported. `completion_future` resolves when the root's scan
+/// endpoint returns, and fails the scan if the endpoint failed. If the counts
+/// or their batches have not all arrived within twice
+/// [`MESSAGE_DELIVERY_TIMEOUT`] of the reply, the scan fails.
 ///
 /// Returns a stream that reads from the task.
 fn create_draining_stream<F>(
@@ -296,19 +281,21 @@ fn create_draining_stream<F>(
     completion_future: F,
 ) -> SendableRecordBatchStream
 where
-    F: std::future::Future<Output = PyResult<Py<PyAny>>> + Send + 'static,
+    F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
 {
     let (sender, receiver) = mpsc::unbounded_channel();
     let mut tracker = ScanTracker::new(sender);
-    // Collectors post their batches before replying, but the delivery timeout
-    // bounds each transport hop, not the whole path through host gateways.
+    // The root posts its counts, and collectors their batches, before replying,
+    // but the delivery timeout bounds each transport hop, not the whole path
+    // through host gateways.
     let delivery_timeout = hyperactor_config::global::get(MESSAGE_DELIVERY_TIMEOUT) * 2;
 
     get_tokio_runtime().spawn(async move {
         let mut port_receiver = port_receiver;
         tokio::pin!(completion_future);
         let mut replied = false;
-        // Armed when the reply arrives; until then this branch is disabled.
+        // Armed when the reply arrives; the root posts its counts before
+        // replying. Until then this branch is disabled.
         let delivery_deadline = tokio::time::sleep(delivery_timeout);
         tokio::pin!(delivery_deadline);
 
@@ -321,21 +308,19 @@ where
                     delivery_deadline
                         .as_mut()
                         .reset(tokio::time::Instant::now() + delivery_timeout);
-                    match result.and_then(|reply| scan_batch_counts(&reply)) {
-                        Ok(batch_counts) => tracker.on_reply(batch_counts),
-                        Err(error) => {
-                            tracing::error!("distributed scan failed: {error}");
-                            tracker.fail(&format!("scan failed: {error}"));
-                        }
+                    if let Err(error) = result {
+                        tracing::error!("distributed scan failed: {error}");
+                        tracker.fail(&format!("scan failed: {error}"));
                     }
                 }
 
                 message = port_receiver.recv() => match message {
-                    Ok(QueryResponse { source, data }) => {
+                    Ok(QueryResponse::Batch { source, data }) => {
                         let batch = deserialize_batch(&data.into_bytes())
                             .map_err(|error| DataFusionError::External(error.into()));
                         tracker.on_batch(&source, batch);
                     }
+                    Ok(QueryResponse::Counts(batch_counts)) => tracker.on_counts(batch_counts),
                     Err(error) => {
                         tracing::error!("distributed scan: error receiving: {error:?}");
                         tracker.fail(&format!("error receiving: {error:?}"));
@@ -506,17 +491,17 @@ impl ExecutionPlan for DistributedExec {
         let dest_port_ref = handle.bind();
 
         // Start the distributed scan
-        let completion_future = monarch_with_gil_blocking(
+        let reply = monarch_with_gil_blocking(
             GilSite::EndpointDispatch,
             |py| -> anyhow::Result<ReplyFuture> {
                 let dest_port_id: PyPortId = dest_port_ref.port_addr().clone().into();
 
-                // Send to every scan actor now. The existing draining task below
-                // owns the native reply collector, alongside the batch receiver.
+                // Send to every scan actor now. The draining task below awaits
+                // the reply alongside the batch receiver.
                 let scan = self
                     .actor
                     .bind(py)
-                    .getattr("scan")?
+                    .getattr("query_scan")?
                     .cast_into::<ActorEndpoint>()
                     .map_err(PyErr::from)?;
                 let args = (
@@ -531,6 +516,17 @@ impl ExecutionPlan for DistributedExec {
             },
         )
         .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;
+
+        // The root posts its counts to the port, so the reply only reports
+        // whether its scan endpoint failed.
+        let completion_future = async move {
+            match reply.await {
+                Ok(_) => Ok(()),
+                Err(error) => Err(anyhow::anyhow!(
+                    monarch_with_gil(GilSite::Convert, |_| error.to_string()).await
+                )),
+            }
+        };
 
         Ok(create_draining_stream(schema, receiver, completion_future))
     }
@@ -749,7 +745,7 @@ mod tests {
         let (a, b) = (collector("a"), collector("b"));
 
         tracker.on_batch(&b, batch(1));
-        tracker.on_reply(vec![(a.clone(), 1), (b.clone(), 2)]);
+        tracker.on_counts(vec![(a.clone(), 1), (b.clone(), 2)]);
         tracker.on_batch(&b, batch(2));
         assert!(!receiver.is_closed(), "a still owes its one batch");
 
@@ -765,15 +761,15 @@ mod tests {
         let (slow, root) = (collector("slow"), collector("root"));
 
         tracker.on_batch(&slow, batch(98));
-        tracker.on_reply(vec![(root.clone(), 2)]);
+        tracker.on_counts(vec![(root.clone(), 2)]);
         tracker.on_batch(&slow, batch(99));
         tracker.on_batch(&slow, unreadable());
         tracker.on_batch(&root, batch(1));
         assert!(!receiver.is_closed(), "root still owes a batch");
 
         tracker.on_batch(&root, batch(2));
-        // A batch that arrived before the reply stays, as best-effort
-        // coverage; anything after the reply left `slow` out is dropped,
+        // A batch that arrived before the counts stays, as best-effort
+        // coverage; anything after the counts left `slow` out is dropped,
         // unreadable or not.
         assert_eq!(drain(&mut receiver), Some(vec![98, 1, 2]));
     }
@@ -783,7 +779,7 @@ mod tests {
         let (mut tracker, mut receiver) = tracker();
         let root = collector("root");
 
-        tracker.on_reply(vec![(root.clone(), 2)]);
+        tracker.on_counts(vec![(root.clone(), 2)]);
         tracker.on_batch(&root, batch(1));
         tracker.on_batch(&root, unreadable());
 
@@ -791,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tracker_unreadable_batch_before_reply_fails() {
+    fn test_tracker_unreadable_batch_before_counts_fails() {
         let (mut tracker, mut receiver) = tracker();
 
         tracker.on_batch(&collector("root"), unreadable());
@@ -800,11 +796,11 @@ mod tests {
     }
 
     #[test]
-    fn test_tracker_extra_batch_after_reply_fails() {
+    fn test_tracker_extra_batch_after_counts_fails() {
         let (mut tracker, mut receiver) = tracker();
         let (a, b) = (collector("a"), collector("b"));
 
-        tracker.on_reply(vec![(a.clone(), 1), (b.clone(), 1)]);
+        tracker.on_counts(vec![(a.clone(), 1), (b.clone(), 1)]);
         tracker.on_batch(&a, batch(1));
         tracker.on_batch(&a, batch(2));
 
@@ -812,13 +808,13 @@ mod tests {
     }
 
     #[test]
-    fn test_tracker_extra_batch_before_reply_fails() {
+    fn test_tracker_extra_batch_before_counts_fails() {
         let (mut tracker, mut receiver) = tracker();
         let root = collector("root");
 
         tracker.on_batch(&root, batch(1));
         tracker.on_batch(&root, batch(2));
-        tracker.on_reply(vec![(root.clone(), 1)]);
+        tracker.on_counts(vec![(root.clone(), 1)]);
 
         assert_failed(&mut receiver);
     }
@@ -828,7 +824,7 @@ mod tests {
         let (mut tracker, mut receiver) = tracker();
         let (a, b) = (collector("a"), collector("b"));
 
-        tracker.on_reply(vec![(a.clone(), 1), (b.clone(), 2)]);
+        tracker.on_counts(vec![(a.clone(), 1), (b.clone(), 2)]);
         tracker.on_batch(&a, batch(1));
         tracker.on_batch(&b, batch(2));
         tracker.expire(Duration::from_secs(30));
@@ -846,6 +842,21 @@ mod tests {
     }
 
     #[test]
+    fn test_tracker_expire_without_counts_says_so() {
+        let (mut tracker, mut receiver) = tracker();
+
+        tracker.on_batch(&collector("root"), batch(1));
+        tracker.expire(Duration::from_secs(30));
+
+        assert!(tracker.is_finished());
+        let message = std::iter::from_fn(|| receiver.try_recv().ok())
+            .find_map(Result::err)
+            .expect("the stream should end with an error")
+            .to_string();
+        assert!(message.contains("batch counts not delivered"), "{message}");
+    }
+
+    #[test]
     fn test_tracker_failure_ends_stream_with_an_error() {
         let (mut tracker, mut receiver) = tracker();
 
@@ -855,21 +866,21 @@ mod tests {
     }
 
     #[test]
-    fn test_tracker_empty_reply_ends_stream() {
+    fn test_tracker_empty_counts_end_stream() {
         let (mut tracker, mut receiver) = tracker();
 
         tracker.on_batch(&collector("slow"), batch(1));
-        tracker.on_reply(vec![]);
+        tracker.on_counts(vec![]);
 
         assert_eq!(drain(&mut receiver), Some(vec![1]));
     }
 
     #[test]
-    fn test_tracker_duplicate_collector_in_reply_fails() {
+    fn test_tracker_duplicate_collector_in_counts_fails() {
         let (mut tracker, mut receiver) = tracker();
         let root = collector("root");
 
-        tracker.on_reply(vec![(root.clone(), 1), (root, 1)]);
+        tracker.on_counts(vec![(root.clone(), 1), (root, 1)]);
 
         assert_failed(&mut receiver);
     }
