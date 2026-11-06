@@ -52,6 +52,67 @@ async def test_rank_0_slice(counters: Counter) -> None:
     assert await rank_0.get_value.call_one() == 1
 
 
+class Trainer(Actor):
+    def __init__(self, parallel_dims: dict[str, int]) -> None:
+        self.rank: int = context().actor_instance.rank.rank
+        self.dp_rank: int = self.rank // parallel_dims["tp"] % parallel_dims["dp"]
+        self.batch: list[int] = []
+
+    @endpoint
+    async def get_dp_rank(self) -> int:
+        return self.dp_rank
+
+    @endpoint
+    async def train_step(self, batch: list[int]) -> None:
+        self.batch = batch
+
+    @endpoint
+    async def received(self) -> tuple[int, list[int]]:
+        return self.rank, self.batch
+
+
+async def test_scatter() -> None:
+    procs = this_host().spawn_procs(per_host={"gpus": 8})
+    batches = [[0, 1], [2, 3]]
+
+    # cookbook: scatter-split
+    parallel_dims = {"pp": 2, "dp": 2, "tp": 2}
+    trainer = procs.spawn("trainer", Trainer, parallel_dims)
+    mesh = trainer.flatten("rank").split(rank=tuple(parallel_dims), **parallel_dims)
+    by_dp_rank = [mesh.slice(dp=i) for i in range(mesh.size("dp"))]
+    # cookbook: end
+
+    # cookbook: scatter-check
+    for dp_rank, trainer_at_dp_rank in enumerate(by_dp_rank):
+        reported = set((await trainer_at_dp_rank.get_dp_rank.call()).values())
+        if reported != {dp_rank}:
+            raise RuntimeError(f"DP slice {dp_rank} holds DP ranks {reported}")
+    # cookbook: end
+
+    # cookbook: scatter-send
+    await asyncio.gather(
+        *[
+            trainer_at_dp_rank.train_step.call(batches[dp_rank])
+            for dp_rank, trainer_at_dp_rank in enumerate(by_dp_rank)
+        ]
+    )
+    # cookbook: end
+
+    received = dict((await trainer.received.call()).values())
+    assert received == {
+        0: [0, 1],
+        1: [0, 1],
+        4: [0, 1],
+        5: [0, 1],
+        2: [2, 3],
+        3: [2, 3],
+        6: [2, 3],
+        7: [2, 3],
+    }
+
+    await procs.stop()
+
+
 class Worker(Actor):
     mesh: "Worker"
 
