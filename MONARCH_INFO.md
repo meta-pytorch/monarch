@@ -9,7 +9,8 @@
 - Never commit code that does not pass the type checkers (rustc or pyre).
 - Classes and functions should be named clearly, but succinctly. Prefer shorter names and succinct noun phrases.
 - For large changes, include a "walkthrough" in the commit message, so that the reviewer can approach the change efficiently.
-- When refactoring code, we don't care about backwards compatibility within the implementation crates. Update all usages within 'monarch', but don't worry about breaking potential external customers. Treat the 'monarch' project as a monorepo.
+- Monarch does not support forward or backward compatibility across Monarch versions. There is no guarantee of interoperability between hosts running different Monarch versions; assume the client and all workers run the same version.
+- When refactoring code or changing internal APIs, message types, or serialization formats, update all usages within `monarch` together. Preserving compatibility with other Monarch versions is not required. Treat the `monarch` project as a monorepo.
 
 ## Design imperatives
 
