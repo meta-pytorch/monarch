@@ -78,6 +78,7 @@ if TYPE_CHECKING:
             actor_spawn_max_idle: NotRequired[str]
             get_actor_state_max_idle: NotRequired[str]
             use_direct_spawn: NotRequired[bool]
+            data_supervision_timeout: NotRequired[str]
             supervision_watchdog_timeout: NotRequired[str]
             proc_stop_max_idle: NotRequired[str]
             get_proc_state_max_idle: NotRequired[str]
@@ -173,6 +174,9 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
             actor_spawn_max_idle: Maximum idle time while spawning actors (humantime).
             get_actor_state_max_idle: Maximum idle time for actor state queries (humantime).
             use_direct_spawn: Use data-backed actor meshes for ordinary instance actor mesh spawns.
+            data_supervision_timeout: Maximum gap between data worker keepalives before notifying
+                the owner (humantime, default 30s); workers send keepalives every 5s. Independent of
+                mesh_orphan_timeout, which should be at least as long.
             supervision_watchdog_timeout: Watchdog timeout for the actor-mesh supervision stream; prolonged
                 silence is interpreted as the controller being unreachable (humantime).
 

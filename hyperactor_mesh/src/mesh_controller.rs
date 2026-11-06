@@ -2331,8 +2331,19 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_orphaned_actors_cleaned_up_on_controller_crash() {
+        assert_orphaned_actors_cleaned_up_on_owner_crash(false).await;
+    }
+
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_data_mesh_orphaned_actors_cleaned_up_on_owner_crash() {
+        assert_orphaned_actors_cleaned_up_on_owner_crash(true).await;
+    }
+
+    #[cfg(fbcode_build)]
+    async fn assert_orphaned_actors_cleaned_up_on_owner_crash(use_direct_spawn: bool) {
         let config = hyperactor_config::global::lock();
-        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
+        let _mode = config.override_key(USE_DIRECT_SPAWN, use_direct_spawn);
         let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, Some(Duration::from_secs(2)));
         let _poll = config.override_key(SUPERVISION_POLL_FREQUENCY, Duration::from_secs(1));
         let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
@@ -2367,9 +2378,6 @@ mod tests {
         let (supervision_port, _supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
 
-        // Spawn WrapperActor on controller_proc_mesh. Its init() spawns
-        // ActorMesh<TestActor> on actor_proc_mesh with a real
-        // ActorMeshController co-located on the controller's process.
         let _wrapper_mesh: ActorMesh<testactor::WrapperActor> = controller_proc_mesh
             .spawn(
                 instance,
@@ -2383,26 +2391,21 @@ mod tests {
             .await
             .unwrap();
 
-        // Give the controller time to run at least one CheckState cycle
-        // (polling every 1s). This is what sends `KeepaliveGetState` to
-        // each agent, and is what arms the agent's `expiry_time` so the
-        // agent's `SelfCheck` reaper can cull the actors after the
-        // controller dies. Polling for `Running` is not enough: actors
-        // reach `Running` at spawn time before the controller's first
-        // poll, and if we kill the controller in that window the agents
-        // never received a keepalive and the orphan timeout never trips.
+        // Arm managed keepalives or establish the remote supervision link.
         tokio::time::sleep(Duration::from_secs(3)).await;
-        let states = actor_proc_mesh
-            .actor_states(instance, child_name.clone())
-            .await
-            .unwrap();
-        for state in states.values() {
-            assert_eq!(
-                state.status,
-                resource::Status::Running,
-                "actor should be running before controller crash"
-            );
-        }
+        let child_ref = crate::ActorMeshRef::<testactor::TestActor>::try_new_data(
+            child_name.clone(),
+            actor_proc_mesh.region().clone(),
+            actor_proc_mesh
+                .proc_ids()
+                .map(|proc| {
+                    hyperactor::ActorRef::attest(proc.actor_addr_uid(child_name.uid().clone()))
+                })
+                .collect(),
+        )
+        .unwrap();
+        testactor::assert_casting_correctness(&child_ref, instance, None).await;
+        let monitor = child_ref.monitor(instance);
 
         // Kill the controller's host process uncleanly. The TestActors on
         // actor_proc_mesh survive. Killing the host (rather than asking the
@@ -2412,19 +2415,23 @@ mod tests {
         // runner.
         controller_hm.kill_hosts().await;
 
-        // Poll until all actors are stopped via the orphan timeout. The
-        // configured timeout is 2s and `SelfCheck` fires every 2s, so this
-        // converges quickly; allow generous slack for slow CI environments.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
-            let states = actor_proc_mesh
-                .actor_states(instance, child_name.clone())
-                .await
-                .unwrap();
-            if states
-                .values()
-                .all(|s| s.status == resource::Status::Stopped)
-            {
+            let stopped = if use_direct_spawn {
+                (0..num_replicas).all(|rank| {
+                    monitor
+                        .status(rank)
+                        .is_some_and(|status| status.is_terminal())
+                })
+            } else {
+                actor_proc_mesh
+                    .actor_states(instance, child_name.clone())
+                    .await
+                    .unwrap()
+                    .values()
+                    .all(|state| state.status == resource::Status::Stopped)
+            };
+            if stopped {
                 break;
             }
             assert!(
