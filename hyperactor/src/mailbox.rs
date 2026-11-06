@@ -1407,10 +1407,11 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                             ))
                         });
                         let sender_id: ActorAddr = envelope.sender().clone();
-                        let return_port =
+                        let mut return_port =
                             PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(
                                 &sender_id,
                             );
+                        return_port.return_undeliverable(false);
                         return_port.post_serialized(
                             &client,
                             Flattrs::new(),

@@ -828,13 +828,17 @@ impl MonitorPollActor {
         let reply = this
             .port::<MonitorStatusReply>()
             .contramap(MonitorStatusReply);
-        let reply_ref = reply.bind().into_once();
+        // The poll may finish or be dropped before its replies arrive; a late
+        // reply must not fail the replying proc's return path.
+        let mut reply_ref = reply.bind().into_once();
+        reply_ref.return_undeliverable(false);
         let (delivery_request, delivery) = match delivery {
             Some(delivery) => {
                 let delivery_reply = this
                     .port::<MonitorDeliveryReply>()
                     .contramap(MonitorDeliveryReply);
-                let delivery_reply_ref = delivery_reply.bind().into_once();
+                let mut delivery_reply_ref = delivery_reply.bind().into_once();
+                delivery_reply_ref.return_undeliverable(false);
                 (
                     Some((
                         delivery.sequencer.session_id(),
