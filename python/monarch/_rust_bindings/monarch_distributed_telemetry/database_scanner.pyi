@@ -4,7 +4,9 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
+
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 
 class DatabaseScanner:
     """Local MemTable operations, scans with child stream merging."""
@@ -38,6 +40,10 @@ class DatabaseScanner:
         projection: Optional[List[int]] = None,
         limit: Optional[int] = None,
         filter_expr: Optional[str] = None,
-    ) -> int:
-        """Perform a scan, sending results directly to the dest port."""
+    ) -> Tuple[ActorAddr, int]:
+        """Perform a scan, sending results directly to the dest port.
+
+        Returns this collector's actor address, which tags every batch it
+        sent, and the number of batches sent.
+        """
         ...

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from monarch._rust_bindings.monarch_distributed_telemetry import (
     _register_telemetry_schemas,
@@ -41,6 +41,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortId,
     UndeliverableMessageEnvelope,
 )
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch._src.job.host_metrics_actor import GpuMetricsActor, HostMetricsActor
 from monarch._src.job.telemetry_ingest import (
@@ -296,8 +297,15 @@ class TelemetryActor(Actor):
         projection: Optional[List[int]],
         limit: Optional[int],
         filter_expr: Optional[str],
-    ) -> int:
-        """Scan the local store and configured worker collector meshes."""
+    ) -> List[Tuple[ActorAddr, int]]:
+        """Scan the local store and configured worker collector meshes.
+
+        Returns the actor address and batch count of the local collector and
+        of every collector in a worker mesh that replied in time; a mesh that
+        times out or fails is left out as a whole. Each collector tags the
+        batches it sends to `dest` with its address, so the caller can tell
+        when each one has fully arrived.
+        """
         # The client collector is the singleton query root: scan its local store
         # first, then fan out flat to worker collector meshes. Worker
         # collectors have an empty `_worker_collectors` registry, so the same
@@ -306,10 +314,10 @@ class TelemetryActor(Actor):
         if scanner is None:
             # An inactive worker shares a host with the collector that owns
             # its socket, such as the client's host, so it holds no rows.
-            return 0
-        local_count: int = scanner.scan(
-            dest, table_name, projection, limit, filter_expr
-        )
+            return []
+        batch_counts: List[Tuple[ActorAddr, int]] = [
+            scanner.scan(dest, table_name, projection, limit, filter_expr)
+        ]
 
         child_futures = []
         for mesh_name, collector_mesh in tuple(self._worker_collectors.items()):
@@ -329,14 +337,13 @@ class TelemetryActor(Actor):
                 logger.info("worker telemetry scan call failed, skipping")
                 self._worker_collectors.pop(mesh_name, None)
 
-        total_count = local_count
         for mesh_name, future in child_futures:
             try:
                 # Worker collectors are independent leaves. A slow or failed
                 # worker should reduce query coverage, not fail the root query.
                 child_results = future.get(timeout=_SCAN_WORKER_TIMEOUT_SECS)
-                for _rank, count in child_results:
-                    total_count += count
+                for _rank, counts in child_results:
+                    batch_counts.extend(counts)
             except TimeoutError:
                 logger.warning(
                     "worker telemetry scan timed out after %ss",
@@ -346,4 +353,4 @@ class TelemetryActor(Actor):
                 logger.info("worker telemetry scan failed, skipping")
                 self._worker_collectors.pop(mesh_name, None)
 
-        return total_count
+        return batch_counts

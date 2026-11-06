@@ -35,6 +35,7 @@ use hyperactor::Instance;
 use monarch_hyperactor::actor::PythonActor;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::mailbox::PyPortId;
+use monarch_hyperactor::proc::PyActorAddr;
 use monarch_hyperactor::runtime::get_tokio_runtime;
 use monarch_record_batch::RecordBatchBuffer;
 use monarch_telemetry_schema::deserialize_one_batch;
@@ -424,13 +425,14 @@ fn scan_output_schema(stream_schema: SchemaRef, is_empty_projection: bool) -> DF
     Ok(stream_schema)
 }
 
-/// Serialize `batch` and post it to `dest_ref`.
+/// Serialize `batch` and post it to `dest_ref`, tagged with the posting
+/// collector's address.
 ///
 /// A serialization failure fails the scan rather than skipping the batch.
 /// Skipping matched the previous per-batch behaviour, but a coalesced batch
 /// carries up to [`SCAN_TARGET_BATCH_ROWS`] rows, and dropping it would leave
 /// the query silently short of that many rows while still reporting success --
-/// the batch count the root waits for is only incremented on a successful post,
+/// the batch count this collector reports is only incremented on a successful post,
 /// so nothing downstream would notice.
 fn post_batch(
     batch: &RecordBatch,
@@ -442,6 +444,7 @@ fn post_batch(
     dest_ref.post(
         instance,
         QueryResponse {
+            source: instance.self_addr().clone(),
             data: Part::from(data),
         },
     );
@@ -633,7 +636,8 @@ impl DatabaseScanner {
     ///     filter_expr: Optional SQL WHERE clause
     ///
     /// Returns:
-    ///     Number of batches sent
+    ///     This collector's actor address, which tags every batch it sent,
+    ///     and the number of batches sent
     fn scan(
         &self,
         py: Python<'_>,
@@ -642,7 +646,7 @@ impl DatabaseScanner {
         projection: Option<Vec<usize>>,
         limit: Option<usize>,
         filter_expr: Option<String>,
-    ) -> PyResult<usize> {
+    ) -> PyResult<(PyActorAddr, usize)> {
         // Get actor instance from context and extract the Rust Instance once.
         // The `PyRef` is dropped here so no Python borrow is held while the
         // GIL is released below.
@@ -661,7 +665,7 @@ impl DatabaseScanner {
         // Execute scan, streaming batches directly to destination. The scan
         // does not touch Python, so release the GIL to let other Python
         // threads in this process run meanwhile.
-        py.detach(|| {
+        let batch_count = py.detach(|| {
             self.execute_scan_streaming(
                 &table_name,
                 projection,
@@ -670,7 +674,8 @@ impl DatabaseScanner {
                 &instance,
                 &dest_ref,
             )
-        })
+        })?;
+        Ok((instance.self_addr().clone().into(), batch_count))
     }
 }
 
