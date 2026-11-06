@@ -22,6 +22,7 @@ async-trait = "0.1.92"
 datafusion = "52.5.0"
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
+hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 monarch_gil = { version = "0.0.0", path = "../monarch_gil" }
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }

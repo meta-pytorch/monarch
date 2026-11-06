@@ -4740,6 +4740,7 @@ dependencies = [
  "datafusion",
  "futures 0.3.34",
  "hyperactor",
+ "hyperactor_config",
  "hyperactor_telemetry",
  "monarch_gil",
  "monarch_hyperactor",
