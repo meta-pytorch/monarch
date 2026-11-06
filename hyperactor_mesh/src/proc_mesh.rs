@@ -466,20 +466,23 @@ impl ProcMeshRef {
                 })
                 .collect(),
         )?);
+        let host_cast_actors = Arc::new(ValueMesh::from_dense(
+            region.clone(),
+            host_procs.values().map(CastActor::ref_for_proc).collect(),
+        )?);
 
-        let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks)?;
-        let proc_mesh_ref = Self {
+        let proc_agent_mesh =
+            Self::proc_agent_mesh_ref(&id, &region, &ranks, Arc::clone(&host_cast_actors))?;
+
+        Ok(Self {
             id,
             region,
             ranks,
             host_procs,
-            host_cast_actors: OnceLock::new(),
+            host_cast_actors: OnceLock::from(host_cast_actors),
             proc_agent_mesh,
             host_mesh: Some(host_mesh),
-        };
-        proc_mesh_ref.host_cast_actors();
-
-        Ok(proc_mesh_ref)
+        })
     }
 
     /// Create a local singleton ProcMeshRef from its ProcRef and host mesh.
@@ -509,21 +512,21 @@ impl ProcMeshRef {
             .clone();
         let region: Region = Extent::unity().into();
         let ranks = Arc::new(vec![proc_ref]);
-        let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks)?;
+        let host_cast_actor = CastActor::ref_for_proc(host_proc_addr.clone());
         let host_procs = Arc::new(ValueMesh::from_single(region.clone(), host_proc_addr));
+        let host_cast_actors = Arc::new(ValueMesh::from_single(region.clone(), host_cast_actor));
+        let proc_agent_mesh =
+            Self::proc_agent_mesh_ref(&id, &region, &ranks, Arc::clone(&host_cast_actors))?;
 
-        let proc_mesh_ref = Self {
+        Ok(Self {
             id,
             region,
             ranks,
             host_procs,
-            host_cast_actors: OnceLock::new(),
+            host_cast_actors: OnceLock::from(host_cast_actors),
             proc_agent_mesh,
             host_mesh: None,
-        };
-        proc_mesh_ref.host_cast_actors();
-
-        Ok(proc_mesh_ref)
+        })
     }
 
     pub fn id(&self) -> &ProcMeshId {
@@ -547,6 +550,7 @@ impl ProcMeshRef {
         proc_mesh_id: &ProcMeshId,
         region: &Region,
         ranks: &[ProcRef],
+        cast_actors: Arc<ValueMesh<ActorRef<CastActor>>>,
     ) -> crate::Result<ActorMeshRef<ProcAgent>> {
         let agent_label = ranks
             .first()
@@ -566,12 +570,13 @@ impl ProcMeshRef {
                 .map_err(|error| crate::Error::ConfigurationError(error.into()))?,
         );
 
-        Ok(ActorMeshRef::new_managed(
+        Ok(ActorMeshRef::new_managed_with_cast_actors(
             id,
             Some(proc_mesh_id.clone()),
             region.clone(),
             None,
             members,
+            cast_actors,
         ))
     }
 
@@ -1514,7 +1519,9 @@ impl view::RankedSliceable for ProcMeshRef {
             id: self.id.clone(),
             proc_agent_mesh: self.proc_agent_mesh.sliced(region.clone()),
             host_procs: Arc::new(self.host_procs.sliced(region.clone())),
-            host_cast_actors: OnceLock::new(),
+            host_cast_actors: OnceLock::from(Arc::new(
+                self.host_cast_actors().sliced(region.clone()),
+            )),
             region,
             ranks: Arc::new(ranks),
             host_mesh: self.host_mesh.clone(),
