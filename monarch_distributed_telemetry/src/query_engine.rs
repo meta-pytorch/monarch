@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow::pyarrow::PyArrowType;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -41,6 +42,7 @@ use datafusion::sql::unparser::expr_to_sql;
 use futures::StreamExt;
 use hyperactor::ActorAddr;
 use hyperactor::Instance;
+use hyperactor::config::MESSAGE_DELIVERY_TIMEOUT;
 use hyperactor::context::Mailbox as MailboxTrait;
 use hyperactor::mailbox::PortReceiver;
 use monarch_gil::GilSite;
@@ -225,6 +227,27 @@ impl ScanTracker {
         self.close_if_finished();
     }
 
+    /// Fail the scan because the reply's collectors did not deliver every
+    /// batch they reported within `timeout`.
+    fn expire(&mut self, timeout: Duration) {
+        let message = match &self.counts {
+            Counts::Received(_) => {
+                format!("batch counts not delivered within {timeout:?} of the scan reply")
+            }
+            Counts::Outstanding(outstanding) => {
+                let owed = outstanding
+                    .iter()
+                    .filter(|(_, remaining)| **remaining > 0)
+                    .map(|(source, remaining)| format!("{source} owes {remaining}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("batches not delivered within {timeout:?} of the scan reply: {owed}")
+            }
+        };
+        tracing::error!("distributed scan: {message}");
+        self.fail(&message);
+    }
+
     fn fail(&mut self, message: &str) {
         if let Some(sender) = self.sender.take() {
             let _ = sender.send(Err(DataFusionError::External(message.into())));
@@ -263,6 +286,8 @@ fn scan_batch_counts(reply: &Py<PyAny>) -> PyResult<Vec<(ActorAddr, usize)>> {
 
 /// Spawns a task that forwards the scan's batches from `port_receiver` until
 /// every collector in the scan's reply has delivered the batches it reported.
+/// If they have not all arrived within twice [`MESSAGE_DELIVERY_TIMEOUT`] of
+/// the reply, the scan fails.
 ///
 /// Returns a stream that reads from the task.
 fn create_draining_stream<F>(
@@ -275,11 +300,17 @@ where
 {
     let (sender, receiver) = mpsc::unbounded_channel();
     let mut tracker = ScanTracker::new(sender);
+    // Collectors post their batches before replying, but the delivery timeout
+    // bounds each transport hop, not the whole path through host gateways.
+    let delivery_timeout = hyperactor_config::global::get(MESSAGE_DELIVERY_TIMEOUT) * 2;
 
     get_tokio_runtime().spawn(async move {
         let mut port_receiver = port_receiver;
         tokio::pin!(completion_future);
         let mut replied = false;
+        // Armed when the reply arrives; until then this branch is disabled.
+        let delivery_deadline = tokio::time::sleep(delivery_timeout);
+        tokio::pin!(delivery_deadline);
 
         while !tracker.is_finished() {
             tokio::select! {
@@ -287,6 +318,9 @@ where
 
                 result = &mut completion_future, if !replied => {
                     replied = true;
+                    delivery_deadline
+                        .as_mut()
+                        .reset(tokio::time::Instant::now() + delivery_timeout);
                     match result.and_then(|reply| scan_batch_counts(&reply)) {
                         Ok(batch_counts) => tracker.on_reply(batch_counts),
                         Err(error) => {
@@ -307,6 +341,9 @@ where
                         tracker.fail(&format!("error receiving: {error:?}"));
                     }
                 },
+
+                // Last, so batches already queued on the port count first.
+                () = &mut delivery_deadline, if replied => tracker.expire(delivery_timeout),
             }
         }
     });
@@ -784,6 +821,28 @@ mod tests {
         tracker.on_reply(vec![(root.clone(), 1)]);
 
         assert_failed(&mut receiver);
+    }
+
+    #[test]
+    fn test_tracker_expire_names_collectors_still_owing() {
+        let (mut tracker, mut receiver) = tracker();
+        let (a, b) = (collector("a"), collector("b"));
+
+        tracker.on_reply(vec![(a.clone(), 1), (b.clone(), 2)]);
+        tracker.on_batch(&a, batch(1));
+        tracker.on_batch(&b, batch(2));
+        tracker.expire(Duration::from_secs(30));
+
+        assert!(tracker.is_finished());
+        let message = std::iter::from_fn(|| receiver.try_recv().ok())
+            .find_map(Result::err)
+            .expect("the stream should end with an error")
+            .to_string();
+        assert!(message.contains(&format!("{b} owes 1")), "{message}");
+        assert!(
+            !message.contains(&a.to_string()),
+            "a delivered everything: {message}"
+        );
     }
 
     #[test]
