@@ -17,7 +17,16 @@ buck run @mode/opt fbcode//monarch/python/benches/telemetry_query_benchmark:tele
 ```
 
 The default `query-engine` backend measures the direct DataFusion-to-PyArrow
-path. Run the end-to-end sidecar integration backend with:
+path. Add `--workers N` to spread the fixture round-robin by dump across the
+query root and `N` local worker collectors, each with its own store, so every
+query fans out across `N + 1` collectors:
+
+```bash
+buck run @mode/opt fbcode//monarch/python/benches/telemetry_query_benchmark:telemetry_query_benchmark -- \
+  --workers 3
+```
+
+Run the end-to-end sidecar integration backend with:
 
 ```bash
 buck run @mode/opt fbcode//monarch/python/benches/telemetry_query_benchmark:telemetry_query_benchmark -- \
@@ -26,8 +35,17 @@ buck run @mode/opt fbcode//monarch/python/benches/telemetry_query_benchmark:tele
 
 The fixed fixture contains 20 dump rows, 80 stack-trace rows, 100,000 frame
 rows, and 100,000 local-variable rows. Each run preloads rows before running
-each case 100 times. The ingestion timestamp in `pyspy_dumps` varies by run and
-is intentionally excluded from every query.
+any query. The ingestion timestamp in `pyspy_dumps` varies by run and is
+intentionally excluded from every query.
+
+## Measurements
+
+Each case reports:
+
+| Column | Meaning |
+|---|---|
+| Warm | Median of 100 sequential queries |
+| Concurrent | Median wall time of 20 rounds of `--concurrency` simultaneous queries |
 
 ## Backends
 
@@ -45,6 +63,7 @@ baselines and must not be compared to each other.
 
 | Case | Work measured |
 |---|---|
+| `fanout_floor` | Scan of a 20-row table; with `--workers`, the fixed cost of fanning out to every collector |
 | `frame_count` | Full one-table scan and scalar aggregation |
 | `filtered_count` | Selective one-table filter and aggregation |
 | `group_by_filename` | Grouping, aggregation, and ordering |
@@ -54,7 +73,8 @@ baselines and must not be compared to each other.
 ## Scope
 
 The direct backend exercises DataFusion, the local telemetry actor and scanner,
-and PyArrow result construction. The sidecar backend additionally exercises
+and PyArrow result construction; with `--workers`, it also exercises collector
+fan-out between processes. The sidecar backend additionally exercises
 `ProcessJob`, HTTP, JSON, and Python-row materialization. Neither backend
 measures concurrent ingestion, remote collector fan-out, peak memory, or
 production query mixes.

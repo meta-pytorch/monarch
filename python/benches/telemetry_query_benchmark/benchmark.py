@@ -16,6 +16,7 @@ import functools
 import socket
 import statistics
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Callable, cast
@@ -28,6 +29,7 @@ from monarch.python.benches.telemetry_query_benchmark import (
 _QueryRows = query_backend.QueryRows
 _Validator = Callable[[_QueryRows], None]
 _QUERY_ITERATIONS = 100
+_CONCURRENT_ROUNDS = 20
 
 
 @dataclass(frozen=True)
@@ -84,6 +86,12 @@ def _query_cases(
     shape: pyspy_fixture.DatasetShape,
 ) -> tuple[_QueryCase, ...]:
     return (
+        _scalar_case(
+            "fanout_floor",
+            "SELECT COUNT(*) AS dump_count FROM pyspy_dumps",
+            "dump_count",
+            shape.dumps,
+        ),
         _scalar_case(
             "frame_count",
             "SELECT COUNT(*) AS frame_count FROM pyspy_frames",
@@ -144,47 +152,85 @@ def _execute_query(
     return elapsed
 
 
+@dataclass(frozen=True)
+class _CaseResult:
+    # Median latency of sequential queries.
+    warm: float
+    # Median wall time for a round of `concurrency` simultaneous queries.
+    concurrent: float
+
+
+def _concurrent_round(
+    backend: query_backend.QueryBackend,
+    case: _QueryCase,
+    pool: ThreadPoolExecutor,
+    concurrency: int,
+) -> float:
+    start = time.monotonic()
+    results = list(pool.map(lambda _: backend.query(case.sql), range(concurrency)))
+    elapsed = time.monotonic() - start
+    for data in results:
+        case.validate(backend.rows(data))
+    return elapsed
+
+
 def _benchmark_case(
     backend: query_backend.QueryBackend,
     case: _QueryCase,
-) -> float:
-    return statistics.median(
+    concurrency: int,
+) -> _CaseResult:
+    warm = statistics.median(
         _execute_query(backend, case) for _ in range(_QUERY_ITERATIONS)
+    )
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        concurrent = statistics.median(
+            _concurrent_round(backend, case, pool, concurrency)
+            for _ in range(_CONCURRENT_ROUNDS)
+        )
+    return _CaseResult(
+        warm=warm,
+        concurrent=concurrent,
     )
 
 
 def _run_benchmark(
     shape: pyspy_fixture.DatasetShape,
     backend_name: query_backend.BackendName,
-) -> dict[str, float]:
+    workers: int,
+    concurrency: int,
+) -> dict[str, _CaseResult]:
     cases = _query_cases(shape)
-    backend = query_backend.create_backend(backend_name)
+    backend = query_backend.create_backend(backend_name, workers)
     try:
         backend.preload(shape)
 
-        query_medians = {}
+        results = {}
         for case in cases:
-            query_medians[case.name] = _benchmark_case(
-                backend,
-                case,
-            )
+            results[case.name] = _benchmark_case(backend, case, concurrency)
     except BaseException:
         with suppress(Exception):
             backend.close()
         raise
     else:
         backend.close()
-        return query_medians
+        return results
 
 
-def _print_summary(query_medians: dict[str, float]) -> None:
-    print("| Query | Median (ms) |")
-    print("|---|---:|")
-    for name, median in query_medians.items():
-        print(f"| `{name}` | {median * 1000.0:.3f} |")
+def _format_ms(seconds: float) -> str:
+    return f"{seconds * 1000.0:.3f}"
 
 
-def _parse_backend() -> query_backend.BackendName:
+def _print_summary(results: dict[str, _CaseResult], concurrency: int) -> None:
+    print(f"| Query | Warm (ms) | {concurrency} concurrent (ms) |")
+    print("|---|---:|---:|")
+    for name, result in results.items():
+        print(
+            f"| `{name}` | {_format_ms(result.warm)} "
+            f"| {_format_ms(result.concurrent)} |"
+        )
+
+
+def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="benchmark fixed-data telemetry SQL queries",
     )
@@ -194,11 +240,26 @@ def _parse_backend() -> query_backend.BackendName:
         default="query-engine",
         help="Execution boundary to measure; use sidecar-http for end-to-end integration coverage.",
     )
-    return cast(query_backend.BackendName, parser.parse_args().backend)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Local worker collectors that share the fixture with the query root (query-engine only).",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=8,
+        help="Simultaneous queries per concurrent round.",
+    )
+    return parser.parse_args()
 
 
 def main() -> None:
-    backend = _parse_backend()
+    args = _parse_args()
+    backend = cast(query_backend.BackendName, args.backend)
+    workers = cast(int, args.workers)
+    concurrency = cast(int, args.concurrency)
     shape = pyspy_fixture.DatasetShape(
         dumps=20,
         threads_per_dump=4,
@@ -206,7 +267,12 @@ def main() -> None:
     )
     print(f"hostname={socket.gethostname()}")
     print(f"backend={backend}")
-    _print_summary(_run_benchmark(shape, backend))
+    print(f"workers={workers}")
+    print(f"concurrency={concurrency}")
+    _print_summary(
+        _run_benchmark(shape, backend, workers, concurrency),
+        concurrency,
+    )
 
 
 if __name__ == "__main__":
