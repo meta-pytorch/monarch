@@ -42,7 +42,8 @@ jobs:
       with-xpu: disable
       with-cuda: disable
       with-rocm: enable
-      build-python-only: "disable"
+      # Single oldest Python from test-infra's channel list (auto-bumps).
+      build-python-only: "enable"
 
   set:
     if: >-
@@ -87,36 +88,33 @@ jobs:
               echo "::error::ROCm binary matrix from test-infra is empty" >&2
               exit 1
             fi
-            # One entry per unique ROCm version; first Python from the matrix.
+            # One entry per unique ROCm version. build-python-only already left
+            # a single Python in the matrix.
             BUILD_MATRIX=$(echo "${ROCM_BINARY_MATRIX}" | jq -c '
-              (.include | map(.python_version) | unique | .[0]) as $py
-              | [
-                  .include[]
-                  | select(.python_version == $py)
-                  | {
-                      name: ("rocm" + .gpu_arch_version),
-                      "python-version": .python_version,
-                      "docker-image": ("pytorch/manylinux2_28-builder:rocm" + .gpu_arch_version),
-                      "torch-spec": ("--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm" + .gpu_arch_version + "/")
-                    }
-                ]
-                | unique_by(.name)
+              [
+                .include[]
+                | {
+                    name: ("rocm" + .gpu_arch_version),
+                    "python-version": .python_version,
+                    "docker-image": ("pytorch/manylinux2_28-builder:rocm" + .gpu_arch_version),
+                    "torch-spec": ("--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm" + .gpu_arch_version + "/")
+                  }
+              ]
+              | unique_by(.name)
             ')
             TEST_MATRIX=$(echo "${ROCM_BINARY_MATRIX}" | jq -c --arg runner "${{ inputs.runner-rocm }}" '
-              (.include | map(.python_version) | unique | .[0]) as $py
-              | [
-                  .include[]
-                  | select(.python_version == $py)
-                  | {
-                      name: ("rocm" + .gpu_arch_version),
-                      runner: $runner,
-                      "gpu-arch-type": "rocm",
-                      "gpu-arch-version": .gpu_arch_version,
-                      "docker-image": ("pytorch/manylinux2_28-builder:rocm" + .gpu_arch_version),
-                      "torch-spec": ("--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm" + .gpu_arch_version + "/")
-                    }
-                ]
-                | unique_by(."gpu-arch-version")
+              [
+                .include[]
+                | {
+                    name: ("rocm" + .gpu_arch_version),
+                    runner: $runner,
+                    "gpu-arch-type": "rocm",
+                    "gpu-arch-version": .gpu_arch_version,
+                    "docker-image": ("pytorch/manylinux2_28-builder:rocm" + .gpu_arch_version),
+                    "torch-spec": ("--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm" + .gpu_arch_version + "/")
+                  }
+              ]
+              | unique_by(."gpu-arch-version")
             ')
             echo "ROCm build matrix from test-infra: ${BUILD_MATRIX}"
             echo "ROCm test matrix from test-infra: ${TEST_MATRIX}"
