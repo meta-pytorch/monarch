@@ -443,7 +443,7 @@ fn post_batch(
         .map_err(|error| datafusion::error::DataFusionError::External(error.into()))?;
     dest_ref.post(
         instance,
-        QueryResponse {
+        QueryResponse::Batch {
             source: instance.self_addr().clone(),
             data: Part::from(data),
         },

@@ -26,6 +26,11 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use hyperactor::ActorAddr;
+use hyperactor::Endpoint as _;
+use hyperactor::PortRef;
+use monarch_hyperactor::context::PyInstance;
+use monarch_hyperactor::mailbox::PyPortId;
+use monarch_hyperactor::proc::PyActorAddr;
 use monarch_record_batch::RecordBatchBuffer;
 use monarch_telemetry_schema::entity_tables::ACTOR_STATUS_EVENTS;
 use monarch_telemetry_schema::entity_tables::ACTORS;
@@ -73,17 +78,22 @@ use serde::Serialize;
 use serde_multipart::Part;
 use typeuri::Named;
 
-/// Response message for streaming query results.
+/// Message streamed to a distributed query's port.
 /// Sent directly over Rust PortRef for efficiency.
-/// Completion is signaled by the scan endpoint returning each source's batch
-/// count, not via a message.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
-pub struct QueryResponse {
-    /// The collector actor that scanned this batch.
-    pub source: ActorAddr,
-    /// A batch of data in Arrow IPC format.
-    /// Uses Part for zero-copy transfer across the actor system.
-    pub data: Part,
+pub enum QueryResponse {
+    /// A batch scanned by one collector.
+    Batch {
+        /// The collector actor that scanned this batch.
+        source: ActorAddr,
+        /// A batch of data in Arrow IPC format.
+        /// Uses Part for zero-copy transfer across the actor system.
+        data: Part,
+    },
+    /// The batch count of every collector that finished its scan, posted
+    /// once by the query root. The query ends when each of them has
+    /// delivered its count.
+    Counts(Vec<(ActorAddr, usize)>),
 }
 
 // ============================================================================
@@ -157,6 +167,22 @@ where
         .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
 }
 
+/// Post every collector's batch count to a distributed query's port, as the
+/// query root's final message for the scan.
+#[pyfunction]
+fn _post_scan_counts(
+    instance: PyRef<'_, PyInstance>,
+    dest: &PyPortId,
+    counts: Vec<(PyActorAddr, usize)>,
+) {
+    let dest: PortRef<QueryResponse> = PortRef::attest(dest.clone().into());
+    let counts = counts
+        .into_iter()
+        .map(|(source, count)| (source.into(), count))
+        .collect();
+    dest.post(&**instance, QueryResponse::Counts(counts));
+}
+
 /// Activate the process-global Unix socket telemetry sink.
 #[pyfunction]
 fn _set_unix_socket_sink_path(socket_path: &str) -> PyResult<()> {
@@ -168,5 +194,6 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_start_socket_ingest, module)?)?;
     module.add_function(wrap_pyfunction!(_register_telemetry_schemas, module)?)?;
     module.add_function(wrap_pyfunction!(_set_unix_socket_sink_path, module)?)?;
+    module.add_function(wrap_pyfunction!(_post_scan_counts, module)?)?;
     Ok(())
 }
