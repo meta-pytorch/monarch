@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from typing import Any, List, Optional, Tuple
 
 from monarch._rust_bindings.monarch_distributed_telemetry import (
@@ -48,7 +50,16 @@ from monarch._src.job.telemetry_ingest import (
     telemetry_socket_dir,
     telemetry_socket_path,
 )
-from monarch.actor import Actor, current_rank, endpoint, HostMesh, ProcMesh, this_proc
+from monarch.actor import (
+    Actor,
+    current_rank,
+    endpoint,
+    Future,
+    HostMesh,
+    Port,
+    ProcMesh,
+    this_proc,
+)
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -289,37 +300,37 @@ class TelemetryActor(Actor):
         self._scanner_or_raise().ingest_snapshot_batch(table_name, arrow_ipc_bytes)
         return True
 
-    @endpoint
+    @endpoint(explicit_response_port=True)
     def scan(
         self,
+        port: Port[List[Tuple[ActorAddr, int]]],
         dest: PortId,
         table_name: str,
         projection: Optional[List[int]],
         limit: Optional[int],
         filter_expr: Optional[str],
-    ) -> List[Tuple[ActorAddr, int]]:
+    ) -> None:
         """Scan the local store and configured worker collector meshes.
 
-        Returns the actor address and batch count of the local collector and
-        of every collector in a worker mesh that replied in time; a mesh that
-        times out or fails is left out as a whole. Each collector tags the
-        batches it sends to `dest` with its address, so the caller can tell
-        when each one has fully arrived.
+        Replies with the actor address and batch count of the local collector
+        and of every collector in a worker mesh that replied before the scan
+        deadline; a mesh that times out or fails is left out as a whole. Each
+        collector tags the batches it sends to `dest` with its address, so the
+        caller can tell when each one has fully arrived.
         """
-        # The client collector is the singleton query root: scan its local store
-        # first, then fan out flat to worker collector meshes. Worker
-        # collectors have an empty `_worker_collectors` registry, so the same
-        # endpoint is leaf-only when invoked on a worker.
+        # The client collector is the singleton query root: it fans out flat to
+        # worker collector meshes, then scans its local store while they run.
+        # Worker collectors have an empty `_worker_collectors` registry, so the
+        # same endpoint is leaf-only when invoked on a worker.
         scanner = self._scanner
         if scanner is None:
             # An inactive worker shares a host with the collector that owns
             # its socket, such as the client's host, so it holds no rows.
-            return []
-        batch_counts: List[Tuple[ActorAddr, int]] = [
-            scanner.scan(dest, table_name, projection, limit, filter_expr)
-        ]
+            port.send([])
+            return
 
-        child_futures = []
+        deadline = time.monotonic() + _SCAN_WORKER_TIMEOUT_SECS
+        child_futures: List[Tuple[str, Future[Any]]] = []
         for mesh_name, collector_mesh in tuple(self._worker_collectors.items()):
             try:
                 # Constructing the call can fail if the actor ref is stale.
@@ -333,24 +344,62 @@ class TelemetryActor(Actor):
                         ),
                     )
                 )
-            except Exception:
-                logger.info("worker telemetry scan call failed, skipping")
+            except Exception as error:
+                logger.warning(
+                    "worker telemetry scan call to %s failed, dropping it: %s",
+                    mesh_name,
+                    error,
+                )
                 self._worker_collectors.pop(mesh_name, None)
 
+        try:
+            local_counts = scanner.scan(
+                dest, table_name, projection, limit, filter_expr
+            )
+            if not child_futures:
+                port.send([local_counts])
+                return
+            # Waiting off the actor's thread lets the root start other scans
+            # while these workers answer.
+            threading.Thread(
+                target=self._reply_with_worker_counts,
+                args=(port, [local_counts], child_futures, deadline),
+                name="telemetry-scan-reply",
+                daemon=True,
+            ).start()
+        except Exception as error:
+            # An exception escaping an explicit-port endpoint fails the actor,
+            # so send it to the caller instead. Unlike a plain endpoint, the
+            # caller gets the bare exception, without the remote traceback.
+            port.exception(error)
+
+    def _reply_with_worker_counts(
+        self,
+        port: Port[List[Tuple[ActorAddr, int]]],
+        batch_counts: List[Tuple[ActorAddr, int]],
+        child_futures: List[Tuple[str, Future[Any]]],
+        deadline: float,
+    ) -> None:
         for mesh_name, future in child_futures:
             try:
                 # Worker collectors are independent leaves. A slow or failed
                 # worker should reduce query coverage, not fail the root query.
-                child_results = future.get(timeout=_SCAN_WORKER_TIMEOUT_SECS)
+                child_results = future.get(
+                    timeout=max(0.0, deadline - time.monotonic())
+                )
                 for _rank, counts in child_results:
                     batch_counts.extend(counts)
             except TimeoutError:
                 logger.warning(
-                    "worker telemetry scan timed out after %ss",
+                    "worker telemetry scan of %s timed out after %ss",
+                    mesh_name,
                     _SCAN_WORKER_TIMEOUT_SECS,
                 )
-            except Exception:
-                logger.info("worker telemetry scan failed, skipping")
+            except Exception as error:
+                logger.warning(
+                    "worker telemetry scan of %s failed, dropping it: %s",
+                    mesh_name,
+                    error,
+                )
                 self._worker_collectors.pop(mesh_name, None)
-
-        return batch_counts
+        port.send(batch_counts)

@@ -12,17 +12,20 @@ import json
 import os
 import shutil
 import socket
+import threading
 import time
 import types
 import unittest.mock
 import uuid
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, cast
 
 import monarch._src.job.telemetry_actor as job_telemetry_actor
 import monarch.actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
+from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch._src.actor.actor_mesh import Actor, ActorMesh, current_rank
@@ -80,6 +83,43 @@ class _ClientHostTelemetryActor(job_telemetry_actor.TelemetryActor):
         super().__init__(apply_id if rank == 0 else f"{apply_id}-host{rank}", *args)
 
 
+_SLOW_SCAN_TABLE = "pyspy_dumps"
+_SLOW_SCAN_SECS = 6.0
+
+
+class _SlowScanTelemetryActor(job_telemetry_actor.TelemetryActor):
+    """Worker collector that answers `_SLOW_SCAN_TABLE` scans late and empty.
+
+    It replies from a timer thread, so its actor stays free for other calls.
+    """
+
+    def __init__(self, *args: Any) -> None:
+        super().__init__(*args)
+        self._slow_scans = 0
+
+    @endpoint(explicit_response_port=True)
+    def scan(
+        self,
+        port: Any,
+        dest: Any,
+        table_name: str,
+        projection: Any,
+        limit: Any,
+        filter_expr: Any,
+    ) -> None:
+        if table_name != _SLOW_SCAN_TABLE:
+            port.send([])
+            return
+        self._slow_scans += 1
+        reply = threading.Timer(_SLOW_SCAN_SECS, port.send, args=([],))
+        reply.daemon = True
+        reply.start()
+
+    @endpoint
+    def slow_scans(self) -> int:
+        return self._slow_scans
+
+
 class _FailureTestTelemetryRoot(job_telemetry_actor.TelemetryActor):
     @endpoint
     def start_failing_collector(self, host_mesh: Any, apply_id: str) -> Any:
@@ -104,6 +144,15 @@ class _FailureTestTelemetryRoot(job_telemetry_actor.TelemetryActor):
         if healthy is None:
             raise RuntimeError("healthy test collector did not activate")
         return healthy
+
+    @endpoint
+    def start_slow_collector(self, host_mesh: Any, apply_id: str, name: str) -> Any:
+        slow = self._start_worker_collector(
+            host_mesh, _SlowScanTelemetryActor, apply_id, name
+        )
+        if slow is None:
+            raise RuntimeError("slow test collector did not activate")
+        return slow
 
     @endpoint
     def start_client_host_collector(self, host_mesh: Any, apply_id: str) -> Any:
@@ -2023,6 +2072,124 @@ def test_worker_telemetry_failure_preserves_other_workers() -> None:
             # Only the failed collector was pruned: the surviving healthy worker
             # is still scanned and still contributes its row.
             assert query_engine.query(sql).num_rows == 1
+    finally:
+        for apply_id in apply_ids.values():
+            _remove_socket_dir(apply_id)
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_root_answers_queries_while_a_worker_scan_is_slow() -> None:
+    apply_ids = {"root": _new_apply_id(), "slow": _new_apply_id()}
+    for apply_id in apply_ids.values():
+        _remove_socket_dir(apply_id)
+
+    try:
+        with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+            root = monarch.actor.context().actor_instance.proc_mesh.spawn(
+                "root_telemetry",
+                _FailureTestTelemetryRoot,
+                apply_ids["root"],
+                0,
+            )
+            assert root.activate.call_one().get()
+            slow = root.start_slow_collector.call_one(
+                state.hosts, apply_ids["slow"], "telemetry_slow_procs"
+            ).get()
+            root.store_pyspy_dump.call_one(
+                "root-dump", "proc[0]", _sample_pyspy_dump_json()
+            ).get()
+            query_engine = QueryEngine(root)
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                slow_query = pool.submit(
+                    query_engine.query, f"SELECT dump_id FROM {_SLOW_SCAN_TABLE}"
+                )
+                deadline = time.monotonic() + 30
+                while slow.slow_scans.call_one().get() == 0:
+                    assert time.monotonic() < deadline, "slow scan never started"
+                    time.sleep(0.05)
+
+                start = time.monotonic()
+                frames = query_engine.query("SELECT name FROM pyspy_frames")
+                elapsed = time.monotonic() - start
+
+                assert frames.column("name").to_pylist() == ["main"]
+                assert elapsed < _SLOW_SCAN_SECS / 3, (
+                    f"query waited {elapsed:.1f}s behind another query's slow worker"
+                )
+                assert not slow_query.done()
+                assert slow_query.result().column("dump_id").to_pylist() == [
+                    "root-dump"
+                ]
+    finally:
+        for apply_id in apply_ids.values():
+            _remove_socket_dir(apply_id)
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_root_scan_error_reaches_the_caller_and_keeps_the_root() -> None:
+    apply_id = _new_apply_id()
+    _remove_socket_dir(apply_id)
+    try:
+        root = monarch.actor.context().actor_instance.proc_mesh.spawn(
+            "root_telemetry", job_telemetry_actor.TelemetryActor, apply_id, 0
+        )
+        assert root.activate.call_one().get()
+        # The scan fails before posting a batch, so `dest` is never used.
+        dest = PortId(
+            actor_id=ActorAddr(addr="local:0", proc_name="unused", actor_name="unused"),
+            port=1,
+        )
+
+        with pytest.raises(Exception, match="table 'no_such_table' not found"):
+            root.scan.call_one(dest, "no_such_table", None, None, None).get(timeout=30)
+        assert "pyspy_dumps" in root.table_names.call_one().get(timeout=30)
+    finally:
+        _remove_socket_dir(apply_id)
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_slow_worker_meshes_share_one_scan_deadline() -> None:
+    apply_ids = {
+        "root": _new_apply_id(),
+        "slow_a": _new_apply_id(),
+        "slow_b": _new_apply_id(),
+    }
+    for apply_id in apply_ids.values():
+        _remove_socket_dir(apply_id)
+
+    try:
+        with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+            root = monarch.actor.context().actor_instance.proc_mesh.spawn(
+                "root_telemetry",
+                _FailureTestTelemetryRoot,
+                apply_ids["root"],
+                0,
+            )
+            assert root.activate.call_one().get()
+            for name in ("slow_a", "slow_b"):
+                root.start_slow_collector.call_one(
+                    state.hosts, apply_ids[name], f"telemetry_{name}_procs"
+                ).get()
+            assert root.worker_collector_count.call_one().get() == 2
+            query_engine = QueryEngine(root)
+
+            with unittest.mock.patch.object(
+                job_telemetry_actor, "_SCAN_WORKER_TIMEOUT_SECS", 2.0
+            ):
+                start = time.monotonic()
+                dumps = query_engine.query(f"SELECT dump_id FROM {_SLOW_SCAN_TABLE}")
+                elapsed = time.monotonic() - start
+
+            assert dumps.num_rows == 0
+            # Two meshes timing out one after the other would take 4s.
+            # One shared deadline takes about 2s; one per mesh would take 4s.
+            assert elapsed < 3.5, f"scan took {elapsed:.1f}s for a 2s deadline"
+            # Timed-out meshes stay registered for later scans.
+            assert root.worker_collector_count.call_one().get() == 2
     finally:
         for apply_id in apply_ids.values():
             _remove_socket_dir(apply_id)
