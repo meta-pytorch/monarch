@@ -23,7 +23,6 @@ opentelemetry-otlp = { git = "https://github.com/open-telemetry/opentelemetry-ru
 opentelemetry-proto = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "b998a568632baaa424793a000dfb015f28b5aa5c" }
 opentelemetry_sdk = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "b998a568632baaa424793a000dfb015f28b5aa5c" }
 rustls-native-certs = { git = "https://github.com/rustls/rustls-native-certs", rev = "9734b4cc0bfa88224e0fc49867abafa1c56fa28d" }
-tonic = { git = "https://github.com/grpc/grpc-rust", rev = "de65d0a48783869d89b7d8d4a65ce703f1612249" }
 wezterm-color-types = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
 wezterm-dynamic = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
 wezterm-input-types = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
