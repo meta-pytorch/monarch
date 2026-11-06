@@ -79,6 +79,7 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::actor::StopMode;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
+use hyperactor::child_process::spawn_child;
 use hyperactor::context;
 use hyperactor::context::Actor as _;
 use hyperactor::gateway::GatewayServeHandle;
@@ -265,7 +266,10 @@ impl UnixProcCommand {
                 Ok(())
             });
         }
-        command.spawn()
+        // CPS-1 (hyperactor::child_process): the child arms PR_SET_PDEATHSIG,
+        // which tracks the forking thread, so fork it from the
+        // process-lifetime child-spawner thread.
+        spawn_child(command)
     }
 }
 

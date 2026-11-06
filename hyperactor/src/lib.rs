@@ -52,6 +52,7 @@
 #![feature(exact_size_is_empty)]
 #![feature(impl_trait_in_assoc_type)]
 #![feature(never_type)]
+#![feature(once_cell_try)]
 #![feature(panic_update_hook)]
 #![feature(type_alias_impl_trait)]
 #![feature(trait_alias)]
@@ -62,6 +63,7 @@ pub mod actor;
 pub mod actor_local;
 pub mod addr;
 pub mod channel;
+pub mod child_process;
 pub mod client;
 pub mod config;
 pub mod context;
