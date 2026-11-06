@@ -3511,6 +3511,7 @@ dependencies = [
  "indenter",
  "indoc",
  "inventory",
+ "libc",
  "local-ip-address",
  "maplit",
  "ndslice",

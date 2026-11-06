@@ -82,6 +82,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use hyperactor::child_process::spawn_child;
 use tokio::sync::oneshot;
 use tracing::Instrument;
 
@@ -350,7 +351,10 @@ impl ProcLauncher for NativeProcLauncher {
 
         let started_at = std::time::SystemTime::now();
 
-        let mut child = cmd.spawn().map_err(ProcLauncherError::Launch)?;
+        // CPS-1 (hyperactor::child_process): the child arms PR_SET_PDEATHSIG,
+        // which tracks the forking thread, so fork it from the
+        // process-lifetime child-spawner thread.
+        let mut child = spawn_child(cmd).map_err(ProcLauncherError::Launch)?;
         let pid = child.id().expect("spawned child pid unavailable");
 
         // Record PID in current span and log spawn event.
