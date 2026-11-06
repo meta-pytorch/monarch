@@ -25,6 +25,7 @@ pub use database_scanner::DatabaseScanner;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
+use hyperactor::ActorAddr;
 use monarch_record_batch::RecordBatchBuffer;
 use monarch_telemetry_schema::entity_tables::ACTOR_STATUS_EVENTS;
 use monarch_telemetry_schema::entity_tables::ACTORS;
@@ -74,9 +75,12 @@ use typeuri::Named;
 
 /// Response message for streaming query results.
 /// Sent directly over Rust PortRef for efficiency.
-/// Completion is signaled by the scan endpoint returning, not via a message.
+/// Completion is signaled by the scan endpoint returning each source's batch
+/// count, not via a message.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
 pub struct QueryResponse {
+    /// The collector actor that scanned this batch.
+    pub source: ActorAddr,
     /// A batch of data in Arrow IPC format.
     /// Uses Part for zero-copy transfer across the actor system.
     pub data: Part,

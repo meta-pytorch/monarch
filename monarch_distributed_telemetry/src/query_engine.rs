@@ -8,6 +8,7 @@
 
 //! QueryEngine - DataFusion query execution and streaming results
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::pyarrow::PyArrowType;
@@ -38,6 +39,7 @@ use datafusion::prelude::SessionConfig;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::unparser::expr_to_sql;
 use futures::StreamExt;
+use hyperactor::ActorAddr;
 use hyperactor::Instance;
 use hyperactor::context::Mailbox as MailboxTrait;
 use hyperactor::mailbox::PortReceiver;
@@ -48,6 +50,7 @@ use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::endpoint::ActorEndpoint;
 use monarch_hyperactor::endpoint::ReplyFuture;
 use monarch_hyperactor::mailbox::PyPortId;
+use monarch_hyperactor::proc::PyActorAddr;
 use monarch_hyperactor::runtime::get_tokio_runtime;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -116,20 +119,152 @@ fn deserialize_schema(data: &[u8]) -> anyhow::Result<SchemaRef> {
     Ok(reader.schema())
 }
 
-fn deserialize_batch(data: &[u8]) -> anyhow::Result<Option<RecordBatch>> {
+fn deserialize_batch(data: &[u8]) -> anyhow::Result<RecordBatch> {
     let mut reader = StreamReader::try_new(std::io::Cursor::new(data), None)?;
-    Ok(reader.next().transpose()?)
+    reader
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("scan response carried no batch"))?
+        .map_err(Into::into)
 }
 
 // ============================================================================
-// Helper to spawn reader task that drains PortReceiver into a channel
+// Distributed scan
 // ============================================================================
 
-/// Spawns a task that reads QueryResponse messages from port_receiver until
-/// the completion future resolves with the expected batch count, then waits
-/// for exactly that many batches.
+type BatchSender = mpsc::UnboundedSender<DFResult<RecordBatch>>;
+
+/// Forwards one distributed scan's batches to its output stream.
 ///
-/// Returns a stream that reads from the channel.
+/// A collector reports how many batches it posted only when the scan endpoint
+/// returns, so the stream ends once every collector in the root's reply has
+/// delivered its reported count. Batches from collectors the reply leaves out
+/// (timed out or failed) are dropped from then on: a late collector can neither
+/// stand in for batches another collector still owes nor add rows after the
+/// stream ends.
+///
+/// Otherwise, a batch that cannot be read, or one more batch than a collector
+/// reported, fails the query: either way the result no longer matches what the
+/// collectors scanned. A malformed reply fails it too rather than panicking: a
+/// panic would only end this task, which the reader sees as a normal end of
+/// stream.
+struct ScanTracker {
+    sender: Option<BatchSender>,
+    counts: Counts,
+}
+
+/// Per-collector batch counts, before and after the root's reply.
+enum Counts {
+    /// Batches received from each collector so far.
+    Received(HashMap<ActorAddr, usize>),
+    /// Batches each collector in the reply still owes.
+    Outstanding(HashMap<ActorAddr, usize>),
+}
+
+impl ScanTracker {
+    fn new(sender: BatchSender) -> Self {
+        Self {
+            sender: Some(sender),
+            counts: Counts::Received(HashMap::new()),
+        }
+    }
+
+    fn on_batch(&mut self, source: &ActorAddr, batch: DFResult<RecordBatch>) {
+        let batch = match (&self.counts, batch) {
+            // The reply left this collector out: it timed out or failed.
+            (Counts::Outstanding(outstanding), _) if !outstanding.contains_key(source) => return,
+            (_, Err(error)) => {
+                self.fail(&format!("unreadable batch from {source}: {error}"));
+                return;
+            }
+            (_, Ok(batch)) => batch,
+        };
+
+        match &mut self.counts {
+            Counts::Received(received) => *received.entry(source.clone()).or_default() += 1,
+            Counts::Outstanding(outstanding) => {
+                let remaining = outstanding
+                    .get_mut(source)
+                    .expect("should be outstanding: sources left out of the reply return above");
+                if *remaining == 0 {
+                    self.fail(&format!("{source} sent more batches than it reported"));
+                    return;
+                }
+                *remaining -= 1;
+            }
+        }
+
+        if let Some(sender) = &self.sender {
+            // A dropped receiver means the query stopped reading; keep
+            // draining the port until the scan completes.
+            let _ = sender.send(Ok(batch));
+        }
+        self.close_if_finished();
+    }
+
+    fn on_reply(&mut self, batch_counts: Vec<(ActorAddr, usize)>) {
+        let Counts::Received(received) = &self.counts else {
+            self.fail("received a second scan reply");
+            return;
+        };
+        let mut outstanding = HashMap::new();
+        for (source, count) in batch_counts {
+            let delivered = received.get(&source).copied().unwrap_or(0);
+            let Some(remaining) = count.checked_sub(delivered) else {
+                self.fail(&format!(
+                    "{source} sent {delivered} batches but reported {count}"
+                ));
+                return;
+            };
+            if outstanding.contains_key(&source) {
+                self.fail(&format!("the reply lists {source} more than once"));
+                return;
+            }
+            outstanding.insert(source, remaining);
+        }
+        self.counts = Counts::Outstanding(outstanding);
+        self.close_if_finished();
+    }
+
+    fn fail(&mut self, message: &str) {
+        if let Some(sender) = self.sender.take() {
+            let _ = sender.send(Err(DataFusionError::External(message.into())));
+        }
+    }
+
+    fn close_if_finished(&mut self) {
+        if let Counts::Outstanding(outstanding) = &self.counts
+            && outstanding.values().all(|&remaining| remaining == 0)
+        {
+            self.sender = None;
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.sender.is_none()
+    }
+}
+
+/// Read each collector's `(source, batch count)` from the root's scan reply: a
+/// `ValueMesh` of `(rank, [(source, count), ...])` items.
+fn scan_batch_counts(reply: &Py<PyAny>) -> PyResult<Vec<(ActorAddr, usize)>> {
+    monarch_with_gil_blocking(GilSite::Convert, |py| {
+        let per_rank = reply
+            .bind(py)
+            .try_iter()?
+            .map(|item| item?.get_item(1)?.extract::<Vec<(PyActorAddr, usize)>>())
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(per_rank
+            .into_iter()
+            .flatten()
+            .map(|(source, count)| (source.into(), count))
+            .collect())
+    })
+}
+
+/// Spawns a task that forwards the scan's batches from `port_receiver` until
+/// every collector in the scan's reply has delivered the batches it reported.
+///
+/// Returns a stream that reads from the task.
 fn create_draining_stream<F>(
     schema: SchemaRef,
     port_receiver: PortReceiver<QueryResponse>,
@@ -138,110 +273,46 @@ fn create_draining_stream<F>(
 where
     F: std::future::Future<Output = PyResult<Py<PyAny>>> + Send + 'static,
 {
-    let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(32);
+    let (sender, receiver) = mpsc::unbounded_channel();
+    let mut tracker = ScanTracker::new(sender);
 
-    // Spawn a task that reads messages until we have all expected batches
     get_tokio_runtime().spawn(async move {
-        let mut receiver = port_receiver;
-        let mut batch_count: usize = 0;
-        let mut expected_batches: Option<usize> = None;
-
+        let mut port_receiver = port_receiver;
         tokio::pin!(completion_future);
+        let mut replied = false;
 
-        loop {
-            // Check if we've received all expected batches
-            if let Some(expected) = expected_batches
-                && batch_count >= expected {
-                    tracing::info!(
-                        "QueryEngine reader: received all {} expected batches",
-                        expected
-                    );
-                    break;
-                }
-
+        while !tracker.is_finished() {
             tokio::select! {
                 biased;
 
-                // Check if the scan has completed (only if we don't have expected count yet)
-                result = &mut completion_future, if expected_batches.is_none() => {
-                    match result {
-                        Ok(py_result) => {
-                            // Extract the batch count from the Python result
-                            // Result is a ValueMesh which is iterable, yielding (rank_dict, count) tuples
-                            let count = monarch_with_gil_blocking(GilSite::Convert, |py| {
-                                let bound = py_result.bind(py);
-                                let mut total: usize = 0;
-                                // Iterate the ValueMesh
-                                if let Ok(iter) = bound.try_iter() {
-                                    for item in iter {
-                                        if let Ok(tuple) = item {
-                                            // Each item is (rank_dict, count) - get second element
-                                            if let Ok(count_val) = tuple.get_item(1)
-                                                && let Ok(count) = count_val.extract::<usize>() {
-                                                    total += count;
-                                                }
-                                        }
-                                    }
-                                }
-                                total
-                            });
-                            tracing::info!(
-                                "QueryEngine reader: scan completed, expecting {} batches, have {}",
-                                count,
-                                batch_count
-                            );
-                            expected_batches = Some(count);
-                        }
-                        Err(e) => {
-                            tracing::error!("QueryEngine reader: scan failed: {:?}", e);
-                            let _ = tx.send(Err(datafusion::error::DataFusionError::External(
-                                anyhow::anyhow!("Scan failed: {:?}", e).into(),
-                            ))).await;
-                            break;
+                result = &mut completion_future, if !replied => {
+                    replied = true;
+                    match result.and_then(|reply| scan_batch_counts(&reply)) {
+                        Ok(batch_counts) => tracker.on_reply(batch_counts),
+                        Err(error) => {
+                            tracing::error!("distributed scan failed: {error}");
+                            tracker.fail(&format!("scan failed: {error}"));
                         }
                     }
                 }
 
-                // Receive data from the port
-                recv_result = receiver.recv() => {
-                    match recv_result {
-                        Ok(QueryResponse { data }) => {
-                            match deserialize_batch(&data.into_bytes()) {
-                                Ok(Some(batch)) => {
-                                    batch_count += 1;
-                                    if tx.send(Ok(batch)).await.is_err() {
-                                        tracing::info!(
-                                            "QueryEngine reader: consumer dropped, continuing to drain"
-                                        );
-                                    }
-                                }
-                                Ok(None) => {}
-                                Err(e) => {
-                                    let _ = tx
-                                        .send(Err(datafusion::error::DataFusionError::External(e.into())))
-                                        .await;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("QueryEngine reader: error receiving: {:?}", e);
-                            let _ = tx
-                                .send(Err(datafusion::error::DataFusionError::External(
-                                    anyhow::anyhow!("Error receiving: {:?}", e).into(),
-                                )))
-                                .await;
-                            break;
-                        }
+                message = port_receiver.recv() => match message {
+                    Ok(QueryResponse { source, data }) => {
+                        let batch = deserialize_batch(&data.into_bytes())
+                            .map_err(|error| DataFusionError::External(error.into()));
+                        tracker.on_batch(&source, batch);
                     }
-                }
+                    Err(error) => {
+                        tracing::error!("distributed scan: error receiving: {error:?}");
+                        tracker.fail(&format!("error receiving: {error:?}"));
+                    }
+                },
             }
         }
-        tracing::info!("QueryEngine reader: complete, {} batches", batch_count);
     });
 
-    // Convert channel receiver to a stream
-    let stream = futures::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|item| (item, rx))
+    let stream = futures::stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|item| (item, receiver))
     });
 
     Box::pin(RecordBatchStreamAdapter::new(schema, stream))
@@ -565,4 +636,182 @@ impl QueryEngine {
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<QueryEngine>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use datafusion::arrow::array::Int64Array;
+    use datafusion::arrow::datatypes::DataType;
+    use datafusion::arrow::datatypes::Field;
+    use datafusion::arrow::datatypes::Schema;
+    use hyperactor::ProcAddr;
+    use hyperactor::channel::ChannelAddr;
+
+    use super::*;
+
+    /// A fresh collector address; each call returns a distinct one.
+    fn collector(name: &str) -> ActorAddr {
+        ProcAddr::instance(ChannelAddr::Local(0), name).actor_addr(name)
+    }
+
+    fn unreadable() -> DFResult<RecordBatch> {
+        Err(DataFusionError::External("bad batch".into()))
+    }
+
+    /// Assert that the stream ends with an error after the batches before it.
+    fn assert_failed(receiver: &mut mpsc::UnboundedReceiver<DFResult<RecordBatch>>) {
+        while let Ok(item) = receiver.try_recv() {
+            if item.is_err() {
+                assert!(
+                    matches!(
+                        receiver.try_recv(),
+                        Err(mpsc::error::TryRecvError::Disconnected)
+                    ),
+                    "the error should end the stream"
+                );
+                return;
+            }
+        }
+        panic!("the stream should have ended with an error");
+    }
+
+    fn batch(value: i64) -> DFResult<RecordBatch> {
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, false)]));
+        Ok(RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![value]))]).unwrap())
+    }
+
+    fn tracker() -> (ScanTracker, mpsc::UnboundedReceiver<DFResult<RecordBatch>>) {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        (ScanTracker::new(sender), receiver)
+    }
+
+    /// Drain the stream, returning its values if it has ended, or `None` if
+    /// it is still open.
+    fn drain(receiver: &mut mpsc::UnboundedReceiver<DFResult<RecordBatch>>) -> Option<Vec<i64>> {
+        let mut values = Vec::new();
+        loop {
+            match receiver.try_recv() {
+                Ok(batch) => values.push(
+                    batch
+                        .unwrap()
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(0),
+                ),
+                Err(mpsc::error::TryRecvError::Disconnected) => return Some(values),
+                Err(mpsc::error::TryRecvError::Empty) => return None,
+            }
+        }
+    }
+
+    #[test]
+    fn test_tracker_waits_for_every_reported_count() {
+        let (mut tracker, mut receiver) = tracker();
+        let (a, b) = (collector("a"), collector("b"));
+
+        tracker.on_batch(&b, batch(1));
+        tracker.on_reply(vec![(a.clone(), 1), (b.clone(), 2)]);
+        tracker.on_batch(&b, batch(2));
+        assert!(!receiver.is_closed(), "a still owes its one batch");
+
+        tracker.on_batch(&a, batch(3));
+        assert_eq!(drain(&mut receiver), Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn test_tracker_late_collector_cannot_stand_in_for_another() {
+        // The old protocol waited for a total batch count, so a late batch from
+        // a timed-out collector could stand in for one still owed by another.
+        let (mut tracker, mut receiver) = tracker();
+        let (slow, root) = (collector("slow"), collector("root"));
+
+        tracker.on_batch(&slow, batch(98));
+        tracker.on_reply(vec![(root.clone(), 2)]);
+        tracker.on_batch(&slow, batch(99));
+        tracker.on_batch(&slow, unreadable());
+        tracker.on_batch(&root, batch(1));
+        assert!(!receiver.is_closed(), "root still owes a batch");
+
+        tracker.on_batch(&root, batch(2));
+        // A batch that arrived before the reply stays, as best-effort
+        // coverage; anything after the reply left `slow` out is dropped,
+        // unreadable or not.
+        assert_eq!(drain(&mut receiver), Some(vec![98, 1, 2]));
+    }
+
+    #[test]
+    fn test_tracker_unreadable_batch_fails_without_counting() {
+        let (mut tracker, mut receiver) = tracker();
+        let root = collector("root");
+
+        tracker.on_reply(vec![(root.clone(), 2)]);
+        tracker.on_batch(&root, batch(1));
+        tracker.on_batch(&root, unreadable());
+
+        assert_failed(&mut receiver);
+    }
+
+    #[test]
+    fn test_tracker_unreadable_batch_before_reply_fails() {
+        let (mut tracker, mut receiver) = tracker();
+
+        tracker.on_batch(&collector("root"), unreadable());
+
+        assert_failed(&mut receiver);
+    }
+
+    #[test]
+    fn test_tracker_extra_batch_after_reply_fails() {
+        let (mut tracker, mut receiver) = tracker();
+        let (a, b) = (collector("a"), collector("b"));
+
+        tracker.on_reply(vec![(a.clone(), 1), (b.clone(), 1)]);
+        tracker.on_batch(&a, batch(1));
+        tracker.on_batch(&a, batch(2));
+
+        assert_failed(&mut receiver);
+    }
+
+    #[test]
+    fn test_tracker_extra_batch_before_reply_fails() {
+        let (mut tracker, mut receiver) = tracker();
+        let root = collector("root");
+
+        tracker.on_batch(&root, batch(1));
+        tracker.on_batch(&root, batch(2));
+        tracker.on_reply(vec![(root.clone(), 1)]);
+
+        assert_failed(&mut receiver);
+    }
+
+    #[test]
+    fn test_tracker_failure_ends_stream_with_an_error() {
+        let (mut tracker, mut receiver) = tracker();
+
+        tracker.fail("scan failed");
+
+        assert_failed(&mut receiver);
+    }
+
+    #[test]
+    fn test_tracker_empty_reply_ends_stream() {
+        let (mut tracker, mut receiver) = tracker();
+
+        tracker.on_batch(&collector("slow"), batch(1));
+        tracker.on_reply(vec![]);
+
+        assert_eq!(drain(&mut receiver), Some(vec![1]));
+    }
+
+    #[test]
+    fn test_tracker_duplicate_collector_in_reply_fails() {
+        let (mut tracker, mut receiver) = tracker();
+        let root = collector("root");
+
+        tracker.on_reply(vec![(root.clone(), 1), (root, 1)]);
+
+        assert_failed(&mut receiver);
+    }
 }
