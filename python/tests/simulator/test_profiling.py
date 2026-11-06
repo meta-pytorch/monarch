@@ -4,7 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
 import unittest
 
 import pytest
@@ -123,8 +122,8 @@ class TestRuntimeEstimator(unittest.TestCase):
 
     @pytest.mark.oss_skip
     def test_runtime_profiler(self) -> None:
-        m1 = torch.rand(1000, 2000).cuda()
-        m2 = torch.rand(2000, 4000).cuda()
+        m1 = torch.rand(1000, 2000, device="cuda")
+        m2 = torch.rand(2000, 4000, device="cuda")
         # pyrefly: ignore [missing-attribute]
         m1.ref = 1
         # pyrefly: ignore [missing-attribute]
@@ -146,7 +145,7 @@ class TestRuntimeEstimator(unittest.TestCase):
             # pyrefly: ignore [bad-argument-type]
             remote_process_groups=None,
         )
-        profiler = RuntimeProfiler()
+        profiler = RuntimeProfiler(world_size=1)
 
         ret = profiler.profile_cmd(msg, ranks=[0])[0]
         # pyrefly: ignore [unsupported-operation]
