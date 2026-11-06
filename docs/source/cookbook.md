@@ -35,6 +35,50 @@ if those names change.
 
 See [Slicing Operations](actors.md#slicing-operations) in the Actors guide for the full slicing API.
 
+### Scatter different data to groups of ranks
+
+Sometimes you need to send different data to different groups of ranks. In RL,
+for example, the controller owns the training data and must send each
+data-parallel (DP) group of the trainer its own batch.
+
+To do this, first find the DP groups by splitting the mesh into your trainer's
+parallel dimensions:
+
+```{literalinclude} ../../python/tests/test_cookbook.py
+---
+language: python
+start-after: "# cookbook: scatter-split"
+end-before: "# cookbook: end"
+dedent: 4
+caption: "[View source](%%SRC:scatter-split%%)"
+---
+```
+
+Optionally, check the layout once at startup:
+
+```{literalinclude} ../../python/tests/test_cookbook.py
+---
+language: python
+start-after: "# cookbook: scatter-check"
+end-before: "# cookbook: end"
+dedent: 4
+caption: "[View source](%%SRC:scatter-check%%)"
+---
+```
+
+Then send each DP group its batch. `asyncio.gather` issues the calls
+concurrently and returns one `ValueMesh` per group:
+
+```{literalinclude} ../../python/tests/test_cookbook.py
+---
+language: python
+start-after: "# cookbook: scatter-send"
+end-before: "# cookbook: end"
+dedent: 4
+caption: "[View source](%%SRC:scatter-send%%)"
+---
+```
+
 ## Intra-mesh Communication
 
 ### Call a specific rank of your own mesh
