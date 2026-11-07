@@ -307,6 +307,17 @@ controller host. Select a host for its recent history:
   has more than eight devices, the charts cover the first eight by device
   index while the table lists all of them.
 
+Each host, including the controller, reports what its own process can see. A
+controller outside the cluster reports the machine it runs on, not the worker
+it attaches through. A container reports the GPUs mounted into it. Some NVIDIA
+runtimes mount every GPU on the node into pods that request none, so a
+controller pod on a worker's node lists that worker's GPUs under its own
+hostname. If your controller pod should not have GPUs, set
+`NVIDIA_VISIBLE_DEVICES=void` in its pod spec, as the
+[Kubernetes examples](https://github.com/meta-pytorch/monarch/tree/main/examples/kubernetes)
+do. If it should, request them with `nvidia.com/gpu` and leave that setting
+out.
+
 Readings are whole-host and include other jobs and the controller. Only fresh
 samples are counted; missing or stale samples are excluded rather than shown
 as zero. When sampling is disabled or collectors are unavailable, the tab says

@@ -24,6 +24,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import warnings
 import weakref
 from contextlib import ExitStack, suppress
@@ -62,10 +63,13 @@ from monarch._src.actor.host_mesh import (
 )
 from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, get_or_spawn_controller
+from monarch._src.job import host_metrics_actor
 from monarch._src.job.job import ProcessState
 from monarch._src.job.process import ProcessJob
 from monarch._src.job.service_identity import new_service_proc_id, service_proc_addr
+from monarch._src.job.telemetry_actor import TelemetryActor
 from monarch.config import configured
+from monarch.distributed_telemetry.engine import QueryEngine
 from scoped_state import scoped_state
 
 
@@ -1742,6 +1746,45 @@ class EchoActor(Actor):
     @endpoint
     async def getenv(self, name: str) -> Optional[str]:
         return os.environ.get(name)
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+async def test_attached_client_samples_its_own_host() -> None:
+    """An attached client's host samplers run in the client process.
+
+    The hostname is patched only in this process, so rows sampled by the
+    worker the client attaches through would carry the real hostname.
+    """
+    job = DuplexProcessJob()
+    job.apply()
+    try:
+        attach(job.duplex_addr)
+        with patch.object(
+            host_metrics_actor, "socket", SimpleNamespace(gethostname=lambda: "client")
+        ):
+            collector = context().actor_instance.proc_mesh.spawn(
+                "telemetry",
+                TelemetryActor,
+                f"attach_sampling_{uuid.uuid4().hex}",
+                0,
+                0.2,
+                0.0,
+            )
+            assert collector.activate.call_one().get()
+            engine = QueryEngine(collector)
+            deadline = time.monotonic() + 30
+            hostnames: list[str] = []
+            while not hostnames and time.monotonic() < deadline:
+                time.sleep(0.2)
+                hostnames = (
+                    engine.query("SELECT DISTINCT hostname FROM host_metrics")
+                    .column("hostname")
+                    .to_pylist()
+                )
+        assert hostnames == ["client"]
+    finally:
+        job.kill()
 
 
 @pytest.mark.timeout(120)
