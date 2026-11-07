@@ -148,3 +148,47 @@ datagrams to `[::1]`.
 `cat` opens an opaque bidirectional QUIC stream. Connections are pooled, so
 opening additional streams is cheap; applications can build request/response,
 RPC, mailboxes, or actor messaging directly on top of them.
+
+## Sealed postcard in Firecracker microVMs
+
+The `sealed-postcard` example's separate-process roles also run across real
+isolation boundaries. Alice sends an end-to-end encrypted postcard to Bob
+through Relay, then checks 32 more echoed streams. Alice and Bob each run in
+their own Firecracker microVM; Relay runs on the host and forwards their
+datagrams without seeing the postcard's plaintext:
+
+```text
+  VM A                      host                       VM B
+  Alice  <--- vsock --->    Relay    <--- vsock --->   Bob
+         (Firecracker's Unix sockets on the host side)
+```
+
+The three roles are the unchanged Rust binary. A Python program on the host,
+[`python/tests/sealed_postcard_microvms.py`](python/tests/sealed_postcard_microvms.py),
+boots the two VMs, starts Relay, checks the outcome and releases every process
+it started.
+
+It needs a Linux devserver with read and write access to `/dev/kvm`; no root
+access or host network setup. Buck builds the guest image, Firecracker, the
+guest kernel and the Rust example. Run the automated test with:
+
+```bash
+buck test @fbcode//mode/dev-nosan \
+  fbcode//monarch/chrysalis/python/tests:test_sealed_postcard_microvms \
+  -- --print-passing-details
+```
+
+With usable KVM it reports six passing tests and no skips: Alice exits
+successfully, Bob reports `bob served 33 streams, all from alice: true`, and
+Relay reports forwarded traffic, no postcard plaintext and a complete log.
+Without KVM the microVM test is skipped and the five cleanup and interrupt
+tests still run. A failed run prints whichever VM consoles and Relay log exist,
+releases every process it started, and keeps its run directory if a process
+couldn't be confirmed stopped.
+
+[`firecracker.md`](crates/chrysalis/examples/sealed-postcard/firecracker.md)
+runs the same example by hand in a tmux session, with each role's output in its
+own pane. That walkthrough needs the host Python
+`/usr/local/fbcode/platform010/bin/python3.12` and tmux. This example is
+Buck-only: Cargo still runs the Rust example, but it doesn't build the image or
+start a VM.
