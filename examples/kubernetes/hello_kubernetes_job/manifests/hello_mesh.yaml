@@ -182,6 +182,11 @@ spec:
     - name: controller
       image: ghcr.io/meta-pytorch/monarch:latest
       env:
+        # Optional. This controller requests no GPUs, but some NVIDIA runtimes
+        # still mount every GPU on the node; this hides them. To give the
+        # controller GPUs, request nvidia.com/gpu and remove this setting.
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: void
         - name: MONARCH_POD_UID
           valueFrom:
             fieldRef:

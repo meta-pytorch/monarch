@@ -64,6 +64,12 @@ spec:
   # affinity, tolerations, and containers[0].image are supplied by overlays.
   containers:
     - name: controller
+      env:
+        # Optional. This controller requests no GPUs, but some NVIDIA runtimes
+        # still mount every GPU on the node; this hides them. To give the
+        # controller GPUs, request nvidia.com/gpu and remove this setting.
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: void
       command: ["sleep"]
       args: ["infinity"]
       volumeMounts:
