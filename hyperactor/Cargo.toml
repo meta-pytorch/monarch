@@ -93,7 +93,7 @@ tracing-subscriber = { version = "0.3.23", features = ["chrono", "env-filter", "
 tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-tokio-vsock = { version = "0.7.2", features = ["tonic014"] }
+tokio-vsock = { version = "0.7.3", features = ["tonic014"] }
 vsock = "0.5.4"
 
 [features]
