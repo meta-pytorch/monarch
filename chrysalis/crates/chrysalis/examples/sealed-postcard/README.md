@@ -232,3 +232,6 @@ directory removes their private keys.
 
 Continue with [`separate-processes.md`](separate-processes.md) for a copyable
 three-pane tmux walkthrough.
+
+[`firecracker.md`](firecracker.md) runs the same roles with Alice and Bob in
+Firecracker microVMs and Relay on the host.
