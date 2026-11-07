@@ -9,13 +9,13 @@ license = "BSD-3-Clause"
 
 [dependencies]
 anyhow = "1.0.104"
-arrow = { version = "=57.3.0", features = ["ffi", "json", "prettyprint", "pyarrow"] }
 arrow-array = "=57.3.0"
 arrow-buffer = "=57.3.0"
 arrow-cast = "=57.3.0"
 arrow-data = "=57.3.0"
 arrow-ipc = "=57.3.0"
 arrow-ord = "=57.3.0"
+arrow-pyarrow = "=57.3.0"
 arrow-schema = "=57.3.0"
 arrow-select = "=57.3.0"
 async-trait = "0.1.92"
