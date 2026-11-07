@@ -322,11 +322,15 @@ def test_execution_scans_include_worker_collector_records(table):
 
     actor = TelemetryActor("query-root-test", 0)
     actor._scanner = MagicMock()
-    actor._scanner.scan.return_value = 2
+    actor._scanner.scan.return_value = ("root", 2)
     worker = MagicMock()
-    worker.scan.call.return_value.get.return_value = [("rank0", 3)]
+    worker.scan.call.return_value.get.return_value = [("rank0", [("worker", 3)])]
     actor._worker_collectors = {"workers": worker}
-    assert TelemetryActor.scan._method(actor, "dest", table, None, None, None) == 5
+    port = MagicMock()
+    TelemetryActor.scan._method(actor, port, "dest", table, None, None, None)
+    wait_until(lambda: port.send.called)
+    port.send.assert_called_once_with([("root", 2), ("worker", 3)])
+    port.exception.assert_not_called()
     worker.scan.call.assert_called_once()
 
 
