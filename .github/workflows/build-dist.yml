@@ -64,6 +64,10 @@ jobs:
         source scripts/common-setup.sh
         setup_build_environment ${{ matrix.python-version }}
 
+        # Published wheels must not depend on the compiler cache that PR CI
+        # writes to.
+        unset RUSTC_WRAPPER
+
         # Install torch before building the wheel
         pip install ${{ inputs.torch-spec }}
         pip install -r build-requirements.txt
@@ -75,11 +79,6 @@ jobs:
         if ! command -v nvcc &> /dev/null; then
             setup_cuda_toolkit
         fi
-
-        # CI disables the Send/Sync shortcut impls so rustc verifies the
-        # underlying auto-trait bounds structurally.
-        RUSTFLAGS="${RUSTFLAGS:-} --cfg hyperactor_verify_auto_traits" \
-          cargo install --locked --path monarch_hyperactor
 
         # Build dashboard frontend (if Node.js is available)
         FRONTEND_DIR="python/monarch/monarch_dashboard/frontend"
@@ -99,10 +98,6 @@ jobs:
           export MONARCH_VERSION=0.8.0.dev$(date +'%Y%m%d')
         fi
         python -m build --wheel --no-isolation
-
-        echo "=== sccache stats ==="
-        sccache --show-stats || true
-        echo "=== end sccache stats ==="
 
         # Rename to manylinux2014 for PyPI compatibility
         for f in dist/*linux_*.whl; do

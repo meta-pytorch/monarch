@@ -79,7 +79,6 @@ jobs:
     needs: prepare-release
     uses: ./.github/workflows/build-dist.yml
     with:
-      # Allow Rust compilation to finish when compiler-cache reuse is low.
       timeout: 120
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       # Published wheels ship cu132 even though PR CI tests at cu130 (see
@@ -108,7 +107,6 @@ jobs:
     needs: prepare-release
     uses: ./.github/workflows/build-dist.yml
     with:
-      # Allow Rust compilation to finish when compiler-cache reuse is low.
       timeout: 120
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       runner: linux.arm64.2xlarge
