@@ -1453,7 +1453,9 @@ fn unix_writer_flushes_pending_sends_before_teardown() {
     let server = runtime_actor(&server_ctx, "flush-server");
     let client = runtime_actor(&client_ctx, "flush-client");
     let (server_poller, mut server_rx) = runtime_poller(&server_ctx);
+    let (client_poller, mut client_rx) = runtime_poller(&client_ctx);
     runtime_subscribe(&server_ctx, server_poller, 0, server);
+    runtime_subscribe(&client_ctx, client_poller, 0, client);
 
     let url = unix_test_url("flush");
     server_ctx
@@ -1473,6 +1475,10 @@ fn unix_writer_flushes_pending_sends_before_teardown() {
     assert_eq!(
         recv_strings(&mut server_rx),
         vec!["flush-server", "flush-client"]
+    );
+    assert_eq!(
+        recv_strings(&mut client_rx),
+        vec!["flush-client", "flush-server"]
     );
 
     // Enqueue a send, then immediately shut the client down. The shutdown drains
