@@ -214,6 +214,7 @@ mod tests {
     use std::time::Duration;
     use std::time::Instant;
 
+    use nix::unistd::gettid;
     use tokio::runtime::Runtime;
 
     use super::*;
@@ -625,9 +626,7 @@ mod tests {
         // and record that worker's OS thread ID before the request.
         let (child, worker) = runtime.block_on(async {
             tokio::spawn(async move {
-                // SAFETY: `gettid` takes no arguments and only returns the
-                // calling thread's ID.
-                let worker = unsafe { libc::gettid() };
+                let worker = gettid();
                 (
                     spawn(sleep_with_death_signal("60")).expect("spawn the child"),
                     worker,
@@ -650,8 +649,7 @@ mod tests {
 
                 // Run the probe as a task too, so its ID belongs to the
                 // current worker rather than the thread driving `block_on`.
-                // SAFETY: as above.
-                let current = tokio::spawn(async { unsafe { libc::gettid() } })
+                let current = tokio::spawn(async { gettid() })
                     .await
                     .expect("the probe task panicked");
                 if current != worker {
