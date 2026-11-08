@@ -794,9 +794,13 @@ def test_stop_job_sidecar_treats_dead_sidecar_as_stopped(tmp_path, error) -> Non
         js.stop_job_sidecar("apply_id")
 
 
-def test_stop_job_sidecar_raises_when_live_sidecar_is_unreachable(tmp_path) -> None:
-    daemon = OnceDaemon(str(tmp_path / "cmd.sock"), os.getpid())
+def test_stop_job_sidecar_raises_when_live_sidecar_is_unreachable() -> None:
+    # Keep the socket path short: macOS's per-user tmp_path exceeds the
+    # AF_UNIX path limit.
+    tempdir = tempfile.TemporaryDirectory(prefix="monarch_sidecar_", dir="/tmp")
+    daemon = OnceDaemon(os.path.join(tempdir.name, "cmd.sock"), os.getpid())
     with (
+        tempdir,
         patch.object(js, "find_job_sidecar", return_value=daemon),
         patch.object(js, "_SIDECAR_EXIT_GRACE_S", 0.0),
         pytest.raises(FileNotFoundError),

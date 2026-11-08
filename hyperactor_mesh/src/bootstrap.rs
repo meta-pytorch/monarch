@@ -2794,6 +2794,8 @@ mod tests {
         }
     }
 
+    // Some variants/fields are used only by the Linux-only hybrid vsock tests.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[derive(Clone, Copy)]
     enum RecordingBehavior {
         Succeed,
@@ -2872,6 +2874,8 @@ mod tests {
         }
     }
 
+    // Some variants/fields are used only by the Linux-only hybrid vsock tests.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     struct HybridFixture {
         manager: BootstrapProcManager,
         launcher: Arc<RecordingLauncher>,
@@ -2919,6 +2923,7 @@ mod tests {
             .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
     }
 
+    #[cfg(target_os = "linux")]
     fn port_addr(uds: &Path, port: u32) -> ChannelAddr {
         let mut path = uds.as_os_str().to_owned();
         path.push(format!("_{port}"));
@@ -2939,6 +2944,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(target_os = "linux")]
     /// Delivers one envelope through the proc's backend ingress to a port on
     /// the fixture's gateway, and returns the still-open client.
     async fn deliver_through_ingress(
@@ -2963,6 +2969,7 @@ mod tests {
         tx
     }
 
+    #[cfg(target_os = "linux")]
     async fn wait_closed(tx: &channel::ChannelTx<MessageEnvelope>) {
         let mut status = tx.status().clone();
         bounded(
@@ -2980,6 +2987,7 @@ mod tests {
     /// RCH-2, RCH-3 ([registry](super::reachability)):
     /// verify hybrid addresses, host routing, and readiness.
     /// Uses host Unix sockets and a recording launcher, not Firecracker.
+    #[cfg(target_os = "linux")]
     #[async_timed_test(timeout_secs = 60)]
     async fn test_hybrid_vsock_spawn_wiring() {
         let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Succeed);
@@ -3073,6 +3081,7 @@ mod tests {
     /// RCH-5, RCH-7 ([registry](super::reachability)):
     /// exit joins readiness and message tasks, closes ingress, and removes
     /// the VM directory.
+    #[cfg(target_os = "linux")]
     #[async_timed_test(timeout_secs = 60)]
     async fn test_hybrid_vsock_exit_closes_listeners() {
         let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Succeed);
@@ -3109,6 +3118,7 @@ mod tests {
     /// the readiness listener's path refuses connections after cleanup.
     /// No report reaches the handle; rejection is tested by
     /// `proc_handle::mark_ready_after_terminal_is_rejected`.
+    #[cfg(target_os = "linux")]
     #[async_timed_test(timeout_secs = 60)]
     async fn test_hybrid_vsock_callback_after_exit_is_ignored() {
         let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Succeed);
@@ -3147,6 +3157,7 @@ mod tests {
     /// RCH-5, RCH-7 ([registry](super::reachability)):
     /// loss of the exit sender still joins the readiness task and releases
     /// the VM resources.
+    #[cfg(target_os = "linux")]
     #[async_timed_test(timeout_secs = 60)]
     async fn test_hybrid_vsock_exit_sender_dropped() {
         let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Succeed);
@@ -3179,6 +3190,7 @@ mod tests {
 
     /// RCH-5 ([registry](super::reachability)):
     /// a refused launch leaves no VM directory or message listener.
+    #[cfg(target_os = "linux")]
     #[async_timed_test(timeout_secs = 60)]
     async fn test_hybrid_vsock_launch_failure_releases_dir() {
         let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Fail);
@@ -3210,6 +3222,7 @@ mod tests {
     /// RCH-5 ([registry](super::reachability)):
     /// unwinding from a launcher panic releases the VM socket directory.
     /// This does not attest that the receive task drains or joins.
+    #[cfg(target_os = "linux")]
     #[async_timed_test(timeout_secs = 60)]
     async fn test_hybrid_vsock_launcher_panic_releases_dir() {
         let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Panic);
@@ -3237,6 +3250,7 @@ mod tests {
 
     /// RCH-5 ([registry](super::reachability)):
     /// cancellation drops the prepared resources.
+    #[cfg(target_os = "linux")]
     #[async_timed_test(timeout_secs = 60)]
     async fn test_hybrid_vsock_cancelled_spawn_releases_dir() {
         let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Succeed);
@@ -3264,6 +3278,7 @@ mod tests {
 
     /// RCH-3 ([registry](super::reachability)):
     /// two launches cannot share their VM socket directory.
+    #[cfg(target_os = "linux")]
     #[async_timed_test(timeout_secs = 60)]
     async fn test_hybrid_vsock_spawns_get_distinct_dirs() {
         let mut fx = hybrid_fixture(ProcReachability::HybridVsock, RecordingBehavior::Succeed);
