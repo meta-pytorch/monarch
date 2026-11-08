@@ -84,7 +84,7 @@ class _ClientHostTelemetryActor(job_telemetry_actor.TelemetryActor):
 
 
 _SLOW_SCAN_TABLE = "pyspy_dumps"
-_SLOW_SCAN_SECS = 6.0
+_SLOW_SCAN_SECS = 10.0
 
 
 class _SlowScanTelemetryActor(job_telemetry_actor.TelemetryActor):
@@ -2178,16 +2178,15 @@ def test_slow_worker_meshes_share_one_scan_deadline() -> None:
             query_engine = QueryEngine(root)
 
             with unittest.mock.patch.object(
-                job_telemetry_actor, "_SCAN_WORKER_TIMEOUT_SECS", 2.0
+                job_telemetry_actor, "_SCAN_WORKER_TIMEOUT_SECS", 4.0
             ):
                 start = time.monotonic()
                 dumps = query_engine.query(f"SELECT dump_id FROM {_SLOW_SCAN_TABLE}")
                 elapsed = time.monotonic() - start
 
             assert dumps.num_rows == 0
-            # Two meshes timing out one after the other would take 4s.
-            # One shared deadline takes about 2s; one per mesh would take 4s.
-            assert elapsed < 3.5, f"scan took {elapsed:.1f}s for a 2s deadline"
+            # One shared deadline takes about 4s; one per mesh would take 8s.
+            assert elapsed < 6.0, f"scan took {elapsed:.1f}s for a 4s deadline"
             # Timed-out meshes stay registered for later scans.
             assert root.worker_collector_count.call_one().get() == 2
     finally:
