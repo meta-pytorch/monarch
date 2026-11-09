@@ -61,6 +61,8 @@ pub enum ControlPort {
     Signal,
     /// Actor lifecycle status.
     Status,
+    /// Resolve the concrete proc owning the directly contacted endpoint.
+    ResolveProc,
 }
 
 /// Errors that can occur when parsing a [`ControlPort`].
@@ -121,6 +123,7 @@ impl Port {
             Self::Control(ControlPort::Introspect) => 0,
             Self::Control(ControlPort::Signal) => 1,
             Self::Control(ControlPort::Status) => 2,
+            Self::Control(ControlPort::ResolveProc) => 3,
         }
     }
 }
@@ -174,6 +177,7 @@ impl fmt::Display for ControlPort {
             Self::Introspect => f.write_str("introspect"),
             Self::Signal => f.write_str("signal"),
             Self::Status => f.write_str("status"),
+            Self::ResolveProc => f.write_str("resolve_proc"),
         }
     }
 }
@@ -186,6 +190,7 @@ impl FromStr for ControlPort {
             "introspect" => Ok(Self::Introspect),
             "signal" => Ok(Self::Signal),
             "status" => Ok(Self::Status),
+            "resolve_proc" => Ok(Self::ResolveProc),
             _ => Err(ControlPortParseError::Unknown(s.to_string())),
         }
     }
@@ -249,6 +254,25 @@ mod tests {
             ControlPort::Status
         );
         assert_eq!(Port::control(ControlPort::Status).as_u64(), 2);
+    }
+
+    #[test]
+    fn test_control_port_wire_tags_and_resolution_roundtrip() {
+        for (port, tag) in [
+            (ControlPort::Introspect, 0),
+            (ControlPort::Signal, 1),
+            (ControlPort::Status, 2),
+            (ControlPort::ResolveProc, 3),
+        ] {
+            assert_eq!(Port::control(port).as_u64(), tag);
+            let bytes = bincode::serde::encode_to_vec(port, bincode::config::standard()).unwrap();
+            assert_eq!(bytes, vec![tag as u8]);
+            let (decoded, consumed): (ControlPort, _) =
+                bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+            assert_eq!(decoded, port);
+            assert_eq!(consumed, bytes.len());
+            assert_eq!(port.to_string().parse::<ControlPort>().unwrap(), port);
+        }
     }
 
     #[test]

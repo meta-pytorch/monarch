@@ -33,6 +33,7 @@
   - [Gateway](procs/gateway.md)
   - [Stable Locations](procs/stable_locations.md)
   - [Host](procs/host.md)
+  - [Endpoint-owned Proc Resolution](procs/host_identity.md)
 - [Actors](actors/index.md)
   - [Actor](actors/actor.md)
   - [Handler](actors/handler.md)

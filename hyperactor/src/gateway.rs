@@ -63,6 +63,7 @@ use crate::mailbox::UndeliverableReason;
 use crate::mailbox::UnroutableMailboxSender;
 use crate::proc::Proc;
 use crate::proc::WeakProc;
+use crate::proc::control;
 
 // ---------------------------------------------------------------------------
 // Gateway attach protocol
@@ -79,10 +80,7 @@ use crate::proc::WeakProc;
 /// Label used for attach-control envelopes.
 const ATTACH_CONTROL_LABEL: &str = "attach";
 
-/// Upper bound on how long [`Gateway::serve_via`] waits for the peer's
-/// [`AttachAck`]. A peer that accepts the connection but never replies
-/// (hung, misconfigured, or running an older protocol) would otherwise
-/// block the caller — typically Python `bootstrap_host` — indefinitely.
+/// Deadline for attach acknowledgement and one-shot identity queries.
 const ATTACH_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// First attach message. The upstream records the slot key and returns its
@@ -632,11 +630,12 @@ impl Gateway {
     /// With an upstream, its core/path location remains the default, and this
     /// listener is a local alias. Stopping a listener removes only its alias.
     pub fn serve(&self, addr: ChannelAddr) -> Result<GatewayServeHandle, ChannelError> {
-        let (serve_id, handle) = self.serve_inner(addr)?;
+        let (serve_id, handle, endpoint_owner) = self.serve_inner(addr)?;
         Ok(GatewayServeHandle {
             gateway: self.clone(),
             handle,
             stopped: false,
+            endpoint_owner: Some(endpoint_owner),
             kind: HandleKind::Serve {
                 serve_id: Some(serve_id),
             },
@@ -704,8 +703,10 @@ impl Gateway {
         let gateway = self.clone();
         let inner = server.inner;
         let serve_id = self.add_server(location);
+        let endpoint_owner = control::EndpointOwner::default();
+        let loop_owner = endpoint_owner.clone();
         let join_handle = tokio::spawn(async move {
-            duplex_accept_loop(inner, bound_addr, gateway, loop_token).await;
+            duplex_accept_loop(inner, bound_addr, gateway, loop_token, loop_owner).await;
             Ok::<(), MailboxServerError>(())
         });
         // The inner handle exists only so `join()`/`await` can await the
@@ -717,6 +718,7 @@ impl Gateway {
             gateway: self.clone(),
             handle,
             stopped: false,
+            endpoint_owner: Some(endpoint_owner),
             kind: HandleKind::ServeDuplex {
                 serve_id: Some(serve_id),
                 cancel_token,
@@ -747,7 +749,9 @@ impl Gateway {
         let mux =
             channel::serve_mux::<MessageEnvelope, MessageEnvelope, AttachWire>(addr, listener)?;
         let bound_addr = mux.addr().clone();
-        let simplex_gateway = self.clone();
+        let endpoint_owner = control::EndpointOwner::default();
+        let simplex_gateway = control::EndpointIngress::new(self.clone(), endpoint_owner.clone());
+        let duplex_owner = endpoint_owner.clone();
         let duplex_gateway = self.clone();
         let duplex_addr = bound_addr.clone();
         let raw = mux.serve(
@@ -766,14 +770,19 @@ impl Gateway {
                         cancel_token.cancel();
                     }
                 });
-                duplex_accept_loop(duplex_server, duplex_addr, duplex_gateway, loop_token).await;
+                duplex_accept_loop(
+                    duplex_server,
+                    duplex_addr,
+                    duplex_gateway,
+                    loop_token,
+                    duplex_owner,
+                )
+                .await;
             },
         );
-        Ok(GatewayServeHandle::from_mailbox_handle(
-            self.clone(),
-            bound_addr,
-            raw,
-        ))
+        let mut handle = GatewayServeHandle::from_mailbox_handle(self.clone(), bound_addr, raw);
+        handle.endpoint_owner = Some(endpoint_owner);
+        Ok(handle)
     }
 
     /// Serve this gateway on `addr`, optionally using an already-bound
@@ -795,12 +804,11 @@ impl Gateway {
             let addr = self.resolve_serve_addr(addr);
             let (addr, rx) = channel::serve_with_listener(addr, listener)?;
             let serve_id = self.add_server(Location::from(addr));
-            let raw = self.clone().serve(rx);
-            Ok(GatewayServeHandle::from_simplex(
-                self.clone(),
-                raw,
-                Some(serve_id),
-            ))
+            let owner = control::EndpointOwner::default();
+            let raw = control::EndpointIngress::new(self.clone(), owner.clone()).serve(rx);
+            let mut handle = GatewayServeHandle::from_simplex(self.clone(), raw, Some(serve_id));
+            handle.endpoint_owner = Some(owner);
+            Ok(handle)
         }
     }
 
@@ -844,11 +852,14 @@ impl Gateway {
 
         let serve_id = self.add_via_server(location, MailboxClient::new(duplex_tx).into_boxed());
         drop(reservation);
-        let serve_handle = self.serve_rx(AttachRx(duplex_rx));
+        let endpoint_owner = control::EndpointOwner::default();
+        let serve_handle = control::EndpointIngress::new(self.clone(), endpoint_owner.clone())
+            .serve(AttachRx(duplex_rx));
         Ok(GatewayServeHandle {
             gateway: self.clone(),
             handle: serve_handle,
             stopped: false,
+            endpoint_owner: Some(endpoint_owner),
             kind: HandleKind::ServeVia {
                 serve_id: Some(serve_id),
                 duplex_client: Some(duplex_client),
@@ -856,14 +867,53 @@ impl Gateway {
         })
     }
 
+    /// Resolve the proc owning the endpoint at `location`, using an existing
+    /// mailbox context. The query is routed like any other message, so the
+    /// returned address also carries ordinary actor traffic.
+    pub async fn resolve_endpoint_proc(
+        &self,
+        cx: &impl crate::context::Mailbox,
+        location: Location,
+    ) -> anyhow::Result<ProcAddr> {
+        self.resolve_endpoint_proc_with_timeout(cx, location, ATTACH_HANDSHAKE_TIMEOUT)
+            .await
+    }
+
+    async fn resolve_endpoint_proc_with_timeout(
+        &self,
+        cx: &impl crate::context::Mailbox,
+        location: Location,
+        timeout: Duration,
+    ) -> anyhow::Result<ProcAddr> {
+        tokio::time::timeout(timeout, async {
+            let (reply, receiver) = cx.mailbox().open_once_port::<control::ResolveProcResult>();
+            let mut reply = reply.bind();
+            reply.return_undeliverable(false);
+            let mut envelope = control::resolve_envelope(location.clone(), reply)?;
+            envelope.update_sender(cx.mailbox().actor_addr().clone());
+            let (returns, mut failures) =
+                cx.mailbox().open_port::<Undeliverable<MessageEnvelope>>();
+            self.post(envelope, returns.clone());
+            let id = tokio::select! {
+                result = receiver.recv() => result?.into_result()?,
+                result = failures.recv() => return Err(result?.into_error().into()),
+            };
+            Ok(ProcAddr::new(id, location))
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("endpoint proc query timed out"))?
+    }
+
     fn serve_inner(
         &self,
         addr: ChannelAddr,
-    ) -> Result<(ServeId, MailboxServerHandle), ChannelError> {
+    ) -> Result<(ServeId, MailboxServerHandle, control::EndpointOwner), ChannelError> {
         let addr = self.resolve_serve_addr(addr);
         let (addr, rx) = channel::serve(addr)?;
         let serve_id = self.add_server(Location::from(addr));
-        Ok((serve_id, self.serve_rx(rx)))
+        let owner = control::EndpointOwner::default();
+        let handle = control::EndpointIngress::new(self.clone(), owner.clone()).serve(rx);
+        Ok((serve_id, handle, owner))
     }
 
     fn resolve_serve_addr(&self, addr: ChannelAddr) -> ChannelAddr {
@@ -1023,6 +1073,7 @@ pub struct GatewayServeHandle {
     handle: MailboxServerHandle,
     stopped: bool,
     kind: HandleKind,
+    endpoint_owner: Option<control::EndpointOwner>,
 }
 
 /// Per-flavor teardown state for a [`GatewayServeHandle`].
@@ -1060,6 +1111,20 @@ impl fmt::Debug for GatewayServeHandle {
 }
 
 impl GatewayServeHandle {
+    /// Register the concrete live proc owning this listener. Registration is
+    /// listener-scoped and weak; conflicting live owners are rejected.
+    pub fn register_proc_owner(&self, proc: &Proc) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.stopped, "cannot register owner on a stopped endpoint");
+        anyhow::ensure!(
+            Arc::ptr_eq(&self.gateway.inner, &proc.gateway().inner),
+            "endpoint owner must be attached to its Gateway"
+        );
+        self.endpoint_owner
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("listener does not support endpoint resolution"))?
+            .register(proc)
+    }
+
     /// [`GatewayServeHandle`] of kind `Serve` for an already-open receiver.
     fn from_simplex(
         gateway: Gateway,
@@ -1070,6 +1135,7 @@ impl GatewayServeHandle {
             gateway,
             handle,
             stopped: false,
+            endpoint_owner: None,
             kind: HandleKind::Serve { serve_id },
         }
     }
@@ -1100,6 +1166,9 @@ impl GatewayServeHandle {
             return;
         }
         self.stopped = true;
+        if let Some(owner) = self.endpoint_owner.take() {
+            owner.clear();
+        }
         // `ServeDuplex` is driven by its cancellation token, not the
         // inner mailbox-server watch (whose receiver is unused), so
         // signal the token here and leave the inner handle alone.
@@ -1169,27 +1238,26 @@ impl Drop for GatewayServeHandle {
     }
 }
 
-/// Accept loop body shared by all duplex servers attached to a
-/// gateway. Each accepted connection is dispatched based on its first
-/// message:
-///
-/// * [`AttachRequest`] control envelope — register the peer in
-///   `peers`, reply with [`AttachAck::Accepted`] carrying the via
-///   location, then serve remaining envelope traffic from the duplex.
-///   If registration fails, reply with [`AttachAck::Rejected`] and
-///   close the connection.
-/// * regular [`MessageEnvelope`] — serve straight through.
+/// Dispatch attachment setup or ordinary inbound traffic. Runtime control is
+/// handled by the endpoint ingress throughout each connection's lifetime.
 async fn duplex_accept_loop(
     mut duplex_server: channel::duplex::DuplexServer<MessageEnvelope, AttachWire>,
     bound_addr: ChannelAddr,
     gateway: Gateway,
     cancel_token: CancellationToken,
+    endpoint_owner: control::EndpointOwner,
 ) {
     let mut tasks: JoinSet<()> = JoinSet::new();
     loop {
         let accept = tokio::select! {
             result = duplex_server.accept() => result,
             () = cancel_token.cancelled() => break,
+            result = tasks.join_next(), if !tasks.is_empty() => {
+                if let Some(Err(error)) = result {
+                    tracing::error!(%error, "duplex connection task failed");
+                }
+                continue;
+            },
         };
         let (duplex_rx, duplex_tx) = match accept {
             Ok(pair) => pair,
@@ -1208,10 +1276,16 @@ async fn duplex_accept_loop(
             duplex_rx,
             duplex_tx,
             cancel_token.clone(),
+            endpoint_owner.clone(),
         ));
     }
 
-    while tasks.join_next().await.is_some() {}
+    endpoint_owner.clear();
+    while let Some(result) = tasks.join_next().await {
+        if let Err(error) = result {
+            tracing::error!(%error, "duplex connection task failed during shutdown");
+        }
+    }
     // Tear down the server now that the accept loop has exited. The loop
     // broke on its own `cancel_token`, which is distinct from the server's
     // listener cancel, so we must signal the listener explicitly: `stop`
@@ -1229,6 +1303,7 @@ async fn serve_duplex_connection(
     mut duplex_rx: channel::duplex::DuplexRx<MessageEnvelope>,
     duplex_tx: channel::duplex::DuplexTx<AttachWire>,
     cancel_token: CancellationToken,
+    endpoint_owner: control::EndpointOwner,
 ) {
     let first_msg = tokio::select! {
         result = duplex_rx.recv() => match result {
@@ -1258,7 +1333,8 @@ async fn serve_duplex_connection(
             location: via_location,
         }));
 
-        let mut handle = gateway.serve_rx(duplex_rx);
+        let mut handle =
+            control::EndpointIngress::new(gateway.clone(), endpoint_owner.clone()).serve(duplex_rx);
         tokio::select! {
             _ = &mut handle => {}
             () = cancel_token.cancelled() => {
@@ -1283,7 +1359,7 @@ async fn serve_duplex_connection(
             first: Some(first_msg),
             inner: duplex_rx,
         };
-        let mut handle = gateway.serve_rx(rx);
+        let mut handle = control::EndpointIngress::new(gateway.clone(), endpoint_owner).serve(rx);
         tokio::select! {
             _ = &mut handle => {}
             () = cancel_token.cancelled() => {
@@ -1390,6 +1466,12 @@ impl Gateway {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         if envelope.route_cursor().is_none() {
+            // Resolution must arrive through the selected endpoint's ingress,
+            // even when that endpoint is one of our own advertised locations.
+            if control::is_resolve(&envelope) {
+                self.forwarder().post(envelope, return_handle);
+                return;
+            }
             if let Some(cursor) = self.local_route_cursor(envelope.dest().location()) {
                 envelope.set_route_cursor(cursor);
             } else {
@@ -1399,6 +1481,10 @@ impl Gateway {
         }
 
         if envelope.route_complete() {
+            if control::is_resolve(&envelope) {
+                Self::return_no_route(envelope, return_handle);
+                return;
+            }
             let local = self
                 .inner
                 .procs
@@ -1465,6 +1551,9 @@ impl Gateway {
 
 #[cfg(test)]
 mod routing_tests;
+
+#[cfg(test)]
+mod discovery_tests;
 
 #[cfg(test)]
 mod tests {
