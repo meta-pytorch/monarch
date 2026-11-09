@@ -49,6 +49,11 @@ declare_static_counter!(
 // Tracks the number of messages that were posted.
 hyperactor_telemetry::declare_static_counter!(MAILBOX_POSTS, "mailbox.posts");
 
+declare_static_counter!(
+    GATEWAY_ATTACHMENT_REPLACEMENTS,
+    "gateway.attachment_replacements"
+);
+
 // ACTOR
 // Tracks the current size of the message queue for actors (increases when messages are queued, decreases when processed)
 declare_static_up_down_counter!(ACTOR_MESSAGE_QUEUE_SIZE, "actor.message_queue_size");

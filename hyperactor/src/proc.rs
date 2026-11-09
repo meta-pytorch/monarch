@@ -6853,10 +6853,8 @@ mod tests {
         rx.await.unwrap();
     }
 
-    /// Proc ownership is based on `ProcId`, not the routeable
-    /// `ProcAddr`. A proc may be reached through multiple locations,
-    /// but a different proc id must still forward even when the
-    /// location matches.
+    /// Proc-local ownership is by id; a missing incarnation at an owned
+    /// location is terminal rather than being forwarded back out.
     #[tokio::test]
     async fn test_post_routes_by_proc_id() {
         use crate::mailbox::monitored_return_handle;
@@ -6930,20 +6928,34 @@ mod tests {
         );
         assert_eq!(forwarded.load(Ordering::SeqCst), 0);
 
-        // Different ProcId, same location: forward.
+        let return_client = proc.client("return");
+        let (returns, mut returned) = return_client.open_port::<Undeliverable<MessageEnvelope>>();
         let other_id_same_location_dest = proc_other_id_same_location
             .actor_addr("worker")
             .port_addr(Port::from(1234));
         proc.post(
             MessageEnvelope::new(
                 sender,
-                other_id_same_location_dest,
+                other_id_same_location_dest.clone(),
                 wirevalue::Any::serialize(&1u64).unwrap(),
                 Flattrs::new(),
             ),
-            monitored_return_handle(),
+            returns,
         );
-        assert_eq!(forwarded.load(Ordering::SeqCst), 1);
+        assert_eq!(forwarded.load(Ordering::SeqCst), 0);
+        let Undeliverable::Returned(message) = returned.recv().await.unwrap() else {
+            panic!("expected stale incarnation failure");
+        };
+        assert_eq!(message.dest(), &other_id_same_location_dest);
+        assert!(matches!(
+            &message.root_delivery_failure().unwrap().kind,
+            crate::mailbox::DeliveryFailureKind::InvalidReference(
+                crate::mailbox::InvalidReference {
+                    reason: crate::mailbox::InvalidReferenceReason::ProcNotExist,
+                    ..
+                }
+            )
+        ));
     }
 
     /// `Instance::post` (-> `MailboxExt::post`) must stamp `SENDER_ACTOR_ID`
@@ -7346,16 +7358,12 @@ mod tests {
         // mirroring the host-spawn convention so the peer route
         // matches the outermost via hop.
         let remote_uid = Uid::Instance(0xabc123, Some(Label::strip("remote")));
-        let remote_inner_addr = ChannelAddr::Local(1234);
-        let remote_location =
-            Location::from(remote_inner_addr.clone()).with_via(remote_uid.clone());
+        let remote_location = gateway.default_location().append_via(remote_uid.clone());
         let remote_proc = ProcAddr::new(ProcId::new(remote_uid.clone(), None), remote_location);
         let remote_dest = remote_proc.actor_addr("worker").port_addr(Port::from(0));
 
         let (tx, mut rx) = unbounded_channel::<MessageEnvelope>();
-        let route_guard = gateway
-            .attach_peer(remote_uid.clone(), MpscSender(tx).into_boxed())
-            .unwrap();
+        let route_guard = gateway.attach_peer(remote_uid.clone(), MpscSender(tx).into_boxed());
 
         gateway.post(
             MessageEnvelope::serialize(
@@ -7372,15 +7380,9 @@ mod tests {
             .await
             .expect("attach_peer did not route envelope before timeout")
             .expect("recording sender closed unexpectedly");
-        // The outer via is peeled from the next hop before
-        // forwarding; the canonical destination is preserved.
         assert_eq!(routed.dest(), &remote_dest);
-        assert_eq!(routed.next_hop().id(), remote_dest.id());
-        assert_eq!(routed.next_hop().location().addr(), &remote_inner_addr);
-        assert!(
-            !routed.next_hop().location().is_via(),
-            "outer via hop must be peeled from the next hop"
-        );
+        assert_eq!(routed.route_cursor(), Some(1));
+        assert!(routed.route_complete());
 
         drop(route_guard);
 

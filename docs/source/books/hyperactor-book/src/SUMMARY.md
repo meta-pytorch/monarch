@@ -31,6 +31,7 @@
 - [Procs](procs/index.md)
   - [Proc](procs/proc.md)
   - [Gateway](procs/gateway.md)
+  - [Stable Locations](procs/stable_locations.md)
   - [Host](procs/host.md)
 - [Actors](actors/index.md)
   - [Actor](actors/actor.md)
