@@ -183,14 +183,24 @@ def _wait_for_peers(owner: Owner, count: int) -> None:
     assert len(_peers(owner)) == count, _peers(owner)
 
 
+def _process_state(pid: int) -> str:
+    """Return the single-letter scheduler state of `pid` (e.g. "T" when stopped)."""
+    if sys.platform == "linux":
+        with open(f"/proc/{pid}/stat") as f:
+            # The process name in parentheses can contain spaces and parentheses.
+            return f.read().rsplit(")", 1)[1].split()[0]
+    # No procfs on macOS; ps reports the state first, followed by flag letters.
+    return subprocess.check_output(
+        ["ps", "-o", "state=", "-p", str(pid)], text=True
+    ).strip()[:1]
+
+
 def _wait_for_stopped(process: subprocess.Popen[str]) -> None:
     """Acknowledge SIGSTOP before sending a join; fail rather than race onward."""
     deadline = time.monotonic() + WAIT
     while time.monotonic() < deadline:
         assert process.poll() is None, "the owner exited before it could be held"
-        with open(f"/proc/{process.pid}/stat") as f:
-            # The process name in parentheses can contain spaces and parentheses.
-            state = f.read().rsplit(")", 1)[1].split()[0]
+        state = _process_state(process.pid)
         if state == "T":
             return
         time.sleep(0.01)
