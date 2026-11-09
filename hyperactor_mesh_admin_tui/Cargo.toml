@@ -32,7 +32,7 @@ wezterm-dynamic = { git = "https://github.com/wezterm/wezterm.git", rev = "05343
 
 [dev-dependencies]
 axum = { version = "0.8.9", features = ["macros", "multipart", "ws"] }
-uuid = { version = "1.28.0", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
+uuid = { version = "1.29.1", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
 
 [lints]
 workspace = true
