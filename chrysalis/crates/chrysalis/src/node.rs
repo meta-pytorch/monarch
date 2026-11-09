@@ -618,6 +618,7 @@ mod tests {
     use rcgen::KeyUsagePurpose;
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
+    use tokio::task::JoinSet;
     use tokio::time::timeout;
 
     use super::*;
@@ -828,6 +829,91 @@ mod tests {
         timeout(TEST_TIMEOUT, parent.join())
             .await
             .expect("parent shutdown timed out");
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_dials_to_one_peer_complete() {
+        const STREAMS: u8 = 8;
+        let network = InprocNetwork::new(NonZeroUsize::new(1024).expect("nonzero capacity"));
+        let parent_socket = Arc::new(network.bind(1).expect("bind parent"));
+        let child_socket = Arc::new(network.bind(2).expect("bind child"));
+        let parent_address = parent_socket.local_addr().clone();
+        let mut identities = test_node_identities(2).into_iter();
+        let parent_identity = identities.next().expect("parent identity");
+        let parent = Arc::new(
+            Node::create(NodeConfig::new(TransportConfig::new(
+                parent_socket,
+                parent_identity,
+            )))
+            .expect("create parent node"),
+        );
+        let child_identity = identities.next().expect("child identity");
+        let child = Node::create(
+            NodeConfig::new(TransportConfig::new(child_socket, child_identity)).with_parent(
+                NamespaceConfig::try_new(
+                    parent.pid(),
+                    vec![chrysalis_nameserver::ParentEndpoint::new(parent_address)],
+                )
+                .expect("construct parent config")
+                .with_retry_delay(Duration::from_millis(10)),
+            ),
+        )
+        .expect("create child node");
+        wait_for_publication(&parent, child.pid()).await;
+
+        // Neither side panics while exchanging, so a failure still reaches the
+        // cleanup below instead of leaving tasks and nodes running.
+        let serve = async {
+            for _ in 0..STREAMS {
+                let mut incoming = child.accept().await.map_err(io::Error::other)?;
+                let stream = incoming.stream_mut();
+                let mut request = Vec::new();
+                stream.recv_mut().read_to_end(&mut request).await?;
+                stream.send_mut().write_all(&request).await?;
+                stream.send_mut().finish().await.map_err(io::Error::other)?;
+            }
+            Ok::<_, io::Error>(())
+        };
+        let mut exchanges = JoinSet::new();
+        for byte in 0..STREAMS {
+            let parent = Arc::clone(&parent);
+            let target = child.pid();
+            exchanges.spawn(async move {
+                let mut stream = parent
+                    .dial(target, ResolveConsistency::Cached)
+                    .await
+                    .map_err(io::Error::other)?;
+                stream.send_mut().write_all(&[byte]).await?;
+                stream.send_mut().finish().await.map_err(io::Error::other)?;
+                let mut echo = Vec::new();
+                stream.recv_mut().read_to_end(&mut echo).await?;
+                Ok::<_, io::Error>((byte, echo))
+            });
+        }
+        let drain = async {
+            let mut echoes = Vec::new();
+            while let Some(joined) = exchanges.join_next().await {
+                echoes.push(joined.map_err(io::Error::other)??);
+            }
+            Ok::<_, io::Error>(echoes)
+        };
+        let outcome = timeout(TEST_TIMEOUT, async { tokio::try_join!(serve, drain) }).await;
+
+        exchanges.shutdown().await;
+        child.shutdown();
+        parent.shutdown();
+        let (child_joined, parent_joined) = tokio::join!(
+            timeout(TEST_TIMEOUT, child.join()),
+            timeout(TEST_TIMEOUT, parent.join()),
+        );
+        child_joined.expect("child shutdown timed out");
+        parent_joined.expect("parent shutdown timed out");
+        let (_, mut echoes) = outcome
+            .expect("concurrent first dials should complete in time")
+            .expect("every exchange should succeed");
+        echoes.sort();
+        let expected: Vec<_> = (0..STREAMS).map(|byte| (byte, vec![byte])).collect();
+        assert_eq!(echoes, expected);
     }
 
     #[tokio::test]
