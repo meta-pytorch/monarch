@@ -21,6 +21,16 @@ from monarch.simulator.simulator import Simulator, SimulatorTraceMode
 from monarch.simulator.utils import file_path_with_iter
 
 
+@pytest.fixture(autouse=True)
+def require_real_runtime_profiler(monkeypatch: pytest.MonkeyPatch) -> None:
+    def reject_fake_profiler(*args: object, **kwargs: object) -> None:
+        raise AssertionError("GPU simulator tests require real CUDA profiling")
+
+    monkeypatch.setattr(
+        "monarch.simulator.simulator.FakeRuntimeProfiler", reject_fake_profiler
+    )
+
+
 def with_tempfile(suffix=".json", unlink=True):
     def decorator(func):
         @functools.wraps(func)

@@ -4,12 +4,12 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
+from __future__ import annotations
 
 import os
 import sys
 import unittest
-from typing import cast, Dict, List
+from typing import cast
 
 import cloudpickle
 import torch
@@ -24,11 +24,11 @@ class CudaInitTestActor(Actor):
     """Actor that initializes CUDA and checks environment variables"""
 
     def __init__(self) -> None:
-        self.env_vars_before_init: Dict[str, str] = {}
+        self.env_vars_before_init: dict[str, str] = {}
         self.cuda_initialized: bool = False
 
     @endpoint
-    async def init_cuda_and_check_env(self, env_var_names: List[str]) -> Dict[str, str]:
+    async def init_cuda_and_check_env(self, env_var_names: list[str]) -> dict[str, str]:
         """
         Check environment variables before initializing CUDA
         Returns the values of the environment variables
@@ -99,8 +99,8 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
 
     async def test_lambda_sets_env_vars_before_cuda_init(self) -> None:
         """Test that environment variables are set by lambda before CUDA initialization"""
-        cuda_env_vars: Dict[str, str] = {
-            "CUDA_VISIBLE_DEVICES": "0",
+        cuda_env_vars: dict[str, str] = {
+            "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", "0"),
             "CUDA_CACHE_PATH": "/tmp/cuda_cache_test",
             "CUDA_LAUNCH_BLOCKING": "1",
         }
@@ -118,7 +118,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
                 list(cuda_env_vars.keys())
             )
 
-            await actor.is_cuda_initialized.call_one()
+            self.assertTrue(await actor.is_cuda_initialized.call_one())
 
             for name, expected_value in cuda_env_vars.items():
                 self.assertEqual(
@@ -132,7 +132,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
 
     async def test_proc_mesh_with_lambda_env(self) -> None:
         """Test that proc_mesh function works with lambda for env parameter"""
-        cuda_env_vars: Dict[str, str] = {
+        cuda_env_vars: dict[str, str] = {
             "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
             "CUDA_MODULE_LOADING": "LAZY",
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
@@ -151,6 +151,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
                 env_vars = await actor.init_cuda_and_check_env.call_one(
                     list(cuda_env_vars.keys())
                 )
+                self.assertTrue(await actor.is_cuda_initialized.call_one())
                 for name, expected_value in cuda_env_vars.items():
                     self.assertEqual(
                         env_vars.get(name),
@@ -160,7 +161,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
 
     async def test_proc_mesh_with_dictionary_env(self) -> None:
         """Test that proc_mesh function works with dictionary for env parameter"""
-        cuda_env_vars: Dict[str, str] = {
+        cuda_env_vars: dict[str, str] = {
             "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
             "CUDA_MODULE_LOADING": "LAZY",
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
@@ -176,6 +177,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
                 env_vars = await actor.init_cuda_and_check_env.call_one(
                     list(cuda_env_vars.keys())
                 )
+                self.assertTrue(await actor.is_cuda_initialized.call_one())
 
                 self.assertEqual(
                     env_vars.get("CUDA_DEVICE_ORDER"),
