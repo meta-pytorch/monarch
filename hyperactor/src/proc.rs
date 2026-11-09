@@ -97,6 +97,8 @@
 //!   treat the age as best-effort telemetry, not a monotonic
 //!   invariant.
 
+pub(crate) mod control;
+
 use std::any::Any;
 use std::any::TypeId;
 use std::collections::BTreeMap;

@@ -1374,6 +1374,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
         // `MailboxSender`s to attempt to forward them back to their
         // senders.
         let (return_handle, mut undeliverable_rx) = undeliverable::new_undeliverable_port();
+        let failure_sender = self.clone();
         tokio::task::spawn(async move {
             // Returns go back to the original sender. If one is undeliverable
             // too (the sender already stopped, such as during shutdown), log
@@ -1412,6 +1413,12 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                                 ),
                             ))
                         });
+                        if crate::proc::control::return_resolution_failure(
+                            &failure_sender,
+                            &envelope,
+                        ) {
+                            continue;
+                        }
                         let sender_id: ActorAddr = envelope.sender().clone();
                         let mut return_port =
                             PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(
