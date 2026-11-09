@@ -244,6 +244,8 @@ if "PYO3_PYTHON" not in os.environ:
 
 # Set Rust and C++ flags
 rustflags = ["-Zthreads=16", "--cfg=tracing_unstable"]
+# CI disables the Send/Sync shortcut impls so rustc verifies the
+# underlying auto-trait bounds structurally.
 if os.environ.get("CI") == "true":
     rustflags.append("--cfg=hyperactor_verify_auto_traits")
 if os.environ.get("ENABLE_MESSAGE_LOGGING"):
