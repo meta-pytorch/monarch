@@ -96,7 +96,7 @@ def test_batch_mode_invokes_in_allocation_runner(tmp_path, monkeypatch):
     assert isinstance(cached, BatchJob)
     assert cached.active
     assert not cached._job.active
-    assert job._pbs_job_id == "12345.pbs-server"
+    assert job.job_id == "12345.pbs-server"
 
 
 def test_external_controller_mode_has_no_client(tmp_path, monkeypatch):
@@ -187,6 +187,47 @@ def test_wait_for_job_start_raises_on_finished_job():
         with pytest.raises(RuntimeError, match="failed with state: F"):
             job._wait_for_job_start("12345.pbs-server", 2)
     kill.assert_called_once()
+
+
+def test_job_id_fallback_order(monkeypatch):
+    monkeypatch.delenv("MONARCH_BATCH_JOB", raising=False)
+    monkeypatch.delenv("PBS_JOBID", raising=False)
+    job = _make_job()
+    assert job.job_id is None
+
+    monkeypatch.setenv("PBS_JOBID", "99999.pbs-server")
+    assert job.job_id is None
+
+    monkeypatch.setenv("MONARCH_BATCH_JOB", "1")
+    assert job.job_id == "99999.pbs-server"
+
+    job._pbs_job_id = "12345.pbs-server"
+    assert job.job_id == "12345.pbs-server"
+
+
+def test_job_id_after_reattaching_to_cached_job(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MONARCH_BATCH_JOB", raising=False)
+    monkeypatch.delenv("PBS_JOBID", raising=False)
+    cached_path = str(tmp_path / "job_state.pkl")
+    with (
+        patch("monarch._src.job.pbs.subprocess.run", side_effect=_fake_qsub),
+        patch.object(PBSJob, "_get_job_info_json", return_value={"job_state": "R"}),
+        patch.object(PBSJob, "_connect_host_meshes", return_value={}),
+    ):
+        submitted = _make_job()
+        submitted.apply()
+        submitted.dump(cached_path)
+
+        job = _make_job()
+        job.state(cached_path=cached_path)
+
+    assert job.apply_id == submitted.apply_id
+    assert job.job_id == "12345.pbs-server"
+
+    with patch("monarch._src.job.pbs.subprocess.run", side_effect=_fake_qsub):
+        job.kill()
+    assert job.job_id is None
 
 
 def test_state_pairs_controller_addresses_with_worker_service_proc_ids():

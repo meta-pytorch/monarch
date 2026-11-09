@@ -138,6 +138,16 @@ class PBSJob(JobTrait):
     def add_mesh(self, name: str, num_nodes: int) -> None:
         self._meshes[name] = num_nodes
 
+    @property
+    def job_id(self) -> Optional[str]:
+        """The PBS job ID, or ``None`` if no job was submitted or it was killed.
+
+        Inside the job's own batch allocation, falls back to ``$PBS_JOBID``.
+        """
+        running = self._running
+        job = running if isinstance(running, PBSJob) else self
+        return job._resolved_job_id()
+
     def _resolved_job_id(self) -> Optional[str]:
         """The submitted job id, falling back to ``$PBS_JOBID`` in batch mode."""
         if self._pbs_job_id is not None:
