@@ -45,6 +45,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use hyperactor::channel::ChannelAddr;
@@ -124,6 +125,10 @@ pub enum ProcExitKind {
 /// Terminal status of a proc.
 #[derive(Debug, Clone)]
 pub struct ProcExitResult {
+    /// When the launcher observed the exit, on the host's monotonic clock.
+    /// Record this before cleanup or result delivery: a later host stop
+    /// must not turn an already observed failure into a clean stop.
+    pub observed_at: Instant,
     /// How the proc terminated.
     pub kind: ProcExitKind,
     /// Tail of stderr output if available.

@@ -72,6 +72,7 @@ use async_trait::async_trait;
 use futures::Future;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use futures::stream;
 use hyperactor::Actor;
 use hyperactor::ActorAddr;
@@ -82,6 +83,7 @@ use hyperactor::Location;
 use hyperactor::Proc;
 use hyperactor::ProcAddr;
 use hyperactor::ProcId;
+use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Binds;
 use hyperactor::actor::Referable;
 use hyperactor::channel;
@@ -607,6 +609,25 @@ impl<M: ProcManager> Host<M> {
                     Entry::Occupied(_) => return Err(HostError::ProcExists(name.clone())),
                 }
 
+                // Once the proc exits, answer for its actors at the gateway
+                // (see `PeerAttachGuard::mark_dead`), until the route is
+                // released.
+                if let Some(exited) = proc_handle_guard.handle().terminal_actor_status() {
+                    let procs = Arc::downgrade(&procs);
+                    let name = name.clone();
+                    let proc_id = proc_id.clone();
+                    tokio::spawn(async move {
+                        let status = exited.await;
+                        if let Some(procs) = procs.upgrade()
+                            && let Some(guard) =
+                                procs.lock().expect("procs mutex poisoned").get(&name)
+                        {
+                            tracing::info!(%proc_id, %status, "proc exited; answering for its actors");
+                            guard.mark_dead(status);
+                        }
+                    });
+                }
+
                 Ok((proc_id.clone(), agent_ref))
             }
             .await;
@@ -1098,6 +1119,19 @@ pub trait ProcHandle: Clone + Send + Sync + 'static {
     /// sends `SIGKILL`. Also idempotent/race-safe; the terminal
     /// outcome is the one observed by `wait()`.
     async fn kill(&self) -> Result<Self::TerminalStatus, TerminateError<Self::TerminalStatus>>;
+
+    /// A future that resolves once the proc has exited, with the terminal
+    /// status that each of its actors reports from then on: a clean stop if
+    /// the host had begun stopping or killing the proc when its exit was
+    /// observed, the exit as a failure otherwise, even if the proc's owner
+    /// or mesh had asked for a stop. [`Host`] answers status queries for the proc's
+    /// actors with it.
+    ///
+    /// Returns `None` if the handle does not observe its proc's exit; the
+    /// host then keeps routing to the proc.
+    fn terminal_actor_status(&self) -> Option<BoxFuture<'static, ActorStatus>> {
+        None
+    }
 }
 
 /// A trait describing a manager of procs, responsible for bootstrapping
@@ -1880,6 +1914,8 @@ mod tests {
     use hyperactor::Label;
     use hyperactor::Location;
     use hyperactor::OncePortRef;
+    #[cfg(fbcode_build)]
+    use hyperactor::StatusMessage;
     use hyperactor::Uid;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Tx;
@@ -1909,6 +1945,8 @@ mod tests {
     use crate::config_dump::ConfigDump;
     #[cfg(fbcode_build)]
     use crate::config_dump::ConfigDumpResult;
+    #[cfg(fbcode_build)]
+    use crate::proc_agent::ProcAgent;
 
     #[tokio::test]
     async fn test_basic() {
@@ -2043,6 +2081,145 @@ mod tests {
             None,
         );
         assert_bootstrap_child_round_trip(service_proc_id).await;
+    }
+
+    /// A host on a [`BootstrapProcManager`], with one child spawned as
+    /// `name`, whose address and agent are returned.
+    #[cfg(fbcode_build)]
+    async fn bootstrap_host_with_child(
+        name: &str,
+    ) -> (Host<BootstrapProcManager>, ProcAddr, ActorRef<ProcAgent>) {
+        let gateway = Gateway::new();
+        let manager = BootstrapProcManager::new(BootstrapCommand::test(), gateway.clone()).unwrap();
+        let host = Host::new_with_gateway(
+            manager,
+            ProcAddr::new(
+                service_proc_id(),
+                ChannelAddr::any(ChannelTransport::Unix).into(),
+            ),
+            None,
+            gateway,
+            None,
+        )
+        .await
+        .unwrap();
+        let (proc_addr, agent) = host
+            .spawn(
+                name.to_string(),
+                BootstrapProcConfig {
+                    create_rank: 0,
+                    client_config_override: Attrs::new(),
+                    proc_bind: None,
+                    bootstrap_command: None,
+                },
+            )
+            .await
+            .unwrap();
+        (host, proc_addr, agent)
+    }
+
+    /// Poll `actor`'s status until it is terminal, for at most `timeout`.
+    #[cfg(fbcode_build)]
+    async fn terminal_status(
+        cx: &impl context::Actor,
+        actor: &ActorAddr,
+        timeout: Duration,
+    ) -> Option<ActorStatus> {
+        tokio::time::timeout(timeout, async {
+            loop {
+                let (reply, rx) = cx.mailbox().open_once_port::<Option<ActorStatus>>();
+                let mut status_port = actor.status_port();
+                status_port.return_undeliverable(false);
+                status_port.post(
+                    cx,
+                    StatusMessage::GetStatus {
+                        reply: reply.bind(),
+                        delivery: None,
+                    },
+                );
+                if let Ok(Ok(Some(status))) =
+                    tokio::time::timeout(Duration::from_millis(500), rx.recv()).await
+                    && status.is_terminal()
+                {
+                    return status;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .ok()
+    }
+
+    /// The host answers for any actor on a child that was killed before the
+    /// host began stopping it with the failure, in the managed mesh's
+    /// wording, also after the host then stops it, and until it terminates
+    /// its children.
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn test_host_answers_for_killed_child() {
+        let (mut host, proc_addr, agent) = bootstrap_host_with_child("killed-child").await;
+        let client = host.system_proc().client("status");
+        host.manager()
+            .launcher()
+            .kill(&proc_addr)
+            .await
+            .expect("kill the child");
+
+        let killed = ActorStatus::generic_failure(
+            "the process this actor was running on failed: Killed(sig=9)",
+        );
+        for actor in [agent.actor_addr().clone(), proc_addr.actor_addr("unknown")] {
+            assert_eq!(
+                terminal_status(&client, &actor, Duration::from_secs(30)).await,
+                Some(killed.clone()),
+                "status of {actor}",
+            );
+        }
+        host.manager()
+            .request_stop(
+                &client,
+                &proc_addr,
+                Duration::from_secs(1),
+                "stop after death",
+            )
+            .await;
+        assert_eq!(
+            terminal_status(&client, agent.actor_addr(), Duration::from_secs(30)).await,
+            Some(killed),
+            "a stop that begins after the exit does not change the failure",
+        );
+
+        let summary = host
+            .terminate_children(&client, Duration::from_secs(2), 1, "test complete")
+            .await;
+        assert_eq!(summary.failed, 0);
+        assert_eq!(
+            terminal_status(&client, agent.actor_addr(), Duration::from_secs(2)).await,
+            None,
+            "terminating the children releases the dead-proc route",
+        );
+        host.shutdown_servers().await;
+    }
+
+    /// The host answers for the actors on a child that exited after the host
+    /// began stopping it as cleanly stopped, also when the child ends by a
+    /// signal.
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn test_host_answers_for_stopped_child() {
+        let (mut host, proc_addr, agent) = bootstrap_host_with_child("stopped-child").await;
+        let client = host.system_proc().client("status");
+        // Without a grace period, the host signals the child at once.
+        host.terminate_proc(&client, &proc_addr, Duration::ZERO, "test stop")
+            .await
+            .expect("stop the child");
+
+        let status = terminal_status(&client, agent.actor_addr(), Duration::from_secs(30)).await;
+        assert!(
+            matches!(status, Some(ActorStatus::Stopped(_))),
+            "expected a clean stop, got {status:?}",
+        );
+        host.shutdown_servers().await;
     }
 
     #[tokio::test]

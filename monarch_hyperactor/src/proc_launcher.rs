@@ -22,6 +22,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::Context as _;
 use async_trait::async_trait;
@@ -123,6 +124,8 @@ mod py {
 /// Decoding is *strict*: all required attributes must be present
 /// with correct types.
 mod decode {
+    use std::time::Instant;
+
     use hyperactor_mesh::proc_launcher::ProcExitKind;
     use hyperactor_mesh::proc_launcher::ProcExitResult;
     use hyperactor_mesh::proc_launcher::ProcLauncherError;
@@ -251,7 +254,7 @@ mod decode {
     ///
     /// `stderr_tail` is always populated from the decoded payload
     /// (possibly empty).
-    fn decoded_to_exit_result(d: DecodedExit) -> ProcExitResult {
+    fn decoded_to_exit_result(d: DecodedExit, observed_at: Instant) -> ProcExitResult {
         let kind = if let Some(reason) = d.failed_reason {
             ProcExitKind::Failed { reason }
         } else if let Some(sig) = d.signal {
@@ -267,6 +270,7 @@ mod decode {
         };
 
         ProcExitResult {
+            observed_at,
             kind,
             stderr_tail: Some(d.stderr_tail),
         }
@@ -280,12 +284,16 @@ mod decode {
     /// [`ProcExitKind::Failed`]. No stderr tail is attached because the
     /// failure originated in the spawner logic rather than the launched
     /// process.
-    fn exception_to_exit_result(err_obj: &Bound<'_, PyAny>) -> ProcExitResult {
+    fn exception_to_exit_result(
+        err_obj: &Bound<'_, PyAny>,
+        observed_at: Instant,
+    ) -> ProcExitResult {
         let reason = format!(
             "spawner raised: {}",
             super::py::pyany_to_error_string(err_obj)
         );
         ProcExitResult {
+            observed_at,
             kind: ProcExitKind::Failed { reason },
             stderr_tail: None,
         }
@@ -307,6 +315,7 @@ mod decode {
     /// kind is treated as a protocol error.
     pub(super) fn convert_py_exit_result(
         msg: crate::actor::PythonMessage,
+        observed_at: Instant,
     ) -> Result<ProcExitResult, ProcLauncherError> {
         use crate::actor::PythonMessageKind;
 
@@ -319,7 +328,7 @@ mod decode {
                         .call_method1("loads", (msg.message.to_bytes().as_ref(),))
                         .map_err(|e| ProcLauncherError::Other(format!("cloudpickle.loads: {e}")))?;
                     let decoded = decode_exit_obj(&obj)?;
-                    Ok(decoded_to_exit_result(decoded))
+                    Ok(decoded_to_exit_result(decoded, observed_at))
                 }
                 PythonMessageKind::Exception { .. } => {
                     let err_obj = cloudpickle
@@ -327,7 +336,7 @@ mod decode {
                         .map_err(|e| {
                             ProcLauncherError::Other(format!("cloudpickle.loads exception: {e}"))
                         })?;
-                    Ok(exception_to_exit_result(&err_obj))
+                    Ok(exception_to_exit_result(&err_obj, observed_at))
                 }
                 _ => Err(ProcLauncherError::Other(
                     "unexpected message kind in exit result".into(),
@@ -356,7 +365,7 @@ mod decode {
                 failed_reason: Some("spawn failed".into()),
                 stderr_tail: vec!["error line".into()],
             };
-            let result = decoded_to_exit_result(decoded);
+            let result = decoded_to_exit_result(decoded, Instant::now());
             // failed_reason takes priority over everything else
             assert!(matches!(
                 result.kind,
@@ -377,7 +386,7 @@ mod decode {
                 failed_reason: None,
                 stderr_tail: vec![],
             };
-            let result = decoded_to_exit_result(decoded);
+            let result = decoded_to_exit_result(decoded, Instant::now());
             assert!(matches!(
                 result.kind,
                 ProcExitKind::Signaled {
@@ -399,7 +408,9 @@ mod decode {
                 failed_reason: None,
                 stderr_tail: vec!["line1".into(), "line2".into()],
             };
-            let result = decoded_to_exit_result(decoded);
+            let observed_at = Instant::now();
+            let result = decoded_to_exit_result(decoded, observed_at);
+            assert_eq!(result.observed_at, observed_at);
             assert!(matches!(result.kind, ProcExitKind::Exited { code: 42 }));
             assert_eq!(
                 result.stderr_tail,
@@ -421,7 +432,7 @@ mod decode {
                 failed_reason: None,
                 stderr_tail: vec![],
             };
-            let result = decoded_to_exit_result(decoded);
+            let result = decoded_to_exit_result(decoded, Instant::now());
             assert!(matches!(result.kind, ProcExitKind::Exited { code: -1 }));
         }
 
@@ -801,23 +812,31 @@ impl ProcLauncher for ActorProcLauncher {
             // spawner having stopped since.
             let result = tokio::select! {
                 biased;
-                reply = exit_port_rx.recv() => match reply {
-                    Ok(py_message) => {
-                        convert_py_exit_result(py_message).unwrap_or_else(|e| ProcExitResult {
+                reply = exit_port_rx.recv() => {
+                    // Python decoding and active-proc cleanup can delay
+                    // delivery, so preserve when the report was received.
+                    let observed_at = Instant::now();
+                    match reply {
+                        Ok(py_message) => {
+                            convert_py_exit_result(py_message, observed_at).unwrap_or_else(|e| ProcExitResult {
+                                observed_at,
+                                kind: ProcExitKind::Failed {
+                                    reason: format!("failed to decode exit result: {e}"),
+                                },
+                                stderr_tail: None,
+                            })
+                        }
+                        Err(_) => ProcExitResult {
+                            observed_at,
                             kind: ProcExitKind::Failed {
-                                reason: format!("failed to decode exit result: {e}"),
+                                reason: "exit port closed (spawner crashed or forgot to send)".into(),
                             },
                             stderr_tail: None,
-                        })
-                    }
-                    Err(_) => ProcExitResult {
-                        kind: ProcExitKind::Failed {
-                            reason: "exit port closed (spawner crashed or forgot to send)".into(),
                         },
-                        stderr_tail: None,
-                    },
+                    }
                 },
                 stopped = wait_terminal(&mut spawner_status) => ProcExitResult {
+                    observed_at: Instant::now(),
                     kind: ProcExitKind::Failed {
                         reason: format!("launcher actor stopped: {stopped}"),
                     },

@@ -1521,7 +1521,11 @@ mod tests {
     #[cfg(fbcode_build)]
     use hyperactor::ProcAddr;
     #[cfg(fbcode_build)]
+    use hyperactor::StatusMessage;
+    #[cfg(fbcode_build)]
     use hyperactor::accum::IdleFlushReducerOpts;
+    #[cfg(fbcode_build)]
+    use hyperactor::actor::ActorStatus;
     #[cfg(fbcode_build)]
     use hyperactor::channel::BindSpec;
     #[cfg(fbcode_build)]
@@ -1856,6 +1860,73 @@ mod tests {
         actor_mesh
             .stop(instance, "test complete".to_string())
             .expect("stop data actor mesh");
+        let _ = hm.shutdown(instance).await;
+    }
+
+    /// Once an actor's process exits, its host answers status queries for
+    /// the actor with the exit code, in the managed mesh's wording.
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn host_answers_status_for_actor_whose_process_exited() {
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(instance, "exited", extent!(gpus = 1), None, None)
+            .await
+            .expect("spawn proc mesh");
+        let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_data(
+                instance,
+                ActorMeshId::instance(Label::strip("exited")),
+                &(),
+                None,
+            )
+            .await
+            .expect("spawn data actor mesh");
+        let actor = actor_mesh
+            .values()
+            .next()
+            .expect("one actor")
+            .actor_addr()
+            .clone();
+
+        actor_mesh
+            .cast(
+                instance,
+                testactor::CauseSupervisionEvent {
+                    kind: testactor::SupervisionEventType::ProcessExit(70),
+                    send_to_children: false,
+                },
+            )
+            .expect("cast process exit");
+        let status = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let (reply, rx) = instance.mailbox().open_once_port::<Option<ActorStatus>>();
+                actor.status_port().post(
+                    instance,
+                    StatusMessage::GetStatus {
+                        reply: reply.bind(),
+                        delivery: None,
+                    },
+                );
+                if let Ok(Ok(Some(status))) =
+                    tokio::time::timeout(Duration::from_millis(500), rx.recv()).await
+                    && status.is_terminal()
+                {
+                    return status;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("the host should answer for the actor of an exited process");
+        assert_eq!(
+            status,
+            ActorStatus::generic_failure(
+                "the process this actor was running on exited with non-zero code 70"
+            )
+        );
+
         let _ = hm.shutdown(instance).await;
     }
 

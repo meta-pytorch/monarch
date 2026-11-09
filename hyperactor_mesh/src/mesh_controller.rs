@@ -428,7 +428,7 @@ fn actor_state_to_supervision_events(
 /// is mapped to [`ActorStatus::Stopped`] rather than [`ActorStatus::Failed`]
 /// so that a graceful shutdown in progress does not trigger unhandled
 /// supervision errors.
-fn proc_status_to_actor_status(proc_status: Option<ProcStatus>) -> ActorStatus {
+pub(crate) fn proc_status_to_actor_status(proc_status: Option<ProcStatus>) -> ActorStatus {
     match proc_status {
         Some(ProcStatus::Stopped { exit_code: 0, .. }) => {
             ActorStatus::Stopped("process exited cleanly".to_string())

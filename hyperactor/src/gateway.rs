@@ -65,6 +65,8 @@ use crate::proc::Proc;
 use crate::proc::WeakProc;
 use crate::proc::control;
 
+mod dead_proc;
+
 // ---------------------------------------------------------------------------
 // Gateway attach protocol
 // ---------------------------------------------------------------------------

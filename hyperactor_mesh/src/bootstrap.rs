@@ -33,6 +33,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::Weak;
 use std::time::Duration;
+use std::time::Instant;
 use std::time::SystemTime;
 
 use anyhow::Context;
@@ -40,6 +41,7 @@ use async_trait::async_trait;
 use base64::prelude::*;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use futures::stream;
 use humantime::format_duration;
 use hyperactor::ActorAddr;
@@ -49,6 +51,7 @@ use hyperactor::Endpoint as _;
 use hyperactor::Gateway;
 use hyperactor::Label;
 use hyperactor::ProcAddr;
+use hyperactor::actor::ActorStatus;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
@@ -91,6 +94,7 @@ use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
+use crate::mesh_controller::proc_status_to_actor_status;
 use crate::proc_agent::ProcAgent;
 use crate::proc_launcher::LaunchOptions;
 use crate::proc_launcher::NativeProcLauncher;
@@ -962,6 +966,20 @@ pub struct BootstrapProcHandle {
     /// `borrow()` the current status and `changed().await` future
     /// transitions independently.
     rx: tokio::sync::watch::Receiver<ProcStatus>,
+
+    /// Ordering of the host's stop request and the launcher's exit
+    /// observation, independent of delayed status publication.
+    exit_timing: Arc<Mutex<ExitTiming>>,
+}
+
+/// Stop/exit ordering becomes immutable once the exit is observed.
+enum ExitTiming {
+    Pending {
+        host_stop_started_at: Option<Instant>,
+    },
+    Observed {
+        host_stop_begun: bool,
+    },
 }
 
 impl fmt::Debug for BootstrapProcHandle {
@@ -1001,6 +1019,9 @@ impl BootstrapProcHandle {
             stderr_fwder: Arc::new(std::sync::Mutex::new(None)),
             tx,
             rx,
+            exit_timing: Arc::new(Mutex::new(ExitTiming::Pending {
+                host_stop_started_at: None,
+            })),
         }
     }
 
@@ -1157,6 +1178,38 @@ impl BootstrapProcHandle {
         })
     }
 
+    /// Record that the host is beginning to stop or kill the proc. Call it
+    /// just before the host acts on the proc. An exit observed after this
+    /// point reads as a clean stop in [`ProcHandle::terminal_actor_status`].
+    /// An exit observed before it is a failure, even if its notification or
+    /// log cleanup delays publication of the terminal status.
+    fn record_host_stop(&self) {
+        let mut timing = self.exit_timing.lock().expect("exit timing mutex poisoned");
+        if let ExitTiming::Pending {
+            host_stop_started_at,
+        } = &mut *timing
+        {
+            host_stop_started_at.get_or_insert_with(Instant::now);
+        }
+    }
+
+    /// Latch stop/exit ordering using the launcher's observation time.
+    fn record_exit(&self, observed_at: Instant) {
+        let mut timing = self.exit_timing.lock().expect("exit timing mutex poisoned");
+        if let ExitTiming::Pending {
+            host_stop_started_at,
+        } = *timing
+        {
+            // Receiving the notification or finishing log cleanup can lag
+            // the exit. Comparing observation times preserves a failure
+            // even if the host began stopping during that delay. This orders
+            // host observations, not the exact instant the OS process died.
+            *timing = ExitTiming::Observed {
+                host_stop_begun: host_stop_started_at.is_some_and(|start| start < observed_at),
+            };
+        }
+    }
+
     /// Record that a stop has been requested for the proc (e.g. a
     /// graceful shutdown via SIGTERM), but the underlying process has
     /// not yet fully exited.
@@ -1183,6 +1236,7 @@ impl BootstrapProcHandle {
     /// Record that the process has exited normally with the given
     /// exit code.
     pub(crate) fn mark_stopped(&self, exit_code: i32, stderr_tail: Vec<String>) -> bool {
+        self.record_exit(Instant::now());
         self.transition(|st| match *st {
             ProcStatus::Starting
             | ProcStatus::Running { .. }
@@ -1207,6 +1261,7 @@ impl BootstrapProcHandle {
     /// Record that the process was killed by the given signal (e.g.
     /// SIGKILL, SIGTERM).
     pub(crate) fn mark_killed(&self, signal: i32, core_dumped: bool) -> bool {
+        self.record_exit(Instant::now());
         self.transition(|st| match *st {
             ProcStatus::Starting
             | ProcStatus::Running { .. }
@@ -1231,6 +1286,7 @@ impl BootstrapProcHandle {
     /// Record that the proc or its process failed for an unexpected
     /// reason (bootstrap error, spawn failure, etc.).
     pub(crate) fn mark_failed<S: Into<String>>(&self, reason: S) -> bool {
+        self.record_exit(Instant::now());
         self.transition(|st| match *st {
             ProcStatus::Starting
             | ProcStatus::Running { .. }
@@ -1498,6 +1554,7 @@ impl ProcHandle for BootstrapProcHandle {
             tracing::debug!(?st0, "terminate(): already terminal");
             return Err(TerminateError::AlreadyTerminated(st0));
         }
+        self.record_host_stop();
 
         // Before signaling, try to close actors normally. Only works if
         // they are in the Ready state and have an Agent we can message.
@@ -1568,6 +1625,7 @@ impl ProcHandle for BootstrapProcHandle {
         if st0.is_exit() {
             return Err(TerminateError::AlreadyTerminated(st0));
         }
+        self.record_host_stop();
 
         // Delegate to launcher for kill.
         tracing::info!(proc_id = %self.proc_id, "kill(): delegating to launcher");
@@ -1592,6 +1650,37 @@ impl ProcHandle for BootstrapProcHandle {
         } else {
             Err(TerminateError::ChannelClosed)
         }
+    }
+
+    fn terminal_actor_status(&self) -> Option<BoxFuture<'static, ActorStatus>> {
+        let handle = self.clone();
+        Some(
+            async move {
+                let status = handle
+                    .wait()
+                    .await
+                    .expect("the handle holds its status sender, so the channel stays open");
+                let actor_status = proc_status_to_actor_status(Some(status.clone()));
+                let host_stop_begun = match *handle
+                    .exit_timing
+                    .lock()
+                    .expect("exit timing mutex poisoned")
+                {
+                    ExitTiming::Observed { host_stop_begun } => host_stop_begun,
+                    ExitTiming::Pending { .. } => {
+                        panic!("terminal status requires an exit observation")
+                    }
+                };
+                if actor_status.is_failed() && host_stop_begun {
+                    ActorStatus::Stopped(format!(
+                        "the process this actor was running on was stopped: {status}"
+                    ))
+                } else {
+                    actor_status
+                }
+            }
+            .boxed(),
+        )
     }
 }
 
@@ -1993,6 +2082,7 @@ impl BootstrapProcManager {
         if status.is_exit() || matches!(status, ProcStatus::Stopping { .. }) {
             return;
         }
+        handle.record_host_stop();
 
         if let Some(agent) = handle.agent_ref() {
             let mut agent_port = agent.port();
@@ -2065,6 +2155,9 @@ impl BootstrapProcManager {
                         return;
                     }
                 };
+                // Freeze the classification before awaiting diagnostics, so
+                // a stop during cleanup cannot change the observed outcome.
+                handle.record_exit(exit_result.observed_at);
 
                 // Collect stderr tail from StreamFwder if we captured stdio.
                 // The launcher may also provide stderr_tail in exit_result;
@@ -2868,6 +2961,7 @@ mod tests {
 
         fn report_exit(&self) {
             let _ = self.take_exit().send(ProcExitResult {
+                observed_at: Instant::now(),
                 kind: ProcExitKind::Exited { code: 0 },
                 stderr_tail: None,
             });
@@ -2916,6 +3010,59 @@ mod tests {
     }
 
     const BOUND: Duration = Duration::from_secs(10);
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_exit_observed_before_host_stop_with_delayed_notification() {
+        for (kind, expected) in [
+            (
+                ProcExitKind::Exited { code: 70 },
+                ActorStatus::generic_failure(
+                    "the process this actor was running on exited with non-zero code 70",
+                ),
+            ),
+            (
+                ProcExitKind::Signaled {
+                    signal: libc::SIGKILL,
+                    core_dumped: false,
+                },
+                ActorStatus::generic_failure(
+                    "the process this actor was running on failed: Killed(sig=9)",
+                ),
+            ),
+        ] {
+            let mut fx = hybrid_fixture(ProcReachability::Unix, RecordingBehavior::Succeed);
+            let proc_id = test_proc_id("delayed-exit");
+            let handle = fx
+                .manager
+                .spawn(
+                    proc_id.clone(),
+                    ChannelAddr::any(ChannelTransport::Unix),
+                    cleanup_test_config(),
+                )
+                .await
+                .unwrap();
+            let result = ProcExitResult {
+                observed_at: Instant::now(),
+                kind,
+                stderr_tail: Some(vec!["last diagnostic".to_string()]),
+            };
+            let client = fx.proc.client("stop");
+            fx.manager
+                .request_stop(&client, &proc_id, BOUND, "stop after observed exit")
+                .await;
+            fx.launcher.take_exit().send(result).unwrap();
+
+            assert_eq!(
+                bounded("terminal status", handle.terminal_actor_status().unwrap()).await,
+                expected,
+                "delayed publication must not relabel an earlier exit as stopped",
+            );
+            if let ProcStatus::Stopped { stderr_tail, .. } = handle.status() {
+                assert_eq!(stderr_tail, ["last diagnostic"]);
+            }
+            bounded("cleanup", fx.cleanups.recv()).await.unwrap();
+        }
+    }
 
     async fn bounded<F: std::future::Future>(what: &str, future: F) -> F::Output {
         tokio::time::timeout(BOUND, future)
@@ -4193,6 +4340,60 @@ mod tests {
                 other => panic!("expected Failed(\"boom\"), got {other:?}"),
             }
         }
+
+        /// An exit before the host begins stopping the proc is a failure, in
+        /// the managed mesh's wording, also if the host stops it afterward.
+        #[tokio::test]
+        async fn terminal_actor_status_reports_exit_before_host_stop_as_failure() {
+            let h = handle_for_test();
+            assert!(h.mark_running(SystemTime::now()));
+            let status = h
+                .terminal_actor_status()
+                .expect("bootstrap handles observe their proc's exit");
+            assert!(h.mark_stopped(70, Vec::new()));
+            assert_eq!(
+                status.await,
+                ActorStatus::generic_failure(
+                    "the process this actor was running on exited with non-zero code 70"
+                )
+            );
+
+            let h = handle_for_test();
+            assert!(h.mark_running(SystemTime::now()));
+            assert!(h.mark_killed(libc::SIGKILL, false));
+            h.record_host_stop();
+            assert_eq!(
+                h.terminal_actor_status().unwrap().await,
+                ActorStatus::generic_failure(
+                    "the process this actor was running on failed: Killed(sig=9)"
+                )
+            );
+        }
+
+        /// An exit after the host began stopping the proc reads as a clean
+        /// stop, also when the proc ended by a signal.
+        #[tokio::test]
+        async fn terminal_actor_status_reports_exit_after_host_stop_as_stopped() {
+            let h = handle_for_test();
+            assert!(h.mark_running(SystemTime::now()));
+            h.record_host_stop();
+            assert!(h.mark_killed(libc::SIGKILL, false));
+            assert_eq!(
+                h.terminal_actor_status().unwrap().await,
+                ActorStatus::Stopped(
+                    "the process this actor was running on was stopped: Killed(sig=9)".to_string()
+                )
+            );
+
+            let h = handle_for_test();
+            assert!(h.mark_running(SystemTime::now()));
+            h.record_host_stop();
+            assert!(h.mark_stopped(0, Vec::new()));
+            assert_eq!(
+                h.terminal_actor_status().unwrap().await,
+                ActorStatus::Stopped("process exited cleanly".to_string())
+            );
+        }
     }
 
     /// A test launcher that panics on any method call.
@@ -4683,6 +4884,7 @@ mod tests {
             let (tx, rx) = tokio::sync::oneshot::channel();
             // Immediately send exit result
             let _ = tx.send(ProcExitResult {
+                observed_at: Instant::now(),
                 kind: ProcExitKind::Exited { code: 0 },
                 stderr_tail: Some(vec![]),
             });

@@ -25,12 +25,15 @@ use hyperactor::mailbox::TransportFailure;
 use hyperactor::mailbox::TransportFailureReason;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableReason;
+use hyperactor::port::ControlPort;
+use hyperactor::port::Port;
 
 /// Dials local procs directly through a configured socket directory.
 ///
 /// A same-host destination is direct-dialable when its deterministic socket
-/// exists in `socket_dir`. Other destinations are routed through the backend
-/// sender to the host gateway.
+/// exists in `socket_dir`. Other destinations, and every actor status message,
+/// are routed through the backend sender to the host gateway, which answers
+/// status queries for a proc that has exited.
 #[derive(Debug)]
 pub(crate) struct LocalProcDialer {
     local_addr: ChannelAddr,
@@ -83,7 +86,8 @@ impl MailboxSender for LocalProcDialer {
     ) {
         let proc_ref = envelope.dest().actor_addr().proc_addr();
         let addr = proc_ref.addr();
-        if addr == &self.local_addr {
+        if addr == &self.local_addr && envelope.dest().port() != Port::control(ControlPort::Status)
+        {
             let key = proc_ref.uid().clone();
             {
                 let senders = self.local_senders.read().unwrap();
@@ -221,6 +225,52 @@ mod tests {
 
         let forwarded = backend_rx.recv().await.unwrap();
         assert_eq!(forwarded.dest().actor_addr().proc_addr(), service_proc);
+    }
+
+    /// Status messages for a direct-dialable sibling go through the host
+    /// gateway, which answers for the sibling once it has exited; other
+    /// messages are still dialed directly.
+    #[tokio::test]
+    async fn test_proc_dialer_routes_status_messages_through_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
+        let sender = hyperactor::ProcAddr::instance(local_addr.clone(), "sender");
+        let sibling = hyperactor::ProcAddr::instance(local_addr.clone(), "sibling");
+        let (sibling_serve, _) = local_proc_addr(dir.path(), sibling.id()).unwrap();
+        let (_sibling_addr, mut sibling_rx) =
+            channel::serve::<MessageEnvelope>(sibling_serve).unwrap();
+        let (proc_dialer, mut backend_rx) =
+            recording_dialer(local_addr.clone(), dir.path().to_owned());
+        let (return_handle, _return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
+            .open_port::<Undeliverable<MessageEnvelope>>();
+
+        let actor = sibling.actor_addr("actor");
+        for port in [Port::control(ControlPort::Status), Port::from(0u64)] {
+            proc_dialer.post(
+                MessageEnvelope::new(
+                    sender.actor_addr("actor"),
+                    actor.port_addr(port),
+                    wirevalue::Any::serialize(&()).unwrap(),
+                    Flattrs::new(),
+                ),
+                return_handle.clone(),
+            );
+        }
+
+        let timeout = std::time::Duration::from_secs(5);
+        let forwarded = tokio::time::timeout(timeout, backend_rx.recv())
+            .await
+            .expect("status message should reach the backend")
+            .unwrap();
+        assert_eq!(
+            forwarded.dest(),
+            &actor.port_addr(Port::control(ControlPort::Status))
+        );
+        let delivered = tokio::time::timeout(timeout, sibling_rx.recv())
+            .await
+            .expect("other message should reach the sibling")
+            .unwrap();
+        assert_eq!(delivered.dest(), &actor.port_addr(Port::from(0u64)));
     }
 
     #[tokio::test]
