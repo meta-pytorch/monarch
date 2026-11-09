@@ -79,6 +79,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
+use std::time::Instant;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -396,7 +397,9 @@ impl ProcLauncher for NativeProcLauncher {
                 // for the child to terminate and translate the OS
                 // `ExitStatus` into the trait-level `ProcExitKind` used
                 // by the manager.
-                let kind = match child.wait().await {
+                let exit_status = child.wait().await;
+                let observed_at = Instant::now();
+                let kind = match exit_status {
                     Ok(status) => exit_kind_from_status(&status),
                     Err(e) => ProcExitKind::Failed {
                         reason: format!("wait failed: {e}"),
@@ -425,6 +428,7 @@ impl ProcLauncher for NativeProcLauncher {
                 // manager attaches StreamFwder for `Captured` stdio and
                 // can derive any tailing diagnostics itself.
                 let _ = exit_tx.send(ProcExitResult {
+                    observed_at,
                     kind,
                     stderr_tail: None,
                 });

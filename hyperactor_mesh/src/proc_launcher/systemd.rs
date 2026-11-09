@@ -70,6 +70,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::MutexGuard;
 use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -267,10 +268,12 @@ fn send_and_cleanup(
     units: &std::sync::Mutex<HashMap<hyperactor::ProcAddr, String>>,
     exit_tx: oneshot::Sender<ProcExitResult>,
 ) {
+    let observed_at = Instant::now();
     tracing::debug!(?kind, "exit_observed");
     let mut g = units_lock_recover(units);
     g.remove(proc_id);
     let _ = exit_tx.send(ProcExitResult {
+        observed_at,
         kind,
         stderr_tail: None,
     });
