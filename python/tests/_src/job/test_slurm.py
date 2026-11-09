@@ -145,6 +145,7 @@ def test_external_controller_mode_has_no_client(tmp_path, monkeypatch):
         job = _make_job()
         job.apply()  # no client_script -> workers only
 
+    assert job.job_id == "12345"
     script = _submitted_script(mock)
     assert "srun" in script
     assert "run_worker_loop_forever" in script
@@ -449,25 +450,25 @@ def test_account_and_qos_omitted_when_unset(tmp_path, monkeypatch):
 # ---- $SLURM_JOB_ID fallback + _kill lifecycle --------------------------------
 
 
-def test_resolved_job_id_fallback_order(monkeypatch):
+def test_job_id_fallback_order(monkeypatch):
     monkeypatch.delenv("SLURM_JOB_ID", raising=False)
     monkeypatch.delenv("MONARCH_BATCH_JOB", raising=False)
     job = _make_job()
-    assert job._resolved_job_id() is None
+    assert job.job_id is None
 
     # Outside batch mode the $SLURM_JOB_ID fallback must NOT fire: an external
     # controller could itself be running inside an unrelated SLURM allocation,
     # and adopting that id would query/scancel the wrong job.
     monkeypatch.setenv("SLURM_JOB_ID", "99999")
-    assert job._resolved_job_id() is None
+    assert job.job_id is None
 
     # Reloaded inside its own batch allocation, it adopts $SLURM_JOB_ID.
     monkeypatch.setenv("MONARCH_BATCH_JOB", "1")
-    assert job._resolved_job_id() == "99999"
+    assert job.job_id == "99999"
 
     # A submitted id always takes precedence over the env.
     job._slurm_job_id = "12345"
-    assert job._resolved_job_id() == "12345"
+    assert job.job_id == "12345"
 
 
 def test_kill_is_noop_inside_batch_allocation(monkeypatch):
@@ -494,6 +495,27 @@ def test_kill_scancels_for_external_client(monkeypatch):
     with patch("monarch._src.job.slurm.subprocess.run", side_effect=_record):
         job._kill()
     assert ["scancel", "777"] in seen
+    assert job.job_id is None
+
+
+def test_job_id_after_reattaching_to_cached_job(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MONARCH_BATCH_JOB", raising=False)
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+    cached_path = str(tmp_path / "job_state.pkl")
+    with (
+        patch("monarch._src.job.slurm.subprocess.run", side_effect=_fake_running_slurm),
+        patch.object(SlurmJob, "_connect_host_meshes", return_value={}),
+    ):
+        submitted = _make_job()
+        submitted.apply()
+        submitted.dump(cached_path)
+
+        job = _make_job()
+        job.state(cached_path=cached_path)
+
+    assert job.apply_id == submitted.apply_id
+    assert job.job_id == "12345"
 
 
 def test_jobs_active_for_reloaded_batch_job(monkeypatch):

@@ -185,6 +185,16 @@ class SlurmJob(JobTrait):
     def add_mesh(self, name: str, num_nodes: int) -> None:
         self._meshes[name] = num_nodes
 
+    @property
+    def job_id(self) -> Optional[str]:
+        """The SLURM job ID, or ``None`` if no job was submitted or it was killed.
+
+        Inside the job's own batch allocation, falls back to ``$SLURM_JOB_ID``.
+        """
+        running = self._running
+        job = running if isinstance(running, SlurmJob) else self
+        return job._resolved_job_id()
+
     def _resolved_job_id(self) -> Optional[str]:
         """The submitted job id, falling back to ``$SLURM_JOB_ID`` in batch mode
         where the unpickled instance never had ``_slurm_job_id`` set. Gated on
