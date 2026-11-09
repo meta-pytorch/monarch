@@ -398,7 +398,9 @@ impl DatagramSocket for SwitchSocket {
                 destination_ip: None,
             };
             count += 1;
-            next = receiver.try_recv();
+            if count < capacity {
+                next = receiver.try_recv();
+            }
         }
         Poll::Ready(Ok(count))
     }
@@ -898,6 +900,60 @@ mod tests {
         assert_eq!(meta[0].stride, segment.len());
         assert_eq!(meta[0].ecn, Some(2));
         assert_eq!(meta[0].source, *source.local_addr());
+
+        datagram_switch.shutdown();
+        timeout(Duration::from_secs(1), datagram_switch.join())
+            .await
+            .expect("switch join timed out");
+    }
+
+    #[tokio::test]
+    async fn batch_receive_leaves_unread_datagrams_queued() {
+        let network = InprocNetwork::new(NonZeroUsize::new(32).expect("nonzero capacity"));
+        let carrier = Arc::new(network.bind(1).expect("bind switch carrier"));
+        let datagram_switch = DatagramSwitch::spawn(carrier, Arc::new(Router::new()));
+        let source = datagram_switch.bind(SOURCE).expect("bind source PID");
+        let destination = datagram_switch.bind(TARGET).expect("bind destination PID");
+        let sent: Vec<Vec<u8>> = (0..3)
+            .map(|index| {
+                let mut datagram = datagram(TARGET);
+                datagram.push(index);
+                datagram
+            })
+            .collect();
+        // Local delivery is synchronous, so all three are queued before any receive.
+        for datagram in &sent {
+            source
+                .try_send_to(datagram, destination.local_addr())
+                .expect("send local datagram");
+        }
+        let mut storage = [[0; 64]; 2];
+        let [first, second] = &mut storage;
+        let mut buffers = [IoSliceMut::new(first), IoSliceMut::new(second)];
+        let mut meta = [DatagramRecvMeta::default(), DatagramRecvMeta::default()];
+
+        let count = poll_fn(|cx| destination.poll_recv(cx, &mut buffers[..1], &mut meta[..1]))
+            .await
+            .expect("receive into one slot");
+        assert_eq!(count, 1);
+        assert_eq!(&buffers[0][..meta[0].len], sent[0]);
+
+        let count = poll_fn(|cx| destination.poll_recv(cx, &mut buffers, &mut meta))
+            .await
+            .expect("receive into two slots");
+        assert_eq!(
+            count, 2,
+            "a full one-slot batch should leave the other two datagrams queued"
+        );
+        assert_eq!(&buffers[0][..meta[0].len], sent[1]);
+        assert_eq!(&buffers[1][..meta[1].len], sent[2]);
+
+        let idle =
+            poll_fn(|cx| Poll::Ready(destination.poll_recv(cx, &mut buffers, &mut meta))).await;
+        assert!(
+            idle.is_pending(),
+            "each queued datagram should be received exactly once"
+        );
 
         datagram_switch.shutdown();
         timeout(Duration::from_secs(1), datagram_switch.join())
