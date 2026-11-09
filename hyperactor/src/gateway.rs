@@ -13,13 +13,9 @@
 //! default location, receive inbound traffic through the gateway, and forward
 //! outbound traffic directly through the gateway.
 //!
-//! Gateways route [`Location`]s: if the inbound message is source routed,
-//! the gateway looks up the next hop via its peer table and forwards
-//! accordingly; otherwise the message is delivered if the proc is attached
-//! to the gateway.
-//!
-//! Messages with no local proc or peer route are forwarded through the
-//! default forwarder.
+//! A location names a core address and a top-down attachment path. Traffic
+//! climbs to an upstream, crosses the core, and descends through registered
+//! attachment keys. Terminal delivery checks the concrete process incarnation.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -40,7 +36,6 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::Location;
-use crate::PortAddr;
 use crate::ProcAddr;
 use crate::ProcId;
 use crate::channel;
@@ -90,13 +85,11 @@ const ATTACH_CONTROL_LABEL: &str = "attach";
 /// block the caller — typically Python `bootstrap_host` — indefinitely.
 const ATTACH_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// First message a gateway sends when attaching to a peer. The peer
-/// records `uid` in its [`peers`] table; afterwards, any
-/// destination whose outermost location hop is `Via(uid, ...)` is
-/// peeled by the peer and forwarded back over the duplex.
+/// First attach message. The upstream records the slot key and returns its
+/// advertised location extended by that key.
 #[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
 pub(crate) struct AttachRequest {
-    /// The attaching gateway's uid.
+    /// The attaching gateway's slot key (stable singleton or fresh instance).
     pub(crate) uid: Uid,
 }
 wirevalue::register_type!(AttachRequest);
@@ -104,8 +97,7 @@ wirevalue::register_type!(AttachRequest);
 /// Acknowledgement returned by a peer gateway during attach.
 #[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
 pub(crate) enum AttachAck {
-    /// Attach succeeded. Carries the via location the client should advertise
-    /// as its [`default_location`] — `Via(client_uid, peer_default_location)`.
+    /// Attach succeeded. Carries the upstream location extended by this key.
     Accepted {
         /// The location through which the client is now reachable.
         location: Location,
@@ -313,6 +305,14 @@ impl Drop for AttachedProcGuard {
 pub struct PeerAttachGuard {
     gateway: Weak<GatewayState>,
     uid: Uid,
+    registration: u64,
+    replaced: CancellationToken,
+}
+
+struct Peer {
+    sender: BoxedMailboxSender,
+    registration: u64,
+    replaced: CancellationToken,
 }
 
 impl fmt::Debug for PeerAttachGuard {
@@ -328,17 +328,14 @@ impl Drop for PeerAttachGuard {
         let Some(state) = self.gateway.upgrade() else {
             return;
         };
-        state.peers.write().unwrap().remove(&self.uid);
+        let mut peers = state.peers.write().unwrap();
+        if peers
+            .get(&self.uid)
+            .is_some_and(|peer| peer.registration == self.registration)
+        {
+            peers.remove(&self.uid);
+        }
     }
-}
-
-/// Error returned by [`Gateway::attach_peer`] when a peer is already
-/// attached under the given uid.
-#[derive(Debug, thiserror::Error)]
-#[error("gateway already has a via peer with uid {uid}")]
-pub struct PeerAttachError {
-    /// The uid that was already registered.
-    pub uid: Uid,
 }
 
 /// Original routing inputs for a gateway. Mutate through [`Routing::mutate`]
@@ -350,8 +347,9 @@ struct RoutingState {
     /// The forwarder configured when the gateway was created.
     base_forwarder: BoxedMailboxSender,
 
-    /// Active normal serves and `serve_via` sessions in start order.
+    /// Active listeners and at most one upstream attachment in start order.
     active_serves: Vec<ActiveServe>,
+    upstream_connecting: bool,
 }
 
 /// Routing state for a gateway. Holds original inputs plus derived fields
@@ -360,14 +358,10 @@ struct RoutingState {
 struct Routing {
     state: RoutingState,
 
-    /// The advertised location for newly bound refs. The newest active
-    /// normal serve or [`Gateway::serve_via`] session takes precedence.
+    /// The upstream location, or the newest listener when unattached.
     default_location: Location,
 
-    /// Sender used to forward messages whose destination is neither
-    /// an attached proc nor matched by [`peers`]. The newest active
-    /// [`Gateway::serve_via`] session supplies this; otherwise this is
-    /// `base_forwarder`.
+    /// Sender for the single upstream, or the base core dialer.
     forwarder: BoxedMailboxSender,
 }
 
@@ -378,6 +372,7 @@ impl Routing {
                 fallback_location: fallback_location.clone(),
                 base_forwarder: base_forwarder.clone(),
                 active_serves: Vec::new(),
+                upstream_connecting: false,
             },
             default_location: fallback_location,
             forwarder: base_forwarder,
@@ -393,7 +388,9 @@ impl Routing {
         self.default_location = self
             .state
             .active_serves
-            .last()
+            .iter()
+            .find(|serve| matches!(serve.kind, ActiveServeKind::Via { .. }))
+            .or_else(|| self.state.active_serves.last())
             .map(|serve| serve.location.clone())
             .unwrap_or_else(|| self.state.fallback_location.clone());
         self.forwarder = self
@@ -424,11 +421,7 @@ enum ActiveServeKind {
 }
 
 struct GatewayState {
-    /// A random, stable identifier for this gateway. It is just a
-    /// routing key in peers' tables: peers route messages
-    /// back through this gateway by referencing its uid in a
-    /// [`Location::Via`] hop. We mint a uid (rather than reuse an
-    /// existing key) mainly so the entry can carry a meaningful label.
+    /// Fresh default attachment key for this gateway's lifetime.
     uid: Uid,
 
     /// Outbound routing state, held under one lock so the advertised
@@ -444,15 +437,37 @@ struct GatewayState {
     /// Monotonic id source for active serve handles.
     next_serve_id: AtomicU64,
 
-    /// Senders to gateways that have attached *to* this one. Each key
-    /// is the attaching gateway's uid; values are senders that put
-    /// envelopes back onto the duplex toward that gateway. Source
-    /// routes (`Location::Via(uid, ...)`) consult this table to peel
-    /// the outermost hop and forward.
-    peers: RwLock<HashMap<Uid, BoxedMailboxSender>>,
+    /// Attached gateways keyed by slot. Downward routing indexes the
+    /// destination path at its cursor and forwards through the selected sender.
+    peers: RwLock<HashMap<Uid, Peer>>,
+}
+
+struct UpstreamReservation(Weak<GatewayState>);
+
+impl Drop for UpstreamReservation {
+    fn drop(&mut self) {
+        if let Some(gateway) = self.0.upgrade() {
+            gateway.routing.write().unwrap().state.upstream_connecting = false;
+        }
+    }
 }
 
 impl Gateway {
+    fn reserve_upstream(&self) -> anyhow::Result<UpstreamReservation> {
+        let mut routing = self.inner.routing.write().unwrap();
+        anyhow::ensure!(
+            !routing.state.upstream_connecting
+                && !routing
+                    .state
+                    .active_serves
+                    .iter()
+                    .any(|serve| matches!(serve.kind, ActiveServeKind::Via { .. })),
+            "gateway already has an active or connecting upstream attachment"
+        );
+        routing.state.upstream_connecting = true;
+        Ok(UpstreamReservation(Arc::downgrade(&self.inner)))
+    }
+
     /// Create a fresh unserved gateway with dial-based forwarding.
     pub fn new() -> Self {
         Self::configured(
@@ -498,9 +513,8 @@ impl Gateway {
         }
     }
 
-    /// This gateway's stable uid. Peers route messages back to procs
-    /// attached here by addressing them as
-    /// `Location::Via(this_uid, inner)`.
+    /// Default instance attachment key, fresh for each gateway lifetime.
+    /// [`Self::serve_via_with_key`] can use a separate stable deployment key.
     pub fn uid(&self) -> &Uid {
         &self.inner.uid
     }
@@ -510,18 +524,16 @@ impl Gateway {
         self.inner.routing.read().unwrap().default_location.clone()
     }
 
-    /// The outbound forwarder. Inbound traffic for destinations that
-    /// don't match a bound proc, route, or via peer is handed off to
-    /// this sender.
+    /// The upstream sender, or base dialer, for traffic still going up/across.
     pub fn forwarder(&self) -> BoxedMailboxSender {
         self.inner.routing.read().unwrap().forwarder.clone()
     }
 
     /// Set the gateway's fallback advertised location.
     ///
-    /// If any serves are active, the newest active normal serve or
-    /// [`Gateway::serve_via`] session remains the advertised default. This
-    /// location is used once all active serves stop.
+    /// An active upstream remains the advertised default. Without one,
+    /// the newest active listener takes precedence over this fallback.
+    /// The fallback is used when no listener or attachment remains.
     pub fn set_default_location(&self, location: Location) {
         let mut routing = self.inner.routing.write().unwrap();
         routing.mutate(|routing| routing.fallback_location = location);
@@ -536,15 +548,9 @@ impl Gateway {
     /// directly to the muxer; other destinations continue to the
     /// appropriate peer or forwarder.
     ///
-    /// Internal-only: only [`Proc`] construction calls this, and the
-    /// resulting [`AttachedProcGuard`] is held inside the proc itself
-    /// so the proc's lifetime drives detachment. The public Gateway
-    /// API exposes gateway connectivity via [`Gateway::attach`] (an
-    /// in-process bidirectional bind), [`Gateway::attach_peer`] (a
-    /// sender-based via entry for a peer gateway uid), and
-    /// [`Gateway::serve_via`] (a duplex-attach connection to a remote
-    /// gateway). Hosts register spawned child proc gateways with
-    /// [`Gateway::attach_peer`].
+    /// Internal-only: [`Proc`] construction holds the returned guard so the
+    /// proc's lifetime controls detachment. [`Self::attach_peer`] registers
+    /// child attachment slots; [`Self::serve_via`] connects an upstream.
     ///
     /// Panics if a live proc with the same id is already attached. A
     /// dead entry whose [`WeakProc`] has been dropped is replaced
@@ -566,32 +572,33 @@ impl Gateway {
         }
     }
 
-    /// Register a gateway peer that is reachable through `sender`.
-    /// Messages whose destination location has an outermost
-    /// [`Location::Via`] hop carrying `uid` are forwarded through
-    /// `sender` after peeling the hop. The returned guard removes the
-    /// entry on drop.
-    ///
-    /// Used by [`Gateway::attach`] and the duplex accept loop in
-    /// [`Gateway::serve_duplex`]. Hosts also use this for spawned
-    /// child proc gateways.
-    ///
-    /// Returns [`PeerAttachError`] if a peer with the same uid is
-    /// already attached.
-    pub fn attach_peer(
-        &self,
-        uid: Uid,
-        sender: BoxedMailboxSender,
-    ) -> Result<PeerAttachGuard, PeerAttachError> {
-        let mut via = self.inner.peers.write().unwrap();
-        if via.contains_key(&uid) {
-            return Err(PeerAttachError { uid });
+    /// Register an attachment slot. The newest registration wins; the old
+    /// session is cancelled, and its guard cannot remove the replacement.
+    pub fn attach_peer(&self, uid: Uid, sender: BoxedMailboxSender) -> PeerAttachGuard {
+        let registration = self
+            .inner
+            .next_serve_id
+            .fetch_add(1, AtomicOrdering::Relaxed);
+        let replaced = CancellationToken::new();
+        let previous = self.inner.peers.write().unwrap().insert(
+            uid.clone(),
+            Peer {
+                sender,
+                registration,
+                replaced: replaced.clone(),
+            },
+        );
+        if let Some(previous) = previous {
+            previous.replaced.cancel();
+            tracing::warn!(key = %uid, "replacing live gateway attachment");
+            crate::metrics::GATEWAY_ATTACHMENT_REPLACEMENTS.add(1, &[]);
         }
-        via.insert(uid.clone(), sender);
-        Ok(PeerAttachGuard {
+        PeerAttachGuard {
             gateway: Arc::downgrade(&self.inner),
             uid,
-        })
+            registration,
+            replaced,
+        }
     }
 
     pub(crate) fn serve_rx(
@@ -621,10 +628,9 @@ impl Gateway {
     /// Later local `any` serves allocate fresh local ports, so the gateway can
     /// have multiple active local servers.
     ///
-    /// Serving updates the gateway's default location to the newly served
-    /// address. When that server stops, the default location falls back to the
-    /// previous active normal serve or `serve_via` session, or to the reserved
-    /// fallback location when no serve remains.
+    /// Without an upstream, the newest active listener is advertised.
+    /// With an upstream, its core/path location remains the default, and this
+    /// listener is a local alias. Stopping a listener removes only its alias.
     pub fn serve(&self, addr: ChannelAddr) -> Result<GatewayServeHandle, ChannelError> {
         let (serve_id, handle) = self.serve_inner(addr)?;
         Ok(GatewayServeHandle {
@@ -640,17 +646,10 @@ impl Gateway {
     /// Open a duplex endpoint that accepts both regular inbound
     /// envelope traffic and gateway-attach handshakes from peers.
     ///
-    /// On each connection the first message determines the branch:
-    /// * an [`AttachRequest`] control envelope enters the attach
-    ///   branch — this gateway records the peer's uid in `peers` (so
-    ///   source routes addressed to `Via(peer_uid, ...)` flow back
-    ///   through the duplex), replies with [`AttachAck::Accepted`]
-    ///   carrying `Via(peer_uid, default_location)`, and serves
-    ///   remaining traffic from the duplex into this gateway. If the
-    ///   peer cannot be registered, it replies with
-    ///   [`AttachAck::Rejected`] and closes the connection.
-    /// * a regular [`MessageEnvelope`] enters the inbound branch and
-    ///   is served straight through.
+    /// The first message distinguishes attachment setup from ordinary traffic.
+    /// An [`AttachRequest`] installs or replaces the slot and receives an
+    /// [`AttachAck::Accepted`] with `default_location.append_via(key)`.
+    /// Subsequent messages use the same cursor routing as ordinary ingress.
     ///
     /// Returns a [`GatewayServeHandle`] of kind `ServeDuplex`. The
     /// accept loop respects `.stop("reason")`.
@@ -738,10 +737,8 @@ impl Gateway {
     /// plain duplex endpoint. Requires a net transport (`serve_mux`
     /// rejects non-net addresses).
     ///
-    /// Like [`serve_with_listener`](Self::serve_with_listener), this
-    /// registers the bound address as an active serve location (so the
-    /// gateway delivers frontend-addressed traffic in-process and adopts
-    /// it as the default location).
+    /// Registers the bound address as a listener alias. It becomes the
+    /// default advertised location only when no upstream is active.
     pub fn serve_mux_with_listener(
         &self,
         addr: ChannelAddr,
@@ -807,25 +804,21 @@ impl Gateway {
         }
     }
 
-    /// Connect this gateway to a peer gateway's [`serve_duplex`] endpoint
-    /// using the attach handshake.
-    ///
-    /// Dials `addr`, sends this gateway's uid as [`AttachRequest`],
-    /// receives [`AttachAck::Accepted`] with the via location the peer
-    /// assigned, sets that location as this gateway's
-    /// [`default_location`] (so every address handed out by this
-    /// gateway carries the via prefix), installs the duplex sender as
-    /// this gateway's outbound forwarder, and serves inbound traffic
-    /// from the duplex locally. If the peer returns
-    /// [`AttachAck::Rejected`], the rejection reason is returned as an
-    /// error.
-    ///
-    /// Multiple `serve_via` sessions may be active. The newest active
-    /// normal serve or `serve_via` session is this gateway's advertised
-    /// default location, while older active locations remain valid. The
-    /// newest active `serve_via` supplies the outbound forwarder.
+    /// Attach to one upstream, using this gateway's instance key.
     pub async fn serve_via(&self, addr: ChannelAddr) -> anyhow::Result<GatewayServeHandle> {
-        let my_uid = self.inner.uid.clone();
+        self.serve_via_with_key(addr, None).await
+    }
+
+    /// Attach to an upstream under a deployment-chosen slot key. A singleton
+    /// key stays stable across restarts; `None` uses this gateway's uid.
+    /// Stop and join an existing attachment before changing upstreams.
+    pub async fn serve_via_with_key(
+        &self,
+        addr: ChannelAddr,
+        key: Option<Uid>,
+    ) -> anyhow::Result<GatewayServeHandle> {
+        let reservation = self.reserve_upstream()?;
+        let my_uid = key.unwrap_or_else(|| self.inner.uid.clone());
         let mut duplex_client = channel::duplex::dial::<MessageEnvelope, AttachWire>(addr)?;
         let duplex_tx = duplex_client.tx();
         let mut duplex_rx = duplex_client
@@ -850,6 +843,7 @@ impl Gateway {
         };
 
         let serve_id = self.add_via_server(location, MailboxClient::new(duplex_tx).into_boxed());
+        drop(reservation);
         let serve_handle = self.serve_rx(AttachRx(duplex_rx));
         Ok(GatewayServeHandle {
             gateway: self.clone(),
@@ -927,15 +921,7 @@ impl Gateway {
         });
     }
 
-    fn envelope_with_next_hop_location(
-        envelope: MessageEnvelope,
-        location: Location,
-    ) -> MessageEnvelope {
-        let dest_id = envelope.next_hop().id().clone();
-        envelope.with_next_hop(PortAddr::new(dest_id, location))
-    }
-
-    fn return_no_route(
+    pub(crate) fn return_no_route(
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
@@ -989,13 +975,27 @@ impl Gateway {
         .buffer_unordered(concurrency)
         .collect()
         .await;
-        let forwarder = self.inner.routing.read().unwrap().forwarder.clone();
-        let forwarder_result = forwarder.flush().await;
+        let (base, upstream) = {
+            let routing = self.inner.routing.read().unwrap();
+            let upstream = routing
+                .state
+                .active_serves
+                .iter()
+                .find_map(|serve| match &serve.kind {
+                    ActiveServeKind::Via { forwarder } => Some(forwarder.clone()),
+                    ActiveServeKind::Server => None,
+                });
+            (routing.state.base_forwarder.clone(), upstream)
+        };
+        let base_result = base.flush().await;
+        let upstream_result = match upstream {
+            Some(upstream) => upstream.flush().await,
+            None => Ok(()),
+        };
 
-        // Best-effort: all flushes have run; surface the first error.
         proc_results
             .into_iter()
-            .chain(std::iter::once(forwarder_result))
+            .chain([base_result, upstream_result])
             .collect()
     }
 }
@@ -1247,36 +1247,13 @@ async fn serve_duplex_connection(
             uid = %peer_uid,
             "duplex accepted gateway-attach connection",
         );
-        // Register the peer *before* accepting, so the handshake
-        // reflects the actual server-side state. If registration
-        // fails (e.g. a duplicate uid), reject the attach instead of
-        // letting the client infer failure from a closed channel.
+        // The slot is installed before the acknowledgement, and replacement
+        // cancels the previous connection's ingress loop.
         let sender = MailboxClient::new(AttachTx(duplex_tx.clone())).into_boxed();
-        let attach_guard = match gateway.attach_peer(peer_uid.clone(), sender) {
-            Ok(guard) => guard,
-            Err(err) => {
-                let reason = err.to_string();
-                tracing::warn!(
-                    uid = %err.uid,
-                    error = %reason,
-                    "rejecting gateway-attach connection"
-                );
-                if let Err(send_error) = duplex_tx
-                    .send(AttachWire::Ack(AttachAck::Rejected { reason }))
-                    .await
-                {
-                    tracing::warn!(
-                        uid = %err.uid,
-                        error = %send_error,
-                        "failed to send gateway-attach rejection"
-                    );
-                }
-                return;
-            }
-        };
+        let attach_guard = gateway.attach_peer(peer_uid.clone(), sender);
 
         // Reply with the via location the peer should advertise.
-        let via_location = gateway.default_location().with_via(peer_uid);
+        let via_location = gateway.default_location().append_via(peer_uid);
         duplex_tx.post(AttachWire::Ack(AttachAck::Accepted {
             location: via_location,
         }));
@@ -1286,6 +1263,10 @@ async fn serve_duplex_connection(
             _ = &mut handle => {}
             () = cancel_token.cancelled() => {
                 handle.stop("gateway accept loop stopping");
+                let _ = handle.await;
+            }
+            () = attach_guard.replaced.cancelled() => {
+                handle.stop("gateway attachment replaced");
                 let _ = handle.await;
             }
         }
@@ -1387,76 +1368,103 @@ impl crate::mailbox::MailboxSender for Gateway {
 }
 
 impl Gateway {
+    pub(crate) fn local_route_cursor(&self, location: &Location) -> Option<usize> {
+        let routing = self.inner.routing.read().unwrap();
+        std::iter::once(&routing.default_location)
+            .chain(std::iter::once(&routing.state.fallback_location))
+            .chain(
+                routing
+                    .state
+                    .active_serves
+                    .iter()
+                    .map(|serve| &serve.location),
+            )
+            .filter(|own| own.is_prefix_of(location))
+            .map(Location::path_len)
+            .max()
+    }
+
     fn route_envelope(
         &self,
-        envelope: MessageEnvelope,
+        mut envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        // A message that reaches a gateway resolves by the
-        // next hop's outermost `Via(uid, ...)` hop (if any):
-        //
-        //   * a peer hop (`uid` in `peers`): peel the hop and forward
-        //     to that peer;
-        //   * *our own* hop (`uid == self.uid`): consume the hop, then
-        //     keep routing the peeled next hop;
-        //   * a via-less local destination: deliver locally;
-        //   * anything else: not ours. Hand it to the forwarder, which
-        //     is either a route onward (a dial router, or an attached
-        //     duplex) or a terminal `UnroutableMailboxSender` that
-        //     returns it as undeliverable.
-        //
-        // A foreign via is never silently delivered locally just
-        // because its inner proc id happens to match a local proc.
-        let mut envelope = envelope;
-        loop {
-            let dest_location = envelope.next_hop().location().clone();
-            let Ok((via_uid, inner_location)) = dest_location.pop_via() else {
-                break;
-            };
-
-            if let Some(sender) = self.inner.peers.read().unwrap().get(&via_uid).cloned() {
-                let envelope = Gateway::envelope_with_next_hop_location(envelope, inner_location);
-                sender.post(envelope, return_handle);
+        if envelope.route_cursor().is_none() {
+            if let Some(cursor) = self.local_route_cursor(envelope.dest().location()) {
+                envelope.set_route_cursor(cursor);
+            } else {
+                self.forwarder().post(envelope, return_handle);
                 return;
             }
-            if via_uid != self.inner.uid {
-                // A hop naming neither a peer nor this gateway: we are a
-                // waypoint, not the destination. Forward toward the
-                // default route, which itself returns the message as
-                // undeliverable if it is terminal.
-                let forwarder = self.inner.routing.read().unwrap().forwarder.clone();
-                forwarder.post(envelope, return_handle);
-                return;
-            }
-            envelope = Gateway::envelope_with_next_hop_location(envelope, inner_location);
         }
 
-        // Via-less destination: deliver to the local proc if it is a
-        // delivery target, otherwise hand to the forwarder (outbound egress
-        // for plain remote addresses). When a gateway has already consumed a
-        // routing hop, it is the named leaf and a miss is undeliverable rather
-        // than a fallback forward. A dead entry is left in place —
-        // `AttachedProcGuard::drop` is the sole remover.
-        let local = self
-            .inner
-            .procs
-            .read()
-            .unwrap()
-            .get(envelope.dest().proc_id())
-            .and_then(WeakProc::upgrade);
-        if let Some(proc) = local {
-            proc.muxer().post(envelope, return_handle);
+        if envelope.route_complete() {
+            let local = self
+                .inner
+                .procs
+                .read()
+                .unwrap()
+                .get(envelope.dest().proc_id())
+                .and_then(WeakProc::upgrade);
+            if let Some(proc) = local {
+                proc.muxer().post(envelope, return_handle);
+            } else {
+                Self::return_missing(
+                    envelope,
+                    return_handle,
+                    crate::mailbox::InvalidReferenceReason::ProcNotExist,
+                );
+            }
             return;
         }
 
-        if envelope.has_next_hop() {
-            Gateway::return_no_route(envelope, return_handle);
+        let cursor = envelope
+            .route_cursor()
+            .expect("downward route has a cursor");
+        let Some(key) = envelope.dest().location().path_key(cursor) else {
+            Self::return_no_route(envelope, return_handle);
+            return;
+        };
+        let sender = self
+            .inner
+            .peers
+            .read()
+            .unwrap()
+            .get(key)
+            .map(|peer| peer.sender.clone());
+        if let Some(sender) = sender {
+            envelope.set_route_cursor(cursor + 1);
+            sender.post(envelope, return_handle);
+        } else if cursor + 1 == envelope.dest().location().path_len() {
+            Self::return_missing(
+                envelope,
+                return_handle,
+                crate::mailbox::InvalidReferenceReason::RouteNotExist,
+            );
         } else {
-            let forwarder = self.inner.routing.read().unwrap().forwarder.clone();
-            forwarder.post(envelope, return_handle)
+            Self::return_no_route(envelope, return_handle);
+        }
+    }
+
+    fn return_missing(
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        reason: crate::mailbox::InvalidReferenceReason,
+    ) {
+        if envelope.dest().proc_id().uid().is_instance() {
+            let failure = DeliveryFailure::new(crate::mailbox::InvalidReference::new(
+                envelope.dest().actor_addr(),
+                reason,
+            ));
+            envelope.undeliverable(failure, return_handle);
+        } else {
+            Self::return_no_route(envelope, return_handle);
         }
     }
 }
+
+#[cfg(test)]
+mod routing_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1474,9 +1482,9 @@ mod tests {
     use super::*;
     use crate::Endpoint as _;
     use crate::Label;
+    use crate::PortAddr;
     use crate::ProcAddr;
     use crate::mailbox::DeliveryFailureKind;
-    use crate::mailbox::MailboxClient;
     use crate::mailbox::MailboxSender;
     use crate::mailbox::PortLocation;
     use crate::mailbox::monitored_return_handle;
@@ -1499,109 +1507,6 @@ mod tests {
             self.0
                 .send(envelope)
                 .expect("recording sender should be open");
-        }
-    }
-
-    /// Test-only helper that connects two gateways over real
-    /// `Local`-transport channels, so the via-routing tests exercise a
-    /// genuine cross-gateway hop: each gateway serves on a local channel
-    /// and the peer reaches it by dialing. After attach, each side's
-    /// `default_location` advertises its destinations through the peer's
-    /// uid (`Via(self_uid, peer_default)`), so procs bound afterward
-    /// inherit the via prefix and route across the link.
-    ///
-    /// Production cross-process attach is [`Gateway::serve_via`] /
-    /// [`Gateway::serve_duplex`]; this is just enough wiring to test the
-    /// gateway's via routing locally.
-    trait GatewayAttachExt {
-        fn attach(&self, peer: &Gateway) -> AttachGuard;
-    }
-
-    impl GatewayAttachExt for Gateway {
-        fn attach(&self, peer: &Gateway) -> AttachGuard {
-            // Genuine pre-attach defaults, captured before serving
-            // (serving overwrites `default_location` with the served
-            // address).
-            let pre_self_default = self.default_location();
-            let pre_peer_default = peer.default_location();
-
-            // Serve each gateway on a local channel so the other can
-            // reach it by dialing.
-            let self_serve = self
-                .serve(ChannelAddr::any(ChannelTransport::Local))
-                .expect("serve self on local channel");
-            let peer_serve = peer
-                .serve(ChannelAddr::any(ChannelTransport::Local))
-                .expect("serve peer on local channel");
-            let self_addr = self.default_location().addr().clone();
-            let peer_addr = peer.default_location().addr().clone();
-
-            // Cross-register dialed senders keyed by uid, so each side
-            // peels the other's uid and forwards over the local channel.
-            let self_via_guard = peer
-                .attach_peer(
-                    self.inner.uid.clone(),
-                    MailboxClient::dial(self_addr)
-                        .expect("dial self")
-                        .into_boxed(),
-                )
-                .expect("peer has no via entry for this gateway's uid");
-            let peer_via_guard = self
-                .attach_peer(
-                    peer.inner.uid.clone(),
-                    MailboxClient::dial(peer_addr)
-                        .expect("dial peer")
-                        .into_boxed(),
-                )
-                .expect("self has no via entry for the peer gateway's uid");
-
-            // Advertise each side's destinations through the peer's uid.
-            self.inner.routing.write().unwrap().default_location =
-                Location::Via(self.inner.uid.clone(), Box::new(pre_peer_default.clone()));
-            peer.inner.routing.write().unwrap().default_location =
-                Location::Via(peer.inner.uid.clone(), Box::new(pre_self_default.clone()));
-
-            AttachGuard {
-                self_gateway: Arc::downgrade(&self.inner),
-                peer_gateway: Arc::downgrade(&peer.inner),
-                prev_self_default: Some(pre_self_default),
-                prev_peer_default: Some(pre_peer_default),
-                _self_via_guard: self_via_guard,
-                _peer_via_guard: peer_via_guard,
-                _self_serve: self_serve,
-                _peer_serve: peer_serve,
-            }
-        }
-    }
-
-    /// Guard for the test-only [`GatewayAttachExt::attach`]: on drop it
-    /// restores both gateways' previous default locations and removes
-    /// the cross-registered peers and local serve loops (via the
-    /// held guards and serve handles).
-    struct AttachGuard {
-        self_gateway: Weak<GatewayState>,
-        peer_gateway: Weak<GatewayState>,
-        prev_self_default: Option<Location>,
-        prev_peer_default: Option<Location>,
-        _self_via_guard: PeerAttachGuard,
-        _peer_via_guard: PeerAttachGuard,
-        _self_serve: GatewayServeHandle,
-        _peer_serve: GatewayServeHandle,
-    }
-
-    impl Drop for AttachGuard {
-        fn drop(&mut self) {
-            if let Some(state) = self.self_gateway.upgrade()
-                && let Some(loc) = self.prev_self_default.take()
-            {
-                state.routing.write().unwrap().default_location = loc;
-            }
-            if let Some(state) = self.peer_gateway.upgrade()
-                && let Some(loc) = self.prev_peer_default.take()
-            {
-                state.routing.write().unwrap().default_location = loc;
-            }
-            // via guards and serve handles drop themselves.
         }
     }
 
@@ -1821,8 +1726,8 @@ mod tests {
 
         assert_eq!(
             forwarded.load(Ordering::SeqCst),
-            1,
-            "remaining via routes must not deliver locally after peeling this gateway's hop",
+            0,
+            "a missing downward slot must not escape through the forwarder",
         );
     }
 
@@ -1946,7 +1851,7 @@ mod tests {
     #[tokio::test]
     async fn test_gateway_self_via_peels_before_local_delivery() {
         #[derive(Clone)]
-        struct CapturingSender(Arc<std::sync::Mutex<Option<(PortAddr, PortAddr)>>>);
+        struct CapturingSender(Arc<std::sync::Mutex<Option<(PortAddr, Option<usize>)>>>);
 
         #[async_trait]
         impl MailboxSender for CapturingSender {
@@ -1955,8 +1860,7 @@ mod tests {
                 envelope: MessageEnvelope,
                 _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
             ) {
-                *self.0.lock().unwrap() =
-                    Some((envelope.dest().clone(), envelope.next_hop().clone()));
+                *self.0.lock().unwrap() = Some((envelope.dest().clone(), envelope.route_cursor()));
             }
         }
 
@@ -1982,6 +1886,7 @@ mod tests {
                 .clone()
                 .with_via(gateway.uid().clone()),
         );
+        gateway.set_default_location(via_dest.location().clone());
         gateway.post(
             MessageEnvelope::serialize(
                 test_actor_id("test", "sender"),
@@ -1995,8 +1900,8 @@ mod tests {
 
         assert_eq!(
             *captured.lock().unwrap(),
-            Some((via_dest, inner_dest)),
-            "delivery preserves the canonical destination and peels only the next hop",
+            Some((via_dest, Some(1))),
+            "delivery preserves the destination and only advances the cursor",
         );
     }
 
@@ -2029,6 +1934,7 @@ mod tests {
                 .clone()
                 .with_via(gateway.uid().clone()),
         );
+        gateway.set_default_location(dest.location().clone());
         let envelope = MessageEnvelope::serialize(
             test_actor_id("test", "sender"),
             dest.clone(),
@@ -2049,15 +1955,18 @@ mod tests {
             panic!("expected returned envelope");
         };
         assert_eq!(returned.dest(), &dest);
-        assert_eq!(returned.next_hop(), &peeled_dest);
+        assert_eq!(returned.route_cursor(), Some(1));
         assert!(
             returned
                 .root_delivery_failure()
                 .is_some_and(|failure| matches!(
                     &failure.kind,
-                    DeliveryFailureKind::Undeliverable(UndeliverableReason::Transport(_))
+                    DeliveryFailureKind::InvalidReference(crate::mailbox::InvalidReference {
+                        reason: crate::mailbox::InvalidReferenceReason::ProcNotExist,
+                        ..
+                    })
                 )),
-            "expected NoRoute transport bounce, got {:?}",
+            "expected stale incarnation failure, got {:?}",
             returned.delivery_failures(),
         );
         // This self-via miss is returned directly from `Gateway::post_unchecked`
@@ -2544,68 +2453,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gateway_serve_via_sessions_are_additive() {
-        let server1_gw = Gateway::new();
-        let mut accept1_handle = server1_gw
+    async fn test_gateway_serve_via_rejects_second_upstream_and_allows_reattach() {
+        let server1 = Gateway::new();
+        let mut listener1 = server1
             .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
             .unwrap();
-        let server1_addr = server1_gw.default_location().addr().clone();
-        let server2_gw = Gateway::new();
-        let mut accept2_handle = server2_gw
+        let server2 = Gateway::new();
+        let mut listener2 = server2
             .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
             .unwrap();
-        let server2_addr = server2_gw.default_location().addr().clone();
-
-        let client_gw = Gateway::new();
-        let pre_default = client_gw.default_location();
-        let mut serve_via1 = client_gw.serve_via(server1_addr.clone()).await.unwrap();
-        let via1_default = client_gw.default_location();
-        assert_eq!(via1_default.addr(), &server1_addr);
-
-        let client_proc = Proc::builder()
-            .proc_id(ProcId::instance(Label::strip("service")))
-            .shared_gateway(client_gw.clone())
-            .build()
-            .unwrap();
-        let client = client_proc.client("recv");
-        let (client_port, mut client_rx) = client.bind_handler_port::<u64>();
-        let PortLocation::Bound(old_client_dest) = client_port.location() else {
-            panic!("client port must be bound");
-        };
-
-        let mut serve_via2 = client_gw.serve_via(server2_addr.clone()).await.unwrap();
-        let via2_default = client_gw.default_location();
-        assert_eq!(via2_default.addr(), &server2_addr);
-        assert_ne!(via1_default, via2_default);
-
-        server1_gw.post(
-            MessageEnvelope::serialize(
-                test_actor_id("server1", "sender"),
-                old_client_dest,
-                &11u64,
-                Flattrs::new(),
-            )
-            .unwrap(),
-            monitored_return_handle(),
-        );
-        let received = time::timeout(Duration::from_secs(5), client_rx.recv())
+        let client = Gateway::isolated();
+        let fallback = client.default_location();
+        let mut first = client
+            .serve_via(server1.default_location().addr().clone())
             .await
-            .expect("client_rx timed out")
-            .expect("client_rx closed");
-        assert_eq!(received, 11);
-
-        serve_via2.stop("test cleanup");
-        serve_via2.join().await.unwrap();
-        assert_eq!(client_gw.default_location(), via1_default);
-
-        serve_via1.stop("test cleanup");
-        serve_via1.join().await.unwrap();
-        assert_eq!(client_gw.default_location(), pre_default);
-
-        accept1_handle.stop("test cleanup");
-        accept1_handle.join().await.unwrap();
-        accept2_handle.stop("test cleanup");
-        accept2_handle.join().await.unwrap();
+            .unwrap();
+        let first_location = client.default_location();
+        assert!(
+            client
+                .serve_via(server2.default_location().addr().clone())
+                .await
+                .is_err()
+        );
+        assert_eq!(client.default_location(), first_location);
+        first.stop("test");
+        first.join().await.unwrap();
+        assert_eq!(client.default_location(), fallback);
+        let mut second = client
+            .serve_via(server2.default_location().addr().clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            client.default_location().addr(),
+            server2.default_location().addr()
+        );
+        second.stop("test");
+        second.join().await.unwrap();
+        listener1.stop("test");
+        listener1.join().await.unwrap();
+        listener2.stop("test");
+        listener2.join().await.unwrap();
     }
 
     #[tokio::test]
@@ -2623,7 +2510,7 @@ mod tests {
         let err = client_gw.serve_via(server_addr).await.unwrap_err();
         assert!(
             err.to_string()
-                .contains("gateway already has a via peer with uid"),
+                .contains("active or connecting upstream attachment"),
             "unexpected error: {err:#}"
         );
         assert_eq!(client_gw.default_location(), via_default);
@@ -2635,7 +2522,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gateway_serve_with_listener_takes_precedence_after_via() {
+    async fn test_gateway_upstream_location_survives_later_listener() {
         let server_gw = Gateway::new();
         let mut accept_handle = server_gw
             .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
@@ -2657,8 +2544,7 @@ mod tests {
             .serve_with_listener(ChannelAddr::any(ChannelTransport::Unix), None)
             .unwrap();
         let frontend_location = client_gw.default_location();
-        assert!(matches!(frontend_location.addr(), ChannelAddr::Unix(_)));
-        assert_ne!(frontend_location, via_default);
+        assert_eq!(frontend_location, via_default);
 
         frontend.stop("test cleanup");
         frontend.join().await.unwrap();
@@ -2843,128 +2729,93 @@ mod tests {
         accept_handle.join().await.unwrap();
     }
 
-    /// `Gateway::attach(&Gateway)` is purely via-based:
-    /// 1. Each gateway's `default_location` becomes a `Via` form
-    ///    that advertises destinations through the peer.
-    /// 2. Procs bound *after* attach inherit the via prefix and
-    ///    route across the link in both directions without any
-    ///    per-id registration.
-    /// 3. On guard drop: restore both `default_location`s and
-    ///    remove the peer entries.
-    ///
-    /// No snapshot cross-bind: pre-attach destinations are not
-    /// reachable across the link because their addresses lack the
-    /// via prefix. (Motivating use case: a client attached to a
-    /// host inside a kubernetes cluster cannot dial the cluster's
-    /// internal addresses directly, so any "shortcut" route would
-    /// be unreachable.)
-    #[tokio::test]
-    async fn test_gateway_attach_bidirectional() {
-        use crate::testing::ids::test_actor_id;
-
-        let gw_a = Gateway::isolated();
-        let pre_a_default = gw_a.default_location();
-        let gw_b = Gateway::isolated();
-        let pre_b_default = gw_b.default_location();
-
-        // Connect the two gateways before binding any procs, so we
-        // exercise the via-only path. (Pre-attach procs are not
-        // reachable across the link by design.)
-        let attach = gw_a.attach(&gw_b);
-
-        // default_location on each side is now Via(self_uid, peer_default).
-        let post_a_default = gw_a.default_location();
-        let post_b_default = gw_b.default_location();
-        let (uid_a, inner_a) = post_a_default.as_via().expect("gw_a default is via");
-        assert_eq!(uid_a, gw_a.uid());
-        assert_eq!(inner_a.as_ref(), &pre_b_default);
-        let (uid_b, inner_b) = post_b_default.as_via().expect("gw_b default is via");
-        assert_eq!(uid_b, gw_b.uid());
-        assert_eq!(inner_b.as_ref(), &pre_a_default);
-
-        // Bind procs on each side *after* attach so their port
-        // addresses inherit the via prefix.
-        let proc_a = Proc::builder()
-            .proc_id(ProcId::instance(Label::strip("alpha")))
-            .shared_gateway(gw_a.clone())
-            .build()
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_core_and_nested_leaves_carry_actor_replies() {
+        let a = Gateway::new();
+        let mut a_listener = a
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
             .unwrap();
-        let alpha_client = proc_a.client("client");
-        let (alpha_port, mut alpha_rx) = alpha_client.bind_handler_port::<u64>();
-        let PortLocation::Bound(alpha_dest) = alpha_port.location() else {
-            panic!("alpha port must be bound");
-        };
-        assert!(
-            alpha_dest.location().as_via().is_some(),
-            "alpha carries via prefix"
-        );
-
-        let proc_b = Proc::builder()
-            .proc_id(ProcId::instance(Label::strip("beta")))
-            .shared_gateway(gw_b.clone())
-            .build()
+        let b = Gateway::new();
+        let mut b_listener = b
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
             .unwrap();
-        let beta_client = proc_b.client("client");
-        let (beta_port, mut beta_rx) = beta_client.bind_handler_port::<u64>();
-        let PortLocation::Bound(beta_dest) = beta_port.location() else {
-            panic!("beta port must be bound");
-        };
-        assert!(
-            beta_dest.location().as_via().is_some(),
-            "beta carries via prefix"
-        );
-
-        // gw_a → alpha: gw_a consumes its own outermost Via from the routing
-        // destination and delivers locally.
-        let sender = test_actor_id("client", "sender");
-        gw_a.post(
-            MessageEnvelope::serialize(sender.clone(), alpha_dest.clone(), &11u64, Flattrs::new())
-                .unwrap(),
-            monitored_return_handle(),
-        );
+        let rack = Gateway::isolated();
+        let mut rack_attach = rack
+            .serve_via_with_key(
+                a.default_location().addr().clone(),
+                Some(Uid::singleton(Label::strip("rack"))),
+            )
+            .await
+            .unwrap();
+        let rack_addr = channel::ChannelAddr::any(ChannelTransport::Unix);
+        let rack_server = PreboundAcceptServer::duplex(rack_addr, None).unwrap();
+        let rack_addr = rack_server.addr().clone();
+        let mut rack_listener = rack.serve_duplex_with_server(rack_server);
+        let leaf = Gateway::isolated();
+        let mut leaf_attach = leaf
+            .serve_via_with_key(rack_addr, Some(Uid::singleton(Label::strip("worker"))))
+            .await
+            .unwrap();
         assert_eq!(
-            time::timeout(Duration::from_secs(2), alpha_rx.recv())
-                .await
-                .expect("alpha_rx timed out")
-                .expect("alpha_rx closed"),
-            11
+            leaf.default_location(),
+            a.default_location()
+                .append_via(Uid::singleton(Label::strip("rack")))
+                .append_via(Uid::singleton(Label::strip("worker")))
         );
-
-        // gw_b → alpha: gw_b's post sees Via(gw_a.uid, ..), finds
-        // gw_a in gw_b.peers, peels, forwards to gw_a.
-        gw_b.post(
-            MessageEnvelope::serialize(sender.clone(), alpha_dest.clone(), &22u64, Flattrs::new())
-                .unwrap(),
-            monitored_return_handle(),
-        );
-        assert_eq!(
-            time::timeout(Duration::from_secs(2), alpha_rx.recv())
-                .await
-                .expect("alpha_rx timed out")
-                .expect("alpha_rx closed"),
-            22
-        );
-
-        // gw_a → beta: symmetric direction.
-        gw_a.post(
-            MessageEnvelope::serialize(sender.clone(), beta_dest.clone(), &33u64, Flattrs::new())
-                .unwrap(),
-            monitored_return_handle(),
-        );
-        assert_eq!(
-            time::timeout(Duration::from_secs(2), beta_rx.recv())
-                .await
-                .expect("beta_rx timed out")
-                .expect("beta_rx closed"),
-            33
-        );
-
-        // Dropping the AttachGuard restores default_location and
-        // removes the peer entries.
-        drop(attach);
-        assert_eq!(gw_a.default_location(), pre_a_default);
-        assert_eq!(gw_b.default_location(), pre_b_default);
-        assert!(gw_a.inner.peers.read().unwrap().is_empty());
-        assert!(gw_b.inner.peers.read().unwrap().is_empty());
+        let sibling = Gateway::isolated();
+        let mut sibling_attach = sibling
+            .serve_via(a.default_location().addr().clone())
+            .await
+            .unwrap();
+        let foreign_leaf = Gateway::isolated();
+        let mut foreign_attach = foreign_leaf
+            .serve_via(b.default_location().addr().clone())
+            .await
+            .unwrap();
+        let procs: Vec<_> = [&a, &b, &rack, &leaf, &sibling, &foreign_leaf]
+            .into_iter()
+            .map(|gateway| {
+                Proc::builder()
+                    .shared_gateway(gateway.clone())
+                    .build()
+                    .unwrap()
+            })
+            .collect();
+        let actors: Vec<_> = procs
+            .iter()
+            .map(|proc| proc.spawn(PingPongActor::new(None, None, None)))
+            .collect();
+        let caller = procs[3].client("caller");
+        for actor in &actors {
+            let (done, reply) = caller.open_once_port::<bool>();
+            actors[3].post(&caller, PingPongMessage(3, actor.bind(), done.bind()));
+            assert!(
+                time::timeout(Duration::from_secs(5), reply.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            );
+        }
+        for actor in actors {
+            actor.stop("test").unwrap();
+        }
+        for handle in [
+            &mut foreign_attach,
+            &mut sibling_attach,
+            &mut leaf_attach,
+            &mut rack_listener,
+            &mut rack_attach,
+            &mut b_listener,
+            &mut a_listener,
+        ] {
+            handle.stop("test");
+        }
+        foreign_attach.join().await.unwrap();
+        sibling_attach.join().await.unwrap();
+        leaf_attach.join().await.unwrap();
+        rack_listener.join().await.unwrap();
+        rack_attach.join().await.unwrap();
+        b_listener.join().await.unwrap();
+        a_listener.join().await.unwrap();
     }
 }

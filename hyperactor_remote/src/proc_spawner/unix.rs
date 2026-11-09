@@ -708,22 +708,11 @@ impl UnixProcWorker {
                 return Ok(());
             }
         };
-        let peer_guard = match cx
+        let peer_guard = cx
             .instance()
             .proc()
             .gateway()
-            .attach_peer(self.uid.clone(), child_sender.into_boxed())
-        {
-            Ok(guard) => guard,
-            Err(error) => {
-                self.reject_and_stop(
-                    cx,
-                    &supervise,
-                    format!("failed to attach spawned proc route: {error}"),
-                );
-                return Ok(());
-            }
-        };
+            .attach_peer(self.uid.clone(), child_sender.into_boxed());
 
         let liveness_handle = match supervise.liveness.clone().spawn_worker(cx).await {
             Ok(liveness_handle) => liveness_handle,

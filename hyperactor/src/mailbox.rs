@@ -146,7 +146,6 @@ use crate::Addr;
 use crate::Endpoint;
 use crate::EndpointLocation;
 use crate::IdleFlushPortRef;
-use crate::Location;
 // for macros
 use crate::OncePortRef;
 use crate::PortAddr;
@@ -319,6 +318,14 @@ impl InvalidReference {
 /// Why a destination reference is invalid.
 #[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub enum InvalidReferenceReason {
+    /// The selected endpoint has no proc with this incarnation id.
+    #[error("proc does not exist")]
+    ProcNotExist,
+
+    /// The final attachment slot is no longer registered.
+    #[error("route does not exist")]
+    RouteNotExist,
+
     /// The actor does not exist.
     #[error("actor does not exist")]
     ActorNotExist,
@@ -493,9 +500,9 @@ pub struct MessageEnvelope {
     /// The destination of the message.
     dest: PortAddr,
 
-    /// The next hop used only for gateway routing.
+    /// Downward path cursor. `None` means traffic is still going up/across.
     #[serde(default)]
-    next_hop: Option<PortAddr>,
+    route_cursor: Option<usize>,
 
     /// The serialized message.
     data: wirevalue::Any,
@@ -531,7 +538,7 @@ impl MessageEnvelope {
         Self {
             sender,
             dest,
-            next_hop: None,
+            route_cursor: None,
             data,
             delivery_failures: Vec::new(),
             headers,
@@ -621,27 +628,26 @@ impl MessageEnvelope {
         &self.dest
     }
 
-    /// The next hop that gateways use for routing.
-    pub(crate) fn next_hop(&self) -> &PortAddr {
-        self.next_hop.as_ref().unwrap_or(&self.dest)
+    /// Number of attachment keys consumed after reaching the core.
+    pub(crate) fn route_cursor(&self) -> Option<usize> {
+        self.route_cursor
     }
 
-    /// Whether this envelope carries a next hop distinct from the
-    /// canonical destination.
-    pub(crate) fn has_next_hop(&self) -> bool {
-        self.next_hop.is_some()
+    /// Enter the downward phase at `cursor` in the destination path.
+    pub(crate) fn set_route_cursor(&mut self, cursor: usize) {
+        assert!(cursor <= self.dest.location().path_len());
+        self.route_cursor = Some(cursor);
+    }
+
+    /// Whether the route ends at the current ingress.
+    pub(crate) fn route_complete(&self) -> bool {
+        self.route_cursor == Some(self.dest.location().path_len())
     }
 
     /// Return this envelope with its destination replaced by `dest`.
     pub fn with_dest(mut self, dest: PortAddr) -> Self {
         self.dest = dest;
-        self.next_hop = None;
-        self
-    }
-
-    /// Return this envelope with its next hop replaced by `dest`.
-    pub(crate) fn with_next_hop(mut self, dest: PortAddr) -> Self {
-        self.next_hop = if dest == self.dest { None } else { Some(dest) };
+        self.route_cursor = None;
         self
     }
 
@@ -747,7 +753,7 @@ impl MessageEnvelope {
         let Self {
             sender,
             dest,
-            next_hop,
+            route_cursor,
             data,
             delivery_failures,
             headers,
@@ -759,7 +765,7 @@ impl MessageEnvelope {
             MessageMetadata {
                 sender,
                 dest,
-                next_hop,
+                route_cursor,
                 delivery_failures,
                 headers,
                 ttl,
@@ -773,7 +779,7 @@ impl MessageEnvelope {
         let MessageMetadata {
             sender,
             dest,
-            next_hop,
+            route_cursor,
             delivery_failures,
             headers,
             ttl,
@@ -783,7 +789,7 @@ impl MessageEnvelope {
         Self {
             sender,
             dest,
-            next_hop,
+            route_cursor,
             data,
             delivery_failures,
             headers,
@@ -824,7 +830,7 @@ impl fmt::Display for MessageEnvelope {
 pub struct MessageMetadata {
     sender: ActorAddr,
     dest: PortAddr,
-    next_hop: Option<PortAddr>,
+    route_cursor: Option<usize>,
     /// Structured delivery failures. The first entry is the root delivery
     /// failure; later entries record subsequent failures while returning or
     /// forwarding the same envelope.
@@ -1582,10 +1588,8 @@ impl MailboxClient {
     /// buffer would otherwise wait on. Each message is re-posted at most
     /// once.
     ///
-    /// Only messages addressed directly to a proc at the peer's address are
-    /// re-posted. A message whose next hop is a `Via` names a proc behind the
-    /// peer's process, such as a child proc of a host, which does not
-    /// survive the peer's restart; it is returned as undeliverable.
+    /// Re-posts keep the selected core endpoint and downward cursor. A stale
+    /// transport session cannot retarget the destination incarnation.
     fn with_stale_session_repost(
         tx: impl channel::Tx<MessageEnvelope> + Send + Sync + 'static,
         repost: StaleSessionRepost,
@@ -1625,7 +1629,7 @@ impl MailboxClient {
                         } = send_error;
                         if let Some(SendErrorReason::StaleSession(_)) = &reason
                             && let Some(repost) = &repost
-                            && matches!(message.next_hop().location(), Location::Addr(_))
+                            && message.route_cursor() == Some(0)
                             && message
                                 .headers()
                                 .get(headers::REPOSTED_AFTER_STALE_SESSION)
@@ -2384,7 +2388,7 @@ impl MailboxSender for Mailbox {
             mut headers,
             sender,
             dest,
-            next_hop,
+            route_cursor,
             delivery_failures,
             ttl,
             return_undeliverable,
@@ -2424,7 +2428,7 @@ impl MailboxSender for Mailbox {
                         headers,
                         sender,
                         dest,
-                        next_hop,
+                        route_cursor,
                         delivery_failures,
                         ttl,
                         return_undeliverable,
@@ -2445,7 +2449,7 @@ impl MailboxSender for Mailbox {
                         headers,
                         sender,
                         dest,
-                        next_hop,
+                        route_cursor,
                         delivery_failures,
                         ttl,
                         return_undeliverable,
@@ -4273,7 +4277,13 @@ impl MailboxSender for DialMailboxRouter {
                     )));
                 envelope.undeliverable(failure, return_handle)
             }
-            Ok(sender) => sender.post(envelope, return_handle),
+            Ok(sender) => {
+                let mut envelope = envelope;
+                if envelope.route_cursor().is_none() {
+                    envelope.set_route_cursor(0);
+                }
+                sender.post(envelope, return_handle);
+            }
         }
     }
 
@@ -5650,6 +5660,83 @@ mod tests {
             !Arc::ptr_eq(&stale_client, &fresh_client),
             "the stale-session client should be replaced in the cache"
         );
+    }
+
+    #[tokio::test]
+    async fn test_dial_router_repost_preserves_attachment_path_and_cursor() {
+        #[derive(Clone)]
+        struct Ingress {
+            mailbox: Mailbox,
+            seen: Arc<Mutex<Vec<(PortAddr, Option<usize>, bool)>>>,
+        }
+        #[async_trait]
+        impl MailboxSender for Ingress {
+            fn post_unchecked(
+                &self,
+                message: MessageEnvelope,
+                returns: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                self.seen.lock().unwrap().push((
+                    message.dest().clone(),
+                    message.route_cursor(),
+                    message
+                        .headers()
+                        .get(headers::REPOSTED_AFTER_STALE_SESSION)
+                        .is_some(),
+                ));
+                self.mailbox.post_unchecked(message, returns);
+            }
+        }
+        let mailbox = Mailbox::new(test_actor_id("routed_restart", "actor"));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let ingress = Ingress {
+            mailbox: mailbox.clone(),
+            seen: seen.clone(),
+        };
+        let (first_addr, first_rx) = channel::serve::<MessageEnvelope>(tcp_loopback()).unwrap();
+        let _first = ingress.clone().serve(first_rx);
+        let (second_addr, second_rx) = channel::serve::<MessageEnvelope>(tcp_loopback()).unwrap();
+        let _second = ingress.serve(second_rx);
+        let mut relay = TcpRelay::start(&first_addr).await;
+        let location = crate::Location::from(relay.addr.clone())
+            .append_via(crate::Uid::singleton(crate::Label::strip("rack")))
+            .append_via(crate::Uid::singleton(crate::Label::strip("worker")));
+        let router = DialMailboxRouter::new();
+        let stale = router.dial(&relay.addr, mailbox.actor_addr()).unwrap();
+        let (port, mut receiver) = mailbox.open_port::<u64>();
+        let port = port.bind();
+        let dest = PortAddr::new(port.port_addr().id().clone(), location);
+        let send = |value| {
+            router.post(
+                MessageEnvelope::serialize(
+                    mailbox.actor_addr().clone(),
+                    dest.clone(),
+                    &value,
+                    Flattrs::new(),
+                )
+                .unwrap(),
+                monitored_return_handle(),
+            )
+        };
+        send(1u64);
+        assert_eq!(receiver.recv().await.unwrap(), 1);
+        stale.flush().await.unwrap();
+        relay.restart_peer_at(&second_addr);
+        relay.reconnected().await;
+        send(2u64);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(30), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![(dest.clone(), Some(0), false), (dest, Some(0), true)]
+        );
+        let fresh = router.dial(&relay.addr, mailbox.actor_addr()).unwrap();
+        assert!(!Arc::ptr_eq(&stale, &fresh));
     }
 
     #[tokio::test]

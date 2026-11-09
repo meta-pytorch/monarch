@@ -55,33 +55,15 @@ use crate::port::Port;
 use crate::proc::StatusMessage;
 use crate::ref_::PortRef;
 
-/// A network location.
+/// A core address followed by a top-down path of attachment keys.
 ///
-/// Two variants: a terminal [`ChannelAddr`], or a "via" hop carrying
-/// the [`Uid`] of a gateway through which the inner location is
-/// reachable. The via form is a source route — a message addressed to
-/// `Via(uid, inner)` is forwarded by the gateway holding that `uid` and
-/// then routed by the inner location.
+/// Core gateways can all dial one another. A leaf attaches to one upstream;
+/// its location extends the upstream's path. Singleton [`Uid`] keys name
+/// stable deployment slots, while instance keys last for one gateway lifetime.
 ///
-/// Display syntax:
-///
-/// ```text
-/// location := via* zmq-url
-/// via      := uid "."
-/// uid      := label | "<" base58 ">" | label "<" base58 ">"
-/// ```
-///
-/// The parser sniffs the ZMQ URL scheme (`<scheme>://`) to split the
-/// via list from the URL — so any uid form accepted by [`Uid`]
-/// (singleton label, unlabeled instance, or labeled instance) is
-/// admitted in via position.
-///
-/// Examples:
-///
-/// * `<2MuAHeDjLCEd>.tcp://[::1]:2345` — one unlabeled instance via.
-/// * `host<7PDmJtQJB5S>.tcp://[::1]:2345` — labeled instance via.
-/// * `client.host<7PDmJtQJB5S>.tcp://[::1]:2345` — a singleton via
-///   stacked on a labeled instance via.
+/// Display syntax: `rack.worker.tcp://host:4444` names `rack`, then `worker`,
+/// below the core gateway at `tcp://host:4444`. The `Addr`/`Via` encoding is
+/// retained; no address hop can appear inside an attachment path.
 #[derive(
     Clone,
     EnumAsInner,
@@ -96,14 +78,35 @@ use crate::ref_::PortRef;
 pub enum Location {
     /// A terminal channel address. Routed directly.
     Addr(ChannelAddr),
-    /// A via hop: messages for this location are forwarded by the
-    /// gateway holding `Uid`, which peels this prefix off the
-    /// destination before routing the inner location.
+    /// An attachment key followed by the rest of the top-down path.
     Via(Uid, Box<Location>),
 }
 
 impl Location {
-    /// Returns the innermost channel address, peeling all via hops.
+    /// Number of attachment keys below the core gateway.
+    pub fn path_len(&self) -> usize {
+        match self {
+            Self::Addr(_) => 0,
+            Self::Via(_, inner) => 1 + inner.path_len(),
+        }
+    }
+
+    /// Attachment key at `index`, in top-down traversal order.
+    pub fn path_key(&self, index: usize) -> Option<&Uid> {
+        match self {
+            Self::Via(key, _) if index == 0 => Some(key),
+            Self::Via(_, inner) => inner.path_key(index - 1),
+            Self::Addr(_) => None,
+        }
+    }
+
+    /// Whether this location is an ancestor of `other` (including itself).
+    pub(crate) fn is_prefix_of(&self, other: &Self) -> bool {
+        self.addr() == other.addr()
+            && (0..self.path_len()).all(|i| self.path_key(i) == other.path_key(i))
+    }
+
+    /// Returns the core address, ignoring attachment keys.
     pub fn addr(&self) -> &ChannelAddr {
         match self {
             Location::Addr(addr) => addr,
@@ -111,9 +114,7 @@ impl Location {
         }
     }
 
-    /// Wrap this location in a via hop carrying `uid`. Vias act like a
-    /// stack: the outermost (most recently added) hop is the first the
-    /// receiving gateway peels off.
+    /// Prepend `uid` to the top-down attachment path.
     pub fn with_via(self, uid: Uid) -> Self {
         Location::Via(uid, Box::new(self))
     }
@@ -898,6 +899,34 @@ mod tests {
     fn test_location_debug_same_as_display() {
         let loc: Location = ChannelAddr::Local(7).into();
         assert_eq!(format!("{:?}", loc), format!("{}", loc));
+    }
+
+    #[test]
+    fn test_location_top_down_path_and_prefix() {
+        let core = Location::from(ChannelAddr::Local(7));
+        let rack = core
+            .clone()
+            .append_via(Uid::singleton(Label::strip("rack")));
+        let leaf = rack
+            .clone()
+            .append_via(Uid::singleton(Label::strip("worker")));
+        assert_eq!(leaf.path_len(), 2);
+        assert_eq!(leaf.path_key(0), rack.path_key(0));
+        assert_eq!(
+            leaf.path_key(1),
+            Some(&Uid::singleton(Label::strip("worker")))
+        );
+        assert_eq!(leaf.path_key(2), None);
+        assert!(core.is_prefix_of(&leaf));
+        assert!(rack.is_prefix_of(&leaf));
+        assert!(!leaf.is_prefix_of(&rack));
+        assert!(!Location::from(ChannelAddr::Local(8)).is_prefix_of(&leaf));
+        assert_eq!(leaf.to_string(), "rack.worker.inproc://7");
+        assert_eq!(leaf.to_string().parse::<Location>().unwrap(), leaf);
+        assert_eq!(
+            serde_json::from_str::<Location>(&serde_json::to_string(&leaf).unwrap()).unwrap(),
+            leaf
+        );
     }
 
     #[test]

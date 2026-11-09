@@ -93,7 +93,6 @@ use hyperactor::channel::ServerError;
 use hyperactor::channel::Tx;
 use hyperactor::context;
 use hyperactor::gateway::GatewayServeHandle;
-use hyperactor::gateway::PeerAttachError;
 use hyperactor::gateway::PeerAttachGuard;
 use hyperactor::id::Label;
 use hyperactor::mailbox::IntoBoxedMailboxSender as _;
@@ -142,10 +141,6 @@ pub enum HostError {
     /// The host's proc-name registry cannot be used safely.
     #[error("host proc-name registry is poisoned")]
     ProcRegistryPoisoned,
-
-    /// Attaching a spawned proc to the host gateway failed.
-    #[error("failed to attach proc '{0}' to the host gateway: {1}")]
-    PeerAttachFailure(ProcAddr, #[source] PeerAttachError),
 
     /// The detached task spawning a proc panicked.
     #[error("proc '{0}' spawn panicked: {1}")]
@@ -576,9 +571,7 @@ impl<M: ProcManager> Host<M> {
                 let agent_ref = ready.agent_ref().clone();
                 drop(ready);
 
-                let guard = gateway
-                    .attach_peer(proc_uid.clone(), child_sender.into_boxed())
-                    .map_err(|error| HostError::PeerAttachFailure(proc_id.clone(), error))?;
+                let guard = gateway.attach_peer(proc_uid.clone(), child_sender.into_boxed());
                 match procs
                     .lock()
                     .map_err(|_| HostError::ProcRegistryPoisoned)?
