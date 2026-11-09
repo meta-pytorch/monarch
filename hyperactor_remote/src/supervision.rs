@@ -36,7 +36,12 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::actor::StopMode;
 use hyperactor::context;
 use hyperactor::context::Actor as _;
+use hyperactor::mailbox::DeliveryFailureKind;
+use hyperactor::mailbox::InvalidReference;
+use hyperactor::mailbox::InvalidReferenceReason;
 use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::TransportFailure;
+use hyperactor::mailbox::TransportFailureReason;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::supervision::ActorSupervisionEvent;
@@ -326,6 +331,40 @@ impl Actor for Supervisor {
 
     fn supervision_observation(&self) -> Option<SupervisionObservation> {
         self.observation.clone()
+    }
+
+    async fn handle_delivery_failure_event(
+        &mut self,
+        this: &Instance<Self>,
+        undeliverable: Undeliverable<MessageEnvelope>,
+    ) -> anyhow::Result<()> {
+        // A linked worker received the bootstrap request, but a channel that
+        // closes before acknowledging it still returns it. Once linked, the
+        // liveness link alone decides reachability.
+        if self.session.is_some() {
+            return Ok(());
+        }
+        // ChannelClosed also covers unexpected transport failures. Ending an
+        // unlinked proxy cleanly does not establish that its remote child
+        // stopped; subsequent use is checked through actor-status monitoring.
+        if let Some(failure) = undeliverable.root_delivery_failure()
+            && matches!(
+                &failure.kind,
+                DeliveryFailureKind::InvalidReference(InvalidReference {
+                    reason: InvalidReferenceReason::ActorStopped,
+                    ..
+                }) | DeliveryFailureKind::Undeliverable(UndeliverableReason::Transport(
+                    TransportFailure {
+                        reason: TransportFailureReason::ChannelClosed { .. },
+                        ..
+                    }
+                ))
+            )
+        {
+            this.exit("supervision bootstrap returned before linking")?;
+            return Ok(());
+        }
+        hyperactor::actor::handle_delivery_failure_event(self, this, undeliverable).await
     }
 }
 
@@ -906,6 +945,7 @@ mod tests {
     use hyperactor::PortHandle;
     use hyperactor::Proc;
     use hyperactor::Uid;
+    use hyperactor::mailbox::DeliveryFailure;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
     use hyperactor_config::attrs::declare_attrs;
@@ -1446,6 +1486,156 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), worker)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_linked_supervisor_ignores_returned_bootstrap_request() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let requested = proc.proc_addr().actor_addr_uid(Uid::anonymous());
+        let (worker_port, _worker_rx) = client.open_port::<WorkerCommand>();
+        let worker = worker_port.bind();
+        let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
+        let child = requested.clone();
+        let supervisor = Supervisor::bootstrap_uid(
+            KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+            SupervisionOptions::default(),
+            Uid::anonymous(),
+            requested,
+            None,
+            move |this, request| {
+                let envelope = MessageEnvelope::serialize(
+                    this.self_addr().clone(),
+                    request.supervisor.port_addr().clone(),
+                    &request,
+                    Flattrs::new(),
+                )?;
+                request.supervisor.post(
+                    this,
+                    SupervisorEvent::Linked {
+                        session_id: request.session_id.clone(),
+                        worker,
+                        child,
+                        display_name: None,
+                    },
+                );
+                this.port::<Undeliverable<MessageEnvelope>>()
+                    .post(this, Undeliverable::Returned(envelope));
+                Ok(())
+            },
+        );
+        let parent = proc.spawn(Parent {
+            supervisor: Some(supervisor),
+            events,
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), event_rx.recv())
+                .await
+                .is_err(),
+            "a returned bootstrap request after linking should not fail the supervisor"
+        );
+        parent.stop("test complete").unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+        assert!(
+            !status.is_failed(),
+            "the parent and its supervisor should stop cleanly: {status}"
+        );
+    }
+
+    /// Return the event a parent observes when its supervisor's bootstrap
+    /// request bounces, before linking, with the failure `failure` makes for
+    /// the request's envelope.
+    async fn bounced_bootstrap_event(
+        failure: impl FnOnce(&MessageEnvelope) -> DeliveryFailure + Send + 'static,
+    ) -> ActorSupervisionEvent {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let requested = proc.proc_addr().actor_addr_uid(Uid::anonymous());
+        let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
+        let supervisor = Supervisor::bootstrap_uid(
+            KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+            SupervisionOptions::default(),
+            Uid::anonymous(),
+            requested,
+            None,
+            move |this, request| {
+                let mut envelope = MessageEnvelope::serialize(
+                    this.self_addr().clone(),
+                    request.supervisor.port_addr().clone(),
+                    &request,
+                    Flattrs::new(),
+                )?;
+                let failure = failure(&envelope);
+                envelope.push_delivery_failure(failure);
+                this.port::<Undeliverable<MessageEnvelope>>()
+                    .post(this, Undeliverable::Returned(envelope));
+                Ok(())
+            },
+        );
+        let parent = proc.spawn(Parent {
+            supervisor: Some(supervisor),
+            events,
+        });
+        let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        parent.stop("test complete").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+        event
+    }
+
+    fn invalid_reference(
+        reason: InvalidReferenceReason,
+    ) -> impl FnOnce(&MessageEnvelope) -> DeliveryFailure + Send + 'static {
+        move |envelope| DeliveryFailure::new(InvalidReference::new(envelope.dest().clone(), reason))
+    }
+
+    fn assert_spawn_lost_race_with_stop(event: &ActorSupervisionEvent) {
+        assert!(
+            matches!(event.actor_status, ActorStatus::Stopped(_)),
+            "a spawn that loses a race with a stop should end cleanly: {event}"
+        );
+        assert_eq!(
+            event.observation, None,
+            "a spawn that loses a race with a stop should not be reported as a failed request"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_to_stopped_recipient_does_nothing() {
+        let event =
+            bounced_bootstrap_event(invalid_reference(InvalidReferenceReason::ActorStopped)).await;
+        assert_spawn_lost_race_with_stop(&event);
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_in_flight_when_channel_closes_does_nothing() {
+        let event = bounced_bootstrap_event(|envelope| {
+            DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                envelope.dest().clone(),
+                TransportFailureReason::ChannelClosed {
+                    addr: hyperactor::channel::ChannelTransport::Local.any(),
+                },
+            )))
+        })
+        .await;
+        assert_spawn_lost_race_with_stop(&event);
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_to_failed_recipient_fails() {
+        let event =
+            bounced_bootstrap_event(invalid_reference(InvalidReferenceReason::ActorFailed)).await;
+        assert!(
+            event.is_error(),
+            "a bootstrap request that reaches a failed recipient should fail: {event}"
+        );
     }
 
     // proc
