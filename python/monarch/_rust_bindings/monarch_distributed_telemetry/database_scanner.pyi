@@ -15,7 +15,15 @@ class DatabaseScanner:
         cls,
         rank: int,
         retention_secs: int = 3600,
-    ) -> "DatabaseScanner": ...
+        persist_dir: Optional[str] = None,
+    ) -> "DatabaseScanner":
+        """Create a scanner. When ``persist_dir`` is set, every table append is
+        also written to a persist log there; if the log cannot be created, the
+        scanner runs without it."""
+        ...
+    def close_persist(self) -> None:
+        """Write pending telemetry and close the persist log, if enabled."""
+        ...
     def apply_retention(self, table_name: str, where_clause: str) -> None:
         """Filter a table, keeping only rows that match the WHERE clause."""
         ...
