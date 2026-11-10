@@ -42,6 +42,8 @@ Default Hosts and workers started with a bare channel URL mint fresh service
 identities. `attach_to_workers(workers=[location])` discovers those identities;
 strings and future-valued strings are accepted. A concrete
 `service<uid>@location` skips discovery and must name the correct incarnation.
+Monarch's launchers start workers from bare channel URLs and attach by discovery,
+so a restarted worker has a fresh identity.
 Dial/bind aliases are canonicalized for dialing. The context's actor must be
 created after the listener or attachment that provides its return path.
 

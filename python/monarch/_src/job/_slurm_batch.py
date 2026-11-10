@@ -33,11 +33,8 @@ from monarch._src.job._batch_env import MONARCH_BATCH_JOB_ENV
 # Bootstraps one Monarch worker that advertises this node's hostname. Passed as
 # Python ``-c`` argv (no shell), so quoting inside is irrelevant.
 _WORKER_BOOTSTRAP: str = (
-    "import os, socket; from monarch.actor import run_worker_loop_forever; "
-    "from monarch._src.job.service_identity import service_proc_addr, ranked_service_proc_id_from_env; "
-    'run_worker_loop_forever(address=service_proc_addr(f"%s", '
-    'ranked_service_proc_id_from_env(rank_env="SLURM_NODEID")), '
-    'ca="trust_all_connections")'
+    "import socket; from monarch.actor import run_worker_loop_forever; "
+    'run_worker_loop_forever(address=f"%s", ca="trust_all_connections")'
 )
 
 

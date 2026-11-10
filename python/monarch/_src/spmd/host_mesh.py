@@ -43,8 +43,6 @@ import threading
 from collections.abc import Mapping
 from typing import Final, Protocol
 
-from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
-from monarch._src.job.service_identity import new_service_proc_id, service_proc_addr
 from monarch.actor import enable_transport
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -236,12 +234,10 @@ def _worker_addrs_from_store(
     enable_transport(transport)
 
     if env_local_rank == 0:
-        service_proc_id = new_service_proc_id()
         addr, _pid = _spawn_worker_process(
             transport=transport,
             monarch_port=monarch_port,
             name=f"{name}_{group_rank}",
-            service_proc_id=service_proc_id,
         )
         store.set(_worker_addr_key(group_rank), addr.encode())
 
@@ -257,7 +253,6 @@ def _spawn_worker_process(
     monarch_port: int = 0,
     name: str = "monarch_worker",
     env: Mapping[str, str] | None = None,
-    service_proc_id: ProcId | None = None,
 ) -> tuple[str, int]:
     """Spawn a ``run_worker_loop_forever`` subprocess.
 
@@ -297,17 +292,6 @@ def _spawn_worker_process(
     }
     if env is not None:
         child_env.update(env)
-    if service_proc_id is None:
-        logger.warning(
-            "_spawn_worker_process called without service_proc_id for %s; "
-            "allocating a fresh ephemeral ID which will not be coordinated "
-            "with attach_to_workers. Pass an explicit ProcId to ensure routing.",
-            name,
-        )
-        service_proc_id = new_service_proc_id()
-    proc_addr = service_proc_addr(addr, service_proc_id)
-    child_env[_ADDR_ENV] = proc_addr
-
     if _IN_PAR:
         # sys.executable in PAR/XAR is the bare interpreter and cannot import
         # archive-bundled modules. Re-invoke the PAR with PAR_MAIN_OVERRIDE to
@@ -338,4 +322,4 @@ def _spawn_worker_process(
     logger.info("monarch worker %s spawned pid=%d addr=%s", name, proc.pid, addr)
     _watch_worker(proc, name, addr)
 
-    return proc_addr, proc.pid
+    return addr, proc.pid

@@ -47,7 +47,7 @@ def test_store_job_queries_existing_telemetry() -> None:
 
 
 def test_spmd_job_cleanup_log_context_includes_scheduler_handle() -> None:
-    job = SPMDJob(handle="scheduler://app", scheduler="scheduler", service_proc_ids=[])
+    job = SPMDJob(handle="scheduler://app", scheduler="scheduler")
 
     assert job._cleanup_log_context() == {
         "job_type": "SPMDJob",
@@ -270,7 +270,6 @@ def test_run_spmd(name: str) -> None:
     job = SPMDJob(
         handle="test_handle",
         scheduler="mast_conda",
-        service_proc_ids=[],
         name=name,
         original_roles=[
             {

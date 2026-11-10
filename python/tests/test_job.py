@@ -70,10 +70,6 @@ from monarch._src.job.once_daemon import (
     OnceDaemon,
 )
 from monarch._src.job.process import ProcessJob
-from monarch._src.job.service_identity import (
-    deserialize_service_proc_ids,
-    serialize_service_proc_ids,
-)
 from monarch.actor import context as current_context, Future, HostMesh
 
 
@@ -87,12 +83,6 @@ def test_explicit_uid_values_are_instance_identities() -> None:
     assert first.uid.is_instance
     assert ProcId.from_string(str(first)) == first
     assert pickle.loads(pickle.dumps(first)) == first
-    assert deserialize_service_proc_ids(
-        serialize_service_proc_ids([first, second])
-    ) == [
-        first,
-        second,
-    ]
 
 
 def _append_line(path: str, line: str) -> None:

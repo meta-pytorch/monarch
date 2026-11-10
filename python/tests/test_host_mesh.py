@@ -1405,12 +1405,9 @@ def test_attach_after_host_restart_at_same_address(stop: str) -> None:
             assert job._tmpdir is not None
             with suppress(FileNotFoundError):
                 os.unlink(os.path.join(job._tmpdir, "hosts_0"))
-            proc_addr = service_proc_addr(
-                worker.channel.split("@", 1)[1], new_service_proc_id()
-            )
-            restarted = _restart_process_job_worker(proc_addr)
+            restarted = _restart_process_job_worker(worker.channel)
             hm2 = attach_to_workers(
-                name="hosts", ca="trust_all_connections", workers=[proc_addr]
+                name="hosts", ca="trust_all_connections", workers=[worker.channel]
             )
             hm2.initialized.get(timeout=30)
             am2 = hm2.spawn_procs(per_host={"gpus": 1}).spawn("actor", RankActor)
