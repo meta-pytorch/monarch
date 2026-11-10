@@ -15,6 +15,8 @@ use monarch_record_batch::arrow::ipc::reader::StreamReader;
 use monarch_record_batch::arrow::ipc::writer::StreamWriter;
 use monarch_record_batch::arrow::record_batch::RecordBatch;
 
+pub mod frame;
+
 /// Maximum table-name length in a socket frame.
 pub const MAX_TABLE_NAME_LEN: usize = 256;
 /// Maximum Arrow IPC payload length in a socket frame.
@@ -54,20 +56,18 @@ pub fn deserialize_one_batch(data: &[u8]) -> anyhow::Result<RecordBatch> {
     Ok(batch)
 }
 
-/// Append the Unix-socket frame header for an Arrow IPC payload.
+/// Append a frame header for an Arrow IPC payload or the clean-close marker.
 ///
 /// The header contains the table name and payload length. Callers append the
-/// Arrow IPC payload bytes after this header.
+/// Arrow IPC payload bytes after this header. `__end` has an empty payload.
 pub fn write_frame_header(
     buf: &mut Vec<u8>,
     table_name: &str,
     payload_len: usize,
 ) -> anyhow::Result<()> {
-    if table_name.is_empty() || table_name.len() > MAX_TABLE_NAME_LEN {
-        anyhow::bail!("invalid table name length {}", table_name.len());
-    }
-    if payload_len == 0 || payload_len > MAX_FRAME_LEN {
-        anyhow::bail!("invalid frame length {payload_len}");
+    frame::check_table_name_len(table_name.len())?;
+    if table_name != frame::END_FRAME || payload_len != 0 {
+        frame::check_payload_len(payload_len)?;
     }
 
     let name_len = u16::try_from(table_name.len())?;
