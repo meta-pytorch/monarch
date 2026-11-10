@@ -1,0 +1,145 @@
+# Chrysalis in Python
+
+These bindings are experimental, private, and subject to change. They are not part of Chrysalis's public API.
+
+This tutorial runs three Chrysalis nodes in one Python process. Alice is the root of a process namespace, Relay joins Alice, and Bob joins Relay. Alice knows Bob's certificate-derived process ID, finds him through the namespace, opens an authenticated stream through Relay, sends a postcard, and receives Bob's reply.
+
+The nodes share a Python process, but they do not exchange packets through Python objects or in-memory queues. Each node binds its own UDP socket on `127.0.0.1`, and Chrysalis sends real QUIC packets between those sockets.
+
+The runnable source is [`examples/hello_world.py`](examples/hello_world.py).
+
+## Run it
+
+From `~/fbsource`:
+
+```sh
+buck2 run @fbcode//mode/dev-nosan fbcode//monarch/chrysalis/python/examples:hello_world
+```
+
+One run prints output like this. The PIDs and UDP ports change each time:
+
+```text
+alice 46591982e72d44e2355c899587bd39b6 udp://127.0.0.1:41673
+relay c14d6fa5d91dee1d8159288f96cc5ba9 udp://127.0.0.1:34560
+bob   c5acbf12247707f6935961364ad5ff33 udp://127.0.0.1:50920
+bob received b'wish you were here' from alice
+alice received b"we're just two lost souls swimming in a fish bowl, year after year" from bob
+```
+
+## What happens
+
+### Create three identities
+
+The program creates three PEM identity bundles signed by one new test certificate authority, then loads them:
+
+```python
+alice, relay, bob = (
+    Identity.from_pem(bundle) for bundle in generate_test_identities(3)
+)
+```
+
+Each identity contains a certificate and private key. The certificate determines the node's `Pid`, a complete 32-digit process identifier. Because one test certificate authority signs all three certificates, the nodes trust one another for this run.
+
+`generate_test_identities` is for examples and tests. It does not load production credentials.
+
+### Build the namespace tree
+
+The three nodes form this parent-child tree:
+
+```text
+Alice
+└── Relay
+    └── Bob
+```
+
+The program constructs that tree directly:
+
+```python
+alice_node = Node(alice)
+relay_node = Node(relay, parent=(alice.pid, alice_node.addresses[0]))
+bob_node = Node(bob, parent=(relay.pid, relay_node.addresses[0]))
+```
+
+`Node(alice)` has no parent, so Alice becomes the namespace root. With no carrier argument, each node binds a new `UdpCarrier` on `127.0.0.1` and asks the operating system to choose an available port.
+
+The `parent` tuple contains two different facts: the PID the parent must authenticate as, and the UDP address where the child contacts it. `Node.addresses` reports the actual address after the operating system chooses the port. Relay receives Alice's PID and address; Bob receives Relay's.
+
+Joining is asynchronous. Bob's namespace entry takes a moment to travel through Relay to Alice, so Alice retries `dial` until Bob is visible or the deadline passes:
+
+```python
+async def dial_when_visible(node: Node, pid: Pid, within: float = 10.0) -> Stream:
+    """Open a stream to `pid` once `node` can see it.
+
+    A new node's PID takes a moment to reach the rest of the namespace, and
+    `dial` fails until it does.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + within
+    while True:
+        try:
+            return await node.dial(pid)
+        except ChrysalisError:
+            if loop.time() > deadline:
+                raise
+            await asyncio.sleep(0.05)
+```
+
+Alice dials Bob by PID, not by Bob's UDP port. Alice's namespace says that the next hop toward Bob is Relay. Relay forwards Bob-addressed packets rather than terminating Alice's application connection.
+
+### Exchange bytes on one stream
+
+Bob waits for an incoming stream:
+
+```python
+source, stream = await bob_node.accept()
+postcard = await read_to_end(stream)
+sender = "alice" if source == alice.pid else str(source)
+print(f"bob received {postcard!r} from {sender}")
+await stream.write(REPLY)
+await stream.finish()
+```
+
+`accept` returns both the new bidirectional `Stream` and the PID that the peer authenticated as during mutual TLS. Bob therefore compares a certificate-backed PID, not a sender name supplied in the postcard.
+
+Alice opens the other end of that stream and sends the postcard:
+
+```python
+stream = await dial_when_visible(alice_node, bob.pid)
+await stream.write(POSTCARD)
+await stream.finish()
+print(f"alice received {await read_to_end(stream)!r} from bob")
+```
+
+`write` waits until Chrysalis accepts all the bytes. `finish` says that this side will send no more bytes; it does not close the stream's receive side. Each side calls `read` until it returns `b""`, which means the peer finished sending. A connection failure before that point raises `ChrysalisError` instead of looking like a normal end of stream.
+
+Relay sees and forwards encrypted QUIC packets addressed to Bob. It does not receive the application `Stream` and does not parse the postcard.
+
+### Close every node
+
+The program always shuts down all three nodes, whether the exchange succeeds or raises:
+
+```python
+finally:
+    await asyncio.gather(*(node.close() for node in nodes))
+```
+
+`close` starts node shutdown and waits for its background work to finish.
+
+## The API used here
+
+- `generate_test_identities(count)` returns PEM identity bundles signed by one new test certificate authority.
+- `Identity.from_pem(bundle)` loads one node's certificate, private key, and trust roots. `Identity.pid` is the `Pid` derived from its certificate.
+- `Pid(value)` parses a complete 32-digit hexadecimal process ID. PIDs compare and hash by value.
+- `UdpCarrier(bind="127.0.0.1:0")` describes a UDP binding. The default address limits it to loopback, and port `0` asks the operating system to choose an available port. `Node` creates this carrier when none is supplied.
+- `Node(identity, parent=...)` starts a namespace root or joins one parent. `addresses` reports its bound UDP address, `dial(pid)` opens a stream to a visible PID, `accept()` waits for a peer to open one, and `close()` shuts the node down.
+- `Stream.write(data)` sends all the bytes, `finish()` closes the send side, and `read(max_bytes)` reads the next available bytes or returns `b""` after the peer finishes.
+- `ChrysalisError` reports node and transport failures. Invalid input raises `ValueError`, and a wrong type or out-of-range integer raises `TypeError` or `OverflowError`.
+
+The complete experimental signatures are in [`chrysalis/_rust_bindings/__init__.pyi`](chrysalis/_rust_bindings/__init__.pyi).
+
+## Limitations
+
+- The bindings are private and experimental. Importing `chrysalis._rust_bindings` does not establish a public or stable Python API.
+- `generate_test_identities` creates test credentials whose certificates name `localhost`. The current binding uses that fixed TLS server name.
+- A node binds one carrier.
+- A UDP node advertises the address it binds. It cannot bind an unspecified address such as `0.0.0.0` while advertising a different reachable address.
