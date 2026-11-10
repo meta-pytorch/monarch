@@ -103,6 +103,18 @@ class TelemetryConfig:
             the ``gpu_metrics`` table through NVML. The default is 1 second;
             0 disables GPU sampling, and hosts without NVIDIA GPUs or NVML
             skip it.
+        persist_dir: Directory for crash-tolerant telemetry files; each
+            collector writes ``{persist_dir}/{apply_id}/{hostname}-{pid}/``.
+            Use a path that outlives the host, such as a shared mount. ``None``
+            disables persistence.
+            Use graceful job shutdown to drain queued batches and finalize the
+            log, then check readback's ``clean`` flag. After unexpected
+            termination, readback recovers complete frames and reports an
+            unclean log and any torn tail. Recent queued or unsynced data may
+            be missing.
+        client_persist_dir: Overrides ``persist_dir`` for the client collector
+            in the job sidecar, which runs where the job was applied. Defaults
+            to ``persist_dir``.
     """
 
     retention_secs: int = 3600
@@ -111,6 +123,8 @@ class TelemetryConfig:
     snapshot_interval_secs: float = 30.0
     host_metrics_interval_secs: float = 1.0
     gpu_metrics_interval_secs: float = 1.0
+    persist_dir: str | None = None
+    client_persist_dir: str | None = None
 
 
 # Successful response from the telemetry handle's `open_or_refresh` control message,
@@ -142,6 +156,8 @@ def _config_from_wire(config: Mapping[str, object]) -> TelemetryConfig:
         dashboard_port=cast(int, config["dashboard_port"]),
         host_metrics_interval_secs=cast(float, config["host_metrics_interval_secs"]),
         gpu_metrics_interval_secs=cast(float, config["gpu_metrics_interval_secs"]),
+        persist_dir=cast(str | None, config.get("persist_dir")),
+        client_persist_dir=cast(str | None, config.get("client_persist_dir")),
     )
 
 
@@ -219,6 +235,8 @@ class Telemetry:
                     "gpu_metrics_interval_secs": (
                         self._config.gpu_metrics_interval_secs
                     ),
+                    "persist_dir": self._config.persist_dir,
+                    "client_persist_dir": self._config.client_persist_dir,
                 },
                 host_meshes=dict(host_meshes or {}),
                 spawn_worker_collectors=spawn_worker_collectors,
@@ -338,6 +356,8 @@ class _TelemetryHandle:
             config.retention_secs,
             config.host_metrics_interval_secs,
             config.gpu_metrics_interval_secs,
+            config.persist_dir,
+            config.client_persist_dir,
         )
         # `activate` is the actor's bind decision: it binds the Unix socket and
         # stands up the scanner for the sidecar host. The job sidecar is keyed
