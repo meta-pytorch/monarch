@@ -1115,8 +1115,9 @@ impl ChannelAddr {
                         let hostname = hostname::get().expect("failed to retrieve hostname");
                         let hostname = hostname.to_str().expect("hostname is not valid UTF-8");
                         // TODO: Avoid using DNS directly once we figure out a good extensibility story here
-                        let addresses =
-                            dns_lookup::lookup_host(hostname).expect("failed to resolve hostname");
+                        let addresses: Vec<_> = dns_lookup::lookup_host(hostname)
+                            .expect("failed to resolve hostname")
+                            .collect();
                         find_routable_address(&addresses).expect(
                             "hostname resolved to no non-loopback, non-link-local address; configure an explicit transport address",
                         )
