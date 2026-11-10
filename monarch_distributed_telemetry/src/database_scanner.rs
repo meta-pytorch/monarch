@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicUsize;
@@ -62,6 +63,8 @@ use tokio::task::AbortHandle;
 use crate::QueryResponse;
 use crate::persist::Exporter;
 use crate::persist::PersistConfig;
+use crate::persist::PersistedInstance;
+use crate::persist::load_persisted;
 use crate::pyspy_table::PySpyDumpBuffer;
 use crate::pyspy_table::PySpyFrameBuffer;
 use crate::pyspy_table::PySpyLocalVariableBuffer;
@@ -301,6 +304,19 @@ impl TableStore {
         let table = self.get_or_create(table_name, batch.schema())?;
         table.push(batch).await;
         Ok(())
+    }
+
+    /// [`ingest_batch`](Self::ingest_batch) for synchronous callers.
+    pub(crate) fn ingest_batch_blocking(
+        &self,
+        table_name: &str,
+        batch: RecordBatch,
+    ) -> anyhow::Result<()> {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| handle.block_on(self.ingest_batch(table_name, batch)))
+        } else {
+            get_tokio_runtime().block_on(self.ingest_batch(table_name, batch))
+        }
     }
 
     /// Push a batch to a table that must already be registered.
@@ -559,14 +575,11 @@ impl DatabaseScanner {
                 })
                 .ok()
         });
-        let scanner = Self {
-            store: TableStore::with_exporter(exporter),
-            scan_session: SessionContext::new(),
+        let scanner = Self::with_store(
             rank,
-            retention_us: retention_secs as i64 * 1_000_000,
-            socket_ingest_handles: StdMutex::new(Vec::new()),
-            retention_task: StdMutex::new(None),
-        };
+            retention_secs as i64 * 1_000_000,
+            TableStore::with_exporter(exporter),
+        );
 
         // Pre-register py-spy tables so QueryEngine discovers them at setup time
         for (name, batch) in [
@@ -601,6 +614,26 @@ impl DatabaseScanner {
     #[pyo3(name = "close_persist")]
     fn close_persist_py(&self, py: Python<'_>) {
         py.detach(|| self.close_persist());
+    }
+
+    /// Load persist logs into a new scanner for querying after a job ends.
+    ///
+    /// Each root is a `{persist_dir}/{apply_id}` directory. The scanner has
+    /// no retention, socket ingest, or persistence of its own.
+    /// Read logs with the Monarch build that wrote them; table schemas come
+    /// from the stored Arrow IPC streams.
+    #[staticmethod]
+    fn open_persisted(
+        py: Python<'_>,
+        roots: Vec<String>,
+    ) -> PyResult<(Self, Vec<PersistedInstance>)> {
+        let roots: Vec<PathBuf> = roots.into_iter().map(PathBuf::from).collect();
+        py.detach(|| {
+            let scanner = Self::with_store(0, 0, TableStore::new_empty());
+            let instances = load_persisted(&scanner.store, &roots)?;
+            Ok((scanner, instances))
+        })
+        .map_err(|error: anyhow::Error| PyException::new_err(format!("{error:#}")))
     }
 
     /// Filter a single table, keeping only rows that match the WHERE clause.
@@ -729,6 +762,17 @@ impl DatabaseScanner {
 }
 
 impl DatabaseScanner {
+    fn with_store(rank: usize, retention_us: i64, store: TableStore) -> Self {
+        Self {
+            store,
+            scan_session: SessionContext::new(),
+            rank,
+            retention_us,
+            socket_ingest_handles: StdMutex::new(Vec::new()),
+            retention_task: StdMutex::new(None),
+        }
+    }
+
     /// Register an empty table with an authoritative schema.
     pub fn register_table(&self, table_name: &str, schema: SchemaRef) -> anyhow::Result<()> {
         self.table_store().register_table(table_name, schema)
@@ -1188,6 +1232,7 @@ fn decode_snapshot_batch(table_name: &str, payload: &[u8]) -> anyhow::Result<Rec
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<DatabaseScanner>()?;
+    module.add_class::<PersistedInstance>()?;
     Ok(())
 }
 
