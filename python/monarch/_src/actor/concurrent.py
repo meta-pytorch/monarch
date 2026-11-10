@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from traceback import TracebackException
 from typing import Any, Awaitable, Callable, cast
 
+from monarch._rust_bindings.monarch_hyperactor.actor import DroppingPort
 from monarch._rust_bindings.monarch_hyperactor.logging import log_endpoint_exception
 from monarch._src.actor.actor_mesh import ActorError, context
 from monarch._src.actor.endpoint import endpoint, EndpointProperty, Propagator
@@ -44,13 +45,6 @@ def _state(instance: Any) -> _ConcurrentState:
     return state
 
 
-def _send_exception(port: Any, actor_error: ActorError) -> None:
-    try:
-        port.exception(actor_error)
-    except Exception:
-        pass
-
-
 def _cancelled_for_cleanup(record: _TaskRecord | None) -> bool:
     # True when cleanup cancelled this task because the actor is stopping;
     # callers skip failing the actor so a graceful stop is not escalated.
@@ -64,6 +58,18 @@ def _fail_actor(actor_instance: Any, exception: BaseException) -> None:
     except Exception:
         # The actor's signal channel may already be closed if it has finished
         # stopping; there is then nothing left to fail.
+        pass
+
+
+def _send_exception(actor_instance: Any, port: Any, actor_error: ActorError) -> None:
+    if isinstance(port, DroppingPort):
+        # No caller receives the exception (e.g., `broadcast()`), so fail the
+        # actor, as `DroppingPort.exception` does for a plain endpoint.
+        _fail_actor(actor_instance, actor_error.exception)
+        return
+    try:
+        port.exception(actor_error)
+    except Exception:
         pass
 
 
@@ -95,7 +101,7 @@ async def _run_endpoint(
                     e,
                     f"Actor call {actor_name}.{method_name} failed with BaseException.",
                 )
-                _send_exception(port, actor_error)
+                _send_exception(actor_instance, port, actor_error)
             raise
         except Exception as e:
             log_endpoint_exception(e, method_name, actor_id)
@@ -104,7 +110,7 @@ async def _run_endpoint(
                     e,
                     f"Actor call {actor_name}.{method_name} failed.",
                 )
-                _send_exception(port, actor_error)
+                _send_exception(actor_instance, port, actor_error)
             elif not _cancelled_for_cleanup(record):
                 _fail_actor(actor_instance, e)
         except BaseException as e:  # noqa: B036
@@ -113,7 +119,7 @@ async def _run_endpoint(
                     e,
                     f"Actor call {actor_name}.{method_name} failed with BaseException.",
                 )
-                _send_exception(port, actor_error)
+                _send_exception(actor_instance, port, actor_error)
             elif not _cancelled_for_cleanup(record):
                 _fail_actor(actor_instance, e)
     finally:

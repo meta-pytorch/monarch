@@ -359,6 +359,25 @@ async def test_concurrent_endpoint_exception_uses_actor_error_context() -> None:
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
+async def test_concurrent_endpoint_broadcast_exception_kills_actor() -> None:
+    """A ``@concurrent_endpoint`` called with ``broadcast()`` has no caller to
+    receive its exception, so the exception fails the actor, just as it does
+    for a plain ``@endpoint``."""
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    async with this_host().spawn_procs(per_host={"gpus": 1}) as proc:
+        actor = proc.spawn(
+            "failing_concurrent_broadcast_endpoint", FailingConcurrentEndpointActor
+        )
+        assert await asyncio.wait_for(actor.ping.call_one(), timeout=10) == "pong"
+        actor.fail.broadcast()
+        with pytest.raises(SupervisionError):
+            for _ in range(30):
+                await asyncio.wait_for(actor.ping.call_one(), timeout=10)
+                await asyncio.sleep(0.5)
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
 async def test_concurrent_explicit_port_exception_kills_actor() -> None:
     """An ``@concurrent_endpoint(explicit_response_port=True)`` body that raises
     instead of sending through its port kills the actor with a supervision
