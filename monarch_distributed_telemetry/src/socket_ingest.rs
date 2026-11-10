@@ -38,8 +38,8 @@ use anyhow::Context;
 use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
 use monarch_hyperactor::runtime::get_tokio_runtime;
-use monarch_telemetry_schema::MAX_FRAME_LEN;
-use monarch_telemetry_schema::MAX_TABLE_NAME_LEN;
+use monarch_telemetry_schema::frame::check_payload_len;
+use monarch_telemetry_schema::frame::check_table_name_len;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::BufReader;
@@ -168,9 +168,7 @@ where
     }
 
     let name_len = u16::from_be_bytes(name_len_bytes) as usize;
-    if name_len == 0 || name_len > MAX_TABLE_NAME_LEN {
-        anyhow::bail!("invalid table name length {name_len}");
-    }
+    check_table_name_len(name_len)?;
 
     let mut name_bytes = vec![0; name_len];
     reader.read_exact(&mut name_bytes).await?;
@@ -185,9 +183,7 @@ where
     reader.read_exact(&mut frame_len_bytes).await?;
 
     let frame_len = u32::from_be_bytes(frame_len_bytes) as usize;
-    if frame_len == 0 || frame_len > MAX_FRAME_LEN {
-        anyhow::bail!("invalid frame length {frame_len}");
-    }
+    check_payload_len(frame_len)?;
 
     let mut payload = vec![0; frame_len];
     reader.read_exact(&mut payload).await?;
