@@ -13,7 +13,6 @@ import tempfile
 
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.host_mesh import HostMesh
-from monarch._src.job.service_identity import new_service_proc_id, service_proc_addr
 
 
 def hosts_from_config(name: str) -> HostMesh:
@@ -28,18 +27,16 @@ def hosts_from_config(name: str) -> HostMesh:
     workers = []
     for i in range(num_hosts):
         addr = f"ipc://{tmpdir}/{name}_{i}"
-        service_proc_id = new_service_proc_id()
-        proc_addr = service_proc_addr(addr, service_proc_id)
         env = {**os.environ}
         cmd = [
             sys.executable,
             "-c",
             "from monarch.actor import run_worker_loop_forever; "
-            f"run_worker_loop_forever(address={proc_addr!r}, "
+            f"run_worker_loop_forever(address={addr!r}, "
             'ca="trust_all_connections")',
         ]
         subprocess.Popen(cmd, env=env, start_new_session=True)
-        workers.append(proc_addr)
+        workers.append(addr)
 
     return attach_to_workers(
         name=name,

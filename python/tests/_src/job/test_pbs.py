@@ -4,9 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
-
 import json
+import os
 import shlex
 import subprocess
 from unittest.mock import patch
@@ -15,12 +14,6 @@ import pytest
 from monarch._src.job import _pbs_batch
 from monarch._src.job.job import BatchJob, job_load
 from monarch._src.job.pbs import parse_exec_host, PBSJob
-from monarch._src.job.service_identity import (
-    allocate_service_proc_ids,
-    deserialize_service_proc_ids,
-    serialize_service_proc_ids,
-    SERVICE_PROC_IDS_ENV,
-)
 
 
 def _fake_qsub(*args, **kwargs):
@@ -86,7 +79,7 @@ def test_batch_mode_invokes_in_allocation_runner(tmp_path, monkeypatch):
     assert "#PBS -q debug" in lines and "#PBS -A proj" in lines
     assert "#PBS -l filesystems=home" in lines and "#PBS -l place=scatter" in lines
     assert 'cd "$PBS_O_WORKDIR"' in lines
-    assert any(line.startswith(f"export {SERVICE_PROC_IDS_ENV}=") for line in lines)
+    assert "MONARCH_SERVICE_PROC" not in script
     runner = lines[-1]
     assert "-m monarch._src.job._pbs_batch" in runner
     assert "--port 26600" in runner and "--bind-to" not in runner
@@ -105,7 +98,7 @@ def test_external_controller_mode_has_no_client(tmp_path, monkeypatch):
         _make_job().apply()
 
     runner = _submitted_script(mock).splitlines()[-1]
-    assert runner.endswith("--rank-env PMI_RANK")
+    assert runner.endswith("--mpiexec mpiexec")
     assert not (tmp_path / ".monarch" / "job_state.pkl").exists()
 
 
@@ -115,14 +108,12 @@ def test_launcher_options_reach_the_runner(tmp_path, monkeypatch):
         _make_job(
             mpiexec="/opt/pals/mpiexec",
             mpiexec_args=["--cpu-bind=none"],
-            rank_env="PALS_RANKID",
             bind_to="0.0.0.0",
         ).apply()
 
     runner = _submitted_script(mock).splitlines()[-1]
     assert "--mpiexec /opt/pals/mpiexec" in runner
     assert "--mpiexec-arg=--cpu-bind=none" in runner
-    assert "--rank-env PALS_RANKID" in runner
     assert "--bind-to 0.0.0.0" in runner
 
 
@@ -230,12 +221,10 @@ def test_job_id_after_reattaching_to_cached_job(tmp_path, monkeypatch):
     assert job.job_id is None
 
 
-def test_state_pairs_controller_addresses_with_worker_service_proc_ids():
+def test_state_attaches_by_worker_url():
     job = _make_job()
     job._pbs_job_id = "12345.pbs-server"
     job._all_hostnames = ["worker-a", "worker-b"]
-    job._ensure_service_proc_ids(2)
-    service_proc_ids = list(job._service_proc_ids)
 
     with (
         patch.object(job, "_jobs_active", return_value=True),
@@ -245,21 +234,15 @@ def test_state_pairs_controller_addresses_with_worker_service_proc_ids():
     ):
         job._state()
 
-    assert attach.call_args_list[0].kwargs["workers"] == [
-        f"{service_proc_ids[0]}@tcp://worker-a:26600"
-    ]
-    assert attach.call_args_list[1].kwargs["workers"] == [
-        f"{service_proc_ids[1]}@tcp://worker-b:26600"
-    ]
+    assert attach.call_args_list[0].kwargs["workers"] == ["tcp://worker-a:26600"]
+    assert attach.call_args_list[1].kwargs["workers"] == ["tcp://worker-b:26600"]
 
 
 def test_batch_state_adopts_the_allocation_of_a_hand_written_script(
     nodefile, monkeypatch
 ):
-    """Inside an allocation: no qsub, hosts from $PBS_NODEFILE, ids from the runner's env."""
-    ids = allocate_service_proc_ids(2)
+    """Inside an allocation: no qsub, hosts from $PBS_NODEFILE."""
     monkeypatch.setenv("MONARCH_BATCH_JOB", "1")
-    monkeypatch.setenv(SERVICE_PROC_IDS_ENV, serialize_service_proc_ids(ids))
     job = PBSJob(meshes={"hosts": 2})
 
     with (
@@ -273,8 +256,8 @@ def test_batch_state_adopts_the_allocation_of_a_hand_written_script(
         job.state(cached_path=None)
 
     assert attach.call_args.kwargs["workers"] == [
-        f"{ids[0]}@tcp://host-a:26600",
-        f"{ids[1]}@tcp://host-b:26600",
+        "tcp://host-a:26600",
+        "tcp://host-b:26600",
     ]
 
 
@@ -282,7 +265,7 @@ def test_can_run_compares_launcher_options():
     job = _make_job()
     with patch.object(job, "_jobs_active", return_value=True):
         assert job.can_run(_make_job())
-        assert not job.can_run(_make_job(rank_env="PALS_RANKID"))
+        assert not job.can_run(_make_job(mpiexec="/opt/pals/mpiexec"))
         assert not job.can_run(_make_job(bind_to="0.0.0.0"))
 
 
@@ -299,15 +282,7 @@ def test_read_nodefile_rejects_a_missing_or_empty_file(tmp_path):
         _pbs_batch.read_nodefile(str(empty))
 
 
-def test_service_proc_ids_must_cover_every_node():
-    job = _make_job()
-    with pytest.raises(ValueError, match="need 2 nodes, not 3"):
-        job._ensure_service_proc_ids(3)
-
-
-def test_worker_bootstrap_uses_rank_env_and_drops_launcher_env(monkeypatch):
-    ids = allocate_service_proc_ids(4)
-    monkeypatch.setenv(SERVICE_PROC_IDS_ENV, serialize_service_proc_ids(ids))
+def test_worker_bootstrap_uses_bare_url_and_drops_launcher_env(monkeypatch):
     monkeypatch.setenv("PALS_RANKID", "3")
     monkeypatch.setenv("PMI_RANK", "3")
 
@@ -315,20 +290,17 @@ def test_worker_bootstrap_uses_rank_env_and_drops_launcher_env(monkeypatch):
         patch("socket.gethostname", return_value="worker-a.cluster.org"),
         patch("monarch.actor.run_worker_loop_forever") as run_worker,
     ):
-        exec(_pbs_batch._worker_bootstrap(26600, "0.0.0.0", "PALS_RANKID"), {})
-        import os
-
+        exec(_pbs_batch._worker_bootstrap(26600, "0.0.0.0"), {})
         leaked = [k for k in os.environ if k.startswith(("PMI_", "PALS_"))]
 
     run_worker.assert_called_once_with(
-        address=f"{ids[3]}@tcp://worker-a:26600@tcp://0.0.0.0:26600",
+        address="tcp://worker-a:26600@tcp://0.0.0.0:26600",
         ca="trust_all_connections",
     )
     assert leaked == []
 
 
 def test_runner_seeds_workers_with_mpiexec_then_runs_the_client(nodefile, monkeypatch):
-    monkeypatch.delenv(SERVICE_PROC_IDS_ENV, raising=False)
     calls = {}
 
     class FakeWorkers:
@@ -369,17 +341,23 @@ def test_runner_seeds_workers_with_mpiexec_then_runs_the_client(nodefile, monkey
         "host-a,host-b",
         "--cpu-bind=none",
     ]
-    # a hand-written script has no ids yet: the runner allocates one per host
-    assert len(deserialize_service_proc_ids(worker_env[SERVICE_PROC_IDS_ENV])) == 2
+    assert not any(name.startswith("MONARCH_SERVICE_PROC") for name in worker_env)
     client_cmd, client_env = calls["client"]
     assert client_cmd == ["python", "-m", "my.train"]
     assert client_env["MONARCH_BATCH_JOB"] == "1"
-    assert client_env[SERVICE_PROC_IDS_ENV] == worker_env[SERVICE_PROC_IDS_ENV]
+    assert not any(name.startswith("MONARCH_SERVICE_PROC") for name in client_env)
     assert calls["terminated"]
 
 
-def test_worker_bootstrap_stops_when_the_rank_variable_is_missing(monkeypatch):
+def test_worker_bootstrap_starts_without_rank_variables(monkeypatch):
     monkeypatch.delenv("PALS_RANKID", raising=False)
-    source = _pbs_batch._worker_bootstrap(26600, None, "PALS_RANKID")
-    with pytest.raises(SystemExit, match="PALS_RANKID is not set"):
+    monkeypatch.delenv("PMI_RANK", raising=False)
+    source = _pbs_batch._worker_bootstrap(26600, None)
+    with (
+        patch("socket.gethostname", return_value="worker-a.cluster.org"),
+        patch("monarch.actor.run_worker_loop_forever") as run_worker,
+    ):
         exec(source, {})
+    run_worker.assert_called_once_with(
+        address="tcp://worker-a:26600", ca="trust_all_connections"
+    )

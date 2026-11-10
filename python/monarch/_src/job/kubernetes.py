@@ -24,7 +24,6 @@ except ImportError:
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
-from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.actor.actor_mesh import _client_attached_to
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._kubernetes_exec import load_kube_config
@@ -34,15 +33,6 @@ from monarch._src.job._kubernetes_port_forward import (
     stop_allocation_port_forward,
 )
 from monarch._src.job.job import JobState, JobTrait
-from monarch._src.job.service_identity import (
-    allocate_service_proc_ids,
-    deserialize_service_proc_ids,
-    serialize_service_proc_ids,
-    service_proc_addrs,
-    service_proc_id_from_uuid,
-    SERVICE_PROC_IDS_ENV,
-    SERVICE_PROC_RANK_ENV,
-)
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -64,13 +54,12 @@ _MONARCHMESH_PLURAL = "monarchmeshes"
 _WORKER_BOOTSTRAP_SCRIPT: str = textwrap.dedent("""\
     import os
     import socket
-    from monarch._src.job.service_identity import ranked_service_proc_id_from_env, service_proc_addr
     from monarch.actor import run_worker_loop_forever
     port = os.environ.get("MONARCH_PORT", "26600")
     hostname = socket.getfqdn()
     address = f"tcp://{hostname}:{port}@tcp://0.0.0.0:{port}"
     run_worker_loop_forever(
-        address=service_proc_addr(address, ranked_service_proc_id_from_env()),
+        address=address,
         ca="trust_all_connections",
     )
 """)
@@ -229,7 +218,6 @@ class _MonarchMeshPod:
     name: str
     ip: str
     port: int
-    service_proc_id: ProcId
 
 
 class _MeshConfigRequired(TypedDict):
@@ -297,7 +285,6 @@ class KubernetesJob(JobTrait):
         self._attach_to = attach_to
         self._meshes: dict[str, _MeshConfig] = {}
         self._prepared_mesh_pods: dict[str, list[_MonarchMeshPod]] | None = None
-        self._service_proc_ids: dict[str, list[ProcId]] = {}
         self._gateway_address: str | None = None
         super().__init__()
 
@@ -408,10 +395,6 @@ class KubernetesJob(JobTrait):
             ),
         )
 
-    @staticmethod
-    def _allocate_service_proc_ids(num_replicas: int) -> list[ProcId]:
-        return allocate_service_proc_ids(num_replicas)
-
     # TODO: Consider adding monarch-rank label instead of relying on StatefulSet index by default if using MonarchMesh CRD.
     def add_mesh(
         self,
@@ -447,8 +430,8 @@ class KubernetesJob(JobTrait):
             port: Monarch worker port (default: 26600).
             pod_template: ``V1PodTemplateSpec`` for advanced provisioning (e.g. custom volumes, sidecars,
                           pod-level labels/annotations). Mutually exclusive with ``image_spec``.
-                          The worker uses ``service_proc_id_from_uuid(os.environ["MONARCH_POD_UID"])``
-                          as its service identity; the launcher supplies ``MONARCH_POD_UID``.
+                          The worker should start from a bare channel URL so that each container
+                          start gets a fresh service identity, discovered when the client attaches.
             labels: Optional labels to apply to the MonarchMesh CRD metadata.
                     Propagated by the operator to the StatefulSet metadata. To set
                     labels on the worker pods, use ``pod_template.metadata.labels``.
@@ -535,11 +518,6 @@ class KubernetesJob(JobTrait):
         provisioned = {
             name: cfg for name, cfg in self._meshes.items() if cfg.get("provisioned")
         }
-        if self._service_proc_ids:
-            raise RuntimeError(
-                "KubernetesJob._create should be called once; "
-                "_service_proc_ids already set"
-            )
         if not provisioned:
             return
 
@@ -552,62 +530,10 @@ class KubernetesJob(JobTrait):
             pod_template = mesh_config.get("pod_template")
             image_spec = mesh_config.get("image_spec")
             if image_spec is not None:
-                # If the CRD already exists, reuse its service proc IDs so
-                # we stay in sync with the already-running pods. This mirrors
-                # the metadata roundtrip used in the yardstick MAST launcher.
-                service_proc_ids: list[ProcId] | None = None
-                try:
-                    existing = api.get_namespaced_custom_object(
-                        group=_MONARCHMESH_GROUP,
-                        version=_MONARCHMESH_VERSION,
-                        namespace=self._namespace,
-                        plural=_MONARCHMESH_PLURAL,
-                        name=mesh_name,
-                    )
-                    containers = (
-                        existing.get("spec", {})
-                        .get("podTemplate", {})
-                        .get("spec", {})
-                        .get("containers", [])
-                    )
-                    if containers:
-                        for env_var in containers[0].get("env", []):
-                            if env_var.get("name") == SERVICE_PROC_IDS_ENV:
-                                serialized = env_var.get("value")
-                                if serialized:
-                                    candidate = deserialize_service_proc_ids(serialized)
-                                    if len(candidate) == mesh_config["num_replicas"]:
-                                        service_proc_ids = candidate
-                                break
-                except ApiException as e:
-                    if e.status != 404:
-                        raise
-
-                if service_proc_ids is None:
-                    service_proc_ids = self._allocate_service_proc_ids(
-                        mesh_config["num_replicas"]
-                    )
-                self._service_proc_ids[mesh_name] = service_proc_ids
                 pod_template = self._build_worker_pod_template(
-                    image_spec, mesh_config["port"], service_proc_ids
+                    image_spec, mesh_config["port"]
                 )
             assert pod_template is not None
-            if image_spec is None:
-                container = pod_template.spec.containers[0]
-                container.env = [
-                    var
-                    for var in (container.env or [])
-                    if var.name != "MONARCH_POD_UID"
-                ] + [
-                    client.V1EnvVar(
-                        name="MONARCH_POD_UID",
-                        value_from=client.V1EnvVarSource(
-                            field_ref=client.V1ObjectFieldSelector(
-                                field_path="metadata.uid"
-                            )
-                        ),
-                    )
-                ]
             pod_template_dict = api_client.sanitize_for_serialization(pod_template)
             metadata: dict[str, Any] = {
                 "name": mesh_name,
@@ -657,7 +583,6 @@ class KubernetesJob(JobTrait):
     def _build_worker_pod_template(
         image_spec: ImageSpec,
         port: int,
-        service_proc_ids: list[ProcId],
     ) -> client.V1PodTemplateSpec:
         """
         Build a V1PodTemplateSpec for the MonarchMesh CRD.
@@ -668,7 +593,6 @@ class KubernetesJob(JobTrait):
         Args:
             image_spec: ImageSpec with container image and optional resources.
             port: Monarch worker port.
-            service_proc_ids: Service process identities indexed by pod rank.
 
         Returns:
             V1PodTemplateSpec suitable for the ``podTemplate`` CRD field.
@@ -682,18 +606,6 @@ class KubernetesJob(JobTrait):
             )
         env = [
             client.V1EnvVar(name="MONARCH_PORT", value=str(port)),
-            client.V1EnvVar(
-                name=SERVICE_PROC_RANK_ENV,
-                value_from=client.V1EnvVarSource(
-                    field_ref=client.V1ObjectFieldSelector(
-                        field_path="metadata.labels['apps.kubernetes.io/pod-index']"
-                    )
-                ),
-            ),
-            client.V1EnvVar(
-                name=SERVICE_PROC_IDS_ENV,
-                value=serialize_service_proc_ids(service_proc_ids),
-            ),
         ]
         volume_mounts: list[client.V1VolumeMount] = []
         volumes: list[client.V1Volume] = []
@@ -866,7 +778,6 @@ class KubernetesJob(JobTrait):
                         name=pod.metadata.name,
                         ip=pod.status.pod_ip,
                         port=self._discover_monarch_port(pod),
-                        service_proc_id=self._discover_service_proc_id(pod, pod_rank),
                     )
 
                     # Check if we have all required ranks (0 to num_replicas-1)
@@ -888,19 +799,6 @@ class KubernetesJob(JobTrait):
             raise RuntimeError(f"Failed to watch pods: {e}") from e
         finally:
             w.stop()
-
-    def _discover_service_proc_id(self, pod: client.V1Pod, rank: int) -> ProcId:
-        env = {
-            var.name: var
-            for container in pod.spec.containers
-            for var in (container.env or [])
-        }
-        if SERVICE_PROC_IDS_ENV in env:
-            return deserialize_service_proc_ids(env[SERVICE_PROC_IDS_ENV].value)[rank]
-        assert "MONARCH_POD_UID" in env, (
-            "worker must publish its service identity policy"
-        )
-        return service_proc_id_from_uuid(pod.metadata.uid)
 
     # TODO: Consider using named port instead of env var for monarch port
     def _discover_monarch_port(self, pod: client.V1Pod) -> int:
@@ -949,12 +847,11 @@ class KubernetesJob(JobTrait):
         for mesh_name, pods in all_mesh_pods.items():
             # Create worker addresses using discovered IPs and ports
             workers = [f"tcp://{pod.ip}:{pod.port}" for pod in pods]
-            service_proc_ids = [pod.service_proc_id for pod in pods]
             # Create host mesh by attaching to workers
             host_mesh = attach_to_workers(
                 name=mesh_name,
                 ca="trust_all_connections",
-                workers=service_proc_addrs(workers, service_proc_ids),
+                workers=workers,
             )
             host_meshes[mesh_name] = host_mesh
 

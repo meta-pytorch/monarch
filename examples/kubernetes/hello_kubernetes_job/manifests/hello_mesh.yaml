@@ -99,11 +99,6 @@ spec:
       containers:
       - name: worker
         image: ghcr.io/meta-pytorch/monarch:latest
-        env:
-          - name: MONARCH_POD_UID
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.uid
         command:
           - python
           - -u
@@ -112,7 +107,6 @@ spec:
             import os
             import socket
             import logging
-            from monarch._src.job.service_identity import service_proc_addr, service_proc_id_from_uuid
             from monarch.actor import run_worker_loop_forever
             logging.basicConfig(level=logging.INFO)
             logger = logging.getLogger("monarch-worker")
@@ -123,7 +117,7 @@ spec:
             logger.info(f"--- Starting Monarch Worker ---")
             logger.info(f"Identity: {hostname}")
             logger.info(f"Listening on: {address}")
-            run_worker_loop_forever(address=service_proc_addr(address, service_proc_id_from_uuid(os.environ["MONARCH_POD_UID"])), ca="trust_all_connections")
+            run_worker_loop_forever(address=address, ca="trust_all_connections")
 ---
 apiVersion: monarch.pytorch.org/v1alpha1
 kind: MonarchMesh
@@ -145,11 +139,6 @@ spec:
       containers:
       - name: worker
         image: ghcr.io/meta-pytorch/monarch:latest
-        env:
-          - name: MONARCH_POD_UID
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.uid
         command:
           - python
           - -u
@@ -158,7 +147,6 @@ spec:
             import os
             import socket
             import logging
-            from monarch._src.job.service_identity import service_proc_addr, service_proc_id_from_uuid
             from monarch.actor import run_worker_loop_forever
             logging.basicConfig(level=logging.INFO)
             logger = logging.getLogger("monarch-worker")
@@ -169,7 +157,7 @@ spec:
             logger.info(f"--- Starting Monarch Worker ---")
             logger.info(f"Identity: {hostname}")
             logger.info(f"Listening on: {address}")
-            run_worker_loop_forever(address=service_proc_addr(address, service_proc_id_from_uuid(os.environ["MONARCH_POD_UID"])), ca="trust_all_connections")
+            run_worker_loop_forever(address=address, ca="trust_all_connections")
 ---
 # Controller pod for running the hello_kubernetes_job script
 apiVersion: v1
@@ -187,10 +175,6 @@ spec:
         # controller GPUs, request nvidia.com/gpu and remove this setting.
         - name: NVIDIA_VISIBLE_DEVICES
           value: void
-        - name: MONARCH_POD_UID
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.uid
       command: ["sleep"]
       args: ["infinity"]
   serviceAccountName: hello-controller

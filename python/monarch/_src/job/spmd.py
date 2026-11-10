@@ -20,18 +20,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
-from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import this_host
 from monarch._src.job.job import JobState, JobTrait
-from monarch._src.job.service_identity import (
-    allocate_service_proc_ids,
-    serialize_service_proc_ids,
-    service_proc_addrs,
-    SERVICE_PROC_IDS_ENV,
-    SERVICE_PROC_RANK_ENV,
-)
 from monarch._src.spmd.actor import SPMDActor
 from monarch._src.spmd.host_mesh import _worker_addrs_from_store, StoreLike
 from monarch._src.tools.commands import torchx_runner
@@ -339,7 +331,6 @@ def serve(
 
     # Cache original entrypoints before modifying
     original_roles = []
-    service_proc_ids_by_role: dict[str, list[ProcId]] = {}
     scheme = "metatls" if scheduler.startswith("mast") else "tcp"
     for role in appdef.roles:
         original_roles.append(
@@ -349,22 +340,15 @@ def serve(
             }
         )
 
-        service_proc_ids = SPMDJob._allocate_service_proc_ids(role.num_replicas)
-        service_proc_ids_by_role[role.name] = service_proc_ids
-        role.env[SERVICE_PROC_IDS_ENV] = serialize_service_proc_ids(service_proc_ids)
-        role.env[SERVICE_PROC_RANK_ENV] = specs.macros.replica_id
-
         role.args = [
             "python",
             "-X",
             "faulthandler",
             "-c",
             "import os, socket; "
-            "from monarch._src.job.service_identity import ranked_service_proc_id_from_env, service_proc_addr; "
             "from monarch.actor import run_worker_loop_forever; "
-            f'run_worker_loop_forever(ca="trust_all_connections", address=service_proc_addr('
-            f'f"{scheme}://{{socket.getfqdn()}}:26600", '
-            "ranked_service_proc_id_from_env()))",
+            f'run_worker_loop_forever(ca="trust_all_connections", '
+            f'address=f"{scheme}://{{socket.getfqdn()}}:26600")',
         ]
 
     # Fall back to cwd if no workspace defined in appdef
@@ -392,9 +376,6 @@ def serve(
         name=appdef.name,
         workspace=workspace,
         original_roles=original_roles,
-        service_proc_ids=(
-            service_proc_ids_by_role[appdef.roles[0].name] if appdef.roles else []
-        ),
     )
 
     return job
@@ -487,15 +468,10 @@ class SPMDJob(JobTrait):
     This job type wraps a torchx Runner and job handle, providing monarch job tracking.
     """
 
-    @staticmethod
-    def _allocate_service_proc_ids(num_replicas: int) -> list[ProcId]:
-        return allocate_service_proc_ids(num_replicas)
-
     def __init__(
         self,
         handle: str,
         scheduler: str,
-        service_proc_ids: list[ProcId],
         workspace: Optional[str] = None,
         original_roles: Optional[List[Dict[str, Any]]] = None,
         name: str = "spmd",
@@ -505,7 +481,6 @@ class SPMDJob(JobTrait):
         self._scheduler = scheduler
         self._workspace = workspace
         self._original_roles = original_roles or []
-        self._service_proc_ids = service_proc_ids
         self._name = name
         self._hostnames: Optional[List[str]] = None
 
@@ -595,10 +570,9 @@ class SPMDJob(JobTrait):
 
         configure(default_transport=_get_channel_transport(self._scheduler))
         worker_addrs = [_get_worker_addr(self._scheduler, h) for h in hostnames]
-        service_proc_ids = [self._service_proc_ids[replica.id] for replica in replicas]
         workers = attach_to_workers(
             ca="trust_all_connections",
-            workers=service_proc_addrs(worker_addrs, service_proc_ids),
+            workers=worker_addrs,
         )
 
         return JobState({"workers": workers})

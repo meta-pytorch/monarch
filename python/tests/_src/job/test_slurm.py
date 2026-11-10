@@ -15,10 +15,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 from monarch._src.job import _slurm_batch
 from monarch._src.job.job import BatchJob, job_load
-from monarch._src.job.service_identity import (
-    serialize_service_proc_ids,
-    SERVICE_PROC_IDS_ENV,
-)
 from monarch._src.job.slurm import SlurmJob
 
 
@@ -151,7 +147,7 @@ def test_external_controller_mode_has_no_client(tmp_path, monkeypatch):
     assert "run_worker_loop_forever" in script
     assert "-m monarch._src.job._slurm_batch" not in script
     assert "MONARCH_BATCH_JOB" not in script
-    assert f"export {SERVICE_PROC_IDS_ENV}=" in script
+    assert "MONARCH_SERVICE_PROC" not in script
     assert not (tmp_path / ".monarch" / "job_state.pkl").exists()
 
 
@@ -314,13 +310,7 @@ def test_in_cluster_state_does_not_attach_client_gateway():
     attach.assert_not_called()
 
 
-def test_worker_bootstrap_uses_preallocated_service_proc_id(monkeypatch):
-    service_proc_ids = SlurmJob._allocate_service_proc_ids(8)
-    monkeypatch.setenv(
-        SERVICE_PROC_IDS_ENV, serialize_service_proc_ids(service_proc_ids)
-    )
-    monkeypatch.setenv("SLURM_NODEID", "7")
-
+def test_worker_bootstrap_uses_bare_address():
     with (
         patch("socket.gethostname", return_value="worker-a"),
         patch("monarch.actor.run_worker_loop_forever") as run_worker,
@@ -328,7 +318,7 @@ def test_worker_bootstrap_uses_preallocated_service_proc_id(monkeypatch):
         exec(_slurm_batch._worker_bootstrap(22222, None), {})
 
     run_worker.assert_called_once_with(
-        address=f"{service_proc_ids[7]}@tcp://worker-a:22222",
+        address="tcp://worker-a:22222",
         ca="trust_all_connections",
     )
 
@@ -340,13 +330,7 @@ def test_worker_bootstrap_uses_preallocated_service_proc_id(monkeypatch):
         ("::", "tcp://[::]:22222"),
     ],
 )
-def test_worker_bootstrap_uses_bind_alias(monkeypatch, bind_to, expected_bind_url):
-    service_proc_ids = SlurmJob._allocate_service_proc_ids(1)
-    monkeypatch.setenv(
-        SERVICE_PROC_IDS_ENV, serialize_service_proc_ids(service_proc_ids)
-    )
-    monkeypatch.setenv("SLURM_NODEID", "0")
-
+def test_worker_bootstrap_uses_bind_alias(bind_to, expected_bind_url):
     with (
         patch("socket.gethostname", return_value="worker-a"),
         patch("monarch.actor.run_worker_loop_forever") as run_worker,
@@ -354,7 +338,7 @@ def test_worker_bootstrap_uses_bind_alias(monkeypatch, bind_to, expected_bind_ur
         exec(_slurm_batch._worker_bootstrap(22222, bind_to), {})
 
     run_worker.assert_called_once_with(
-        address=(f"{service_proc_ids[0]}@tcp://worker-a:22222@{expected_bind_url}"),
+        address=f"tcp://worker-a:22222@{expected_bind_url}",
         ca="trust_all_connections",
     )
 
@@ -372,12 +356,10 @@ def test_can_run_compares_bind_to():
         assert not job.can_run(_make_job(bind_to="127.0.0.1"))
 
 
-def test_state_pairs_controller_addresses_with_worker_service_proc_ids():
+def test_state_attaches_each_mesh_by_worker_address():
     job = _make_job()
     job._slurm_job_id = "12345"
     job._all_hostnames = ["worker-a", "worker-b"]
-    job._ensure_service_proc_ids(2)
-    service_proc_ids = list(job._service_proc_ids)
 
     with (
         patch.object(job, "_jobs_active", return_value=True),
@@ -388,21 +370,8 @@ def test_state_pairs_controller_addresses_with_worker_service_proc_ids():
         job._state()
 
     assert attach.call_count == 2
-    assert attach.call_args_list[0].kwargs["workers"] == [
-        f"{service_proc_ids[0]}@tcp://worker-a:22222"
-    ]
-    assert attach.call_args_list[1].kwargs["workers"] == [
-        f"{service_proc_ids[1]}@tcp://worker-b:22222"
-    ]
-
-
-def test_same_slurm_coordinates_get_distinct_service_proc_ids() -> None:
-    first = _make_job()
-    second = _make_job()
-    first._ensure_service_proc_ids(2)
-    second._ensure_service_proc_ids(2)
-
-    assert set(first._service_proc_ids).isdisjoint(second._service_proc_ids)
+    assert attach.call_args_list[0].kwargs["workers"] == ["tcp://worker-a:22222"]
+    assert attach.call_args_list[1].kwargs["workers"] == ["tcp://worker-b:22222"]
 
 
 def test_submit_raises_when_job_id_unparseable(tmp_path, monkeypatch):

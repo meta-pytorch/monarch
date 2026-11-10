@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
 import ipaddress
 import json
 import logging
@@ -17,18 +15,10 @@ from typing import Any, Dict, FrozenSet, List, Optional, Sequence
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
-from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._batch_env import in_batch_job
 from monarch._src.job._pbs_batch import _DEFAULT_MONARCH_PORT, read_nodefile
 from monarch._src.job.job import BatchJob, DEFAULT_JOB_PATH, JobState, JobTrait
-from monarch._src.job.service_identity import (
-    allocate_service_proc_ids,
-    deserialize_service_proc_ids,
-    serialize_service_proc_ids,
-    service_proc_addrs,
-    SERVICE_PROC_IDS_ENV,
-)
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -75,7 +65,6 @@ class PBSJob(JobTrait):
         job_start_timeout: Optional[int] = None,
         mpiexec: str = "mpiexec",
         mpiexec_args: Sequence[str] = (),
-        rank_env: str = "PMI_RANK",
         bind_to: Optional[str] = None,
     ) -> None:
         """
@@ -94,8 +83,6 @@ class PBSJob(JobTrait):
                       This should account for potential queueing delays. If None (default), waits indefinitely.
             mpiexec: MPI launcher that starts one worker per node (``-n N --ppn 1 --hosts ...``)
             mpiexec_args: Extra launcher flags (e.g. ``["--cpu-bind=none"]`` for Cray PALS)
-            rank_env: Variable holding each worker's rank in that launch
-                      (``PMI_RANK`` for MPICH, ``PALS_RANKID`` for Cray PALS)
             bind_to: Optional IP address on which workers listen, without a port.
                       When set, workers advertise their hostname while binding
                       this address through the ``dial_to@bind_to`` alias format.
@@ -113,7 +100,6 @@ class PBSJob(JobTrait):
         self._job_start_timeout = job_start_timeout
         self._mpiexec = mpiexec
         self._mpiexec_args = mpiexec_args
-        self._rank_env = rank_env
         try:
             self._bind_to = (
                 str(ipaddress.ip_address(bind_to)) if bind_to is not None else None
@@ -125,7 +111,6 @@ class PBSJob(JobTrait):
         # Track the single PBS job ID and all allocated hostnames
         self._pbs_job_id: Optional[str] = None
         self._all_hostnames: List[str] = []
-        self._service_proc_ids: list[ProcId] = []
         super().__init__()
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
@@ -172,7 +157,6 @@ class PBSJob(JobTrait):
         if in_batch_job():
             return
         total_nodes = sum(self._meshes.values())
-        self._ensure_service_proc_ids(total_nodes)
         if client_script is not None:
             # Dumped before submit: the job id isn't known yet, and the client
             # resolves it from $PBS_JOBID anyway.
@@ -185,7 +169,6 @@ class PBSJob(JobTrait):
         self, num_nodes: int, client_script: Optional[str] = None
     ) -> str:
         """Submit a PBS job for all nodes."""
-        self._ensure_service_proc_ids(num_nodes)
         os.makedirs(self._log_dir, exist_ok=True)
 
         pbs_directives = [
@@ -213,8 +196,6 @@ class PBSJob(JobTrait):
             str(self._port),
             "--mpiexec",
             self._mpiexec,
-            "--rank-env",
-            self._rank_env,
         ]
         runner += [f"--mpiexec-arg={arg}" for arg in self._mpiexec_args]
         if self._bind_to is not None:
@@ -228,10 +209,6 @@ class PBSJob(JobTrait):
 
         batch_script = "\n".join(pbs_directives)
         batch_script += '\ncd "$PBS_O_WORKDIR"\n'
-        batch_script += (
-            f"export {SERVICE_PROC_IDS_ENV}="
-            f"{shlex.quote(serialize_service_proc_ids(self._service_proc_ids))}\n"
-        )
         batch_script += shlex.join(runner) + "\n"
 
         logger.info(f"Submitting PBS job with {num_nodes} nodes")
@@ -256,18 +233,6 @@ class PBSJob(JobTrait):
             f"PBS job {job_id} submitted. Logs will be written to: {self._log_dir}"
         )
         return job_id
-
-    def _ensure_service_proc_ids(self, num_nodes: int) -> None:
-        if len(self._service_proc_ids) != num_nodes:
-            self._service_proc_ids = [
-                proc_id
-                for mesh_nodes in self._meshes.values()
-                for proc_id in allocate_service_proc_ids(mesh_nodes)
-            ]
-        if len(self._service_proc_ids) != num_nodes:
-            raise ValueError(
-                f"meshes {self._meshes} need {len(self._service_proc_ids)} nodes, not {num_nodes}"
-            )
 
     def _get_job_info_json(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get job information using qstat -f -F json (-x includes finished jobs)."""
@@ -343,27 +308,19 @@ class PBSJob(JobTrait):
             raise RuntimeError(
                 f"Meshes need {total_nodes} nodes but the job has {len(self._all_hostnames)}"
             )
-        # Inside an allocation started by a hand-written script, the runner's
-        # service ids are in the environment rather than in this object.
-        if not self._service_proc_ids and in_batch_job():
-            self._service_proc_ids = deserialize_service_proc_ids(
-                os.environ[SERVICE_PROC_IDS_ENV]
-            )
-
         # Distribute the allocated hostnames among meshes
         host_meshes = {}
         hostname_idx = 0
         for mesh_name, num_nodes in self._meshes.items():
             next_hostname_idx = hostname_idx + num_nodes
             mesh_hostnames = self._all_hostnames[hostname_idx:next_hostname_idx]
-            service_proc_ids = self._service_proc_ids[hostname_idx:next_hostname_idx]
             hostname_idx = next_hostname_idx
 
             workers = [f"tcp://{hostname}:{self._port}" for hostname in mesh_hostnames]
             host_meshes[mesh_name] = attach_to_workers(
                 name=mesh_name,
                 ca="trust_all_connections",
-                workers=service_proc_addrs(workers, service_proc_ids),
+                workers=workers,
             )
         return JobState(host_meshes)
 
@@ -382,7 +339,6 @@ class PBSJob(JobTrait):
             and spec._job_start_timeout == self._job_start_timeout
             and spec._mpiexec == self._mpiexec
             and spec._mpiexec_args == self._mpiexec_args
-            and spec._rank_env == self._rank_env
             and spec._bind_to == self._bind_to
             and self._jobs_active()
         )

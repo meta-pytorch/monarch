@@ -28,7 +28,6 @@ from monarch._rust_bindings.monarch_hyperactor.handle import (
     _new_handle_pair,
     Handle,
 )
-from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.actor.actor_mesh import (
     _client_attached_to,
     _reset_context,
@@ -41,10 +40,6 @@ from monarch._src.job._telemetry_query_client import QueryEngineClient
 from monarch._src.job.execution_config import normalize_exit_code
 from monarch._src.job.job_components import JobComponents, MeshAdminConfig
 from monarch._src.job.job_sidecar import create_job_sidecar, stop_job_sidecar
-from monarch._src.job.service_identity import (
-    allocate_service_proc_ids,
-    service_proc_addr,
-)
 from monarch._src.job.telemetry_config import TelemetryConfig
 
 # The jobs API otherwise imports only public actor APIs. Attachment state is a
@@ -1479,27 +1474,12 @@ class SSHJob(LoginJob):
             "metatls" if transport in ("metatls", "metatls-hostname") else "tcp"
         )
         super().__init__()
-        self._service_proc_ids_by_host: Dict[str, ProcId] = {}
-
-    @staticmethod
-    def _allocate_service_proc_ids(num_hosts: int) -> list[ProcId]:
-        return allocate_service_proc_ids(num_hosts)
-
-    def _create(self, client_script: Optional[str]) -> None:
-        self._service_proc_ids_by_host = {}
-        for hosts in self._meshes.values():
-            self._service_proc_ids_by_host.update(
-                zip(hosts, self._allocate_service_proc_ids(len(hosts)))
-            )
-        super()._create(client_script)
 
     def _start_host(self, host: str) -> ProcessState:
         addr = f"{self._scheme}://{host}:{self._port}"
-        service_proc_id = self._service_proc_ids_by_host[host]
-        proc_addr = service_proc_addr(addr, service_proc_id)
         startup = (
             "from monarch.actor import run_worker_loop_forever; "
-            f"run_worker_loop_forever(address={proc_addr!r}, "
+            f"run_worker_loop_forever(address={addr!r}, "
             'ca="trust_all_connections")'
         )
 
@@ -1508,7 +1488,7 @@ class SSHJob(LoginJob):
             ["ssh", *self._ssh_args, host, "-n", command],
             start_new_session=True,
         )
-        return ProcessState(proc.pid, proc_addr)
+        return ProcessState(proc.pid, addr)
 
     def can_run(self, spec):
         return (
