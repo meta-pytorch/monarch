@@ -24,7 +24,6 @@ from typing import (
     Sequence,
     Set,
     Tuple,
-    TYPE_CHECKING,
     Union,
 )
 from weakref import WeakKeyDictionary
