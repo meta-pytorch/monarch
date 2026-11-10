@@ -43,6 +43,7 @@ use monarch_telemetry_schema::entity_tables::MESSAGE_STATUS_EVENTS;
 use monarch_telemetry_schema::entity_tables::MESSAGES;
 use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
 use monarch_telemetry_schema::execution_tables::EXECUTION_STATUS_EVENTS;
+use monarch_telemetry_schema::frame::is_reserved;
 use monarch_telemetry_schema::host_tables::GPU_METRICS;
 use monarch_telemetry_schema::host_tables::HOST_METRICS;
 use monarch_telemetry_schema::metric_tables::METRIC_GAUGES;
@@ -59,6 +60,8 @@ use serde_multipart::Part;
 use tokio::task::AbortHandle;
 
 use crate::QueryResponse;
+use crate::persist::Exporter;
+use crate::persist::PersistConfig;
 use crate::pyspy_table::PySpyDumpBuffer;
 use crate::pyspy_table::PySpyFrameBuffer;
 use crate::pyspy_table::PySpyLocalVariableBuffer;
@@ -83,6 +86,7 @@ const COMPACT_TARGET_ROWS: usize = 8192;
 /// Wraps a table's data so we can dynamically push new batches.
 /// The MemTable is created on initialization and shared with queries.
 pub struct LiveTableData {
+    name: String,
     /// The MemTable that queries use
     mem_table: Arc<MemTable>,
     /// Batches appended since the last compaction, and their total rows.
@@ -91,16 +95,24 @@ pub struct LiveTableData {
     /// is what keeps them consistent with the partition itself.
     pending_batches: AtomicUsize,
     pending_rows: AtomicUsize,
+    /// Receives every appended batch when persistence is enabled.
+    exporter: Option<Arc<Exporter>>,
 }
 
 impl LiveTableData {
-    fn new(schema: SchemaRef) -> Self {
+    /// Create an empty table, registering it with the exporter if any.
+    fn new(name: &str, schema: SchemaRef, exporter: Option<Arc<Exporter>>) -> Self {
+        if let Some(exporter) = &exporter {
+            exporter.send(name, RecordBatch::new_empty(schema.clone()));
+        }
         let mem_table = MemTable::try_new(schema, vec![vec![]])
             .expect("failed to create MemTable with empty partition");
         Self {
+            name: name.to_string(),
             mem_table: Arc::new(mem_table),
             pending_batches: AtomicUsize::new(0),
             pending_rows: AtomicUsize::new(0),
+            exporter,
         }
     }
 
@@ -114,6 +126,9 @@ impl LiveTableData {
         let partition = &self.mem_table.batches[0];
         let mut guard = partition.write().await;
         let rows = batch.num_rows();
+        if let Some(exporter) = &self.exporter {
+            exporter.send(&self.name, batch.clone());
+        }
         guard.push(batch);
 
         let pending = self.pending_batches.fetch_add(1, Ordering::Relaxed) + 1;
@@ -221,6 +236,7 @@ impl LiveTableData {
 #[derive(Clone)]
 pub struct TableStore {
     inner: Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
+    exporter: Option<Arc<Exporter>>,
 }
 
 impl TableStore {
@@ -229,28 +245,48 @@ impl TableStore {
     /// Useful for testing or standalone ingestion scenarios where
     /// the full [`DatabaseScanner`] lifecycle is not needed.
     pub fn new_empty() -> Self {
+        Self::with_exporter(None)
+    }
+
+    fn with_exporter(exporter: Option<Arc<Exporter>>) -> Self {
         Self {
             inner: Arc::new(StdMutex::new(HashMap::new())),
+            exporter,
         }
     }
 
-    /// Register an empty table with an authoritative schema.
-    pub fn register_table(&self, table_name: &str, schema: SchemaRef) -> anyhow::Result<()> {
+    /// Return the named table, creating it with `schema` if absent.
+    ///
+    /// Names starting with `__` are reserved for persist log control frames.
+    fn get_or_create(
+        &self,
+        table_name: &str,
+        schema: SchemaRef,
+    ) -> anyhow::Result<Arc<LiveTableData>> {
+        anyhow::ensure!(!is_reserved(table_name), "reserved table name {table_name}");
         let mut guard = self
             .inner
             .lock()
             .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+        Ok(guard
+            .entry(table_name.to_string())
+            .or_insert_with(|| {
+                Arc::new(LiveTableData::new(
+                    table_name,
+                    schema,
+                    self.exporter.clone(),
+                ))
+            })
+            .clone())
+    }
 
-        match guard.get(table_name) {
-            Some(table) if table.schema() != schema => {
-                anyhow::bail!("schema mismatch for registered table {table_name}")
-            }
-            Some(_) => Ok(()),
-            None => {
-                guard.insert(table_name.to_string(), Arc::new(LiveTableData::new(schema)));
-                Ok(())
-            }
+    /// Register an empty table with an authoritative schema.
+    pub fn register_table(&self, table_name: &str, schema: SchemaRef) -> anyhow::Result<()> {
+        let table = self.get_or_create(table_name, schema.clone())?;
+        if table.schema() != schema {
+            anyhow::bail!("schema mismatch for registered table {table_name}");
         }
+        Ok(())
     }
 
     /// Ingest a `RecordBatch` into a named table (TS-2).
@@ -262,16 +298,7 @@ impl TableStore {
     /// `DatabaseScanner::push_batch_to_tables` for behavioral
     /// guarantees (this method preserves the same semantics).
     pub async fn ingest_batch(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
-        let table = {
-            let mut guard = self
-                .inner
-                .lock()
-                .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
-            guard
-                .entry(table_name.to_string())
-                .or_insert_with(|| Arc::new(LiveTableData::new(batch.schema())))
-                .clone()
-        };
+        let table = self.get_or_create(table_name, batch.schema())?;
         table.push(batch).await;
         Ok(())
     }
@@ -334,6 +361,9 @@ impl TableStore {
 
 /// Default retention duration: one hour in seconds.
 const DEFAULT_RETENTION_SECS: u64 = 60 * 60;
+
+/// How long closing the persist log waits for pending writes.
+const PERSIST_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Ordered tables that keep only recent data; trace definitions are filtered first.
 const RETENTION_TABLES: &[&str] = &[
@@ -495,8 +525,8 @@ fn build_scan_dataframe(
     module = "monarch._rust_bindings.monarch_distributed_telemetry.database_scanner"
 )]
 pub struct DatabaseScanner {
-    /// Tables stored by name - each holds the schema and shared PartitionData
-    table_data: Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
+    /// Tables stored by name, plus the persist exporter if enabled.
+    store: TableStore,
     scan_session: SessionContext,
     rank: usize,
     /// Retention window in microseconds.
@@ -516,11 +546,21 @@ pub struct DatabaseScanner {
 
 #[pymethods]
 impl DatabaseScanner {
+    /// Create a scanner. When `persist_dir` is set, every table append is
+    /// also written to a persist log there; if the log cannot be created,
+    /// the scanner runs without it.
     #[new]
-    #[pyo3(signature = (rank, retention_secs=DEFAULT_RETENTION_SECS))]
-    fn new(rank: usize, retention_secs: u64) -> PyResult<Self> {
+    #[pyo3(signature = (rank, retention_secs=DEFAULT_RETENTION_SECS, persist_dir=None))]
+    fn new(rank: usize, retention_secs: u64, persist_dir: Option<String>) -> PyResult<Self> {
+        let exporter = persist_dir.and_then(|dir| {
+            Exporter::start(Path::new(&dir), PersistConfig::default())
+                .inspect_err(|error| {
+                    tracing::warn!("telemetry persist: not enabled for {dir}: {error:#}");
+                })
+                .ok()
+        });
         let scanner = Self {
-            table_data: Arc::new(StdMutex::new(HashMap::new())),
+            store: TableStore::with_exporter(exporter),
             scan_session: SessionContext::new(),
             rank,
             retention_us: retention_secs as i64 * 1_000_000,
@@ -551,17 +591,24 @@ impl DatabaseScanner {
                     .unwrap(),
             ),
         ] {
-            Self::push_batch_to_tables(&scanner.table_data, name, batch).unwrap();
+            scanner.push_batch_to_tables(name, batch).unwrap();
         }
 
         Ok(scanner)
+    }
+
+    /// Write pending telemetry and close the persist log, if enabled.
+    #[pyo3(name = "close_persist")]
+    fn close_persist_py(&self, py: Python<'_>) {
+        py.detach(|| self.close_persist());
     }
 
     /// Filter a single table, keeping only rows that match the WHERE clause.
     fn apply_retention(&self, table_name: &str, where_clause: &str) -> PyResult<()> {
         let table = {
             let guard = self
-                .table_data
+                .store
+                .inner
                 .lock()
                 .map_err(|_| PyException::new_err("lock poisoned"))?;
             match guard.get(table_name) {
@@ -583,7 +630,8 @@ impl DatabaseScanner {
     /// Get list of table names.
     fn table_names(&self) -> PyResult<Vec<String>> {
         let guard = self
-            .table_data
+            .store
+            .inner
             .lock()
             .map_err(|_| PyException::new_err("lock poisoned"))?;
         Ok(guard.keys().cloned().collect())
@@ -592,7 +640,8 @@ impl DatabaseScanner {
     /// Get schema for a table in Arrow IPC format.
     fn schema_for<'py>(&self, py: Python<'py>, table: &str) -> PyResult<Bound<'py, PyBytes>> {
         let guard = self
-            .table_data
+            .store
+            .inner
             .lock()
             .map_err(|_| PyException::new_err("lock poisoned"))?;
         let table_data = guard
@@ -685,6 +734,15 @@ impl DatabaseScanner {
         self.table_store().register_table(table_name, schema)
     }
 
+    /// Write pending telemetry and close the persist log, if enabled.
+    ///
+    /// Waits up to [`PERSIST_CLOSE_TIMEOUT`]. Later calls return immediately.
+    pub fn close_persist(&self) {
+        if let Some(exporter) = &self.store.exporter {
+            exporter.close(PERSIST_CLOSE_TIMEOUT);
+        }
+    }
+
     /// Push a batch to a table that must already be registered.
     pub async fn push_to_registered(
         &self,
@@ -742,7 +800,7 @@ impl DatabaseScanner {
         }
 
         *guard = Some(Self::spawn_periodic_retention_task(
-            self.table_data.clone(),
+            self.store.inner.clone(),
             self.retention_us,
         ));
         Ok(())
@@ -816,7 +874,7 @@ impl DatabaseScanner {
         handle.abort_handle()
     }
 
-    /// Push a batch into the named table in `table_data`.
+    /// Push a batch into the named table.
     ///
     /// # Ingestion invariants (ID-*)
     ///
@@ -824,26 +882,14 @@ impl DatabaseScanner {
     ///   a new `LiveTableData` is created from `batch.schema()`.
     /// - **ID-2 (empty batch registers schema):** An empty batch
     ///   creates the table entry and preserves the schema —
-    ///   `LiveTableData::push` is a no-op for zero rows, but the
-    ///   `entry().or_insert_with()` runs unconditionally.
+    ///   `LiveTableData::push` is a no-op for zero rows, but table
+    ///   creation runs unconditionally.
     /// - **ID-3 (append on existing table):** A non-empty batch for
     ///   an existing table appends rows.
-    /// - **ID-4 (error surface):** Lock poisoning propagates as
-    ///   `Err`. `push()` itself is infallible.
-    fn push_batch_to_tables(
-        table_data: &Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
-        table_name: &str,
-        batch: RecordBatch,
-    ) -> anyhow::Result<()> {
-        let table = {
-            let mut guard = table_data
-                .lock()
-                .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
-            guard
-                .entry(table_name.to_string())
-                .or_insert_with(|| Arc::new(LiveTableData::new(batch.schema())))
-                .clone()
-        };
+    /// - **ID-4 (error surface):** Lock poisoning and reserved table
+    ///   names propagate as `Err`. `push()` itself is infallible.
+    fn push_batch_to_tables(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
+        let table = self.store.get_or_create(table_name, batch.schema())?;
 
         // Push the batch (push ignores empty batches).
         // Use block_in_place + Handle::current() when called from within a tokio
@@ -933,11 +979,7 @@ impl DatabaseScanner {
             capture_mode: capture_mode.to_string(),
             warnings_json,
         });
-        Self::push_batch_to_tables(
-            &self.table_data,
-            "pyspy_dumps",
-            dump_buf.drain_to_record_batch()?,
-        )?;
+        self.push_batch_to_tables("pyspy_dumps", dump_buf.drain_to_record_batch()?)?;
 
         // Insert stack trace, frame, and local variable rows
         let mut trace_buf = PySpyStackTraceBuffer::default();
@@ -1029,29 +1071,15 @@ impl DatabaseScanner {
             }
         }
 
-        Self::push_batch_to_tables(
-            &self.table_data,
-            "pyspy_stack_traces",
-            trace_buf.drain_to_record_batch()?,
-        )?;
-        Self::push_batch_to_tables(
-            &self.table_data,
-            "pyspy_frames",
-            frame_buf.drain_to_record_batch()?,
-        )?;
-        Self::push_batch_to_tables(
-            &self.table_data,
-            "pyspy_local_variables",
-            local_buf.drain_to_record_batch()?,
-        )?;
+        self.push_batch_to_tables("pyspy_stack_traces", trace_buf.drain_to_record_batch()?)?;
+        self.push_batch_to_tables("pyspy_frames", frame_buf.drain_to_record_batch()?)?;
+        self.push_batch_to_tables("pyspy_local_variables", local_buf.drain_to_record_batch()?)?;
         Ok(())
     }
 
     /// Return an opaque [`TableStore`] handle for external callers.
     pub fn table_store(&self) -> TableStore {
-        TableStore {
-            inner: self.table_data.clone(),
-        }
+        self.store.clone()
     }
 
     fn execute_scan_streaming(
@@ -1068,7 +1096,8 @@ impl DatabaseScanner {
         // Get the LiveTableData's MemTable
         let mem_table = {
             let guard = self
-                .table_data
+                .store
+                .inner
                 .lock()
                 .map_err(|_| PyException::new_err("lock poisoned"))?;
             let table_data = guard
@@ -1146,6 +1175,7 @@ impl Drop for DatabaseScanner {
         {
             handle.abort();
         }
+        self.close_persist();
     }
 }
 
@@ -1255,7 +1285,7 @@ mod tests {
 
     fn test_scanner(retention_us: i64) -> DatabaseScanner {
         DatabaseScanner {
-            table_data: Arc::new(StdMutex::new(HashMap::new())),
+            store: TableStore::new_empty(),
             scan_session: SessionContext::new(),
             rank: 0,
             retention_us,
@@ -1581,7 +1611,7 @@ mod tests {
     }
 
     async fn table_row_count_async(scanner: &DatabaseScanner, table_name: &str) -> usize {
-        let table = scanner.table_data.lock().unwrap().get(table_name).cloned();
+        let table = scanner.store.inner.lock().unwrap().get(table_name).cloned();
         match table {
             Some(table) => row_count(&table).await,
             None => 0,
@@ -1594,7 +1624,8 @@ mod tests {
         column_name: &str,
     ) -> Vec<u64> {
         let table = scanner
-            .table_data
+            .store
+            .inner
             .lock()
             .expect("table map should be available")
             .get(table_name)
@@ -1623,7 +1654,8 @@ mod tests {
         column_name: &str,
     ) -> Vec<i64> {
         let table = scanner
-            .table_data
+            .store
+            .inner
             .lock()
             .expect("table map should be available")
             .get(table_name)
@@ -1648,7 +1680,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_batch_ignored() {
-        let table = LiveTableData::new(make_batch(&[]).schema());
+        let table = LiveTableData::new("t", make_batch(&[]).schema(), None);
 
         table.push(make_batch(&[])).await;
         assert_eq!(row_count(&table).await, 0);
@@ -1657,7 +1689,7 @@ mod tests {
     #[tokio::test]
     async fn test_apply_retention_filters_rows() {
         // Push rows with x values 1..=5, then keep only x >= 3.
-        let table = LiveTableData::new(make_batch(&[]).schema());
+        let table = LiveTableData::new("t", make_batch(&[]).schema(), None);
         table.push(make_batch(&[1, 2, 3, 4, 5])).await;
 
         table.apply_retention("t", "x >= 3").await.unwrap();
@@ -1668,7 +1700,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_retention_keeps_all() {
-        let table = LiveTableData::new(make_batch(&[]).schema());
+        let table = LiveTableData::new("t", make_batch(&[]).schema(), None);
         table.push(make_batch(&[1, 2, 3])).await;
 
         table.apply_retention("t", "1=1").await.unwrap();
@@ -1678,7 +1710,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_scan_dataframe_applies_filter_projection_and_limit() {
-        let table = LiveTableData::new(make_batch(&[]).schema());
+        let table = LiveTableData::new("t", make_batch(&[]).schema(), None);
         table.push(make_batch(&[1, 2, 3, 4])).await;
         let schema = table.schema();
         let ctx = SessionContext::new();
@@ -1699,7 +1731,7 @@ mod tests {
 
     #[test]
     fn test_build_scan_dataframe_rejects_out_of_range_projection() {
-        let table = LiveTableData::new(make_batch(&[]).schema());
+        let table = LiveTableData::new("t", make_batch(&[]).schema(), None);
         let ctx = SessionContext::new();
 
         let error = build_scan_dataframe(&ctx, table.mem_table(), Some(&[1]), None, None)
@@ -1824,7 +1856,7 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_push_during_retention() {
         // Verify that a push() concurrent with apply_retention() is not lost.
-        let table = Arc::new(LiveTableData::new(make_batch(&[]).schema()));
+        let table = Arc::new(LiveTableData::new("t", make_batch(&[]).schema(), None));
         table.push(make_batch(&[1, 2, 3, 4, 5])).await;
 
         let table_clone = table.clone();
@@ -1854,7 +1886,7 @@ mod tests {
 
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
         let handle = DatabaseScanner::spawn_triggered_retention_task(
-            scanner.table_data.clone(),
+            scanner.store.inner.clone(),
             scanner.retention_us,
             receiver,
         );
@@ -1967,7 +1999,7 @@ mod tests {
         )
         .await;
         DatabaseScanner::apply_retention_policies_to_tables(
-            &scanner.table_data,
+            &scanner.store.inner,
             &DatabaseScanner::retention_where_clause(scanner.retention_us, 100_000_000),
         )
         .await
@@ -1982,7 +2014,8 @@ mod tests {
             vec![2, 2, 2, 2, 91_000_000, 95_000_000, 96_000_000],
         );
         let table = scanner
-            .table_data
+            .store
+            .inner
             .lock()
             .unwrap()
             .get(EXECUTION_STATUS_EVENTS)
@@ -2027,7 +2060,7 @@ mod tests {
     #[tokio::test]
     async fn test_failed_retention_rewrite_preserves_original_rows() {
         let batch = make_batch(&[1, 2, 3]);
-        let table = LiveTableData::new(batch.schema());
+        let table = LiveTableData::new("t", batch.schema(), None);
         table.push(batch).await;
         assert!(
             table
@@ -2075,7 +2108,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let table = LiveTableData::new(schema.clone());
+        let table = LiveTableData::new("t", schema.clone(), None);
         table.push(batch).await;
 
         for predicate in ["x IS NULL OR x > 1", "x IS NULL"] {
@@ -2130,7 +2163,7 @@ mod tests {
         )
         .await;
         let handle = DatabaseScanner::spawn_periodic_retention_task(
-            scanner.table_data.clone(),
+            scanner.store.inner.clone(),
             scanner.retention_us,
         );
         let retained = tokio::time::timeout(Duration::from_secs(5), async {
@@ -2175,7 +2208,7 @@ mod tests {
     }
 
     fn table_row_count(scanner: &DatabaseScanner, table_name: &str) -> usize {
-        let guard = scanner.table_data.lock().unwrap();
+        let guard = scanner.store.inner.lock().unwrap();
         match guard.get(table_name) {
             Some(table) => get_tokio_runtime().block_on(async {
                 table.mem_table().batches[0]
@@ -2190,7 +2223,7 @@ mod tests {
     }
 
     fn table_batches(scanner: &DatabaseScanner, table_name: &str) -> Vec<RecordBatch> {
-        let guard = scanner.table_data.lock().unwrap();
+        let guard = scanner.store.inner.lock().unwrap();
         match guard.get(table_name) {
             Some(table) => get_tokio_runtime()
                 .block_on(async { table.mem_table().batches[0].read().await.clone() }),
@@ -2741,7 +2774,7 @@ mod tests {
     // drives scan, retention, and planning cost.
     #[tokio::test]
     async fn test_push_compacts_small_batches() {
-        let table = LiveTableData::new(make_batch(&[1]).schema());
+        let table = LiveTableData::new("t", make_batch(&[1]).schema(), None);
         let writes = COMPACT_TARGET_ROWS * 3;
 
         for i in 0..writes {
@@ -2764,7 +2797,7 @@ mod tests {
     // Compaction merges by position, so the stored order must survive it.
     #[tokio::test]
     async fn test_compaction_preserves_row_order() {
-        let table = LiveTableData::new(make_batch(&[1]).schema());
+        let table = LiveTableData::new("t", make_batch(&[1]).schema(), None);
         let writes = COMPACT_TARGET_ROWS + 10;
 
         for i in 0..writes {
@@ -2792,7 +2825,7 @@ mod tests {
     // row-only trigger bound the tail.
     #[tokio::test]
     async fn test_uncompacted_tail_is_bounded() {
-        let table = LiveTableData::new(make_batch(&[1]).schema());
+        let table = LiveTableData::new("t", make_batch(&[1]).schema(), None);
 
         // One row short of a second compaction: the worst case tail.
         for i in 0..(COMPACT_TARGET_ROWS * 2 - 1) {
@@ -2810,7 +2843,7 @@ mod tests {
     // cleared or compaction would merge against a stale tail length.
     #[tokio::test]
     async fn test_retention_resets_pending_counters() {
-        let table = LiveTableData::new(make_batch(&[1]).schema());
+        let table = LiveTableData::new("t", make_batch(&[1]).schema(), None);
         for i in 0..10 {
             table.push(make_batch(&[i])).await;
         }
@@ -2993,5 +3026,147 @@ mod tests {
             &[1, 2, 3, 4, 5, 6],
             "coalescing must preserve row order across batches"
         );
+    }
+
+    const PYSPY_DUMP_JSON: &str = r#"{
+        "Ok": {
+            "pid": 1234, "binary": "python3", "capture_mode": "native",
+            "stack_traces": [{
+                "pid": 1234, "thread_id": 100, "thread_name": "MainThread",
+                "os_thread_id": 5678, "active": true, "owns_gil": true,
+                "frames": [
+                    {"name": "inner", "filename": "a.py", "module": "a",
+                     "short_filename": "a.py", "line": 10, "is_entry": false,
+                     "locals": [{"name": "x", "addr": 1, "arg": true, "repr": "42"}]},
+                    {"name": "outer", "filename": "a.py", "module": "a",
+                     "short_filename": "a.py", "line": 5, "is_entry": true,
+                     "locals": []}
+                ]
+            }],
+            "warnings": []
+        }
+    }"#;
+
+    fn persisting_scanner(dir: &std::path::Path) -> DatabaseScanner {
+        DatabaseScanner::new(0, 0, Some(dir.to_str().unwrap().to_string())).unwrap()
+    }
+
+    /// Rows per table in a persist log.
+    fn persisted_rows(
+        dir: &std::path::Path,
+    ) -> (
+        std::collections::BTreeMap<String, usize>,
+        monarch_telemetry_schema::frame_log::InstanceSummary,
+    ) {
+        let mut rows = std::collections::BTreeMap::new();
+        let summary = monarch_telemetry_schema::frame_log::read_instance(dir, |table, batch| {
+            *rows.entry(table.to_string()).or_insert(0) += batch.num_rows();
+            Ok(())
+        })
+        .unwrap();
+        (rows, summary)
+    }
+
+    #[test]
+    fn every_ingest_path_reaches_persist_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let scanner = persisting_scanner(dir.path());
+
+        scanner
+            .register_table("reg", make_batch(&[]).schema())
+            .unwrap();
+        get_tokio_runtime()
+            .block_on(
+                scanner
+                    .table_store()
+                    .ingest_batch("ing", make_batch(&[1, 2])),
+            )
+            .unwrap();
+        get_tokio_runtime()
+            .block_on(scanner.push_to_registered("reg", make_batch(&[1, 2, 3])))
+            .unwrap();
+        scanner
+            .store_pyspy_dump("dump-1", "proc[0]", PYSPY_DUMP_JSON)
+            .unwrap();
+        let payload = crate::serialize_batch(&make_batch(&[4])).unwrap();
+        scanner.ingest_snapshot_batch("reg", &payload).unwrap();
+        scanner.close_persist();
+
+        let (rows, summary) = persisted_rows(dir.path());
+        let tables = [
+            "ing",
+            "pyspy_dumps",
+            "pyspy_frames",
+            "pyspy_local_variables",
+            "pyspy_stack_traces",
+            "reg",
+        ];
+        assert_eq!(rows.keys().map(String::as_str).collect::<Vec<_>>(), tables);
+        for table in tables {
+            assert_eq!(
+                rows[table],
+                table_row_count(&scanner, table),
+                "{table} on disk matches the live table"
+            );
+        }
+        assert_eq!(rows["reg"], 4, "registered push plus snapshot ingest");
+        assert!(summary.clean, "close_persist writes the end frame");
+    }
+
+    #[test]
+    fn reserved_table_names_are_rejected() {
+        let scanner = test_scanner(0);
+
+        let registered = scanner.register_table("__end", make_batch(&[]).schema());
+        let ingested = get_tokio_runtime()
+            .block_on(scanner.table_store().ingest_batch("__x", make_batch(&[1])));
+
+        assert!(
+            registered
+                .unwrap_err()
+                .to_string()
+                .contains("reserved table name")
+        );
+        assert!(
+            ingested
+                .unwrap_err()
+                .to_string()
+                .contains("reserved table name")
+        );
+    }
+
+    #[test]
+    fn retention_does_not_rewrite_persist_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let scanner = persisting_scanner(dir.path());
+        get_tokio_runtime()
+            .block_on(scanner.table_store().ingest_batch("t", make_batch(&[1, 2])))
+            .unwrap();
+
+        scanner.apply_retention("t", "x > 100").unwrap();
+        scanner.close_persist();
+
+        assert_eq!(
+            table_row_count(&scanner, "t"),
+            0,
+            "retention empties memory"
+        );
+        let (rows, _) = persisted_rows(dir.path());
+        assert_eq!(rows["t"], 2, "the log keeps rows retention removed");
+    }
+
+    #[test]
+    fn unusable_persist_dir_keeps_scanner_working() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        let scanner = persisting_scanner(&file.join("instance"));
+
+        get_tokio_runtime()
+            .block_on(scanner.table_store().ingest_batch("t", make_batch(&[1, 2])))
+            .unwrap();
+        scanner.close_persist();
+
+        assert_eq!(table_row_count(&scanner, "t"), 2);
     }
 }
