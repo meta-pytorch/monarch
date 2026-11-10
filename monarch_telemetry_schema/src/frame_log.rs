@@ -29,6 +29,7 @@ use monarch_record_batch::arrow::datatypes::DataType;
 use monarch_record_batch::arrow::datatypes::Int64Type;
 use monarch_record_batch::arrow::record_batch::RecordBatch;
 
+use crate::MAX_FRAME_LEN;
 use crate::deserialize_one_batch;
 use crate::frame::END_FRAME;
 use crate::frame::FrameReader;
@@ -71,10 +72,18 @@ impl SegmentWriter {
 
     /// Append one table batch, returning the bytes written.
     ///
-    /// The serialized batch must fit in one frame.
+    /// A batch too large for one frame is split by rows across several. A
+    /// single row too large for a frame is an error, and nothing is written.
     pub fn write_batch(&mut self, table: &str, batch: &RecordBatch) -> anyhow::Result<u64> {
         let payload = serialize_batch(batch)?;
-        self.write_frame(table, &payload)
+        let rows = batch.num_rows();
+        if payload.len() <= MAX_FRAME_LEN || rows <= 1 {
+            return self.write_frame(table, &payload);
+        }
+        let half = rows / 2;
+        let head = self.write_batch(table, &batch.slice(0, half))?;
+        let tail = self.write_batch(table, &batch.slice(half, rows - half))?;
+        Ok(head + tail)
     }
 
     /// Whether the current segment has reached its size limit.
