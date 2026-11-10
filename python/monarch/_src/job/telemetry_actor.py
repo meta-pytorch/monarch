@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import threading
 import time
 from typing import Any, Callable, List, Optional, Tuple
@@ -71,6 +72,11 @@ _SCAN_WORKER_TIMEOUT_SECS: float = 10.0
 _SAMPLER_START_TIMEOUT_SECS: float = 10.0
 
 
+def telemetry_persist_dir(persist_dir: str, apply_id: str) -> str:
+    """Return this collector's persist log directory under ``persist_dir``."""
+    return os.path.join(persist_dir, apply_id, f"{socket.gethostname()}-{os.getpid()}")
+
+
 class TelemetryActor(Actor):
     """Host-local telemetry collector actor."""
 
@@ -80,6 +86,8 @@ class TelemetryActor(Actor):
         retention_secs: int,
         host_metrics_interval_secs: float = 0.0,
         gpu_metrics_interval_secs: float = 0.0,
+        persist_dir: str | None = None,
+        client_persist_dir: str | None = None,
     ) -> None:
         # Job-instance identifier; namespaces the per-host socket path under
         # /tmp so concurrent jobs on the same host do not collide.
@@ -104,6 +112,12 @@ class TelemetryActor(Actor):
         # Sampler actor meshes spawned next to this collector's store. Held so
         # the samplers live as long as this collector.
         self._sampler_meshes: list[Any] = []
+        # Root of the persist logs worker collectors write; `None` disables
+        # persistence. Forwarded to every worker collector.
+        self._persist_dir: str | None = persist_dir
+        # Overrides `persist_dir` for this collector only. Set for the client
+        # collector, whose host may lack the workers' shared mount.
+        self._client_persist_dir: str | None = client_persist_dir
 
     def _scanner_or_raise(self) -> DatabaseScanner:
         scanner = self._scanner
@@ -127,9 +141,15 @@ class TelemetryActor(Actor):
         os.makedirs(socket_dir, mode=0o700, exist_ok=True)
         os.chmod(socket_dir, 0o700)
 
+        persist_root = self._client_persist_dir or self._persist_dir
         scanner = DatabaseScanner(
             current_rank().rank,
             retention_secs=self._retention_secs,
+            persist_dir=(
+                telemetry_persist_dir(persist_root, self._apply_id)
+                if persist_root
+                else None
+            ),
         )
         try:
             _register_telemetry_schemas(scanner)
@@ -221,6 +241,7 @@ class TelemetryActor(Actor):
                 self._retention_secs,
                 self._host_metrics_interval_secs,
                 self._gpu_metrics_interval_secs,
+                self._persist_dir,
             )
             active = any(
                 active for _rank, active in worker_collector_mesh.activate.call().get()
@@ -265,6 +286,12 @@ class TelemetryActor(Actor):
     ) -> bool:
         logger.info("worker telemetry message was undeliverable, skipping: %s", message)
         return True
+
+    def __cleanup__(self, exc: Exception | None) -> None:
+        """Close this collector's persist log so it ends cleanly."""
+        scanner = self._scanner
+        if scanner is not None:
+            scanner.close_persist()
 
     def __supervise__(self, failure: MeshFailure) -> bool:
         self._worker_collectors.pop(failure.mesh_name, None)
