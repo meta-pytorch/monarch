@@ -25,6 +25,9 @@ import monarch._src.job.telemetry_actor as job_telemetry_actor
 import monarch.actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
+from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner import (
+    DatabaseScanner,
+)
 from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
@@ -382,6 +385,84 @@ def test_telemetry_actor_starts_local_socket_collector() -> None:
         assert os.stat(socket_dir).st_mode & 0o777 == 0o700
         start_ingest.assert_called_once()
         assert start_ingest.call_args.args[1] == socket_path
+    finally:
+        _remove_socket_dir(apply_id)
+
+
+def _activate_without_socket(actor: job_telemetry_actor.TelemetryActor) -> bool:
+    with (
+        unittest.mock.patch.object(
+            job_telemetry_actor,
+            "current_rank",
+            return_value=types.SimpleNamespace(rank=0),
+        ),
+        unittest.mock.patch.object(job_telemetry_actor, "_start_socket_ingest"),
+    ):
+        return actor._activate_impl()
+
+
+def _instance_name() -> str:
+    return f"{socket.gethostname()}-{os.getpid()}"
+
+
+@pytest.mark.timeout(30)
+def test_telemetry_actor_persists_and_closes_cleanly(tmp_path) -> None:
+    apply_id = _new_apply_id()
+    _remove_socket_dir(apply_id)
+    try:
+        actor = job_telemetry_actor.TelemetryActor(
+            apply_id, retention_secs=0, persist_dir=str(tmp_path)
+        )
+        assert _activate_without_socket(actor)
+
+        actor.__cleanup__(None)
+    finally:
+        _remove_socket_dir(apply_id)
+
+    scanner, instances = DatabaseScanner.open_persisted([str(tmp_path / apply_id)])
+    assert [instance.name for instance in instances] == [_instance_name()]
+    assert instances[0].clean
+    assert "spans" in scanner.table_names()
+    assert "pyspy_dumps" in scanner.table_names()
+
+
+@pytest.mark.timeout(30)
+def test_client_persist_dir_overrides_own_path_only(tmp_path) -> None:
+    apply_id = _new_apply_id()
+    _remove_socket_dir(apply_id)
+    workers = tmp_path / "workers"
+    client = tmp_path / "client"
+    try:
+        actor = job_telemetry_actor.TelemetryActor(
+            apply_id,
+            0,
+            persist_dir=str(workers),
+            client_persist_dir=str(client),
+        )
+        assert _activate_without_socket(actor)
+
+        actor.__cleanup__(None)
+    finally:
+        _remove_socket_dir(apply_id)
+
+    assert (client / apply_id / _instance_name()).is_dir()
+    assert not (workers / apply_id).exists()
+
+
+@pytest.mark.timeout(30)
+def test_unwritable_persist_dir_keeps_collector_active(tmp_path) -> None:
+    apply_id = _new_apply_id()
+    _remove_socket_dir(apply_id)
+    not_a_dir = tmp_path / "file"
+    not_a_dir.write_text("")
+    try:
+        actor = job_telemetry_actor.TelemetryActor(
+            apply_id, retention_secs=0, persist_dir=str(not_a_dir)
+        )
+
+        assert _activate_without_socket(actor)
+        assert actor._scanner is not None
+        actor.__cleanup__(None)
     finally:
         _remove_socket_dir(apply_id)
 

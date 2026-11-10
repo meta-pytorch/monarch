@@ -170,6 +170,9 @@ async def async_main(
     dashboard_port: int | None = None,
     kill_waiter_after: float | None = None,
     telemetry: bool = True,
+    duration: float | None = None,
+    persist_dir: str | None = None,
+    client_persist_dir: str | None = None,
 ) -> None:
     job = ProcessJob({"hosts": 1})
     if telemetry:
@@ -181,6 +184,8 @@ async def async_main(
             TelemetryConfig(
                 include_dashboard=dashboard,
                 dashboard_port=resolved_dashboard_port,
+                persist_dir=persist_dir,
+                client_persist_dir=client_persist_dir,
             )
         )
     else:
@@ -188,6 +193,11 @@ async def async_main(
     try:
         state = job.state(cached_path=None)
         host = state.hosts
+        print(f"Apply ID: {job.apply_id}", flush=True)
+        if state.dashboard_url is not None:
+            print(f"Monarch Dashboard: {state.dashboard_url}", flush=True)
+        if state.telemetry_url is not None:
+            print(f"Telemetry API: {state.telemetry_url}", flush=True)
 
         print("\nPress Ctrl+C to stop.\n", flush=True)
 
@@ -210,7 +220,7 @@ async def async_main(
             await asyncio.sleep(kill_waiter_after)
             print("Killing the waiter...")
             cast(ActorMesh[Waiter], waiter).stop().get()
-        await asyncio.sleep(float("inf"))
+        await asyncio.sleep(float("inf") if duration is None else duration)
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
@@ -222,6 +232,17 @@ async def async_main(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Dining Philosophers")
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=None,
+        help="Run for N seconds, then shut down normally",
+    )
+    parser.add_argument("--persist-dir", help="Directory for persisted telemetry")
+    parser.add_argument(
+        "--client-persist-dir",
+        help="Override the client collector's persistence directory",
+    )
     parser.add_argument(
         "--dashboard",
         action="store_true",
@@ -253,6 +274,9 @@ def main() -> None:
                 dashboard_port=args.dashboard_port,
                 kill_waiter_after=args.kill_waiter_after,
                 telemetry=not args.no_telemetry,
+                duration=args.duration,
+                persist_dir=args.persist_dir,
+                client_persist_dir=args.client_persist_dir,
             )
         )
     except KeyboardInterrupt:
