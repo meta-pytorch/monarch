@@ -16,6 +16,7 @@ use monarch_record_batch::arrow::ipc::writer::StreamWriter;
 use monarch_record_batch::arrow::record_batch::RecordBatch;
 
 pub mod frame;
+pub mod frame_log;
 
 /// Maximum table-name length in a socket frame.
 pub const MAX_TABLE_NAME_LEN: usize = 256;
