@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+import datetime
 import io
 import json
 import tempfile
@@ -15,6 +16,7 @@ from email.message import Message
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from monarch._src.job.persisted_telemetry import format_instances, InstanceSummary
 from monarch.tools.cli import _format_query_table, get_parser, main
 
 
@@ -157,6 +159,99 @@ class TestCli(unittest.TestCase):
         self.assertEqual(args.sql, "SELECT * FROM actors")
         self.assertEqual(args.output_format, "json")
         self.assertEqual(args.timeout, 120)
+
+    def test_query_dir_parser(self) -> None:
+        args = get_parser().parse_args(
+            ["query", "--dir", "/p", "--dir", "/q", "SELECT 1"]
+        )
+        self.assertEqual(args.dir, ["/p", "/q"])
+        self.assertEqual(args.sql, "SELECT 1")
+
+    @patch("monarch.tools.cli.job_load", side_effect=AssertionError("job_load"))
+    @patch("monarch.tools.cli.open_persisted_engine")
+    def test_query_dir_skips_job_load(
+        self, open_persisted_engine: MagicMock, _job_load: MagicMock
+    ) -> None:
+        engine = MagicMock()
+        engine.query.return_value.to_pylist.return_value = [{"x": 1}]
+        instance = {
+            "name": "h1-12",
+            "segments": 1,
+            "clean": True,
+            "torn_bytes": 0,
+            "rows": 1,
+            "first_timestamp_us": 0,
+            "last_timestamp_us": 0,
+        }
+        open_persisted_engine.return_value = (engine, [instance])
+        args = get_parser().parse_args(["query", "--dir", "/p", "SELECT x FROM t"])
+
+        with (
+            patch("sys.stdout", new_callable=io.StringIO) as output,
+            patch("sys.stderr", new_callable=io.StringIO) as errors,
+        ):
+            args.func(args)
+
+        open_persisted_engine.assert_called_once_with(["/p"])
+        engine.query.assert_called_once_with("SELECT x FROM t")
+        self.assertEqual(output.getvalue(), "x\n-\n1\n(1 row)\n")
+        self.assertIn("h1-12 clean", errors.getvalue())
+
+    @patch("monarch.tools.cli.open_persisted_engine")
+    def test_query_dir_json_renders_arrow_values(
+        self, open_persisted_engine: MagicMock
+    ) -> None:
+        engine = MagicMock()
+        moment = datetime.datetime(2026, 10, 26, 12, tzinfo=datetime.timezone.utc)
+        engine.query.return_value.to_pylist.return_value = [{"at": moment}]
+        open_persisted_engine.return_value = (engine, [])
+        args = get_parser().parse_args(
+            ["query", "--dir", "/p", "--format", "jsonl", "SELECT at FROM t"]
+        )
+
+        with (
+            patch("sys.stdout", new_callable=io.StringIO) as output,
+            patch("sys.stderr", new_callable=io.StringIO),
+        ):
+            args.func(args)
+
+        self.assertEqual(json.loads(output.getvalue()), {"at": str(moment)})
+
+    def test_format_instances_marks_earliest_unclean_stop(self) -> None:
+        def instance(name: str, clean: bool, last_us: int) -> InstanceSummary:
+            return {
+                "name": name,
+                "segments": 1,
+                "clean": clean,
+                "torn_bytes": 0 if clean else 7,
+                "rows": 4,
+                "first_timestamp_us": 0,
+                "last_timestamp_us": last_us,
+            }
+
+        noon_us = 1_793_016_000_000_000
+        lines = format_instances(
+            [
+                instance("h1-12", True, noon_us - 60_000_000),
+                instance("h2-13", False, noon_us),
+                instance("h3-14", False, noon_us + 1_000_000),
+            ]
+        ).splitlines()
+
+        self.assertEqual(
+            lines,
+            [
+                "h1-12 clean segments=1 rows=4 last=2026-10-26T11:59:00Z torn=0B",
+                "h2-13 unclean segments=1 rows=4 last=2026-10-26T12:00:00Z torn=7B first to stop",
+                "h3-14 unclean segments=1 rows=4 last=2026-10-26T12:00:01Z torn=7B",
+            ],
+        )
+
+    def test_dashboard_open_parser(self) -> None:
+        args = get_parser().parse_args(["dashboard", "open", "/p", "/q", "--port", "0"])
+        self.assertEqual(args.dirs, ["/p", "/q"])
+        self.assertEqual(args.port, 0)
+        self.assertEqual(args.dashboard_func.__name__, "_run_open")
 
     @patch("monarch.tools.cli.job_load")
     def test_query_table_output(self, job_load: MagicMock) -> None:
