@@ -29,6 +29,12 @@
 //! start background Tokio tasks, so it briefly enters the runtime owned by
 //! `pyo3-async-runtimes`. It leaves that runtime before returning to Python.
 //!
+//! A node binds one carrier. `UdpCarrier`, the default, sends each QUIC packet
+//! as one UDP datagram. `VsockCarrier` exists for Firecracker, whose vsock
+//! device provides byte streams rather than the datagrams Chrysalis expects.
+//! It preserves packet boundaries by framing each datagram onto that stream.
+//! Its Unix-stream mode exercises the same adapter without a VM.
+//!
 //! Cancelling a Python awaitable drops its Rust future. Work already completed
 //! by that operation is not undone.
 //!
@@ -46,9 +52,12 @@
 //!   values. `Identity.pid`, parent configuration, `dial`, and `accept` use the
 //!   `Pid` type rather than unvalidated strings. An identity's leaf certificate
 //!   determines its PID.
-//! - **CPY-3 (address roles and parent authentication):** A node listens only
-//!   on Unix or native-vsock addresses. A child may dial Unix, native-vsock, or
-//!   hybrid-vsock parent addresses and requires the parent to authenticate as
+//! - **CPY-3 (carriers, address roles and parent authentication):** A node
+//!   binds exactly one carrier. A `UdpCarrier` binds one specific IP and port.
+//!   A `VsockCarrier` listens only on Unix or native-vsock addresses. A parent
+//!   address must belong to the node's carrier: `udp://<ip>:<port>` with a
+//!   specific IP and a non-zero port for UDP, and Unix, native-vsock, or
+//!   hybrid-vsock for vsock. The child requires its parent to authenticate as
 //!   the configured PID. `node:` values name connected peers and are not
 //!   caller-supplied addresses.
 //! - **CPY-4 (stream behavior):** A stream's send and receive sides have
@@ -71,10 +80,18 @@
 //! - **CPY-8 (private Python identity):** Native types and exceptions belong to
 //!   `chrysalis._rust_bindings`. The module is private and experimental; no
 //!   stable top-level `chrysalis` package API is provided.
+//! - **CPY-9 (UDP by default, and UDP nodes forward):** A node given no carrier
+//!   binds a fresh UDP socket on 127.0.0.1, on a port the system chooses.
+//!   Every UDP node is built with `TransportConfig::routed_udp`, so it forwards
+//!   PID-routed packets for its children. A UDP node's `Node.addresses` is the
+//!   address it actually bound, which other nodes dial; a `VsockCarrier` node's
+//!   is its configured listen addresses, whose dial form depends on the
+//!   deployment.
 
 use std::borrow::Cow;
 use std::fmt::Display;
 use std::io;
+use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -93,7 +110,7 @@ use chrysalis::ResolveConsistency;
 use chrysalis::SendStream;
 use chrysalis::Stream;
 use chrysalis::TransportConfig;
-use chrysalis::VSOCK_SCHEME;
+use chrysalis::UdpSocket;
 use chrysalis::VsockDatagramAddr;
 use chrysalis::VsockDatagramSocket;
 use pyo3::create_exception;
@@ -125,6 +142,23 @@ const SERVER_NAME: &str = "localhost";
 /// Python controls `max_bytes`; cap it so an accidental large value cannot
 /// allocate an equally large Rust buffer. This is not a transport limit.
 const READ_BUFFER_LIMIT: usize = 1 << 20;
+
+/// Default bind for `UdpCarrier()` and for `Node` when no carrier is supplied.
+///
+/// This is Python-binding policy, not a transport default. `127.0.0.1` makes
+/// the default node reachable only by programs sharing the Python process's
+/// loopback network; it does not expose the node on an external network
+/// interface. Port 0 lets the system choose an available port. Callers that
+/// need another interface pass `UdpCarrier(bind=...)`.
+const DEFAULT_UDP_BIND: &str = "127.0.0.1:0";
+
+/// Prefix used to expose and parse UDP addresses in the Python API.
+///
+/// This private parser mirrors the established spelling used by other
+/// Chrysalis clients. Moving it into the transport requires a shared concrete
+/// UDP address type; bind specifications and bootstrap locators have different
+/// validation rules and cannot simply share this constant.
+const UDP_PREFIX: &str = "udp://";
 
 // CPY-7, CPY-8: defines `chrysalis._rust_bindings.ChrysalisError`, a Python `Exception`
 // subclass. Call sites convert errors to it explicitly through `chrysalis_error`.
@@ -295,15 +329,13 @@ fn parse_pid(text: &str) -> PyResult<Pid> {
         .ok_or_else(|| PyValueError::new_err(format!("a PID has 32 hex digits, not {text:?}")))
 }
 
-/// Parses a carrier address supplied by Python.
+/// Parses a caller-supplied vsock address and rejects `node:` peer labels.
 ///
-/// Accepts `unix:<path>`, `native:<cid>:<port>` and
-/// `hybrid:<port>:<uds>`. A `node:` value names a connected peer rather than
-/// an address to bind or dial, so callers cannot supply one.
-fn carrier_address(text: &str) -> PyResult<VsockDatagramAddr> {
+/// `VsockDatagramAddr` owns the address syntax. This binding owns which
+/// variants Python callers may supply.
+fn vsock_address(text: &str) -> PyResult<VsockDatagramAddr> {
     // CPY-3, CPY-7: parse caller-supplied addresses and reject peer names.
-    let address = VsockDatagramAddr::try_from(&DatagramAddr::new(VSOCK_SCHEME, text.as_bytes()))
-        .map_err(value_error)?;
+    let address = text.parse().map_err(value_error)?;
     match address {
         VsockDatagramAddr::Node(_) => Err(PyValueError::new_err(format!(
             "{text:?} is a peer's name, not an address"
@@ -312,13 +344,13 @@ fn carrier_address(text: &str) -> PyResult<VsockDatagramAddr> {
     }
 }
 
-/// Parses a carrier address a node can listen on.
+/// Parses a vsock carrier address a node can listen on.
 ///
 /// Hybrid addresses are dial-only, so only Unix and native addresses are
 /// accepted.
-fn listen_address(text: &str) -> PyResult<VsockDatagramAddr> {
+fn vsock_listen_address(text: &str) -> PyResult<VsockDatagramAddr> {
     // CPY-3: hybrid addresses are dial-only.
-    match carrier_address(text)? {
+    match vsock_address(text)? {
         VsockDatagramAddr::Hybrid { .. } => Err(PyValueError::new_err(format!(
             "cannot listen on {text:?}: use a unix: or native: address"
         ))),
@@ -326,15 +358,194 @@ fn listen_address(text: &str) -> PyResult<VsockDatagramAddr> {
     }
 }
 
+/// Returns the canonical text stored in a vsock [`DatagramAddr`].
+///
+/// Addresses parsed from Python text already have nonempty UTF-8 paths, the
+/// only conditions this conversion can reject.
+fn vsock_address_text(address: &VsockDatagramAddr) -> PyResult<String> {
+    let address = DatagramAddr::try_from(address).map_err(chrysalis_error)?;
+    std::str::from_utf8(address.opaque())
+        .map(str::to_owned)
+        .map_err(chrysalis_error)
+}
+
+/// Parses a UDP node's parent address, `udp://<ip>:<port>`.
+///
+/// The IP must be specific and the port non-zero: no node can be reached at
+/// an unspecified IP or at port 0.
+fn udp_parent_address(text: &str) -> PyResult<DatagramAddr> {
+    // CPY-3, CPY-7: a UDP node joins its parent over UDP, at an address a
+    // parent can have.
+    let address = text
+        .strip_prefix(UDP_PREFIX)
+        .and_then(|address| SocketAddr::from_str(address).ok())
+        .ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "a UDP node's parent address has the form udp://<ip>:<port>, not {text:?}"
+            ))
+        })?;
+    if address.ip().is_unspecified() || address.port() == 0 {
+        return Err(PyValueError::new_err(format!(
+            "a UDP node's parent address names a specific IP and a non-zero port, not {text:?}"
+        )));
+    }
+    Ok(UdpSocket::datagram_addr(address))
+}
+
+/// Parses a `VsockCarrier` node's parent address: `unix:`, `native:` or
+/// `hybrid:`.
+fn vsock_parent_address(text: &str) -> PyResult<DatagramAddr> {
+    // CPY-3, CPY-7: a vsock node can't join a parent over UDP.
+    if text.starts_with(UDP_PREFIX) {
+        return Err(PyValueError::new_err(format!(
+            "a VsockCarrier node's parent address starts with unix:, native:, or hybrid:, not {text:?}"
+        )));
+    }
+    DatagramAddr::try_from(&vsock_address(text)?).map_err(value_error)
+}
+
 /// Builds the configuration used when a new node joins a parent.
 ///
 /// `pid` is the identity the parent must authenticate as; `address` is where
 /// the new child connects to it.
-fn parent_namespace(pid: PyPid, address: &str) -> PyResult<NamespaceConfig> {
+fn parent_namespace(pid: PyPid, address: DatagramAddr) -> PyResult<NamespaceConfig> {
     // CPY-2, CPY-3: bind the dial address to the identity the parent must
     // authenticate as.
-    let address = DatagramAddr::try_from(&carrier_address(address)?).map_err(value_error)?;
     NamespaceConfig::try_new(pid.inner, vec![ParentEndpoint::new(address)]).map_err(value_error)
+}
+
+/// Configuration for a node's UDP carrier.
+///
+/// UDP carries each QUIC packet as one datagram. This value owns no socket; it
+/// stores the requested local bind address. `Node` opens the socket during
+/// construction, and `Node.addresses` reports the actual address after port 0
+/// is resolved.
+// CPY-3, CPY-8: a UDP carrier names one specific local IP and port.
+#[pyclass(
+    name = "UdpCarrier",
+    module = "chrysalis._rust_bindings",
+    frozen,
+    from_py_object
+)]
+#[derive(Clone, Copy)]
+struct PyUdpCarrier {
+    /// Requested local IP and port. The IP is specific; port 0 asks the system
+    /// to choose an available port.
+    bind: SocketAddr,
+}
+
+#[pymethods]
+impl PyUdpCarrier {
+    /// Describes a UDP socket bound at `bind`, a specific IP and port.
+    ///
+    /// Port 0 lets the system choose a free port. A malformed address or an
+    /// unspecified IP raises Python `ValueError`, because a node advertises
+    /// the address it binds.
+    #[new]
+    #[pyo3(signature = (bind = DEFAULT_UDP_BIND))]
+    fn new(bind: &str) -> PyResult<Self> {
+        // CPY-3, CPY-7: other nodes can't reach an unspecified IP.
+        let bind = SocketAddr::from_str(bind).map_err(|error| {
+            PyValueError::new_err(format!("{bind:?} is not an IP and port: {error}"))
+        })?;
+        if bind.ip().is_unspecified() {
+            return Err(PyValueError::new_err(format!(
+                "a UDP carrier binds a specific IP, not {}",
+                bind.ip()
+            )));
+        }
+        Ok(Self { bind })
+    }
+}
+
+/// The vsock carrier, which frames datagrams onto byte streams.
+///
+/// It connects nodes over Firecracker's vsock links, or over Unix stream
+/// sockets on one host. The carrier only describes its endpoints. The `Node`
+/// that uses it binds them.
+// CPY-3, CPY-8: a vsock carrier listens only on Unix or native-vsock addresses.
+#[pyclass(
+    name = "VsockCarrier",
+    module = "chrysalis._rust_bindings",
+    frozen,
+    from_py_object
+)]
+#[derive(Clone)]
+struct PyVsockCarrier {
+    /// Parsed listen addresses. `Node.addresses` reports their canonical text.
+    listen: Vec<VsockDatagramAddr>,
+}
+
+#[pymethods]
+impl PyVsockCarrier {
+    /// Describes a carrier that accepts connections at `listen`.
+    ///
+    /// Each address is `unix:<path>` or `native:<cid>:<port>`. With none, the
+    /// node only connects to its parent. Any other address raises Python
+    /// `ValueError`.
+    #[new]
+    // PyO3 evaluates `Vec::new()` for each call, so callers do not share a
+    // mutable default.
+    #[pyo3(signature = (listen = Vec::new()))]
+    fn new(listen: Vec<String>) -> PyResult<Self> {
+        let listen = listen
+            .iter()
+            .map(|text| vsock_listen_address(text))
+            .collect::<PyResult<_>>()?;
+        Ok(Self { listen })
+    }
+}
+
+/// The carrier a node binds, from the `carrier` argument of `Node(...)`.
+#[derive(FromPyObject)]
+enum Carrier {
+    /// A UDP socket at the carrier's bind address.
+    Udp(PyUdpCarrier),
+    /// The vsock carrier with the caller's listen addresses.
+    Vsock(PyVsockCarrier),
+}
+
+impl Carrier {
+    /// Parses a parent address in this carrier's form.
+    fn parent_address(&self, text: &str) -> PyResult<DatagramAddr> {
+        match self {
+            Self::Udp(_) => udp_parent_address(text),
+            Self::Vsock(_) => vsock_parent_address(text),
+        }
+    }
+
+    /// Binds the carrier, returning the node's transport and the addresses
+    /// `Node.addresses` reports.
+    ///
+    /// Call this inside the Tokio runtime: binding a vsock carrier starts
+    /// tasks on it.
+    fn bind(&self, identity: QuicIdentity) -> PyResult<(TransportConfig, Vec<String>)> {
+        match self {
+            Self::Udp(udp) => {
+                let socket = std::net::UdpSocket::bind(udp.bind).map_err(chrysalis_error)?;
+                let local = socket.local_addr().map_err(chrysalis_error)?;
+                // CPY-9: a routed UDP transport forwards PID-routed packets for
+                // the node's children; a direct one would answer them itself.
+                let transport =
+                    TransportConfig::routed_udp(socket, None, identity).map_err(chrysalis_error)?;
+                Ok((transport, vec![format!("{UDP_PREFIX}{local}")]))
+            }
+            Self::Vsock(vsock) => {
+                // Format every reported address before binding opens any
+                // listener, so a conversion error leaves no carrier resources.
+                let addresses = vsock
+                    .listen
+                    .iter()
+                    .map(vsock_address_text)
+                    .collect::<PyResult<_>>()?;
+                let name = PidPrefix::from(identity.pid()).to_string();
+                let socket =
+                    VsockDatagramSocket::bind(&name, &vsock.listen).map_err(chrysalis_error)?;
+                let transport = TransportConfig::new(Arc::new(socket), identity);
+                Ok((transport, addresses))
+            }
+        }
+    }
 }
 
 /// A running Chrysalis node exposed to Python.
@@ -346,6 +557,9 @@ fn parent_namespace(pid: PyPid, address: &str) -> PyResult<NamespaceConfig> {
 struct PyNode {
     /// Shared node and shutdown state captured by its async operations.
     inner: Arc<NodeInner>,
+    /// The addresses `addresses` reports: a UDP node's bound address, or a
+    /// `VsockCarrier` node's listen addresses.
+    addresses: Vec<String>,
 }
 
 /// State shared by the Python node and its in-flight async operations.
@@ -377,36 +591,40 @@ impl NodeInner {
 impl PyNode {
     /// Creates and starts a Chrysalis node.
     ///
-    /// `listen` lists the addresses where this node accepts carrier
-    /// connections. `parent`, when present, gives the PID and address of the
-    /// parent to join; without it, the node is a namespace root.
+    /// `carrier` is the node's `UdpCarrier` or `VsockCarrier`; without one,
+    /// the node binds a fresh UDP socket on 127.0.0.1. `parent`, when present,
+    /// gives the PID and address of the parent to join; without it, the node
+    /// is a namespace root.
     ///
-    /// Invalid input raises Python `ValueError`. A failure to bind or start the
-    /// node raises `ChrysalisError`.
+    /// Invalid input raises Python `ValueError`, and a carrier of another type
+    /// raises `TypeError`. A failure to bind the carrier or start the node,
+    /// including a kernel that refuses io_uring to a UDP node, raises
+    /// `ChrysalisError`.
     #[new]
-    // Optional configuration is keyword-only. PyO3 evaluates `Vec::new()` for
-    // each call, so callers do not share a mutable default.
-    #[pyo3(signature = (identity, *, listen = Vec::new(), parent = None))]
+    // Optional configuration is keyword-only.
+    #[pyo3(signature = (identity, *, carrier = None, parent = None))]
     fn new(
         identity: &PyIdentity,
-        listen: Vec<String>,
+        carrier: Option<Carrier>,
         parent: Option<(PyPid, String)>,
     ) -> PyResult<Self> {
-        let listen = listen
-            .iter()
-            .map(|text| listen_address(text))
-            .collect::<PyResult<Vec<_>>>()?;
+        // CPY-9: a node given no carrier binds a fresh loopback UDP socket.
+        let carrier = carrier.unwrap_or_else(|| {
+            Carrier::Udp(
+                PyUdpCarrier::new(DEFAULT_UDP_BIND)
+                    .expect("should parse the default UDP bind address"),
+            )
+        });
         let parent = parent
-            .map(|(pid, address)| parent_namespace(pid, &address))
+            .map(|(pid, address)| parent_namespace(pid, carrier.parent_address(&address)?))
             .transpose()?;
         let identity = identity.inner.clone();
-        let name = PidPrefix::from(identity.pid()).to_string();
 
-        // CPY-1: `bind` and `Node::create` start tasks on the current Tokio runtime,
-        // and this Python thread has none.
+        // CPY-1: binding a vsock carrier and `Node::create` start tasks on the
+        // current Tokio runtime, and this Python thread has none.
         let _runtime = get_runtime().enter();
-        let socket = VsockDatagramSocket::bind(&name, &listen).map_err(chrysalis_error)?;
-        let mut config = NodeConfig::new(TransportConfig::new(Arc::new(socket), identity));
+        let (transport, addresses) = carrier.bind(identity)?;
+        let mut config = NodeConfig::new(transport);
         // CPY-3: adding a parent turns this node from a namespace root into an
         // authenticated child.
         if let Some(parent) = parent {
@@ -419,7 +637,21 @@ impl PyNode {
                 closing: AtomicBool::new(false),
                 closed: OnceCell::new(),
             }),
+            addresses,
         })
+    }
+
+    /// Returns this node's addresses.
+    ///
+    /// A UDP node has one, `udp://<ip>:<port>`, with the port it bound; other
+    /// nodes dial it there. A `VsockCarrier` node has its listen addresses in
+    /// canonical form, or none if it only connects. How another node dials a
+    /// vsock listener depends on the deployment: a host reaches a guest's
+    /// `native:` listener through a `hybrid:` address.
+    #[getter]
+    fn addresses(&self) -> Vec<String> {
+        // CPY-9: a UDP node reports the port the system chose, not port 0.
+        self.addresses.clone()
     }
 
     /// Opens an application stream to `pid` using this node's current
@@ -601,6 +833,8 @@ fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("ChrysalisError", py.get_type::<ChrysalisError>())?;
     module.add_class::<PyPid>()?;
     module.add_class::<PyIdentity>()?;
+    module.add_class::<PyUdpCarrier>()?;
+    module.add_class::<PyVsockCarrier>()?;
     module.add_class::<PyNode>()?;
     module.add_class::<PyStream>()?;
     module.add_function(wrap_pyfunction!(generate_test_identities, module)?)?;
