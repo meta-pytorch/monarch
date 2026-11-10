@@ -12,5 +12,8 @@ anyhow = "1.0.104"
 monarch_record_batch = { version = "0.0.0", path = "../monarch_record_batch" }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 
+[dev-dependencies]
+tempfile = "3.27.0"
+
 [lints]
 workspace = true
