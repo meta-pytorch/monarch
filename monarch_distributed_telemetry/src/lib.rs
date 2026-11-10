@@ -17,13 +17,6 @@
 //! Data flows directly Rust-to-Rust via PortRef for efficiency.
 
 pub mod database_scanner;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the store starts using the exporter in the next change"
-    )
-)]
 pub(crate) mod persist;
 pub mod pyspy_table;
 pub mod query_engine;
