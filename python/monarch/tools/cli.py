@@ -630,10 +630,13 @@ class QueryCmd:
     def _query_persisted(self, dirs: list[str], sql: str) -> dict[str, Any]:
         try:
             engine, instances = open_persisted_engine(dirs)
-            rows = engine.query(sql).to_pylist()
         except (RuntimeError, OSError) as error:
             raise SystemExit(f"monarch query: {error}") from None
         sys.stderr.write(format_instances(instances) + "\n")
+        try:
+            rows = engine.query(sql).to_pylist()
+        except Exception as error:  # SQL errors from Rust are plain `Exception`.
+            raise SystemExit(f"monarch query: {error}") from None
         return {"rows": rows}
 
     def _query_job(self, args: argparse.Namespace, sql: str) -> dict[str, Any]:
