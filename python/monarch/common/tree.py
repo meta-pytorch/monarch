@@ -5,12 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
-from typing import Any, Callable, Protocol, Sequence, Tuple
-
-import torch.utils._pytree as _pytree
 from torch.utils._pytree import (
     _get_node_type,
-    register_pytree_node,
     SUPPORTED_NODES,
     tree_flatten,
     tree_map,
