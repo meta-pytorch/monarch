@@ -149,6 +149,7 @@ impl Exporter {
     }
 
     /// Batches dropped so far.
+    #[cfg(test)]
     pub(crate) fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
