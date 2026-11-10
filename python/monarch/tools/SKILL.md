@@ -41,6 +41,11 @@ Quick start:
   # Agent-friendly structured output; SQL can also come from stdin or --file
   monarch query --format json 'SELECT * FROM actor_failures LIMIT 10'
 
+  # After the job ended: query or browse telemetry it persisted
+  # (TelemetryConfig(persist_dir=...)); PATH is {persist_dir}/{apply_id}
+  monarch query --dir PATH 'SELECT COUNT(*) AS failed FROM actor_failures'
+  monarch dashboard open PATH
+
   # Collect from an existing MAST job
   monarch profile mast <mast-job-id>
 
@@ -64,6 +69,9 @@ Commands:
   tui     Inspect a running mesh in an interactive terminal UI
   context Manage named job contexts
   debug   Connect to the debug server
+  dashboard
+          Serve Monarch dashboards (mast: relay a MAST job's dashboard;
+          open: serve persisted telemetry)
 
 Job reuse:
   Worker allocation is slow (minutes). Use "monarch exec" to reuse workers
@@ -107,6 +115,16 @@ query options:
   --file PATH       Read SQL from a file
   --format FORMAT   table (default), json, or jsonl
   --timeout TIME    Query timeout such as 30s or 2m (default: 10s)
+  --dir PATH        Query telemetry persisted under PATH instead of the active
+                    job (repeatable). PATH is {persist_dir}/{apply_id}. A
+                    summary of each collector's log goes to stderr; the
+                    unclean log whose last row is earliest is marked
+                    "first to stop".
+
+dashboard open options:
+
+  PATH ...          Persisted telemetry directories, as for query --dir
+  --port N          Dashboard port (default: 8265)
 
 Query responses are materialized in memory. Use aggregates or `LIMIT` for
 diagnostics; use the Arrow streaming API for bulk export.

@@ -22,7 +22,10 @@ from monarch._rust_bindings.monarch_extension.mesh_admin_tui import (
 from monarch._rust_bindings.monarch_extension.trace import export_profile
 from monarch._src.job._telemetry_query_client import DEFAULT_QUERY_TIMEOUT_SEC
 from monarch._src.job.job import job_load
+from monarch._src.job.persisted_telemetry import format_instances, open_persisted_engine
 from monarch.actor import shutdown_context
+from monarch.monarch_dashboard.server.app import start_telemetry_servers
+from monarch.monarch_dashboard.server.query_engine_adapter import QueryEngineAdapter
 from monarch.tools.commands import (
     apply_job,
     context_create,
@@ -585,6 +588,16 @@ class QueryCmd:
                 f"(default: {DEFAULT_QUERY_TIMEOUT_SEC:g}s)"
             ),
         )
+        subparser.add_argument(
+            "--dir",
+            action="append",
+            default=None,
+            metavar="PATH",
+            help=(
+                "Query telemetry persisted under PATH ({persist_dir}/{apply_id}) "
+                "instead of the active job; repeatable"
+            ),
+        )
 
     def _read_sql(self, args: argparse.Namespace) -> str:
         if args.sql is not None and args.sql_file is not None:
@@ -608,6 +621,22 @@ class QueryCmd:
             sql = self._read_sql(args)
         except (RuntimeError, OSError, UnicodeError) as error:
             raise SystemExit(f"monarch query: {error}") from None
+        if args.dir is not None:
+            result = self._query_persisted(args.dir, sql)
+        else:
+            result = self._query_job(args, sql)
+        self._write(args, result)
+
+    def _query_persisted(self, dirs: list[str], sql: str) -> dict[str, Any]:
+        try:
+            engine, instances = open_persisted_engine(dirs)
+            rows = engine.query(sql).to_pylist()
+        except (RuntimeError, OSError) as error:
+            raise SystemExit(f"monarch query: {error}") from None
+        sys.stderr.write(format_instances(instances) + "\n")
+        return {"rows": rows}
+
+    def _query_job(self, args: argparse.Namespace, sql: str) -> dict[str, Any]:
         try:
             job = job_load()
         except FileNotFoundError:
@@ -617,26 +646,33 @@ class QueryCmd:
             ) from None
         try:
             client = job.telemetry_query_client()
-            result: dict[str, Any] = (
+            return (
                 client.query(sql)
                 if args.timeout is None
                 else client.query(sql, timeout=args.timeout)
             )
-            if args.output_format == "json":
-                output = json.dumps(result, indent=2, sort_keys=True)
-            elif args.output_format == "jsonl":
-                rows = result.get("rows", [])
-                if not isinstance(rows, list):
-                    raise RuntimeError(f"query returned invalid rows: {rows!r}")
-                # Zero rows intentionally produce zero JSONL records.
-                output = "\n".join(json.dumps(row, sort_keys=True) for row in rows)
-            else:
-                output = _format_query_table(result)
         except TimeoutError:
             raise SystemExit(
                 "monarch query: query timed out; try increasing --timeout"
             ) from None
         except (RuntimeError, OSError, json.JSONDecodeError, UnicodeError) as error:
+            raise SystemExit(f"monarch query: {error}") from None
+
+    def _write(self, args: argparse.Namespace, result: dict[str, Any]) -> None:
+        try:
+            if args.output_format == "json":
+                output = json.dumps(result, indent=2, sort_keys=True, default=str)
+            elif args.output_format == "jsonl":
+                rows = result.get("rows", [])
+                if not isinstance(rows, list):
+                    raise RuntimeError(f"query returned invalid rows: {rows!r}")
+                # Zero rows intentionally produce zero JSONL records.
+                output = "\n".join(
+                    json.dumps(row, sort_keys=True, default=str) for row in rows
+                )
+            else:
+                output = _format_query_table(result)
+        except RuntimeError as error:
             raise SystemExit(f"monarch query: {error}") from None
         if output:
             sys.stdout.write(output + "\n")
@@ -671,6 +707,23 @@ class DashboardCmd:
             help="Dashboard port on the MAST task.",
         )
         mast.set_defaults(dashboard_func=self._run_mast)
+        open_parser = sub.add_parser(
+            "open",
+            help="Serve the Monarch dashboard over persisted telemetry",
+        )
+        open_parser.add_argument(
+            "dirs",
+            nargs="+",
+            metavar="PATH",
+            help="Persisted telemetry directory ({persist_dir}/{apply_id}).",
+        )
+        open_parser.add_argument(
+            "--port",
+            type=int,
+            default=_DEFAULT_DASHBOARD_PORT,
+            help="Dashboard port.",
+        )
+        open_parser.set_defaults(dashboard_func=self._run_open)
 
     def run(self, args: argparse.Namespace) -> None:
         if not hasattr(args, "dashboard_func"):
@@ -693,6 +746,21 @@ class DashboardCmd:
             role_name=args.role_name,
             dashboard_port=args.dashboard_port,
         )
+
+    def _run_open(self, args: argparse.Namespace) -> None:
+        try:
+            engine, instances = open_persisted_engine(args.dirs)
+            info = start_telemetry_servers(
+                QueryEngineAdapter(engine), port=args.port, include_dashboard=True
+            )
+        except (RuntimeError, OSError) as error:
+            raise SystemExit(f"monarch dashboard: {error}") from None
+        sys.stderr.write(format_instances(instances) + "\n")
+        sys.stderr.write(f"Monarch Dashboard: {info['url']} (Ctrl-C to stop)\n")
+        try:
+            info["handle"].join()
+        except KeyboardInterrupt:
+            pass
 
 
 def _load_skill_md() -> str:
