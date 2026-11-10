@@ -51,7 +51,7 @@ import math
 import os
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
