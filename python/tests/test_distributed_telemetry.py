@@ -42,6 +42,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch._src.actor.actor_mesh import Actor, ActorMesh, current_rank
 from monarch._src.actor.endpoint import endpoint
+from monarch._src.job.job_sidecar import find_job_sidecar
 from monarch._src.job.persisted_telemetry import open_persisted_engine
 from monarch._src.job.telemetry_ingest import encode_frame, FrameWriter
 from monarch.actor import span
@@ -683,6 +684,41 @@ def test_persisted_telemetry_survives_runtime_shutdown(
 
 
 @pytest.mark.timeout(120)
+@pytest.mark.parametrize("graceful", [True, False])
+@isolate_in_subprocess
+def test_persisted_sidecar_shutdown(tmp_path, graceful: bool) -> None:
+    job = ProcessJob({"hosts": 1}).enable_telemetry(
+        _sidecar_telemetry_config(
+            persist_dir=str(tmp_path),
+            host_metrics_interval_secs=0.0,
+            gpu_metrics_interval_secs=0.0,
+        )
+    )
+    try:
+        state = job.state(cached_path=None)
+        assert job.apply_id is not None
+        persist_root = tmp_path / job.apply_id
+        dump_id = _new_apply_id()
+        _store_pyspy_dump(state, dump_id, "proc[0]", _sample_pyspy_dump_json())
+        sql = f"SELECT * FROM pyspy_dumps WHERE dump_id = '{dump_id}'"
+        expected = _sidecar_query_rows(state, sql)
+        assert len(expected) == 1
+        _wait_for_persisted_rows(persist_root, sql, expected)
+        if not graceful:
+            sidecar = find_job_sidecar(job.apply_id)
+            assert sidecar is not None
+            os.kill(sidecar._pid, signal.SIGKILL)
+        job.kill()
+    finally:
+        job.kill()
+    engine, instances = open_persisted_engine([str(persist_root)])
+    assert engine.query(sql).to_pylist() == expected
+    assert len(instances) == 1
+    assert instances[0]["clean"] is graceful
+    assert instances[0]["torn_bytes"] == 0
+
+
+@pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_persisted_tables_match_live_tables(tmp_path) -> None:
     apply_id = _new_apply_id()
@@ -743,6 +779,32 @@ def test_persisted_tables_match_live_tables(tmp_path) -> None:
     for table in sorted(live_names):
         assert _table_rows(offline_engine, table) == live_rows[table], table
     assert [instance["clean"] for instance in instances] == [True]
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_close_persist_endpoint_ends_log_cleanly(tmp_path) -> None:
+    apply_id = _new_apply_id()
+    _remove_socket_dir(apply_id)
+    try:
+        collector = monarch.actor.this_proc().spawn(
+            "telemetry",
+            job_telemetry_actor.TelemetryActor,
+            apply_id,
+            0,
+            0.0,
+            0.0,
+            str(tmp_path),
+        )
+        assert collector.activate.call_one().get()
+
+        collector.close_persist.call_one().get(timeout=30)
+
+        # The collector is still running; its log is already closed.
+        _, instances = DatabaseScanner.open_persisted([str(tmp_path / apply_id)])
+    finally:
+        _remove_socket_dir(apply_id)
+    assert [instance.clean for instance in instances] == [True]
 
 
 @pytest.mark.timeout(60)
