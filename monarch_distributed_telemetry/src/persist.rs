@@ -15,7 +15,9 @@
 //! affecting live telemetry.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
@@ -24,10 +26,15 @@ use std::sync::mpsc;
 use std::time::Duration;
 use std::time::Instant;
 
+use anyhow::Context;
 use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use monarch_telemetry_schema::frame_log::SegmentWriter;
+use monarch_telemetry_schema::frame_log::read_instance;
+use pyo3::prelude::*;
+
+use crate::database_scanner::TableStore;
 
 /// Tuning for a persist exporter.
 #[derive(Debug, Clone)]
@@ -335,6 +342,88 @@ fn is_io(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| cause.is::<std::io::Error>())
 }
 
+/// What loading one collector's persist log found.
+#[pyclass(
+    name = "PersistedInstance",
+    module = "monarch._rust_bindings.monarch_distributed_telemetry.database_scanner",
+    get_all
+)]
+#[derive(Debug, Clone)]
+pub struct PersistedInstance {
+    /// Instance directory name, `{hostname}-{pid}`.
+    pub name: String,
+    /// Segment files read.
+    pub segments: u32,
+    /// Whether the collector closed the log cleanly.
+    pub clean: bool,
+    /// Bytes dropped from a torn final frame.
+    pub torn_bytes: u64,
+    /// Rows loaded.
+    pub rows: u64,
+    /// Earliest `timestamp_us` loaded.
+    pub first_timestamp_us: Option<i64>,
+    /// Latest `timestamp_us` loaded.
+    pub last_timestamp_us: Option<i64>,
+}
+
+/// Load every collector instance under `roots` into `store`.
+///
+/// Each root is a `{persist_dir}/{apply_id}` directory whose children are
+/// `{hostname}-{pid}` instance directories. Tables are created with the
+/// schemas recorded in the logs.
+pub(crate) fn load_persisted(
+    store: &TableStore,
+    roots: &[PathBuf],
+) -> anyhow::Result<Vec<PersistedInstance>> {
+    let mut instances = Vec::new();
+    for root in roots {
+        let dirs = instance_dirs(root)?;
+        anyhow::ensure!(
+            !dirs.is_empty(),
+            "no telemetry instances under {}: expected {{persist_dir}}/{{apply_id}} \
+             containing {{hostname}}-{{pid}} directories",
+            root.display()
+        );
+        for dir in dirs {
+            let summary = read_instance(&dir, |table, batch| {
+                store.ingest_batch_blocking(table, batch)
+            })?;
+            instances.push(PersistedInstance {
+                name: dir
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                segments: summary.segments,
+                clean: summary.clean,
+                torn_bytes: summary.torn_bytes,
+                rows: summary.rows,
+                first_timestamp_us: summary.first_timestamp_us,
+                last_timestamp_us: summary.last_timestamp_us,
+            });
+        }
+    }
+    Ok(instances)
+}
+
+/// Child directories of `root` that hold at least one segment, sorted.
+fn instance_dirs(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut dirs: Vec<PathBuf> = fs::read_dir(root)
+        .with_context(|| format!("read {}", root.display()))?
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .filter(|path| path.is_dir() && has_segments(path))
+        .collect();
+    dirs.sort();
+    Ok(dirs)
+}
+
+fn has_segments(dir: &Path) -> bool {
+    fs::read_dir(dir).is_ok_and(|entries| {
+        entries
+            .filter_map(Result::ok)
+            .any(|entry| entry.path().extension().is_some_and(|ext| ext == "frames"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs::File;
@@ -348,6 +437,8 @@ mod tests {
     use datafusion::arrow::datatypes::Field;
     use datafusion::arrow::datatypes::Schema;
     use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::prelude::SessionContext;
+    use monarch_hyperactor::runtime::get_tokio_runtime;
     use monarch_telemetry_schema::MAX_FRAME_LEN;
     use monarch_telemetry_schema::frame::FrameReader;
     use monarch_telemetry_schema::frame::ReadOutcome;
@@ -532,5 +623,121 @@ mod tests {
 
         let (_, summary) = read_all(dir.path());
         assert!(summary.clean);
+    }
+    /// Write one collector instance with a zero-row and a two-row `t` batch.
+    fn write_instance(dir: &Path) {
+        let exporter = Exporter::start(dir, PersistConfig::default()).unwrap();
+        exporter.send("t", ints(&[]));
+        exporter.send("t", ints(&[1, 2]));
+        exporter.close(CLOSE_TIMEOUT);
+    }
+
+    fn row_count(store: &TableStore, table: &str) -> i64 {
+        let provider = store.table_provider(table).unwrap().unwrap();
+        get_tokio_runtime().block_on(async {
+            let ctx = SessionContext::new();
+            ctx.register_table(table, provider).unwrap();
+            let batches = ctx
+                .sql(&format!("SELECT COUNT(*) AS c FROM {table}"))
+                .await
+                .unwrap()
+                .collect()
+                .await
+                .unwrap();
+            batches[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(0)
+        })
+    }
+
+    fn names(instances: &[PersistedInstance]) -> Vec<&str> {
+        instances.iter().map(|i| i.name.as_str()).collect()
+    }
+
+    #[test]
+    fn load_persisted_merges_instances() {
+        let root = tempfile::tempdir().unwrap();
+        write_instance(&root.path().join("h1-1"));
+        write_instance(&root.path().join("h2-2"));
+        let store = TableStore::new_empty();
+
+        let instances = load_persisted(&store, &[root.path().to_path_buf()]).unwrap();
+
+        assert_eq!(names(&instances), vec!["h1-1", "h2-2"]);
+        assert!(instances.iter().all(|i| i.clean));
+        assert!(instances.iter().all(|i| i.rows == 2));
+        assert_eq!(row_count(&store, "t"), 4, "two instances of two rows");
+    }
+
+    #[test]
+    fn load_persisted_merges_roots() {
+        let client = tempfile::tempdir().unwrap();
+        let workers = tempfile::tempdir().unwrap();
+        write_instance(&client.path().join("h1-1"));
+        write_instance(&workers.path().join("h2-2"));
+        let store = TableStore::new_empty();
+
+        let instances = load_persisted(
+            &store,
+            &[client.path().to_path_buf(), workers.path().to_path_buf()],
+        )
+        .unwrap();
+
+        assert_eq!(names(&instances), vec!["h1-1", "h2-2"]);
+        assert_eq!(row_count(&store, "t"), 4);
+    }
+
+    #[test]
+    fn load_persisted_reports_unclean_instance() {
+        let root = tempfile::tempdir().unwrap();
+        let mut writer = SegmentWriter::create(&root.path().join("h1-1"), u64::MAX).unwrap();
+        writer.write_batch("t", &ints(&[])).unwrap();
+        writer.write_batch("t", &ints(&[1, 2])).unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+        let store = TableStore::new_empty();
+
+        let instances = load_persisted(&store, &[root.path().to_path_buf()]).unwrap();
+
+        assert_eq!(instances.len(), 1);
+        assert!(
+            !instances[0].clean,
+            "no end frame means an unclean shutdown"
+        );
+        assert_eq!(row_count(&store, "t"), 2);
+    }
+
+    #[test]
+    fn open_persisted_rejects_root_without_instances() {
+        let empty = tempfile::tempdir().unwrap();
+        let nested = tempfile::tempdir().unwrap();
+        std::fs::create_dir(nested.path().join("not-an-instance")).unwrap();
+
+        for root in [empty.path(), nested.path()] {
+            let error = load_persisted(&TableStore::new_empty(), &[root.to_path_buf()])
+                .unwrap_err()
+                .to_string();
+
+            assert!(
+                error.contains("expected {persist_dir}/{apply_id}"),
+                "error names the expected layout: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn loaded_tables_are_queryable() {
+        let root = tempfile::tempdir().unwrap();
+        write_instance(&root.path().join("h1-1"));
+        write_instance(&root.path().join("h2-2"));
+        let store = TableStore::new_empty();
+
+        load_persisted(&store, &[root.path().to_path_buf()]).unwrap();
+
+        assert_eq!(store.table_names().unwrap(), vec!["t".to_string()]);
+        assert_eq!(row_count(&store, "t"), 4);
     }
 }
