@@ -7,8 +7,9 @@
 """Experimental Python bindings for Chrysalis identities, nodes, and streams.
 
 This private, version-zero module supports asyncio programs and is subject to
-change. It lets a program load an identity, join a parent, find another node by
-PID, and exchange bytes over authenticated streams.
+change. It lets a program load an identity, start a node on a UDP or vsock
+carrier, join a parent, find another node by PID, and exchange bytes over
+authenticated streams.
 """
 
 from collections.abc import Sequence
@@ -77,6 +78,39 @@ def generate_test_identities(count: int) -> list[str]:
     """
     ...
 
+class UdpCarrier:
+    """A UDP socket for a node to bind.
+
+    The carrier only describes the socket. The `Node` that uses it binds it.
+    """
+
+    def __init__(self, bind: str = "127.0.0.1:0") -> None:
+        """Describe a UDP socket bound at `bind`.
+
+        `bind` is a specific IP and port, such as `"127.0.0.1:5000"` or
+        `"[::1]:0"`. Port 0 lets the system choose a free port. Raises
+        `ValueError` if `bind` is malformed or its IP is unspecified, such as
+        `0.0.0.0`, because a node advertises the address it binds.
+        """
+        ...
+
+class VsockCarrier:
+    """The vsock carrier, which frames datagrams onto byte streams.
+
+    It connects nodes over Firecracker's vsock links, or over Unix stream
+    sockets on one host. The carrier only describes its endpoints. The `Node`
+    that uses it binds them.
+    """
+
+    def __init__(self, listen: Sequence[str] = ()) -> None:
+        """Describe a carrier that accepts connections at `listen`.
+
+        Each address is `unix:<path>` or `native:<cid>:<port>`. With no
+        addresses, the node only connects to its parent. Any other address
+        raises `ValueError`.
+        """
+        ...
+
 class Node:
     """A participant in a Chrysalis process namespace.
 
@@ -89,19 +123,33 @@ class Node:
         self,
         identity: Identity,
         *,
-        listen: Sequence[str] = (),
+        carrier: UdpCarrier | VsockCarrier | None = None,
         parent: tuple[Pid, str] | None = None,
     ) -> None:
         """Create and start a node using `identity`.
 
-        `listen` gives the `unix:<path>` or `native:<cid>:<port>` addresses
-        where other nodes may connect. `parent`, when present, gives the PID
-        and address of the parent this node joins. A parent address may be
-        `unix:`, `native:`, or `hybrid:<port>:<uds>`. Without a parent, this
-        node is the root of its namespace.
+        `carrier` says how the node reaches other nodes. Without one, the node
+        binds a new UDP socket on 127.0.0.1, on a port the system chooses.
+        `parent`, when present, gives the PID and address of the parent this
+        node joins. Without a parent, this node is the root of its namespace.
+        A UDP node's parent address is `udp://<ip>:<port>`, with a specific IP
+        and a non-zero port. A `VsockCarrier` node's parent address is `unix:`,
+        `native:`, or `hybrid:<port>:<uds>`.
 
-        An invalid address raises `ValueError`. A failure to bind an address or
+        An invalid address raises `ValueError`. A failure to bind the carrier or
         start the node raises `ChrysalisError`.
+        """
+        ...
+
+    @property
+    def addresses(self) -> list[str]:
+        """This node's addresses.
+
+        A UDP node has one, `udp://<ip>:<port>`, with the port it bound; other
+        nodes dial it there. A `VsockCarrier` node has its `listen` addresses
+        in canonical form, or none if it only connects. How another node dials
+        a vsock listener depends on the deployment: a host reaches a guest's
+        `native:` listener through a `hybrid:` address.
         """
         ...
 

@@ -7,21 +7,24 @@
 """Tests for the experimental Chrysalis Python bindings.
 
 The tests use real Chrysalis nodes and streams rather than mocks. They cover
-identity loading, namespace discovery, authenticated streams, cancellation,
-concurrent reading and writing, and shutdown.
+identity loading, carriers and addresses, namespace discovery, authenticated
+streams, cancellation, concurrent reading and writing, and shutdown.
 
-Each test runs in its own asyncio loop. Its nodes use the vsock-family carrier
-with `unix:` endpoints, so framed datagrams travel over Unix stream sockets.
-The sockets live in a fresh, short `/tmp` directory that is removed afterward.
+Each test runs in its own asyncio loop. Most nodes use the default carrier, a
+fresh UDP socket on 127.0.0.1. The tests where framing matters also run over
+`VsockCarrier` with `unix:` endpoints, so framed datagrams travel over Unix
+stream sockets. Those sockets live in a fresh, short `/tmp` directory that is
+removed afterward.
 """
 
 import asyncio
 import re
 import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 from chrysalis._rust_bindings import (
@@ -31,6 +34,8 @@ from chrysalis._rust_bindings import (
     Node,
     Pid,
     Stream,
+    UdpCarrier,
+    VsockCarrier,
 )
 
 # Arbitrary application messages used by the round-trip test.
@@ -40,6 +45,12 @@ ACKNOWLEDGEMENT = b"got it"
 VISIBLE_WITHIN = 10.0
 # Number of bytes in one mebibyte.
 MIB = 1 << 20
+# The carriers that the carrier-dependent tests run over.
+CARRIERS = ["udp", "vsock"]
+
+# Builds one carrier configuration per test node. The optional name lets a
+# carrier create a listener; `_carriers` keeps any shared resources alive.
+CarrierFactory = Callable[[str | None], UdpCarrier | VsockCarrier]
 
 
 @contextmanager
@@ -52,20 +63,60 @@ def _socket_dir() -> Iterator[Path]:
         shutil.rmtree(path, ignore_errors=True)
 
 
+def _udp_carrier(_name: str | None) -> UdpCarrier:
+    """Return a fresh loopback UDP carrier; UDP nodes need no name."""
+    return UdpCarrier()
+
+
+@contextmanager
+def _carriers(kind: str) -> Iterator[CarrierFactory]:
+    """Yield the carrier factory for one case of a carrier-parametrized test.
+
+    The vsock factory makes a named node listen at `unix:<directory>/<name>`, in
+    one temporary directory removed when the context exits. It gives an unnamed
+    node a `VsockCarrier` that only connects.
+    """
+    if kind == "udp":
+        yield _udp_carrier
+        return
+    with _socket_dir() as directory:
+
+        def vsock(name: str | None) -> VsockCarrier:
+            return VsockCarrier(listen=[f"unix:{directory}/{name}"] if name else [])
+
+        yield vsock
+
+
 def _identities(count: int) -> list[Identity]:
     """Generate and load `count` mutually trusted test identities."""
     return [Identity.from_pem(bundle) for bundle in generate_test_identities(count)]
 
 
-def _pair(directory: Path, alice: Identity, bob: Identity) -> tuple[Node, Node]:
+def _pair(
+    alice: Identity, bob: Identity, carrier: CarrierFactory = _udp_carrier
+) -> tuple[Node, Node]:
     """Start Alice as a namespace root and Bob as her child.
 
-    Alice listens at `<directory>/a`. Bob connects there and requires the
-    parent to authenticate as Alice's PID. The nodes return before Bob's
-    namespace entry has necessarily reached Alice.
+    `carrier` gives each node its carrier; by default both use UDP. Bob joins
+    Alice at her first address and requires the parent to authenticate as
+    Alice's PID. The nodes return before Bob's namespace entry has necessarily
+    reached Alice.
     """
-    address = f"unix:{directory}/a"
-    return Node(alice, listen=[address]), Node(bob, parent=(alice.pid, address))
+    alice_node = Node(alice, carrier=carrier("a"))
+    bob_node = Node(
+        bob, carrier=carrier(None), parent=(alice.pid, alice_node.addresses[0])
+    )
+    return alice_node, bob_node
+
+
+def _udp_port(node: Node) -> int:
+    """Return the port of a node's one loopback UDP address."""
+    (address,) = node.addresses
+    match = re.fullmatch(r"udp://127\.0\.0\.1:(\d+)", address)
+    assert match, address
+    port = int(match[1])
+    assert port != 0, "the address should name the port the system chose"
+    return port
 
 
 async def _dial_when_visible(node: Node, pid: Pid) -> Stream:
@@ -138,37 +189,40 @@ def test_identities() -> None:
         Identity.from_pem(bundles[0][: len(bundles[0]) // 2])
     with pytest.raises(ValueError):
         Pid("not-a-pid")
-    for native in (Pid, Identity, Node, Stream, ChrysalisError):
+    natives = (Pid, Identity, Node, Stream, UdpCarrier, VsockCarrier, ChrysalisError)
+    for native in natives:
         assert native.__module__ == "chrysalis._rust_bindings", native
 
 
-def test_postcard_through_relay() -> None:
+@pytest.mark.parametrize("kind", CARRIERS)
+def test_postcard_through_relay(kind: str) -> None:
     """Send a postcard from Alice to Bob through Relay and return an acknowledgement.
 
-    All three nodes run in one Python process, but each uses a real
-    `VsockDatagramSocket` with a `unix:` endpoint. The carrier frames Chrysalis
-    datagrams onto Unix byte streams and reconstructs them at the other end,
-    using the same framing later used over vsock. Keeping the nodes in one
-    process tests the Python bindings and transport independently, before later
-    tests add separate processes and microVMs.
+    All three nodes run in one Python process. Bob joins Relay, Relay joins
+    Alice, and each child names its parent's address from `Node.addresses`.
+    Alice finds Bob by PID. Check that Bob sees Alice's authenticated PID
+    rather than Relay's and that both application messages arrive unchanged.
 
-    Bob joins Relay, Relay joins Alice, and Alice finds Bob by PID. Check that
-    Bob sees Alice's authenticated PID rather than Relay's and that both
-    application messages arrive unchanged.
+    In the `udp` case every node uses the default carrier, so Relay's UDP
+    socket must forward Alice's packets to Bob. A UDP node built without a PID
+    router would answer them itself, and Alice's handshake would fail because
+    Relay authenticated in Bob's place. In the `vsock` case every node uses a
+    `VsockCarrier` with `unix:` endpoints, which frames Chrysalis datagrams
+    onto Unix byte streams, as it does over vsock.
 
-    Invariants: CPY-2, CPY-3, CPY-4.
+    Invariants: CPY-2, CPY-3, CPY-4, CPY-9.
     Registry: `crates/chrysalis-extension/src/lib.rs`.
     """
 
-    async def scenario(directory: Path) -> None:
+    async def scenario(carrier: CarrierFactory) -> None:
         alice_id, relay_id, bob_id = _identities(3)
-        alice = Node(alice_id, listen=[f"unix:{directory}/a"])
+        alice = Node(alice_id, carrier=carrier("a"))
         relay = Node(
-            relay_id,
-            listen=[f"unix:{directory}/r"],
-            parent=(alice_id.pid, f"unix:{directory}/a"),
+            relay_id, carrier=carrier("r"), parent=(alice_id.pid, alice.addresses[0])
         )
-        bob = Node(bob_id, parent=(relay_id.pid, f"unix:{directory}/r"))
+        bob = Node(
+            bob_id, carrier=carrier(None), parent=(relay_id.pid, relay.addresses[0])
+        )
 
         async def send() -> bytes:
             stream = await _dial_when_visible(alice, bob_id.pid)
@@ -193,17 +247,18 @@ def test_postcard_through_relay() -> None:
         assert postcard == POSTCARD
         assert acknowledgement == ACKNOWLEDGEMENT
 
-    with _socket_dir() as directory:
-        asyncio.run(scenario(directory))
+    with _carriers(kind) as carrier:
+        asyncio.run(scenario(carrier))
 
 
-def test_concurrent_streams() -> None:
+@pytest.mark.parametrize("kind", CARRIERS)
+def test_concurrent_streams(kind: str) -> None:
     """Open eight streams from Alice to Bob at once and echo every message.
 
     The dials begin before Alice has a pooled connection to Bob, so they create
-    a burst of independent handshakes through the framed carrier. This guards
-    against the carrier losing queued datagrams when several connections start
-    together.
+    a burst of independent handshakes. In the `vsock` case this guards against
+    the framed carrier losing queued datagrams when several connections start
+    together; the `udp` case sends the same burst over UDP.
 
     Check that every stream completes and that each reply matches the message
     sent on that stream.
@@ -213,9 +268,9 @@ def test_concurrent_streams() -> None:
     """
     streams = 8
 
-    async def scenario(directory: Path) -> None:
+    async def scenario(carrier: CarrierFactory) -> None:
         alice_id, bob_id = _identities(2)
-        alice, bob = _pair(directory, alice_id, bob_id)
+        alice, bob = _pair(alice_id, bob_id, carrier)
 
         async def echo(stream: Stream) -> None:
             await stream.write(await _read_to_end(stream))
@@ -246,8 +301,8 @@ def test_concurrent_streams() -> None:
             await _close_all(alice, bob)
         assert echoes == [f"stream {i}".encode() for i in range(streams)]
 
-    with _socket_dir() as directory:
-        asyncio.run(scenario(directory))
+    with _carriers(kind) as carrier:
+        asyncio.run(scenario(carrier))
 
 
 def test_dial_unknown_pid_raises() -> None:
@@ -259,17 +314,16 @@ def test_dial_unknown_pid_raises() -> None:
     Registry: `crates/chrysalis-extension/src/lib.rs`.
     """
 
-    async def scenario(directory: Path) -> None:
+    async def scenario() -> None:
         node_id, absent_id = _identities(2)
-        node = Node(node_id, listen=[f"unix:{directory}/n"])
+        node = Node(node_id)
         try:
             with pytest.raises(ChrysalisError):
                 await node.dial(absent_id.pid)
         finally:
             await node.close()
 
-    with _socket_dir() as directory:
-        asyncio.run(scenario(directory))
+    asyncio.run(scenario())
 
 
 def test_cancelled_accept_leaves_node_usable() -> None:
@@ -284,9 +338,9 @@ def test_cancelled_accept_leaves_node_usable() -> None:
     Registry: `crates/chrysalis-extension/src/lib.rs`.
     """
 
-    async def scenario(directory: Path) -> None:
+    async def scenario() -> None:
         alice_id, bob_id = _identities(2)
-        alice, bob = _pair(directory, alice_id, bob_id)
+        alice, bob = _pair(alice_id, bob_id)
 
         async def send() -> None:
             stream = await _dial_when_visible(alice, bob_id.pid)
@@ -308,23 +362,25 @@ def test_cancelled_accept_leaves_node_usable() -> None:
         assert source == alice_id.pid
         assert postcard == POSTCARD
 
-    with _socket_dir() as directory:
-        asyncio.run(scenario(directory))
+    asyncio.run(scenario())
 
 
-def test_node_constructs_outside_asyncio() -> None:
+@pytest.mark.parametrize("kind", CARRIERS)
+def test_node_constructs_outside_asyncio(kind: str) -> None:
     """Create a node in ordinary Python code, before asyncio starts.
 
-    The Rust constructor starts background Tokio tasks. Check that it enters
-    the extension's Tokio runtime itself instead of requiring a Python event
-    loop. Then start an asyncio loop and close the node normally.
+    The Rust constructor binds the carrier and starts background Tokio tasks.
+    Check that it enters the extension's Tokio runtime itself instead of
+    requiring a Python event loop. The carriers bind differently, and binding a
+    `VsockCarrier` is itself a call that needs the runtime. Then start an
+    asyncio loop and close the node normally.
 
     Invariant: CPY-1.
     Registry: `crates/chrysalis-extension/src/lib.rs`.
     """
-    with _socket_dir() as directory:
+    with _carriers(kind) as carrier:
         (identity,) = _identities(1)
-        node = Node(identity, listen=[f"unix:{directory}/n"])
+        node = Node(identity, carrier=carrier("n"))
         asyncio.run(_close_all(node))
 
 
@@ -346,9 +402,9 @@ def test_read_and_write_on_one_stream_concurrently() -> None:
     total = 65 * MIB
     prefix = 64 * 1024
 
-    async def scenario(directory: Path) -> None:
+    async def scenario() -> None:
         alice_id, bob_id = _identities(2)
-        alice, bob = _pair(directory, alice_id, bob_id)
+        alice, bob = _pair(alice_id, bob_id)
         # In-process, so the barrier needs no flow-control credit on the
         # connection that Alice's write has filled.
         release = asyncio.Event()
@@ -383,34 +439,59 @@ def test_read_and_write_on_one_stream_concurrently() -> None:
             await _close_all(alice, bob)
         assert received == total
 
-    with _socket_dir() as directory:
-        asyncio.run(scenario(directory))
+    asyncio.run(scenario())
 
 
 def test_bad_arguments() -> None:
-    """Pass invalid PID, address, and read arguments through the Python API.
+    """Pass invalid PID, carrier, address, and read arguments through the Python API.
 
-    Reject a malformed or abbreviated PID, a malformed carrier address,
-    dial-only or peer-name listen addresses, a peer-name parent address, and
-    zero or negative read sizes with `ValueError`.
+    Reject with `ValueError` an abbreviated PID; a malformed, dial-only, or
+    peer-name `VsockCarrier` address; a peer-name parent address; a malformed
+    or unspecified `UdpCarrier` bind address; a UDP parent address with an
+    unspecified IP or port 0, which no node can be reached at; a parent address
+    that belongs to the other carrier; and zero or negative read sizes. Reject
+    a carrier of the wrong type with `TypeError`.
 
     Invariants: CPY-2, CPY-3, CPY-4, CPY-7.
     Registry: `crates/chrysalis-extension/src/lib.rs`.
     """
 
-    async def scenario(directory: Path) -> None:
+    async def scenario() -> None:
         alice_id, bob_id = _identities(2)
         with pytest.raises(ValueError, match="32 hex digits"):
             Pid("0123abcd")
         with pytest.raises(ValueError):
-            Node(alice_id, listen=["bogus"])
+            VsockCarrier(listen=["bogus"])
         with pytest.raises(ValueError):
-            Node(alice_id, listen=[f"hybrid:5000:{directory}/v.sock"])
+            VsockCarrier(listen=["hybrid:5000:/tmp/v.sock"])
         with pytest.raises(ValueError, match="peer's name"):
-            Node(alice_id, listen=["node:a"])
+            VsockCarrier(listen=["node:a"])
         with pytest.raises(ValueError, match="peer's name"):
-            Node(alice_id, parent=(bob_id.pid, "node:b"))
-        alice, bob = _pair(directory, alice_id, bob_id)
+            Node(alice_id, carrier=VsockCarrier(), parent=(bob_id.pid, "node:b"))
+        with pytest.raises(ValueError):
+            UdpCarrier(bind="bogus")
+        for unspecified in ("0.0.0.0:0", "[::]:0"):
+            with pytest.raises(ValueError, match="specific IP"):
+                UdpCarrier(bind=unspecified)
+        for unreachable in (
+            "udp://0.0.0.0:5000",
+            "udp://[::]:5000",
+            "udp://127.0.0.1:0",
+        ):
+            with pytest.raises(ValueError, match="specific IP and a non-zero port"):
+                Node(alice_id, parent=(bob_id.pid, unreachable))
+        with pytest.raises(ValueError, match="udp://<ip>:<port>"):
+            Node(alice_id, parent=(bob_id.pid, "unix:/tmp/x"))
+        with pytest.raises(ValueError, match="unix:, native:, or hybrid:"):
+            Node(
+                alice_id,
+                carrier=VsockCarrier(),
+                parent=(bob_id.pid, "udp://127.0.0.1:1"),
+            )
+        not_a_carrier: Any = "udp"
+        with pytest.raises(TypeError):
+            Node(alice_id, carrier=not_a_carrier)
+        alice, bob = _pair(alice_id, bob_id)
         try:
             stream = await _dial_when_visible(alice, bob_id.pid)
             with pytest.raises(ValueError):
@@ -420,8 +501,7 @@ def test_bad_arguments() -> None:
         finally:
             await _close_all(alice, bob)
 
-    with _socket_dir() as directory:
-        asyncio.run(scenario(directory))
+    asyncio.run(scenario())
 
 
 def test_close() -> None:
@@ -453,11 +533,47 @@ def test_close() -> None:
         with pytest.raises(ChrysalisError, match="the node is closed"):
             await node.dial(other)
 
+    node_id, other_id = _identities(2)
+    node = Node(node_id)
+    # Without a running loop `close` cannot create its awaitable, and the
+    # node stays open.
+    pytest.raises(RuntimeError, node.close)
+    asyncio.run(accept_is_pending(node))
+    asyncio.run(scenario(node, other_id.pid))
+
+
+def test_addresses() -> None:
+    """Report each node's addresses.
+
+    Default UDP nodes, and a node given `UdpCarrier(bind="127.0.0.1:0")`, each
+    report one loopback `udp://` address with the distinct, non-zero port the
+    system chose. Passing `bind` by keyword keeps the stub's parameter name
+    from drifting from the runtime's. A listening `VsockCarrier` node reports
+    its `listen` addresses, and one that only connects reports none. The other
+    tests join and dial through these addresses, which shows that the reported
+    UDP address is reachable.
+
+    Invariant: CPY-9.
+    Registry: `crates/chrysalis-extension/src/lib.rs`.
+    """
+
+    async def scenario(directory: Path) -> None:
+        first_id, second_id, bound_id, listener_id, dialer_id = _identities(5)
+        listen = f"unix:{directory}/l"
+        udp = [
+            Node(first_id),
+            Node(second_id),
+            Node(bound_id, carrier=UdpCarrier(bind="127.0.0.1:0")),
+        ]
+        listener = Node(listener_id, carrier=VsockCarrier(listen=[listen]))
+        dialer = Node(dialer_id, carrier=VsockCarrier())
+        try:
+            ports = [_udp_port(node) for node in udp]
+            assert len(set(ports)) == len(udp), f"ports should differ: {ports}"
+            assert listener.addresses == [listen]
+            assert dialer.addresses == []
+        finally:
+            await _close_all(*udp, listener, dialer)
+
     with _socket_dir() as directory:
-        node_id, other_id = _identities(2)
-        node = Node(node_id, listen=[f"unix:{directory}/n"])
-        # Without a running loop `close` cannot create its awaitable, and the
-        # node stays open.
-        pytest.raises(RuntimeError, node.close)
-        asyncio.run(accept_is_pending(node))
-        asyncio.run(scenario(node, other_id.pid))
+        asyncio.run(scenario(directory))
