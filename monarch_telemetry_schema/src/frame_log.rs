@@ -159,7 +159,8 @@ pub struct InstanceSummary {
 /// Read every segment in `dir` in order, passing each table batch to
 /// `on_batch`, including the zero-row batches that register tables.
 ///
-/// Reading stops at the first torn frame.
+/// Reading stops at the first torn frame. A complete frame whose payload does
+/// not decode, such as one with pages lost on a shared mount, counts as torn.
 /// Table schemas come from the stored Arrow IPC streams. Reading is supported
 /// with the Monarch build that wrote the log.
 pub fn read_instance(
@@ -169,41 +170,69 @@ pub fn read_instance(
     let mut summary = InstanceSummary::default();
     for path in segment_paths(dir)? {
         summary.segments += 1;
-        let file_len = fs::metadata(&path)?.len();
         let file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
         let mut reader = FrameReader::new(BufReader::new(file));
         loop {
-            match reader.read_frame()? {
+            let start = reader.offset();
+            let frame = match reader.read_frame()? {
                 ReadOutcome::End => break,
                 ReadOutcome::Torn { offset } => {
-                    summary.torn_bytes = file_len - offset;
+                    summary.torn_bytes = bytes_after(&path, offset)?;
                     return Ok(summary);
                 }
-                ReadOutcome::Frame(frame) => {
-                    apply_frame(&mut summary, frame, &mut on_batch)
-                        .with_context(|| format!("read {}", path.display()))?;
-                }
-            }
+                ReadOutcome::Frame(frame) => frame,
+            };
+            let Ok(frame) = decode_frame(frame) else {
+                summary.torn_bytes = bytes_after(&path, start)?;
+                return Ok(summary);
+            };
+            apply_frame(&mut summary, frame, &mut on_batch)
+                .with_context(|| format!("read {}", path.display()))?;
         }
     }
     Ok(summary)
 }
 
+/// Bytes in `path` from `offset` on, measured now: a collector that is still
+/// running may have appended since reading began.
+fn bytes_after(path: &Path, offset: u64) -> anyhow::Result<u64> {
+    Ok(fs::metadata(path)?.len().saturating_sub(offset))
+}
+
+enum DecodedFrame {
+    End,
+    Batch(String, RecordBatch),
+}
+
+fn decode_frame(frame: RawFrame) -> anyhow::Result<DecodedFrame> {
+    let RawFrame { name, payload } = frame;
+    Ok(match name.as_str() {
+        END_FRAME => {
+            anyhow::ensure!(payload.is_empty(), "end frame has a payload");
+            DecodedFrame::End
+        }
+        _ => {
+            let batch = deserialize_one_batch(&payload)?;
+            DecodedFrame::Batch(name, batch)
+        }
+    })
+}
+
 fn apply_frame(
     summary: &mut InstanceSummary,
-    frame: RawFrame,
+    frame: DecodedFrame,
     on_batch: &mut impl FnMut(&str, RecordBatch) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     summary.clean = false;
-    if frame.name == END_FRAME {
-        anyhow::ensure!(frame.payload.is_empty(), "end frame has a payload");
-        summary.clean = true;
-    } else {
-        let batch = deserialize_one_batch(&frame.payload)
-            .with_context(|| format!("decode frame for table {}", frame.name))?;
-        summary.rows += batch.num_rows() as u64;
-        update_timestamps(summary, &batch);
-        on_batch(&frame.name, batch)?;
+    match frame {
+        DecodedFrame::End => {
+            summary.clean = true;
+        }
+        DecodedFrame::Batch(name, batch) => {
+            summary.rows += batch.num_rows() as u64;
+            update_timestamps(summary, &batch);
+            on_batch(&name, batch)?;
+        }
     }
     Ok(())
 }
@@ -417,6 +446,76 @@ mod tests {
             assert_eq!(summary.torn_bytes, (n - last_complete) as u64, "at {n}");
             assert_eq!(summary.clean, n == bytes.len(), "at {n}");
         }
+    }
+
+    #[test]
+    fn undecodable_frame_reads_as_torn_at_its_start() {
+        let source = tempfile::tempdir().unwrap();
+        let mut writer = SegmentWriter::create(source.path(), u64::MAX).unwrap();
+        writer.write_batch("t", &timestamps(&[1, 2])).unwrap();
+        writer.write_batch("t", &timestamps(&[3])).unwrap();
+        writer.finish().unwrap();
+        let bytes = std::fs::read(segment_path(source.path(), 0)).unwrap();
+        let ends = frame_ends(&bytes);
+        assert_eq!(ends.len(), 3);
+
+        // Zero one frame's payload but keep its lengths, as a page lost on a
+        // shared mount would.
+        for (damaged, surviving) in [(1, vec![1, 2]), (2, vec![1, 2, 3])] {
+            let start = ends[damaged - 1];
+            let name_len = u16::from_be_bytes([bytes[start], bytes[start + 1]]) as usize;
+            let mut damaged_bytes = bytes.clone();
+            if damaged == 2 {
+                damaged_bytes[start + 2 + name_len..start + 2 + name_len + 4]
+                    .copy_from_slice(&1u32.to_be_bytes());
+                damaged_bytes.push(0);
+            } else {
+                damaged_bytes[start + 2 + name_len + 4..ends[damaged]].fill(0);
+            }
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(segment_path(dir.path(), 0), &damaged_bytes).unwrap();
+
+            let (batches, summary) = read_all(dir.path());
+
+            let all: Vec<i64> = batches.iter().flat_map(|(_, b)| values(b)).collect();
+            assert_eq!(all, surviving, "frames before frame {damaged} survive");
+            assert_eq!(summary.torn_bytes, (damaged_bytes.len() - start) as u64);
+            assert!(!summary.clean, "frame {damaged} damaged");
+        }
+    }
+
+    #[test]
+    fn torn_bytes_count_bytes_appended_while_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = SegmentWriter::create(dir.path(), u64::MAX).unwrap();
+        writer.write_batch("t", &timestamps(&[1])).unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+        let path = segment_path(dir.path(), 0);
+        let mut appended = Vec::new();
+        encode_frame(
+            &mut appended,
+            "t",
+            &serialize_batch(&timestamps(&[2])).unwrap(),
+        )
+        .unwrap();
+        let mut appended_once = false;
+
+        // A collector that is still running appends a whole frame and the
+        // start of the next one while the reader is partway through the file.
+        let summary = read_instance(dir.path(), |_, _| {
+            if !appended_once {
+                appended_once = true;
+                let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+                file.write_all(&appended).unwrap();
+                file.write_all(&appended[..3]).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(summary.rows, 2);
+        assert_eq!(summary.torn_bytes, 3);
     }
 
     #[test]

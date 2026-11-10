@@ -83,6 +83,11 @@ impl<R: Read> FrameReader<R> {
         Self { reader, offset: 0 }
     }
 
+    /// Bytes consumed so far, which is where the next frame starts.
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
     /// Read the next frame, reporting a torn tail instead of failing.
     pub fn read_frame(&mut self) -> anyhow::Result<ReadOutcome> {
         let start = self.offset;
