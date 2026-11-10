@@ -198,6 +198,21 @@ class TestCli(unittest.TestCase):
         self.assertIn("h1-12 clean", errors.getvalue())
 
     @patch("monarch.tools.cli.open_persisted_engine")
+    def test_query_dir_reports_sql_errors(
+        self, open_persisted_engine: MagicMock
+    ) -> None:
+        engine = MagicMock()
+        # The Rust query engine raises a plain `Exception` for bad SQL.
+        engine.query.side_effect = Exception("table 'nope' not found")
+        open_persisted_engine.return_value = (engine, [])
+        args = get_parser().parse_args(["query", "--dir", "/p", "SELECT * FROM nope"])
+
+        with self.assertRaises(SystemExit) as raised:
+            args.func(args)
+
+        self.assertEqual(str(raised.exception), "monarch query: table 'nope' not found")
+
+    @patch("monarch.tools.cli.open_persisted_engine")
     def test_query_dir_json_renders_arrow_values(
         self, open_persisted_engine: MagicMock
     ) -> None:
