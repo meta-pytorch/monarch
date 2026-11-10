@@ -48,7 +48,6 @@ for mod_name, file_name in [
     sys.modules[mod_name] = mod
     spec.loader.exec_module(mod)
 
-from wbridge.utils.data import LoadSpec
 from wbridge.utils.specgen import infer_load_spec, verify_load_spec
 
 device = torch.device("cuda", 0)
