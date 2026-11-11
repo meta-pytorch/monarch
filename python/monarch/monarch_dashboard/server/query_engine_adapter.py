@@ -6,9 +6,8 @@
 
 """Production adapter: wraps the Monarch DataFusion QueryEngine.
 
-Unlike the SQLite-based db.py (local dev/testing), this connects directly
-to the live telemetry engine attached to a job state. The QueryEngine
-uses DataFusion as its SQL planner/executor and returns pyarrow Tables.
+Connects directly to the telemetry engine attached to a job state. The
+QueryEngine uses DataFusion as its SQL planner/executor and returns Arrow tables.
 """
 
 import contextlib
@@ -66,7 +65,7 @@ class QueryEngineAdapter(DBAdapter):
     """Production adapter wrapping Monarch's DataFusion QueryEngine.
 
     Provides the same query interface as db.py's _query() but backed by
-    the distributed telemetry system instead of a local SQLite file.
+    the distributed telemetry system.
 
     The job sidecar constructs this adapter with the internal query engine
     that backs the dashboard HTTP API.

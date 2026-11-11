@@ -6,17 +6,10 @@
 
 """SQL query layer for the Monarch Dashboard.
 
-Defines a DBAdapter interface with two implementations:
-  - SQLiteAdapter: local dev/testing with a SQLite file (fake or real data).
-  - QueryEngineAdapter (separate module): production, wraps Monarch's
-    DataFusion QueryEngine for live telemetry.
-
-Module-level functions (init, _query, etc.) provide backward compatibility
-by delegating to a module-level SQLiteAdapter instance.
+Defines the dashboard data-access interface and SQL queries.
 """
 
 import json
-import sqlite3
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
@@ -66,54 +59,7 @@ class DBAdapter(ABC):
         raise NotImplementedError("snapshot ingest unavailable")
 
 
-# ---------------------------------------------------------------------------
-# SQLite adapter — local dev/testing
-# ---------------------------------------------------------------------------
-
-
-class SQLiteAdapter(DBAdapter):
-    """LOCAL DEV/TESTING: reads from a SQLite database file.
-
-    For production use with the live Monarch telemetry stack,
-    use QueryEngineAdapter instead.
-    """
-
-    def __init__(self, db_path: str) -> None:
-        self._db_path = db_path
-
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
-        # WAL mode allows concurrent readers without blocking on writes.
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def query(self, sql: str) -> list[dict[str, Any]]:
-        conn = self._connect()
-        try:
-            rows = conn.execute(sql).fetchall()
-            return [dict(row) for row in rows]
-        finally:
-            conn.close()
-
-    def table_names(self) -> list[str]:
-        return [
-            r["name"]
-            for r in self.query("SELECT name FROM sqlite_master WHERE type='table'")
-        ]
-
-
-# ---------------------------------------------------------------------------
-# Module-level backward compatibility
-# ---------------------------------------------------------------------------
-
 _adapter: DBAdapter | None = None
-
-
-def init(db_path: str) -> None:
-    """Initialise with a SQLite database path (backward-compatible entry point)."""
-    global _adapter
-    _adapter = SQLiteAdapter(db_path)
 
 
 def set_adapter(adapter: DBAdapter) -> None:
@@ -124,7 +70,7 @@ def set_adapter(adapter: DBAdapter) -> None:
 
 def _get_adapter() -> DBAdapter:
     if _adapter is None:
-        raise RuntimeError("db.init() or db.set_adapter() must be called first")
+        raise RuntimeError("db.set_adapter() must be called first")
     return _adapter
 
 
@@ -268,7 +214,7 @@ def list_meshes(
     """Return meshes, optionally filtered by class and/or parent_mesh_id.
 
     ``exclude_classes`` removes meshes whose class is in the given list
-    (applied in Python to work with both SQLite and DataFusion).
+    (applied in Python after the DataFusion query).
     Results are deduplicated by mesh id.
     """
     clauses: list[str] = []

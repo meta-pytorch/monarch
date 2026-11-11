@@ -14,19 +14,22 @@ At a configurable time (default ~4.5 minutes) a single actor triggers a
 CUDA OOM failure, demonstrating actor-level failure display.
 
 Usage:
-    python fake_data/simulate.py [--db PATH] [--interval SECONDS] [--failure-at SECONDS]
+    python -m monarch.monarch_dashboard.fake_data.simulate [--interval SECONDS] [--failure-at SECONDS]
 """
 
 import argparse
 import json
-import os
 import random
-import signal
-import sqlite3
+import threading
 import time
-from importlib.resources import files
 
-from generate import _ACTOR_MESH_CLASSES, _insert_rows, ENDPOINTS, SCHEMA_SQL
+import pyarrow as pa
+from monarch.monarch_dashboard.fake_data.generate import (
+    _ACTOR_MESH_CLASSES,
+    ENDPOINTS,
+    SCHEMAS,
+)
+from monarch.monarch_dashboard.fake_data.store import ArrowAdapter
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -179,9 +182,10 @@ def _build_hierarchy() -> dict:
 
 
 def _run_simulation(
-    db_path: str,
+    data: ArrowAdapter,
     interval: float,
     failure_at: float,
+    stop: threading.Event,
 ) -> None:
     """Run the continuous simulation until interrupted.
 
@@ -199,18 +203,8 @@ def _run_simulation(
 
     actor_ids = [a["id"] for a in actors]
 
-    # -- Open DB --------------------------------------------------------
-    if os.path.exists(db_path):
-        os.remove(db_path)
-
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(SCHEMA_SQL)
-
-    # Insert hierarchy rows.
-    _insert_rows(conn, "meshes", hierarchy["meshes"])
-    _insert_rows(conn, "actors", hierarchy["actors"])
-    conn.commit()
+    data.append_rows("meshes", hierarchy["meshes"])
+    data.append_rows("actors", hierarchy["actors"])
 
     # -- ID sequences for event tables ----------------------------------
     event_seq = _IdSeq()
@@ -263,24 +257,13 @@ def _run_simulation(
         )
         actor_state[aid] = "idle"
 
-    _insert_rows(conn, "actor_status_events", init_events)
-    conn.commit()
+    data.append_rows("actor_status_events", init_events)
 
     n_actors_total = len(actor_ids)
     print(
         f"Simulator started: {n_actors_total} actors, "
         f"failure at {failure_at:.0f}s, tick every {interval:.1f}s"
     )
-    print(f"Database: {os.path.abspath(db_path)}")
-
-    # -- Graceful shutdown via SIGINT ------------------------------------
-    shutting_down = False
-
-    def _handle_sigint(sig: int, frame: object) -> None:
-        nonlocal shutting_down
-        shutting_down = True
-
-    signal.signal(signal.SIGINT, _handle_sigint)
 
     # -- Main loop ------------------------------------------------------
     start_time = time.monotonic()
@@ -289,7 +272,7 @@ def _run_simulation(
     dead_actors: set[int] = set()
 
     try:
-        while not shutting_down:
+        while not stop.is_set():
             tick += 1
             elapsed = time.monotonic() - start_time
             now = _now_us()
@@ -396,11 +379,10 @@ def _run_simulation(
                     )
 
             # -- Write to DB --------------------------------------------
-            _insert_rows(conn, "actor_status_events", new_events)
-            _insert_rows(conn, "messages", new_messages)
-            _insert_rows(conn, "message_status_events", new_msg_events)
-            _insert_rows(conn, "sent_messages", new_sent)
-            conn.commit()
+            data.append_rows("actor_status_events", new_events)
+            data.append_rows("messages", new_messages)
+            data.append_rows("message_status_events", new_msg_events)
+            data.append_rows("sent_messages", new_sent)
 
             status_summary = (
                 f"live={len(live_actors)} dead={len(dead_actors)} "
@@ -408,10 +390,9 @@ def _run_simulation(
             )
             print(f"  [tick {tick}] {elapsed:6.1f}s  {status_summary}")
 
-            time.sleep(interval)
+            stop.wait(interval)
 
     finally:
-        conn.close()
         print(f"\nSimulator stopped after {tick} ticks.")
 
 
@@ -423,11 +404,6 @@ def _run_simulation(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run a continuous Monarch fake data simulator."
-    )
-    parser.add_argument(
-        "--db",
-        default=str(files("monarch.monarch_dashboard.fake_data") / "fake_data.db"),
-        help="SQLite database path (default: fake_data/fake_data.db)",
     )
     parser.add_argument(
         "--interval",
@@ -442,7 +418,16 @@ def main() -> None:
         help="Seconds until failure event (default: 270 = 4.5 minutes)",
     )
     args = parser.parse_args()
-    _run_simulation(args.db, args.interval, args.failure_at)
+    data = ArrowAdapter(
+        {
+            name: pa.Table.from_pylist([], schema=schema)
+            for name, schema in SCHEMAS.items()
+        }
+    )
+    try:
+        _run_simulation(data, args.interval, args.failure_at, threading.Event())
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

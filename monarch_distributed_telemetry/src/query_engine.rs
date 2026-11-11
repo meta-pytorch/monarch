@@ -20,6 +20,7 @@ use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::record_batch::RecordBatchReader;
 use datafusion::catalog::Session;
+use datafusion::datasource::MemTable;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::error::Result as DFResult;
@@ -542,6 +543,37 @@ pub struct QueryEngine {
 
 #[pymethods]
 impl QueryEngine {
+    /// Create a DataFusion engine for local Arrow tables, without actor RPCs.
+    #[staticmethod]
+    fn local() -> Self {
+        Self {
+            session: SessionContext::new_with_config(
+                SessionConfig::new()
+                    .with_information_schema(true)
+                    .with_target_partitions(1),
+            ),
+        }
+    }
+
+    /// Register or replace a local table from an Arrow IPC stream.
+    fn register_local_table(&self, name: String, arrow_ipc_bytes: Vec<u8>) -> PyResult<()> {
+        let reader = StreamReader::try_new(std::io::Cursor::new(arrow_ipc_bytes), None)
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+        let schema = reader.schema();
+        let batches = reader
+            .collect::<ArrowResult<Vec<_>>>()
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+        let table = MemTable::try_new(schema, vec![batches])
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+        self.session
+            .deregister_table(&name)
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+        self.session
+            .register_table(name, Arc::new(table))
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+        Ok(())
+    }
+
     /// Create a new QueryEngine.
     ///
     /// Args:

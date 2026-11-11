@@ -6,10 +6,9 @@
 
 """Execution history, pagination and fleet isolation regression coverage."""
 
-import sqlite3
 import time
-from pathlib import Path
 
+import pyarrow as pa
 import pytest
 from monarch._src.job.execution_history import execution_schemas
 from monarch.monarch_dashboard.fake_data.generate import generate
@@ -18,46 +17,29 @@ from monarch.monarch_dashboard.server.app import create_app
 
 
 @pytest.fixture
-def history(tmp_path):
-    path = tmp_path / "dashboard.db"
-    generate(str(path))
-    with sqlite3.connect(path) as conn:
-        for table, schema in execution_schemas().items():
-            columns = ",".join(
-                f"{field.name} {'TEXT' if str(field.type) == 'string' else 'INTEGER'}"
-                for field in schema
-            )
-            conn.execute(f"CREATE TABLE {table} ({columns})")
-    app = create_app(db.SQLiteAdapter(str(path)))
+def history():
+    data = generate()
+    for table, schema in execution_schemas().items():
+        data.set_table(table, pa.Table.from_pylist([], schema=schema))
+    app = create_app(data)
     app.testing = True
-    return path, app.test_client()
+    return data, app.test_client()
 
 
-def insert(path: Path, table: str, row: dict):
-    if table == "execution_rank_results":
-        row = {
-            "flat_rank": None,
-            "coordinates": None,
-            "host_rank": None,
-            **row,
-        }
-    with sqlite3.connect(path) as conn:
-        conn.execute(
-            f"INSERT INTO {table} ({','.join(row)}) VALUES ({','.join('?' for _ in row)})",
-            tuple(row.values()),
-        )
+def insert(data, table: str, row: dict):
+    data.append_rows(table, [row])
 
 
-def execution(path, number, status="succeeded", timestamp=None, command="ls", code=0):
+def execution(data, number, status="succeeded", timestamp=None, command="ls", code=0):
     identifier = f"{number:032x}"
     timestamp = timestamp if timestamp is not None else time.time_ns() // 1000
     insert(
-        path,
+        data,
         "executions",
         {"id": identifier, "timestamp_us": timestamp, "command": command},
     )
     insert(
-        path,
+        data,
         "execution_status_events",
         {
             "execution_id": identifier,
@@ -69,24 +51,39 @@ def execution(path, number, status="succeeded", timestamp=None, command="ls", co
     return identifier
 
 
-def own_actor(path, actor_id, execution_id):
+def own_actor(data, actor_id, execution_id):
     """Give exactly one fixture actor an explicit execution proc parent."""
-    with sqlite3.connect(path) as conn:
-        conn.execute(
-            "INSERT INTO meshes(id,timestamp_us,class,given_name,full_name,shape_json,parent_mesh_id) VALUES(100000,0,'Proc',?,?,'{}',1)",
-            (f"exec_{execution_id}", f"exec_{execution_id}"),
-        )
-        conn.execute(
-            "INSERT INTO meshes(id,timestamp_us,class,given_name,full_name,shape_json,parent_mesh_id) VALUES(100001,0,'BashActor','BashActor','BashActor','{}',100000)"
-        )
-        conn.execute("UPDATE actors SET mesh_id=100001 WHERE id=?", (actor_id,))
+    data.append_rows(
+        "meshes",
+        [
+            {
+                "id": 100000,
+                "timestamp_us": 0,
+                "class": "Proc",
+                "given_name": f"exec_{execution_id}",
+                "full_name": f"exec_{execution_id}",
+                "shape_json": "{}",
+                "parent_mesh_id": 1,
+            },
+            {
+                "id": 100001,
+                "timestamp_us": 0,
+                "class": "BashActor",
+                "given_name": "BashActor",
+                "full_name": "BashActor",
+                "shape_json": "{}",
+                "parent_mesh_id": 100000,
+            },
+        ],
+    )
+    data.update_rows("actors", lambda row: row["id"] == actor_id, {"mesh_id": 100001})
 
 
 def test_failure_survives_successful_ls_and_independent_running_job(history):
-    path, client = history
-    failed = execution(path, 1, "failed", command="python train.py", code=7)
-    success = execution(path, 2, command="ls")
-    active = execution(path, 3, "running", command="python distributed.py")
+    data, client = history
+    failed = execution(data, 1, "failed", command="python train.py", code=7)
+    success = execution(data, 2, command="ls")
+    active = execution(data, 3, "running", command="python distributed.py")
     result = client.get("/api/executions").get_json()
     assert result["counts"] == {"failed": 1, "running": 1, "succeeded": 1}
     assert result["retained_failures"] == 1
@@ -97,9 +94,9 @@ def test_failure_survives_successful_ls_and_independent_running_job(history):
 
 
 def test_pagination_does_not_drop_equal_timestamp_commands(history):
-    path, client = history
+    data, client = history
     timestamp = time.time_ns() // 1000
-    identifiers = {execution(path, i, timestamp=timestamp) for i in range(27)}
+    identifiers = {execution(data, i, timestamp=timestamp) for i in range(27)}
     observed = []
     url = "/api/executions?limit=5"
     while url:
@@ -116,10 +113,9 @@ def test_pagination_does_not_drop_equal_timestamp_commands(history):
 
 @pytest.mark.parametrize("missing_table", list(execution_schemas()))
 def test_missing_command_table_disables_history_and_details(history, missing_table):
-    path, client = history
-    identifier = execution(path, 1)
-    with sqlite3.connect(path) as conn:
-        conn.execute(f"DROP TABLE {missing_table}")
+    data, client = history
+    identifier = execution(data, 1)
+    data.remove_table(missing_table)
     response = client.get("/api/executions")
     assert response.status_code == 200
     assert response.get_json()["available"] is False
@@ -127,9 +123,9 @@ def test_missing_command_table_disables_history_and_details(history, missing_tab
 
 
 def test_search_treats_sql_and_wildcards_as_command_text(history):
-    path, client = history
-    target = execution(path, 1, command="printf '100%_done'; select * from actors")
-    execution(path, 2, command="printf 100Xdone")
+    data, client = history
+    target = execution(data, 1, command="printf '100%_done'; select * from actors")
+    execution(data, 2, command="printf 100Xdone")
     assert [
         x["id"]
         for x in client.get(
@@ -158,16 +154,15 @@ def test_invalid_pagination_is_rejected(history, query):
 
 
 def test_lost_heartbeat_is_unknown_and_terminal_outcome_wins_timestamp_tie(history):
-    path, client = history
-    stale = execution(path, 1, "running", timestamp=time.time_ns() // 1000 - 50_000_000)
-    finished = execution(path, 2, "running")
-    with sqlite3.connect(path) as conn:
-        timestamp = conn.execute(
-            "SELECT timestamp_us FROM execution_status_events WHERE execution_id=?",
-            (finished,),
-        ).fetchone()[0]
+    data, client = history
+    stale = execution(data, 1, "running", timestamp=time.time_ns() // 1000 - 50_000_000)
+    finished = execution(data, 2, "running")
+    timestamp = data.query_one(
+        "SELECT timestamp_us FROM execution_status_events WHERE execution_id=?",
+        (finished,),
+    )["timestamp_us"]
     insert(
-        path,
+        data,
         "execution_status_events",
         {
             "execution_id": finished,
@@ -183,16 +178,16 @@ def test_lost_heartbeat_is_unknown_and_terminal_outcome_wins_timestamp_tie(histo
 
 
 def test_large_active_list_and_rank_details_are_bounded(history):
-    path, client = history
+    data, client = history
     for i in range(120):
-        execution(path, i, "running")
+        execution(data, i, "running")
     page = client.get("/api/executions").get_json()
     assert page["counts"]["running"] == 120
     assert len(page["active"]) == 100
     identifier = page["active"][0]["id"]
     for i in range(205):
         insert(
-            path,
+            data,
             "execution_rank_results",
             {
                 "id": f"{i:032x}",
@@ -212,24 +207,21 @@ def test_large_active_list_and_rank_details_are_bounded(history):
     assert last["ranks"][-1]["returncode"] == 7
 
 
-def test_unavailable_history_is_explicit(tmp_path):
-    path = tmp_path / "old.db"
-    generate(str(path))
-    client = create_app(db.SQLiteAdapter(str(path))).test_client()
+def test_unavailable_history_is_explicit():
+    client = create_app(generate()).test_client()
     assert client.get("/api/executions").get_json()["available"] is False
     assert client.get("/api/executions/missing").status_code == 404
 
 
 @pytest.mark.parametrize("expired", [False, True])
 def test_missing_or_expired_metadata_preserves_failed_actor_in_fleet(history, expired):
-    path, _ = history
+    data, _ = history
     actors = [a for a in db.list_actors() if a["is_system"] is not True]
     identifier = f"{1:032x}"
-    own_actor(path, actors[0]["id"], identifier)
-    with sqlite3.connect(path) as conn:
-        conn.execute("DELETE FROM actor_status_events")
+    own_actor(data, actors[0]["id"], identifier)
+    data.delete_rows("actor_status_events", lambda row: True)
     insert(
-        path,
+        data,
         "actor_status_events",
         {
             "id": 1,
@@ -240,20 +232,19 @@ def test_missing_or_expired_metadata_preserves_failed_actor_in_fleet(history, ex
         },
     )
     insert(
-        path,
+        data,
         "actor_status_events",
         {"id": 2, "timestamp_us": 2, "actor_id": actors[1]["id"], "new_status": "Idle"},
     )
     if expired:
-        execution(path, 1, "failed", code=7)
+        execution(data, 1, "failed", code=7)
         assert (
             next(a for a in db.list_actors() if a["id"] == actors[0]["id"])[
                 "execution_id"
             ]
             == identifier
         )
-        with sqlite3.connect(path) as conn:
-            conn.execute("DELETE FROM executions")
+        data.delete_rows("executions", lambda row: True)
     summary = db.get_summary()
     assert summary["health_status"] == "unhealthy"
     assert len(summary["errors"]["failed_actors"]) == 1
@@ -271,24 +262,21 @@ def test_missing_or_expired_metadata_preserves_failed_actor_in_fleet(history, ex
 def test_execution_actor_history_is_separate_from_fleet(
     history, identifier, suffix, status
 ):
-    path, _ = history
+    data, _ = history
     actors = [a for a in db.list_actors() if a["is_system"] is not True]
     if identifier != "g" * 32:
         insert(
-            path, "executions", {"id": identifier, "timestamp_us": 1, "command": "test"}
+            data, "executions", {"id": identifier, "timestamp_us": 1, "command": "test"}
         )
-        own_actor(path, actors[0]["id"], identifier)
-    with sqlite3.connect(path) as conn:
-        conn.execute("DELETE FROM actor_status_events")
-        conn.execute(
-            "UPDATE actors SET full_name=? WHERE id=?",
-            (
-                f"bashactor<actor>.exec_{identifier}{suffix}<proc>@tcp://worker",
-                actors[0]["id"],
-            ),
-        )
+        own_actor(data, actors[0]["id"], identifier)
+    data.delete_rows("actor_status_events", lambda row: True)
+    data.update_rows(
+        "actors",
+        lambda row: row["id"] == actors[0]["id"],
+        {"full_name": f"bashactor<actor>.exec_{identifier}{suffix}<proc>@tcp://worker"},
+    )
     insert(
-        path,
+        data,
         "actor_status_events",
         {
             "id": 1,
@@ -299,7 +287,7 @@ def test_execution_actor_history_is_separate_from_fleet(
         },
     )
     insert(
-        path,
+        data,
         "actor_status_events",
         {"id": 2, "timestamp_us": 2, "actor_id": actors[1]["id"], "new_status": "Idle"},
     )
@@ -330,7 +318,7 @@ def test_execution_actor_history_is_separate_from_fleet(
         db.list_actor_status_events(actor_id=actors[0]["id"])[0]["new_status"] == status
     )
     insert(
-        path,
+        data,
         "actor_status_events",
         {
             "id": 3,
@@ -348,15 +336,15 @@ def test_execution_actor_history_is_separate_from_fleet(
     "outcome,code", [("succeeded", 0), ("failed", 7), ("interrupted", 130)]
 )
 def test_known_outcome_survives_late_running_and_unknown(history, outcome, code):
-    path, client = history
+    data, client = history
     now = time.time_ns() // 1000
-    identifier = execution(path, 1, outcome, timestamp=now - 100, code=code)
+    identifier = execution(data, 1, outcome, timestamp=now - 100, code=code)
     for status, timestamp in [
         ("running", now),
         ("unknown", now + 1),
     ]:
         insert(
-            path,
+            data,
             "execution_status_events",
             {
                 "execution_id": identifier,
@@ -380,12 +368,12 @@ def test_known_outcome_survives_late_running_and_unknown(history, outcome, code)
 def test_owned_runtime_failure_remains_visible_with_any_command_outcome(
     history, status
 ):
-    path, client = history
-    identifier = execution(path, 1, status)
+    data, client = history
+    identifier = execution(data, 1, status)
     actor = db.list_actors()[0]
-    own_actor(path, actor["id"], identifier)
+    own_actor(data, actor["id"], identifier)
     insert(
-        path,
+        data,
         "actor_status_events",
         {
             "id": 900001,

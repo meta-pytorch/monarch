@@ -10,23 +10,18 @@ Each test is isolated in a subprocess so the daemon Flask thread is
 cleaned up when the subprocess exits.
 """
 
-import os
 import socket
-import tempfile
 import threading
 
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch.monarch_dashboard.fake_data.generate import generate
+from monarch.monarch_dashboard.fake_data.store import ArrowAdapter
 from monarch.monarch_dashboard.server.app import start_telemetry_servers
-from monarch.monarch_dashboard.server.db import SQLiteAdapter
 
 
-def _make_adapter() -> SQLiteAdapter:
-    tmpdir = tempfile.mkdtemp()
-    db_path = os.path.join(tmpdir, "test.db")
-    generate(db_path)
-    return SQLiteAdapter(db_path)
+def _make_adapter() -> ArrowAdapter:
+    return generate()
 
 
 def _free_port() -> int:

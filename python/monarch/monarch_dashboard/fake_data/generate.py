@@ -4,11 +4,9 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
-
 """Deterministic fake data generator for the Monarch Dashboard.
 
-Produces a SQLite database with realistic Monarch telemetry data spanning
+Produces Arrow tables with realistic Monarch telemetry data spanning
 a 5-minute window. The topology follows the real Monarch hierarchy:
 
     meshes table (all mesh types differentiated by class):
@@ -38,17 +36,15 @@ The generated data exercises all dashboard features:
   - Death propagation from a failed actor to its host mesh siblings
 
 Usage:
-    python generate.py [--output PATH]
-
-The default output is fake_data.db in the same directory as this script.
+    python -m monarch.monarch_dashboard.fake_data.generate
 """
 
 import argparse
 import json
-import os
 import random
-import sqlite3
-from importlib.resources import files
+
+import pyarrow as pa
+from monarch.monarch_dashboard.fake_data.store import ArrowAdapter
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -110,72 +106,68 @@ _ACTOR_MESH_CLASSES = [
     "Python<Aggregator>",
 ]
 
-# ---------------------------------------------------------------------------
-# Schema DDL
-# ---------------------------------------------------------------------------
+SCHEMAS = {
+    "meshes": pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("timestamp_us", pa.int64()),
+            pa.field("class", pa.string()),
+            pa.field("given_name", pa.string()),
+            pa.field("full_name", pa.string()),
+            pa.field("shape_json", pa.string()),
+            pa.field("parent_mesh_id", pa.int64()),
+            pa.field("parent_view_json", pa.string()),
+        ]
+    ),
+    "actors": pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("timestamp_us", pa.int64()),
+            pa.field("mesh_id", pa.int64()),
+            pa.field("rank", pa.int64()),
+            pa.field("full_name", pa.string()),
+            pa.field("display_name", pa.string()),
+        ]
+    ),
+    "actor_status_events": pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("timestamp_us", pa.int64()),
+            pa.field("actor_id", pa.int64()),
+            pa.field("new_status", pa.string()),
+            pa.field("reason", pa.string()),
+        ]
+    ),
+    "messages": pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("timestamp_us", pa.int64()),
+            pa.field("from_actor_id", pa.int64()),
+            pa.field("to_actor_id", pa.int64()),
+            pa.field("endpoint", pa.string()),
+            pa.field("port_index", pa.int64()),
+        ]
+    ),
+    "message_status_events": pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("timestamp_us", pa.int64()),
+            pa.field("message_id", pa.int64()),
+            pa.field("status", pa.string()),
+        ]
+    ),
+    "sent_messages": pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("timestamp_us", pa.int64()),
+            pa.field("sender_actor_id", pa.int64()),
+            pa.field("actor_mesh_id", pa.int64()),
+            pa.field("view_json", pa.string()),
+            pa.field("shape_json", pa.string()),
+        ]
+    ),
+}
 
-SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS meshes (
-    id              INTEGER PRIMARY KEY,
-    timestamp_us    INTEGER NOT NULL,
-    class           TEXT    NOT NULL,
-    given_name      TEXT    NOT NULL,
-    full_name       TEXT    NOT NULL,
-    shape_json      TEXT    NOT NULL,
-    parent_mesh_id  INTEGER,
-    parent_view_json TEXT,
-    FOREIGN KEY (parent_mesh_id) REFERENCES meshes(id)
-);
-
-CREATE TABLE IF NOT EXISTS actors (
-    id              INTEGER PRIMARY KEY,
-    timestamp_us    INTEGER NOT NULL,
-    mesh_id         INTEGER NOT NULL,
-    rank            INTEGER NOT NULL,
-    full_name       TEXT    NOT NULL,
-    display_name    TEXT,
-    FOREIGN KEY (mesh_id) REFERENCES meshes(id)
-);
-
-CREATE TABLE IF NOT EXISTS actor_status_events (
-    id              INTEGER PRIMARY KEY,
-    timestamp_us    INTEGER NOT NULL,
-    actor_id        INTEGER NOT NULL,
-    new_status      TEXT    NOT NULL,
-    reason          TEXT,
-    FOREIGN KEY (actor_id) REFERENCES actors(id)
-);
-
-CREATE TABLE IF NOT EXISTS messages (
-    id              INTEGER PRIMARY KEY,
-    timestamp_us    INTEGER NOT NULL,
-    from_actor_id   INTEGER NOT NULL,
-    to_actor_id     INTEGER NOT NULL,
-    endpoint        TEXT,
-    port_index         INTEGER,
-    FOREIGN KEY (from_actor_id) REFERENCES actors(id),
-    FOREIGN KEY (to_actor_id)   REFERENCES actors(id)
-);
-
-CREATE TABLE IF NOT EXISTS message_status_events (
-    id              INTEGER PRIMARY KEY,
-    timestamp_us    INTEGER NOT NULL,
-    message_id      INTEGER NOT NULL,
-    status          TEXT    NOT NULL,
-    FOREIGN KEY (message_id) REFERENCES messages(id)
-);
-
-CREATE TABLE IF NOT EXISTS sent_messages (
-    id              INTEGER PRIMARY KEY,
-    timestamp_us    INTEGER NOT NULL,
-    sender_actor_id INTEGER NOT NULL,
-    actor_mesh_id   INTEGER NOT NULL,
-    view_json       TEXT    NOT NULL,
-    shape_json      TEXT    NOT NULL,
-    FOREIGN KEY (sender_actor_id) REFERENCES actors(id),
-    FOREIGN KEY (actor_mesh_id)   REFERENCES meshes(id)
-);
-"""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -699,34 +691,8 @@ def _generate_messages(
 # ---------------------------------------------------------------------------
 
 
-def _insert_rows(
-    conn: sqlite3.Connection,
-    table: str,
-    rows: list[dict],
-) -> None:
-    """Bulk-insert *rows* into *table* using the dict keys as columns."""
-    if not rows:
-        return
-    cols = list(rows[0].keys())
-    placeholders = ", ".join(["?"] * len(cols))
-    col_names = ", ".join(cols)
-    sql = f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})"
-    conn.executemany(sql, [tuple(r[c] for c in cols) for r in rows])
-
-
-def generate_fake_data(db_path: str | None = None) -> str:
-    """Generate the fake SQLite database and return the file path.
-
-    Args:
-        db_path: Destination file path.  Defaults to ``fake_data.db`` in the
-            same directory as this script.
-
-    Returns:
-        Absolute path to the generated database file.
-    """
-    if db_path is None:
-        db_path = str(files("monarch.monarch_dashboard.fake_data") / "fake_data.db")
-
+def generate_fake_data() -> ArrowAdapter:
+    """Generate deterministic Arrow fixtures for dashboard development and tests."""
     rng = random.Random(SEED)
 
     # Build the full hierarchy.
@@ -750,24 +716,20 @@ def generate_fake_data(db_path: str | None = None) -> str:
     )
     messages, msg_status_events, sent_messages = _generate_messages(actors, rng)
 
-    # Write to SQLite.
-    if os.path.exists(db_path):
-        os.remove(db_path)
-
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.executescript(SCHEMA_SQL)
-        _insert_rows(conn, "meshes", meshes)
-        _insert_rows(conn, "actors", actors)
-        _insert_rows(conn, "actor_status_events", status_events)
-        _insert_rows(conn, "messages", messages)
-        _insert_rows(conn, "message_status_events", msg_status_events)
-        _insert_rows(conn, "sent_messages", sent_messages)
-        conn.commit()
-    finally:
-        conn.close()
-
-    return os.path.abspath(db_path)
+    rows = {
+        "meshes": meshes,
+        "actors": actors,
+        "actor_status_events": status_events,
+        "messages": messages,
+        "message_status_events": msg_status_events,
+        "sent_messages": sent_messages,
+    }
+    return ArrowAdapter(
+        {
+            name: pa.Table.from_pylist(list(data), schema=SCHEMAS[name])
+            for name, data in rows.items()
+        }
+    )
 
 
 # Backward compatibility alias.
@@ -780,17 +742,13 @@ generate = generate_fake_data
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
+    """Generate fixtures and report their table sizes."""
+    argparse.ArgumentParser(
         description="Generate fake Monarch telemetry data."
-    )
-    parser.add_argument(
-        "--output",
-        default=None,
-        help="Output SQLite file path (default: fake_data.db beside this script)",
-    )
-    args = parser.parse_args()
-    path = generate_fake_data(args.output)
-    print(f"Generated fake data: {path}")
+    ).parse_args()
+    data = generate_fake_data()
+    for name, table in data.tables.items():
+        print(f"{name}: {table.num_rows} rows")
 
 
 if __name__ == "__main__":

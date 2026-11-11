@@ -6,40 +6,40 @@
 
 """Regression coverage for health after successful iterative executions."""
 
-import sqlite3
-import tempfile
 import unittest
-from pathlib import Path
 
+import pyarrow as pa
 from monarch.monarch_dashboard.fake_data.generate import generate
 from monarch.monarch_dashboard.server import db
 
 
 class DashboardHealthTest(unittest.TestCase):
     def setUp(self):
-        self._directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self._directory.cleanup)
-        self._path = Path(self._directory.name) / "health.db"
-        generate(str(self._path))
-        db.init(str(self._path))
+        self._data = generate()
+        db.set_adapter(self._data)
         self._event_id = 0
-        with sqlite3.connect(self._path) as connection:
-            # These lifecycle tests treat every fixture actor as user workload.
-            # Agent membership is exercised separately below.
-            connection.execute(
-                "UPDATE meshes SET class='TestWorkload' WHERE class IN ('Host', 'Proc')"
-            )
-            connection.execute("DELETE FROM actor_status_events")
+        self._data.update_rows(
+            "meshes",
+            lambda row: row["class"] in ("Host", "Proc"),
+            {"class": "TestWorkload"},
+        )
+        self._data.delete_rows("actor_status_events", lambda row: True)
         self._actors = db.list_actors()
 
     def _status(self, actor_id: int, status: str, reason: str | None = None):
         self._event_id += 1
-        with sqlite3.connect(self._path) as connection:
-            connection.execute(
-                "INSERT INTO actor_status_events "
-                "(id, timestamp_us, actor_id, new_status, reason) VALUES (?, ?, ?, ?, ?)",
-                (self._event_id, self._event_id * 1_000_000, actor_id, status, reason),
-            )
+        self._data.append_rows(
+            "actor_status_events",
+            [
+                {
+                    "id": self._event_id,
+                    "timestamp_us": self._event_id * 1_000_000,
+                    "actor_id": actor_id,
+                    "new_status": status,
+                    "reason": reason,
+                }
+            ],
+        )
 
     def test_completed_executions_and_normal_transitions_are_healthy(self):
         for actor in self._actors:
@@ -125,21 +125,43 @@ class DashboardHealthTest(unittest.TestCase):
         self.assertEqual(summary["errors"]["failed_actors"], [])
 
     def _snapshot_tables(self):
-        with sqlite3.connect(self._path) as connection:
-            connection.executescript(
-                "CREATE TABLE snapshots (snapshot_id TEXT, snapshot_ts INTEGER);"
-                "CREATE TABLE actor_nodes (snapshot_id TEXT, node_id TEXT, is_system BOOLEAN);"
-            )
+        self._data.set_table(
+            "snapshots",
+            pa.Table.from_pylist(
+                [],
+                schema=pa.schema(
+                    [("snapshot_id", pa.string()), ("snapshot_ts", pa.int64())]
+                ),
+            ),
+        )
+        self._data.set_table(
+            "actor_nodes",
+            pa.Table.from_pylist(
+                [],
+                schema=pa.schema(
+                    [
+                        ("snapshot_id", pa.string()),
+                        ("node_id", pa.string()),
+                        ("is_system", pa.bool_()),
+                    ]
+                ),
+            ),
+        )
 
     def _snapshot_role(self, snapshot_id, timestamp, actor, flag):
-        with sqlite3.connect(self._path) as connection:
-            connection.execute(
-                "INSERT INTO snapshots VALUES (?, ?)", (snapshot_id, timestamp)
-            )
-            connection.execute(
-                "INSERT INTO actor_nodes VALUES (?, ?, ?)",
-                (snapshot_id, actor["full_name"], flag),
-            )
+        self._data.append_rows(
+            "snapshots", [{"snapshot_id": snapshot_id, "snapshot_ts": timestamp}]
+        )
+        self._data.append_rows(
+            "actor_nodes",
+            [
+                {
+                    "snapshot_id": snapshot_id,
+                    "node_id": actor["full_name"],
+                    "is_system": flag,
+                }
+            ],
+        )
 
     def test_roles_come_from_snapshot_flags_not_names(self):
         self._snapshot_tables()
@@ -147,10 +169,9 @@ class DashboardHealthTest(unittest.TestCase):
             self._status(actor["id"], "Idle")
         actor = self._actors[0]
         for name in ("logger", "controller", "SetupActor", "telemetry", "HostAgent"):
-            with sqlite3.connect(self._path) as connection:
-                connection.execute(
-                    "UPDATE actors SET full_name=? WHERE id=?", (name, actor["id"])
-                )
+            self._data.update_rows(
+                "actors", lambda row: row["id"] == actor["id"], {"full_name": name}
+            )
             actor["full_name"] = name
             self._status(actor["id"], "Failed")
             self._snapshot_role(name, self._event_id, actor, False)
@@ -168,11 +189,16 @@ class DashboardHealthTest(unittest.TestCase):
         self.assertIsNone(db.list_actors()[0]["is_system"])
         self._snapshot_tables()
         self.assertIsNone(db.list_actors()[0]["is_system"])
-        with sqlite3.connect(self._path) as connection:
-            connection.execute(
-                "INSERT INTO actor_nodes VALUES (?, ?, ?)",
-                ("not-published", self._actors[0]["full_name"], True),
-            )
+        self._data.append_rows(
+            "actor_nodes",
+            [
+                {
+                    "snapshot_id": "not-published",
+                    "node_id": self._actors[0]["full_name"],
+                    "is_system": True,
+                }
+            ],
+        )
         self.assertIsNone(db.list_actors()[0]["is_system"])
         self.assertEqual(db.get_summary()["health_status"], "unhealthy")
 
@@ -195,14 +221,14 @@ class DashboardHealthTest(unittest.TestCase):
             self._status(actor["id"], "Idle")
         agent = self._actors[0]
         for mesh_class in ("Host", "Proc"):
-            with sqlite3.connect(self._path) as connection:
-                connection.execute(
-                    "UPDATE meshes SET class=? WHERE id=?",
-                    (mesh_class, agent["mesh_id"]),
-                )
-                connection.execute(
-                    "DELETE FROM actor_status_events WHERE actor_id=?", (agent["id"],)
-                )
+            self._data.update_rows(
+                "meshes",
+                lambda row: row["id"] == agent["mesh_id"],
+                {"class": mesh_class},
+            )
+            self._data.delete_rows(
+                "actor_status_events", lambda row: row["actor_id"] == agent["id"]
+            )
             self.assertTrue(db.list_actors()[0]["is_system"], mesh_class)
             self.assertEqual(db.get_summary()["health_status"], "healthy", mesh_class)
         # An explicit snapshot flag wins over membership metadata.

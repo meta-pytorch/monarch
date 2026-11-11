@@ -10,8 +10,6 @@ Uses Flask's test client to exercise every endpoint, verifying status codes,
 JSON structure, filtering, and 404 behaviour.
 """
 
-import os
-import tempfile
 import unittest
 from typing import Any
 from unittest.mock import patch
@@ -19,7 +17,7 @@ from unittest.mock import patch
 from monarch.monarch_dashboard.fake_data.generate import generate
 from monarch.monarch_dashboard.server import admin_dag, routes
 from monarch.monarch_dashboard.server.app import create_app
-from monarch.monarch_dashboard.server.db import DBAdapter, SQLiteAdapter
+from monarch.monarch_dashboard.server.db import DBAdapter
 from monarch.monarch_dashboard.server.routes import _SNAPSHOT_TABLE_NAMES
 
 
@@ -28,24 +26,10 @@ class _RouteTestBase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._tmpdir = tempfile.mkdtemp()
-        cls._db_path = os.path.join(cls._tmpdir, "test.db")
-        generate(cls._db_path)
-        cls.app = create_app(SQLiteAdapter(cls._db_path))
+        cls.app = create_app(generate())
         cls.app.config["TESTING"] = True
         cls.client = cls.app.test_client()
 
-    @classmethod
-    def tearDownClass(cls):
-        os.remove(cls._db_path)
-
-
-# ---------------------------------------------------------------------------
-# Health
-# ---------------------------------------------------------------------------
-
-
-class HealthTest(_RouteTestBase):
     def test_health_returns_ok(self):
         resp = self.client.get("/api/health")
         self.assertEqual(resp.status_code, 200)
@@ -540,8 +524,8 @@ class PyspyDumpRouteTest(_RouteTestBase):
         resp = self.client.post("/api/pyspy_dump", json={"dump_id": "x"})
         self.assertEqual(resp.status_code, 400)
 
-    def test_pyspy_dump_ok_sqlite(self):
-        # SQLite adapter has no-op store_pyspy_dump — should succeed
+    def test_pyspy_dump_ok_without_dump_storage(self):
+        # The fixture adapter inherits the default no-op dump storage.
         resp = self.client.post(
             "/api/pyspy_dump",
             json={"dump_id": "d1", "proc_ref": "p1", "pyspy_result_json": "{}"},

@@ -4,36 +4,56 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import sqlite3
-import tempfile
 import unittest
 from unittest.mock import patch
 
+import pyarrow as pa
+from monarch.monarch_dashboard.fake_data.store import ArrowAdapter
 from monarch.monarch_dashboard.server import db, resources
 
 
 class ResourcesTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = self.tmp.name + "/metrics.db"
-        db.init(self.path)
-        self.conn = sqlite3.connect(self.path)
-        self.addCleanup(self.conn.close)
-        self.conn.executescript(
-            "CREATE TABLE host_metrics (timestamp_us INTEGER, hostname TEXT, "
-            "net_rx_bytes INTEGER, net_tx_bytes INTEGER, disk_read_bytes INTEGER, disk_write_bytes INTEGER);"
-            "CREATE TABLE gpu_metrics (timestamp_us INTEGER, hostname TEXT, gpu_uuid TEXT, utilization_percent REAL);"
-            "CREATE TABLE snapshots (snapshot_id TEXT, snapshot_ts INTEGER);"
-            "CREATE TABLE host_nodes (snapshot_id TEXT, hostname TEXT);"
+        schemas = {
+            "host_metrics": [
+                ("timestamp_us", pa.int64()),
+                ("hostname", pa.string()),
+                ("net_rx_bytes", pa.int64()),
+                ("net_tx_bytes", pa.int64()),
+                ("disk_read_bytes", pa.int64()),
+                ("disk_write_bytes", pa.int64()),
+            ],
+            "gpu_metrics": [
+                ("timestamp_us", pa.int64()),
+                ("hostname", pa.string()),
+                ("gpu_uuid", pa.string()),
+                ("utilization_percent", pa.float64()),
+            ],
+            "snapshots": [("snapshot_id", pa.string()), ("snapshot_ts", pa.int64())],
+            "host_nodes": [("snapshot_id", pa.string()), ("hostname", pa.string())],
+        }
+        self.data = ArrowAdapter(
+            {
+                name: pa.Table.from_pylist([], schema=pa.schema(fields))
+                for name, fields in schemas.items()
+            }
         )
+        db.set_adapter(self.data)
 
     def sample(self, seconds, counter, hostname="worker's-host"):
-        self.conn.execute(
-            "INSERT INTO host_metrics VALUES (?, ?, ?, ?, ?, ?)",
-            (seconds * 1_000_000, hostname, counter, counter, None, counter),
+        self.data.append_rows(
+            "host_metrics",
+            [
+                {
+                    "timestamp_us": seconds * 1_000_000,
+                    "hostname": hostname,
+                    "net_rx_bytes": counter,
+                    "net_tx_bytes": counter,
+                    "disk_read_bytes": None,
+                    "disk_write_bytes": counter,
+                }
+            ],
         )
-        self.conn.commit()
 
     def history(self, now=400):
         with patch.object(resources.time, "time_ns", return_value=now * 1_000_000_000):
@@ -59,10 +79,37 @@ class ResourcesTest(unittest.TestCase):
     def test_inventory_deduplicates_hosts_and_keeps_missing_hosts(self):
         self.sample(101, 100)
         self.sample(102, 200)
-        self.conn.executescript(
-            "INSERT INTO snapshots VALUES ('old', 1), ('new', 2);"
-            "INSERT INTO host_nodes VALUES ('old', 'gone'), ('new', 'missing'), ('new', 'missing');"
-            "INSERT INTO gpu_metrics VALUES (101, 'gpu-host', 'uuid', NULL), (102, 'gpu-host', 'uuid', NULL);"
+        self.data.append_rows(
+            "snapshots",
+            [
+                {"snapshot_id": "old", "snapshot_ts": 1},
+                {"snapshot_id": "new", "snapshot_ts": 2},
+            ],
+        )
+        self.data.append_rows(
+            "host_nodes",
+            [
+                {"snapshot_id": "old", "hostname": "gone"},
+                {"snapshot_id": "new", "hostname": "missing"},
+                {"snapshot_id": "new", "hostname": "missing"},
+            ],
+        )
+        self.data.append_rows(
+            "gpu_metrics",
+            [
+                {
+                    "timestamp_us": 101,
+                    "hostname": "gpu-host",
+                    "gpu_uuid": "uuid",
+                    "utilization_percent": None,
+                },
+                {
+                    "timestamp_us": 102,
+                    "hostname": "gpu-host",
+                    "gpu_uuid": "uuid",
+                    "utilization_percent": None,
+                },
+            ],
         )
         result = resources.inventory()
         hosts = {h["hostname"]: h for h in result["hosts"]}
@@ -86,7 +133,8 @@ class ResourcesTest(unittest.TestCase):
     def test_missing_tables_and_other_hosts(self):
         self.sample(102, 200, "other-host")
         self.assertEqual(self.history()["hosts"], [])
-        self.conn.executescript("DROP TABLE host_metrics; DROP TABLE gpu_metrics;")
+        self.data.remove_table("host_metrics")
+        self.data.remove_table("gpu_metrics")
         result = resources.inventory()
         self.assertEqual(result["hosts"], [])
         self.assertFalse(result["host_metrics_available"])

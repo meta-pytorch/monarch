@@ -6,5 +6,5 @@
 
 # Monarch Dashboard — Fake Data Package
 #
-# Provides deterministic generation of a SQLite database populated with
+# Provides deterministic generation of Arrow tables populated with
 # realistic Monarch telemetry data for dashboard development and testing.

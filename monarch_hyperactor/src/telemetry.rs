@@ -12,7 +12,6 @@ use hyperactor_telemetry::end_user_span;
 use hyperactor_telemetry::sinks::perfetto::USER_TELEMETRY_PREFIX;
 use hyperactor_telemetry::start_user_span;
 use hyperactor_telemetry::trace_dispatcher::FieldValue;
-use hyperactor_telemetry_sqlite::sqlite::SqliteTracing;
 use opentelemetry::global;
 use opentelemetry::metrics;
 use pyo3::prelude::*;
@@ -323,62 +322,6 @@ impl Drop for PySpan {
     }
 }
 
-#[pyclass(
-    subclass,
-    module = "monarch._rust_bindings.monarch_hyperactor.telemetry"
-)]
-struct PySqliteTracing {
-    guard: Option<SqliteTracing>,
-}
-
-#[pymethods]
-impl PySqliteTracing {
-    #[new]
-    #[pyo3(signature = (in_memory = false))]
-    fn new(in_memory: bool) -> PyResult<Self> {
-        let guard = if in_memory {
-            SqliteTracing::new_in_memory()
-        } else {
-            SqliteTracing::new()
-        };
-
-        match guard {
-            Ok(guard) => Ok(Self { guard: Some(guard) }),
-            Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "Failed to create SQLite tracing guard: {}",
-                e
-            ))),
-        }
-    }
-
-    fn db_path(&self) -> PyResult<Option<String>> {
-        match &self.guard {
-            Some(guard) => Ok(guard.db_path().map(|p| p.to_string_lossy().to_string())),
-            None => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "Guard has been closed",
-            )),
-        }
-    }
-
-    fn __enter__(slf: PyRefMut<'_, Self>) -> PyResult<PyRefMut<'_, Self>> {
-        Ok(slf)
-    }
-
-    fn __exit__(
-        &mut self,
-        _exc_type: Option<Py<PyAny>>,
-        _exc_value: Option<Py<PyAny>>,
-        _traceback: Option<Py<PyAny>>,
-    ) -> PyResult<bool> {
-        self.guard = None;
-        Ok(false) // Don't suppress exceptions
-    }
-
-    fn close(&mut self) {
-        self.guard = None;
-    }
-}
-
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register the forward_to_tracing function
     let f = wrap_pyfunction!(forward_to_tracing, module)?;
@@ -415,7 +358,6 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyGauge>()?;
     module.add_class::<PyHistogram>()?;
     module.add_class::<PyUpDownCounter>()?;
-    module.add_class::<PySqliteTracing>()?;
     Ok(())
 }
 

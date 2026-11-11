@@ -1,137 +1,42 @@
 # Monarch Dashboard
 
-A web dashboard for monitoring Monarch training jobs. Shows real-time actor status, message traffic, and health metrics across the Monarch hierarchy (Meshes > Host Units > Proc Meshes > Procs > Actor Meshes > Actors).
+The dashboard shows actor status, message traffic, execution history, and host
+and GPU metrics. Live jobs and saved telemetry use Monarch's DataFusion engine.
 
-## Quick Start
+## Local development
 
-```bash
-cd fbcode/monarch/monarch_dashboard
-
-# Option 1: Shell script (sets up venv + builds frontend automatically)
-bash run.sh
-
-# Option 2: Python module (requires deps already installed)
-python -m monarch_dashboard
-```
-
-Then open http://localhost:5000 in your browser (or use an SSH tunnel, see below).
-
-## Running Modes
-
-### Static Data (default)
-
-Serves the dashboard with a pre-generated SQLite database (`fake_data/fake_data.db`).
+The standalone launcher generates deterministic Arrow fixtures in memory and
+queries them with Monarch's native DataFusion engine:
 
 ```bash
-# Shell script
-bash run.sh
-
-# Python module
-python -m monarch_dashboard
+python -m monarch.monarch_dashboard --host 127.0.0.1 --port 5000
 ```
 
-### Force Frontend Rebuild
+Within fbsource, build and run `fbcode//monarch/python/monarch/monarch_dashboard:__main__`
+with Buck. The target includes the frontend and native query engine.
 
-Deletes `frontend/build/` and rebuilds from source before starting.
+Open http://localhost:5000. The sample contains ten actors across two host
+meshes, a five-minute event timeline, and a simulated failure.
+
+## Live simulator
 
 ```bash
-# Shell script
-bash run.sh --rebuild
-
-# Python module
-python -m monarch_dashboard --rebuild
+python -m monarch.monarch_dashboard --simulate --interval 0.5 --failure-at 30
 ```
 
-### Live Simulator
+The simulator appends Arrow rows with current timestamps in the server process.
+It stops when the server exits.
 
-Launches a background simulator that writes data with real wall-clock timestamps, so the dashboard shows live-updating state. At 4.5 minutes (configurable), a CUDA OOM failure triggers on one host unit with death propagation.
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--host` | `0.0.0.0` | Bind address |
+| `--port` | `5000` | HTTP port |
+| `--simulate` | Off | Append simulated telemetry continuously |
+| `--interval` | `1.0` | Seconds between simulation ticks; must be positive |
+| `--failure-at` | `270.0` | Seconds until the simulated actor failure |
 
-```bash
-# Shell script
-bash run.sh --simulate
+## Real telemetry
 
-# Python module
-python -m monarch_dashboard --simulate
-```
-
-### Live Simulator with Custom Failure Time
-
-```bash
-# Trigger failure after 30 seconds instead of 4.5 minutes
-bash run.sh --simulate --failure-at 30
-
-# Python module equivalent
-python -m monarch_dashboard --simulate --failure-at 30
-```
-
-### Custom Tick Interval
-
-```bash
-# Simulator ticks every 0.5 seconds instead of 1.0
-bash run.sh --simulate --interval 0.5
-
-python -m monarch_dashboard --simulate --interval 0.5
-```
-
-### Standalone Simulator
-
-Run the simulator by itself (without the Flask server), useful for pre-populating a database.
-
-```bash
-python fake_data/simulate.py --db fake_data/fake_data.db --failure-at 270
-```
-
-Options:
-- `--db PATH` — SQLite database path (default: `fake_data/fake_data.db`)
-- `--interval SECONDS` — tick interval (default: 1.0)
-- `--failure-at SECONDS` — seconds until failure event (default: 270)
-
-### Filter by Time Range
-
-Restrict the dashboard API to only return data from the last N seconds.
-
-```bash
-python -m monarch_dashboard --time-range 60
-```
-
-## SSH Tunnel
-
-The dashboard binds to `0.0.0.0:5000` on your devserver. To access it from your laptop:
-
-```bash
-ssh -L 5000:localhost:5000 YOUR_DEVSERVER
-```
-
-Then open http://localhost:5000 in your local browser.
-
-## All CLI Flags
-
-### `run.sh`
-
-| Flag | Description |
-|------|-------------|
-| `--rebuild` | Force frontend rebuild before starting |
-| `--simulate` | Launch live data simulator alongside server |
-| `--failure-at N` | Seconds until simulator failure event (default: 270) |
-| `--interval N` | Simulator tick interval in seconds (default: 1.0) |
-
-### `python -m monarch_dashboard`
-
-| Flag | Description |
-|------|-------------|
-| `--db PATH` | SQLite database path |
-| `--host HOST` | Bind address (default: 0.0.0.0) |
-| `--port PORT` | Bind port (default: 5000) |
-| `--rebuild` | Force frontend rebuild |
-| `--simulate` | Launch live data simulator |
-| `--failure-at N` | Seconds until simulator failure (default: 270) |
-| `--interval N` | Simulator tick interval (default: 1.0) |
-| `--time-range N` | Filter API to last N seconds |
-
-### `fake_data/simulate.py`
-
-| Flag | Description |
-|------|-------------|
-| `--db PATH` | SQLite database path (default: fake_data/fake_data.db) |
-| `--interval N` | Tick interval in seconds (default: 1.0) |
-| `--failure-at N` | Seconds until failure event (default: 270) |
+Use `monarch dashboard open PATH` to view saved telemetry, or enable the
+job's dashboard for live data. See the [persistence guide](../../../docs/source/telemetry-persistence.md)
+for configuration, paths, and shutdown behavior.
