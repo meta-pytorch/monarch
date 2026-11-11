@@ -45,6 +45,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorAddr;
 use hyperactor::ActorEnvironment;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
@@ -56,13 +57,31 @@ use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
+use hyperactor::StatusMessage;
 use hyperactor::Uid;
+use hyperactor::actor::ActorStatus;
 use hyperactor::context;
+use hyperactor::context::Actor as _;
+use hyperactor::context::Mailbox as _;
+use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor::supervision::SupervisionObservation;
+use hyperactor::supervision::SupervisionTarget;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
 use crate::LinkSpec;
+use crate::RemoteActorDisposition;
+use crate::SupervisorEvent;
+
+const LINK_LOST_STATUS_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Debug)]
+pub(crate) struct KeepaliveSupervision {
+    pub session_id: Uid,
+    pub supervisor: PortRef<SupervisorEvent>,
+    pub target: SupervisionTarget,
+}
 
 /// Split a failure-detection `timeout` into a deadline and a grace period that
 /// together span it. On a link whose interval is at most half its timeout, a
@@ -381,13 +400,10 @@ impl KeepaliveWorker {
     fn send_keepalive(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         self.generation += 1;
         let generation = self.generation;
-        (&self.supervisor).post(
-            this,
-            Keepalive {
-                generation,
-                reply: this.port::<KeepaliveAck>().bind().into_once(),
-            },
-        );
+        let mut reply = this.port::<KeepaliveAck>().bind().into_once();
+        // The worker can stop before an in-flight keepalive is acknowledged.
+        reply.return_undeliverable(false);
+        (&self.supervisor).post(this, Keepalive { generation, reply });
 
         this.post_after(this, SendKeepalive { generation }, self.interval);
         this.post_after(
@@ -414,6 +430,7 @@ pub struct KeepaliveSupervisor {
     deadline: Duration,
     grace: Duration,
     generation: u64,
+    supervision: Option<KeepaliveSupervision>,
 }
 
 #[async_trait]
@@ -443,6 +460,18 @@ impl Handler<Keepalive> for KeepaliveSupervisor {
 }
 
 #[async_trait]
+impl Handler<KeepaliveSupervision> for KeepaliveSupervisor {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        message: KeepaliveSupervision,
+    ) -> anyhow::Result<()> {
+        self.supervision = Some(message);
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl Handler<Deadline> for KeepaliveSupervisor {
     async fn handle(&mut self, cx: &Context<Self>, message: Deadline) -> anyhow::Result<()> {
         // A deadline is scheduled for the generation that was current at the
@@ -464,6 +493,37 @@ impl Handler<Deadline> for KeepaliveSupervisor {
             return Ok(());
         }
         let reason = format!("keepalive missed for generation {}", message.generation);
+        if let Some(supervision) = &self.supervision {
+            let target = &supervision.target;
+            let event = match self.terminal_status(cx.instance(), &target.actor_id).await {
+                Some(status) => ActorSupervisionEvent::new(
+                    target.actor_id.clone(),
+                    target.display_name.clone(),
+                    status,
+                    None,
+                ),
+                None => ActorSupervisionEvent::new(
+                    cx.self_addr().clone(),
+                    None,
+                    ActorStatus::generic_failure(format!(
+                        "actor explicitly aborted due to: {reason}"
+                    )),
+                    None,
+                )
+                .with_transparent(true)
+                .with_observation(Some(SupervisionObservation::LinkLost(target.clone()))),
+            };
+            supervision.supervisor.post(
+                cx,
+                SupervisorEvent::SupervisionEvent {
+                    session_id: supervision.session_id.clone(),
+                    event,
+                    disposition: RemoteActorDisposition::Unreachable,
+                },
+            );
+            cx.exit("supervision link outcome reported")?;
+            return Ok(());
+        }
         cx.kill(&reason)?;
         Ok(())
     }
@@ -477,6 +537,30 @@ impl KeepaliveSupervisor {
             deadline,
             grace,
             generation: 0,
+            supervision: None,
+        }
+    }
+
+    async fn terminal_status(
+        &self,
+        this: &Instance<Self>,
+        target: &ActorAddr,
+    ) -> Option<ActorStatus> {
+        let (reply, receiver) = this.mailbox().open_once_port::<Option<ActorStatus>>();
+        let mut reply_ref = reply.bind();
+        reply_ref.return_undeliverable(false);
+        let mut status_port = target.status_port();
+        status_port.return_undeliverable(false);
+        status_port.post(
+            this,
+            StatusMessage::GetStatus {
+                reply: reply_ref,
+                delivery: None,
+            },
+        );
+        match tokio::time::timeout(LINK_LOST_STATUS_QUERY_TIMEOUT, receiver.recv()).await {
+            Ok(Ok(status)) => status.filter(|status| status.is_terminal()),
+            _ => None,
         }
     }
 
@@ -624,6 +708,74 @@ mod tests {
 
         parent.stop("test").unwrap();
         parent.await;
+    }
+
+    #[tokio::test]
+    async fn test_keepalive_timeout_reports_one_child_outcome() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let child = client.spawn(SilentSupervisor);
+        let child_addr = child.actor_addr().clone();
+        child.stop("child stopped").unwrap();
+        let child_status = child.await;
+
+        let (keepalives, mut keepalive_rx) = client.open_port::<Keepalive>();
+        let worker = KeepaliveWorkerParams::new(
+            keepalives.bind(),
+            KeepaliveParams::new(Duration::from_secs(60), Duration::from_secs(60)),
+        )
+        .link_spec()
+        .unwrap()
+        .spawn_worker(&client)
+        .await
+        .unwrap();
+        let keepalive = keepalive_rx.recv().await.unwrap();
+        worker.stop("worker stopped").unwrap();
+        worker.await;
+
+        let (events, mut events_rx) = client.open_port::<SupervisorEvent>();
+        let session_id = Uid::anonymous();
+        let supervisor = client.spawn(KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(
+            Duration::from_millis(10),
+        )));
+        supervisor.post(
+            &client,
+            KeepaliveSupervision {
+                session_id: session_id.clone(),
+                supervisor: events.bind(),
+                target: SupervisionTarget {
+                    actor_id: child_addr.clone(),
+                    display_name: Some("child".to_string()),
+                },
+            },
+        );
+        supervisor.post(&client, keepalive);
+
+        let message = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let SupervisorEvent::SupervisionEvent {
+            session_id: reported_session,
+            event,
+            ..
+        } = message
+        else {
+            panic!("expected the child's terminal event: {message:?}");
+        };
+        assert_eq!(reported_session, session_id);
+        assert_eq!(event.actor_id, child_addr);
+        assert_eq!(event.display_name.as_deref(), Some("child"));
+        assert_eq!(event.actor_status, child_status);
+        assert!(event.observation.is_none());
+        let status = tokio::time::timeout(Duration::from_secs(5), supervisor)
+            .await
+            .unwrap();
+        assert!(matches!(status, ActorStatus::Stopped(_)), "{status}");
+        assert!(
+            events_rx.try_recv().unwrap().is_none(),
+            "expected exactly one link outcome"
+        );
     }
 
     #[tokio::test]

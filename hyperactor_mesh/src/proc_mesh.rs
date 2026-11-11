@@ -1856,6 +1856,13 @@ mod tests {
             Some("client.<testactor.TestActor named_data{'hosts': 0/1, 'gpus': 1/2}>"),
             "the failure should name the actor by its point in the spawned mesh"
         );
+        assert_eq!(
+            failure.event.actor_status,
+            ActorStatus::generic_failure(
+                "the process this actor was running on exited with non-zero code 1"
+            ),
+            "the failure should report its process's exit status"
+        );
 
         actor_mesh
             .stop(instance, "test complete".to_string())

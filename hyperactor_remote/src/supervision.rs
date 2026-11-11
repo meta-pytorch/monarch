@@ -59,6 +59,7 @@ use crate::SupervisionOptions;
 use crate::SupervisorEvent;
 use crate::WorkerCommand;
 use crate::WorkerLike;
+use crate::keepalive::KeepaliveSupervision;
 
 #[derive(Debug)]
 struct PendingStop {
@@ -274,6 +275,7 @@ impl Actor for Supervisor {
             .expect("supervisor initialized more than once")
             .spawn_supervisor(this)?;
         self.liveness_handle = Some(liveness_handle);
+        self.configure_liveness(this);
         self.bootstrap.start(
             this,
             Supervise {
@@ -311,6 +313,9 @@ impl Actor for Supervisor {
             .as_ref()
             .is_some_and(|handle| handle.actor_addr() == &event.actor_id)
         {
+            if !event.is_error() {
+                return Ok(true);
+            }
             if self.finish_requested_stop(this)? {
                 return Ok(true);
             }
@@ -395,6 +400,7 @@ impl Handler<SupervisorEvent> for Supervisor {
                     child,
                     display_name,
                 });
+                self.configure_liveness(cx.instance());
                 self.send_pending_worker_stop(cx)?;
                 Ok(())
             }
@@ -419,6 +425,10 @@ impl Handler<SupervisorEvent> for Supervisor {
                 disposition: _,
             } => {
                 self.ensure_session(&session_id)?;
+                if self.finish_requested_stop(cx.instance())? {
+                    return Ok(());
+                }
+                self.observation = event.observation.clone();
                 match &event.actor_status {
                     ActorStatus::Stopped(reason) => {
                         cx.exit(reason)?;
@@ -438,6 +448,23 @@ impl Handler<SupervisorEvent> for Supervisor {
 }
 
 impl Supervisor {
+    fn configure_liveness(&self, this: &Instance<Self>) {
+        if self.session.is_some() || matches!(self.bootstrap, SupervisorBootstrap::Callback { .. })
+        {
+            self.liveness_handle
+                .as_ref()
+                .expect("liveness actor must be spawned before configuration")
+                .post(
+                    this,
+                    KeepaliveSupervision {
+                        session_id: self.session_id.clone(),
+                        supervisor: this.port::<SupervisorEvent>().bind(),
+                        target: self.supervision_target(),
+                    },
+                );
+        }
+    }
+
     fn ensure_session(&self, session_id: &hyperactor::Uid) -> anyhow::Result<()> {
         if session_id != &self.session_id {
             anyhow::bail!("remote supervision session id mismatch");
@@ -2399,6 +2426,138 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), parent)
             .await
             .unwrap();
+    }
+
+    fn unlinked_supervisor(child: ActorAddr) -> Supervisor {
+        Supervisor::bootstrap_uid(
+            KeepaliveLink::new(Duration::from_millis(5), Duration::from_millis(100)),
+            SupervisionOptions::default(),
+            Uid::anonymous(),
+            child,
+            None,
+            |_cx, _supervise| Ok(()),
+        )
+        .with_display_name(Some("child{'gpus': 1/2}".to_string()))
+    }
+
+    #[tokio::test]
+    async fn test_liveness_loss_reports_queried_actor_status() {
+        let proc = Proc::isolated();
+        let (_reported, coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let inst = proc.client("inst");
+        let (ready, mut ready_rx) = inst.open_port::<ActorAddr>();
+        let (stopped, _stopped_rx) = inst.open_port::<String>();
+        let child_handle = proc.spawn(test_child(
+            ready,
+            stopped,
+            Some(TestChildAction::FailAfter(Duration::from_millis(10))),
+        ));
+        let child = ready_rx.recv().await.unwrap();
+        let exit = tokio::time::timeout(Duration::from_secs(5), child_handle)
+            .await
+            .unwrap();
+        assert!(exit.is_failed(), "expected the child to fail: {exit}");
+
+        let (events, mut events_rx) = inst.open_port::<ActorSupervisionEvent>();
+        let parent = proc.spawn_with_label(
+            "parent",
+            Parent {
+                supervisor: Some(unlinked_supervisor(child.clone())),
+                events,
+            },
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(event.observation.is_none(), "{event:?}");
+        let ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(cause)) =
+            &event.actor_status
+        else {
+            panic!("expected the supervised actor's failure: {event:?}");
+        };
+        assert_eq!(cause.actor_id, child);
+        assert_eq!(cause.display_name.as_deref(), Some("child{'gpus': 1/2}"));
+        assert_eq!(cause.actor_status, exit);
+
+        parent.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+        coordinator.drain_and_stop("test").unwrap();
+        coordinator.await;
+    }
+
+    #[tokio::test]
+    async fn test_liveness_loss_with_live_child_keeps_link_lost() {
+        let proc = Proc::isolated();
+        let inst = proc.client("inst");
+        let (ready, mut ready_rx) = inst.open_port::<ActorAddr>();
+        let (stopped, _stopped_rx) = inst.open_port::<String>();
+        let child_handle = proc.spawn(test_child(ready, stopped, None));
+        let child = ready_rx.recv().await.unwrap();
+
+        let (events, mut events_rx) = inst.open_port::<ActorSupervisionEvent>();
+        let parent = proc.spawn_with_label(
+            "parent",
+            Parent {
+                supervisor: Some(unlinked_supervisor(child.clone())),
+                events,
+            },
+        );
+
+        // The child answers the status query but is not terminal, so the
+        // lost link itself is what gets reported.
+        let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let Some(SupervisionObservation::LinkLost(target)) = &event.observation else {
+            panic!("expected the live child's lost link: {event:?}");
+        };
+        assert_eq!(target.actor_id, child);
+        assert_eq!(
+            target.display_name.as_deref(),
+            Some("child{'gpus': 1/2}"),
+            "the lost link should keep the requested display name"
+        );
+
+        parent.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+        child_handle.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), child_handle)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_liveness_loss_with_queried_stop_ends_cleanly() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
+        let (stopped, _stopped_rx) = client.open_port::<String>();
+        let child_handle = proc.spawn(test_child(ready, stopped, None));
+        let child = ready_rx.recv().await.unwrap();
+        child_handle.stop("child stopped").unwrap();
+        let exit = tokio::time::timeout(Duration::from_secs(5), child_handle)
+            .await
+            .unwrap();
+        assert!(
+            matches!(exit, ActorStatus::Stopped(ref reason) if reason == "child stopped"),
+            "expected the child to stop cleanly: {exit}"
+        );
+
+        let supervisor = client.spawn(unlinked_supervisor(child));
+        let status = tokio::time::timeout(Duration::from_secs(5), supervisor)
+            .await
+            .unwrap();
+        assert!(
+            matches!(status, ActorStatus::Stopped(ref reason) if reason == "child stopped"),
+            "{status}"
+        );
     }
 
     // proc
