@@ -5020,6 +5020,7 @@ dependencies = [
  "anyhow",
  "monarch_record_batch",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
