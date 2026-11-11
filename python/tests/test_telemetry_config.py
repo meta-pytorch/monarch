@@ -633,6 +633,73 @@ def test_ensure_open_reraises_sidecar_error() -> None:
         _remove_socket_dir(apply_id)
 
 
+def test_persist_dir_crosses_the_wire() -> None:
+    apply_id = _new_apply_id()
+    tel = tc.Telemetry(
+        TelemetryConfig(persist_dir="/tmp/x", client_persist_dir="/tmp/c")
+    )
+    try:
+        with patch.object(tc, "get_job_sidecar") as get_sidecar:
+            get_sidecar.return_value.send.return_value.get.return_value = {
+                "telemetry_url": "http://api",
+                "dashboard_url": None,
+                "socket_path": "/tmp/s",
+            }
+            tel.ensure_open(apply_id)
+        request = get_sidecar.return_value.send.call_args.args[0]
+    finally:
+        _remove_socket_dir(apply_id)
+
+    config = tc._config_from_wire(request.config)
+    default = tc._config_from_wire(_cfg_dict())
+
+    assert config.persist_dir == "/tmp/x"
+    assert config.client_persist_dir == "/tmp/c"
+    assert default.persist_dir is None
+    assert default.client_persist_dir is None
+
+
+def test_bootstrap_passes_persist_dirs_to_client_actor() -> None:
+    handle = tc._TelemetryHandle("apply")
+    config = TelemetryConfig(persist_dir="/tmp/x", client_persist_dir="/tmp/c")
+    with (
+        patch.object(tc, "context") as context,
+        patch.object(tc, "QueryEngine"),
+        patch.object(tc, "QueryEngineAdapter"),
+        patch.object(
+            tc, "start_telemetry_servers", return_value={"api_url": "", "url": None}
+        ),
+        patch.object(tc, "_set_unix_socket_sink_path"),
+    ):
+        handle._bootstrap(config)
+
+    spawn = context.return_value.actor_instance.proc_mesh.spawn
+    assert spawn.call_args.args[-2:] == ("/tmp/x", "/tmp/c")
+
+
+def test_worker_collector_receives_persist_dir() -> None:
+    actor_mesh = MagicMock()
+    proc_mesh = MagicMock()
+    host_mesh = MagicMock()
+    telemetry_actor = tc.TelemetryActor(
+        "fanout_test", 0, persist_dir="/tmp/x", client_persist_dir="/tmp/c"
+    )
+    proc_mesh.spawn.return_value = actor_mesh
+    host_mesh.spawn_procs.return_value = proc_mesh
+    actor_mesh.activate.call.return_value.get.return_value = [(0, True)]
+
+    telemetry_actor._start_worker_collector(
+        host_mesh,
+        tc.TelemetryActor,
+        "fanout_test",
+        "telemetry_hosts",
+    )
+
+    # Workers write to `persist_dir`; the client override is not forwarded.
+    assert proc_mesh.spawn.call_args.args[-1] == "/tmp/x"
+    assert "/tmp/c" not in proc_mesh.spawn.call_args.args
+
+
 def test_set_admin_url_sends_admin_url_request() -> None:
     apply_id = _new_apply_id()
     tel = tc.Telemetry(TelemetryConfig())
