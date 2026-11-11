@@ -946,6 +946,8 @@ mod tests {
     use hyperactor::channel::ChannelAddr;
     use hyperactor::id::Label;
     use hyperactor::id::Uid;
+    use hyperactor_mesh::host_mesh::HostMeshRef;
+    use hyperactor_mesh::mesh_id::HostMeshId;
     use hyperactor_mesh::mesh_id::ProcMeshId;
     use hyperactor_mesh::proc_agent::PROC_AGENT_ACTOR_NAME;
     use hyperactor_mesh::proc_agent::ProcAgent;
@@ -968,10 +970,15 @@ mod tests {
         let proc_addr = ProcAddr::new(proc_id, ChannelAddr::Local(1).into());
         let agent: ActorRef<ProcAgent> =
             ActorRef::attest(proc_addr.actor_addr(PROC_AGENT_ACTOR_NAME));
-        let proc_ref = ProcRef::new(proc_addr, 0, agent);
+        let proc_ref = ProcRef::new(proc_addr.clone(), 0, agent);
+        let host_mesh = HostMeshRef::from_hosts(
+            HostMeshId::singleton(Label::new("host").expect("test label should be valid")),
+            vec![proc_addr],
+        );
         ProcMeshRef::new_singleton(
             ProcMeshId::singleton(Label::new(mesh).expect("test label should be valid")),
             proc_ref,
+            &host_mesh,
         )
         .expect("test proc mesh should be valid")
     }
