@@ -18,6 +18,7 @@ import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch.actor import Actor, Channel, endpoint, this_host
+from monarch.config import parametrize_config
 
 
 T = TypeVar("T")
@@ -141,6 +142,7 @@ def test_root_failure_closes_unrelated_receives(once: bool, mode: str) -> None:
         assert interrupted.wait(timeout=30)
 
 
+@parametrize_config(use_direct_spawn={False, True})
 @isolate_in_subprocess
 def test_proc_failure():
     """

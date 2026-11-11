@@ -26,7 +26,6 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor::supervision::SupervisionObservation;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Notify;
@@ -479,15 +478,22 @@ async fn test_token_join_worker_kill_notifies_parent() -> anyhow::Result<()> {
     harness.worker_root.post(&harness.observer, WorkerControl);
 
     let event = recv(&mut harness.parent_events_rx).await?;
-    assert!(matches!(event.actor_status, ActorStatus::Failed(_)));
+    // The worker can no longer report the child, so the keepalive actor asks the
+    // child directly and adopts its terminal status: the child was stopped
+    // as its worker's tree collapsed, so the parent observes that stop
+    // (through the transparent supervisor) rather than a lost link.
+    assert_eq!(
+        event.actor_status,
+        ActorStatus::Stopped("parent stopping".to_string())
+    );
     assert_ne!(event.actor_id, harness.child_addr);
-    let Some(SupervisionObservation::LinkLost(target)) = &event.observation else {
-        panic!("expected the lost link's affected actor: {event:?}");
-    };
-    assert_eq!(target.actor_id, harness.child_addr);
+    assert!(event.observation.is_none(), "{event:?}");
     let cause = event.caused_by();
-    assert_ne!(cause.actor_id, event.actor_id);
-    assert!(cause.is_error());
+    assert_eq!(cause.actor_id, harness.child_addr);
+    assert_eq!(
+        cause.actor_status,
+        ActorStatus::Stopped("parent stopping".to_string())
+    );
     harness.stop().await?;
     Ok(())
 }
