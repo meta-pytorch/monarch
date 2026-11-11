@@ -52,7 +52,7 @@ use crate::supervision::local_fence;
 
 const DEFAULT_INITIAL_DELAY: Duration = Duration::from_secs(2);
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The current state of an actor monitor.

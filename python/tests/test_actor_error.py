@@ -47,7 +47,7 @@ from monarch.actor import (
     MeshFailure,
     Port,
 )
-from monarch.config import configured
+from monarch.config import configured, parametrize_config
 
 
 class ExceptionActor(Actor):
@@ -1235,6 +1235,43 @@ async def test_process_exit_handling(error_actor_cls) -> None:
     ):
         await error_actor.check.call()
 
+    await proc.stop()
+
+
+class StallActor(Actor):
+    @endpoint
+    async def pid(self) -> int:
+        return os.getpid()
+
+    @endpoint
+    async def sleep(self, seconds: float) -> str:
+        await asyncio.sleep(seconds)
+        return "done"
+
+
+@parametrize_config(use_direct_spawn={False, True})
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+async def test_pending_call_survives_transient_process_stall() -> None:
+    """A pending call survives a worker pause beyond the former monitor timeout."""
+    faults = []
+    monarch.actor.unhandled_fault_hook = lambda failure: faults.append(failure.report())
+    proc = spawn_procs_on_this_host({"gpus": 1})
+    actor = proc.spawn("stalled", StallActor)
+    pid = await actor.pid.call_one()
+    call = asyncio.ensure_future(actor.sleep.call_one(15.0))
+    await asyncio.sleep(1)
+    # SIGSTOP/SIGCONT simulate a frozen Proc by pausing and resuming all its threads.
+    os.kill(pid, signal.SIGSTOP)
+    try:
+        await asyncio.sleep(8)
+        assert not call.done(), "a frozen worker must not end a pending call"
+    finally:
+        os.kill(pid, signal.SIGCONT)
+
+    assert await asyncio.wait_for(call, timeout=30) == "done"
+    assert await actor.pid.call_one() == pid
+    assert faults == []
     await proc.stop()
 
 
