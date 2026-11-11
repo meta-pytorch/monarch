@@ -339,6 +339,7 @@ def test_port_reconstruction_through_stream_binds_caller_instance() -> None:
         owner = pm.slice(gpus=0).spawn("owner", PortOwner)
         caller = pm.slice(gpus=1).spawn("caller", StreamCaller, owner)
         caller.send_doomed_via_stream.call_one().get()
+        # pyrefly: ignore [bad-argument-type]
         observed, caller_actor_id = _await_observed_sender(caller)
         assert observed, "no undeliverable envelope returned to the caller"
         assert observed == caller_actor_id, (
