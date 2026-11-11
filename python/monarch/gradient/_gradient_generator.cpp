@@ -742,8 +742,12 @@ static int PyGradientGenerator_init(
                           const at::Tensor& example,
                           std::optional<size_t> sequence_nr,
                           bool last) mutable {
-      auto it = py::iter(obj(example, sequence_nr, last));
-      it++;
+      py::iterator it = py::iter(obj(example, sequence_nr, last));
+      // Enter the context: dereference the iterator to advance it to the
+      // first yield. pybind11's iterator::operator++() consumes an item on
+      // every call, so calling it right after construction skips the first
+      // yield (the context body never runs under the restored context).
+      *it;
       return [it = std::move(it)]() mutable { it++; };
     };
   }

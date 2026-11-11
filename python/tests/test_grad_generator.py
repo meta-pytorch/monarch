@@ -9,7 +9,7 @@ from unittest import main, TestCase
 
 import torch
 from monarch.gradient import GradientGenerator
-from monarch.gradient_generator import gradient_execution_order
+from monarch.gradient_generator import gradient_execution_order, restore_context
 
 
 class TestGradIter(TestCase):
@@ -119,6 +119,37 @@ class TestGradIter(TestCase):
 
         order = gradient_execution_order([loss], [w2, w3, w1, a])
         self.assertEqual(order, [3, 1, 0, 2])
+
+    def test_context_restorer_enters_before_backward(self):
+        # Regression test: the C++ context_restorer wrapper used to consume
+        # two items from the context generator on first use (pybind11's
+        # iterator::operator++() is init()+advance()), so the restored
+        # context was already exited when the backward op ran. The context
+        # provided by Context.enable() runs ops under no_grad, so observe
+        # grad state from inside a custom backward.
+        observed_grad_state = []
+
+        class Probe(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x):
+                return x * 2
+
+            @staticmethod
+            def backward(ctx, g):
+                observed_grad_state.append(torch.is_grad_enabled())
+                return g * 2
+
+        t = torch.rand(3, requires_grad=True)
+        loss = Probe.apply(t).sum()
+
+        # context_restorer is what makes the C++ side build the (buggy)
+        # iterator wrapper; without it GradientGenerator uses emptyContext.
+        # pyrefly: ignore [missing-argument]
+        gi = GradientGenerator([loss], [t], [], restore_context)
+        r = list(gi)
+        self.assertTrue(torch.allclose(r[0], torch.full((3,), 2.0)))
+        # The backward op must run inside the restored context (no_grad).
+        self.assertEqual(observed_grad_state, [False])
 
 
 if __name__ == "__main__":
