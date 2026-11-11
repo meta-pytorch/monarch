@@ -303,7 +303,7 @@ impl Actor for Supervisor {
 
     async fn handle_supervision_event(
         &mut self,
-        _this: &Instance<Self>,
+        this: &Instance<Self>,
         event: &ActorSupervisionEvent,
     ) -> anyhow::Result<bool> {
         if self
@@ -311,6 +311,9 @@ impl Actor for Supervisor {
             .as_ref()
             .is_some_and(|handle| handle.actor_addr() == &event.actor_id)
         {
+            if self.finish_requested_stop(this)? {
+                return Ok(true);
+            }
             self.observation = Some(SupervisionObservation::LinkLost(self.supervision_target()));
             return Ok(false);
         }
@@ -361,7 +364,12 @@ impl Actor for Supervisor {
                 ))
             )
         {
-            this.exit("supervision bootstrap returned before linking")?;
+            if !self.finish_requested_stop(this)? {
+                this.exit("supervision bootstrap returned before linking")?;
+            }
+            return Ok(());
+        }
+        if self.finish_requested_stop(this)? {
             return Ok(());
         }
         hyperactor::actor::handle_delivery_failure_event(self, this, undeliverable).await
@@ -392,6 +400,9 @@ impl Handler<SupervisorEvent> for Supervisor {
             }
             SupervisorEvent::SuperviseRejected { session_id, reason } => {
                 self.ensure_session(&session_id)?;
+                if self.finish_requested_stop(cx.instance())? {
+                    return Ok(());
+                }
                 let reason = format!("remote supervision request rejected: {}", reason);
                 if let SupervisorBootstrap::Callback { fallback_actor, .. } = &self.bootstrap {
                     self.observation =
@@ -432,6 +443,14 @@ impl Supervisor {
             anyhow::bail!("remote supervision session id mismatch");
         }
         Ok(())
+    }
+
+    fn finish_requested_stop(&self, this: &Instance<Self>) -> anyhow::Result<bool> {
+        let Some(stop) = &self.pending_stop else {
+            return Ok(false);
+        };
+        this.exit(&stop.reason)?;
+        Ok(true)
     }
 
     /// Forward a pending stop to the worker, then exit without waiting for
@@ -942,6 +961,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use hyperactor::Client;
     use hyperactor::PortHandle;
     use hyperactor::Proc;
     use hyperactor::Uid;
@@ -1226,6 +1246,123 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    async fn assert_requested_stop_finishes(
+        liveness_timeout: Duration,
+        fail_control: impl FnOnce(&Client, &ActorHandle<Supervisor>, Supervise),
+    ) {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let requested = proc.proc_addr().actor_addr_uid(Uid::anonymous());
+        let (started, started_rx) = client.open_once_port();
+        let supervisor = client.spawn(Supervisor::bootstrap_uid(
+            KeepaliveLink::new(Duration::from_millis(5), liveness_timeout),
+            SupervisionOptions::default(),
+            Uid::anonymous(),
+            requested.clone(),
+            None,
+            |this, request| {
+                started.post(this, request);
+                Ok(())
+            },
+        ));
+        let request = started_rx.recv().await.unwrap();
+        supervisor.stop("cancelled spawn").unwrap();
+        let mut status = supervisor.status();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !matches!(*status.borrow_and_update(), ActorStatus::Stopping(_)) {
+                status.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        fail_control(&client, &supervisor, request);
+        let status = tokio::time::timeout(Duration::from_secs(5), supervisor)
+            .await
+            .unwrap();
+        assert!(
+            matches!(status, ActorStatus::Stopped(ref reason) if reason == "cancelled spawn"),
+            "the requested stop must retain its reason: {status}"
+        );
+    }
+
+    fn return_bootstrap(
+        client: &Client,
+        supervisor: &ActorHandle<Supervisor>,
+        request: Supervise,
+        failure: impl FnOnce(&MessageEnvelope) -> Option<DeliveryFailure>,
+    ) {
+        let mut envelope = MessageEnvelope::serialize(
+            supervisor.actor_addr().clone(),
+            request.supervisor.port_addr().clone(),
+            &request,
+            Flattrs::new(),
+        )
+        .unwrap();
+        if let Some(failure) = failure(&envelope) {
+            envelope.push_delivery_failure(failure);
+        }
+        supervisor
+            .port::<Undeliverable<MessageEnvelope>>()
+            .post(client, Undeliverable::Returned(envelope));
+    }
+
+    #[tokio::test]
+    async fn test_supervisor_control_failure_after_requested_stop_is_clean() {
+        assert_requested_stop_finishes(Duration::from_secs(60), |client, supervisor, request| {
+            return_bootstrap(client, supervisor, request, |_| None);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_supervisor_channel_closed_after_requested_stop_retains_reason() {
+        assert_requested_stop_finishes(Duration::from_secs(60), |client, supervisor, request| {
+            return_bootstrap(client, supervisor, request, |envelope| {
+                Some(DeliveryFailure::new(UndeliverableReason::Transport(
+                    TransportFailure::new(
+                        envelope.dest().clone(),
+                        TransportFailureReason::ChannelClosed {
+                            addr: hyperactor::channel::ChannelTransport::Local.any(),
+                        },
+                    ),
+                )))
+            });
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_supervisor_stopped_recipient_after_requested_stop_retains_reason() {
+        assert_requested_stop_finishes(Duration::from_secs(60), |client, supervisor, request| {
+            return_bootstrap(client, supervisor, request, |envelope| {
+                Some(DeliveryFailure::new(InvalidReference::new(
+                    envelope.dest().clone(),
+                    InvalidReferenceReason::ActorStopped,
+                )))
+            });
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_supervisor_liveness_loss_after_requested_stop_is_clean() {
+        assert_requested_stop_finishes(Duration::from_secs(1), |_, _, _| {}).await;
+    }
+
+    #[tokio::test]
+    async fn test_supervisor_rejection_after_requested_stop_is_clean() {
+        assert_requested_stop_finishes(Duration::from_secs(60), |client, _, request| {
+            request.supervisor.post(
+                client,
+                SupervisorEvent::SuperviseRejected {
+                    session_id: request.session_id,
+                    reason: "worker declined supervision".to_string(),
+                },
+            );
+        })
+        .await;
     }
 
     // proc
