@@ -152,6 +152,10 @@ Distributed scans are best-effort. If a worker collector fails or times out,
 the query can return reduced coverage while the job and healthy collectors
 continue operating.
 
+To keep telemetry after the job stops, configure `TelemetryConfig.persist_dir`.
+The [telemetry persistence guide](telemetry-persistence) covers storage paths,
+offline SQL and dashboards, and recovery after expected or unexpected shutdown.
+
 ## Retention and snapshots
 
 `TelemetryConfig.retention_secs` applies to `sent_messages`, `messages`,

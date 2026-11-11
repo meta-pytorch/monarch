@@ -12,6 +12,7 @@ and can independently export metrics, logs, and spans to external backends.
 | Use case | Surface | What it provides |
 |----------|---------|------------------|
 | Query actor, mesh, message, trace, metric, and host resource history | [Distributed telemetry](distributed-telemetry) | DataFusion SQL across host-local collectors |
+| Inspect saved telemetry after a job stops | [Telemetry persistence](telemetry-persistence) | SQL and dashboards over persisted Arrow data |
 | Monitor topology, status, failures, traffic, and resources in a browser | [Monarch Dashboard](monarch-dashboard) | Live summaries, hierarchy views, host and GPU resources, and a job DAG |
 | Trace endpoint calls and handler execution across a job | [Actor profiling](profiling) | Perfetto traces grouped by process and actor, with call-to-handler links |
 | Diagnose a running mesh from a terminal | [Mesh Admin TUI](admin-tui) | Live topology, health checks, and py-spy stack traces |
@@ -157,6 +158,7 @@ That supports the TUI, but it does not provide the dashboard or SQL history.
 
 - [Understand metric collection and export](metrics)
 - [Query distributed telemetry](distributed-telemetry)
+- [Save and analyze telemetry after shutdown](telemetry-persistence)
 - [Profile actor activity](profiling)
 - [Use the Monarch Dashboard](monarch-dashboard)
 - [Diagnose a mesh with the Admin TUI](admin-tui)
@@ -166,6 +168,7 @@ That supports the TUI, but it does not provide the dashboard or SQL history.
 :maxdepth: 1
 :hidden:
 distributed-telemetry
+telemetry-persistence
 profiling
 metrics
 opentelemetry
