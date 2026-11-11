@@ -11,6 +11,7 @@
 import json
 import os
 import shutil
+import signal
 import socket
 import threading
 import time
@@ -19,6 +20,7 @@ import unittest.mock
 import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from typing import Any, cast
 
 import monarch._src.job.telemetry_actor as job_telemetry_actor
@@ -32,12 +34,16 @@ from monarch._rust_bindings.monarch_distributed_telemetry import (
 from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner import (
     DatabaseScanner,
 )
+from monarch._rust_bindings.monarch_extension.snapshot_integration import (
+    _snapshot_table_names,
+)
 from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch._src.actor.actor_mesh import Actor, ActorMesh, current_rank
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.job.persisted_telemetry import open_persisted_engine
+from monarch._src.job.telemetry_ingest import encode_frame, FrameWriter
 from monarch.actor import span
 from monarch.config import configured
 from monarch.distributed_telemetry.engine import QueryEngine
@@ -76,6 +82,15 @@ class _CrashingTelemetryActor(job_telemetry_actor.TelemetryActor):
     @endpoint
     def crash(self) -> None:
         raise _TelemetryActorFailure("intentional telemetry actor failure")
+
+
+class _PersistenceTestTelemetryActor(job_telemetry_actor.TelemetryActor):
+    """Collector whose process can be terminated by its lifecycle test."""
+
+    @endpoint
+    def pid(self) -> int:
+        """Return the PID of this test-owned collector process."""
+        return os.getpid()
 
 
 class _ClientHostTelemetryActor(job_telemetry_actor.TelemetryActor):
@@ -129,6 +144,16 @@ class _SlowScanTelemetryActor(job_telemetry_actor.TelemetryActor):
 
 
 class _FailureTestTelemetryRoot(job_telemetry_actor.TelemetryActor):
+    @endpoint
+    def start_persistence_collector(self, host_mesh: Any, apply_id: str) -> Any:
+        """Start a collector for persistence lifecycle tests."""
+        collector = self._start_worker_collector(
+            host_mesh, _PersistenceTestTelemetryActor, apply_id, "persist_procs"
+        )
+        if collector is None:
+            raise RuntimeError("persistence test collector did not activate")
+        return collector
+
     @endpoint
     def start_failing_collector(self, host_mesh: Any, apply_id: str) -> Any:
         failing = self._start_worker_collector(
@@ -512,6 +537,212 @@ def test_persisted_engine_queries_loaded_tables(tmp_path) -> None:
 
     assert [instance["name"] for instance in instances] == ["h1-12"]
     assert engine.query("SELECT COUNT(*) AS c FROM spans").to_pylist() == [{"c": 3}]
+
+
+def _synthetic_values(field: pa.Field, rows: int) -> list[Any]:
+    value_type = field.type
+    if isinstance(value_type, pa.DictionaryType):
+        value_type = value_type.value_type
+    if pa.types.is_integer(value_type):
+        values: list[Any] = list(range(rows))
+    elif pa.types.is_floating(value_type):
+        values = [i + 0.5 for i in range(rows)]
+    elif pa.types.is_string(value_type) or pa.types.is_large_string(value_type):
+        values = [f"{field.name}{i}" for i in range(rows)]
+    elif pa.types.is_boolean(value_type):
+        values = [i % 2 == 0 for i in range(rows)]
+    else:
+        raise TypeError(f"unsupported type {field.type} for {field.name}")
+    if field.nullable:
+        values[-1] = None
+    return values
+
+
+def _synthetic_batch(schema: pa.Schema, rows: int) -> pa.RecordBatch:
+    return pa.RecordBatch.from_pydict(
+        {field.name: _synthetic_values(field, rows) for field in schema}, schema=schema
+    )
+
+
+def _batch_ipc(batch: pa.RecordBatch) -> bytes:
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, batch.schema) as writer:
+        writer.write_batch(batch)
+    return sink.getvalue().to_pybytes()
+
+
+def _engine_table_names(engine: Any) -> set[str]:
+    return {
+        row["table_name"]
+        for row in engine.query("SHOW TABLES").to_pylist()
+        if row["table_schema"] != "information_schema"
+    }
+
+
+def _table_rows(engine: Any, table: str) -> list[str]:
+    return sorted(map(repr, engine.query(f"SELECT * FROM {table}").to_pylist()))
+
+
+def _row_count(engine: Any, table: str) -> int:
+    return engine.query(f"SELECT COUNT(*) AS c FROM {table}").to_pylist()[0]["c"]
+
+
+def _wait_for_persisted_rows(
+    root: Any, sql: str, expected: list[dict[str, Any]]
+) -> None:
+    deadline = time.monotonic() + 20
+    while True:
+        engine, _ = open_persisted_engine([str(root)])
+        try:
+            if engine.query(sql).to_pylist() == expected:
+                return
+        except Exception as error:
+            if "not found" not in str(error):
+                raise
+        finally:
+            engine._actor.stop("persist readback probe").get(timeout=10)
+        assert time.monotonic() < deadline, (
+            "rows were not readable from the persist log"
+        )
+        time.sleep(0.1)
+
+
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize(
+    "target,graceful,torn",
+    [
+        ("proc", True, False),
+        ("host", True, False),
+        ("proc", False, False),
+        ("host", False, False),
+        ("proc", False, True),
+        ("host", False, True),
+    ],
+)
+@isolate_in_subprocess
+def test_persisted_telemetry_survives_runtime_shutdown(
+    tmp_path, target: str, graceful: bool, torn: bool
+) -> None:
+    root_id, worker_id = _new_apply_id(), _new_apply_id()
+    job = ProcessJob({"hosts": 1})
+    root = None
+    try:
+        state = job.state(cached_path=None)
+        root = monarch.actor.this_proc().spawn(
+            "persist_root",
+            _FailureTestTelemetryRoot,
+            root_id,
+            0,
+            0.0,
+            0.0,
+            str(tmp_path),
+        )
+        assert root.activate.call_one().get()
+        worker = root.start_persistence_collector.call_one(state.hosts, worker_id).get()
+        worker_pid = worker.pid.call_one().get()
+        schema = pa.ipc.read_schema(
+            pa.py_buffer(worker.schema_for.call_one("spans").get())
+        )
+        assert worker.ingest_snapshot_batch.call_one(
+            "spans", _spans_ipc(schema, 3)
+        ).get()
+        sql = "SELECT * FROM spans WHERE process_id = 'p' ORDER BY id"
+        expected = QueryEngine(root).query(sql).to_pylist()
+        assert len(expected) == 3
+        persist_root = tmp_path / worker_id
+        _wait_for_persisted_rows(persist_root, sql, expected)
+        if graceful:
+            if target == "host":
+                state.hosts.shutdown().get(timeout=30)
+            else:
+                root.stop_worker_collectors.call_one().get(timeout=30)
+        else:
+            pids = [worker_pid]
+            if target == "host":
+                pids.insert(0, job._host_to_pid["hosts_0"].pid)
+            for pid in pids:
+                os.kill(pid, signal.SIGKILL)
+        root.stop("persist lifecycle test").get(timeout=30)
+        root = None
+    finally:
+        if root is not None:
+            with suppress(Exception):
+                root.stop("persist lifecycle cleanup").get(timeout=30)
+        job.kill()
+        for apply_id in (root_id, worker_id):
+            _remove_socket_dir(apply_id)
+    if torn:
+        instance_dir = persist_root / f"{socket.gethostname()}-{worker_pid}"
+        with (instance_dir / "000000.frames").open("ab") as segment:
+            segment.write(b"\x00\x01s")
+    engine, instances = open_persisted_engine([str(persist_root)])
+    assert engine.query(sql).to_pylist() == expected
+    assert len(instances) == 1
+    assert instances[0]["clean"] is graceful
+    assert instances[0]["torn_bytes"] == (3 if torn else 0)
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_persisted_tables_match_live_tables(tmp_path) -> None:
+    apply_id = _new_apply_id()
+    _remove_socket_dir(apply_id)
+    try:
+        live = monarch.actor.this_proc().spawn(
+            "telemetry",
+            job_telemetry_actor.TelemetryActor,
+            apply_id,
+            0,
+            0.0,
+            0.0,
+            str(tmp_path),
+        )
+        assert live.activate.call_one().get()
+        live_engine = QueryEngine(live)
+
+        assert live.store_pyspy_dump.call_one(
+            "dump-0", "proc[0]", _sample_pyspy_dump_json()
+        ).get()
+        tables = live.table_names.call_one().get()
+        snapshot_tables = set(_snapshot_table_names())
+        frames = FrameWriter(job_telemetry_actor.telemetry_socket_path(apply_id))
+        routed_tables = [table for table in tables if not table.startswith("pyspy_")]
+        socket_tables = []
+        for table in routed_tables:
+            schema = pa.ipc.read_schema(
+                pa.py_buffer(live.schema_for.call_one(table).get())
+            )
+            batch = _synthetic_batch(schema, rows=3)
+            if table in snapshot_tables:
+                assert live.ingest_snapshot_batch.call_one(
+                    table, _batch_ipc(batch)
+                ).get()
+            else:
+                frames.send(encode_frame(table, batch))
+                socket_tables.append(table)
+
+        deadline = time.monotonic() + 30
+        while pending := [
+            table for table in socket_tables if _row_count(live_engine, table) < 3
+        ]:
+            assert time.monotonic() < deadline, f"socket rows never arrived: {pending}"
+            time.sleep(0.1)
+        assert {
+            table: _row_count(live_engine, table) for table in routed_tables
+        } == dict.fromkeys(routed_tables, 3)
+
+        live_names = _engine_table_names(live_engine)
+        live_rows = {table: _table_rows(live_engine, table) for table in live_names}
+        live.stop("parity test").get(timeout=30)
+    finally:
+        _remove_socket_dir(apply_id)
+
+    offline_engine, instances = open_persisted_engine([str(tmp_path / apply_id)])
+
+    assert _engine_table_names(offline_engine) == live_names
+    for table in sorted(live_names):
+        assert _table_rows(offline_engine, table) == live_rows[table], table
+    assert [instance["clean"] for instance in instances] == [True]
 
 
 @pytest.mark.timeout(60)
