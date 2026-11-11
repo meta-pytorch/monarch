@@ -655,6 +655,7 @@ impl<M: ProcManager> Host<M> {
     }
 
     /// Remove a child proc's gateway registration and release its name.
+    #[expect(dead_code, reason = "recently added; caller not yet landed")]
     pub(crate) fn remove_proc(&self, name: &str) {
         let guard = self
             .procs
