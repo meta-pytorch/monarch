@@ -7,7 +7,7 @@
 """Flask application factory for the Monarch Dashboard.
 
 Creates and configures the Flask app, registers the API blueprint,
-initialises the database layer pointing at the fake data SQLite file,
+initialises the query adapter,
 and serves the React frontend build as static files.
 """
 
@@ -58,7 +58,7 @@ def create_app(adapter: DBAdapter) -> Flask:
     """Build a configured Flask application.
 
     Args:
-        adapter: A DBAdapter instance for data access (e.g. SQLiteAdapter
+        adapter: A DBAdapter instance for data access (e.g. ArrowAdapter
             for local dev, QueryEngineAdapter for production).
     """
     build_dir = _frontend_build_dir()

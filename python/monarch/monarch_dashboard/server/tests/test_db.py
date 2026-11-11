@@ -6,13 +6,10 @@
 
 """Unit tests for the SQL query layer (server.db).
 
-Each test class generates a fresh SQLite database, initialises db.init(),
+Each test class generates a fresh Arrow dataset, initialises db.set_adapter(),
 and validates that the query functions return correct results.
 """
 
-import os
-import sqlite3
-import tempfile
 import unittest
 
 from monarch.monarch_dashboard.fake_data.generate import generate
@@ -24,14 +21,8 @@ class _DbTestBase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._tmpdir = tempfile.mkdtemp()
-        cls._db_path = os.path.join(cls._tmpdir, "test.db")
-        generate(cls._db_path)
-        db.init(cls._db_path)
-
-    @classmethod
-    def tearDownClass(cls):
-        os.remove(cls._db_path)
+        cls._data = generate()
+        db.set_adapter(cls._data)
 
 
 # ---------------------------------------------------------------------------
@@ -438,21 +429,28 @@ class GetSummaryTest(_DbTestBase):
         # errors panel, but excluded from workload health by explicit membership.
         self.assertEqual(summary["health_status"], "healthy")
         workload = next(a for a in db.list_actors() if a["is_system"] is not True)
-        with sqlite3.connect(self._db_path) as connection:
-            event_id, timestamp = connection.execute(
-                "SELECT MAX(id)+1, MAX(timestamp_us)+1 FROM actor_status_events"
-            ).fetchone()
-            connection.execute(
-                "INSERT INTO actor_status_events VALUES (?, ?, ?, 'Failed', 'user failure')",
-                (event_id, timestamp, workload["id"]),
-            )
+        row = self._data.query_one(
+            "SELECT MAX(id)+1 AS id, MAX(timestamp_us)+1 AS timestamp_us FROM actor_status_events"
+        )
+        event_id = row["id"]
+        self._data.append_rows(
+            "actor_status_events",
+            [
+                {
+                    "id": event_id,
+                    "timestamp_us": row["timestamp_us"],
+                    "actor_id": workload["id"],
+                    "new_status": "Failed",
+                    "reason": "user failure",
+                }
+            ],
+        )
         try:
             self.assertEqual(db.get_summary()["health_status"], "unhealthy")
         finally:
-            with sqlite3.connect(self._db_path) as connection:
-                connection.execute(
-                    "DELETE FROM actor_status_events WHERE id=?", (event_id,)
-                )
+            self._data.delete_rows(
+                "actor_status_events", lambda row: row["id"] == event_id
+            )
 
 
 class GetMessageStatsTest(_DbTestBase):

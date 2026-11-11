@@ -10,6 +10,13 @@ class QueryEngine:
     """DataFusion query execution, creates ports, collects results."""
 
     def __new__(cls, actor: object) -> "QueryEngine": ...
+    @staticmethod
+    def local() -> "QueryEngine":
+        """Create a DataFusion engine for local Arrow tables without actor RPCs."""
+        ...
+    def register_local_table(self, name: str, arrow_ipc_bytes: bytes) -> None:
+        """Register or replace a local table from an Arrow IPC stream."""
+        ...
     def __repr__(self) -> str: ...
     def query(self, sql: str) -> pa.RecordBatchReader:
         """Execute a SQL query and return an Arrow record batch reader."""

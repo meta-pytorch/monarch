@@ -8,7 +8,7 @@
 
 //! Sinks for the unified telemetry layer.
 //! Each sink implements `TraceEventSink` and writes events to a specific
-//! backend (SQLite, Perfetto, glog, etc.).
+//! backend (Perfetto, glog, etc.).
 
 pub mod glog;
 pub mod perfetto;

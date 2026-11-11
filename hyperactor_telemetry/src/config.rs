@@ -9,7 +9,7 @@
 //! Configuration keys for hyperactor telemetry.
 //!
 //! This module defines configuration attributes for telemetry features including
-//! OpenTelemetry tracing/metrics, recorder output, SQLite tracing, and file logging.
+//! OpenTelemetry tracing/metrics, recorder output, and file logging.
 
 use std::str::FromStr;
 use std::time::Duration;
@@ -45,14 +45,6 @@ declare_attrs! {
         Some("enable_recorder_tracing".to_string()),
     ))
     pub attr ENABLE_RECORDER_TRACING: bool = true;
-
-    /// Enable the SQLite tracing layer.
-    /// When true, SQLite tracing is enabled.
-    @meta(CONFIG = ConfigAttr::new(
-        Some("ENABLE_SQLITE_TRACING".to_string()),
-        Some("enable_sqlite_tracing".to_string()),
-    ))
-    pub attr ENABLE_SQLITE_TRACING: bool = false;
 
     /// Log level for Monarch file logging.
     /// Valid values: "debug", "info", "warn", "error"
