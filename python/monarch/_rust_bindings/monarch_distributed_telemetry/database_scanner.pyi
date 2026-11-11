@@ -8,6 +8,24 @@ from typing import List, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 
+class PersistedInstance:
+    """What loading one collector's persist log found."""
+
+    name: str
+    """Instance directory name, ``{hostname}-{pid}``."""
+    segments: int
+    """Segment files read."""
+    clean: bool
+    """Whether the collector closed the log cleanly."""
+    torn_bytes: int
+    """Bytes dropped from a torn final frame."""
+    rows: int
+    """Rows loaded."""
+    first_timestamp_us: Optional[int]
+    """Earliest ``timestamp_us`` loaded."""
+    last_timestamp_us: Optional[int]
+    """Latest ``timestamp_us`` loaded."""
+
 class DatabaseScanner:
     """Local MemTable operations, scans with child stream merging."""
 
@@ -23,6 +41,17 @@ class DatabaseScanner:
         ...
     def close_persist(self) -> None:
         """Write pending telemetry and close the persist log, if enabled."""
+        ...
+    @staticmethod
+    def open_persisted(
+        roots: List[str],
+    ) -> Tuple["DatabaseScanner", List[PersistedInstance]]:
+        """Load persist logs into a new scanner for querying after a job ends.
+
+        Each root is a ``{persist_dir}/{apply_id}`` directory. The scanner has
+        no retention, socket ingest, or persistence of its own. Read logs with
+        the Monarch build that wrote them; table schemas come from the stored
+        Arrow IPC streams."""
         ...
     def apply_retention(self, table_name: str, where_clause: str) -> None:
         """Filter a table, keeping only rows that match the WHERE clause."""
