@@ -41,7 +41,6 @@ from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
     BootstrapCommand,
     HostMesh as HyHostMesh,
 )
-from monarch._rust_bindings.monarch_hyperactor.proc import ProcId, Uid
 from monarch._rust_bindings.monarch_hyperactor.shape import Point, Shape, Slice
 from monarch._rust_bindings.monarch_hyperactor.testing import _handle_observer_count
 from monarch._src.actor.actor_mesh import (
@@ -66,7 +65,6 @@ from monarch._src.actor.proc_mesh import _get_bootstrap_args, get_or_spawn_contr
 from monarch._src.job import host_metrics_actor
 from monarch._src.job.job import ProcessState
 from monarch._src.job.process import ProcessJob
-from monarch._src.job.service_identity import new_service_proc_id, service_proc_addr
 from monarch._src.job.telemetry_actor import TelemetryActor
 from monarch.config import configured
 from monarch.distributed_telemetry.engine import QueryEngine
@@ -744,7 +742,7 @@ def test_embedded_worker_loop_returns_after_host_shutdown() -> None:
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
-    addr = f"{new_service_proc_id()}@tcp://127.0.0.1:{port}"
+    addr = f"tcp://127.0.0.1:{port}"
     with tempfile.TemporaryFile(mode="w+t") as child_output:
         child = _spawn_embedded_worker(addr, child_output)
 
@@ -797,20 +795,19 @@ def test_alias_bootstrap() -> None:
         # dial_to advertises a reachable address; bind_to listens on the
         # wildcard interface.
         addr = f"tcp://127.0.0.1:{port}@tcp://0.0.0.0:{port}"
-        proc_addr = service_proc_addr(addr, new_service_proc_id())
         proc = subprocess.Popen(
             [
                 sys.executable,
                 "-c",
                 "import sys; from monarch.actor import run_worker_loop_forever; "
-                f'run_worker_loop_forever(address={proc_addr!r}, ca="trust_all_connections")',
+                f'run_worker_loop_forever(address={addr!r}, ca="trust_all_connections")',
             ],
             env=env,
         )
         procs.append(proc)
         # Pass the full alias through attach_to_workers. The attach path must
-        # canonicalize this to dial_to before using it as host identity.
-        workers.append(proc_addr)
+        # canonicalize this to dial_to before discovering the host identity.
+        workers.append(addr)
 
     try:
         # pyrefly: ignore [bad-argument-type]
@@ -1132,19 +1129,18 @@ def test_attach_to_workers_accepts_future_addresses() -> None:
             env["PYTHONPATH"] = ":".join(sys.path)
 
         addr = f"tcp://127.0.0.1:{port}"
-        proc_addr = service_proc_addr(addr, new_service_proc_id())
         proc = subprocess.Popen(
             [
                 sys.executable,
                 "-c",
                 "import sys; from monarch.actor import run_worker_loop_forever; "
-                f'run_worker_loop_forever(address={proc_addr!r}, ca="trust_all_connections")',
+                f'run_worker_loop_forever(address={addr!r}, ca="trust_all_connections")',
             ],
             env=env,
         )
         procs.append(proc)
         # Pass a Future rather than a string to exercise address resolution.
-        fut: Future[str] = Future._from_handle(_ready_handle(proc_addr))
+        fut: Future[str] = Future._from_handle(_ready_handle(addr))
         workers.append(fut)
 
     try:
@@ -1824,20 +1820,19 @@ def test_spawn_procs_bootstrap_command_uses_remote_host_environment() -> None:
     port = sock.getsockname()[1]
     sock.close()
     addr = f"tcp://127.0.0.1:{port}"
-    proc_addr = service_proc_addr(addr, new_service_proc_id())
     worker = subprocess.Popen(
         [
             sys.executable,
             "-c",
             "from monarch.actor import run_worker_loop_forever; "
-            f'run_worker_loop_forever(address={proc_addr!r}, ca="trust_all_connections")',
+            f'run_worker_loop_forever(address={addr!r}, ca="trust_all_connections")',
         ],
         env=worker_env,
     )
 
     try:
         # pyrefly: ignore [bad-argument-type]
-        hosts = attach_to_workers(ca="trust_all_connections", workers=[proc_addr])
+        hosts = attach_to_workers(ca="trust_all_connections", workers=[addr])
         cmd = default_bootstrap_cmd().with_env(
             {"MONARCH_ENV_REMOVED": None, "MONARCH_ENV_SET": "command"}
         )
@@ -1942,11 +1937,9 @@ class DuplexProcessJob(ProcessJob):
         self,
         meshes: Optional[Dict[str, int]] = None,
         env: Optional[Dict[str, str]] = None,
-        service_proc_id: Optional[ProcId] = None,
     ) -> None:
         super().__init__(meshes or {"hosts": 1}, env)
         self._duplex_addr: Optional[str] = None
-        self._service_proc_id = service_proc_id
 
     def _create(self, client_script: Optional[str]) -> None:
         if client_script is not None:
@@ -1959,8 +1952,6 @@ class DuplexProcessJob(ProcessJob):
             for i in range(count):
                 host_key = f"{mesh_name}_{i}"
                 addr = f"ipc://{self._tmpdir}/{host_key}"
-                service_proc_id = self._service_proc_id or new_service_proc_id()
-                proc_addr = service_proc_addr(addr, service_proc_id)
                 worker_env = {**os.environ, "HYPERACTOR_PROCESS_NAME": host_key}
                 if self._env is not None:
                     worker_env.update(self._env)
@@ -1969,12 +1960,12 @@ class DuplexProcessJob(ProcessJob):
                     sys.executable,
                     "-c",
                     "from monarch.actor import run_worker_loop_forever; "
-                    f"run_worker_loop_forever(address={proc_addr!r}, "
+                    f"run_worker_loop_forever(address={addr!r}, "
                     'ca="trust_all_connections")',
                 ]
                 proc = subprocess.Popen(cmd, env=worker_env, start_new_session=True)
                 first_proc = first_proc or proc
-                self._host_to_pid[host_key] = ProcessState(proc.pid, proc_addr)
+                self._host_to_pid[host_key] = ProcessState(proc.pid, addr)
 
         # Wait for the first worker's frontend socket to appear.
         # The duplex server is now on the same address as the frontend.
@@ -2280,10 +2271,7 @@ class RelayActor(Actor):
 def test_client_attach_service_instance_spawns_on_client_host() -> None:
     worker_marker = "MONARCH_TEST_ATTACHED_WORKER"
     assert worker_marker not in os.environ
-    job = DuplexProcessJob(
-        env={worker_marker: "1"},
-        service_proc_id=ProcId(Uid.instance("service")),
-    )
+    job = DuplexProcessJob(env={worker_marker: "1"})
     job.apply()
     attach(job.duplex_addr)
     with scoped_state(job, cached_path=None):

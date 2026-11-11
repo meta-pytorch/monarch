@@ -1690,7 +1690,7 @@ def test_simple_bootstrap():
         workers = []
 
         for i in range(4):
-            addr = service_proc_addr(f"ipc://{d}/{i}", new_service_proc_id())
+            addr = f"ipc://{d}/{i}"
             env = {**os.environ}
             if "FB_XAR_INVOKED_NAME" in os.environ:
                 env["PYTHONPATH"] = ":".join(sys.path)
@@ -1727,6 +1727,8 @@ def test_attach_fails_closed_on_unreachable_host():
     # wait the 10 s default.
     with configured(mesh_attach_config_timeout="500ms"):
         with TemporaryDirectory() as d:
+            # An explicit identity skips discovery, so attach reaches the
+            # config push.
             unreachable = service_proc_addr(
                 f"ipc://{d}/never_bound", new_service_proc_id()
             )
@@ -1756,6 +1758,8 @@ def test_attach_fails_closed_on_unreachable_host():
 def test_attach_failure_replays_to_fresh_readiness_observers() -> None:
     with configured(mesh_attach_config_timeout="500ms"):
         with TemporaryDirectory() as directory:
+            # An explicit identity skips discovery, so attach reaches the
+            # config push.
             unreachable = service_proc_addr(
                 f"ipc://{directory}/never_bound", new_service_proc_id()
             )
@@ -1800,7 +1804,7 @@ def test_config_propagates_to_host_agent():
         workers = []
 
         for i in range(1):
-            addr = service_proc_addr(f"ipc://{d}/{i}", new_service_proc_id())
+            addr = f"ipc://{d}/{i}"
             env = {**os.environ}
             if "FB_XAR_INVOKED_NAME" in os.environ:
                 env["PYTHONPATH"] = ":".join(sys.path)
@@ -1848,8 +1852,6 @@ def test_fd_bootstrap():
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
         fd = sock.fileno()
-        service_proc_id = new_service_proc_id()
-
         env = {**os.environ}
         if "FB_XAR_INVOKED_NAME" in os.environ:
             env["PYTHONPATH"] = ":".join(sys.path)
@@ -1861,7 +1863,7 @@ def test_fd_bootstrap():
                 sys.executable,
                 "-c",
                 f"import sys; from monarch.actor import run_worker_loop_forever; "
-                f'run_worker_loop_forever(address="{service_proc_id}@tcp://127.0.0.1:fd{fd}", ca="trust_all_connections")',
+                f'run_worker_loop_forever(address="tcp://127.0.0.1:fd{fd}", ca="trust_all_connections")',
             ],
             env=env,
             pass_fds=(fd,),
@@ -1870,7 +1872,7 @@ def test_fd_bootstrap():
         sock.close()
         procs.append(proc)
         # The client connects to the real port, not the fd syntax.
-        workers.append(service_proc_addr(f"tcp://127.0.0.1:{port}", service_proc_id))
+        workers.append(f"tcp://127.0.0.1:{port}")
 
     # pyrefly: ignore [bad-argument-type]
     hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
@@ -1952,20 +1954,18 @@ class FakeLocalLoginJob(LoginJob):
         if "FB_XAR_INVOKED_NAME" in os.environ:
             env["PYTHONPATH"] = ":".join(sys.path)
         addr = f"ipc://{self._dir}/{host}"
-        service_proc_id = new_service_proc_id()
-        proc_addr = service_proc_addr(addr, service_proc_id)
         proc = subprocess.Popen(
             [
                 sys.executable,
                 "-c",
                 "from monarch.actor import run_worker_loop_forever; "
-                f"run_worker_loop_forever(address={proc_addr!r}, "
+                f"run_worker_loop_forever(address={addr!r}, "
                 'ca="trust_all_connections")',
             ],
             env=env,
             start_new_session=True,
         )
-        return ProcessState(proc.pid, proc_addr)
+        return ProcessState(proc.pid, addr)
 
 
 @isolate_in_subprocess
