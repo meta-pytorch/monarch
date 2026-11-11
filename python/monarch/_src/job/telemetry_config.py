@@ -71,6 +71,9 @@ from monarch.monarch_dashboard.server.query_engine_adapter import QueryEngineAda
 
 logger: logging.Logger = logging.getLogger(__name__)
 
+# Above the scanner's own 5 s bound on closing its persist log.
+_PERSIST_CLOSE_TIMEOUT_SECS: float = 10.0
+
 _sidecar_socket_path: str | None = None
 _startup_provider_registered: bool = False
 
@@ -415,6 +418,14 @@ class _TelemetryHandle:
                     "failed to stop telemetry worker collectors",
                     exc_info=True,
                 )
+            # `shutdown_context` waits at most 0.5 s for `__cleanup__`, which
+            # is too short to finish the log on a slow mount.
+            try:
+                client_actor.close_persist.call_one().get(
+                    timeout=_PERSIST_CLOSE_TIMEOUT_SECS
+                )
+            except Exception:
+                logger.info("failed to close telemetry persist log", exc_info=True)
         # Drain in-flight async work with a short cap. Beyond that, we
         # prefer a quick teardown over guaranteed completion — the sidecar
         # is being asked to die and the parent has already moved on.

@@ -391,6 +391,29 @@ def test_shutdown_stops_worker_collectors() -> None:
     shutdown_context.return_value.get.assert_called_once_with(timeout=5.0)
 
 
+def test_shutdown_closes_persist_log_before_context_shutdown() -> None:
+    # `shutdown_context` waits at most 0.5 s for an actor's `__cleanup__`, so
+    # the client log must be closed before it.
+    client_actor = MagicMock()
+    handle = tc._TelemetryHandle("persist_test")
+    handle._client_actor = client_actor
+    order = []
+    client_actor.close_persist.call_one.return_value.get.side_effect = (
+        lambda **_: order.append("close_persist")
+    )
+
+    with patch.object(tc, "shutdown_context") as shutdown_context:
+        shutdown_context.return_value.get.side_effect = lambda **_: order.append(
+            "shutdown_context"
+        )
+        handle.shutdown()
+
+    client_actor.close_persist.call_one.return_value.get.assert_called_once_with(
+        timeout=10.0
+    )
+    assert order == ["close_persist", "shutdown_context"]
+
+
 def test_start_worker_collector_drops_inactive_actor() -> None:
     actor_mesh = MagicMock()
     proc_mesh = MagicMock()

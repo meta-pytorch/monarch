@@ -287,8 +287,16 @@ class TelemetryActor(Actor):
         logger.info("worker telemetry message was undeliverable, skipping: %s", message)
         return True
 
+    @endpoint
+    def close_persist(self) -> None:
+        """Write pending telemetry and close this collector's persist log."""
+        self._close_persist()
+
     def __cleanup__(self, exc: Exception | None) -> None:
         """Close this collector's persist log so it ends cleanly."""
+        self._close_persist()
+
+    def _close_persist(self) -> None:
         scanner = self._scanner
         if scanner is not None:
             scanner.close_persist()
