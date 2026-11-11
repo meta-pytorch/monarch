@@ -7,6 +7,8 @@
 """Admin creation starts at the call; observation never owns its native work."""
 
 import asyncio
+import re
+import socket
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +18,29 @@ from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef
 from monarch._src.actor import host_mesh as host_mesh_module
 from monarch._src.actor.actor_mesh import shutdown_context
 from monarch._src.actor.host_mesh import this_host
+from monarch._src.job.job import LocalJob
+
+
+@pytest.mark.parametrize("via_job", [False, True])
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_spawn_admin_fails_on_occupied_address(via_job):
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as occupied:
+        occupied.bind(("::", 0))
+        occupied.listen()
+        addr = f"[::]:{occupied.getsockname()[1]}"
+        try:
+            with pytest.raises(
+                Exception, match=re.escape(f"cannot bind {addr}") + ".*in use"
+            ):
+                if via_job:
+                    LocalJob().enable_admin(admin_addr=addr).state(cached_path=None)
+                else:
+                    host_mesh_module._spawn_admin([this_host()], admin_addr=addr).get(
+                        timeout=10
+                    )
+        finally:
+            shutdown_context().get(timeout=30)
 
 
 @pytest.mark.parametrize("observation", ["cancel", "timeout", "drop"])

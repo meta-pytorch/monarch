@@ -50,6 +50,7 @@ use hyperactor::Endpoint as _;
 use hyperactor::Gateway;
 use hyperactor::Handler;
 use hyperactor::accum::IdleFlushReducerOpts;
+use hyperactor::actor::ActorStatus;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::id::Label;
 use hyperactor::id::Uid;
@@ -1827,8 +1828,13 @@ fn aggregate_hosts(
 /// all meshes.
 ///
 /// Spawn a `MeshAdminAgent` aggregating topology across one or more
-/// meshes. Returns a typed `ActorRef<MeshAdminAgent>`. Callers that
-/// need the admin URL query it via `get_admin_addr`.
+/// meshes. Binds `admin_addr` (default: `MESH_ADMIN_ADDR` config)
+/// before spawning, so a bind failure returns an error and spawns
+/// nothing. Then waits for the agent to finish `init`. An `init`
+/// failure still goes through normal actor supervision; if the caller
+/// survives it, this returns an error instead of waiting forever.
+/// Returns a typed `ActorRef<MeshAdminAgent>`. Callers that need the
+/// admin URL query it via `get_admin_addr`.
 ///
 /// See the `mesh_admin` module doc for the SA-* (spawn/aggregation),
 /// CH-* (client host), and AI-* (admin identity) invariants.
@@ -1854,6 +1860,24 @@ pub async fn spawn_admin(
 
     let root_client_id = cx.mailbox().actor_addr().clone();
 
+    let bind_addr = match admin_addr {
+        Some(addr) => addr,
+        None => hyperactor_config::global::get_cloned(crate::config::MESH_ADMIN_ADDR)
+            .parse_socket_addr()
+            .map_err(|e| anyhow::anyhow!("invalid MESH_ADMIN_ADDR config: {}", e))?,
+    };
+    // A bind failure must not spawn the singleton admin actor: its id
+    // would stay reserved and block a retry.
+    let listener = tokio::net::TcpListener::bind(bind_addr)
+        .await
+        .and_then(|listener| listener.into_std())
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "mesh admin: cannot bind {bind_addr}: {e}; stop the process using it \
+                 or choose another address with HYPERACTOR_MESH_ADMIN_ADDR"
+            )
+        })?;
+
     // Spawn the admin on the caller's local proc. Placement now
     // follows the caller context rather than mesh topology.
     let local_proc = cx.instance().proc();
@@ -1862,10 +1886,24 @@ pub async fn spawn_admin(
         crate::mesh_admin::MeshAdminAgent::new(
             hosts,
             Some(root_client_id),
-            admin_addr,
+            listener,
             telemetry_url,
         ),
     )?;
+    let initialized = agent_handle
+        .status()
+        .wait_for(|status| {
+            matches!(status, ActorStatus::Idle | ActorStatus::Processing(..))
+                || status.is_terminal()
+        })
+        .await
+        .expect("the actor handle keeps the status channel open")
+        .clone();
+    match initialized {
+        ActorStatus::Failed(error) => anyhow::bail!("mesh admin: init failed: {error}"),
+        ActorStatus::Stopped(reason) => anyhow::bail!("mesh admin: stopped during init: {reason}"),
+        _ => {}
+    }
     let admin_ref = agent_handle.bind();
     Ok(admin_ref)
 }
@@ -1973,7 +2011,9 @@ mod tests {
     #[cfg(fbcode_build)]
     use std::assert_matches;
 
+    use hyperactor::Proc;
     use hyperactor::ProcId;
+    use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
     #[cfg(fbcode_build)]
     use hyperactor_config::attrs::Attrs;
     use ndslice::ViewExt;
@@ -2586,6 +2626,41 @@ mod tests {
             vec![first_service_proc_id, service_proc_id,]
         );
         assert_eq!(round_trip.host_addrs(), vec![dial_addr.clone(), dial_addr]);
+    }
+
+    #[tokio::test]
+    async fn test_spawn_admin_bind_failure_is_retryable() {
+        let occupied = tokio::net::TcpListener::bind("[::]:0").await.unwrap();
+        let addr = occupied.local_addr().unwrap();
+        let caller_proc = Proc::direct(ChannelTransport::Unix.any(), "caller".to_string()).unwrap();
+        let _supervision = ProcSupervisionCoordinator::set(&caller_proc).await.unwrap();
+        let caller = caller_proc.client("caller");
+        let mesh = HostMeshRef::from_hosts(
+            HostMeshId::singleton(Label::new("hosts").unwrap()),
+            vec![ProcAddr::instance(
+                ChannelTransport::Unix.any(),
+                SERVICE_PROC_NAME,
+            )],
+        );
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            spawn_admin([&mesh], &caller, Some(addr), None),
+        )
+        .await
+        .expect("bind failure must not hang")
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains(&format!("cannot bind {addr}")) && error.contains("in use"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(caller_proc.failed_actor_count(), 0);
+
+        drop(occupied);
+        spawn_admin([&mesh], &caller, Some(addr), None)
+            .await
+            .expect("retry after the address is freed must succeed");
     }
 
     #[tokio::test]

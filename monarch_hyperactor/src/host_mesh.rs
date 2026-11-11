@@ -1017,8 +1017,9 @@ impl PyMeshAdminRef {
 ///
 /// An empty mesh list or invalid explicit `admin_addr` is rejected before work
 /// starts. If `admin_addr` is omitted, the agent uses `MESH_ADMIN_ADDR` config.
-/// Host resolution, agent startup and URL lookup errors are raised when the
-/// returned Handle is observed. Dropping that Handle does not cancel the work.
+/// Host resolution, address binding, agent startup, and URL lookup errors are
+/// raised when the returned Handle is observed. Dropping that Handle does not
+/// cancel the work.
 #[pyfunction]
 fn _spawn_admin(
     host_meshes: Vec<PyRef<'_, PyHandle>>,
