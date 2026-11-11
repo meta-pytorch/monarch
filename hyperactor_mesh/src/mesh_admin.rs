@@ -754,22 +754,20 @@ pub struct MeshAdminAgent {
     //
     // The admin HTTP server has three address representations:
     //
-    //   1. `admin_addr_override` — caller-supplied bind address
-    //      (constructor param). When `None`, `init` reads
-    //      `MESH_ADMIN_ADDR` from config instead.
+    //   1. `listener` — the bound server socket (constructor
+    //      param). `spawn_admin` binds it before spawning the agent.
     //
     //   2. `admin_addr` — the actual `SocketAddr` the OS assigned
-    //      after `TcpListener::bind`. Populated during `init`.
+    //      to `listener`. Populated during `init`.
     //
     //   3. `admin_host` — human-friendly URL with the machine
     //      hostname (not the raw IP) so it works with DNS and TLS
     //      certificate validation. Returned via `GetAdminAddr`.
-    /// Caller-supplied bind address. When `None`, `init` reads
-    /// `MESH_ADMIN_ADDR` from config.
-    admin_addr_override: Option<std::net::SocketAddr>,
+    /// Bound, non-blocking HTTP server socket. `init` takes it to
+    /// serve requests.
+    listener: Option<std::net::TcpListener>,
 
-    /// Actual bound address after `TcpListener::bind`, populated
-    /// during `init`.
+    /// Actual bound address of `listener`, populated during `init`.
     admin_addr: Option<std::net::SocketAddr>,
 
     /// Hostname-based URL (e.g. `"https://myhost.facebook.com:1729"`)
@@ -802,12 +800,12 @@ impl MeshAdminAgent {
     /// as a first-class child of the root node in the introspection
     /// tree.
     ///
-    /// The HTTP listen address is initialized to `None` and populated
-    /// during `init()` after the server socket is bound.
+    /// `listener` must be bound and non-blocking; `init` serves HTTP
+    /// on it.
     pub fn new(
         hosts: Vec<(String, ActorRef<HostAgent>)>,
         root_client_actor_id: Option<hyperactor::ActorAddr>,
-        admin_addr: Option<std::net::SocketAddr>,
+        listener: std::net::TcpListener,
         telemetry_url: Option<String>,
     ) -> Self {
         let mut hosts_by_identity = HashMap::new();
@@ -842,7 +840,7 @@ impl MeshAdminAgent {
             proc_owners: HashMap::new(),
             root_client_actor_id,
             self_actor_id: None,
-            admin_addr_override: admin_addr,
+            listener: Some(listener),
             admin_addr: None,
             admin_host: None,
             telemetry_url,
@@ -1057,13 +1055,11 @@ impl Actor for MeshAdminAgent {
         this.set_system();
         self.self_actor_id = Some(this.self_addr().clone());
 
-        let bind_addr = match self.admin_addr_override {
-            Some(addr) => addr,
-            None => hyperactor_config::global::get_cloned(crate::config::MESH_ADMIN_ADDR)
-                .parse_socket_addr()
-                .map_err(|e| anyhow::anyhow!("invalid MESH_ADMIN_ADDR config: {}", e))?,
-        };
-        let listener = TcpListener::bind(bind_addr).await?;
+        let listener = TcpListener::from_std(
+            self.listener
+                .take()
+                .expect("init takes the listener exactly once"),
+        )?;
         let bound_addr = listener.local_addr()?;
         self.admin_addr = Some(bound_addr);
 
@@ -3525,11 +3521,14 @@ mod tests {
     use crate::mesh_id::ResourceId;
     use crate::pyspy::PySpyCaptureMode;
 
-    // Integration tests that spawn MeshAdminAgent must pass
-    // `Some("[::]:0".parse().unwrap())` as the admin_addr to get an
-    // ephemeral port. The default (`None`) reads MESH_ADMIN_ADDR
-    // config which is `[::]:1729` — a fixed port that causes bind
-    // conflicts when tests run concurrently.
+    // Tests that construct MeshAdminAgent pass `ephemeral_listener()`.
+    // The default MESH_ADMIN_ADDR config, `[::]:1729`, is a fixed port
+    // that causes bind conflicts when tests run concurrently.
+    fn ephemeral_listener() -> std::net::TcpListener {
+        let listener = std::net::TcpListener::bind("[::]:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        listener
+    }
 
     #[test]
     fn failed_pyspy_dump_is_rejected_before_storage() {
@@ -3673,7 +3672,7 @@ mod tests {
         let agent = MeshAdminAgent::new(
             vec![("host_a".to_string(), ref1), ("host_b".to_string(), ref2)],
             None,
-            None,
+            ephemeral_listener(),
             None,
         );
 
@@ -3744,7 +3743,7 @@ mod tests {
                 .map(|host| (addr.to_string(), (*host).clone()))
                 .collect(),
             None,
-            None,
+            ephemeral_listener(),
             None,
         )
     }
@@ -3986,7 +3985,7 @@ mod tests {
                             .map(|host| (addr.clone(), (*host).clone()))
                             .collect(),
                         None,
-                        Some("[::]:0".parse().unwrap()),
+                        ephemeral_listener(),
                         None,
                     ),
                 )
@@ -4221,7 +4220,7 @@ mod tests {
             MeshAdminAgent::new(
                 vec![(host_addr_str.clone(), host_agent_ref.clone())],
                 None,
-                Some("[::]:0".parse().unwrap()),
+                ephemeral_listener(),
                 None,
             ),
         );
@@ -4390,7 +4389,7 @@ mod tests {
             MeshAdminAgent::new(
                 vec![(host_addr_str.clone(), host_agent_ref.clone())],
                 None,
-                Some("[::]:0".parse().unwrap()),
+                ephemeral_listener(),
                 None,
             ),
         );
@@ -4475,7 +4474,7 @@ mod tests {
         let agent = MeshAdminAgent::new(
             vec![("host_a".to_string(), ref1)],
             Some(client_actor_id.clone()),
-            None,
+            ephemeral_listener(),
             None,
         );
 
@@ -4547,7 +4546,7 @@ mod tests {
             MeshAdminAgent::new(
                 vec![(host_addr_str.clone(), host_agent_ref.clone())],
                 Some(root_client_actor_id.clone()),
-                Some("[::]:0".parse().unwrap()),
+                ephemeral_listener(),
                 None,
             ),
         );
@@ -4700,7 +4699,7 @@ mod tests {
             MeshAdminAgent::new(
                 vec![(host_addr_str, host_agent_ref)],
                 None,
-                Some("[::]:0".parse().unwrap()),
+                ephemeral_listener(),
                 None,
             ),
         );
@@ -4803,7 +4802,7 @@ mod tests {
             MeshAdminAgent::new(
                 vec![(host_addr_str.clone(), host_agent_ref.clone())],
                 None,
-                Some("[::]:0".parse().unwrap()),
+                ephemeral_listener(),
                 None,
             ),
         );
@@ -5112,7 +5111,7 @@ mod tests {
             MeshAdminAgent::new(
                 vec![(String::new(), stand_in)],
                 None,
-                Some("[::]:0".parse().unwrap()),
+                ephemeral_listener(),
                 None,
             ),
         );
