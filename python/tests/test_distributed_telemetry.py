@@ -23,8 +23,12 @@ from typing import Any, cast
 
 import monarch._src.job.telemetry_actor as job_telemetry_actor
 import monarch.actor
+import pyarrow as pa
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
+from monarch._rust_bindings.monarch_distributed_telemetry import (
+    _register_telemetry_schemas,
+)
 from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner import (
     DatabaseScanner,
 )
@@ -33,6 +37,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch._src.actor.actor_mesh import Actor, ActorMesh, current_rank
 from monarch._src.actor.endpoint import endpoint
+from monarch._src.job.persisted_telemetry import open_persisted_engine
 from monarch.actor import span
 from monarch.config import configured
 from monarch.distributed_telemetry.engine import QueryEngine
@@ -465,6 +470,55 @@ def test_unwritable_persist_dir_keeps_collector_active(tmp_path) -> None:
         actor.__cleanup__(None)
     finally:
         _remove_socket_dir(apply_id)
+
+
+def _spans_ipc(schema: pa.Schema, count: int) -> bytes:
+    batch = pa.RecordBatch.from_pylist(
+        [
+            {
+                "process_id": "p",
+                "id": i,
+                "name": f"span{i}",
+                "target": "t",
+                "level": "INFO",
+                "fields_json": "{}",
+                "timestamp_us": 1_000 + i,
+                "parent_id": None,
+                "thread_name": "main",
+                "file": None,
+                "line": None,
+            }
+            for i in range(count)
+        ],
+        schema=schema,
+    )
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, schema) as writer:
+        writer.write_batch(batch)
+    return sink.getvalue().to_pybytes()
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_persisted_engine_queries_loaded_tables(tmp_path) -> None:
+    root = tmp_path / "apply"
+    scanner = DatabaseScanner(0, retention_secs=0, persist_dir=str(root / "h1-12"))
+    _register_telemetry_schemas(scanner)
+    schema = pa.ipc.read_schema(pa.py_buffer(scanner.schema_for("spans")))
+    scanner.ingest_snapshot_batch("spans", _spans_ipc(schema, 3))
+    scanner.close_persist()
+
+    engine, instances = open_persisted_engine([str(root)])
+
+    assert [instance["name"] for instance in instances] == ["h1-12"]
+    assert engine.query("SELECT COUNT(*) AS c FROM spans").to_pylist() == [{"c": 3}]
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_persisted_engine_reports_missing_instances(tmp_path) -> None:
+    with pytest.raises(RuntimeError, match="no telemetry instances under"):
+        open_persisted_engine([str(tmp_path)])
 
 
 @pytest.mark.timeout(30)
