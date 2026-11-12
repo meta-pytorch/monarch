@@ -174,7 +174,7 @@ guest kernel and the Rust example. Run the automated test with:
 
 ```bash
 buck test @fbcode//mode/dev-nosan \
-  fbcode//monarch/chrysalis/python/tests:test_sealed_postcard_microvms \
+  fbcode//monarch/chrysalis/python/tests:test_sealed_postcard_rust_microvms \
   -- --print-passing-details
 ```
 
