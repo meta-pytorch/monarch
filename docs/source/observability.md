@@ -67,6 +67,11 @@ print(result["rows"])
 Use `state.dashboard_url` in a browser. Pass `state.admin_url` to
 `monarch-tui --addr`.
 
+The job sidecar runs the admin server for the life of the job, so later
+`state()` calls and `monarch` commands reuse it. If the admin address (default
+`[::]:1729`) is taken, `state()` raises. Stop the other process, or pass
+`MeshAdminConfig(admin_addr=...)`.
+
 ## Metrics
 
 Monarch records its built-in metrics through one process-global OpenTelemetry

@@ -29,17 +29,19 @@ def test_spawn_admin_fails_on_occupied_address(via_job):
         occupied.bind(("::", 0))
         occupied.listen()
         addr = f"[::]:{occupied.getsockname()[1]}"
+        job = LocalJob().enable_admin(admin_addr=addr)
         try:
             with pytest.raises(
                 Exception, match=re.escape(f"cannot bind {addr}") + ".*in use"
             ):
                 if via_job:
-                    LocalJob().enable_admin(admin_addr=addr).state(cached_path=None)
+                    job.state(cached_path=None)
                 else:
                     host_mesh_module._spawn_admin([this_host()], admin_addr=addr).get(
                         timeout=10
                     )
         finally:
+            job.kill()
             shutdown_context().get(timeout=30)
 
 

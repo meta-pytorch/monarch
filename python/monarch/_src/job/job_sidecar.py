@@ -11,6 +11,7 @@
 The sidecar process is keyed by a job ``apply_id`` and kept alive by ``OnceDaemon``.
 """
 
+import logging
 import os
 import pickle
 import socket
@@ -19,12 +20,16 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec
+from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef
+from monarch._src.actor.host_mesh import _add_admin_hosts, _spawn_admin
 from monarch._src.job.once_daemon import find_daemon, OnceDaemon
-from monarch.actor import attach, enable_transport, HostMesh
+from monarch.actor import attach, context, enable_transport, HostMesh
 from monarch.config import get_runtime_config
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 _JOB_SIDECAR_WORKER_MODULE = "monarch._src.job._job_sidecar_worker"
 _MOUNT_CLEAR_TIMEOUT_S = 30.0
@@ -122,6 +127,44 @@ def stop_job_sidecar(apply_id: str) -> None:
             raise
 
 
+def ensure_job_admin(
+    apply_id: str,
+    host_meshes: dict[str, HostMesh],
+    client_host: HostMesh,
+    admin_addr: str,
+    telemetry_url: str | None,
+    snapshot_interval_secs: float | None,
+) -> str:
+    """Return the job's mesh admin URL, starting the admin in the sidecar if needed.
+
+    The sidecar also lists this process's ``client_host`` until the process
+    exits. Raises if the admin cannot start, for example because its address is
+    taken.
+    """
+    response = (
+        get_job_sidecar(apply_id)
+        .send(
+            AdminRequest(
+                apply_id=apply_id,
+                host_meshes=host_meshes,
+                client_host=client_host,
+                client_pid=os.getpid(),
+                admin_addr=admin_addr,
+                telemetry_url=telemetry_url,
+                snapshot_interval_secs=snapshot_interval_secs,
+            )
+        )
+        .get()
+    )
+    if not isinstance(response, dict):
+        raise RuntimeError(f"unexpected mesh admin response: {response!r}")
+    if isinstance(response.get("error"), str):
+        raise RuntimeError(response["error"])
+    for warning in response["warnings"]:
+        logger.warning("mesh admin: %s", warning)
+    return response["admin_url"]
+
+
 def raise_for_sidecar_error(response: object, operation: str) -> None:
     """Raise when a job-sidecar response reports an operation failure."""
     if isinstance(response, dict) and isinstance(response.get("error"), str):
@@ -180,11 +223,46 @@ class TelemetryInfoRequest:
 
 
 @dataclass
-class AdminUrlRequest:
-    """Set the mesh-admin URL in the job sidecar process."""
+class AdminRequest:
+    """Start the job's mesh admin, or return the URL of the running one."""
 
     apply_id: str
+    host_meshes: dict[str, HostMesh]
+    client_host: HostMesh
+    client_pid: int
+    admin_addr: str
+    telemetry_url: str | None
+    # None when the client has no telemetry config, so no snapshot opinion.
+    snapshot_interval_secs: float | None
+
+
+class AdminResponse(TypedDict):
+    """The job sidecar's reply to an `AdminRequest`."""
+
     admin_url: str
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class _RunningAdmin:
+    """The job's mesh admin, started by the first `AdminRequest`."""
+
+    url: str
+    addr: str
+    telemetry_url: str | None
+    ref: PyMeshAdminRef
+
+
+def _telemetry_mismatch(admin: _RunningAdmin, request: AdminRequest) -> str | None:
+    """Warn when the client's telemetry is not the one the admin started with."""
+    if request.telemetry_url is None or request.telemetry_url == admin.telemetry_url:
+        return None
+    if admin.telemetry_url is None:
+        return (
+            "started without telemetry, so it cannot query the dashboard; "
+            "kill the job to link it"
+        )
+    return f"uses telemetry at {admin.telemetry_url}; kill the job to change it"
 
 
 class _JobSidecarState:
@@ -194,6 +272,8 @@ class _JobSidecarState:
         self._mounts_handle: Any | None = None
         self._mounts_key: bytes | None = None
         self._telemetry_handle: Any | None = None
+        self._admin: _RunningAdmin | None = None
+        self._snapshot_interval_secs: float | None = None
         self._apply_id: str | None = None
 
     def _ensure_apply_id(self, apply_id: str) -> None:
@@ -258,10 +338,89 @@ class _JobSidecarState:
             raise RuntimeError("distributed telemetry is not running for this job")
         return self._telemetry_handle.info()
 
-    def handle_admin_url(self, request: AdminUrlRequest) -> str:
+    def handle_admin(self, request: AdminRequest) -> AdminResponse:
+        """Start the mesh admin once; later requests reuse it."""
         self._ensure_apply_id(request.apply_id)
-        os.environ["MONARCH_ADMIN_URL"] = request.admin_url
-        return "ok"
+        admin = self._admin
+        if admin is None:
+            url, ref = _spawn_admin(
+                list(request.host_meshes.values()),
+                admin_addr=request.admin_addr,
+                telemetry_url=request.telemetry_url,
+            ).get()
+            admin = self._admin = _RunningAdmin(
+                url, request.admin_addr, request.telemetry_url, ref
+            )
+            # The dashboard's py-spy client reads the admin URL from here.
+            os.environ["MONARCH_ADMIN_URL"] = url
+        elif request.admin_addr != admin.addr:
+            raise RuntimeError(
+                f"mesh admin is already running at {admin.url}; "
+                "kill the job to change its address"
+            )
+        warnings = [
+            warning
+            for warning in (
+                self._add_client_host(admin, request),
+                _telemetry_mismatch(admin, request),
+                self._ensure_snapshots(admin, request),
+            )
+            if warning is not None
+        ]
+        return {"admin_url": admin.url, "warnings": warnings}
+
+    def _add_client_host(
+        self, admin: _RunningAdmin, request: AdminRequest
+    ) -> str | None:
+        """List the requesting client, so actors in its process stay visible.
+
+        Best-effort: a failure returns a warning instead of failing `state()`.
+        """
+        try:
+            _add_admin_hosts(admin.ref, [request.client_host], request.client_pid).get()
+        except Exception as error:
+            _dbg(traceback.format_exc())
+            return f"this client is not listed in the admin topology: {error}"
+        return None
+
+    def _ensure_snapshots(
+        self, admin: _RunningAdmin, request: AdminRequest
+    ) -> str | None:
+        """Start snapshots once telemetry is live. Best-effort: a failed start
+        returns a warning and is retried on the next request.
+
+        Also returns a warning when the request asks for a different interval
+        than the running snapshots, which cannot be changed or stopped.
+        """
+        requested = request.snapshot_interval_secs
+        if requested is None:
+            return None
+        running = self._snapshot_interval_secs
+        if running is not None:
+            if requested != running:
+                return (
+                    f"snapshots keep running every {running}s; kill the job to "
+                    f"apply snapshot_interval_secs={requested}"
+                )
+            return None
+        if request.telemetry_url is None or requested <= 0:
+            return None
+        from monarch._rust_bindings.monarch_extension.snapshot_integration import (
+            _start_periodic_snapshots_http,
+        )
+
+        try:
+            _start_periodic_snapshots_http(
+                base_url=request.telemetry_url,
+                admin_ref=admin.ref,
+                instance=context().actor_instance._as_rust(),
+                interval_secs=requested,
+            )
+        except Exception as error:
+            _dbg(traceback.format_exc())
+            return f"snapshots failed to start; will retry on the next state(): {error}"
+        self._snapshot_interval_secs = requested
+        return None
 
     def shutdown(self) -> None:
         self.clear_mounts()
@@ -339,8 +498,12 @@ def _run_job_sidecar(
                             # Preserve sidecar context in its log, not in CLI errors.
                             _dbg(traceback.format_exc())
                             response = {"error": str(error)}
-                    elif isinstance(msg, AdminUrlRequest):
-                        response = state.handle_admin_url(msg)
+                    elif isinstance(msg, AdminRequest):
+                        try:
+                            response = state.handle_admin(msg)
+                        except Exception as error:
+                            _dbg(traceback.format_exc())
+                            response = {"error": str(error)}
                     else:
                         raise RuntimeError(f"unexpected job sidecar request: {msg!r}")
                 except Exception:

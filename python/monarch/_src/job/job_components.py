@@ -10,7 +10,7 @@
 
 ``JobTrait`` owns scheduler state and the current allocation. ``JobComponent``
 owns the configuration and live handles for one job-scoped capability: mounts,
-telemetry, admin, or snapshots.
+telemetry, or admin.
 
 The hooks mirror the job lifecycle after an allocation is selected:
 
@@ -31,20 +31,20 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef
-from monarch._src.actor.host_mesh import _spawn_admin
-from monarch._src.actor.sync_state import fake_sync_state
 from monarch._src.job._telemetry_query_client import QueryEngineClient
+from monarch._src.job.job_sidecar import ensure_job_admin
 from monarch._src.job.mount_config import Mounts
 from monarch._src.job.telemetry_config import (
     install_sidecar_socket_sink,
     Telemetry,
     TelemetryConfig,
 )
-from monarch.actor import HostMesh
+from monarch.actor import HostMesh, this_host
+from monarch.config import get_global_config
 
 if TYPE_CHECKING:
     from monarch._src.job.job import JobState, JobTrait
@@ -56,14 +56,15 @@ logger: logging.Logger = logging.getLogger(__name__)
 class MeshAdminConfig:
     """Configuration for automatic mesh admin agent startup.
 
-    When passed to ``JobTrait.enable_telemetry``, a MeshAdminAgent HTTP server
-    is spawned when ``state()`` is called. The server aggregates topology
-    across all host meshes and exposes it via a REST API that the admin TUI
-    can attach to.
+    The job sidecar starts a MeshAdminAgent HTTP server on the first
+    ``state()`` call; later calls, from any process using the job, reuse it.
+    The server aggregates topology across all host meshes and exposes it via a
+    REST API that the admin TUI can attach to. If the address is taken,
+    ``state()`` raises.
 
     Args:
         admin_addr: Bind address for the admin HTTP server. When ``None``, the
-            server uses the configured ``MESH_ADMIN_ADDR``.
+            server uses this process's ``mesh_admin_addr`` config.
     """
 
     admin_addr: Optional[str] = None
@@ -296,12 +297,13 @@ class TelemetryComponent(JobComponent):
 
 
 class AdminComponent(JobComponent):
-    """Start the mesh admin agent once per allocation.
+    """Run the job's mesh admin agent in the job sidecar.
 
-    Owns the admin URL and ref. If telemetry is configured, the admin agent
-    receives the telemetry URL from the active telemetry component.
-    ``JobComponents`` resets this runtime when admin config drifts or telemetry
-    config changes.
+    The sidecar starts the admin once per allocation and keeps it for the life
+    of the job, so later ``state`` calls reuse it. Each call adds this
+    process's host, so actors spawned here stay in the topology. With live
+    telemetry, the admin links to the dashboard and the sidecar captures
+    periodic topology snapshots.
     """
 
     def __init__(
@@ -312,130 +314,63 @@ class AdminComponent(JobComponent):
         self._config = config
         self._telemetry = telemetry
         self._admin_url: Optional[str] = None
-        self._admin_ref: Optional[PyMeshAdminRef] = None
 
     def reset_runtime(self) -> None:
         self._admin_url = None
-        self._admin_ref = None
 
     def __getstate__(self) -> Dict[str, Any]:
         state = self.__dict__.copy()
         state["_admin_url"] = None
-        state["_admin_ref"] = None
         return state
 
     def state(self, job: "JobTrait", job_state: "JobState") -> None:
-        if self._admin_url is None:
-            telemetry_url = (
-                self._telemetry._telemetry_url if self._telemetry is not None else None
-            )
-            # state() is a sync API but is commonly called from inside
-            # asyncio.run(...); mask the running loop so the inner .get() does not
-            # trip the Future.get-in-loop check.
-            with fake_sync_state():
-                self._admin_url, self._admin_ref = _spawn_admin(
-                    list(job_state._hosts.values()),
-                    admin_addr=self._config.admin_addr,
-                    telemetry_url=telemetry_url,
-                ).get()
-        # Push the resolved admin URL into the telemetry sidecar (a separate
-        # process) so the dashboard's pyspy client targets the real admin
-        # endpoint rather than the default https://<fqdn>:1729. Best-effort and
-        # only when telemetry is live; never fatal to job startup.
-        if (
-            self._telemetry is not None
-            and self._telemetry._telemetry_url is not None
-            and self._admin_url is not None
-            and job.apply_id is not None
-        ):
-            try:
-                Telemetry(self._telemetry._config).set_admin_url(
-                    job.apply_id, self._admin_url
-                )
-            except Exception:
-                logger.warning(
-                    "failed to push admin URL to telemetry sidecar", exc_info=True
-                )
-        job_state.admin_url = self._admin_url
-
-
-class SnapshotComponent(JobComponent):
-    """Start periodic mesh-introspection snapshots once per allocation.
-
-    Requires both telemetry and admin to have come up, plus a positive
-    ``snapshot_interval_secs``. The snapshot actor is owned by proc lifecycle,
-    so this component has no fine-grained stop handle once started.
-
-    Because the actor cannot be stopped, ``_started`` stays sticky for the life
-    of the allocation: once running, the snapshot is not restarted even when its
-    telemetry or admin dependencies are reset by config drift. Restarting would
-    spawn a duplicate actor against the new runtime while the original keeps
-    capturing from the old one. ``JobComponents`` warns on such drift; picking up
-    new config requires killing and re-applying the job.
-    """
-
-    def __init__(
-        self,
-        telemetry: TelemetryComponent,
-        admin: AdminComponent,
-    ) -> None:
-        self._telemetry = telemetry
-        self._admin = admin
-        self._started = False
-
-    def reset_runtime(self) -> None:
-        self._started = False
-
-    def __getstate__(self) -> Dict[str, Any]:
-        state = self.__dict__.copy()
-        state["_started"] = False
-        return state
-
-    def state(self, job: "JobTrait", job_state: "JobState") -> None:
-        if self._started:
-            return
-        admin_ref = self._admin._admin_ref
-        if admin_ref is None:
-            return
-        snapshot_interval_secs = self._telemetry._config.snapshot_interval_secs
-        if snapshot_interval_secs <= 0:
-            return
-
-        from monarch.actor import context
-
-        instance = context().actor_instance._as_rust()
-        telemetry_url = self._telemetry._telemetry_url
-        if telemetry_url is None:
-            return
-        from monarch._rust_bindings.monarch_extension.snapshot_integration import (
-            _start_periodic_snapshots_http,
+        apply_id = job.apply_id
+        assert apply_id is not None, "state() runs on an applied job"
+        telemetry = self._telemetry
+        telemetry_url = telemetry.telemetry_url if telemetry is not None else None
+        # Resolve the default here: the sidecar does not see this process's
+        # runtime config.
+        admin_addr = self._config.admin_addr
+        if admin_addr is None:
+            admin_addr = str(get_global_config()["mesh_admin_addr"])
+        admin_url = ensure_job_admin(
+            apply_id,
+            job_state._hosts,
+            client_host=this_host(),
+            admin_addr=admin_addr,
+            telemetry_url=telemetry_url,
+            snapshot_interval_secs=(
+                telemetry._config.snapshot_interval_secs
+                if telemetry is not None
+                else None
+            ),
         )
-
-        _start_periodic_snapshots_http(
-            base_url=telemetry_url,
-            admin_ref=admin_ref,
-            instance=instance,
-            interval_secs=snapshot_interval_secs,
-        )
-        self._started = True
+        # The admin prints its address in the sidecar log, not here.
+        if admin_url != self._admin_url:
+            print(f"Mesh admin: {admin_url}", file=sys.stderr, flush=True)
+            self._admin_url = admin_url
+        job_state.admin_url = admin_url
 
 
 @dataclass
 class JobComponents:
     """Stable component set for one job.
 
-    Field order is dependency order. Mounts always run first, telemetry
-    feeds admin, and snapshots require both telemetry and admin.
+    Field order is dependency order. Mounts always run first, and telemetry
+    feeds admin.
     """
 
     mounts: MountComponent = field(default_factory=MountComponent)
     telemetry: Optional[TelemetryComponent] = None
     admin: Optional[AdminComponent] = None
-    snapshot: Optional[SnapshotComponent] = None
 
     def needs_sidecar(self) -> bool:
-        """Whether telemetry or mounts require the shared job sidecar."""
-        return self.mounts.needs_sidecar() or self.telemetry is not None
+        """Whether mounts, telemetry, or admin require the shared job sidecar."""
+        return (
+            self.mounts.needs_sidecar()
+            or self.telemetry is not None
+            or self.admin is not None
+        )
 
     def _ordered(self) -> List[JobComponent]:
         components: List[JobComponent] = [self.mounts]
@@ -443,8 +378,6 @@ class JobComponents:
             components.append(self.telemetry)
         if self.admin is not None:
             components.append(self.admin)
-        if self.snapshot is not None:
-            components.append(self.snapshot)
         return components
 
     def before_connect(self, job: "JobTrait") -> None:
@@ -474,64 +407,30 @@ class JobComponents:
         config: TelemetryConfig,
         mesh_admin_config: Optional[MeshAdminConfig] = None,
     ) -> None:
-        """Configure telemetry and its mesh admin and snapshot dependencies."""
+        """Configure telemetry and its mesh admin dependency."""
         telemetry = self.telemetry
         if telemetry is None:
             telemetry = TelemetryComponent(config)
             self.telemetry = telemetry
-            telemetry_changed = True
-        else:
-            telemetry_changed = telemetry._config != config
-            if telemetry_changed:
-                telemetry.reset_runtime()
+        elif telemetry._config != config:
+            telemetry.reset_runtime()
             telemetry._config = config
-        if telemetry_changed:
-            self._warn_if_snapshot_stale()
         admin = self.admin
         if admin is None:
-            admin = AdminComponent(
+            self.admin = AdminComponent(
                 mesh_admin_config
                 if mesh_admin_config is not None
                 else MeshAdminConfig(),
                 telemetry,
             )
-            self.admin = admin
         else:
-            if telemetry_changed:
-                admin.reset_runtime()
             admin._telemetry = telemetry
             if mesh_admin_config is not None:
-                self._set_admin_inputs(admin, mesh_admin_config)
-        if self.snapshot is None:
-            self.snapshot = SnapshotComponent(telemetry, admin)
+                admin._config = mesh_admin_config
 
     def configure_admin(self, config: MeshAdminConfig) -> None:
         admin = self.admin
         if admin is None:
             self.admin = AdminComponent(config, self.telemetry)
         else:
-            self._set_admin_inputs(admin, config)
-
-    def _set_admin_inputs(self, admin: AdminComponent, config: MeshAdminConfig) -> None:
-        if admin._config != config:
-            admin.reset_runtime()
-            self._warn_if_snapshot_stale()
-        admin._config = config
-        admin._telemetry = self.telemetry
-
-    def _warn_if_snapshot_stale(self) -> None:
-        """Warn when a dependency restarts under an already-running snapshot.
-
-        The snapshot actor is fire-and-forget and cannot be stopped within an
-        allocation, so a restarted telemetry or admin runtime leaves it bound to
-        the old runtime. See :class:`SnapshotComponent`.
-
-        TODO: give periodic snapshot capture an abort handle so
-        ``SnapshotComponent.reset_runtime`` can stop the old actor; then reset
-        the snapshot in this drift cascade alongside telemetry and admin.
-        """
-        if self.snapshot is not None and self.snapshot._started:
-            logger.warning(
-                "telemetry or admin config changed while periodic snapshots are running: "
-                "snapshots stay bound to the original runtime until the job is killed and re-applied"
-            )
+            admin._config = config
