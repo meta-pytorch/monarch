@@ -71,6 +71,7 @@ from monarch._src.job.once_daemon import (
 )
 from monarch._src.job.process import ProcessJob
 from monarch.actor import context as current_context, Future, HostMesh
+from monarch.config import configured, get_global_config
 
 
 def test_explicit_uid_values_are_instance_identities() -> None:
@@ -1523,15 +1524,11 @@ def test_state_query_client_set_with_telemetry():
     assert state.query_engine_client is m.query_engine_client_cls.return_value
     assert state.telemetry_url == "http://sidecar"
     assert state.admin_url == "http://localhost:1729"
-    assert job._components.snapshot is not None
-    _, kwargs = m.spawn_admin.call_args
-    assert kwargs["admin_addr"] is None
-    m.start_snapshots.assert_called_once_with(
-        base_url="http://sidecar",
-        admin_ref=m.admin_ref,
-        instance=m.snapshot_instance,
-        interval_secs=30.0,
-    )
+    _, kwargs = m.ensure_admin.call_args
+    assert kwargs["admin_addr"] == get_global_config()["mesh_admin_addr"]
+    assert kwargs["client_host"] is m.client_host.return_value
+    assert kwargs["telemetry_url"] == "http://sidecar"
+    assert kwargs["snapshot_interval_secs"] == 30.0
 
 
 def test_telemetry_query_client_uses_only_existing_telemetry():
@@ -1545,8 +1542,7 @@ def test_telemetry_query_client_uses_only_existing_telemetry():
     m.telemetry_info.assert_called_once_with(job.apply_id)
     m.ensure_open.assert_not_called()
     m.install_sink.assert_not_called()
-    m.spawn_admin.assert_not_called()
-    m.start_snapshots.assert_not_called()
+    m.ensure_admin.assert_not_called()
 
 
 def test_telemetry_query_client_reports_unhealthy_job():
@@ -1585,7 +1581,7 @@ def test_non_cacheable_local_job_can_query_existing_telemetry(batch):
     with _patched_sidecar() as m:
         assert job.telemetry_query_client() is m.query_engine_client_cls.return_value
         m.ensure_open.assert_not_called()
-        m.spawn_admin.assert_not_called()
+        m.ensure_admin.assert_not_called()
 
 
 def test_telemetry_query_client_preserves_invalid_apply_id_error():
@@ -1865,40 +1861,44 @@ def test_state_admin_url_set_with_telemetry():
         job = MockJobTrait().enable_telemetry(TelemetryConfig())
         state = job.state(cached_path=None)
 
-    m.spawn_admin.assert_called_once()
+    m.ensure_admin.assert_called_once()
     assert state.admin_url == "http://localhost:1729"
 
 
-def test_mesh_admin_started_only_once():
-    """Test that mesh admin is not restarted on subsequent state() calls."""
+def test_mesh_admin_url_comes_from_sidecar_on_every_state():
+    """Each state() asks the sidecar, which starts the admin once."""
     with _patched_sidecar() as m:
         job = MockJobTrait().enable_telemetry(TelemetryConfig())
         job.state(cached_path=None)
-        job.state(cached_path=None)
-
-    m.spawn_admin.assert_called_once()
-
-
-def test_mesh_admin_dropped_on_pickle():
-    """Test that admin_url is dropped during pickling and restored after."""
-    with _patched_sidecar() as m:
-        job = MockJobTrait().enable_telemetry(TelemetryConfig())
-        job.state(cached_path=None)
-        assert m.spawn_admin.call_count == 1
-
-        # Serialize and deserialize — live handles should be dropped
         loaded_job = job_loads(job.dumps())
-        assert loaded_job._components.admin is not None
-
-        # Getting state again should re-spawn admin
         state = loaded_job.state(cached_path=None)
 
-    assert m.spawn_admin.call_count == 2
-    assert state.admin_url is not None
+    assert m.ensure_admin.call_count == 2
+    assert {c.args[0] for c in m.ensure_admin.call_args_list} == {job.apply_id}
+    assert state.admin_url == "http://localhost:1729"
+
+
+def test_mesh_admin_url_printed_once(capsys):
+    with _patched_sidecar():
+        job = MockJobTrait().enable_admin()
+        job.state(cached_path=None)
+        job.state(cached_path=None)
+
+    captured = capsys.readouterr()
+    assert captured.err.count("Mesh admin: http://localhost:1729\n") == 1
+    assert "Mesh admin" not in captured.out
+
+
+def test_mesh_admin_start_failure_fails_state():
+    with _patched_sidecar() as m:
+        m.ensure_admin.side_effect = RuntimeError("cannot bind [::]:1729")
+        job = MockJobTrait().enable_telemetry(TelemetryConfig())
+        with pytest.raises(RuntimeError, match="cannot bind"):
+            job.state(cached_path=None)
 
 
 def test_mesh_admin_receives_custom_addr():
-    """Test that MeshAdminConfig.admin_addr is forwarded to _spawn_admin."""
+    """Test that MeshAdminConfig.admin_addr is forwarded to the sidecar."""
     with _patched_sidecar() as m:
         job = MockJobTrait().enable_telemetry(
             TelemetryConfig(),
@@ -1906,8 +1906,15 @@ def test_mesh_admin_receives_custom_addr():
         )
         job.state(cached_path=None)
 
-    _, kwargs = m.spawn_admin.call_args
+    _, kwargs = m.ensure_admin.call_args
     assert kwargs.get("admin_addr") == "myhost:9999"
+
+
+def test_mesh_admin_uses_client_config_addr():
+    with _patched_sidecar() as m, configured(mesh_admin_addr="[::]:0"):
+        MockJobTrait().enable_admin().state(cached_path=None)
+
+    assert m.ensure_admin.call_args.kwargs["admin_addr"] == "[::]:0"
 
 
 def test_enable_admin_remains_independent_of_telemetry():
@@ -1918,8 +1925,8 @@ def test_enable_admin_remains_independent_of_telemetry():
 
     assert result is job
     assert job._components.telemetry is None
-    assert job._components.snapshot is None
     assert job._components.admin is not None
+    assert job._components.needs_sidecar()
     assert job._components.admin._config is config
 
 
@@ -1934,9 +1941,6 @@ def test_enable_telemetry_reuses_existing_mesh_admin():
     assert job._components.admin is admin
     assert admin._config is config
     assert admin._telemetry is job._components.telemetry
-    assert job._components.snapshot is not None
-    assert job._components.snapshot._admin is admin
-    assert job._components.snapshot._telemetry is job._components.telemetry
 
 
 def test_mesh_admin_receives_telemetry_url():
@@ -1945,80 +1949,30 @@ def test_mesh_admin_receives_telemetry_url():
         job = MockJobTrait().enable_telemetry(TelemetryConfig())
         state = job.state(cached_path=None)
 
-    _, kwargs = m.spawn_admin.call_args
+    _, kwargs = m.ensure_admin.call_args
     assert kwargs.get("telemetry_url") == "http://sidecar"
     assert state.telemetry_url == "http://sidecar"
     assert state.admin_url == "http://localhost:1729"
 
 
-def test_mesh_admin_restarts_when_telemetry_config_changes():
-    mock_future = MagicMock()
-    mock_admin_ref = MagicMock()
-    mock_future.get.side_effect = [
-        ("http://admin-one", mock_admin_ref),
-        ("http://admin-two", mock_admin_ref),
-    ]
-    telemetry_one = {
-        "telemetry_url": "http://telemetry-one",
-        "dashboard_url": "http://dashboard-one",
-        "socket_path": "/tmp/telemetry-one.sock",
-    }
-    telemetry_two = {
-        "telemetry_url": "http://telemetry-two",
-        "dashboard_url": "http://dashboard-two",
-        "socket_path": "/tmp/telemetry-two.sock",
-    }
-
-    with _patched_sidecar(
-        ensure_open_side_effect=[
-            telemetry_one,
-            telemetry_one,
-            telemetry_two,
-            telemetry_two,
-        ]
-    ) as m:
-        m.spawn_admin.return_value = mock_future
-        job = MockJobTrait().enable_telemetry(TelemetryConfig(retention_secs=1))
-        state = job.state(cached_path=None)
-        assert state.telemetry_url == "http://telemetry-one"
-        assert state.admin_url == "http://admin-one"
-
-        job.enable_telemetry(TelemetryConfig(retention_secs=2))
-        state = job.state(cached_path=None)
-
-    assert state.telemetry_url == "http://telemetry-two"
-    assert state.admin_url == "http://admin-two"
-    assert m.spawn_admin.call_count == 2
-    assert [call.kwargs["telemetry_url"] for call in m.spawn_admin.call_args_list] == [
-        "http://telemetry-one",
-        "http://telemetry-two",
-    ]
-
-
-def test_snapshot_component_starts_once_after_telemetry_and_admin():
+def test_mesh_admin_receives_snapshot_interval():
     with _patched_sidecar() as m:
         job = MockJobTrait().enable_telemetry(
             TelemetryConfig(snapshot_interval_secs=5.0)
         )
         job.state(cached_path=None)
-        job.state(cached_path=None)
 
-    m.start_snapshots.assert_called_once_with(
-        base_url="http://sidecar",
-        admin_ref=m.admin_ref,
-        instance=m.snapshot_instance,
-        interval_secs=5.0,
-    )
+    assert m.ensure_admin.call_args.kwargs["snapshot_interval_secs"] == 5.0
 
 
-def test_snapshot_component_can_be_disabled():
+def test_mesh_admin_without_telemetry_disables_snapshots():
     with _patched_sidecar() as m:
-        job = MockJobTrait().enable_telemetry(
-            TelemetryConfig(include_dashboard=True, snapshot_interval_secs=0)
-        )
+        job = MockJobTrait().enable_admin()
         job.state(cached_path=None)
 
-    m.start_snapshots.assert_not_called()
+    _, kwargs = m.ensure_admin.call_args
+    assert kwargs["telemetry_url"] is None
+    assert kwargs["snapshot_interval_secs"] is None
 
 
 def test_batch_job_shares_component_runtime_with_wrapped_job():
@@ -2036,7 +1990,7 @@ def test_batch_job_shares_component_runtime_with_wrapped_job():
     assert job_state.query_engine_client is m.query_engine_client_cls.return_value
     assert job_state.telemetry_url == "http://sidecar"
     assert job_state.admin_url == "http://localhost:1729"
-    m.spawn_admin.assert_called_once()
+    assert m.ensure_admin.call_count == 2
 
 
 def test_batch_job_forwards_connection_input_rebind() -> None:
@@ -2083,7 +2037,6 @@ def test_mast_job_cleanup_log_context_includes_app_handle() -> None:
 def _patched_sidecar(
     ensure_open_side_effect=None,
     ensure_open_return=None,
-    set_admin_url_side_effect=None,
 ):
     with (
         patch("monarch._src.job.job_components.Telemetry") as telemetry_cls,
@@ -2091,15 +2044,14 @@ def _patched_sidecar(
             "monarch._src.job.job_components.install_sidecar_socket_sink"
         ) as install_sink,
         patch("monarch._src.job.job_components.QueryEngineClient") as qec_cls,
-        patch("monarch._src.job.job_components._spawn_admin") as spawn_admin,
-        patch("monarch.actor.context") as actor_context,
         patch(
-            "monarch._rust_bindings.monarch_extension.snapshot_integration._start_periodic_snapshots_http"
-        ) as start_snapshots,
+            "monarch._src.job.job_components.ensure_job_admin",
+            return_value="http://localhost:1729",
+        ) as ensure_admin,
+        patch("monarch._src.job.job_components.this_host") as client_host,
     ):
         ensure_open = telemetry_cls.return_value.ensure_open
         telemetry_info = telemetry_cls.return_value.info
-        set_admin_url = telemetry_cls.return_value.set_admin_url
         if ensure_open_side_effect is not None:
             ensure_open.side_effect = ensure_open_side_effect
         else:
@@ -2113,35 +2065,22 @@ def _patched_sidecar(
             "dashboard_url": "http://dashboard",
             "socket_path": "/tmp/telemetry.sock",
         }
-        if set_admin_url_side_effect is not None:
-            set_admin_url.side_effect = set_admin_url_side_effect
-        admin_ref = MagicMock()
-        admin_future = MagicMock()
-        admin_future.get.return_value = ("http://localhost:1729", admin_ref)
-        spawn_admin.return_value = admin_future
-        snapshot_instance = MagicMock()
-        actor_context.return_value.actor_instance._as_rust.return_value = (
-            snapshot_instance
-        )
         yield types.SimpleNamespace(
             ensure_open=ensure_open,
             telemetry_info=telemetry_info,
-            set_admin_url=set_admin_url,
             install_sink=install_sink,
             query_engine_client_cls=qec_cls,
             telemetry_cls=telemetry_cls,
-            spawn_admin=spawn_admin,
-            admin_ref=admin_ref,
-            start_snapshots=start_snapshots,
-            snapshot_instance=snapshot_instance,
+            ensure_admin=ensure_admin,
+            client_host=client_host,
         )
 
 
-def _assert_admin_url_update(set_admin_url):
-    set_admin_url.assert_called_once()
-    apply_id, admin_url = set_admin_url.call_args.args
+def _assert_admin_requested(ensure_admin):
+    ensure_admin.assert_called_once()
+    apply_id, host_meshes = ensure_admin.call_args.args
     assert isinstance(apply_id, str)
-    assert admin_url == "http://localhost:1729"
+    assert set(host_meshes) == {"hosts"}
 
 
 def test_mesh_admin_receives_sidecar_telemetry_url():
@@ -2150,7 +2089,7 @@ def test_mesh_admin_receives_sidecar_telemetry_url():
         job = MockJobTrait(host_names=["hosts"]).enable_telemetry(TelemetryConfig())
         state = job.state(cached_path=None)
 
-    _, kwargs = m.spawn_admin.call_args
+    _, kwargs = m.ensure_admin.call_args
     assert kwargs.get("telemetry_url") == "http://sidecar"
     assert state.telemetry_url == "http://sidecar"
     assert state.admin_url == "http://localhost:1729"
@@ -2196,7 +2135,7 @@ def test_sidecar_bootstrap_then_fanout_carry_host_meshes():
     assert "spawn_worker_collectors" not in bootstrap_kwargs
     assert set(fanout_kwargs["host_meshes"].keys()) == {"hosts"}
     assert fanout_kwargs["spawn_worker_collectors"] is True
-    _assert_admin_url_update(m.set_admin_url)
+    _assert_admin_requested(m.ensure_admin)
 
 
 def test_local_job_sidecar_skips_worker_collector_actors():
@@ -2212,7 +2151,7 @@ def test_local_job_sidecar_skips_worker_collector_actors():
     assert "spawn_worker_collectors" not in bootstrap_kwargs
     assert set(fanout_kwargs["host_meshes"].keys()) == {"hosts"}
     assert fanout_kwargs["spawn_worker_collectors"] is False
-    _assert_admin_url_update(m.set_admin_url)
+    _assert_admin_requested(m.ensure_admin)
     assert state.query_engine_client is m.query_engine_client_cls.return_value
 
 
@@ -2238,7 +2177,7 @@ def test_process_job_sidecar_skips_worker_collector_actors():
     assert "spawn_worker_collectors" not in bootstrap_kwargs
     assert set(fanout_kwargs["host_meshes"].keys()) == {"hosts"}
     assert fanout_kwargs["spawn_worker_collectors"] is False
-    _assert_admin_url_update(m.set_admin_url)
+    _assert_admin_requested(m.ensure_admin)
     assert state.query_engine_client is m.query_engine_client_cls.return_value
 
 
@@ -2285,7 +2224,7 @@ def test_sidecar_worker_fanout_failure_is_isolated():
         state = job.state(cached_path=None)  # must not raise
 
     assert m.ensure_open.call_count == 2
-    _assert_admin_url_update(m.set_admin_url)
+    _assert_admin_requested(m.ensure_admin)
     assert state.query_engine_client is m.query_engine_client_cls.return_value
 
 
@@ -2296,7 +2235,7 @@ def test_telemetry_bootstraps_sidecar_by_default():
         state = job.state(cached_path=None)
 
     assert m.ensure_open.call_count == 2
-    _assert_admin_url_update(m.set_admin_url)
+    _assert_admin_requested(m.ensure_admin)
     assert state.query_engine is None
     assert state.query_engine_client is m.query_engine_client_cls.return_value
 

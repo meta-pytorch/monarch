@@ -281,19 +281,213 @@ def test_telemetry_info_rejects_invalid_endpoint(response) -> None:
         tc.Telemetry(TelemetryConfig()).info("apply")
 
 
-def test_handle_admin_url_sets_sidecar_env(monkeypatch) -> None:
-    state = js._JobSidecarState()
+_SNAPSHOTS = (
+    "monarch._rust_bindings.monarch_extension.snapshot_integration."
+    "_start_periodic_snapshots_http"
+)
 
-    monkeypatch.delenv("MONARCH_ADMIN_URL", raising=False)
-    response = state.handle_admin_url(
-        js.AdminUrlRequest(
-            apply_id="apply",
-            admin_url="https://host.example:1731",
-        )
+
+_CLIENT_HOST = MagicMock()
+
+
+@pytest.fixture
+def add_hosts():
+    with patch.object(js, "_add_admin_hosts") as add_hosts:
+        yield add_hosts
+
+
+def _admin_request(
+    admin_addr: str = "[::]:1729",
+    telemetry_url: str | None = "http://telemetry",
+    snapshot_interval_secs: float | None = 5.0,
+) -> js.AdminRequest:
+    return js.AdminRequest(
+        apply_id="apply",
+        host_meshes={"hosts": MagicMock()},
+        client_host=_CLIENT_HOST,
+        client_pid=123,
+        admin_addr=admin_addr,
+        telemetry_url=telemetry_url,
+        snapshot_interval_secs=snapshot_interval_secs,
     )
 
-    assert response == "ok"
-    assert os.environ["MONARCH_ADMIN_URL"] == "https://host.example:1731"
+
+def test_handle_admin_starts_once_and_reuses(monkeypatch, add_hosts) -> None:
+    state = js._JobSidecarState()
+    admin_ref = MagicMock()
+    monkeypatch.delenv("MONARCH_ADMIN_URL", raising=False)
+    with (
+        patch.object(js, "_spawn_admin") as spawn_admin,
+        patch.object(js, "context") as context,
+        patch(_SNAPSHOTS) as start_snapshots,
+    ):
+        spawn_admin.return_value.get.return_value = ("https://host:1729", admin_ref)
+        first = state.handle_admin(_admin_request())
+        second = state.handle_admin(_admin_request())
+
+    assert first == second == {"admin_url": "https://host:1729", "warnings": []}
+    spawn_admin.assert_called_once()
+    assert spawn_admin.call_args.kwargs == {
+        "admin_addr": "[::]:1729",
+        "telemetry_url": "http://telemetry",
+    }
+    assert os.environ["MONARCH_ADMIN_URL"] == "https://host:1729"
+    assert add_hosts.call_args_list == [call(admin_ref, [_CLIENT_HOST], 123)] * 2
+    start_snapshots.assert_called_once_with(
+        base_url="http://telemetry",
+        admin_ref=admin_ref,
+        instance=context.return_value.actor_instance._as_rust.return_value,
+        interval_secs=5.0,
+    )
+
+
+def test_handle_admin_rejects_address_change(add_hosts) -> None:
+    state = js._JobSidecarState()
+    with patch.object(js, "_spawn_admin") as spawn_admin, patch(_SNAPSHOTS):
+        spawn_admin.return_value.get.return_value = ("https://host:1729", MagicMock())
+        state.handle_admin(_admin_request(telemetry_url=None))
+        with pytest.raises(RuntimeError, match="already running at https://host:1729"):
+            state.handle_admin(_admin_request(admin_addr="[::]:1730"))
+    spawn_admin.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("telemetry_url", "interval"),
+    [(None, 5.0), ("http://telemetry", 0.0), ("http://telemetry", None)],
+)
+def test_handle_admin_skips_snapshots(telemetry_url, interval, add_hosts) -> None:
+    state = js._JobSidecarState()
+    with (
+        patch.object(js, "_spawn_admin") as spawn_admin,
+        patch(_SNAPSHOTS) as start_snapshots,
+    ):
+        spawn_admin.return_value.get.return_value = ("https://host:1729", MagicMock())
+        state.handle_admin(
+            _admin_request(telemetry_url=telemetry_url, snapshot_interval_secs=interval)
+        )
+    start_snapshots.assert_not_called()
+
+
+def test_handle_admin_starts_snapshots_when_telemetry_arrives_later(add_hosts) -> None:
+    state = js._JobSidecarState()
+    admin_ref = MagicMock()
+    with (
+        patch.object(js, "_spawn_admin") as spawn_admin,
+        patch.object(js, "context"),
+        patch(_SNAPSHOTS) as start_snapshots,
+    ):
+        spawn_admin.return_value.get.return_value = ("https://host:1729", admin_ref)
+        state.handle_admin(_admin_request(telemetry_url=None))
+        start_snapshots.assert_not_called()
+        warnings = state.handle_admin(_admin_request())["warnings"]
+
+    assert len(warnings) == 1
+    assert "started without telemetry" in warnings[0]
+
+    spawn_admin.assert_called_once()
+    start_snapshots.assert_called_once()
+    assert start_snapshots.call_args.kwargs["admin_ref"] is admin_ref
+    assert start_snapshots.call_args.kwargs["interval_secs"] == 5.0
+
+
+@pytest.mark.parametrize(
+    ("started_with", "requested", "warning"),
+    [
+        ("http://telemetry", "http://telemetry", None),
+        ("http://telemetry", None, None),
+        (None, None, None),
+        (None, "http://telemetry", "started without telemetry"),
+        ("http://telemetry", "http://other", "uses telemetry at http://telemetry"),
+    ],
+)
+def test_handle_admin_warns_on_telemetry_mismatch(
+    started_with, requested, warning, add_hosts
+) -> None:
+    state = js._JobSidecarState()
+    with (
+        patch.object(js, "_spawn_admin") as spawn_admin,
+        patch.object(js, "context"),
+        patch(_SNAPSHOTS),
+    ):
+        spawn_admin.return_value.get.return_value = ("https://host:1729", MagicMock())
+        state.handle_admin(_admin_request(telemetry_url=started_with))
+        warnings = state.handle_admin(_admin_request(telemetry_url=requested))[
+            "warnings"
+        ]
+
+    if warning is None:
+        assert warnings == []
+    else:
+        assert len(warnings) == 1
+        assert warning in warnings[0]
+
+
+def test_handle_admin_retries_failed_snapshot_start(add_hosts) -> None:
+    state = js._JobSidecarState()
+    with (
+        patch.object(js, "_spawn_admin") as spawn_admin,
+        patch.object(js, "context"),
+        patch(_SNAPSHOTS, side_effect=[RuntimeError("snapshot failed"), None]) as start,
+    ):
+        spawn_admin.return_value.get.return_value = ("https://host:1729", MagicMock())
+        first = state.handle_admin(_admin_request())
+        assert first["admin_url"] == "https://host:1729"
+        assert "snapshot failed" in first["warnings"][0]
+        assert state.handle_admin(_admin_request())["warnings"] == []
+        assert state.handle_admin(_admin_request())["warnings"] == []
+
+    spawn_admin.assert_called_once()
+    assert start.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("interval", "warned"), [(5.0, False), (10.0, True), (0.0, True), (None, False)]
+)
+def test_handle_admin_warns_when_running_snapshot_interval_changes(
+    interval, warned, add_hosts
+) -> None:
+    state = js._JobSidecarState()
+    with (
+        patch.object(js, "_spawn_admin") as spawn_admin,
+        patch.object(js, "context"),
+        patch(_SNAPSHOTS) as start_snapshots,
+    ):
+        spawn_admin.return_value.get.return_value = ("https://host:1729", MagicMock())
+        state.handle_admin(_admin_request())
+        response = state.handle_admin(_admin_request(snapshot_interval_secs=interval))
+
+    start_snapshots.assert_called_once()
+    assert bool(response["warnings"]) == warned
+    if warned:
+        assert "kill the job" in response["warnings"][0]
+
+
+def test_handle_admin_client_host_failure_is_a_warning(add_hosts) -> None:
+    state = js._JobSidecarState()
+    add_hosts.return_value.get.side_effect = [RuntimeError("add failed"), None]
+    with patch.object(js, "_spawn_admin") as spawn_admin:
+        spawn_admin.return_value.get.return_value = ("https://host:1729", MagicMock())
+        first = state.handle_admin(_admin_request(telemetry_url=None))
+        second = state.handle_admin(_admin_request(telemetry_url=None))
+
+    assert first["admin_url"] == second["admin_url"] == "https://host:1729"
+    assert "not listed in the admin topology: add failed" in first["warnings"][0]
+    assert second["warnings"] == []
+    spawn_admin.assert_called_once()
+
+
+def test_handle_admin_retries_after_failure(add_hosts) -> None:
+    state = js._JobSidecarState()
+    with patch.object(js, "_spawn_admin") as spawn_admin:
+        spawn_admin.return_value.get.side_effect = [
+            RuntimeError("cannot bind [::]:1729"),
+            ("https://host:1729", MagicMock()),
+        ]
+        with pytest.raises(RuntimeError, match="cannot bind"):
+            state.handle_admin(_admin_request(telemetry_url=None))
+        response = state.handle_admin(_admin_request(telemetry_url=None))
+        assert response["admin_url"] == "https://host:1729"
+    assert spawn_admin.call_count == 2
 
 
 # ── _TelemetryHandle.open_or_refresh (bootstrap-once + drift) ─────────────────
@@ -723,34 +917,53 @@ def test_worker_collector_receives_persist_dir() -> None:
     assert "/tmp/c" not in proc_mesh.spawn.call_args.args
 
 
-def test_set_admin_url_sends_admin_url_request() -> None:
-    apply_id = _new_apply_id()
-    tel = tc.Telemetry(TelemetryConfig())
-    try:
-        with patch.object(tc, "get_job_sidecar") as get_sidecar:
-            send = get_sidecar.return_value.send
-            send.return_value.get.return_value = "ok"
-            tel.set_admin_url(apply_id, "https://host.example:1731")
-        sent_request = send.call_args[0][0]
-        assert isinstance(sent_request, js.AdminUrlRequest)
-        assert sent_request.apply_id == apply_id
-        assert sent_request.admin_url == "https://host.example:1731"
-    finally:
-        _remove_socket_dir(apply_id)
+def test_ensure_job_admin_sends_admin_request() -> None:
+    hosts = {"hosts": MagicMock()}
+    with patch.object(js, "get_job_sidecar") as get_sidecar:
+        send = get_sidecar.return_value.send
+        send.return_value.get.return_value = {
+            "admin_url": "https://host:1729",
+            "warnings": [],
+        }
+        url = js.ensure_job_admin(
+            "apply",
+            hosts,
+            client_host=_CLIENT_HOST,
+            admin_addr="[::]:1730",
+            telemetry_url="http://telemetry",
+            snapshot_interval_secs=5.0,
+        )
+    assert url == "https://host:1729"
+    get_sidecar.assert_called_once_with("apply")
+    assert send.call_args.args[0] == js.AdminRequest(
+        apply_id="apply",
+        host_meshes=hosts,
+        client_host=_CLIENT_HOST,
+        client_pid=os.getpid(),
+        admin_addr="[::]:1730",
+        telemetry_url="http://telemetry",
+        snapshot_interval_secs=5.0,
+    )
 
 
-def test_set_admin_url_reraises_sidecar_error() -> None:
-    apply_id = _new_apply_id()
-    tel = tc.Telemetry(TelemetryConfig())
-    try:
-        with patch.object(tc, "get_job_sidecar") as get_sidecar:
-            get_sidecar.return_value.send.return_value.get.return_value = {
-                "error": "boom"
-            }
-            with pytest.raises(RuntimeError, match="boom"):
-                tel.set_admin_url(apply_id, "https://host.example:1731")
-    finally:
-        _remove_socket_dir(apply_id)
+def test_ensure_job_admin_logs_sidecar_warnings(caplog) -> None:
+    with patch.object(js, "get_job_sidecar") as get_sidecar:
+        get_sidecar.return_value.send.return_value.get.return_value = {
+            "admin_url": "https://host:1729",
+            "warnings": ["snapshots keep running every 30.0s"],
+        }
+        url = js.ensure_job_admin("apply", {}, _CLIENT_HOST, "[::]:1729", None, 0.0)
+    assert url == "https://host:1729"
+    assert "snapshots keep running every 30.0s" in caplog.text
+
+
+def test_ensure_job_admin_raises_sidecar_error() -> None:
+    with patch.object(js, "get_job_sidecar") as get_sidecar:
+        get_sidecar.return_value.send.return_value.get.return_value = {
+            "error": "cannot bind [::]:1729"
+        }
+        with pytest.raises(RuntimeError, match="cannot bind"):
+            js.ensure_job_admin("apply", {}, _CLIENT_HOST, "[::]:1729", None, 0.0)
 
 
 @pytest.mark.parametrize(

@@ -36,9 +36,8 @@ materialized, so host-mesh creation events are captured. Jobs call it again with
 materialised `host_meshes`; that second call creates telemetry host proc meshes
 for proc discovery. Remote jobs also activate one live `TelemetryActor`
 collector per host-local socket namespace and hand only those live worker refs
-to the client collector for query fan-out. Once mesh admin has spawned,
-`AdminComponent` calls `Telemetry.set_admin_url(...)`, which updates the sidecar
-process environment for dashboard requests such as pyspy dumps.
+to the client collector for query fan-out. The sidecar also hosts the job's
+mesh admin; see `AdminRequest` in `job_sidecar`.
 """
 
 from __future__ import annotations
@@ -53,7 +52,6 @@ from monarch._rust_bindings.monarch_distributed_telemetry import (
     _set_unix_socket_sink_path,
 )
 from monarch._src.job.job_sidecar import (
-    AdminUrlRequest,
     find_job_sidecar,
     get_job_sidecar,
     TelemetryInfoRequest,
@@ -260,24 +258,6 @@ class Telemetry:
         ):
             raise RuntimeError(f"invalid job sidecar telemetry response: {response!r}")
         return result
-
-    def set_admin_url(self, apply_id: str, admin_url: str) -> None:
-        """Set the mesh-admin URL in the job sidecar process."""
-        if not isinstance(apply_id, str):
-            raise RuntimeError("telemetry requires an active apply_id")
-
-        response = (
-            get_job_sidecar(apply_id)
-            .send(AdminUrlRequest(apply_id=apply_id, admin_url=admin_url))
-            .get()
-        )
-        if isinstance(response, dict):
-            error = response.get("error")
-            if isinstance(error, str):
-                raise RuntimeError(error)
-            raise RuntimeError(f"unexpected admin URL response: {response!r}")
-        if response != "ok":
-            raise RuntimeError(f"unexpected admin URL response: {response!r}")
 
 
 class _TelemetryHandle:

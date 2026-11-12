@@ -539,7 +539,7 @@ def apply_job(module_path: Optional[str] = None) -> None:
     apply_id = job.apply_id  # pyre-ignore[16]
     if apply_id is not None:
         # The sidecar, which runs the mount daemon, exists only for jobs with
-        # mounts or telemetry.
+        # mounts, telemetry, or mesh admin.
         sidecar_log = daemon_log_path(job_sidecar_lock_path(apply_id))
         if os.path.exists(sidecar_log):
             print(f"Job sidecar log: {sidecar_log}")
