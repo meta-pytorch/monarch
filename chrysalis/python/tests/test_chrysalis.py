@@ -198,9 +198,9 @@ def test_identities() -> None:
 def test_postcard_through_relay(kind: str) -> None:
     """Send a postcard from Alice to Bob through Relay and return an acknowledgement.
 
-    All three nodes run in one Python process. Bob joins Relay, Relay joins
-    Alice, and each child names its parent's address from `Node.addresses`.
-    Alice finds Bob by PID. Check that Bob sees Alice's authenticated PID
+    All three nodes run in one Python process. Relay is the root, Alice and Bob
+    join it, and each names Relay's address from `Node.addresses`. Alice finds
+    Bob by PID through Relay. Check that Bob sees Alice's authenticated PID
     rather than Relay's and that both application messages arrive unchanged.
 
     In the `udp` case every node uses the default carrier, so Relay's UDP
@@ -216,9 +216,9 @@ def test_postcard_through_relay(kind: str) -> None:
 
     async def scenario(carrier: CarrierFactory) -> None:
         alice_id, relay_id, bob_id = _identities(3)
-        alice = Node(alice_id, carrier=carrier("a"))
-        relay = Node(
-            relay_id, carrier=carrier("r"), parent=(alice_id.pid, alice.addresses[0])
+        relay = Node(relay_id, carrier=carrier("r"))
+        alice = Node(
+            alice_id, carrier=carrier(None), parent=(relay_id.pid, relay.addresses[0])
         )
         bob = Node(
             bob_id, carrier=carrier(None), parent=(relay_id.pid, relay.addresses[0])

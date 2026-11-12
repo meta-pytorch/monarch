@@ -12,22 +12,22 @@
 //! the same namespace tree as the in-process walkthrough:
 //!
 //! ```text
-//! Alice (root)
-//! └── Relay
-//!     └── Bob
+//! Relay (root)
+//! ├── Alice
+//! └── Bob
 //! ```
 //!
 //! Alice sends the postcard and numbered streams. Bob receives and answers
-//! them. Relay is their routing hop: it maintains the parent/child links and
-//! forwards encrypted carrier datagrams without terminating Alice and Bob's
-//! end-to-end QUIC connection.
+//! them. Relay is their routing hop and the namespace root: it maintains the
+//! parent/child links and forwards encrypted carrier datagrams without
+//! terminating Alice and Bob's end-to-end QUIC connection.
 //!
 //! Each process loads its own certificate and private key, then names its
-//! carrier `node:<its certificate-derived PID>`. Bob opens a parent link to
-//! Relay, and Relay opens one to Alice. Those links publish Bob's PID through
-//! the namespace. Alice waits for that publication, resolves Bob's PID to Relay
-//! as the next hop, and opens an authenticated application stream whose QUIC
-//! peer is Bob rather than Relay.
+//! carrier `node:<its certificate-derived PID>`. Alice and Bob each open a
+//! parent link to Relay, which publishes their PIDs in Relay's namespace. Alice
+//! waits until she can resolve Bob's PID through Relay, which gives Relay as
+//! the next hop, and opens an authenticated application stream whose QUIC peer
+//! is Bob rather than Relay.
 //!
 //! To demonstrate what Relay can see, it wraps its carrier in `ObservedSocket`,
 //! defined in the sibling `observed_socket.rs`. That wrapper forwards datagrams
@@ -57,6 +57,7 @@ use chrysalis::ParentEndpoint;
 use chrysalis::Pid;
 use chrysalis::PidPrefix;
 use chrysalis::QuicIdentity;
+use chrysalis::Resolution;
 use chrysalis::ResolveConsistency;
 use chrysalis::TransportConfig;
 use chrysalis::VsockDatagramAddr;
@@ -70,7 +71,7 @@ use super::identity;
 use super::observed_socket::ObservedSocket;
 use super::read_bounded;
 
-/// Maximum time Alice waits for Bob's namespace entry to reach her.
+/// Maximum time Alice waits until she can resolve Bob through Relay.
 ///
 /// This includes parent-link retries and, in the VM run, guest startup.
 const PEER_WAIT: Duration = Duration::from_secs(120);
@@ -79,7 +80,7 @@ const PEER_WAIT: Duration = Duration::from_secs(120);
 /// statistics, which are published periodically.
 const POOL_WAIT: Duration = Duration::from_secs(5);
 
-/// Delay between local namespace checks while waiting for a peer publication.
+/// Delay between resolution attempts while waiting for a peer publication.
 const NAMESPACE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Delay between checks for the transport's periodically published statistics.
@@ -137,8 +138,8 @@ pub(crate) struct NamedIdentity {
 
 /// Creates a logical datagram endpoint over framed byte-stream connections.
 ///
-/// Alice passes one listening address and Relay may pass several. Bob passes
-/// none, so he cannot accept a new connection; he can still open a bidirectional
+/// Relay passes one or more listening addresses. Alice and Bob pass none, so
+/// neither can accept a new connection; each can still open a bidirectional
 /// parent connection to Relay and send and receive datagrams over it.
 ///
 /// The carrier announces `node:<pid>` on every connection it opens. Naming it
@@ -160,7 +161,7 @@ pub(crate) fn carrier(
 /// All three certificates are signed by one fresh test CA, so the roles trust
 /// one another. Each file is created privately and is never overwritten. The
 /// `identities` prints each returned value as `<role> <pid>`. Those PIDs become
-/// Alice's `--bob-pid`, Relay's `--parent-pid`, and Bob's `--parent-pid` and
+/// Alice's `--parent-pid` and `--bob-pid`, and Bob's `--parent-pid` and
 /// `--alice-pid` arguments.
 pub(crate) fn write_identities(out: &Path) -> io::Result<Vec<NamedIdentity>> {
     // The caller supplies the run's identity directory. Reusing an existing
@@ -198,73 +199,73 @@ struct ParentLink {
     address: VsockDatagramAddr,
 }
 
-/// Creates one role's Chrysalis node on a vsock datagram carrier.
+/// Creates Alice's or Bob's Chrysalis node as Relay's child.
 ///
-/// `None` creates root Alice. A [`ParentLink`] creates a child and starts its
-/// retrying parent connection. The returned address is the `node:<pid>` address
-/// the carrier advertises to peers.
-fn create_node(
-    identity: QuicIdentity,
-    listen: &[VsockDatagramAddr],
-    parent: Option<ParentLink>,
-) -> io::Result<(Node, DatagramAddr)> {
-    // Bind zero or more physical stream listeners and name the logical carrier
-    // after this identity's PID.
-    let socket = carrier(&identity, listen)?;
+/// The node has no listener, so it is outbound-only at the carrier layer, and
+/// it starts a retrying parent connection to `parent`. The returned address is
+/// the `node:<pid>` address the carrier advertises to peers.
+fn create_node(identity: QuicIdentity, parent: ParentLink) -> io::Result<(Node, DatagramAddr)> {
+    // Bind no listener and name the logical carrier after this identity's PID.
+    let socket = carrier(&identity, &[])?;
     // Retain the logical address for reports before the socket moves into Node.
     let advertised = socket.local_addr().clone();
+    // VsockDatagramAddr is the structured, vsock-specific form used by the CLI.
+    // Nameserver configuration is carrier-neutral, so encode it as a
+    // DatagramAddr with scheme `vsock` and the corresponding address bytes.
+    let parent_address = DatagramAddr::try_from(&parent.address)?;
+    // One ParentEndpoint is one possible path for both control traffic and
+    // application traffic to the parent. The API accepts several fallback
+    // paths; this example supplies one.
+    let parent_endpoint = ParentEndpoint::new(parent_address);
+    // Pin the parent to its certificate-derived PID and associate that identity
+    // with the allowed path. This also installs the nameserver's default retry
+    // policy and rejects a reserved PID or an empty path list.
+    let parent_namespace =
+        NamespaceConfig::try_new(parent.pid, vec![parent_endpoint]).map_err(io::Error::other)?;
     // TransportConfig pairs the datagram carrier with this role's mutual-TLS
-    // identity. NodeConfig::new starts as a root configuration and advertises
-    // the carrier's local address; the block below turns it into a child when a
-    // parent was supplied.
-    let mut config = NodeConfig::new(TransportConfig::new(socket, identity));
-    if let Some(parent) = parent {
-        // VsockDatagramAddr is the structured, vsock-specific form used by the
-        // CLI. Nameserver configuration is carrier-neutral, so encode it as a
-        // DatagramAddr with scheme `vsock` and the corresponding address bytes.
-        let parent_address = DatagramAddr::try_from(&parent.address)?;
-        // One ParentEndpoint is one possible path for both control traffic and
-        // application traffic to the parent. The API accepts several fallback
-        // paths; this example supplies one.
-        let parent_endpoint = ParentEndpoint::new(parent_address);
-        // Pin the parent to its certificate-derived PID and associate that
-        // identity with the allowed path. This also installs the nameserver's
-        // default retry policy and rejects a reserved PID or an empty path list.
-        let parent_namespace = NamespaceConfig::try_new(parent.pid, vec![parent_endpoint])
-            .map_err(io::Error::other)?;
-        // Mark this NodeConfig as a child. Node::create below uses this policy
-        // to start the manager that repeatedly connects and authenticates the
-        // parent, then exchanges namespace updates over that link.
-        config = config.with_parent(parent_namespace);
-    }
-    // Node::create starts the transport and namespace background tasks. For a
-    // child, it also starts ParentLinkManager: that task retries the configured
-    // paths, authenticates the pinned parent PID, publishes this node upward,
-    // receives namespace updates, and reconnects after failure. Node::create
-    // returns before the parent connection has necessarily succeeded.
+    // identity. The parent policy makes the node a child: Node::create uses it
+    // to start the manager that repeatedly connects and authenticates the
+    // parent, then exchanges namespace updates over that link.
+    let config =
+        NodeConfig::new(TransportConfig::new(socket, identity)).with_parent(parent_namespace);
+    // Node::create starts the transport and namespace background tasks, and
+    // ParentLinkManager: that task retries the configured paths, authenticates
+    // the pinned parent PID, publishes this node upward, receives namespace
+    // updates, and reconnects after failure. Node::create returns before the
+    // parent connection has necessarily succeeded.
     Ok((Node::create(config).map_err(io::Error::other)?, advertised))
 }
 
-/// Waits until namespace propagation gives `node` a route to `pid`.
+/// Waits until `node` can resolve `pid`.
 ///
 /// A child publishes itself through its parent link asynchronously. For
-/// example, Bob first reaches Relay, then Relay republishes Bob to Alice.
-/// `Node::create` returning therefore does not mean Alice can resolve Bob yet.
-/// This polls Alice's local namespace until the entry arrives or `timeout`
+/// example, Bob first reaches Relay, and only then can Alice resolve him
+/// through Relay. `Node::create` returning therefore does not mean Alice can
+/// resolve Bob yet. This polls the resolution until it finds `pid` or `timeout`
 /// expires.
 ///
 /// # Errors
 ///
-/// Returns [`io::ErrorKind::TimedOut`] when the entry does not arrive in time.
+/// Returns [`io::ErrorKind::TimedOut`] when `pid` does not become resolvable
+/// in time, or the resolution error if the node's parent link closes.
 async fn wait_until_visible(node: &Node, pid: Pid, timeout: Duration) -> io::Result<()> {
     tokio::time::timeout(timeout, async {
-        while node.nameserver().get(pid).await.is_none() {
+        // Bob is in Relay's directory, not Alice's, so Alice resolves him through
+        // her parent link. A not-found answer is cached briefly, which delays
+        // the first success by up to that lifetime.
+        while !matches!(
+            node.resolve(pid, ResolveConsistency::Cached)
+                .await
+                .map_err(io::Error::other)?,
+            Resolution::Found { .. }
+        ) {
             // Sleep between checks so waiting does not spin on the runtime.
             tokio::time::sleep(NAMESPACE_POLL_INTERVAL).await;
         }
+        Ok(())
     })
     .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "peer did not become visible"))
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "peer did not become visible"))?
 }
 
 /// Waits until the transport's latest statistics include a connection to `pid`.
@@ -289,20 +290,26 @@ async fn wait_until_pooled(node: &Node, pid: Pid) -> io::Result<()> {
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "connection was not pooled"))
 }
 
-/// Runs root Alice through the complete application exchange with Bob.
+/// Runs Alice, Relay's child, through the complete application exchange with
+/// Bob.
 ///
-/// Alice listens for Relay, waits for Bob's namespace entry to propagate
-/// through Relay, sends the postcard, opens 32 numbered streams, and verifies
-/// that Bob echoes each number. Alice always stops her node and waits for its
-/// background work before returning.
+/// Alice connects to Relay at `parent`, requiring Relay's `parent_pid`, waits
+/// until she can resolve Bob through Relay, sends the postcard, opens 32
+/// numbered streams, and verifies that Bob echoes each number. Alice always
+/// stops her node and waits for its background work before returning.
 pub(crate) async fn run_alice(
     identity: QuicIdentity,
-    listen: VsockDatagramAddr,
+    parent_pid: Pid,
+    parent: VsockDatagramAddr,
     bob: Pid,
 ) -> io::Result<AliceReport> {
-    // Alice has no parent. Her listener lets Relay establish the first link in
-    // the namespace tree.
-    let (node, advertised) = create_node(identity, &[listen], None)?;
+    let (node, advertised) = create_node(
+        identity,
+        ParentLink {
+            pid: parent_pid,
+            address: parent,
+        },
+    )?;
     // Keep the result instead of returning immediately, so cleanup below runs
     // after both success and failure. Propagate the saved error only afterward.
     let result = alice_exchange(&node, bob).await;
@@ -317,7 +324,7 @@ pub(crate) async fn run_alice(
 /// Waits for Bob, completes both application exchanges, and checks connection
 /// reuse.
 async fn alice_exchange(node: &Node, bob: Pid) -> io::Result<()> {
-    // Bob publishes his PID to Relay, which propagates it to root Alice.
+    // Bob publishes his PID to Relay, and Alice resolves it through Relay.
     wait_until_visible(node, bob, PEER_WAIT).await?;
     exchange_postcard(node, bob).await?;
     exchange_numbered_streams(node, bob).await?;
@@ -440,12 +447,12 @@ impl TrafficObservations {
 
 /// A running Relay node and the traffic recorder attached to its carrier.
 ///
-/// [`Relay::start`] creates the node and parent/listener links. [`Relay::serve`]
+/// [`Relay::start`] creates the root node and its listeners. [`Relay::serve`]
 /// keeps this value alive until a stop signal, then shuts the node down and
 /// turns the accumulated observations into [`RelayReport`].
 pub(crate) struct Relay {
-    /// Chrysalis node that maintains Relay's Alice parent link, Bob child link,
-    /// namespace state, routing, and QUIC transport.
+    /// Chrysalis node that maintains Relay's child links to Alice and Bob, the
+    /// root namespace, routing, and QUIC transport.
     node: Node,
 
     /// Recorder retained outside `Node` so `serve` can periodically drain the
@@ -458,20 +465,16 @@ pub(crate) struct Relay {
 }
 
 impl Relay {
-    /// Creates Relay, starts its parent link to Alice, and binds its child
-    /// listeners.
+    /// Creates Relay, the namespace root, and binds its child listeners.
     ///
-    /// Returning means Relay's node and retrying parent manager are running; it
-    /// does not require Alice's listener to be available yet. [`Self::serve`]
-    /// owns the later serving and shutdown phase.
+    /// Returning means Relay's node is running and Alice and Bob can connect.
+    /// [`Self::serve`] owns the later serving and shutdown phase.
     pub(crate) fn start(
         identity: QuicIdentity,
-        parent_pid: Pid,
-        parent: VsockDatagramAddr,
         listen: Vec<VsockDatagramAddr>,
     ) -> io::Result<Self> {
-        // Bind every address where children such as Bob may connect. Name the
-        // logical carrier from Relay's certificate-derived PID.
+        // Bind every address where Alice and Bob may connect. Name the logical
+        // carrier from Relay's certificate-derived PID.
         let carrier = carrier(&identity, &listen)?;
         // Save the logical `node:<pid>` address for the report before wrapping
         // and moving the carrier into Node.
@@ -480,23 +483,12 @@ impl Relay {
         // and receive unchanged to the real vsock socket.
         let socket = Arc::new(ObservedSocket::new(carrier));
 
-        // Convert Alice's vsock-specific destination into the carrier-neutral
-        // form used by the nameserver, then make it Relay's one parent path.
-        let parent_address = DatagramAddr::try_from(&parent)?;
-        let parent_endpoint = ParentEndpoint::new(parent_address);
-        // Require the parent at that path to authenticate as Alice's PID.
-        let parent_namespace = NamespaceConfig::try_new(parent_pid, vec![parent_endpoint])
-            .map_err(io::Error::other)?;
-
         // Give Node a clone of the recorder. Relay retains the other Arc so
         // `serve` can drain observations from the same wrapper Node is using.
         let transport = TransportConfig::new(socket.clone(), identity);
-        // Combine Relay's transport with the pinned Alice parent policy. This
-        // makes Relay a child rather than a namespace root.
-        let config = NodeConfig::new(transport).with_parent(parent_namespace);
-        // Start Relay's transport, namespace service, child listener, and
-        // retrying parent manager. The Alice connection may complete later.
-        let node = Node::create(config).map_err(io::Error::other)?;
+        // With no parent policy, Relay is the namespace root. Start its
+        // transport, namespace service, and child listener.
+        let node = Node::create(NodeConfig::new(transport)).map_err(io::Error::other)?;
         Ok(Self {
             node,
             socket,
@@ -585,15 +577,13 @@ impl Bob {
         parent: VsockDatagramAddr,
         alice: Pid,
     ) -> io::Result<Self> {
-        // An empty listener slice makes Bob outbound-only at the carrier layer.
         // ParentLink pins Relay's authenticated PID to the address Bob dials.
         let (node, advertised) = create_node(
             identity,
-            &[],
-            Some(ParentLink {
+            ParentLink {
                 pid: parent_pid,
                 address: parent,
-            }),
+            },
         )?;
         // Retain Alice's PID separately from the Relay parent policy: Relay is
         // the routing parent, while Alice is the authenticated application peer.
@@ -801,7 +791,6 @@ mod tests {
     #[tokio::test]
     async fn three_roles_exchange_the_postcard_over_unix_streams() {
         let dir = test_dir("roles");
-        let alice_path = dir.join("a");
         let relay_path = dir.join("r");
         let [alice_identity, relay_identity, bob_identity] =
             identity::mutually_trusted_identities::<3>();
@@ -816,28 +805,27 @@ mod tests {
             alice_pid,
         )
         .expect("start Bob");
-        assert!(!relay_path.exists(), "Relay must not be listening yet");
         let (stop_bob, bob_stop) = oneshot::channel();
         let bob_task = tokio::spawn(bob.serve(stop(bob_stop)));
 
-        let relay = Relay::start(
-            relay_identity,
-            alice_pid,
-            VsockDatagramAddr::Unix(alice_path.clone()),
-            vec![VsockDatagramAddr::Unix(relay_path)],
-        )
-        .expect("start Relay");
-        assert!(!alice_path.exists(), "Alice must not be listening yet");
+        let alice_task = tokio::spawn(run_alice(
+            alice_identity,
+            relay_pid,
+            VsockDatagramAddr::Unix(relay_path.clone()),
+            bob_pid,
+        ));
+        assert!(!relay_path.exists(), "Relay must not be listening yet");
+
+        let relay = Relay::start(relay_identity, vec![VsockDatagramAddr::Unix(relay_path)])
+            .expect("start Relay");
         let (stop_relay, relay_stop) = oneshot::channel();
         let relay_task = tokio::spawn(relay.serve(stop(relay_stop)));
 
-        let alice = tokio::time::timeout(
-            Duration::from_secs(60),
-            run_alice(alice_identity, VsockDatagramAddr::Unix(alice_path), bob_pid),
-        )
-        .await
-        .expect("Alice timed out")
-        .expect("Alice failed");
+        let alice = tokio::time::timeout(Duration::from_secs(60), alice_task)
+            .await
+            .expect("Alice timed out")
+            .expect("Alice task panicked")
+            .expect("Alice failed");
         let _ = stop_bob.send(());
         let bob = tokio::time::timeout(Duration::from_secs(10), bob_task)
             .await

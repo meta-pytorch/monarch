@@ -11,18 +11,17 @@ two VMs and never sees the postcard's plaintext.
 ## What Runs Where
 
 ```text
-  VM A                          host                              VM B
-  Alice                         Relay                             Bob
-  listens on vsock 5000  <----  dials hybrid:5000:<run>/a/v.sock
-                                listens on unix:<run>/b/v.sock_5001  <----  dials native:2:5001
+  VM A                         host                                     VM B
+  Alice                        Relay (namespace root)                   Bob
+  dials native:2:5001  ---->   listens on unix:<run>/a/v.sock_5001
+                               listens on unix:<run>/b/v.sock_5001  <----  dials native:2:5001
 ```
 
 The VMs have no network interface: their only link is vsock to the host.
 Inside a guest that link is vsock; on the host, Firecracker represents each
-VM's vsock as Unix sockets beside the VM's `v.sock`. Relay reaches Alice by
-connecting to VM A's `v.sock` and asking for port 5000. When Bob dials the host
-(CID 2) on port 5001, Firecracker connects him to `v.sock_5001` beside VM B's
-`v.sock`, where Relay listens.
+VM's vsock as Unix sockets beside the VM's `v.sock`. When Alice or Bob dials the
+host (CID 2) on port 5001, that VM's Firecracker connects them to `v.sock_5001`
+beside the VM's `v.sock`, where Relay listens.
 
 A Python program on the host, `sealed_postcard_microvms.py`, starts the three
 roles. It boots each VM with a small init agent that receives one role's
@@ -109,22 +108,22 @@ The control pane reports each stage as the demo:
 1. runs `sealed-postcard identities --out "$sealed_postcard_dir/ids"`, which
    writes one private identity bundle per role and prints their PIDs. There is
    no separate step to create identities;
-2. boots VM A, whose agent runs Alice:
+2. starts Relay, the namespace root, on the host:
 
    ```sh
-   sealed-postcard alice --listen native:4294967295:5000 --bob-pid <bob's PID>
-   ```
-
-   `native:4294967295:5000` is vsock port 5000 on any CID, so Alice listens
-   for Relay inside VM A;
-3. starts Relay on the host:
-
-   ```sh
-   sealed-postcard relay --parent-pid <alice's PID> \
-     --parent "hybrid:5000:$sealed_postcard_dir/a/v.sock" \
+   sealed-postcard relay \
+     --listen "unix:$sealed_postcard_dir/a/v.sock_5001" \
      --listen "unix:$sealed_postcard_dir/b/v.sock_5001"
    ```
 
+3. boots VM A, whose agent runs Alice:
+
+   ```sh
+   sealed-postcard alice --parent-pid <relay's PID> --parent native:2:5001 \
+     --bob-pid <bob's PID>
+   ```
+
+   CID 2 is the host, so Alice dials Relay;
 4. boots VM B, whose agent runs Bob:
 
    ```sh
@@ -149,9 +148,9 @@ The control pane reports each stage as the demo:
    relay observed 123 datagrams, postcard plaintext seen: false, log complete: true
    ```
 
-The roles start without waiting for each other: Relay and Bob keep retrying
-their parents, and Alice waits up to 120 seconds for Bob. Each role receives
-only its own bundle. The demo succeeds only if Alice and Bob exit successfully,
+The roles start without waiting for each other: Alice and Bob keep retrying
+their parent link to Relay, and Alice waits up to 120 seconds for Bob. Each role
+receives only its own bundle. The demo succeeds only if Alice and Bob exit successfully,
 both reports appear, and Relay exits successfully, which it does only when it
 recorded every datagram it forwarded and none contained the postcard's
 plaintext. The control pane ends with:

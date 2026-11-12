@@ -11,12 +11,14 @@ Postcard connections
 
 Alice, Bob and Relay are roles of the same Rust `sealed-postcard` binary.
 Alice and Bob each run in their own microVM. The Relay role runs on the
-host and forwards their encrypted datagrams:
+host, is the namespace root, and forwards their encrypted datagrams. Alice
+and Bob each dial host vsock port 5001, and Firecracker delivers each
+connection to Relay's Unix listener for that VM:
 
-    VM A                       host                            VM B
-    Alice                      Relay                           Bob
-    listens on vsock 5000  <-- dials hybrid:5000:<uds_A>
-                               listens on unix:<uds_B>_5001 <-- dials native:2:5001
+    VM A                          host                           VM B
+    Alice                         Relay                          Bob
+    dials native:2:5001  --> listens on unix:<uds_A>_5001
+                             listens on unix:<uds_B>_5001 <-- dials native:2:5001
 
 Build inputs
 ------------
@@ -55,9 +57,9 @@ when starting the binary inside the VM.
 Starting the roles
 ------------------
 
-This Python program boots VM A with Alice, starts Relay directly on
-the host, then boots VM B with Bob. Each VM starts `fc_agent.py` as its
-first process.
+This Python program starts Relay directly on the host, then boots VM A
+with Alice and VM B with Bob. Each VM starts `fc_agent.py` as its first
+process.
 
 This Python program sends `fc_agent.py` a JSON command over the control
 connection described below. The command names the binary and its arguments,
@@ -111,9 +113,8 @@ from typing import Protocol
 
 # Host vsock port fc_agent.py connects to for commands and exit reports.
 CONTROL_PORT = 9000
-# Guest port Alice listens on; Relay connects through Firecracker.
-ALICE_PORT = 5000
-# Host vsock port Bob dials; Firecracker bridges it to Relay's Unix listener.
+# Host vsock port Alice and Bob dial; each Firecracker bridges it to Relay's
+# Unix listener for that VM.
 RELAY_PORT = 5001
 
 # Location of the Rust binary installed in each guest's root filesystem.
@@ -685,33 +686,23 @@ async def _identities(
 async def _start_roles(
     run_dir: Path, inputs: Inputs, owners: list[_Owner]
 ) -> tuple[_Vm, _Relay, _Vm]:
-    """Boot VM A with Alice, start Relay, then boot VM B with Bob, not waiting
-    between them: children retry their parents, and Alice waits for Bob."""
+    """Start Relay, then boot VM A with Alice and VM B with Bob, not waiting
+    between them: children retry their parent, and Alice waits for Bob."""
     alice_vm, bob_vm = _Vm(run_dir / "a"), _Vm(run_dir / "b")
-    # Relay's Unix listener uses `<run_dir>/b/v.sock_5001` on the host.
-    # Firecracker B connects Bob's traffic to that socket. Create B's host
-    # directory before starting Relay, rather than waiting until VM B boots.
+    # Relay's Unix listeners use `<run_dir>/a/v.sock_5001` and
+    # `<run_dir>/b/v.sock_5001` on the host. Firecracker A and B connect
+    # Alice's and Bob's traffic to them. Create both host directories before
+    # starting Relay, rather than waiting until the VMs boot.
     alice_vm.workdir.mkdir()
     bob_vm.workdir.mkdir()
     _say("generating one identity bundle per role")
     pids = await _identities(inputs, run_dir, owners)
     ids = run_dir / "ids"
 
-    _say(f"booting VM A with Alice, listening on vsock port {ALICE_PORT}")
-    owners.append(alice_vm)
-    # Alice listens inside VM A; 4294967295 is CID_ANY, the local wildcard CID.
-    alice = ["alice", "--listen", f"native:4294967295:{ALICE_PORT}"]
-    # Tell Alice which Chrysalis identity belongs to Bob.
-    alice += ["--bob-pid", pids["bob"]]
-    await _boot(
-        alice_vm, inputs, _guest_command(alice, (ids / "alice.pem").read_text())
-    )
-
     _say("starting Relay on the host")
-    # Relay's parent is Alice, reached through Firecracker A's host Unix socket.
-    relay_args = ["--parent-pid", pids["alice"]]
-    relay_args += ["--parent", f"hybrid:{ALICE_PORT}:{alice_vm.uds}"]
-    # Listen where Firecracker B will connect Bob's guest-to-host traffic.
+    # Relay is the namespace root. Listen where Firecracker A and B will
+    # connect Alice's and Bob's guest-to-host traffic.
+    relay_args = ["--listen", f"unix:{alice_vm.uds}_{RELAY_PORT}"]
     relay_args += ["--listen", f"unix:{bob_vm.uds}_{RELAY_PORT}"]
     relay = await _Relay.start(
         inputs.sealed_postcard,
@@ -720,6 +711,23 @@ async def _start_roles(
         run_dir / "relay.log",
     )
     owners.append(relay)
+
+    _say(f"booting VM A with Alice, dialing the host on vsock port {RELAY_PORT}")
+    owners.append(alice_vm)
+    # CID 2 means the host. Firecracker A bridges this connection to Relay's
+    # Unix listener above; Alice requires that peer to authenticate as Relay.
+    alice = [
+        "alice",
+        "--parent-pid",
+        pids["relay"],
+        "--parent",
+        f"native:2:{RELAY_PORT}",
+    ]
+    # Tell Alice which Chrysalis identity belongs to Bob.
+    alice += ["--bob-pid", pids["bob"]]
+    await _boot(
+        alice_vm, inputs, _guest_command(alice, (ids / "alice.pem").read_text())
+    )
 
     _say(f"booting VM B with Bob, dialing the host on vsock port {RELAY_PORT}")
     owners.append(bob_vm)

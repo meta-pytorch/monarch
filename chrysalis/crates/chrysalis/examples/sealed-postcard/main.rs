@@ -17,9 +17,9 @@
 //! The separate processes form this namespace tree:
 //!
 //! ```text
-//! Alice (root; listens for Relay)
-//! └── Relay (connects to Alice; listens for Bob)
-//!     └── Bob (connects to Relay)
+//! Relay (root; listens for Alice and Bob)
+//! ├── Alice (connects to Relay)
+//! └── Bob (connects to Relay)
 //! ```
 //!
 //! Alice and Bob are the application endpoints. Their authenticated QUIC
@@ -162,27 +162,25 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Run root Alice until the postcard and echo-stream exchange completes.
+    /// Run Alice until the postcard and echo-stream exchange completes.
     Alice {
-        /// Text-form carrier address where Alice listens, such as
-        /// `unix:/tmp/sealed-postcard/a` or `native:4294967295:5000`.
+        /// Relay's PID. Alice uses it to authenticate her parent connection.
         #[arg(long)]
-        listen: String,
+        parent_pid: RolePid,
+        /// Carrier destination for Alice's parent link to Relay. Locally this
+        /// names Relay's Unix listener; in a VM, `native:2:5001` reaches Relay
+        /// on the host.
+        #[arg(long)]
+        parent: String,
         /// Bob's certificate-derived PID from the `identities` output. Bob's
-        /// parent link publishes this PID through Relay; Alice waits for that
-        /// namespace entry, then opens an authenticated end-to-end stream to it.
+        /// parent link publishes this PID to Relay; Alice waits until she can
+        /// resolve it through Relay, then opens an authenticated end-to-end
+        /// stream to it.
         #[arg(long)]
         bob_pid: RolePid,
     },
-    /// Run Relay until Ctrl-C or SIGTERM.
+    /// Run Relay, the namespace root, until Ctrl-C or SIGTERM.
     Relay {
-        /// Alice's PID. Relay uses it to authenticate its parent connection.
-        #[arg(long)]
-        parent_pid: RolePid,
-        /// Text-form carrier address where Relay connects to Alice, such as
-        /// `unix:/tmp/sealed-postcard/a` or `hybrid:5000:/tmp/vm-a.sock`.
-        #[arg(long)]
-        parent: String,
         /// Text-form carrier addresses where children can connect, such as
         /// `unix:/tmp/sealed-postcard/r` or `native:4294967295:5001`.
         #[arg(long, required = true)]
@@ -236,12 +234,12 @@ async fn run_role(_command: Command) -> io::Result<()> {
 async fn run_role(command: Command) -> io::Result<()> {
     match command {
         Command::Identities { out } => run_identities_mode(&out),
-        Command::Alice { listen, bob_pid } => run_alice_mode(listen, bob_pid).await,
-        Command::Relay {
+        Command::Alice {
             parent_pid,
             parent,
-            listen,
-        } => run_relay_mode(parent_pid, parent, listen).await,
+            bob_pid,
+        } => run_alice_mode(parent_pid, parent, bob_pid).await,
+        Command::Relay { listen } => run_relay_mode(listen).await,
         Command::Bob {
             parent_pid,
             parent,
@@ -260,34 +258,33 @@ fn run_identities_mode(out: &std::path::Path) -> io::Result<()> {
 }
 
 /// Runs Alice until the postcard and echo-stream exchange completes.
+///
+/// Alice connects to Relay at `parent`, requiring Relay's `parent_pid`.
 #[cfg(target_os = "linux")]
-async fn run_alice_mode(listen: String, bob_pid: RolePid) -> io::Result<()> {
-    let listen = listen.parse()?;
+async fn run_alice_mode(parent_pid: RolePid, parent: String, bob_pid: RolePid) -> io::Result<()> {
+    let parent = parent.parse()?;
+    let parent_pid = parent_pid.pid();
     let bob = bob_pid.pid();
-    // `run_alice` owns Alice's complete lifecycle: it binds the parsed carrier
-    // address, waits for Bob's PID to be published through Relay, opens an
+    // `run_alice` owns Alice's complete lifecycle: it creates her parent link
+    // to Relay, waits until she can resolve Bob's PID through Relay, opens an
     // authenticated stream to that PID, performs every application exchange,
     // and waits for Alice's background work to finish before returning.
     // It also returns Alice's advertised carrier address so the role test can
     // verify that the address is named after her PID. The CLI does not print it.
     let roles::AliceReport {
         advertised: _advertised,
-    } = roles::run_alice(role_identity()?, listen, bob).await?;
+    } = roles::run_alice(role_identity()?, parent_pid, parent, bob).await?;
     Ok(())
 }
 
 /// Runs the middle node between Alice and Bob.
 ///
-/// Relay connects to Alice at `parent`, requiring Alice's `parent_pid`, and
-/// listens for Bob on each address in `listen`. It forwards their encrypted
-/// datagrams until Ctrl-C or SIGTERM, then stops its background work and prints
-/// whether its complete traffic record contained any postcard plaintext.
+/// Relay is the namespace root. It listens for Alice and Bob on each address in
+/// `listen` and forwards their encrypted datagrams until Ctrl-C or SIGTERM, then
+/// stops its background work and prints whether its complete traffic record
+/// contained any postcard plaintext.
 #[cfg(target_os = "linux")]
-async fn run_relay_mode(
-    parent_pid: RolePid,
-    parent: String,
-    listen: Vec<String>,
-) -> io::Result<()> {
+async fn run_relay_mode(listen: Vec<String>) -> io::Result<()> {
     // Relay may listen on more than one carrier endpoint. The local and VM
     // demos use Unix addresses here. Parse them as VsockDatagramAddr values;
     // binding accepts only the Unix and Native variants.
@@ -295,21 +292,19 @@ async fn run_relay_mode(
         .into_iter()
         .map(|address| address.parse())
         .collect::<io::Result<Vec<_>>>()?;
-    let parent = parent.parse()?;
-    let parent_pid = parent_pid.pid();
     // Install both signal handlers before starting Relay. If either handler
     // cannot be installed, no node or background task has been created yet.
     let stop = roles::stop_signal()?;
 
-    // `start` binds Relay's listeners and creates its authenticated parent link
-    // to Alice. `serve` forwards traffic until Ctrl-C or SIGTERM, then stops and
-    // waits for Relay's background work before returning the complete report.
+    // `start` binds Relay's listeners and creates the root node. `serve`
+    // forwards traffic until Ctrl-C or SIGTERM, then stops and waits for
+    // Relay's background work before returning the complete report.
     let roles::RelayReport {
         advertised: _advertised,
         observed,
         plaintext_seen,
         complete,
-    } = roles::Relay::start(role_identity()?, parent_pid, parent, listen)?
+    } = roles::Relay::start(role_identity()?, listen)?
         .serve(stop)
         .await?;
 
@@ -390,21 +385,10 @@ fn role_identity() -> io::Result<QuicIdentity> {
 /// above and returns without entering this path.
 async fn run() {
     // Use an in-memory datagram carrier so we can exercise Chrysalis
-    // without configuring UDP. Endpoint 1 will be Alice's location in
-    // this network.
+    // without configuring UDP.
     let network = InprocNetwork::new(
         NonZeroUsize::new(DATAGRAM_QUEUE_CAPACITY).expect("queue capacity is nonzero"),
     );
-    // Bind Alice to endpoint 1 and make the resulting socket
-    // shareable by Node's async components.
-    let alice_socket = Arc::new(
-        network
-            .bind(ALICE_ENDPOINT)
-            .expect("Alice's in-process endpoint should be unused"),
-    );
-    // Save Alice's carrier address before moving alice_socket into
-    // Node; Relay will use this address to contact its parent.
-    let alice_address = alice_socket.local_addr().clone();
 
     // Generate one ephemeral test CA and three certificate/private-key
     // pairs signed by it. Each mutual-TLS config trusts that shared
@@ -412,33 +396,13 @@ async fn run() {
     // bytes of SHA-256 over its certificate.
     let [alice_identity, relay_identity, bob_identity] =
         identity::mutually_trusted_identities::<3>();
-    // Save the PID before moving alice_identity into Node, so we can
+    // Save the PID before moving relay_identity into Node, so we can
     // verify that the resulting Node exposes the same identity.
-    let certificate_pid = alice_identity.pid();
+    let certificate_pid = relay_identity.pid();
 
-    // Combine Alice's bound carrier socket and identity, then start a
-    // root Chrysalis node. No parent is configured, so Alice is the
-    // root of her own namespace.
-    let alice = Node::create(NodeConfig::new(TransportConfig::new(
-        alice_socket,
-        alice_identity,
-    )))
-    .expect("create Alice's node");
-
-    // Observe the PID exposed by Node after Alice's identity was
-    // moved into it.
-    let node_pid_matches_certificate = alice.pid() == certificate_pid;
-    println!("sealed-postcard, checkpoint 1: Alice exists");
-    println!("certificate-derived PID: {}", PidPrefix::from(alice.pid()));
-    println!("node PID matches certificate: {node_pid_matches_certificate}");
-    assert!(
-        node_pid_matches_certificate,
-        "Alice's node PID should match her certificate-derived PID"
-    );
-
-    // Bind Relay to endpoint 2 on the same in-memory network, then
-    // wrap the bound carrier in a shareable ObservedSocket. Relay's
-    // Node components use the wrapper normally while it records each
+    // Bind Relay to endpoint 2 on the in-memory network, then wrap the
+    // bound carrier in a shareable ObservedSocket. Relay's Node
+    // components use the wrapper normally while it records each
     // successful raw ingress and egress datagram and delegates the
     // bytes unchanged.
     let relay_carrier = Arc::new(
@@ -447,56 +411,71 @@ async fn run() {
             .expect("Relay's in-process endpoint should be unused"),
     );
     let relay_socket = Arc::new(ObservedSocket::new(relay_carrier));
-    // Save Relay's underlying carrier address. Bob will use it to contact
-    // its parent, and checkpoint 3 compares it with Alice's locator for Bob.
-    // ObservedSocket delegates local_addr() to the wrapped in-memory socket.
+    // Save Relay's underlying carrier address. Alice and Bob will use it
+    // to contact their parent, and checkpoint 3 compares it with Alice's
+    // locator for Bob. ObservedSocket delegates local_addr() to the
+    // wrapped in-memory socket.
     let relay_address = relay_socket.local_addr().clone();
-    // Start Relay as Alice's child. Alice's PID identifies the parent
-    // Relay must authenticate; Alice's carrier address tells Relay
-    // where to contact her.
+    // Combine Relay's carrier and identity, then start a root Chrysalis
+    // node. No parent is configured, so Relay is the root of the
+    // namespace.
     //
     // Pass Node an Arc clone of the observer so this function retains
     // a handle to the same observation log for inspection after the
     // postcard.
-    let relay = Node::create(
-        NodeConfig::new(TransportConfig::new(relay_socket.clone(), relay_identity)).with_parent(
-            NamespaceConfig::try_new(
-                alice.pid(),
-                vec![ParentEndpoint::new(alice_address.clone())],
-            )
-            .expect("Alice should have a nonreserved PID and one endpoint"),
-        ),
-    )
+    let relay = Node::create(NodeConfig::new(TransportConfig::new(
+        relay_socket.clone(),
+        relay_identity,
+    )))
     .expect("Relay should start with a valid identity and carrier");
 
-    // Relay's parent connection starts asynchronously. Resolve Alice
+    // Observe the PID exposed by Node after Relay's identity was
+    // moved into it.
+    let node_pid_matches_certificate = relay.pid() == certificate_pid;
+    println!("sealed-postcard, checkpoint 1: Relay exists");
+    println!("certificate-derived PID: {}", PidPrefix::from(relay.pid()));
+    println!("node PID matches certificate: {node_pid_matches_certificate}");
+    assert!(
+        node_pid_matches_certificate,
+        "Relay's node PID should match its certificate-derived PID"
+    );
+
+    // Bind Alice to endpoint 1 on the same in-memory network and make
+    // the resulting socket shareable by Node's async components.
+    let alice_socket = Arc::new(
+        network
+            .bind(ALICE_ENDPOINT)
+            .expect("Alice's in-process endpoint should be unused"),
+    );
+    // Save Alice's carrier address; checkpoint 5 looks for Relay's
+    // ingress from it.
+    let alice_address = alice_socket.local_addr().clone();
+    // Start Alice as Relay's child. Relay's PID identifies the parent
+    // Alice must authenticate; Relay's carrier address tells Alice
+    // where to contact it.
+    let alice = Node::create(
+        NodeConfig::new(TransportConfig::new(alice_socket, alice_identity)).with_parent(
+            NamespaceConfig::try_new(
+                relay.pid(),
+                vec![ParentEndpoint::new(relay_address.clone())],
+            )
+            .expect("Relay should have a nonreserved PID and one endpoint"),
+        ),
+    )
+    .expect("create Alice's node");
+
+    // Alice's parent connection starts asynchronously. Resolve Relay
     // through that link to wait for it to become active, with a
     // timeout to prevent hanging.
-    let alice_resolution = tokio::time::timeout(
+    let relay_resolution = tokio::time::timeout(
         Duration::from_secs(5),
-        relay.resolve(alice.pid(), ResolveConsistency::Refresh),
+        alice.resolve(relay.pid(), ResolveConsistency::Refresh),
     )
     .await
-    .expect("Relay should connect to Alice within five seconds")
-    .expect("Relay should resolve Alice through its parent link");
-    // Require a positive resolution and extract Alice's process
+    .expect("Alice should connect to Relay within five seconds")
+    .expect("Alice should resolve Relay through her parent link");
+    // Require a positive resolution and extract Relay's process
     // entry; a NotFound result means this checkpoint failed.
-    let Resolution::Found {
-        entry: alice_entry, ..
-    } = alice_resolution
-    else {
-        panic!("Alice should be present in Relay's namespace");
-    };
-
-    // Wait for Relay's publication to reach Alice before consulting
-    // Alice's local directory.
-    wait_until_visible(&alice, relay.pid()).await;
-    let relay_resolution = alice
-        .resolve(relay.pid(), ResolveConsistency::Cached)
-        .await
-        .expect("Alice's local namespace lookup should succeed");
-    // Require Alice's lookup to find Relay and retain Relay's
-    // published entry.
     let Resolution::Found {
         entry: relay_entry, ..
     } = relay_resolution
@@ -504,15 +483,31 @@ async fn run() {
         panic!("Relay should be present in Alice's namespace");
     };
 
+    // Wait for Alice's publication to reach Relay before consulting
+    // Relay's local directory.
+    wait_until_visible(&relay, alice.pid()).await;
+    let alice_resolution = relay
+        .resolve(alice.pid(), ResolveConsistency::Cached)
+        .await
+        .expect("Relay's local namespace lookup should succeed");
+    // Require Relay's lookup to find Alice and retain Alice's
+    // published entry.
+    let Resolution::Found {
+        entry: alice_entry, ..
+    } = alice_resolution
+    else {
+        panic!("Alice should be present in Relay's namespace");
+    };
+
     // Confirm that each lookup returned the PID of the process
     // requested.
-    let relay_resolves_alice = alice_entry.pid == alice.pid();
     let alice_resolves_relay = relay_entry.pid == relay.pid();
-    println!("sealed-postcard, checkpoint 2: Relay joined Alice");
-    println!("Relay resolves Alice: {relay_resolves_alice}");
+    let relay_resolves_alice = alice_entry.pid == alice.pid();
+    println!("sealed-postcard, checkpoint 2: Alice joined Relay");
     println!("Alice resolves Relay: {alice_resolves_relay}");
-    assert!(relay_resolves_alice, "Relay should resolve Alice's PID");
+    println!("Relay resolves Alice: {relay_resolves_alice}");
     assert!(alice_resolves_relay, "Alice should resolve Relay's PID");
+    assert!(relay_resolves_alice, "Relay should resolve Alice's PID");
 
     // Bind Bob to endpoint 3 on the same in-memory network and make
     // its socket shareable by the components of Bob's Node.
@@ -538,10 +533,8 @@ async fn run() {
     )
     .expect("Bob should start with a valid identity and carrier");
 
-    // Wait for Bob's publication to reach Relay first and then
-    // propagate recursively from Relay to Alice.
+    // Wait for Bob's publication to reach Relay.
     wait_until_visible(&relay, bob.pid()).await;
-    wait_until_visible(&alice, bob.pid()).await;
 
     // Resolve Bob from Relay's local directory; because Relay is
     // Bob's direct parent, the returned locator should be Bob's
@@ -559,20 +552,20 @@ async fn run() {
         panic!("Bob should be present in Relay's namespace");
     };
 
-    // Resolve the same Bob PID from Alice's local directory; because
-    // Bob is behind Relay, the returned locator should point to
-    // Relay.
+    // Resolve the same Bob PID from Alice. Bob is not in her own
+    // directory, so the lookup goes through her parent link to Relay,
+    // and the returned locator should point to Relay.
     let bob_from_alice = alice
         .resolve(bob.pid(), ResolveConsistency::Cached)
         .await
-        .expect("Alice's local namespace lookup should succeed");
+        .expect("Alice's lookup through Relay should succeed");
     // Require a positive result and retain Alice's contextual view of
     // Bob.
     let Resolution::Found {
         entry: alice_view, ..
     } = bob_from_alice
     else {
-        panic!("Bob should be present in Alice's namespace");
+        panic!("Bob should be visible to Alice through Relay");
     };
 
     // Check that Relay's view contains Bob's direct carrier address.
@@ -591,7 +584,7 @@ async fn run() {
 
     // Display the same target PID with the different next hops seen
     // by Relay and Alice.
-    println!("sealed-postcard, checkpoint 3: Bob joined through Relay");
+    println!("sealed-postcard, checkpoint 3: Bob joined Relay");
     println!(
         "resolve Bob from Relay: pid=Bob {}, next_hop=Bob {}",
         relay_resolves_bob, relay_reaches_bob_directly
@@ -981,20 +974,17 @@ async fn run() {
         "Alice and Bob should expose their pooled connection after the extra streams"
     );
 
-    // Stop Bob first so Relay can withdraw Bob locally and propagate
-    // that withdrawal upward to Alice while both ancestors are still
-    // running.
+    // Stop the children first, while Relay is still running to
+    // withdraw each of them.
     bob.shutdown();
     bob.join().await;
-    // Stop Relay next so its parent link can close cleanly while
-    // Alice is still running to receive the withdrawal.
-    relay.shutdown();
-    relay.join().await;
-    // Request shutdown, then wait until every task owned by Alice has
-    // finished.
     alice.shutdown();
     alice.join().await;
-    println!("Bob, Relay, and Alice shut down cleanly");
+    // Request shutdown, then wait until every task owned by Relay, the
+    // root, has finished.
+    relay.shutdown();
+    relay.join().await;
+    println!("Bob, Alice, and Relay shut down cleanly");
 }
 
 // Wait until a PID appears in one node's local nameserver, failing

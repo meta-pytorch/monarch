@@ -22,8 +22,9 @@ tmux select-pane -t sealed-postcard:demo.0
 tmux attach-session -t sealed-postcard
 ```
 
-The roles start from the leaves toward the root. Bob and Relay retry their
-parent links until the parent process is listening.
+The roles can start in any order, because Alice and Bob retry their parent
+links until Relay is listening. This walkthrough starts Bob, then Relay, the
+namespace root, then Alice, who runs the exchange.
 
 ## Start Bob
 
@@ -48,12 +49,10 @@ In the Relay pane, run the command below. See the
 ```sh
 SEALED_POSTCARD_IDENTITY=$(cat "$sealed_postcard_dir/ids/relay.pem") \
   cargo run --example sealed-postcard -- relay \
-    --parent-pid "$alice_pid" \
-    --parent "unix:$sealed_postcard_dir/a" \
     --listen "unix:$sealed_postcard_dir/r"
 ```
 
-Relay listens for Bob and retries its parent link until Alice starts.
+Relay listens for Alice and Bob, and Bob's retrying parent link connects.
 
 ## Start Alice
 
@@ -63,12 +62,13 @@ In the Alice pane, run the command below. See the
 ```sh
 SEALED_POSTCARD_IDENTITY=$(cat "$sealed_postcard_dir/ids/alice.pem") \
   cargo run --example sealed-postcard -- alice \
-    --listen "unix:$sealed_postcard_dir/a" \
+    --parent-pid "$relay_pid" \
+    --parent "unix:$sealed_postcard_dir/r" \
     --bob-pid "$bob_pid"
 ```
 
-Alice sends the postcard, checks Bob's acknowledgement, opens 32 numbered
-streams, checks their echoes, and exits.
+Alice joins Relay, sends the postcard, checks Bob's acknowledgement, opens 32
+numbered streams, checks their echoes, and exits.
 
 ## Stop Bob and Relay
 
@@ -89,7 +89,7 @@ relay observed 123 datagrams, postcard plaintext seen: false, log complete: true
 ## How It Works
 
 Each process loads its own certificate and private key from one PEM bundle.
-Alice is the namespace root, Relay is Alice's child, and Bob is Relay's child.
-The processes use `VsockDatagramSocket` over direct Unix streams. Alice and Bob
-communicate through end-to-end encrypted QUIC streams while Relay forwards the
-carrier datagrams without terminating their connection.
+Relay is the namespace root, and Alice and Bob are its children. The processes
+use `VsockDatagramSocket` over direct Unix streams. Alice and Bob communicate
+through end-to-end encrypted QUIC streams while Relay forwards the carrier
+datagrams without terminating their connection.
