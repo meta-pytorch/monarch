@@ -125,13 +125,75 @@ finally:
 
 `close` starts node shutdown and waits for its background work to finish.
 
+## Run the roles as separate processes
+
+[`examples/sealed_postcard.py`](examples/sealed_postcard.py) runs Alice, Relay, and Bob as three processes in the same tree. Alice sends Bob a postcard through Relay and checks his acknowledgement, then opens 32 numbered streams that Bob echoes. Bob checks that every stream came from Alice. Its modes and arguments are those of the [Rust `sealed-postcard` example's role modes](../crates/chrysalis/examples/sealed-postcard/README.md#run-the-roles-as-separate-processes).
+
+Each role uses a `VsockCarrier`, which frames Chrysalis datagrams onto byte streams. Relay listens on the addresses it is given, and Alice and Bob only connect to their parent:
+
+```python
+node = Node(identity, carrier=VsockCarrier(listen=listen))  # Relay
+node = Node(identity, carrier=VsockCarrier(), parent=parent)  # Alice and Bob
+```
+
+Here every address is `unix:<path>`, the carrier's Unix-stream mode on one host. Inside a Firecracker microVM, the same carrier takes vsock addresses, `native:<cid>:<port>`.
+
+From `~/fbsource`, build the program, create a short run directory so its socket path fits the operating system's limit, and write one identity bundle per role:
+
+```sh
+sealed_postcard=$(buck2 build @fbcode//mode/dev-nosan \
+  fbcode//monarch/chrysalis/python/examples:sealed_postcard \
+  --show-full-output | awk '{ print $2 }')
+sealed_postcard_dir=$(mktemp -d /tmp/sealed-postcard-py.XXXXXX)
+
+"$sealed_postcard" identities --out "$sealed_postcard_dir/ids" > "$sealed_postcard_dir/pids"
+alice_pid=$(awk '$1 == "alice" { print $2 }' "$sealed_postcard_dir/pids")
+relay_pid=$(awk '$1 == "relay" { print $2 }' "$sealed_postcard_dir/pids")
+bob_pid=$(awk '$1 == "bob" { print $2 }' "$sealed_postcard_dir/pids")
+```
+
+Each bundle file is readable only by its owner. Start Relay and Bob in the background, then run Alice:
+
+```sh
+SEALED_POSTCARD_IDENTITY=$(cat "$sealed_postcard_dir/ids/relay.pem") \
+  "$sealed_postcard" relay --listen "unix:$sealed_postcard_dir/r" &
+relay_process=$!
+
+SEALED_POSTCARD_IDENTITY=$(cat "$sealed_postcard_dir/ids/bob.pem") \
+  "$sealed_postcard" bob --parent-pid "$relay_pid" \
+  --parent "unix:$sealed_postcard_dir/r" --alice-pid "$alice_pid" &
+bob_process=$!
+
+SEALED_POSTCARD_IDENTITY=$(cat "$sealed_postcard_dir/ids/alice.pem") \
+  "$sealed_postcard" alice --parent-pid "$relay_pid" \
+  --parent "unix:$sealed_postcard_dir/r" --bob-pid "$bob_pid" && echo "alice: done"
+```
+
+Alice exits successfully after both exchanges. Stop Bob, who prints his report and exits successfully only if he served all 33 streams and Alice opened every one:
+
+```sh
+kill -TERM "$bob_process"; wait "$bob_process"
+```
+
+```text
+bob served 33 streams, all from alice: true
+```
+
+Then stop Relay and delete the run directory, which removes the private keys:
+
+```sh
+kill -TERM "$relay_process"; wait "$relay_process"
+rm -rf "$sealed_postcard_dir"
+```
+
 ## The API used here
 
 - `generate_test_identities(count)` returns PEM identity bundles signed by one new test certificate authority.
 - `Identity.from_pem(bundle)` loads one node's certificate, private key, and trust roots. `Identity.pid` is the `Pid` derived from its certificate.
 - `Pid(value)` parses a complete 32-digit hexadecimal process ID. PIDs compare and hash by value.
 - `UdpCarrier(bind="127.0.0.1:0")` describes a UDP binding. The default address limits it to loopback, and port `0` asks the operating system to choose an available port. `Node` creates this carrier when none is supplied.
-- `Node(identity, parent=...)` starts a namespace root or joins one parent. `addresses` reports its bound UDP address, `dial(pid)` opens a stream to a visible PID, `accept()` waits for a peer to open one, and `close()` shuts the node down.
+- `VsockCarrier(listen=...)` frames datagrams onto byte streams. It listens at each `unix:<path>` or `native:<cid>:<port>` address in `listen`; with none, the node only connects to its parent.
+- `Node(identity, carrier=..., parent=...)` starts a namespace root or joins one parent. `addresses` reports its bound UDP address or its vsock listen addresses, `dial(pid)` opens a stream to a visible PID, `accept()` waits for a peer to open one, and `close()` shuts the node down.
 - `Stream.write(data)` sends all the bytes, `finish()` closes the send side, and `read(max_bytes)` reads the next available bytes or returns `b""` after the peer finishes.
 - `ChrysalisError` reports node and transport failures. Invalid input raises `ValueError`, and a wrong type or out-of-range integer raises `TypeError` or `OverflowError`.
 
