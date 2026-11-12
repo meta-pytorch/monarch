@@ -649,11 +649,14 @@ class ProcMesh(MeshTrait):
         return self
 
     async def _drain_pending_actor_spawns(self) -> None:
-        """Wait for every pending actor spawn, including any added meanwhile."""
+        """Finish Python's deferred native spawns, including any added meanwhile.
+
+        Actor readiness is observed separately through ``initialized``.
+        """
         pending = self._pending_actor_spawns
         while (mesh := next(iter(pending), None)) is not None:
             try:
-                await mesh.initialized
+                await mesh._created
             except Exception:
                 pass
             # Another drain may have removed it while this one waited. Removal

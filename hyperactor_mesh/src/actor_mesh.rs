@@ -477,10 +477,14 @@ async fn wait_rank_started(
     let mut delay = Duration::from_millis(10);
     loop {
         let (reply, receiver) = cx.mailbox().open_once_port::<Option<ActorStatus>>();
-        actor.status_port().post(
+        let mut reply_ref = reply.bind();
+        reply_ref.return_undeliverable(false);
+        let mut status_port = actor.status_port();
+        status_port.return_undeliverable(false);
+        status_port.post(
             cx,
             StatusMessage::GetStatus {
-                reply: reply.bind(),
+                reply: reply_ref,
                 delivery: None,
             },
         );
@@ -2132,16 +2136,26 @@ mod tests {
     use std::ops::Deref;
     use std::sync::Arc;
 
+    use async_trait::async_trait;
     use hyperactor::ActorRef;
     use hyperactor::Endpoint as _;
+    use hyperactor::Gateway;
     use hyperactor::Proc;
     use hyperactor::ProcAddr;
+    use hyperactor::ProcId;
+    use hyperactor::StatusMessage;
+    use hyperactor::Uid;
     use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::context::Mailbox as _;
     use hyperactor::id::Label;
     use hyperactor::mailbox;
+    use hyperactor::mailbox::BoxedMailboxSender;
+    use hyperactor::mailbox::MailboxSender;
+    use hyperactor::mailbox::MessageEnvelope;
+    use hyperactor::mailbox::PortHandle;
+    use hyperactor::mailbox::Undeliverable;
     use hyperactor::supervision::ActorSupervisionEvent;
     use hyperactor_cast::TilingPolicy;
     use hyperactor_cast::cast_actor::CastDestination;
@@ -2155,6 +2169,7 @@ mod tests {
     use ndslice::view::RankedSliceable;
     use timed_test::assert_no_process_leak;
     use timed_test::async_timed_test;
+    use tokio::sync::mpsc;
     use tokio::time::Duration;
 
     use super::ActorMesh;
@@ -2177,6 +2192,70 @@ mod tests {
     use crate::test_utils::local_host_mesh;
     use crate::testactor;
     use crate::testing;
+
+    struct SilentPeer(mpsc::UnboundedSender<MessageEnvelope>);
+
+    #[async_trait]
+    impl MailboxSender for SilentPeer {
+        fn post_unchecked(
+            &self,
+            envelope: MessageEnvelope,
+            _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        ) {
+            self.0.send(envelope).unwrap();
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_wait_rank_started_ends_on_supervisor_failure() {
+        let gateway = Gateway::isolated();
+        let proc = Proc::builder()
+            .shared_gateway(gateway.clone())
+            .build()
+            .unwrap();
+        let client = proc.client("client");
+        let peer_uid = Uid::anonymous();
+        let (requests, mut received) = mpsc::unbounded_channel();
+        let _peer = gateway.attach_peer(
+            peer_uid.clone(),
+            BoxedMailboxSender::new(SilentPeer(requests)),
+        );
+        let actor = ProcAddr::new(
+            ProcId::anonymous(),
+            gateway.default_location().append_via(peer_uid),
+        )
+        .actor_addr("uncreated");
+        let proxy = client
+            .spawn_with_label("proxy", testactor::TestActor)
+            .into_any();
+        let mut wait = std::pin::pin!(super::wait_rank_started(&client, &actor, &proxy));
+        let request = tokio::select! {
+            result = &mut wait => panic!("a live silent proc ended the startup wait: {result:?}"),
+            request = received.recv() => request.unwrap(),
+        };
+        assert!(matches!(
+            request.deserialized::<StatusMessage>().unwrap(),
+            StatusMessage::GetStatus { .. }
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1200), &mut wait)
+                .await
+                .is_err(),
+            "silence must not end the startup wait"
+        );
+        assert!(
+            received.try_recv().is_err(),
+            "the pending query is not retried"
+        );
+
+        proxy.stop("lost remote actor").unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(5), wait)
+            .await
+            .expect("the local supervisor should end the startup wait")
+            .expect_err("a stopped supervisor cannot start its actor");
+        assert!(status.to_string().contains("supervisor proxy"));
+        assert!(status.to_string().contains("lost remote actor"));
+    }
 
     #[test]
     fn cast_node_mesh_preserves_shape_and_removes_terminal_nodes() {

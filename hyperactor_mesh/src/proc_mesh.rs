@@ -2372,6 +2372,83 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn spawn_data_wait_started_ends_when_its_proc_exits() {
+        let instance = testing::instance();
+        // The lost actor's supervisor reports to its owner. This owner runs no
+        // message loop, so the event stays queued instead of failing the test
+        // root.
+        let owner = instance
+            .proc()
+            .actor_instance::<testing::TestRootClient>("exited_owner")
+            .expect("create owner instance");
+        let owner = &owner.instance;
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(instance, "wait_started_exit", extent!(gpus = 1), None, None)
+            .await
+            .unwrap();
+        let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_data(
+                owner,
+                ActorMeshId::instance(Label::strip("exited")),
+                &(),
+                None,
+            )
+            .await
+            .unwrap();
+        actor_mesh
+            .cast(
+                owner,
+                testactor::CauseSupervisionEvent {
+                    kind: testactor::SupervisionEventType::ProcessExit(1),
+                    send_to_children: false,
+                },
+            )
+            .unwrap();
+        // Wait until the actor's status query reports a terminal status:
+        // behind the exited proc, the host gateway answers for it.
+        let actor = actor_mesh
+            .values()
+            .next()
+            .expect("one actor")
+            .actor_addr()
+            .clone();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let (reply, rx) = instance.mailbox().open_once_port::<Option<ActorStatus>>();
+                actor.status_port().post(
+                    instance,
+                    StatusMessage::GetStatus {
+                        reply: reply.bind(),
+                        delivery: None,
+                    },
+                );
+                if let Ok(Ok(Some(status))) =
+                    tokio::time::timeout(Duration::from_millis(500), rx.recv()).await
+                    && status.is_terminal()
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for the proc to exit");
+
+        let error = tokio::time::timeout(Duration::from_secs(5), actor_mesh.wait_started(owner))
+            .await
+            .expect("waiting on an actor whose proc exited should end promptly")
+            .expect_err("an actor whose proc exited has not started");
+        assert!(
+            error.to_string().contains("exited with non-zero code 1"),
+            "unexpected error: {error}"
+        );
+
+        let _ = hm.shutdown(instance).await;
+    }
+
     #[async_timed_test(timeout_secs = 300)]
     #[cfg(fbcode_build)]
     async fn direct_spawn_shapes_cast_point() {

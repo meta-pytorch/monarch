@@ -224,15 +224,15 @@ class _AwaitRecord:
 
 
 class _PendingActorRecord:
-    """Record readiness and explicit stop requests during host teardown."""
+    """Record native creation and explicit stop requests during host teardown."""
 
     def __init__(self, record: list[str]) -> None:
         self._record = record
 
     @property
-    def initialized(self) -> Future[bool]:
+    def _created(self) -> Future[None]:
         self._record.append("pending_actor")
-        return Future._from_handle(_ready_handle(True))
+        return Future._from_handle(_ready_handle(None))
 
     def stop(self) -> Future[None]:
         self._record.append("pending_actor_stop")
