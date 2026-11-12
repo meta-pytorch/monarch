@@ -564,24 +564,47 @@ pub(crate) async fn start_workload(
         .stderr
         .take()
         .ok_or_else(|| anyhow!("child stderr not captured"))?;
-    let mut reader = BufReader::new(stdout).lines();
+    let (url_tx, mut url_rx) = mpsc::unbounded_channel::<String>();
 
-    // Collect stderr in background so it's available on failure.
+    // Collect stderr in background so it's available on failure. A
+    // Python job client prints `Mesh admin: <url>` here, because the
+    // admin itself runs in the job sidecar.
+    let stderr_url_tx = url_tx.clone();
     let stderr_handle = tokio::spawn(async move {
         let mut buf = String::new();
-        let mut stderr_reader = BufReader::new(stderr);
-        let _ = tokio::io::AsyncReadExt::read_to_string(&mut stderr_reader, &mut buf).await;
+        let mut stderr_reader = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = stderr_reader.next_line().await {
+            if let Some(url) = line.strip_prefix("Mesh admin: ") {
+                let _ = stderr_url_tx.send(url.trim().to_string());
+            }
+            buf.push_str(&line);
+            buf.push('\n');
+        }
         buf
     });
 
-    let sentinel = "Mesh admin server listening on ";
-    let sentinel_result = tokio::time::timeout(timeout, async {
-        while let Some(line) = reader.next_line().await? {
-            if let Some(url) = line.strip_prefix(sentinel) {
-                return Ok::<String, anyhow::Error>(url.trim().to_string());
+    // Forward stdout lines to the fixture's receiver. This both
+    // prevents pipe-fill deadlock (every line is consumed) and feeds
+    // wait_for_stdout for command-driven workloads. A workload that
+    // hosts the admin in-process prints the listening line here.
+    let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            if let Some(url) = line.strip_prefix("Mesh admin server listening on ") {
+                let _ = url_tx.send(url.trim().to_string());
             }
+            // A closed receiver is benign (fixture dropped); keep
+            // draining so the pipe never fills.
+            let _ = stdout_tx.send(line);
         }
-        bail!("MIT-1: workload exited without printing admin URL sentinel");
+    });
+
+    let sentinel_result = tokio::time::timeout(timeout, async {
+        match url_rx.recv().await {
+            Some(url) => Ok::<String, anyhow::Error>(url),
+            None => bail!("MIT-1: workload exited without printing admin URL sentinel"),
+        }
     })
     .await;
 
@@ -620,19 +643,6 @@ pub(crate) async fn start_workload(
         }
     };
 
-    // Forward remaining stdout lines to the fixture's receiver. This
-    // both prevents pipe-fill deadlock (the line is always consumed)
-    // and feeds wait_for_stdout for command-driven workloads. Workloads
-    // that print nothing further simply never send; the task ends when
-    // the child's stdout closes.
-    let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<String>();
-    tokio::spawn(async move {
-        while let Ok(Some(line)) = reader.next_line().await {
-            // A closed receiver is benign (fixture dropped); keep
-            // draining so the pipe never fills.
-            let _ = stdout_tx.send(line);
-        }
-    });
     // MIT-5: Build reqwest client with test CA and client cert.
     let client = build_client(&pki.ca_pem, &pki.cert_pem, &pki.key_pem)?;
 

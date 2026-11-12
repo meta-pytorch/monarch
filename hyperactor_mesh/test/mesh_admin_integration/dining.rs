@@ -97,10 +97,12 @@ impl Drop for ShutdownGuard<'_> {
 }
 
 /// All dining-based endpoint assertions against a single binary.
-async fn check_dining_endpoints(bin: &Path) {
+async fn check_dining_endpoints(bin: &Path, admin_in_process: bool) {
     DiningScenario::run(bin, |s| {
         Box::pin(async move {
-            s.fixture.assert_custom_tls_access_instructions().await;
+            if admin_in_process {
+                s.fixture.assert_custom_tls_access_instructions().await;
+            }
             crate::admin::assert_admin_info(s).await;
             crate::admin::assert_admin_schema(s).await;
             crate::config::check(s).await;
@@ -115,14 +117,16 @@ async fn check_dining_endpoints(bin: &Path) {
 /// endpoint assertions — Rust binary.
 pub async fn run_dining_endpoints_rust() {
     let bin = harness::dining_philosophers_rust_binary();
-    check_dining_endpoints(&bin).await;
+    check_dining_endpoints(&bin, true).await;
 }
 
-/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76, MIT-77, MIT-79: dining-based
-/// endpoint assertions — Python binary.
+/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76, MIT-77: dining-based
+/// endpoint assertions — Python binary. MIT-79 is Rust-only: the job
+/// sidecar hosts the Python admin, so its access instructions are not
+/// on the workload's stdout.
 pub async fn run_dining_endpoints_python() {
     let bin = harness::dining_philosophers_python_binary();
-    check_dining_endpoints(&bin).await;
+    check_dining_endpoints(&bin, false).await;
 }
 
 // --- traversal family ---
