@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Runs Alice, Relay, and Bob as three processes over Unix-domain streams.
+"""Runs the Rust Alice, Relay, and Bob as three processes over Unix sockets.
 
 This step has no VM. Each process uses `VsockDatagramSocket` with a
 `unix:<path>` address, so the byte streams are ordinary Unix-domain stream
