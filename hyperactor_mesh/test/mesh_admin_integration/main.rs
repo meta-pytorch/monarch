@@ -49,10 +49,12 @@
 //!
 //! ### Access instructions
 //!
-//! - **MIT-79 (tls-access-instruction-fidelity):** Rust and Python
-//!   dining fixtures start mesh admin with ephemeral
-//!   `HYPERACTOR_TLS_{CA,CERT,KEY}` paths and assert that the startup
-//!   root `curl` command advertises those exact paths.
+//! - **MIT-79 (tls-access-instruction-fidelity):** The Rust dining
+//!   fixture starts mesh admin with ephemeral
+//!   `HYPERACTOR_TLS_{CA,CERT,KEY}` paths and asserts that the startup
+//!   root `curl` command advertises those exact paths. Python jobs run
+//!   the admin in the job sidecar, so its startup output is not on the
+//!   workload's stdout.
 //!
 //! ### Discovery
 //!
@@ -369,7 +371,7 @@ async fn test_dining_endpoints_rust() {
     dining::run_dining_endpoints_rust().await;
 }
 
-/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76, MIT-77, MIT-79: dining-based
+/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76, MIT-77: dining-based
 /// endpoint assertions — Python binary.
 #[tokio::test]
 async fn test_dining_endpoints_python() {
