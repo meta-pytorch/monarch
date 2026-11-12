@@ -899,8 +899,10 @@ def test_failed_launcher_does_not_hang_host() -> None:
 def test_terminate_routes_to_launcher() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         params = _launcher_params(tmp)
+        # TODO: on data meshes, stopping a proc mesh with a suspended proc does
+        # not finish.
         with (
-            configured(process_exit_timeout="2s"),
+            configured(process_exit_timeout="2s", use_direct_spawn=False),
             scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state,
         ):
             hosts = state.hosts

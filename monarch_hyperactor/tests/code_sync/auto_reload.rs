@@ -64,6 +64,9 @@ CONSTANT = "initial_constant"
     let actor_mesh: ActorMesh<AutoReloadActor> = proc_mesh
         .spawn(instance, "auto_reload_test", &params)
         .await?;
+    // The actor installs its import hook during construction, so it must
+    // start before the test imports the module it should track.
+    actor_mesh.wait_started(instance).await?;
 
     // Get a reference to the single actor
     let actor_ref = actor_mesh

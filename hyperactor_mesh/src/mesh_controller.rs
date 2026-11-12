@@ -2203,7 +2203,6 @@ mod tests {
     #[tokio::test]
     async fn test_orphaned_actors_are_cleaned_up() {
         let config = hyperactor_config::global::lock();
-        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
         // Short orphan timeout so SelfCheck fires frequently.
         let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, Some(Duration::from_secs(1)));
 

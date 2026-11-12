@@ -390,7 +390,9 @@ async fn test_snapshot_sql_queries() -> Result<()> {
     // Query D: ancestry breadcrumb for one actor.
     // Seeds the CTE with the actor itself, then recursively walks
     // upward through `children` from child -> parent and returns the
-    // path ordered by depth.
+    // path ordered by depth. `children` is a DAG: an actor may also
+    // appear under the actor that spawned it, so the walk follows
+    // only non-actor parents to get the structural path.
     let d = query_batch(
         &ctx,
         &format!(
@@ -407,6 +409,7 @@ async fn test_snapshot_sql_queries() -> Result<()> {
               ON ch.snapshot_id = a.snapshot_id AND ch.child_id = a.node_id
             JOIN nodes p
               ON p.snapshot_id = ch.snapshot_id AND p.node_id = ch.parent_id
+            WHERE p.node_kind <> 'actor'
         )
         SELECT node_id, node_kind, depth
         FROM ancestry

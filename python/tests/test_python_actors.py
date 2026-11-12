@@ -62,7 +62,7 @@ from monarch.actor import (
     endpoint,
     ProcMesh,
 )
-from monarch.config import configure, configured
+from monarch.config import configure, configured, parametrize_config
 from monarch.tools.config import Config
 from monarch.tools.config.workspace import Workspace
 from scoped_state import scoped_state
@@ -2152,7 +2152,9 @@ class ActorWithSlowCleanup(Actor):
         self.counter.incr.call_one().get()
 
 
-def _check_proc_stop_runs_actor_cleanup() -> None:
+@parametrize_config(use_direct_spawn={False, True})
+@isolate_in_subprocess
+def test_proc_stop_runs_actor_cleanup() -> None:
     procs = this_host().spawn_procs(per_host={"gpus": 1})
     counter = procs.spawn("counter", Counter, 0)
     stopped_procs = this_host().spawn_procs(per_host={"gpus": 1})
@@ -2163,17 +2165,6 @@ def _check_proc_stop_runs_actor_cleanup() -> None:
     stopped_procs.stop().get()
     assert counter.value.call_one().get() == 1
     procs.stop().get()
-
-
-@isolate_in_subprocess
-def test_proc_stop_runs_actor_cleanup():
-    _check_proc_stop_runs_actor_cleanup()
-
-
-@isolate_in_subprocess
-def test_proc_stop_runs_data_mesh_actor_cleanup():
-    with configured(use_direct_spawn=True):
-        _check_proc_stop_runs_actor_cleanup()
 
 
 class WrapperActor(Actor):
@@ -2285,6 +2276,41 @@ class RunForeverOnInitActor(Actor):
     @endpoint
     async def unreachable(self) -> None:
         pass
+
+
+class SlowInitActor(Actor):
+    def __init__(self, delay: float, started: Port):
+        started.send(None)
+        time.sleep(delay)
+
+    @endpoint
+    async def ping(self) -> str:
+        return "pong"
+
+
+class MeshHolderActor(Actor):
+    def __init__(self, mesh: ActorMesh[SlowInitActor]):
+        self.mesh = mesh
+
+    @endpoint
+    async def ping(self) -> str:
+        return "holder ready"
+
+
+@parametrize_config(use_direct_spawn={True})
+@pytest.mark.timeout(60)
+async def test_actor_mesh_initialized_only_waits_for_routability() -> None:
+    pm = this_host().spawn_procs(per_host={"gpus": 1})
+    started_send, started_recv = Channel[None].open()
+    actor = pm.spawn("slow_init", SlowInitActor, 15.0, started_send)
+    holder = pm.spawn("mesh_holder", MeshHolderActor, actor)
+
+    await started_recv.recv()
+    await asyncio.wait_for(actor.initialized, timeout=5)
+    await asyncio.wait_for(holder.initialized, timeout=5)
+    assert await holder.ping.call_one() == "holder ready"
+    assert await actor.ping.call_one() == "pong"
+    await pm.stop()
 
 
 @pytest.mark.timeout(60)

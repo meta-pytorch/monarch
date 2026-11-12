@@ -78,8 +78,17 @@ def grad_generator(
     with_respect_to: Sequence[TensorOrEdge] = (),
     grad_roots: Sequence[Optional[torch.Tensor]] = (),
 ):
+    """Iterate gradients while restoring each operation's mesh and stream."""
     if isinstance(roots, torch.Tensor):
         roots = [roots]
+    if not grad_roots:
+        grad_roots = []
+        for root in roots:
+            if isinstance(root, Tensor):
+                with root.mesh.activate(), root.stream.activate(), torch.no_grad():
+                    grad_roots.append(torch.ones_like(root))
+            else:
+                grad_roots.append(None)
     return _GradientGenerator(
         list(roots), list(with_respect_to), list(grad_roots), restore_context
     )

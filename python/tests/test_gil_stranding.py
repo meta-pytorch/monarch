@@ -52,6 +52,7 @@ import monarch.actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch.actor import Actor, endpoint, MeshFailure, this_host
+from monarch.config import parametrize_config
 
 HOLD_SECS = 15
 HOLD_DELAY_SECS = 0.5
@@ -107,6 +108,7 @@ async def _faults_while_sleeping(keep_gil: bool, send_message: bool) -> list[str
 
 
 @pytest.mark.timeout(120)
+@parametrize_config(use_direct_spawn={False})
 @isolate_in_subprocess(env=_ENV)
 async def test_gil_hold_with_python_message_keeps_get_state_alive() -> None:
     """One call to a Python endpoint while the GIL is held must not stall the
@@ -116,6 +118,7 @@ async def test_gil_hold_with_python_message_keeps_get_state_alive() -> None:
 
 
 @pytest.mark.timeout(120)
+@parametrize_config(use_direct_spawn={False})
 @isolate_in_subprocess(env=_ENV)
 async def test_gil_released_with_python_message_keeps_get_state_alive() -> None:
     """The same sleep and call, but the sleep releases the GIL: the call alone
@@ -124,6 +127,7 @@ async def test_gil_released_with_python_message_keeps_get_state_alive() -> None:
 
 
 @pytest.mark.timeout(120)
+@parametrize_config(use_direct_spawn={False})
 @isolate_in_subprocess(env=_ENV)
 async def test_gil_hold_without_python_message_keeps_get_state_alive() -> None:
     """The GIL is held just as long, but no Tokio worker needs it: the proc

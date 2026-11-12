@@ -234,6 +234,10 @@ class _PendingActorRecord:
         self._record.append("pending_actor")
         return Future._from_handle(_ready_handle(None))
 
+    @property
+    def initialized(self) -> Future[None]:
+        raise AssertionError("shutdown must not wait for actor readiness")
+
     def stop(self) -> Future[None]:
         self._record.append("pending_actor_stop")
         return Future._from_handle(_ready_handle(None))
