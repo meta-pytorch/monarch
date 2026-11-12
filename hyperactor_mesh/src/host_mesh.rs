@@ -62,6 +62,7 @@ use hyperactor_config::attrs::declare_attrs;
 use ndslice::view::CollectMeshExt;
 
 use crate::mesh_admin::MeshAdminAgent;
+use crate::mesh_admin::MeshAdminMessageClient;
 use crate::supervision::MeshFailure;
 
 pub mod host_agent;
@@ -1906,6 +1907,25 @@ pub async fn spawn_admin(
     }
     let admin_ref = agent_handle.bind();
     Ok(admin_ref)
+}
+
+/// Add the hosts of `meshes` to a running admin's topology, such as
+/// the host of a client that connects after the admin started.
+/// `owner_pid` is the process on the admin's machine that runs these
+/// hosts; the admin drops them once they stop answering and that
+/// process has exited.
+pub async fn add_admin_hosts(
+    admin: &ActorRef<MeshAdminAgent>,
+    meshes: impl IntoIterator<Item = impl AsRef<HostMeshRef>>,
+    owner_pid: u32,
+    cx: &impl hyperactor::context::Actor,
+) -> anyhow::Result<()> {
+    let meshes: Vec<_> = meshes.into_iter().collect();
+    let hosts = aggregate_hosts(&meshes, None)
+        .into_iter()
+        .map(|(_, host)| host)
+        .collect();
+    admin.add_hosts(cx, hosts, owner_pid).await
 }
 
 impl view::Ranked for HostMeshRef {

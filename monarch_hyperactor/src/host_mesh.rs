@@ -1046,23 +1046,7 @@ fn _spawn_admin(
     let host_mesh_futures: Vec<_> = host_meshes.iter().map(|mesh| mesh.wait_future()).collect();
     let instance = instance.clone();
     Ok(PyHandle::spawn(async move {
-        let mut mesh_refs = Vec::with_capacity(host_mesh_futures.len());
-        // Await each host mesh in input order. Access its Python-facing wrapper
-        // under the GIL to obtain a native HostMeshRef.
-        for host_mesh_future in host_mesh_futures {
-            let host_mesh = host_mesh_future.await?;
-            mesh_refs.push(
-                monarch_with_gil(GilSite::Convert, |py| {
-                    Ok::<_, PyErr>(
-                        host_mesh
-                            .bind(py)
-                            .extract::<PyRef<'_, PyHostMesh>>()?
-                            .mesh_ref()?,
-                    )
-                })
-                .await?,
-            );
-        }
+        let mesh_refs = host_mesh_refs(host_mesh_futures).await?;
         // The native helper aggregates the hosts and starts the admin agent on
         // the caller's local proc.
         let admin_ref =
@@ -1078,6 +1062,52 @@ fn _spawn_admin(
             .ok_or_else(|| PyException::new_err("mesh admin agent did not report an address"))?;
         // Complete the Handle with the URL and the opaque native-agent reference.
         Ok((admin_url, PyMeshAdminRef(admin_ref)))
+    }))
+}
+
+/// Await host-mesh Handles in input order and return their native
+/// `HostMeshRef`s.
+async fn host_mesh_refs(
+    host_mesh_futures: Vec<impl Future<Output = PyResult<Py<PyAny>>>>,
+) -> PyResult<Vec<HostMeshRef>> {
+    let mut mesh_refs = Vec::with_capacity(host_mesh_futures.len());
+    for host_mesh_future in host_mesh_futures {
+        let host_mesh = host_mesh_future.await?;
+        mesh_refs.push(
+            monarch_with_gil(GilSite::Convert, |py| {
+                Ok::<_, PyErr>(
+                    host_mesh
+                        .bind(py)
+                        .extract::<PyRef<'_, PyHostMesh>>()?
+                        .mesh_ref()?,
+                )
+            })
+            .await?,
+        );
+    }
+    Ok(mesh_refs)
+}
+
+/// Add the hosts of the supplied host-mesh Handles to a running mesh admin,
+/// such as the host of a client that connects after the admin started.
+/// `owner_pid` is the local process that runs those hosts; the admin drops
+/// them once they stop answering and that process has exited. Errors are
+/// raised when the returned Handle is observed.
+#[pyfunction]
+fn _add_admin_hosts(
+    admin_ref: &PyMeshAdminRef,
+    host_meshes: Vec<PyRef<'_, PyHandle>>,
+    owner_pid: u32,
+    instance: &PyInstance,
+) -> PyResult<PyHandle> {
+    let admin_ref = admin_ref.0.clone();
+    let host_mesh_futures: Vec<_> = host_meshes.iter().map(|mesh| mesh.wait_future()).collect();
+    let instance = instance.clone();
+    Ok(PyHandle::spawn(async move {
+        let mesh_refs = host_mesh_refs(host_mesh_futures).await?;
+        host_mesh::add_admin_hosts(&admin_ref, &mesh_refs, owner_pid, instance.deref())
+            .await
+            .map_err(|e| PyException::new_err(e.to_string()))
     }))
 }
 
@@ -1109,6 +1139,13 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
         "monarch._rust_bindings.monarch_hyperactor.host_mesh",
     )?;
     hyperactor_mod.add_function(f4)?;
+
+    let f5 = wrap_pyfunction!(_add_admin_hosts, hyperactor_mod)?;
+    f5.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.host_mesh",
+    )?;
+    hyperactor_mod.add_function(f5)?;
 
     hyperactor_mod.add_class::<PyHostMesh>()?;
     hyperactor_mod.add_class::<PyBootstrapCommand>()?;
