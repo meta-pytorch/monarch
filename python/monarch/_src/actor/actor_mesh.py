@@ -2529,8 +2529,17 @@ class ActorMesh(MeshTrait, Generic[T]):
         return Future._from_handle(self._inner.stop(instance, reason))
 
     @property
+    def _created(self) -> Future[None]:
+        """Wait for Python's deferred native spawn, without waiting for actors
+        to start."""
+        return Future._from_handle(self._inner._created())
+
+    @property
     def initialized(self) -> Future[None]:
-        """Return a Future that waits for native mesh creation.
+        """Return a Future that waits for the mesh's actors to start.
+
+        This waits for native actor initialization, which precedes the Python
+        actor's ``__init__`` message.
 
         For a pending slice, reading this property starts the work to create
         the native slice, even if the Future is never observed.

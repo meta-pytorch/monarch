@@ -1275,6 +1275,54 @@ async def test_pending_call_survives_transient_process_stall() -> None:
     await proc.stop()
 
 
+@pytest.mark.parametrize("use_direct_spawn", [False, True])
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+async def test_stop_proc_mesh_after_its_process_is_killed(
+    use_direct_spawn: bool,
+) -> None:
+    """Stopping a proc mesh whose process was killed finishes promptly, well
+    within the data supervision timeout after which the owner learns of the
+    lost actor."""
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    with configured(use_direct_spawn=use_direct_spawn):
+        proc = spawn_procs_on_this_host({"gpus": 1})
+        actor = proc.spawn("killed", StallActor)
+        pid = await actor.pid.call_one()
+        os.kill(pid, signal.SIGKILL)
+        await asyncio.sleep(1)
+        await asyncio.wait_for(proc.stop(), timeout=15)
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+async def test_proc_stop_does_not_wait_for_actor_readiness() -> None:
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    with configured(use_direct_spawn=True):
+        proc = spawn_procs_on_this_host({"gpus": 1})
+        pid = await proc.spawn("pid", StallActor).pid.call_one()
+        readiness = None
+        os.kill(pid, signal.SIGSTOP)
+        try:
+            actor = cast(ActorMesh[StallActor], proc.spawn("unstarted", StallActor))
+            await asyncio.wait_for(actor._created, timeout=5)
+            readiness = actor.initialized.as_asyncio()
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(readiness), timeout=0.1)
+        finally:
+            os.kill(pid, signal.SIGKILL)
+
+        try:
+            await asyncio.wait_for(proc.stop(), timeout=15)
+        finally:
+            if readiness is not None:
+                readiness.cancel()
+                try:
+                    await readiness
+                except asyncio.CancelledError:
+                    pass
+
+
 class FaultActor(Actor):
     # This will dereference a null pointer and crash the process
     # This should also kill the ProcAgent, rendering it unresponsive.

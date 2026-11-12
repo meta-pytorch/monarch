@@ -167,10 +167,16 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
         )))
     }
 
-    /// Return a future that completes when the mesh has been created.
+    /// Wait for Python's deferred native mesh construction, without waiting
+    /// for the actors to start. An already constructed mesh is ready.
+    fn created(&self) -> BoxFuture<'static, PyResult<Option<()>>> {
+        future::ready(Ok(None)).boxed()
+    }
+
+    /// Return a future that completes when the mesh's actors have started.
     ///
-    /// The default returns an already-completed future: the mesh exists.
-    /// Pending meshes override this method to wait for creation.
+    /// Mesh references are already ready. Owned and pending meshes override
+    /// this method to wait for native actor initialization.
     /// The completion value is exposed to Python as None.
     fn initialized(&self) -> BoxFuture<'static, PyResult<Option<()>>> {
         future::ready(Ok(None)).boxed()
@@ -265,10 +271,15 @@ impl PythonActorMesh {
         self.inner.stop(instance, reason).map(PyHandle::spawn)
     }
 
-    /// Start waiting for mesh creation and return a Handle that completes
-    /// with Python None. Dropping the Handle does not cancel creation.
+    /// Wait for mesh creation and native actor initialization. Dropping the
+    /// Handle does not cancel creation.
     fn initialized(&self) -> PyHandle {
         PyHandle::spawn(self.inner.initialized())
+    }
+
+    /// Wait only for Python's deferred native mesh construction.
+    fn _created(&self) -> PyHandle {
+        PyHandle::spawn(self.inner.created())
     }
 
     /// Return a Handle for the mesh's name, waiting for creation if necessary.
@@ -562,6 +573,15 @@ impl ActorMeshProtocol for AsyncActorMesh {
             let _ = tx.send(result);
         });
         Ok(async move { rx.await.map_err(anyhow::Error::from)? }.boxed())
+    }
+
+    fn created(&self) -> BoxFuture<'static, PyResult<Option<()>>> {
+        let mesh = self.mesh.clone();
+        async move {
+            mesh.await?;
+            Ok(None)
+        }
+        .boxed()
     }
 
     /// Return a future that waits for mesh creation, then for the created mesh
@@ -2661,10 +2681,7 @@ mod tests {
             .boxed()
             .shared(),
         );
-        created
-            .initialized()
-            .await
-            .expect("creation should succeed");
+        created.created().await.expect("creation should succeed");
 
         let failed = AsyncActorMesh::new(
             queue,
@@ -2675,10 +2692,7 @@ mod tests {
             .boxed()
             .shared(),
         );
-        failed
-            .initialized()
-            .await
-            .expect_err("creation should fail");
+        failed.created().await.expect_err("creation should fail");
 
         monarch_with_gil_blocking(GilSite::Test, |py| {
             assert!(still_creating.is_instance_of::<PyValueError>(py));

@@ -180,7 +180,7 @@ async def _wait_for_event(event: threading.Event, message: str) -> None:
 
 
 class _PendingActorProbe:
-    """A Handle-backed initializer whose completion the test controls."""
+    """A native spawn whose completion the test controls."""
 
     def __init__(
         self,
@@ -199,13 +199,17 @@ class _PendingActorProbe:
         self.stop_called = False
 
     @property
-    def initialized(self) -> Future[None]:
+    def _created(self) -> Future[None]:
         if not self.entered.is_set():
             self._driven.append(self._name)
             self.entered.set()
             if not self._pending:
                 self.complete()
         return Future._from_handle(self._handle)
+
+    @property
+    def initialized(self) -> Future[None]:
+        raise AssertionError("shutdown must not wait for actor readiness")
 
     def complete(self) -> None:
         if self._completed:
@@ -753,7 +757,7 @@ class _AppendBeforeRemoval(list[Any]):
 
 
 class _CountedSpawn:
-    """A pending spawn that counts reads of its `initialized` Future, so a test
+    """A pending spawn that counts reads of its `_created` Future, so a test
     can tell when each drain has selected it."""
 
     def __init__(self, probe: _PendingActorProbe) -> None:
@@ -761,9 +765,9 @@ class _CountedSpawn:
         self.reads = 0
 
     @property
-    def initialized(self) -> Future[None]:
+    def _created(self) -> Future[None]:
         self.reads += 1
-        return self._probe.initialized
+        return self._probe._created
 
 
 @pytest.mark.timeout(60)
