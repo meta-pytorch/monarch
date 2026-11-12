@@ -14,9 +14,9 @@ postcard.
 The program creates three Chrysalis nodes in a tree:
 
 ```text
-Alice (namespace root)
-└── Relay
-    └── Bob
+Relay (namespace root)
+├── Alice
+└── Bob
 ```
 
 All three nodes run inside one Rust program. Their lowest-level datagram carrier
@@ -35,15 +35,15 @@ Each node receives an ephemeral certificate and private key signed by one shared
 
 The program develops the mesh in six checkpoints.
 
-1. **Create Alice.** Alice starts a root namespace and confirms that her node PID
-   is the PID derived from her certificate.
+1. **Create Relay.** Relay starts a root namespace and confirms that its node PID
+   is the PID derived from its certificate.
 
-2. **Attach Relay.** Relay joins Alice as a child. Their live control connection
+2. **Attach Alice.** Alice joins Relay as a child. Their live control connection
    establishes reciprocal namespace visibility.
 
-3. **Attach Bob behind Relay.** Bob joins Relay, and Relay republishes Bob upward
-   to Alice. Resolution is contextual: Relay's next hop for Bob is Bob, while
-   Alice's next hop for the same Bob PID is Relay.
+3. **Attach Bob.** Bob also joins Relay. Resolution is contextual: Relay's next
+   hop for Bob is Bob, while Alice, who resolves Bob through Relay, gets Relay as
+   her next hop for the same Bob PID.
 
 4. **Send the sealed postcard.** Alice dials Bob by PID and writes an
    application-defined byte string to a bidirectional stream. Bob receives the
@@ -127,13 +127,13 @@ role modes currently require Linux because they use `VsockDatagramSocket`,
 whose native-vsock implementation is Linux-only. The no-mode walkthrough above
 uses `InprocNetwork` and remains available on other platforms.
 
-Alice is the namespace root. Relay listens for Bob at `…/r` and connects to
-Alice at `…/a`. Bob has no listener; he connects to Relay.
+Relay is the namespace root and listens at `…/r`. Alice and Bob have no
+listener; each connects to Relay.
 
 ```text
-Alice (root, listens at …/a)
-└── Relay (listens at …/r)
-    └── Bob (connects to …/r)
+Relay (root, listens at …/r)
+├── Alice (connects to …/r)
+└── Bob (connects to …/r)
 ```
 
 ### Prepare the identities
@@ -170,35 +170,34 @@ relay 22222222222222222222222222222222
 bob 33333333333333333333333333333333
 ```
 
-### Alice
-
-```sh
-SEALED_POSTCARD_IDENTITY=$(cat /tmp/sealed-postcard.ab12cd/ids/alice.pem) \
-  cargo run --example sealed-postcard -- alice \
-    --listen unix:/tmp/sealed-postcard.ab12cd/a \
-    --bob-pid 33333333333333333333333333333333
-```
-
-`SEALED_POSTCARD_IDENTITY` is the text of Alice's own bundle, not its path.
-`--listen` is the Unix socket where Relay connects to Alice. `--bob-pid` is
-Bob's PID from the `bob` line of `pids`; Alice uses it to find and authenticate
-Bob. Alice exits successfully after the postcard and 32 echo streams complete.
-
 ### Relay
 
 ```sh
 SEALED_POSTCARD_IDENTITY=$(cat /tmp/sealed-postcard.ab12cd/ids/relay.pem) \
   cargo run --example sealed-postcard -- relay \
-    --parent-pid 11111111111111111111111111111111 \
-    --parent unix:/tmp/sealed-postcard.ab12cd/a \
     --listen unix:/tmp/sealed-postcard.ab12cd/r
 ```
 
-`SEALED_POSTCARD_IDENTITY` is the text of Relay's own bundle. `--listen` is
-where Relay waits for Bob, so Bob uses the same address as `--parent`.
-`--parent` is Alice's `--listen` address. `--parent-pid` is Alice's PID from
-the `alice` line of `pids`; Relay accepts only a parent whose certificate
-matches it.
+`SEALED_POSTCARD_IDENTITY` is the text of Relay's own bundle, not its path.
+`--listen` is where Relay waits for Alice and Bob, so both use the same address
+as `--parent`. Relay has no parent: it is the namespace root.
+
+### Alice
+
+```sh
+SEALED_POSTCARD_IDENTITY=$(cat /tmp/sealed-postcard.ab12cd/ids/alice.pem) \
+  cargo run --example sealed-postcard -- alice \
+    --parent-pid 22222222222222222222222222222222 \
+    --parent unix:/tmp/sealed-postcard.ab12cd/r \
+    --bob-pid 33333333333333333333333333333333
+```
+
+`SEALED_POSTCARD_IDENTITY` is the text of Alice's own bundle. `--parent` is
+Relay's `--listen` address. `--parent-pid` is Relay's PID from the `relay` line
+of `pids`, and Alice accepts only a parent whose certificate matches it.
+`--bob-pid` is Bob's PID from the `bob` line; Alice uses it to find and
+authenticate Bob. Alice exits successfully after the postcard and 32 echo
+streams complete.
 
 ### Bob
 
@@ -226,8 +225,8 @@ relay observed 123 datagrams, postcard plaintext seen: false, log complete: true
 
 They exit successfully only when those checks pass. A complete Relay report
 means it recorded every datagram its socket sent or received, and none
-contained the postcard's plaintext. Bob has no listening socket, so everything
-between Alice and Bob crosses Relay. After stopping the roles, deleting the run
+contained the postcard's plaintext. Neither Alice nor Bob has a listening
+socket, so everything between them crosses Relay. After stopping the roles, deleting the run
 directory removes their private keys.
 
 Continue with [`separate-processes.md`](separate-processes.md) for a copyable

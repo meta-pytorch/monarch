@@ -13,8 +13,8 @@ HELLO with each `node:` name, reuses connections, manages its queues, and shuts
 down its tasks.
 
 The later VM test uses the same carrier. Only the way it opens the byte stream
-changes: a guest uses `native:<cid>:<port>`, while its host uses Firecracker's
-`hybrid:<port>:<path>` connection.
+changes: a guest dials `native:<cid>:<port>`, and Firecracker delivers that
+connection to a Unix socket on its host.
 """
 
 import os
@@ -165,15 +165,22 @@ def test_sealed_postcard_as_three_processes() -> None:
             timeout=30,
         )
         pids = _parse_pids(identities.stdout)
-        alice_path = directory / "a"
         relay_path = directory / "r"
 
+        relay = _Role(
+            [_binary(), "relay", "--listen", f"unix:{relay_path}"],
+            env=_identity_env(directory / "ids" / "relay.pem"),
+            log=directory / "relay.log",
+        )
+        roles.append(relay)
         alice = _Role(
             [
                 _binary(),
                 "alice",
-                "--listen",
-                f"unix:{alice_path}",
+                "--parent-pid",
+                pids["relay"],
+                "--parent",
+                f"unix:{relay_path}",
                 "--bob-pid",
                 pids["bob"],
             ],
@@ -181,21 +188,6 @@ def test_sealed_postcard_as_three_processes() -> None:
             log=directory / "alice.log",
         )
         roles.append(alice)
-        relay = _Role(
-            [
-                _binary(),
-                "relay",
-                "--parent-pid",
-                pids["alice"],
-                "--parent",
-                f"unix:{alice_path}",
-                "--listen",
-                f"unix:{relay_path}",
-            ],
-            env=_identity_env(directory / "ids" / "relay.pem"),
-            log=directory / "relay.log",
-        )
-        roles.append(relay)
         bob = _Role(
             [
                 _binary(),

@@ -9,9 +9,9 @@
 These bindings are experimental, private, and subject to change. They are not
 part of Chrysalis's public API.
 
-Alice is the root of a namespace. Relay joins Alice, and Bob joins Relay. Alice
-finds Bob by his PID, opens an authenticated stream to him through Relay, and
-sends a postcard. Bob replies on the same stream.
+Relay is the root of a namespace, and Alice and Bob join Relay. Alice finds Bob
+by his PID, opens an authenticated stream to him through Relay, and sends a
+postcard. Bob replies on the same stream.
 """
 
 import asyncio
@@ -61,11 +61,11 @@ async def hello() -> None:
         Identity.from_pem(bundle) for bundle in generate_test_identities(3)
     )
 
-    # Alice is the root. Relay joins Alice, and Bob joins Relay, each naming its
-    # parent's PID and address. Every node binds a fresh UDP port on 127.0.0.1,
-    # and `addresses` reports the port it got.
-    alice_node = Node(alice)
-    relay_node = Node(relay, parent=(alice.pid, alice_node.addresses[0]))
+    # Relay is the root. Alice and Bob join Relay, each naming Relay's PID and
+    # address. Every node binds a fresh UDP port on 127.0.0.1, and `addresses`
+    # reports the port it got.
+    relay_node = Node(relay)
+    alice_node = Node(alice, parent=(relay.pid, relay_node.addresses[0]))
     bob_node = Node(bob, parent=(relay.pid, relay_node.addresses[0]))
     nodes = [alice_node, relay_node, bob_node]
     names = ("alice", "relay", "bob")

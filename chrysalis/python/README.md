@@ -2,7 +2,7 @@
 
 These bindings are experimental, private, and subject to change. They are not part of Chrysalis's public API.
 
-This tutorial runs three Chrysalis nodes in one Python process. Alice is the root of a process namespace, Relay joins Alice, and Bob joins Relay. Alice knows Bob's certificate-derived process ID, finds him through the namespace, opens an authenticated stream through Relay, sends a postcard, and receives Bob's reply.
+This tutorial runs three Chrysalis nodes in one Python process. Relay is the root of a process namespace, and Alice and Bob join Relay. Alice knows Bob's certificate-derived process ID, finds him through the namespace, opens an authenticated stream through Relay, sends a postcard, and receives Bob's reply.
 
 The nodes share a Python process, but they do not exchange packets through Python objects or in-memory queues. Each node binds its own UDP socket on `127.0.0.1`, and Chrysalis sends real QUIC packets between those sockets.
 
@@ -47,24 +47,24 @@ Each identity contains a certificate and private key. The certificate determines
 The three nodes form this parent-child tree:
 
 ```text
-Alice
-└── Relay
-    └── Bob
+Relay
+├── Alice
+└── Bob
 ```
 
 The program constructs that tree directly:
 
 ```python
-alice_node = Node(alice)
-relay_node = Node(relay, parent=(alice.pid, alice_node.addresses[0]))
+relay_node = Node(relay)
+alice_node = Node(alice, parent=(relay.pid, relay_node.addresses[0]))
 bob_node = Node(bob, parent=(relay.pid, relay_node.addresses[0]))
 ```
 
-`Node(alice)` has no parent, so Alice becomes the namespace root. With no carrier argument, each node binds a new `UdpCarrier` on `127.0.0.1` and asks the operating system to choose an available port.
+`Node(relay)` has no parent, so Relay becomes the namespace root. With no carrier argument, each node binds a new `UdpCarrier` on `127.0.0.1` and asks the operating system to choose an available port.
 
-The `parent` tuple contains two different facts: the PID the parent must authenticate as, and the UDP address where the child contacts it. `Node.addresses` reports the actual address after the operating system chooses the port. Relay receives Alice's PID and address; Bob receives Relay's.
+The `parent` tuple contains two different facts: the PID the parent must authenticate as, and the UDP address where the child contacts it. `Node.addresses` reports the actual address after the operating system chooses the port. Alice and Bob each receive Relay's PID and address.
 
-Joining is asynchronous. Bob's namespace entry takes a moment to travel through Relay to Alice, so Alice retries `dial` until Bob is visible or the deadline passes:
+Joining is asynchronous. Bob's namespace entry takes a moment to reach Relay, and Alice finds Bob by asking Relay, so Alice retries `dial` until Bob is visible or the deadline passes:
 
 ```python
 async def dial_when_visible(node: Node, pid: Pid, within: float = 10.0) -> Stream:
@@ -84,7 +84,7 @@ async def dial_when_visible(node: Node, pid: Pid, within: float = 10.0) -> Strea
             await asyncio.sleep(0.05)
 ```
 
-Alice dials Bob by PID, not by Bob's UDP port. Alice's namespace says that the next hop toward Bob is Relay. Relay forwards Bob-addressed packets rather than terminating Alice's application connection.
+Alice dials Bob by PID, not by Bob's UDP port. Alice resolves Bob through her parent, Relay, and the next hop toward Bob is Relay. Relay forwards Bob-addressed packets rather than terminating Alice's application connection.
 
 ### Exchange bytes on one stream
 
