@@ -126,12 +126,9 @@ class _SlowScanTelemetryActor(job_telemetry_actor.TelemetryActor):
         self,
         port: Any,
         dest: Any,
-        table_name: str,
-        projection: Any,
-        limit: Any,
-        filter_expr: Any,
+        sql: str,
     ) -> None:
-        if table_name != _SLOW_SCAN_TABLE:
+        if _SLOW_SCAN_TABLE not in sql:
             port.send([])
             return
         self._slow_scans += 1
@@ -2507,6 +2504,44 @@ def test_worker_telemetry_failure_preserves_other_workers() -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
+def test_worker_query_error_fails_the_query_and_keeps_the_worker() -> None:
+    apply_ids = {"root": _new_apply_id(), "healthy": _new_apply_id()}
+    for apply_id in apply_ids.values():
+        _remove_socket_dir(apply_id)
+
+    try:
+        with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+            root = monarch.actor.context().actor_instance.proc_mesh.spawn(
+                "root_telemetry",
+                _FailureTestTelemetryRoot,
+                apply_ids["root"],
+                0,
+            )
+            assert root.activate.call_one().get()
+            healthy = root.start_healthy_collector.call_one(
+                state.hosts, apply_ids["healthy"]
+            ).get()
+            healthy.store_pyspy_dump.call_one(
+                "healthy-dump", "proc[0]", _sample_pyspy_dump_json()
+            ).get()
+            query_engine = QueryEngine(root)
+
+            # Only the worker holds a row, so only the worker divides by zero.
+            with pytest.raises(Exception, match="(?i)divide by zero"):
+                query_engine.query(
+                    "SELECT dump_id FROM pyspy_dumps "
+                    "WHERE 1 / (length(dump_id) - length(dump_id)) = 0"
+                )
+
+            assert root.worker_collector_count.call_one().get() == 1
+            assert query_engine.query("SELECT dump_id FROM pyspy_dumps").num_rows == 1
+    finally:
+        for apply_id in apply_ids.values():
+            _remove_socket_dir(apply_id)
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_root_answers_queries_while_a_worker_scan_is_slow() -> None:
     apply_ids = {"root": _new_apply_id(), "slow": _new_apply_id()}
     for apply_id in apply_ids.values():
@@ -2571,8 +2606,8 @@ def test_root_scan_error_reaches_the_caller_and_keeps_the_root() -> None:
             port=1,
         )
 
-        with pytest.raises(Exception, match="table 'no_such_table' not found"):
-            root.scan.call_one(dest, "no_such_table", None, None, None).get(timeout=30)
+        with pytest.raises(Exception, match="no_such_table.* not found"):
+            root.scan.call_one(dest, 'SELECT * FROM "no_such_table"').get(timeout=30)
         assert "pyspy_dumps" in root.table_names.call_one().get(timeout=30)
     finally:
         _remove_socket_dir(apply_id)

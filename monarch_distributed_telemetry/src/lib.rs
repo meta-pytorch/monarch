@@ -18,6 +18,7 @@
 
 pub mod database_scanner;
 pub(crate) mod persist;
+pub(crate) mod pushdown;
 pub mod pyspy_table;
 pub mod query_engine;
 pub mod socket_ingest;

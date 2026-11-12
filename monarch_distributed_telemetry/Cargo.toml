@@ -20,6 +20,7 @@ arrow-schema = "=57.3.0"
 arrow-select = "=57.3.0"
 async-trait = "0.1.92"
 datafusion = "52.5.0"
+erased-serde = "0.4.11"
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }

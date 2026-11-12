@@ -28,7 +28,7 @@ import os
 import socket
 import threading
 import time
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Tuple
 
 from monarch._rust_bindings.monarch_distributed_telemetry import (
     _post_scan_counts,
@@ -70,6 +70,10 @@ _SCAN_WORKER_TIMEOUT_SECS: float = 10.0
 
 # `GpuMetricsActor.start` initializes NVML, which can hang.
 _SAMPLER_START_TIMEOUT_SECS: float = 10.0
+
+
+class TelemetryQueryError(Exception):
+    """A collector could not run a telemetry query over its tables."""
 
 
 def telemetry_persist_dir(persist_dir: str, apply_id: str) -> str:
@@ -342,10 +346,7 @@ class TelemetryActor(Actor):
         self,
         port: Port[List[Tuple[ActorAddr, int]]],
         dest: PortId,
-        table_name: str,
-        projection: Optional[List[int]],
-        limit: Optional[int],
-        filter_expr: Optional[str],
+        sql: str,
     ) -> None:
         """Scan the local store and configured worker collector meshes.
 
@@ -354,20 +355,17 @@ class TelemetryActor(Actor):
         deadline; a mesh that times out or fails is left out as a whole. Each
         collector tags the batches it sends to `dest` with its address, so the
         caller can tell when each one has fully arrived.
+
+        Each collector runs `sql`, a read-only query, over its own tables.
         """
-        self._scan(
-            port.send, port.exception, dest, table_name, projection, limit, filter_expr
-        )
+        self._scan(port.send, port.exception, dest, sql)
 
     @endpoint(explicit_response_port=True)
     def query_scan(
         self,
         port: Port[None],
         dest: PortId,
-        table_name: str,
-        projection: Optional[List[int]],
-        limit: Optional[int],
-        filter_expr: Optional[str],
+        sql: str,
     ) -> None:
         """Scan like `scan`, for the query engine that owns `dest`.
 
@@ -381,19 +379,14 @@ class TelemetryActor(Actor):
             _post_scan_counts(instance, dest, batch_counts)
             port.send(None)
 
-        self._scan(
-            post, port.exception, dest, table_name, projection, limit, filter_expr
-        )
+        self._scan(post, port.exception, dest, sql)
 
     def _scan(
         self,
         reply: Callable[[List[Tuple[ActorAddr, int]]], None],
         fail: Callable[[Exception], None],
         dest: PortId,
-        table_name: str,
-        projection: Optional[List[int]],
-        limit: Optional[int],
-        filter_expr: Optional[str],
+        sql: str,
     ) -> None:
         # The client collector is the singleton query root: it fans out flat to
         # worker collector meshes, then scans its local store while they run.
@@ -416,9 +409,7 @@ class TelemetryActor(Actor):
                 child_futures.append(
                     (
                         mesh_name,
-                        collector_mesh.scan.call(
-                            dest, table_name, projection, limit, filter_expr
-                        ),
+                        collector_mesh.scan.call(dest, sql),
                     )
                 )
             except Exception as error:
@@ -430,9 +421,14 @@ class TelemetryActor(Actor):
                 self._worker_collectors.pop(mesh_name, None)
 
         try:
-            local_counts = scanner.scan(
-                dest, table_name, projection, limit, filter_expr
-            )
+            local_counts = scanner.scan(dest, sql)
+        except Exception as error:
+            # An exception escaping an explicit-port endpoint fails the actor,
+            # so send it to the caller instead. Unlike a plain endpoint, the
+            # caller gets the bare exception, without the remote traceback.
+            fail(TelemetryQueryError(str(error)))
+            return
+        try:
             if not child_futures:
                 reply([local_counts])
                 return
@@ -445,9 +441,6 @@ class TelemetryActor(Actor):
                 daemon=True,
             ).start()
         except Exception as error:
-            # An exception escaping an explicit-port endpoint fails the actor,
-            # so send it to the caller instead. Unlike a plain endpoint, the
-            # caller gets the bare exception, without the remote traceback.
             fail(error)
 
     def _reply_with_worker_counts(
@@ -473,6 +466,11 @@ class TelemetryActor(Actor):
                     mesh_name,
                     _SCAN_WORKER_TIMEOUT_SECS,
                 )
+            except TelemetryQueryError as error:
+                # The query failed, not the mesh: fail the query, as a local
+                # error would, and keep scanning the mesh.
+                fail(error)
+                return
             except Exception as error:
                 logger.warning(
                     "worker telemetry scan of %s failed, dropping it: %s",

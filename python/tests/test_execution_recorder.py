@@ -327,7 +327,7 @@ def test_execution_scans_include_worker_collector_records(table):
     worker.scan.call.return_value.get.return_value = [("rank0", [("worker", 3)])]
     actor._worker_collectors = {"workers": worker}
     port = MagicMock()
-    TelemetryActor.scan._method(actor, port, "dest", table, None, None, None)
+    TelemetryActor.scan._method(actor, port, "dest", f'SELECT * FROM "{table}"')
     wait_until(lambda: port.send.called)
     port.send.assert_called_once_with([("root", 2), ("worker", 3)])
     port.exception.assert_not_called()

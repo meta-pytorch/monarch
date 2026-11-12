@@ -4765,6 +4765,7 @@ dependencies = [
  "async-trait",
  "build_utils",
  "datafusion",
+ "erased-serde",
  "futures 0.3.34",
  "hyperactor",
  "hyperactor_config",
