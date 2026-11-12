@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple, Typ
 
 from monarch._rust_bindings.monarch_hyperactor.handle import _after, Handle
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
+    _add_admin_hosts as _hy_add_admin_hosts,
     _spawn_admin as _hy_spawn_admin,
     BootstrapCommand,
     HostMesh as HyHostMesh,
@@ -570,5 +571,24 @@ def _spawn_admin(
             context().actor_instance._as_rust(),
             admin_addr,
             telemetry_url,
+        )
+    )
+
+
+def _add_admin_hosts(
+    admin_ref: PyMeshAdminRef, host_meshes: list["HostMesh"], owner_pid: int
+) -> "Future[None]":
+    """
+    Add the hosts of ``host_meshes`` to a running mesh admin, such as the host
+    of a client that connects after the admin started. ``owner_pid`` is the
+    local process that runs those hosts; the admin drops them once they stop
+    answering and that process has exited.
+    """
+    return Future._from_handle(
+        _hy_add_admin_hosts(
+            admin_ref,
+            [m._hy_host_mesh for m in host_meshes],
+            owner_pid,
+            context().actor_instance._as_rust(),
         )
     )

@@ -254,3 +254,17 @@ def _spawn_admin(
     - `telemetry_url`: Optional base URL of the Monarch telemetry dashboard.
     """
     ...
+
+def _add_admin_hosts(
+    admin_ref: PyMeshAdminRef,
+    host_meshes: list[Handle[HostMesh]],
+    owner_pid: int,
+    instance: Instance,
+) -> Handle[None]:
+    """
+    Add the hosts of ``host_meshes`` to a running mesh admin, such as the host
+    of a client that connects after the admin started. ``owner_pid`` is the
+    local process that runs those hosts; the admin drops them once they stop
+    answering and that process has exited.
+    """
+    ...

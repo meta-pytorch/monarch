@@ -363,6 +363,7 @@ use std::collections::HashSet;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -646,6 +647,18 @@ pub enum MeshAdminMessage {
         #[reply]
         reply: OncePortRef<MeshAdminAddrResponse>,
     },
+
+    /// Add hosts to the topology, such as the host of a client that
+    /// connects after the admin started. Hosts already listed are
+    /// ignored. `owner_pid` is the process on the admin's machine
+    /// that runs these hosts; an added host is dropped only when it
+    /// fails to answer and that process has exited.
+    AddHosts {
+        hosts: Vec<ActorRef<HostAgent>>,
+        owner_pid: u32,
+        #[reply]
+        reply: OncePortRef<()>,
+    },
 }
 wirevalue::register_type!(MeshAdminMessage);
 
@@ -716,7 +729,7 @@ pub struct MeshAdminAgent {
     /// exactly these.
     hosts: Vec<ActorRef<HostAgent>>,
 
-    /// Configured host identity → `HostAgent` reference.
+    /// Host identity → host entry, for configured and added hosts.
     ///
     /// The host agent itself is an actor that can appear in multiple
     /// places (e.g., as a host node and as a child actor under a
@@ -724,7 +737,7 @@ pub struct MeshAdminAgent {
     /// that actor as a *Host* node (via `resolve_host_node`) rather
     /// than a generic *Actor* node, avoiding cycles / dropped nodes
     /// in clients like the TUI.
-    hosts_by_identity: HashMap<ActorId, ActorRef<HostAgent>>,
+    hosts_by_identity: HashMap<ActorId, HostEntry>,
 
     /// Terminal channel address → the configured hosts at that
     /// address. A channel address is not a host identity: a client
@@ -737,6 +750,9 @@ pub struct MeshAdminAgent {
     /// Every value is a key of `hosts_by_identity`. See
     /// [`Self::apply_host_snapshots`].
     proc_owners: HashMap<ProcAddr, ActorId>,
+
+    /// The keys of `hosts_by_identity`, shared with the HTTP bridge.
+    bridge_host_agents: Arc<RwLock<HashSet<ActorId>>>,
 
     /// `ActorAddr` of the process-global root client (`client[0]` on
     /// the singleton Host's `local_proc`), exposed as a first-class
@@ -815,7 +831,13 @@ impl MeshAdminAgent {
             let key = agent_ref.actor_addr().id().clone();
             assert!(
                 hosts_by_identity
-                    .insert(key.clone(), agent_ref.clone())
+                    .insert(
+                        key.clone(),
+                        HostEntry {
+                            agent: agent_ref.clone(),
+                            owner: None,
+                        }
+                    )
                     .is_none(),
                 "host agent {} is listed more than once",
                 agent_ref.actor_addr()
@@ -833,11 +855,13 @@ impl MeshAdminAgent {
             .or_else(|_| std::env::var("USERNAME"))
             .unwrap_or_else(|_| "unknown".to_string());
 
+        let bridge_host_agents = Arc::new(RwLock::new(hosts_by_identity.keys().cloned().collect()));
         Self {
             hosts: ordered,
             hosts_by_identity,
             host_candidates_by_addr,
             proc_owners: HashMap::new(),
+            bridge_host_agents,
             root_client_actor_id,
             self_actor_id: None,
             listener: Some(listener),
@@ -919,7 +943,7 @@ struct BridgeState {
     /// reference resolution.
     admin_ref: ActorRef<MeshAdminAgent>,
     /// Exact actor identities of the HostAgents managed by this admin.
-    host_agents: HashSet<ActorId>,
+    host_agents: Arc<RwLock<HashSet<ActorId>>>,
     /// Dedicated client mailbox on system_proc for HTTP bridge reply
     /// ports. Using a separate `Instance<()>` avoids sharing the
     /// actor's own mailbox with the HTTP bridge and ensures the
@@ -1117,7 +1141,7 @@ impl Actor for MeshAdminAgent {
             mesh_admin_access_instructions(&admin_url, tls.as_ref().map(|(_, bundle)| bundle));
         let bridge_state = Arc::new(BridgeState {
             admin_ref: ActorRef::attest(this.self_addr().clone()),
-            host_agents: self.hosts_by_identity.keys().cloned().collect(),
+            host_agents: self.bridge_host_agents.clone(),
             bridge_cx,
             resolve_semaphore: tokio::sync::Semaphore::new(hyperactor_config::global::get(
                 crate::config::MESH_ADMIN_MAX_CONCURRENT_RESOLVES,
@@ -1248,6 +1272,16 @@ impl Handler<MeshAdminMessage> for MeshAdminAgent {
                 };
                 reply.post(cx, resp);
             }
+            MeshAdminMessage::AddHosts {
+                hosts,
+                owner_pid,
+                reply,
+            } => {
+                for host in hosts {
+                    self.add_host(host, owner_pid);
+                }
+                reply.post(cx, ());
+            }
         }
         Ok(())
     }
@@ -1314,6 +1348,7 @@ impl MeshAdminAgent {
             .parse()
             .map_err(|e| anyhow::anyhow!("invalid reference '{}': {}", reference_string, e))?;
 
+        self.drop_hosts_of_exited_processes();
         match &node_ref {
             crate::introspect::NodeRef::Root => Ok(self.build_root_payload()),
             crate::introspect::NodeRef::Host(actor_id) => {
@@ -1460,11 +1495,63 @@ impl MeshAdminAgent {
         }
     }
 
-    /// The configured host with identity `key`.
+    /// List `host` after the configured hosts, unless it is already
+    /// listed.
+    fn add_host(&mut self, host: ActorRef<HostAgent>, owner_pid: u32) {
+        let key = host.actor_addr().id().clone();
+        if self.hosts_by_identity.contains_key(&key) {
+            return;
+        }
+        self.host_candidates_by_addr
+            .entry(host.actor_addr().addr().clone())
+            .or_default()
+            .push(key.clone());
+        self.hosts_by_identity.insert(
+            key.clone(),
+            HostEntry {
+                agent: host.clone(),
+                owner: Some(ProcessIdentity::of(owner_pid)),
+            },
+        );
+        self.hosts.push(host);
+        self.bridge_host_agents.write().unwrap().insert(key);
+    }
+
+    /// Drop added hosts whose owner process has exited, so a walk does
+    /// not wait on their timeouts. Each query of a dead host would
+    /// otherwise block this actor for `MESH_ADMIN_SINGLE_HOST_TIMEOUT`.
+    fn drop_hosts_of_exited_processes(&mut self) {
+        let exited: Vec<ActorId> = self
+            .hosts_by_identity
+            .iter()
+            .filter(|(_, entry)| entry.owner.is_some_and(|owner| !owner.is_alive()))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in exited {
+            tracing::info!(host = %key, "mesh admin: dropping host of exited process");
+            self.remove_added_host(&key);
+        }
+    }
+
+    /// Stop listing the added host `key` and forget the procs it owned.
+    fn remove_added_host(&mut self, key: &ActorId) {
+        self.hosts.retain(|host| host.actor_addr().id() != key);
+        self.hosts_by_identity.remove(key);
+        self.host_candidates_by_addr.retain(|_, candidates| {
+            candidates.retain(|candidate| candidate != key);
+            !candidates.is_empty()
+        });
+        self.proc_owners.retain(|_, owner| owner != key);
+        self.bridge_host_agents.write().unwrap().remove(key);
+    }
+
+    /// The listed host with identity `key`.
     fn configured_host(&self, key: &ActorId) -> &ActorRef<HostAgent> {
-        self.hosts_by_identity
+        &self
+            .hosts_by_identity
             .get(key)
-            .expect("ownership refers only to configured hosts")
+            .expect("ownership refers only to listed hosts")
+            .agent
     }
 
     /// Record the procs listed by successful host snapshots, all or
@@ -1522,14 +1609,29 @@ impl MeshAdminAgent {
         cx: &Context<'_, Self>,
         actor_id: &hyperactor::ActorAddr,
     ) -> Result<NodePayload, anyhow::Error> {
-        let payload = self
+        let key = actor_id.id().clone();
+        let payload = match self
             .query_host_node(
                 cx,
                 actor_id,
                 hyperactor_config::global::get(crate::config::MESH_ADMIN_SINGLE_HOST_TIMEOUT),
             )
-            .await?;
-        let key = actor_id.id().clone();
+            .await
+        {
+            Ok(payload) => payload,
+            Err(error) => {
+                if let Some(owner) = self
+                    .hosts_by_identity
+                    .get(&key)
+                    .and_then(|entry| entry.owner)
+                    && !owner.is_alive()
+                {
+                    tracing::info!(host = %actor_id, owner_pid = owner.pid, "mesh admin: dropping unreachable host of exited process");
+                    self.remove_added_host(&key);
+                }
+                return Err(error);
+            }
+        };
         if self.hosts_by_identity.contains_key(&key)
             && let Ok(procs) = host_snapshot(&payload)
         {
@@ -2527,6 +2629,67 @@ impl ResolvedProcHandler {
     }
 }
 
+/// A host the admin lists.
+#[derive(Debug, Clone)]
+struct HostEntry {
+    agent: ActorRef<HostAgent>,
+    /// The local process that runs the host, for a host added by
+    /// `MeshAdminMessage::AddHosts`. The host is dropped once this
+    /// process exits. `None` for a configured host, which is never
+    /// dropped.
+    owner: Option<ProcessIdentity>,
+}
+
+/// A process on this machine, identified so that a reused pid is not
+/// mistaken for it. On Linux the identity includes the process start
+/// time from `/proc`; elsewhere it is the pid alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessIdentity {
+    pid: u32,
+    start_time: Option<u64>,
+}
+
+impl ProcessIdentity {
+    fn of(pid: u32) -> Self {
+        Self {
+            pid,
+            start_time: proc_stat(pid).map(|(_, start_time)| start_time),
+        }
+    }
+
+    /// Whether the process still runs. An exited process that its
+    /// parent has not reaped yet (a zombie) counts as exited.
+    #[cfg(target_os = "linux")]
+    fn is_alive(&self) -> bool {
+        match proc_stat(self.pid) {
+            Some((state, start_time)) => {
+                !matches!(state, 'Z' | 'X') && Some(start_time) == self.start_time
+            }
+            None => false,
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn is_alive(&self) -> bool {
+        // SAFETY: signal 0 sends nothing; it only checks that the pid exists.
+        let rc = unsafe { libc::kill(self.pid as libc::pid_t, 0) };
+        rc == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+}
+
+/// The state and start time of `pid`, read from `/proc/<pid>/stat`
+/// (fields 3 and 22). `None` if the process does not exist or `/proc`
+/// is unavailable.
+fn proc_stat(pid: u32) -> Option<(char, u64)> {
+    // `/proc` is served from kernel memory, so this read does not block on disk.
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name (field 2) is parenthesized and may contain spaces.
+    let mut fields = stat.get(stat.rfind(')')? + 1..)?.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let start_time = fields.nth(18)?.parse().ok()?;
+    Some((state, start_time))
+}
+
 /// Parse + route + attest. No probe. The single `ActorRef::attest`
 /// minting point. Used by `config_bridge` which intentionally skips
 /// the probe (CFG-4).
@@ -2549,7 +2712,7 @@ async fn resolve_proc_handler(
     state: &BridgeState,
     raw_proc_reference: &str,
 ) -> Result<ResolvedProcHandler, ApiError> {
-    let handler = route_proc_handler(&state.host_agents, raw_proc_reference)?;
+    let handler = route_proc_handler(&state.host_agents.read().unwrap(), raw_proc_reference)?;
     let cx = &state.bridge_cx;
     if !probe_actor(cx, &handler.agent_id()).await? {
         return Err(ApiError::not_found(
@@ -2883,7 +3046,7 @@ async fn config_bridge(
     State(state): State<Arc<BridgeState>>,
     AxumPath(proc_reference): AxumPath<String>,
 ) -> Result<Json<ConfigDumpResult>, ApiError> {
-    let handler = route_proc_handler(&state.host_agents, &proc_reference)?;
+    let handler = route_proc_handler(&state.host_agents.read().unwrap(), &proc_reference)?;
     let timeout =
         hyperactor_config::global::get(crate::config::MESH_ADMIN_CONFIG_DUMP_BRIDGE_TIMEOUT);
     let result = handler.config_dump(&state.bridge_cx, timeout).await?;
@@ -3769,6 +3932,79 @@ mod tests {
         );
     }
 
+    // A zombie (exited, not yet reaped) and a reaped process are both
+    // dead, and a reused pid with another start time is not the same
+    // process.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_process_identity_liveness() {
+        let me = ProcessIdentity::of(std::process::id());
+        assert!(me.is_alive());
+        assert!(
+            !ProcessIdentity {
+                start_time: me.start_time.map(|t| t + 1),
+                ..me
+            }
+            .is_alive()
+        );
+
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while proc_stat(child.id()).map(|(state, _)| state) != Some('Z') {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child never became a zombie"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let zombie = ProcessIdentity::of(child.id());
+        assert!(zombie.start_time.is_some());
+        assert!(!zombie.is_alive());
+        child.wait().unwrap();
+        assert!(!zombie.is_alive());
+    }
+
+    // An added host is listed after the configured hosts and routed by
+    // the HTTP bridge; removing it forgets the procs it owned.
+    #[test]
+    fn test_added_host_is_listed_and_routed() {
+        let (addr, a, b) = hosts_at_one_address();
+        let mut agent = admin_for(&addr, &[&a]);
+        agent.add_host(b.clone(), std::process::id());
+        agent.add_host(a.clone(), std::process::id());
+
+        assert_eq!(
+            agent.build_root_payload().children,
+            vec![
+                crate::introspect::NodeRef::Host(a.actor_addr().clone()),
+                crate::introspect::NodeRef::Host(b.actor_addr().clone()),
+            ]
+        );
+        assert!(
+            agent
+                .bridge_host_agents
+                .read()
+                .unwrap()
+                .contains(&host_key(&b))
+        );
+        assert!(agent.hosts_by_identity[&host_key(&a)].owner.is_none());
+        agent
+            .apply_host_snapshots(vec![(host_key(&b), procs_at(&addr, &["p"]))])
+            .unwrap();
+
+        agent.remove_added_host(&host_key(&b));
+        assert_eq!(agent.hosts, vec![a.clone()]);
+        assert!(agent.proc_owners.is_empty());
+        assert_eq!(agent.host_candidates_by_addr[&addr], vec![host_key(&a)]);
+        assert!(
+            !agent
+                .bridge_host_agents
+                .read()
+                .unwrap()
+                .contains(&host_key(&b))
+        );
+    }
+
     #[test]
     fn test_host_snapshot_replaces_only_that_hosts_procs() {
         let (addr, a, b) = hosts_at_one_address();
@@ -4099,6 +4335,99 @@ mod tests {
             .unwrap();
         let proc = shared.resolve_proc(&admin).await.unwrap();
         assert_eq!(proc.parent, host_ref(&shared.a));
+    }
+
+    // A silent added host stays listed while its owner process runs,
+    // and answers again once it recovers, without being re-added.
+    #[tokio::test]
+    async fn test_silent_added_host_of_live_process_is_kept() {
+        let shared = SharedAddress::new().await;
+        let admin = shared.admin(&[&shared.a]).await;
+        shared.publish(&shared.a, &[]).await;
+        let slow = shared.silent();
+        admin
+            .admin_ref
+            .add_hosts(&shared.client, vec![slow.clone()], std::process::id())
+            .await
+            .unwrap();
+        let slow_node = crate::introspect::NodeRef::Host(slow.actor_addr().clone());
+        assert!(shared.resolve(&admin, slow_node.clone()).await.is_err());
+
+        let recovered: ActorRef<HostAgent> = ActorRef::attest(
+            shared
+                .proc
+                .spawn_bound_with_uid(
+                    hyperactor::id::Uid::singleton(
+                        hyperactor::id::Label::new("silent_host").unwrap(),
+                    ),
+                    StandInHost,
+                )
+                .unwrap()
+                .bind::<StandInHost>()
+                .actor_addr()
+                .clone(),
+        );
+        assert_eq!(recovered, slow);
+        shared.publish(&recovered, &[&shared.proc]).await;
+        shared.resolve(&admin, slow_node).await.unwrap();
+        let root = shared
+            .resolve(&admin, crate::introspect::NodeRef::Root)
+            .await;
+        assert_eq!(
+            root.unwrap().children,
+            vec![host_ref(&shared.a).unwrap(), host_ref(&slow).unwrap()]
+        );
+        let proc = shared.resolve_proc(&admin).await.unwrap();
+        assert_eq!(proc.parent, host_ref(&slow));
+    }
+
+    // An added host whose owner process has exited is dropped before
+    // the next walk, without waiting on a query. A silent configured
+    // host is kept.
+    #[tokio::test]
+    async fn test_added_host_of_exited_process_is_dropped() {
+        let mut exited = std::process::Command::new("true").spawn().unwrap();
+        exited.wait().unwrap();
+        let shared = SharedAddress::new().await;
+        let configured_silent = shared.silent();
+        let admin = shared.admin(&[&shared.a, &configured_silent]).await;
+        admin
+            .admin_ref
+            .add_hosts(&shared.client, vec![shared.b.clone()], exited.id())
+            .await
+            .unwrap();
+        // An exited owner that has not been reaped (a zombie) counts too.
+        #[cfg(target_os = "linux")]
+        let mut zombie = {
+            let zombie = std::process::Command::new("true").spawn().unwrap();
+            while proc_stat(zombie.id()).map(|(state, _)| state) != Some('Z') {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let host_c = SharedAddress::stand_in(&shared.proc, "host_c");
+            admin
+                .admin_ref
+                .add_hosts(&shared.client, vec![host_c], zombie.id())
+                .await
+                .unwrap();
+            zombie
+        };
+        let configured = crate::introspect::NodeRef::Host(configured_silent.actor_addr().clone());
+        assert!(shared.resolve(&admin, configured).await.is_err());
+
+        let started = std::time::Instant::now();
+        let root = shared
+            .resolve(&admin, crate::introspect::NodeRef::Root)
+            .await;
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(
+            root.unwrap().children,
+            vec![
+                host_ref(&shared.a).unwrap(),
+                host_ref(&configured_silent).unwrap(),
+            ]
+        );
+        #[cfg(target_os = "linux")]
+        zombie.wait().unwrap();
     }
 
     // A sole host at an address owns the procs there without being
