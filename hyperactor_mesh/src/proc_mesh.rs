@@ -82,12 +82,12 @@ use crate::resource::Status;
 use crate::supervision::MeshFailure;
 
 declare_attrs! {
-    /// Whether ordinary actor mesh spawns use the direct spawn path.
+    /// Whether ordinary instance actor mesh spawns use the direct spawn path.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_MESH_USE_DIRECT_SPAWN".to_string()),
         Some("use_direct_spawn".to_string()),
     ))
-    pub attr USE_DIRECT_SPAWN: bool = false;
+    pub attr USE_DIRECT_SPAWN: bool = true;
 
     /// Maximum gap between worker keepalives before its data mesh owner is
     /// notified. Workers send keepalives every 5s, so the owner does not
@@ -2094,6 +2094,45 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 300)]
     #[cfg(fbcode_build)]
+    async fn spawn_uses_managed_path_when_direct_spawn_is_disabled() {
+        let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(
+                instance,
+                "configured_managed_spawn",
+                extent!(gpus = 1),
+                None,
+                None,
+            )
+            .await
+            .expect("spawn proc mesh");
+
+        let mut actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn(instance, "configured_managed_actor", &())
+            .await
+            .expect("spawn managed actor mesh");
+        assert!(
+            actor_mesh.as_managed().is_some(),
+            "disabled direct spawn should return a managed mesh"
+        );
+
+        actor_mesh
+            .stop(instance, "test complete".to_string())
+            .expect("stop managed actor mesh");
+        actor_mesh
+            .wait_for_terminal(instance)
+            .await
+            .expect("wait for managed actor mesh to stop");
+        hm.shutdown(instance)
+            .await
+            .expect("host mesh shutdown should complete");
+    }
+
+    #[async_timed_test(timeout_secs = 300)]
+    #[cfg(fbcode_build)]
     async fn spawn_uses_direct_path_when_configured_but_services_remain_managed() {
         let config = hyperactor_config::global::lock();
         let _mode = config.override_key(USE_DIRECT_SPAWN, true);
@@ -3089,6 +3128,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_spawn_actor_on_proc_mesh_slice_only_spawns_slice_members() {
+        let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
         let instance = testing::instance();
 
         let mut hm = testing::host_mesh(2).await;

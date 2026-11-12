@@ -47,7 +47,7 @@ from monarch.actor import (
     MeshFailure,
     Port,
 )
-from monarch.config import configured, parametrize_config
+from monarch.config import configured, get_global_config, parametrize_config
 
 
 class ExceptionActor(Actor):
@@ -1275,23 +1275,20 @@ async def test_pending_call_survives_transient_process_stall() -> None:
     await proc.stop()
 
 
-@pytest.mark.parametrize("use_direct_spawn", [False, True])
+@parametrize_config(use_direct_spawn={False, True})
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-async def test_stop_proc_mesh_after_its_process_is_killed(
-    use_direct_spawn: bool,
-) -> None:
+async def test_stop_proc_mesh_after_its_process_is_killed() -> None:
     """Stopping a proc mesh whose process was killed finishes promptly, well
     within the data supervision timeout after which the owner learns of the
     lost actor."""
     monarch.actor.unhandled_fault_hook = lambda failure: None
-    with configured(use_direct_spawn=use_direct_spawn):
-        proc = spawn_procs_on_this_host({"gpus": 1})
-        actor = proc.spawn("killed", StallActor)
-        pid = await actor.pid.call_one()
-        os.kill(pid, signal.SIGKILL)
-        await asyncio.sleep(1)
-        await asyncio.wait_for(proc.stop(), timeout=15)
+    proc = spawn_procs_on_this_host({"gpus": 1})
+    actor = proc.spawn("killed", StallActor)
+    pid = await actor.pid.call_one()
+    os.kill(pid, signal.SIGKILL)
+    await asyncio.sleep(1)
+    await asyncio.wait_for(proc.stop(), timeout=15)
 
 
 @pytest.mark.timeout(120)
@@ -1908,30 +1905,27 @@ async def test_supervise_callback_handled():
     await second_mesh.stop()
 
 
-@pytest.mark.parametrize("use_direct_spawn", [True, False])
+@parametrize_config(use_direct_spawn={False, True})
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
-async def test_supervise_failure_mesh_name_matches_owned_mesh(
-    use_direct_spawn: bool,
-) -> None:
+async def test_supervise_failure_mesh_name_matches_owned_mesh() -> None:
     """``MeshFailure.mesh_name`` identifies the failed owned mesh by its
     ``_name`` on both the managed and the data-backed spawn paths."""
-    with configured(use_direct_spawn=use_direct_spawn):
-        pm = spawn_procs_on_this_host({"gpus": 1})
-        second_mesh = spawn_procs_on_this_host({"gpus": 1})
-        supervisor = pm.spawn("supervisor", ErrorActorWithSupervise, second_mesh)
+    pm = spawn_procs_on_this_host({"gpus": 1})
+    second_mesh = spawn_procs_on_this_host({"gpus": 1})
+    supervisor = pm.spawn("supervisor", ErrorActorWithSupervise, second_mesh)
 
-        await supervisor.subworker_fail.call_one()
-        mesh_name, failure_names = await supervisor.get_failure_mesh_names.call_one()
+    await supervisor.subworker_fail.call_one()
+    mesh_name, failure_names = await supervisor.get_failure_mesh_names.call_one()
 
-        assert "error_actor" in mesh_name
-        assert failure_names, "expected at least one supervision event"
-        assert all(name == mesh_name for name in failure_names), (
-            f"every failure should name the owned mesh {mesh_name!r}, got {failure_names}"
-        )
+    assert "error_actor" in mesh_name
+    assert failure_names, "expected at least one supervision event"
+    assert all(name == mesh_name for name in failure_names), (
+        f"every failure should name the owned mesh {mesh_name!r}, got {failure_names}"
+    )
 
-        await pm.stop()
-        await second_mesh.stop()
+    await pm.stop()
+    await second_mesh.stop()
 
 
 @pytest.mark.timeout(30)
@@ -2204,8 +2198,7 @@ async def test_supervise_not_starved_by_sync_endpoints(
     await second_mesh.stop()
 
 
-# This test takes up to 3 minutes to run because the timeout on controller
-# unreachable is 120 seconds.
+@parametrize_config(use_direct_spawn={False, True}, supervision_watchdog_timeout={"2s"})
 @pytest.mark.timeout(180)
 @isolate_in_subprocess
 async def test_actor_mesh_supervision_controller_dead() -> None:
@@ -2232,7 +2225,11 @@ async def test_actor_mesh_supervision_controller_dead() -> None:
     # because that is how long we wait before assuming the controller is dead.
     with pytest.raises(
         SupervisionError,
-        match="timed out reaching controller.*for mesh error_actor",
+        match=(
+            "error_actor.*has status|stopped by client"
+            if get_global_config()["use_direct_spawn"]
+            else "timed out reaching controller.*for mesh error_actor"
+        ),
     ):
         await inner_mesh.check.call()
 

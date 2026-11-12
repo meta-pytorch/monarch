@@ -51,6 +51,7 @@ from monarch._src.actor.proc_mesh import (
     unregister_proc_mesh_spawn_callback,
 )
 from monarch._src.job.process import ProcessJob
+from monarch.config import parametrize_config
 from scoped_state import scoped_state
 
 
@@ -1071,6 +1072,7 @@ def test_raw_proc_mesh_pickle_blocks_on_proc_mesh_init() -> None:
 
 
 @pytest.mark.timeout(60)
+@parametrize_config(use_direct_spawn={False})
 @isolate_in_subprocess
 async def test_actor_spawn_then_immediate_shutdown() -> None:
     with ExitStack() as cleanup:

@@ -3665,7 +3665,6 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let config = hyperactor_config::global::lock();
-        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
         let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
         let _host_spawn = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,

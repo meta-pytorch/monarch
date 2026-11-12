@@ -41,6 +41,7 @@ use tokio::task::JoinHandle;
 use crate::Bootstrap;
 #[cfg(fbcode_build)]
 use crate::HostMeshRef;
+use crate::actor_mesh::ACTOR_MESH_ID;
 #[cfg(fbcode_build)]
 use crate::bootstrap::HostBootstrapReady;
 #[cfg(fbcode_build)]
@@ -191,7 +192,20 @@ pub struct TestRootClient {
     work_rx: ActorWorkReceiver<Self>,
 }
 
-impl Actor for TestRootClient {}
+#[async_trait]
+impl Actor for TestRootClient {
+    async fn handle_supervision_event(
+        &mut self,
+        _this: &Instance<Self>,
+        event: &ActorSupervisionEvent,
+    ) -> Result<bool, anyhow::Error> {
+        if event.is_error() && event.labels.get(ACTOR_MESH_ID).is_some() {
+            tracing::warn!(%event, "test root client absorbed data mesh failure");
+            return Ok(true);
+        }
+        Ok(!event.is_error())
+    }
+}
 
 #[async_trait]
 impl Handler<MeshFailure> for TestRootClient {

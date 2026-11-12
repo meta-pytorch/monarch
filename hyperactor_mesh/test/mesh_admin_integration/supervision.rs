@@ -10,9 +10,10 @@
 //!
 //! In this integration environment, the stable admin contract is the
 //! tree view: the local proc is present, the sieve actor is visible,
-//! and the actor-mesh controller for that sieve workload is also
-//! visible. Direct actor→actor child resolution has proven flaky under
-//! this target even when the workload itself is healthy.
+//! and the actors supervising that sieve workload are also visible: an
+//! actor-mesh controller for a managed mesh, or supervisor proxies for
+//! a data mesh. Direct actor→actor child resolution has proven flaky
+//! under this target even when the workload itself is healthy.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -99,7 +100,7 @@ pub async fn run_supervision_proof_rust() {
 }
 
 /// The admin tree exposes the local proc together with the sieve actor
-/// and its mesh controller.
+/// and its mesh supervision.
 async fn check_supervision(fixture: &WorkloadFixture) {
     let mut last_tree = None;
     for _attempt in 1..=DISCOVERY_ATTEMPTS {
@@ -110,7 +111,8 @@ async fn check_supervision(fixture: &WorkloadFixture) {
         let has_sieve_actor = tree.contains("sieve[");
         let has_sieve_controller = tree.contains("actor_mesh_controller_sieve-")
             || tree.contains("actor_mesh_controller_sieve[");
-        if has_local_proc && has_sieve_actor && has_sieve_controller {
+        let has_supervisor = tree.contains("── supervisor[");
+        if has_local_proc && has_sieve_actor && (has_sieve_controller || has_supervisor) {
             return;
         }
         last_tree = Some(tree);
