@@ -23,6 +23,8 @@ use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::record_batch::RecordBatchReader;
 use datafusion::catalog::Session;
+use datafusion::common::Statistics;
+use datafusion::common::stats::Precision;
 use datafusion::datasource::MemTable;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
@@ -376,6 +378,32 @@ fn query_target_partitions() -> usize {
         .min(MAX_QUERY_PARTITIONS)
 }
 
+/// Typical row count of a telemetry table across all collectors.
+///
+/// Distributed scans report these as inexact statistics so that DataFusion
+/// builds each hash join from its smaller side and broadcasts tables under
+/// `hash_join_single_partition_threshold_rows`. Only their order and which side
+/// of that threshold each falls on affect plans, and a wrong count only makes a
+/// query slower.
+fn typical_rows(table: &str) -> Option<usize> {
+    match table {
+        "meshes" => Some(100),
+        "actors" => Some(10_000),
+        "messages" | "sent_messages" => Some(10_000_000),
+        "message_status_events" => Some(30_000_000),
+        _ => None,
+    }
+}
+
+/// Statistics of a scan expected to return `rows` rows.
+fn scan_statistics(schema: &Schema, rows: Option<usize>) -> Statistics {
+    let statistics = Statistics::new_unknown(schema);
+    match rows {
+        Some(rows) => statistics.with_num_rows(Precision::Inexact(rows)),
+        None => statistics,
+    }
+}
+
 struct DistributedTableProvider {
     table_name: String,
     schema: SchemaRef,
@@ -467,6 +495,7 @@ impl TableProvider for CollectorSqlTable {
             projection,
             None,
             limit,
+            None,
         )
     }
 }
@@ -529,6 +558,7 @@ fn collector_scan(
     projection: Option<&Vec<usize>>,
     where_clause: Option<&str>,
     limit: Option<usize>,
+    rows: Option<usize>,
 ) -> DFResult<Arc<dyn ExecutionPlan>> {
     let (sql, schema) = scan_sql(from, schema, projection, where_clause, limit)?;
     let (actor, instance) = monarch_with_gil_blocking(GilSite::Convert, |py| {
@@ -537,6 +567,7 @@ fn collector_scan(
     let exec: Arc<dyn ExecutionPlan> = Arc::new(DistributedExec {
         sql,
         schema: schema.clone(),
+        rows: rows.map(|rows| limit.map_or(rows, |limit| rows.min(limit))),
         actor,
         instance,
         properties: PlanProperties::new(
@@ -613,6 +644,7 @@ impl TableProvider for DistributedTableProvider {
             projection,
             where_clause.as_deref(),
             limit,
+            typical_rows(&self.table_name),
         )
     }
 }
@@ -621,6 +653,8 @@ struct DistributedExec {
     /// The query each collector runs over its own tables.
     sql: String,
     schema: SchemaRef,
+    /// The rows the collectors are expected to return in all.
+    rows: Option<usize>,
     actor: Py<PyAny>,
     instance: Instance<PythonActor>,
     properties: PlanProperties,
@@ -658,6 +692,10 @@ impl ExecutionPlan for DistributedExec {
         _: Vec<Arc<dyn ExecutionPlan>>,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
         Ok(self)
+    }
+
+    fn partition_statistics(&self, _partition: Option<usize>) -> DFResult<Statistics> {
+        Ok(scan_statistics(&self.schema, self.rows))
     }
 
     fn execute(
@@ -890,6 +928,10 @@ mod tests {
     use datafusion::arrow::array::Int64Array;
     use datafusion::arrow::compute::concat_batches;
     use datafusion::datasource::MemTable;
+    use datafusion::physical_plan::displayable;
+    use datafusion::physical_plan::joins::HashJoinExec;
+    use datafusion::physical_plan::joins::PartitionMode;
+    use datafusion::physical_plan::test::exec::StatisticsExec;
     use hyperactor::ProcAddr;
     use hyperactor::channel::ChannelAddr;
 
@@ -1168,5 +1210,111 @@ mod tests {
     #[test]
     fn test_quote_identifier_escapes_quotes() {
         assert_eq!(quote_identifier("a\"b"), "\"a\"\"b\"");
+    }
+
+    /// A table that plans as a distributed scan of `name` does.
+    #[derive(Debug)]
+    struct PlannedTable {
+        name: &'static str,
+        schema: SchemaRef,
+    }
+
+    #[async_trait::async_trait]
+    impl TableProvider for PlannedTable {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn schema(&self) -> SchemaRef {
+            self.schema.clone()
+        }
+        fn table_type(&self) -> TableType {
+            TableType::Base
+        }
+        fn supports_filters_pushdown(
+            &self,
+            filters: &[&Expr],
+        ) -> DFResult<Vec<TableProviderFilterPushDown>> {
+            Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+        }
+        async fn scan(
+            &self,
+            _state: &dyn Session,
+            projection: Option<&Vec<usize>>,
+            _filters: &[Expr],
+            _limit: Option<usize>,
+        ) -> DFResult<Arc<dyn ExecutionPlan>> {
+            let schema = match projection {
+                Some(projection) => self.schema.project(projection)?,
+                None => self.schema.as_ref().clone(),
+            };
+            let statistics = scan_statistics(&schema, typical_rows(self.name));
+            Ok(Arc::new(StatisticsExec::new(statistics, schema)))
+        }
+    }
+
+    /// The partition mode and build side of every hash join in `plan`.
+    fn hash_joins(plan: &Arc<dyn ExecutionPlan>, joins: &mut Vec<(PartitionMode, String)>) {
+        if let Some(join) = plan.as_any().downcast_ref::<HashJoinExec>() {
+            joins.push((
+                *join.partition_mode(),
+                displayable(join.left().as_ref()).indent(true).to_string(),
+            ));
+        }
+        for child in plan.children() {
+            hash_joins(child, joins);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_joins_build_from_and_broadcast_small_tables() {
+        use DataType::*;
+        let ctx = SessionContext::new_with_config(SessionConfig::new().with_target_partitions(4));
+        for (name, fields) in [
+            (
+                "messages",
+                vec![
+                    ("id", UInt64),
+                    ("timestamp_us", Int64),
+                    ("to_actor_id", UInt64),
+                    ("endpoint", Utf8),
+                ],
+            ),
+            ("actors", vec![("id", UInt64), ("mesh_id", UInt64)]),
+            ("meshes", vec![("id", UInt64), ("given_name", Utf8)]),
+        ] {
+            let schema = Arc::new(Schema::new(
+                fields
+                    .into_iter()
+                    .map(|(field, data_type)| Field::new(field, data_type, false))
+                    .collect::<Vec<_>>(),
+            ));
+            ctx.register_table(name, Arc::new(PlannedTable { name, schema }))
+                .unwrap();
+        }
+        let plan = ctx
+            .sql(
+                "SELECT m.id FROM messages m \
+                 JOIN actors a ON m.to_actor_id = a.id \
+                 JOIN meshes mesh ON a.mesh_id = mesh.id \
+                 WHERE mesh.given_name = 'mesh' AND m.endpoint = 'tick' \
+                 ORDER BY m.timestamp_us DESC LIMIT 10",
+            )
+            .await
+            .unwrap()
+            .create_physical_plan()
+            .await
+            .unwrap();
+        let mut joins = Vec::new();
+        hash_joins(&plan, &mut joins);
+        assert_eq!(
+            joins.len(),
+            2,
+            "{}",
+            displayable(plan.as_ref()).indent(true)
+        );
+        for (mode, build) in joins {
+            assert_eq!(mode, PartitionMode::CollectLeft, "{build}");
+            assert!(!build.contains("Inexact(10000000)"), "{build}");
+        }
     }
 }
