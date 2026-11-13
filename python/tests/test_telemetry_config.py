@@ -946,15 +946,20 @@ def test_ensure_job_admin_sends_admin_request() -> None:
     )
 
 
-def test_ensure_job_admin_logs_sidecar_warnings(caplog) -> None:
-    with patch.object(js, "get_job_sidecar") as get_sidecar:
+def test_ensure_job_admin_logs_sidecar_warnings() -> None:
+    with (
+        patch.object(js, "get_job_sidecar") as get_sidecar,
+        patch.object(js.logger, "warning") as warning,
+    ):
         get_sidecar.return_value.send.return_value.get.return_value = {
             "admin_url": "https://host:1729",
             "warnings": ["snapshots keep running every 30.0s"],
         }
         url = js.ensure_job_admin("apply", {}, _CLIENT_HOST, "[::]:1729", None, 0.0)
     assert url == "https://host:1729"
-    assert "snapshots keep running every 30.0s" in caplog.text
+    warning.assert_called_once_with(
+        "mesh admin: %s", "snapshots keep running every 30.0s"
+    )
 
 
 def test_ensure_job_admin_raises_sidecar_error() -> None:

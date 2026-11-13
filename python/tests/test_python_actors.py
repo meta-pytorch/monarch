@@ -2485,7 +2485,7 @@ class SlowInitActor(Actor):
 
 
 class MeshHolderActor(Actor):
-    def __init__(self, mesh: ActorMesh[SlowInitActor]):
+    def __init__(self, mesh: "ActorMesh[SlowInitActor]"):
         self.mesh = mesh
 
     @endpoint
@@ -2657,6 +2657,7 @@ def is_process_running(pid: int) -> bool:
 
 
 @pytest.mark.timeout(120)
+@parametrize_config(use_direct_spawn={False, True})
 async def test_del_runs_on_proc_mesh_stop() -> None:
     """__del__ on a module global should fire via Py_FinalizeEx when the proc exits."""
     marker = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
