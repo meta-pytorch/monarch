@@ -17,7 +17,7 @@ path = "tests/lib.rs"
 
 [dependencies]
 anyhow = "1.0.104"
-async-once-cell = "0.4.4"
+async-once-cell = "0.5.4"
 async-trait = "0.1.92"
 base64 = { version = "0.23.1", features = ["alloc"] }
 bincode = { version = "2", features = ["serde"] }
