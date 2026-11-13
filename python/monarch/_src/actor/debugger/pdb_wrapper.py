@@ -84,6 +84,9 @@ class PdbWrapper(pdb.Pdb):
 
     def lookupmodule(self, filename: str) -> Optional[str]:
         result = super().lookupmodule(filename)
+        if result is None and os.path.isabs(filename):
+            # Python 3.13+ rejects absolute paths missing locally; keep them so remote source can load.
+            result = filename if os.path.splitext(filename)[1] else filename + ".py"
         if (
             result is not None
             and not os.path.exists(result)
