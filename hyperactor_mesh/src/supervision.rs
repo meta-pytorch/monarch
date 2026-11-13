@@ -49,11 +49,22 @@
 
 use hyperactor::ActorId;
 use hyperactor::actor::ActorErrorKind;
+use hyperactor::actor::ActorStatus;
 use hyperactor::context;
 use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
+
+/// Prefix that marks an abort reason as an injected failure.
+const INJECTED_FAILURE_MARKER: &str = "[monarch-injected] ";
+
+/// The abort reason for a failure injected for fault testing. An actor
+/// aborted with this reason (`Instance::abort`) fails like any other aborted
+/// actor, and [`MeshFailure::is_injected`] recognizes its failure.
+pub fn injected_failure_reason(reason: &str) -> String {
+    format!("{INJECTED_FAILURE_MARKER}{reason}")
+}
 
 /// Message about a supervision failure on a mesh of actors instead of a single
 /// actor.
@@ -80,6 +91,20 @@ pub struct MeshFailure {
 wirevalue::register_type!(MeshFailure);
 
 impl MeshFailure {
+    /// Returns true only when the reported actor was aborted with a reason
+    /// from [`injected_failure_reason`]. A parent that fails while handling
+    /// this event is not itself an injected failure: its status wraps the
+    /// cause instead of carrying the abort reason.
+    pub fn is_injected(&self) -> bool {
+        // `ActorErrorKind::into_supervision_event` reports an abort as a
+        // generic failure with the abort's display text.
+        let ActorStatus::Failed(ActorErrorKind::Generic(message)) = &self.event.actor_status else {
+            return false;
+        };
+        let injected_prefix = ActorErrorKind::Aborted(INJECTED_FAILURE_MARKER.to_string());
+        message.starts_with(&injected_prefix.to_string())
+    }
+
     /// Returns true if the given rank is part of this failure.
     /// A whole-mesh event (empty crashed_ranks) contains every rank.
     pub fn contains_rank(&self, rank: usize) -> bool {
