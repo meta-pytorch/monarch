@@ -691,6 +691,7 @@ struct DeliveryPollResult {
 #[async_trait]
 impl Actor for MonitorActor {
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        this.set_system();
         let subscriber = this
             .port::<MonitorTerminalStatus>()
             .contramap(MonitorTerminalStatus)
@@ -727,6 +728,7 @@ impl Actor for MonitorActor {
 #[async_trait]
 impl Actor for MonitorPollActor {
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        this.set_system();
         self.request_status(this);
         Ok(())
     }
@@ -1559,6 +1561,17 @@ mod tests {
                 timeout_millis: 50,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_monitor_is_a_system_actor() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn(TestActor);
+        let monitor = short_monitor(&client, handle.actor_addr().clone());
+
+        wait_for_alive(&monitor).await;
+        assert!(monitor.inner.as_ref().unwrap().handle.cell().is_system());
     }
 
     #[test]
