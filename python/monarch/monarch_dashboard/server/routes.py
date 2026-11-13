@@ -14,7 +14,7 @@ import re
 from collections.abc import Iterator
 from typing import Any
 
-from flask import Blueprint, jsonify, request, Response
+from flask import Blueprint, current_app, jsonify, request, Response
 from monarch._rust_bindings.monarch_extension.snapshot_integration import (
     _snapshot_table_names,
 )
@@ -174,7 +174,10 @@ def dag():
     try:
 
         def _compute_dag():
-            result = build_admin_dag(hide_system=hide_system)
+            result = build_admin_dag(
+                hide_system=hide_system,
+                sidecar_addr=current_app.config.get("SIDECAR_ADDR"),
+            )
             return _sanitize_for_js(result)
 
         return jsonify(cached(cache_key, _compute_dag))

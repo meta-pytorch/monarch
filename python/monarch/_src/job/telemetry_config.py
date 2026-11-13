@@ -353,6 +353,7 @@ class _TelemetryHandle:
             adapter=QueryEngineAdapter(query_engine),
             port=config.dashboard_port,
             include_dashboard=config.include_dashboard,
+            sidecar_addr=actor_context.actor_instance.actor_id.addr,
         )
         # Self-activate the sidecar process's own `UnixSocketSink` against
         # the client socket so telemetry emitted *by* the sidecar (dashboard

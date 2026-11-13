@@ -54,12 +54,14 @@ def _frontend_build_dir() -> str:
     return str(stack.enter_context(as_file(build)))
 
 
-def create_app(adapter: DBAdapter) -> Flask:
+def create_app(adapter: DBAdapter, sidecar_addr: str | None = None) -> Flask:
     """Build a configured Flask application.
 
     Args:
         adapter: A DBAdapter instance for data access (e.g. ArrowAdapter
             for local dev, QueryEngineAdapter for production).
+        sidecar_addr: Channel address of the job sidecar process serving
+            the dashboard, if it is one.
     """
     build_dir = _frontend_build_dir()
 
@@ -71,6 +73,7 @@ def create_app(adapter: DBAdapter) -> Flask:
     )
 
     db.set_adapter(adapter)
+    app.config["SIDECAR_ADDR"] = sidecar_addr
     app.register_blueprint(api)
 
     # Serve the React frontend at / (catch-all for client-side routing).
@@ -110,6 +113,7 @@ def start_telemetry_servers(
     host: str = "::",
     *,
     include_dashboard: bool = True,
+    sidecar_addr: str | None = None,
 ) -> dict:
     """Start the telemetry HTTP servers in daemon threads.
 
@@ -137,6 +141,8 @@ def start_telemetry_servers(
             v4-mapped addresses.
         include_dashboard: Whether to start the browser-facing server. The
             loopback API remains available when this is false.
+        sidecar_addr: Channel address of the job sidecar process serving
+            the dashboard, if it is one. The topology labels its host.
 
     Returns:
         A dict with keys: ``url`` (external, browser-openable), ``local_url``
@@ -148,7 +154,7 @@ def start_telemetry_servers(
     Raises:
         OSError: If a requested server cannot bind its socket.
     """
-    app = create_app(adapter)
+    app = create_app(adapter, sidecar_addr)
     # Suppress per-request werkzeug logs (they are noisy in production).
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
 

@@ -129,7 +129,7 @@ export function prettyRole(role: string): string {
  *   actor "trainer[o7B7whEtk1W]" -> "trainer"
  *   proc  "worker-0[fa4wpgPjMyD]"    -> "worker-0"
  *   host  "/tmp/…/hosts_0"           -> "hosts_0"
- *   host  "@91ytVCObcks…" (service)  -> "controller"
+ *   host  "@91ytVCObcks…"            -> "@91ytVCObcks…"
  */
 export function cleanNodeLabel(label: string, tier: string): string {
   let s = label.replace(/\(controller\)/gi, "").trim();
@@ -138,8 +138,7 @@ export function cleanNodeLabel(label: string, tier: string): string {
   s = s.split("@")[0].trim();
   if (tier === "host") {
     if (s.includes("/")) return s.split(/[:/]/).filter(Boolean).pop() ?? s;
-    if (!s || label.trim().startsWith("@")) return "controller";
-    return s;
+    return s || label.trim();
   }
   return s || label;
 }

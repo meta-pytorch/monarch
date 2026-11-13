@@ -246,9 +246,7 @@ function Flow() {
     const makeData = (n: ApiDagNode) => {
       const kids = tree.children[n.id] ?? [];
       const isMeshTier = MESH_TIERS.has(n.tier);
-      const isController =
-        !isMeshTier &&
-        (/\(controller\)/i.test(n.label) || (n.tier === "host" && n.label.trim().startsWith("@")));
+      const isController = !isMeshTier && /\(controller\)/i.test(n.label);
       let label = isMeshTier ? n.label : cleanNodeLabel(n.label, n.tier);
       if (n.tier === "host" && isController) label = "Controller";
       const mesh = isMeshTier ? null : nodeMesh(n.tier, label, n.mesh_name);
