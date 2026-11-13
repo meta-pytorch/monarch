@@ -123,21 +123,30 @@ class Node:
         self,
         identity: Identity,
         *,
-        carrier: UdpCarrier | VsockCarrier | None = None,
+        carrier: UdpCarrier
+        | VsockCarrier
+        | tuple[UdpCarrier, VsockCarrier]
+        | tuple[VsockCarrier, UdpCarrier]
+        | None = None,
         parent: tuple[Pid, str] | None = None,
     ) -> None:
         """Create and start a node using `identity`.
 
         `carrier` says how the node reaches other nodes. Without one, the node
-        binds a new UDP socket on 127.0.0.1, on a port the system chooses.
+        binds a new UDP socket on 127.0.0.1, on a port the system chooses. A
+        pair, one `UdpCarrier` and one `VsockCarrier` in either order, gives
+        the node both carriers. The first is its primary: the node joins its
+        parent through it and advertises it, and children may join over either.
         `parent`, when present, gives the PID and address of the parent this
         node joins. Without a parent, this node is the root of its namespace.
         A UDP node's parent address is `udp://<ip>:<port>`, with a specific IP
         and a non-zero port. A `VsockCarrier` node's parent address is `unix:`,
-        `native:`, or `hybrid:<port>:<uds>`.
+        `native:`, or `hybrid:<port>:<uds>`. A pair node's parent address takes
+        its primary carrier's form.
 
-        An invalid address raises `ValueError`. A failure to bind the carrier or
-        start the node raises `ChrysalisError`.
+        An invalid address raises `ValueError`, and a pair of two carriers of
+        one kind raises `TypeError`. A failure to bind a carrier or start the
+        node raises `ChrysalisError`.
         """
         ...
 
@@ -149,7 +158,8 @@ class Node:
         nodes dial it there. A `VsockCarrier` node has its `listen` addresses
         in canonical form, or none if it only connects. How another node dials
         a vsock listener depends on the deployment: a host reaches a guest's
-        `native:` listener through a `hybrid:` address.
+        `native:` listener through a `hybrid:` address. A pair node has its
+        primary carrier's addresses, then the other carrier's.
         """
         ...
 
