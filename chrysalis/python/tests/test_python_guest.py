@@ -26,7 +26,7 @@ from typing import cast
 
 import pytest
 
-# Where `python_guest.bzl` installs the program in every image it builds.
+# Where `guest_rootfs.bzl` installs the program in every image it builds.
 GUEST_PROGRAM = "/usr/local/bin/guest-program"
 # The host port fc_agent.py connects to for its command.
 CONTROL_PORT = 9000
