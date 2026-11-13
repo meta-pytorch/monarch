@@ -7,10 +7,11 @@
 """Checks the release of microVMs by `firecracker/microvm.py`, without KVM.
 
 Each stand-in guest has a real control listener and `sleep 60` for its VMM.
-Each test registers every stand-in as soon as it starts and recovers them
+A test registers every stand-in as soon as it starts and recovers them
 independently of the code under test, so a regression can't leave a process
 behind. A test's own assertion fails first; its directory is removed only once
-recovery has confirmed every stand-in is gone.
+recovery has confirmed every stand-in is gone. The tests of a signal during
+cleanup start no process.
 """
 
 import asyncio
@@ -232,3 +233,68 @@ def _check_interrupt(sig: signal.Signals) -> None:
 def test_run_cli_interrupt_releases_guests() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         _check_interrupt(sig)
+
+
+class _SignallingOwner:
+    """An owner whose release signals this process, then waits to be let go.
+
+    The test's `say` sets `gate` when `run_cli` reports the signal, so the
+    release resumes only after the signal has cancelled the run.
+    """
+
+    def __init__(self, *, fail: bool) -> None:
+        self.gate = asyncio.Event()
+        self.fail = fail
+        self.finished = False
+
+    async def release(self) -> None:
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.wait_for(self.gate.wait(), 10)
+        if self.fail:
+            raise TimeoutError("a stand-in process was not reaped")
+        self.finished = True
+
+
+def _signal_during_cleanup(
+    run_dir: Path, owner: _SignallingOwner
+) -> tuple[int, list[str]]:
+    """Run `cleanup` of `owner` under `run_cli`; return its status and messages."""
+    messages: list[str] = []
+
+    def say(message: str) -> None:
+        messages.append(message)
+        if message.startswith("received SIGTERM"):
+            owner.gate.set()
+
+    status = microvm.run_cli(lambda: microvm.cleanup([owner], run_dir), say)
+    return status, messages
+
+
+def test_signal_during_cleanup_lets_the_release_finish() -> None:
+    run_dir = Path(tempfile.mkdtemp(dir="/tmp", prefix="chr-sig-"))
+    owner = _SignallingOwner(fail=False)
+    try:
+        status, messages = _signal_during_cleanup(run_dir, owner)
+        assert owner.finished, "the signal should not cut the release short"
+        assert status == 1
+        assert messages == ["received SIGTERM; releasing every process", "interrupted"]
+        assert not run_dir.exists(), "a fully released run should remove its directory"
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def test_cleanup_failure_after_a_signal_is_reported() -> None:
+    run_dir = Path(tempfile.mkdtemp(dir="/tmp", prefix="chr-sig-"))
+    owner = _SignallingOwner(fail=True)
+    try:
+        status, messages = _signal_during_cleanup(run_dir, owner)
+        assert status == 1
+        assert messages == [
+            "received SIGTERM; releasing every process",
+            f"failed: failed to release every process; preserved run directory {run_dir}",
+        ]
+        assert run_dir.exists(), (
+            "an unconfirmed release should preserve the run directory"
+        )
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
