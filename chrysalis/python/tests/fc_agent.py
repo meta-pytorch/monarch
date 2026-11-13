@@ -5,10 +5,10 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# PID 1 inside a sealed-postcard Firecracker guest.
+# PID 1 inside a Chrysalis Firecracker test guest.
 #
-# The guest has one read-only root drive that already contains the Rust role
-# binary and its runtime. The agent mounts the kernel's virtual filesystems,
+# The guest has one read-only root drive that already contains the program to
+# run and its runtime. The agent mounts the kernel's virtual filesystems,
 # connects to the host's control port over vsock, runs the command it is given
 # unchanged (failing instead if its working directory does not exist), forwards
 # signals to the command's process group, reports the command's exit, then
