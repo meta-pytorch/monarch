@@ -362,6 +362,20 @@ where
     Box::pin(RecordBatchStreamAdapter::new(schema, stream))
 }
 
+/// Upper bound on the partitions a distributed query runs on.
+///
+/// Each distributed scan arrives as one partition. DataFusion repartitions it
+/// so joins and aggregates over millions of rows run in parallel; past this
+/// bound, extra partitions mostly add repartitioning overhead and take
+/// workers from the shared control-plane runtime.
+const MAX_QUERY_PARTITIONS: usize = 16;
+
+fn query_target_partitions() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, |cores| cores.get())
+        .min(MAX_QUERY_PARTITIONS)
+}
+
 struct DistributedTableProvider {
     table_name: String,
     schema: SchemaRef,
@@ -822,11 +836,9 @@ impl QueryEngine {
             .call_method0(py, "item")?
             .extract(py)?;
 
-        // Each distributed scan exposes one partition; extra local partitions
-        // add repartitioning overhead at representative telemetry sizes.
         let config = SessionConfig::new()
             .with_information_schema(true)
-            .with_target_partitions(1);
+            .with_target_partitions(query_target_partitions());
         let mut state = SessionStateBuilder::new()
             .with_config(config)
             .with_default_features();
