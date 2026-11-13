@@ -4,7 +4,11 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Sealed postcard: Alice, Relay, and Bob as separate Python processes.
+"""The executable for the Python sealed-postcard roles.
+
+The process tests use `sealed_postcard_python_roles.py` to start this program
+once for each separate Alice, Relay, or Bob process. This file implements those
+roles; the test harness chooses their topology and manages their processes.
 
 These bindings are experimental, private, and subject to change. They are not
 part of Chrysalis's public API.
@@ -20,13 +24,18 @@ sends Bob her own postcard, through Alice and Relay. Alice forwards it but
 can't read it. Bob, given `--carol-pid`, checks that it came from Carol and
 counts it apart from Alice's streams.
 
-Each role is one mode of this program, with the command line of the Rust
-`sealed-postcard` example's role modes, plus Carol's options. Every mode
-except `identities` reads its identity bundle from `SEALED_POSTCARD_IDENTITY`,
-and Alice with `--carol` reads Carol's from `SEALED_POSTCARD_CAROL_IDENTITY`:
+With `--udp`, Relay also binds a UDP socket, and a second Relay can join it
+over UDP: Alice joins Relay 1, Bob joins Relay 2, and Alice's streams cross
+both Relays. Relay prints each of its addresses as `relay address <address>`.
 
-    sealed_postcard identities --out <dir> [--carol]
-    sealed_postcard relay --listen <addr>...
+Each role is one mode of this program, with the command line of the Rust
+`sealed-postcard` example's role modes, plus Carol's and the second Relay's
+options. Every mode except `identities` reads its identity bundle from
+`SEALED_POSTCARD_IDENTITY`, and Alice with `--carol` reads Carol's from
+`SEALED_POSTCARD_CAROL_IDENTITY`:
+
+    sealed_postcard identities --out <dir> [--relays {1,2}] [--carol]
+    sealed_postcard relay --listen <addr>... [--udp <ip:port>] [--parent-pid <pid> --parent <addr>]
     sealed_postcard alice --parent-pid <pid> --parent <addr> --bob-pid <pid> [--carol]
     sealed_postcard bob --parent-pid <pid> --parent <addr> --alice-pid <pid> [--carol-pid <pid>]
 """
@@ -56,7 +65,6 @@ ACKNOWLEDGEMENT = b"The porch light is on."
 STREAM_COUNT = 32
 # Seconds Alice waits for Bob to become visible through Relay.
 PEER_WAIT = 120.0
-ROLES = ("alice", "relay", "bob")
 
 
 @dataclass
@@ -69,11 +77,16 @@ class Served:
     carol_postcards: int = 0
 
 
-def write_identities(out: Path, carol: bool) -> None:
-    """Write mutually trusted identity bundles for the roles, and Carol's if
-    asked, and print their PIDs."""
+def write_identities(out: Path, relays: int, carol: bool) -> None:
+    """Write mutually trusted identity bundles for the roles, with a second
+    Relay's and Carol's if asked, and print their PIDs."""
     out.mkdir(parents=True, exist_ok=True)
-    roles = ROLES + ("carol",) if carol else ROLES
+    roles = ["alice", "relay", "bob"]
+    if relays == 2:
+        roles.insert(2, "relay2")
+    if carol:
+        roles.append("carol")
+    # One call, so every bundle trusts the same test CA.
     for name, bundle in zip(roles, generate_test_identities(len(roles))):
         # The file gets mode 0600 before any key bytes exist, and `O_EXCL`
         # refuses a file or symlink already at this path.
@@ -171,11 +184,27 @@ async def run_alice(
         await node.close()
 
 
-async def run_relay(identity: Identity, listen: list[str]) -> None:
-    """Serve as the namespace root until Ctrl-C or SIGTERM."""
+async def run_relay(
+    identity: Identity,
+    listen: list[str],
+    udp: str | None,
+    parent: tuple[Pid, str] | None,
+) -> None:
+    """Serve until Ctrl-C or SIGTERM: as the namespace root, or joined to
+    `parent`.
+
+    Given `udp`, Relay's carrier is the pair `(UdpCarrier(bind=udp),
+    VsockCarrier(listen=listen))`: it joins a parent over UDP and serves
+    children over both.
+    """
     stop = stop_requested()
-    node = Node(identity, carrier=VsockCarrier(listen=listen))
+    vsock = VsockCarrier(listen=listen)
+    carrier = vsock if udp is None else (UdpCarrier(bind=udp), vsock)
+    node = Node(identity, carrier=carrier, parent=parent)
     try:
+        # Bound at port 0, Relay's UDP address is known only from these lines.
+        for address in node.addresses:
+            print(f"relay address {address}", flush=True)
         await stop.wait()
     finally:
         await node.close()
@@ -249,11 +278,21 @@ def parse_args() -> argparse.Namespace:
     )
     identities.add_argument("--out", type=Path, required=True)
     identities.add_argument(
+        "--relays",
+        type=int,
+        choices=(1, 2),
+        default=1,
+        help="write bundles for this many Relays",
+    )
+    identities.add_argument(
         "--carol", action="store_true", help="also write Carol's identity bundle"
     )
 
-    relay = modes.add_parser("relay", help="run Relay, the namespace root")
+    relay = modes.add_parser("relay", help="run Relay, the namespace root by default")
     relay.add_argument("--listen", action="append", required=True)
+    relay.add_argument("--udp", help="also bind UDP at this IP and port")
+    relay.add_argument("--parent-pid", type=Pid)
+    relay.add_argument("--parent")
 
     alice = modes.add_parser("alice", help="run Alice until her exchanges finish")
     alice.add_argument("--parent-pid", type=Pid, required=True)
@@ -271,7 +310,10 @@ def parse_args() -> argparse.Namespace:
     bob.add_argument("--alice-pid", type=Pid, required=True)
     bob.add_argument("--carol-pid", type=Pid, help="also expect Carol's postcard")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.mode == "relay" and (args.parent_pid is None) != (args.parent is None):
+        relay.error("--parent-pid and --parent come together")
+    return args
 
 
 def role_identity() -> Identity:
@@ -283,9 +325,10 @@ def main() -> None:
     args = parse_args()
     match args.mode:
         case "identities":
-            write_identities(args.out, args.carol)
+            write_identities(args.out, args.relays, args.carol)
         case "relay":
-            asyncio.run(run_relay(role_identity(), args.listen))
+            parent = None if args.parent is None else (args.parent_pid, args.parent)
+            asyncio.run(run_relay(role_identity(), args.listen, args.udp, parent))
         case "alice":
             parent = (args.parent_pid, args.parent)
             carol = (

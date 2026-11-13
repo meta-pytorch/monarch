@@ -4,12 +4,16 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Runs the Python sealed-postcard roles as processes and cleans them up.
+"""Process support for the Python sealed-postcard executable.
 
-The process tests share this: each role is a `Role` in its own session, with
-its output in a log in the test's run directory. `cleanup` stops every role,
-then removes the directory, or keeps it and raises if a role's process group
-survived.
+The process tests use this module to locate the binary built from
+`python/examples/sealed_postcard.py` and start one instance for each Alice,
+Relay, or Bob role. The role implementations live in that executable; this
+module manages their host processes.
+
+Each `Role` runs in its own session, with its output in a log in the test's run
+directory. `cleanup` stops every role, then removes the directory, or keeps it
+and raises if a role's process group survived.
 """
 
 import os
