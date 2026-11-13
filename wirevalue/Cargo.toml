@@ -14,7 +14,7 @@ anyhow = "1.0.104"
 bincode = { version = "2", features = ["serde"] }
 bytes = { version = "1.12.1", features = ["serde"] }
 crc32fast = "1.5.4"
-enum-as-inner = "0.6.1"
+enum-as-inner = "0.7.0"
 erased-serde = "0.4.11"
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 inventory = "0.3.25"

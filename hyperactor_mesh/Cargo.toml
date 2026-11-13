@@ -28,7 +28,7 @@ bincode = { version = "2", features = ["serde"] }
 bitmaps = "3.2.1"
 chrono = { version = "0.4.45", features = ["clock", "serde", "std"], default-features = false }
 dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
-enum-as-inner = "0.6.1"
+enum-as-inner = "0.7.0"
 erased-serde = "0.4.11"
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 hostname = "0.4.2"
