@@ -16,7 +16,7 @@ import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from types import FrameType, TracebackType
-from typing import Any, Dict, Generator, Optional, TYPE_CHECKING
+from typing import Any, Dict, Generator, Iterable, Optional, TYPE_CHECKING
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._src.actor.sync_state import fake_sync_state
@@ -59,7 +59,14 @@ class PdbWrapper(pdb.Pdb):
         super().__init__(stdout=WriteWrapper(self), stdin=ReadWrapper.create(self))
         self._first = True
 
-    def set_trace(self, frame: Optional[FrameType] = None) -> None:
+    def set_trace(
+        self,
+        frame: Optional[FrameType] = None,
+        *,
+        commands: Iterable[str] | None = None,
+    ) -> None:
+        if commands is not None:
+            self.rcLines.extend(commands)
         with _debug_controller_request_ctx():
             self.controller.debugger_session_start.call_one(
                 self.rank,
@@ -84,6 +91,9 @@ class PdbWrapper(pdb.Pdb):
 
     def lookupmodule(self, filename: str) -> Optional[str]:
         result = super().lookupmodule(filename)
+        if result is None and os.path.isabs(filename):
+            # Python 3.13+ rejects absolute paths missing locally; keep them so remote source can load.
+            result = filename if os.path.splitext(filename)[1] else filename + ".py"
         if (
             result is not None
             and not os.path.exists(result)
