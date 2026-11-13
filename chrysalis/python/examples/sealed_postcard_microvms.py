@@ -80,11 +80,15 @@ and to signal the running process. When the role exits, `fc_agent.py`
 reports its exit status and reboots the VM, causing Firecracker to exit.
 
 These control connections are separate from the postcard traffic above.
+The host's side of each VM, booting, signalling and releasing it, is `MicroVm`
+in `firecracker/microvm.py`.
 
 Running the example
 -------------------
 
-The pytest suite imports this module. Run directly, it is the standalone demo.
+The pytest suite imports this module. Built by Buck as
+`//monarch/chrysalis/python/examples:sealed_postcard_microvms`, it is the
+standalone demo.
 The guides under `crates/chrysalis/examples/sealed-postcard/` explain:
 
 - `firecracker.md`: prerequisites, build commands, environment variables and
@@ -99,31 +103,30 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import json
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
-from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 
-# Host vsock port fc_agent.py connects to for commands and exit reports.
-CONTROL_PORT = 9000
+from microvm import (
+    built,
+    cleanup,
+    CONTROL_PORT,
+    GUEST_PROGRAM,
+    kvm_unavailable,
+    MicroVm,
+    MicroVmError,
+    Owner,
+    run_cli,
+)
+
 # Host vsock port Alice and Bob dial; each Firecracker bridges it to Relay's
 # Unix listener for that VM.
 RELAY_PORT = 5001
 
-# Where every guest image built by `guest_rootfs.bzl` holds its program.
-GUEST_PROGRAM = "/usr/local/bin/guest-program"
-# Kernel boot options: serial console, read-only root disk, and fc_agent.py
-# as the first process.
-BOOT_ARGS = (
-    "console=ttyS0 reboot=k panic=1 pci=off quiet root=/dev/vda ro init=/fc_agent.py"
-)
 # Maximum Unix socket pathname length in bytes, excluding the terminating NUL.
 SUN_PATH_MAX = 107
 
@@ -144,8 +147,6 @@ ALICE_TIMEOUT = 300
 ROLE_EXIT_TIMEOUT = 30
 # Wait for Firecracker to exit after the guest role has reported its exit.
 VMM_EXIT_TIMEOUT = 30
-# During cleanup, kill Firecracker and wait for its exit to be collected.
-VMM_REAP_TIMEOUT = 10
 # Allow Relay to exit after SIGTERM before escalating to SIGKILL.
 RELAY_STOP_TIMEOUT = 30
 # After SIGKILL, wait for Relay's exit to be collected.
@@ -186,307 +187,16 @@ class Inputs:
         `ScenarioError` if a variable is unset or its path is not a file.
         """
         return cls(
-            firecracker=_built("CHR_FC_FIRECRACKER"),
-            kernel=_built("CHR_FC_KERNEL"),
-            rootfs=_built("CHR_FC_ROOTFS"),
-            sealed_postcard=_built("SEALED_POSTCARD"),
+            firecracker=built("CHR_FC_FIRECRACKER"),
+            kernel=built("CHR_FC_KERNEL"),
+            rootfs=built("CHR_FC_ROOTFS"),
+            sealed_postcard=built("SEALED_POSTCARD"),
         )
-
-
-def _built(var: str) -> Path:
-    """Read a build input's path from the environment variable named by `var`.
-
-    Return its absolute path. Raise `ScenarioError` if the variable is unset
-    or the path does not name an existing file.
-    """
-    value = os.environ.get(var)
-    if value is None:
-        raise ScenarioError(f"{var} is not set")
-    path = Path(value).resolve()
-    if not path.is_file():
-        raise ScenarioError(f"{var}={path} is not a built file")
-    return path
-
-
-def _kvm_unavailable() -> str | None:
-    """Check access to `/dev/kvm`, the device Firecracker uses to run VMs.
-
-    Return an explanation if this user lacks read and write access;
-    otherwise return `None`. This does not attempt to start a VM.
-    """
-    if not os.access("/dev/kvm", os.R_OK | os.W_OK):
-        return "/dev/kvm is not usable by this user"
-    return None
 
 
 def _say(message: str) -> None:
     """Print a status message with the demo's prefix and flush stdout."""
     print(f"sealed-postcard microVMs: {message}", flush=True)
-
-
-class _Owner(Protocol):
-    """A common cleanup interface for objects that own this run's processes.
-
-    VMs, Relay and the identity generator need different shutdown steps.
-    They are kept in one list so `_cleanup` can release them newest first
-    after success, failure or cancellation without knowing those details.
-    """
-
-    async def release(self) -> None:
-        """Stop the owned process and release its resources, or report failure."""
-        ...
-
-
-class _Vm:
-    """Host-side state for one Firecracker VM: its files, control connection
-    and process, all owned here for cleanup.
-    """
-
-    def __init__(self, workdir: Path) -> None:
-        """Prepare this VM's paths and state; `_boot` starts Firecracker later."""
-
-        # This VM's directory for its configuration, sockets and console log.
-        self.workdir = workdir
-        # Firecracker's host Unix socket, configured as `uds_path`.
-        # Guest-to-host connections use neighboring `<uds>_<port>` sockets.
-        self.uds: Path = workdir / "v.sock"
-        # Firecracker's output, including the guest console and role's output.
-        self.console: Path = workdir / "console.log"
-
-        # This VM's control listener on the host, at `<workdir>/v.sock_9000`.
-        # Each VM has its own listener accepting its fc_agent.py's connection.
-        # `_boot` creates the listener before starting this VM's Firecracker.
-        self.control_server: asyncio.Server | None = None
-        # Write half of this VM's accepted control connection. This Python
-        # program sends startup and signal commands to fc_agent.py through it.
-        # When fc_agent.py connects, asyncio starts `_boot`'s `control`
-        # coroutine as a task in this Python program's event loop on the host.
-        # That task keeps the matching reader and queues reports in `events`.
-        self.control: asyncio.StreamWriter | None = None
-        # Queue of fc_agent.py's startup and exit reports read from that stream.
-        # The reader also queues `closed` when it stops reading.
-        # `_exit_event` consumes these events until it finds an exit report.
-        self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-
-        # Firecracker process running this VM; absent until `_boot` starts it.
-        self.fc: asyncio.subprocess.Process | None = None
-        # Records that release has begun, so later calls do not repeat cleanup.
-        self._released = False
-
-    @property
-    def control_path(self) -> Path:
-        """Where sealed_postcard_microvms.py listens for this VM's fc_agent.py.
-
-        fc_agent.py connects to host vsock port `CONTROL_PORT`. Firecracker
-        bridges that connection to this host Unix socket, at
-        `<uds>_<CONTROL_PORT>`. The two programs then exchange startup and
-        signal commands, and startup and exit reports, over that connection.
-        """
-        return Path(f"{self.uds}_{CONTROL_PORT}")
-
-    async def wait_exit(self, timeout: float) -> int:
-        """Wait up to `timeout` seconds for this VM's Firecracker process to exit.
-
-        Return Firecracker's exit code, not the guest role's exit code.
-        A timeout raises `TimeoutError` without stopping Firecracker.
-        """
-        assert self.fc is not None
-        return await asyncio.wait_for(self.fc.wait(), timeout)
-
-    async def release(self) -> None:
-        """Stop Firecracker and release this VM's host-side control resources.
-
-        Kill Firecracker if it is still running, then wait at most
-        `VMM_REAP_TIMEOUT` seconds to collect its exit. Close the control
-        connection and listener and remove the listener's socket file,
-        even if stopping Firecracker fails.
-
-        Raise `TimeoutError` if its exit could not be collected. Later calls
-        do nothing, even if this attempt failed.
-        """
-        if self._released:
-            return
-        # Record the cleanup attempt before awaiting, so it cannot start twice.
-        self._released = True
-        try:
-            reaped = await self._reap()
-        finally:
-            # Release the control resources even if stopping Firecracker failed.
-            # `control` is the stored writer for the established connection
-            # to this VM's fc_agent.py. Closing it closes that connection.
-            if self.control is not None:
-                self.control.close()
-            # `control_server` is the host listener that accepted the
-            # connection, not the connection itself. Stop accepting here.
-            if self.control_server is not None:
-                self.control_server.close()
-            # `control_path` is the listener's Unix-socket pathname,
-            # `<uds>_9000`. Remove it; partial boot may never have created it.
-            with contextlib.suppress(FileNotFoundError):
-                self.control_path.unlink()
-        if not reaped:
-            raise TimeoutError(f"the VMM for {self.workdir} was not reaped")
-
-    async def _reap(self) -> bool:
-        """Kill Firecracker if needed and wait for its exit to be collected.
-
-        Return `True` if Firecracker was never started or its exit was
-        collected within `VMM_REAP_TIMEOUT` seconds. Return `False` if that
-        wait expires. Other errors propagate to the caller.
-        """
-        if self.fc is None:
-            return True
-        if self.fc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                self.fc.kill()
-        try:
-            await asyncio.wait_for(self.fc.wait(), VMM_REAP_TIMEOUT)
-        except TimeoutError:
-            return False
-        return True
-
-
-async def _boot(guest: _Vm, inputs: Inputs, command: dict[str, object]) -> None:
-    """Open this VM's control listener, then start Firecracker on the host.
-
-    `inputs.firecracker` is the executable. Starting it creates a new host
-    OS process that boots and runs this VM using the supplied kernel and disk.
-
-    `guest` holds the host-side state for this VM. `command` tells fc_agent.py
-    which binary to start inside it, with which arguments and environment.
-    Send that command when fc_agent.py connects to the listener.
-
-    The caller must add `guest` to its cleanup list before calling this, so
-    even a partial boot is cleaned up. Return after starting that host process;
-    do not wait for fc_agent.py to connect or for Alice or Bob to start.
-    """
-
-    async def control(
-        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        """Exchange commands and reports with this VM's fc_agent.py.
-
-        asyncio starts this as a task on the host when the connection arrives.
-        """
-        # Keep the writer so `_signal` can send commands on this connection.
-        # This task keeps the reader and receives fc_agent.py's reports.
-        guest.control = writer
-        try:
-            # The first JSON line names the role's binary, arguments and
-            # environment. fc_agent.py reads it and starts the role in the VM.
-            writer.write((json.dumps(command) + "\n").encode())
-            # Wait if needed for room in the stream's output buffer.
-            await writer.drain()
-            # Each following line is one JSON report from fc_agent.py.
-            # Queue it for `_exit_event`, which waits for the role's exit.
-            while line := await reader.readline():
-                guest.events.put_nowait(json.loads(line))
-        finally:
-            # Tell `_exit_event` the reader has stopped, even on an error,
-            # so it does not keep waiting for a report that cannot arrive.
-            guest.events.put_nowait({"event": "closed"})
-
-    # First open this VM's host Unix listener at `guest.control_path`.
-    # This await waits for the listener to be ready, not for a connection.
-    # Firecracker has not started yet, so this VM's fc_agent.py cannot connect.
-    # Continue below to write the configuration and start Firecracker.
-    # When a connection arrives later, asyncio runs `control(reader, writer)`
-    # as a task, supplying that connection's read and write halves.
-    guest.control_server = await asyncio.start_unix_server(
-        control, str(guest.control_path)
-    )
-
-    # Firecracker reads this configuration from `vm.json` below.
-    spec = {
-        # Boot the supplied Linux kernel. BOOT_ARGS names fc_agent.py as
-        # the VM's first process, which will start the requested Rust role.
-        "boot-source": {
-            "kernel_image_path": str(inputs.kernel),
-            "boot_args": BOOT_ARGS,
-        },
-        # Both VMs use this read-only root filesystem. It contains
-        # fc_agent.py and the Rust binary at GUEST_PROGRAM.
-        "drives": [
-            {
-                "drive_id": "root",
-                "path_on_host": str(inputs.rootfs),
-                "is_root_device": True,
-                "is_read_only": True,
-            }
-        ],
-        "machine-config": {"vcpu_count": 1, "mem_size_mib": 512},
-        # CID 3 identifies the guest. `uds_path` is Firecracker's host Unix
-        # socket; connections to host port P go to `<uds_path>_P`.
-        "vsock": {"guest_cid": 3, "uds_path": str(guest.uds)},
-    }
-    (guest.workdir / "vm.json").write_text(json.dumps(spec))
-
-    # Now start a host process running Firecracker from the configuration file,
-    # without an API socket. It boots the VM, which starts fc_agent.py.
-    # fc_agent.py connects to the listener opened above through the vsock bridge.
-    # That connection starts the `control` task, which sends the startup command;
-    # fc_agent.py receives it and starts Alice or Bob inside the VM.
-    # Capture Firecracker's output, including fc_agent.py's and the Rust role's
-    # output, in this VM's console log. Commands use the control connection.
-    with open(guest.console, "w") as console:
-        guest.fc = await asyncio.create_subprocess_exec(
-            str(inputs.firecracker),
-            "--no-api",
-            "--config-file",
-            str(guest.workdir / "vm.json"),
-            stdin=subprocess.DEVNULL,
-            stdout=console,
-            stderr=subprocess.STDOUT,
-        )
-
-
-async def _exit_event(guest: _Vm, timeout: float) -> dict[str, object]:
-    """Let sealed_postcard_microvms.py wait for the role's exit in this VM.
-
-    Used for Alice and Bob: each VM's fc_agent.py reports its role's exit
-    over the control connection. Relay runs on the host, where this Python
-    program waits for its process directly instead.
-
-    The control task queues startup reports as well as exit reports. Skip
-    startup reports and return the exit report, containing the role's exit
-    code or terminating signal. This is not Firecracker's own exit status.
-
-    Raise `ScenarioError` if the control reader stops before an exit report
-    arrives, or `TimeoutError` if the whole wait exceeds `timeout` seconds.
-    """
-
-    async def first_exit() -> dict[str, object]:
-        """Consume queued reports until the role exits or the control reader stops."""
-        while True:
-            # The control task fills this queue as reports arrive.
-            # An empty queue pauses this coroutine, not the control reader.
-            event = await guest.events.get()
-            if event["event"] == "exit":
-                return event
-            if event["event"] == "closed":
-                # The control task adds `closed` when it stops reading.
-                # No exit report arrived before it: fail without waiting longer.
-                raise ScenarioError(
-                    f"the agent in {guest.workdir} closed without an exit"
-                )
-            # Other reports, such as `started`, do not tell us the role exited.
-
-    # Bound the entire wait; receiving a startup report does not reset the timer.
-    return await asyncio.wait_for(first_exit(), timeout)
-
-
-def _signal(guest: _Vm, sig: signal.Signals) -> None:
-    """Ask this VM's fc_agent.py to signal Alice or Bob.
-
-    Write a JSON signal command over the control connection. fc_agent.py
-    receives it and signals the role's process group inside the VM, not
-    Firecracker on the host. This call does not wait for delivery or exit.
-
-    Raise `ScenarioError` if fc_agent.py has not connected yet.
-    """
-    if guest.control is None:
-        raise ScenarioError(f"the agent in {guest.workdir} is not connected")
-    guest.control.write((json.dumps({"signal": int(sig)}) + "\n").encode())
 
 
 class _Relay:
@@ -569,7 +279,7 @@ class _Relay:
     async def release(self) -> None:
         """Stop Relay during cleanup, allowing `RELAY_STOP_TIMEOUT` seconds
         for SIGTERM before `stop` escalates to SIGKILL. Propagate any failure
-        so `_cleanup` knows Relay's exit could not be collected.
+        so `cleanup` knows Relay's exit could not be collected.
         """
         await self.stop(RELAY_STOP_TIMEOUT)
 
@@ -586,7 +296,7 @@ class _Child:
 
         If it has already exited, return. Otherwise send SIGKILL and wait
         up to `CHILD_REAP_TIMEOUT` seconds to collect its exit. Raise
-        `TimeoutError` if that wait expires so `_cleanup` preserves the run
+        `TimeoutError` if that wait expires so `cleanup` preserves the run
         directory rather than treating the process as gone.
         """
         if self.process.returncode is not None:
@@ -599,39 +309,12 @@ class _Child:
             raise TimeoutError(f"process {self.process.pid} was not reaped") from None
 
 
-async def _cleanup(
-    owners: Sequence[_Owner], run_dir: Path, *, keep_run_dir: bool = False
-) -> None:
-    """Release every owner, newest first, even when an earlier release fails.
-
-    The run directory is removed only when every release returned and the
-    caller doesn't keep it. Otherwise a process in it may still be running, so
-    it stays, and the first failure is raised.
-    """
-    first: Exception | asyncio.CancelledError | None = None
-    for owner in reversed(owners):
-        try:
-            await owner.release()
-        except (Exception, asyncio.CancelledError) as exc:  # release the rest
-            if first is None:
-                first = exc
-    if first is None:
-        if not keep_run_dir:
-            shutil.rmtree(run_dir)
-        return
-    if isinstance(first, asyncio.CancelledError):
-        raise first
-    raise RuntimeError(
-        f"failed to release every process; preserved run directory {run_dir}"
-    ) from first
-
-
 def _guest_command(role_args: list[str], identity: str) -> dict[str, object]:
     """Build the request telling fc_agent.py to start Alice or Bob inside its VM.
 
     Name the guest's Rust binary, its arguments, identity bundle environment
     variable and working directory. `identity` contains the bundle's text,
-    not a file path. `_boot` sends this dictionary as JSON over the control
+    not a file path. `MicroVm.boot` sends this dictionary as JSON over the control
     connection; fc_agent.py receives it and starts the process.
     """
     return {
@@ -643,7 +326,7 @@ def _guest_command(role_args: list[str], identity: str) -> dict[str, object]:
 
 
 async def _identities(
-    inputs: Inputs, run_dir: Path, owners: list[_Owner]
+    inputs: Inputs, run_dir: Path, owners: list[Owner]
 ) -> dict[str, str]:
     """Generate Alice, Relay and Bob's identity bundles on the host.
 
@@ -665,7 +348,7 @@ async def _identities(
     )
 
     # Register the process before awaiting its result. If that wait times out
-    # or is cancelled, `_cleanup` still has its handle and can kill and reap it.
+    # or is cancelled, `cleanup` still has its handle and can kill and reap it.
     owners.append(_Child(process))
     # Collect stdout and stderr and wait for exit, with one timeout for all three.
     out, err = await asyncio.wait_for(process.communicate(), IDENTITIES_TIMEOUT)
@@ -684,11 +367,11 @@ async def _identities(
 
 
 async def _start_roles(
-    run_dir: Path, inputs: Inputs, owners: list[_Owner]
-) -> tuple[_Vm, _Relay, _Vm]:
+    run_dir: Path, inputs: Inputs, owners: list[Owner]
+) -> tuple[MicroVm, _Relay, MicroVm]:
     """Start Relay, then boot VM A with Alice and VM B with Bob, not waiting
     between them: children retry their parent, and Alice waits for Bob."""
-    alice_vm, bob_vm = _Vm(run_dir / "a"), _Vm(run_dir / "b")
+    alice_vm, bob_vm = MicroVm(run_dir / "a"), MicroVm(run_dir / "b")
     # Relay's Unix listeners use `<run_dir>/a/v.sock_5001` and
     # `<run_dir>/b/v.sock_5001` on the host. Firecracker A and B connect
     # Alice's and Bob's traffic to them. Create both host directories before
@@ -725,8 +408,11 @@ async def _start_roles(
     ]
     # Tell Alice which Chrysalis identity belongs to Bob.
     alice += ["--bob-pid", pids["bob"]]
-    await _boot(
-        alice_vm, inputs, _guest_command(alice, (ids / "alice.pem").read_text())
+    await alice_vm.boot(
+        inputs.firecracker,
+        inputs.kernel,
+        inputs.rootfs,
+        _guest_command(alice, (ids / "alice.pem").read_text()),
     )
 
     _say(f"booting VM B with Bob, dialing the host on vsock port {RELAY_PORT}")
@@ -736,12 +422,17 @@ async def _start_roles(
     bob = ["bob", "--parent-pid", pids["relay"], "--parent", f"native:2:{RELAY_PORT}"]
     # Alice is the end-to-end peer; Relay forwards their encrypted traffic.
     bob += ["--alice-pid", pids["alice"]]
-    await _boot(bob_vm, inputs, _guest_command(bob, (ids / "bob.pem").read_text()))
+    await bob_vm.boot(
+        inputs.firecracker,
+        inputs.kernel,
+        inputs.rootfs,
+        _guest_command(bob, (ids / "bob.pem").read_text()),
+    )
     return alice_vm, relay, bob_vm
 
 
 async def _check_outcomes(
-    run_dir: Path, inputs: Inputs, alice_vm: _Vm, relay: _Relay, bob_vm: _Vm
+    run_dir: Path, inputs: Inputs, alice_vm: MicroVm, relay: _Relay, bob_vm: MicroVm
 ) -> None:
     """Confirm the exchange succeeded and stop the remaining roles.
 
@@ -750,7 +441,7 @@ async def _check_outcomes(
     VM's Firecracker process to exit, and reject any still running from this run.
     """
     # Alice exits on her own after the postcard and numbered streams complete.
-    alice = await _exit_event(alice_vm, ALICE_TIMEOUT)
+    alice = await alice_vm.exit_event(ALICE_TIMEOUT)
     _say(f"Alice exited: {alice}")
     if alice.get("exit_code") != 0:
         raise ScenarioError(f"Alice failed: {alice}")
@@ -759,8 +450,8 @@ async def _check_outcomes(
 
     # Bob keeps serving until asked to stop; SIGTERM lets him print his report.
     _say("stopping Bob with SIGTERM through his guest agent")
-    _signal(bob_vm, signal.SIGTERM)
-    bob = await _exit_event(bob_vm, ROLE_EXIT_TIMEOUT)
+    bob_vm.send_signal(signal.SIGTERM)
+    bob = await bob_vm.exit_event(ROLE_EXIT_TIMEOUT)
     if bob.get("exit_code") != 0:
         raise ScenarioError(f"Bob failed: {bob}")
     # Bob's exit status arrives over the control connection, but his printed
@@ -818,7 +509,7 @@ def _vmms_in(run_dir: Path, firecracker: Path) -> list[int]:
 def _print_diagnostics(run_dir: Path) -> None:
     """Show available logs when `run_scenario` fails or is cancelled.
 
-    `run_scenario` calls this before `_cleanup` can remove the run directory.
+    `run_scenario` calls this before `cleanup` can remove the run directory.
     Print VM A's console, Relay's log and VM B's console wherever they exist;
     a partial boot may not have created all three. Ignore `OSError` from
     reading or printing a log so diagnostics do not interrupt cleanup.
@@ -848,7 +539,7 @@ async def run_scenario(
     Remove `run_dir` only after every resource was released, unless
     `keep_run_dir` is set. The console demo sets it to keep logs for inspection.
     """
-    owners: list[_Owner] = []
+    owners: list[Owner] = []
     succeeded = False
     try:
         alice_vm, relay, bob_vm = await _start_roles(run_dir, inputs, owners)
@@ -859,64 +550,7 @@ async def run_scenario(
             if not succeeded:
                 _print_diagnostics(run_dir)
         finally:
-            await _cleanup(owners, run_dir, keep_run_dir=keep_run_dir)
-
-
-async def run_with_signals(scenario: Callable[[], Awaitable[None]]) -> None:
-    """Let the console demo clean up its run when interrupted.
-
-    `run_cli` calls this inside `asyncio.run`. Normally `scenario` creates
-    the `run_scenario` coroutine; cleanup tests can supply a stand-in run.
-
-    The first SIGINT, SIGTERM or SIGHUP cancels the run, letting
-    `run_scenario` enter its `finally` block and release its processes.
-    Ignore later signals so another cancellation cannot interrupt those
-    cleanup waits. Remove the signal handlers when the run ends.
-    """
-    loop = asyncio.get_running_loop()
-    # Run the scenario as a task that the signal handler can cancel.
-    task = asyncio.ensure_future(scenario())
-    requested = False
-
-    def request_stop(signum: int) -> None:
-        """Request cancellation once, leaving subsequent cleanup uninterrupted."""
-        nonlocal requested
-        # The same handler serves all three signals; only the first cancels.
-        if requested:
-            return
-        requested = True
-        task.cancel()
-        with contextlib.suppress(OSError):  # SIGHUP may have closed the terminal
-            _say(f"received {signal.Signals(signum).name}; releasing every process")
-
-    # The scenario task doesn't run until this coroutine awaits, so the
-    # handlers are installed before it acquires anything.
-    signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
-    for signum in signals:
-        loop.add_signal_handler(signum, request_stop, signum)
-    try:
-        # Wait for the run, including its cleanup. Errors and cancellation
-        # propagate to `run_cli`, which reports a failing process exit status.
-        await task
-    finally:
-        # Remove our handlers whether the run succeeded, failed or was cancelled.
-        for signum in signals:
-            loop.remove_signal_handler(signum)
-
-
-def run_cli(scenario: Callable[[], Awaitable[None]]) -> int:
-    """Run `scenario` under `run_with_signals` and return a process exit status."""
-    try:
-        asyncio.run(run_with_signals(scenario))
-    except asyncio.CancelledError:
-        with contextlib.suppress(OSError):
-            _say("interrupted")
-        return 1
-    except Exception as exc:  # the process boundary: report any failure as status 1
-        with contextlib.suppress(OSError):
-            _say(f"failed: {exc}")
-        return 1
-    return 0
+            await cleanup(owners, run_dir, keep_run_dir=keep_run_dir)
 
 
 def _check_run_dir(run_dir: Path) -> None:
@@ -958,12 +592,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         inputs = Inputs.from_env()
         _check_run_dir(run_dir)
-        if (reason := _kvm_unavailable()) is not None:
+        if (reason := kvm_unavailable()) is not None:
             raise ScenarioError(reason)
-    except ScenarioError as exc:
+    except (ScenarioError, MicroVmError) as exc:
         print(f"sealed-postcard microVMs: {exc}", file=sys.stderr)
         return 1
-    status = run_cli(lambda: run_scenario(run_dir, inputs, keep_run_dir=True))
+    status = run_cli(lambda: run_scenario(run_dir, inputs, keep_run_dir=True), _say)
     with contextlib.suppress(OSError):
         outcome = "succeeded" if status == 0 else "failed"
         _say(f"{outcome}; logs and VM specs are kept in {run_dir}")
