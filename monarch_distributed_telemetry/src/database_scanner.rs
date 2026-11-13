@@ -1324,13 +1324,13 @@ mod tests {
             id: 5,
             timestamp_us: old_us,
             message_id: 3,
-            status: "queued".to_string(),
+            status: "queued",
         });
         statuses.insert(MessageStatusEvent {
             id: 6,
             timestamp_us: fresh_us,
             message_id: 4,
-            status: "complete".to_string(),
+            status: "complete",
         });
         ingest_batch(
             scanner,

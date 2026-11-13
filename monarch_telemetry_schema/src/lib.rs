@@ -255,7 +255,7 @@ pub mod entity_tables {
         pub id: u64,
         pub timestamp_us: i64,
         pub message_id: u64,
-        pub status: String,
+        pub status: &'static str,
     }
 }
 

@@ -2418,7 +2418,7 @@ impl MailboxSender for Mailbox {
                         timestamp: std::time::SystemTime::now(),
                         id: hyperactor_telemetry::generate_status_event_id(message_id),
                         message_id,
-                        status: "queued".to_string(),
+                        status: "queued",
                     },
                 );
 

@@ -608,7 +608,7 @@ fn buffer_entity_event(inner: &mut UnixSocketSinkInner, event: &EntityEvent) {
                     id: event.id,
                     timestamp_us: timestamp_to_micros(&event.timestamp),
                     message_id: event.message_id,
-                    status: event.status.clone(),
+                    status: event.status,
                 });
         }
     }
@@ -884,7 +884,7 @@ mod tests {
                 timestamp: timestamp(),
                 id: 7,
                 message_id: 4,
-                status: "complete".to_string(),
+                status: "complete",
             })),
         ]
     }
