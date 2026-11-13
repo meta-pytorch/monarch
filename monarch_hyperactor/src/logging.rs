@@ -515,20 +515,30 @@ mod tests {
         }
     }
 
-    /// Drive a logging-client task without the test-only conversion helper's
-    /// internal `expect`s, so an error remains available to the cleanup path.
-    async fn drive_logging_client(handle: PyHandle) -> Result<Py<LoggingMeshClient>> {
+    /// Wait for the logging client and its native forwarders to initialize.
+    async fn drive_logging_client(
+        handle: PyHandle,
+        instance: &Instance<PythonActor>,
+    ) -> Result<Py<LoggingMeshClient>> {
         let future = handle.wait_future();
         let value = timeout(TEST_DEADLINE, future)
             .await
             .map_err(|_| anyhow::anyhow!("logging client spawn exceeded {TEST_DEADLINE:?}"))??;
-        Ok(monarch_with_gil(GilSite::Test, |py| {
+        let client: Py<LoggingMeshClient> = monarch_with_gil(GilSite::Test, |py| {
             value
                 .bind(py)
                 .extract::<Py<LoggingMeshClient>>()
                 .map_err(|error| pyo3::exceptions::PyTypeError::new_err(error.to_string()))
         })
-        .await?)
+        .await?;
+        let forwarder_mesh =
+            monarch_with_gil(GilSite::Test, |py| client.borrow(py).forwarder_mesh.clone()).await;
+        if let Some(mesh) = forwarder_mesh {
+            timeout(TEST_DEADLINE, mesh.wait_started(instance))
+                .await
+                .map_err(|_| anyhow::anyhow!("log forwarders exceeded {TEST_DEADLINE:?}"))??;
+        }
+        Ok(client)
     }
 
     /// Supply an already-created proc mesh to the logging producer.
@@ -629,6 +639,7 @@ mod tests {
     /// Bring up the actor topology exercised by the logging-client tests.
     async fn logging_test_world()
     -> Result<(Proc, Instance<PythonActor>, HostMeshShutdownGuard, ProcMesh)> {
+        hyperactor_telemetry::initialize_logging_for_test();
         ensure_python();
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), "root".to_string())?;
@@ -662,7 +673,7 @@ mod tests {
             let client_task = spawn_logging_client(&py_instance, &py_proc_mesh)
                 .expect("spawn logging Handle (forwarding disabled)");
 
-            let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task)
+            let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task, &instance)
                 .await
                 .expect("spawn failed (forwarding disabled)");
 
@@ -685,7 +696,7 @@ mod tests {
             let client_task = spawn_logging_client(&py_instance, &py_proc_mesh)
                 .expect("spawn logging Handle (forwarding enabled)");
 
-            let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task)
+            let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task, &instance)
                 .await
                 .expect("spawn failed (forwarding enabled)");
 
@@ -769,7 +780,7 @@ mod tests {
             let client_task = spawn_logging_client(&py_instance, &py_proc_mesh)
                 .expect("spawn logging Handle (forwarding disabled)");
 
-            let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task)
+            let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task, &instance)
                 .await
                 .expect("spawn failed (forwarding disabled)");
 
@@ -828,7 +839,7 @@ mod tests {
             let client_task = spawn_logging_client(&py_instance, &py_proc_mesh)
                 .expect("spawn logging Handle (forwarding enabled)");
 
-            let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task)
+            let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task, &instance)
                 .await
                 .expect("spawn failed (forwarding enabled)");
 
@@ -886,7 +897,7 @@ mod tests {
             let client_task = spawn_logging_client(&py_instance, &py_proc_mesh)
                 .expect("spawn logging Handle (forwarding disabled)");
 
-            let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task)
+            let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task, &instance)
                 .await
                 .expect("spawn failed (forwarding disabled)");
 
@@ -915,7 +926,7 @@ mod tests {
             let client_task = spawn_logging_client(&py_instance, &py_proc_mesh)
                 .expect("spawn logging Handle (forwarding enabled)");
 
-            let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task)
+            let client_py: Py<LoggingMeshClient> = drive_logging_client(client_task, &instance)
                 .await
                 .expect("spawn failed (forwarding enabled)");
 
@@ -963,10 +974,10 @@ mod tests {
             let lock = hyperactor_config::global::lock();
             let _guard = lock.override_key(MESH_ENABLE_LOG_FORWARDING, true);
 
-            let client_py = drive_logging_client(spawn_logging_client(
-                &py_instance,
-                &py_proc_mesh,
-            )?)
+            let client_py = drive_logging_client(
+                spawn_logging_client(&py_instance, &py_proc_mesh)?,
+                &instance,
+            )
             .await?;
             let (forwarding_enabled, client_actor) =
                 monarch_with_gil(GilSite::Test, |py| {

@@ -2135,7 +2135,7 @@ async def test_client_attach_addr() -> None:
     attaching to the worker, and that subsequent mesh operations route
     exclusively over the duplex channel.
 
-    After bootstrapping and spawning procs we remove the worker's frontend
+    After bootstrapping and attaching the host mesh we remove the worker's frontend
     socket from the filesystem.  Any subsequent client-side messaging that
     accidentally tries to dial the frontend will fail, proving that
     endpoint calls, replies, and undeliverable bounces travel exclusively
@@ -2151,6 +2151,10 @@ async def test_client_attach_addr() -> None:
     with scoped_state(job, cached_path=None) as state:
         context()
 
+        hm = state.hosts
+        assert hm is not None
+        await hm.initialized
+
         # Remove the worker's frontend socket.  The client should
         # never need to dial the frontend — all communication
         # flows through the duplex channel.  If anything on the
@@ -2161,17 +2165,14 @@ async def test_client_attach_addr() -> None:
         os.remove(frontend)
         assert not os.path.exists(frontend)
 
-        # (a) Spawn HostMesh, ProcMesh, and ActorMesh.
-        hm = state.hosts
-        assert hm is not None
-
+        # (a) Spawn ProcMesh and ActorMesh.
         pm = hm.spawn_procs(per_host={"workers": 2})
         assert pm is not None
 
         am = pm.spawn("echo", EchoActor)
 
         # (b) Send messages to the actor mesh.
-        results = am.echo.call("hello").get()
+        results = await am.echo.call("hello")
 
         # (c) Get replies back.
         for val in results.values():

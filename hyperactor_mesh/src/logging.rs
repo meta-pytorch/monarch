@@ -1038,8 +1038,8 @@ impl hyperactor::RemoteSpawn for LogForwardActor {
             log_channel
         );
 
-        let rx = match channel::serve(log_channel.clone()) {
-            Ok((_, rx)) => rx,
+        let (log_channel, rx) = match channel::serve(log_channel.clone()) {
+            Ok(channel) => channel,
             Err(err) => {
                 // This can happen if we are not spanwed on a separate process like local.
                 // For local mesh, log streaming anyway is not needed.
@@ -1048,7 +1048,7 @@ impl hyperactor::RemoteSpawn for LogForwardActor {
                     log_channel,
                     err
                 );
-                channel::serve(ChannelAddr::any(ChannelTransport::Unix))?.1
+                channel::serve(ChannelAddr::any(ChannelTransport::Unix))?
             }
         };
 
