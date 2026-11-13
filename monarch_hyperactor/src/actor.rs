@@ -40,6 +40,9 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::context::Actor as ContextActor;
+use hyperactor::mailbox::DeliveryFailureKind;
+use hyperactor::mailbox::ExpiredDelivery;
+use hyperactor::mailbox::InvalidReference;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMessageError;
@@ -1598,54 +1601,31 @@ impl Actor for PythonActor {
         &mut self,
         ins: &Instance<Self>,
         reason: UndeliverableReason,
-        mut envelope: Undeliverable<MessageEnvelope>,
+        envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        if envelope
-            .as_message()
-            .is_some_and(|envelope| envelope.sender() != ins.self_addr())
-        {
-            // This can happen if the sender is comm. Update the envelope.
-            envelope = update_undeliverable_envelope_for_casting(envelope);
-        }
-        let envelope = match envelope {
-            Undeliverable::Returned(envelope) => envelope,
-            Undeliverable::Report(report) => {
-                return Err(UndeliverableMessageError::Report { report }.into());
-            }
-        };
-        assert_eq!(
-            envelope.sender(),
-            ins.self_addr(),
-            "undeliverable message was returned to the wrong actor. \
-            Return address = {}, src actor = {}, dest handler port = {}, message type = {}, envelope headers = {}",
-            envelope.sender(),
-            ins.self_addr(),
-            envelope.dest(),
-            envelope.data().typename().unwrap_or("unknown"),
-            envelope.headers()
-        );
+        self.enqueue_delivery_failure(ins, reason.into(), envelope)
+    }
 
-        let cx = Context::new(ins, envelope.headers().clone());
-        let pending = PendingUndeliverable {
-            instance: self
-                .instance
-                .clone()
-                .expect("PythonActor::init should have created the instance"),
-            rank: cx.cast_point(),
-            recording_span: cx.recording_span(),
-            envelope: Undeliverable::Returned(envelope),
-            reply: UndeliverableReply {
-                port: ins.port(),
-                instance: ins.into(),
-                reason,
-                _in_flight: InFlight::new(&self.callbacks_pending),
-            },
-        };
+    /// Enqueues the message for `_handle_invalid_reference`, the same way as
+    /// `handle_undeliverable_message`.
+    async fn handle_invalid_reference(
+        &mut self,
+        ins: &Instance<Self>,
+        invalid: InvalidReference,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.enqueue_delivery_failure(ins, invalid.into(), envelope)
+    }
 
-        self.control_sender
-            .send(pending)
-            .map_err(|_| anyhow::anyhow!("failed to send undeliverable message to queue"))?;
-        Ok(())
+    /// Enqueues the message for `_handle_expired_delivery`, the same way as
+    /// `handle_undeliverable_message`.
+    async fn handle_expired_delivery(
+        &mut self,
+        ins: &Instance<Self>,
+        expired: ExpiredDelivery,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.enqueue_delivery_failure(ins, expired.into(), envelope)
     }
 
     /// Enqueues the event for `__supervise__` and returns `Ok(true)` right
@@ -1705,6 +1685,66 @@ impl Actor for PythonActor {
         )
         .await
         .map(|_| true)
+    }
+}
+
+impl PythonActor {
+    /// Enqueues a returned message for the Python delivery-failure callback
+    /// that matches `failure`, and returns without waiting for its verdict.
+    /// Report envelopes are rejected with an error instead of being enqueued.
+    /// Panics if the message was returned to an actor other than its sender.
+    fn enqueue_delivery_failure(
+        &self,
+        ins: &Instance<Self>,
+        failure: DeliveryFailureKind,
+        mut envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        if envelope
+            .as_message()
+            .is_some_and(|envelope| envelope.sender() != ins.self_addr())
+        {
+            // This can happen if the sender is comm. Update the envelope.
+            envelope = update_undeliverable_envelope_for_casting(envelope);
+        }
+        let envelope = match envelope {
+            Undeliverable::Returned(envelope) => envelope,
+            Undeliverable::Report(report) => {
+                return Err(UndeliverableMessageError::Report { report }.into());
+            }
+        };
+        assert_eq!(
+            envelope.sender(),
+            ins.self_addr(),
+            "undeliverable message was returned to the wrong actor. \
+            Return address = {}, src actor = {}, dest handler port = {}, message type = {}, envelope headers = {}",
+            envelope.sender(),
+            ins.self_addr(),
+            envelope.dest(),
+            envelope.data().typename().unwrap_or("unknown"),
+            envelope.headers()
+        );
+
+        let cx = Context::new(ins, envelope.headers().clone());
+        let pending = PendingUndeliverable {
+            instance: self
+                .instance
+                .clone()
+                .expect("PythonActor::init should have created the instance"),
+            rank: cx.cast_point(),
+            recording_span: cx.recording_span(),
+            envelope: Undeliverable::Returned(envelope),
+            reply: UndeliverableReply {
+                port: ins.port(),
+                instance: ins.into(),
+                failure,
+                _in_flight: InFlight::new(&self.callbacks_pending),
+            },
+        };
+
+        self.control_sender
+            .send(pending)
+            .map_err(|_| anyhow::anyhow!("failed to send undeliverable message to queue"))?;
+        Ok(())
     }
 }
 
@@ -1938,28 +1978,43 @@ impl CallbacksPending {
 }
 
 /// An undeliverable message enqueued for `_callback_loop`, or for a sync
-/// actor's driver, which runs `_handle_undeliverable_message` and reports the
-/// verdict with `_handled` or `_raised`. Dropping it without reporting (for
-/// example because an async loop was cancelled, sync cleanup won the claim, or
-/// the inbox was dropped) produces no verdict.
+/// actor's driver, which runs the delivery-failure callback named by `handler`
+/// and reports the verdict with `_handled` or `_raised`. Dropping it without
+/// reporting (for example because an async loop was cancelled, sync cleanup
+/// won the claim, or the inbox was dropped) produces no verdict.
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 pub struct QueuedUndeliverable {
     #[pyo3(get)]
     context: Py<crate::context::PyContext>,
     #[pyo3(get)]
     envelope: Py<PythonUndeliverableMessageEnvelope>,
+    handler: &'static str,
     reply: Option<UndeliverableReply>,
 }
 
 struct UndeliverableReply {
     port: PortHandle<UndeliverableOutcome>,
     instance: PyInstance,
-    reason: UndeliverableReason,
+    failure: DeliveryFailureKind,
     _in_flight: InFlight,
+}
+
+/// The name of the Python actor callback that handles `failure`.
+fn delivery_failure_handler(failure: &DeliveryFailureKind) -> &'static str {
+    match failure {
+        DeliveryFailureKind::InvalidReference(_) => "_handle_invalid_reference",
+        DeliveryFailureKind::Undeliverable(_) => "_handle_undeliverable_message",
+        DeliveryFailureKind::Expired(_) => "_handle_expired_delivery",
+    }
 }
 
 #[pymethods]
 impl QueuedUndeliverable {
+    #[getter]
+    fn handler(&self) -> &'static str {
+        self.handler
+    }
+
     fn _handled(&mut self, py: Python<'_>, handled: bool) {
         let verdict = if handled {
             UndeliverableVerdict::Handled
@@ -1986,13 +2041,13 @@ impl QueuedUndeliverable {
         let UndeliverableReply {
             port,
             instance,
-            reason,
+            failure,
             _in_flight,
         } = self
             .reply
             .take()
             .expect("undeliverable verdict reported twice");
-        if let Err(err) = port.try_post(instance.deref(), UndeliverableOutcome { reason, verdict })
+        if let Err(err) = port.try_post(instance.deref(), UndeliverableOutcome { failure, verdict })
         {
             tracing::debug!(
                 actor_id = %instance.self_addr(),
@@ -2032,17 +2087,18 @@ impl<'py> IntoPyObject<'py> for PendingUndeliverable {
             QueuedUndeliverable {
                 context: Py::new(py, context)?,
                 envelope: Py::new(py, envelope)?,
+                handler: delivery_failure_handler(&self.reply.failure),
                 reply: Some(self.reply),
             },
         )
     }
 }
 
-/// The verdict of `_handle_undeliverable_message` on a
-/// [`QueuedUndeliverable`], which the actor posts to itself.
+/// The verdict of a delivery-failure callback on a [`QueuedUndeliverable`],
+/// which the actor posts to itself.
 #[derive(Debug)]
 pub struct UndeliverableOutcome {
-    reason: UndeliverableReason,
+    failure: DeliveryFailureKind,
     verdict: UndeliverableVerdict,
 }
 
@@ -2062,9 +2118,17 @@ impl Handler<UndeliverableOutcome> for PythonActor {
     ) -> anyhow::Result<()> {
         match outcome.verdict {
             UndeliverableVerdict::Handled => Ok(()),
-            UndeliverableVerdict::Unhandled(envelope) => {
-                hyperactor::actor::handle_undeliverable_message(cx, outcome.reason, *envelope)
-            }
+            UndeliverableVerdict::Unhandled(envelope) => match outcome.failure {
+                DeliveryFailureKind::InvalidReference(invalid) => {
+                    hyperactor::actor::handle_invalid_reference(cx, invalid, *envelope)
+                }
+                DeliveryFailureKind::Undeliverable(reason) => {
+                    hyperactor::actor::handle_undeliverable_message(cx, reason, *envelope)
+                }
+                DeliveryFailureKind::Expired(expired) => {
+                    hyperactor::actor::handle_expired_delivery(cx, expired, *envelope)
+                }
+            },
             UndeliverableVerdict::Raised(err) => Err(err),
         }
     }
