@@ -9,10 +9,11 @@ import importlib
 import logging
 import sys
 import warnings
+from functools import reduce
 from logging import Logger
 
 # pyre-ignore
-from pickle import _getattribute, PickleError, whichmodule
+from pickle import PickleError, whichmodule
 from types import BuiltinFunctionType, FunctionType
 from typing import (
     Any,
@@ -56,7 +57,7 @@ def function_to_import_path(arg: BuiltinFunctionType | FunctionType) -> Optional
     if name is None:
         name = arg.__name__
     try:
-        module_name = whichmodule(arg, name)
+        module_name = getattr(arg, "__module__", None) or whichmodule(arg, name)
         __import__(module_name, level=0)
         module = sys.modules[module_name]
         if module_name == "__main__":
@@ -70,7 +71,7 @@ def function_to_import_path(arg: BuiltinFunctionType | FunctionType) -> Optional
         except AttributeError:
             pass
 
-        obj2, parent = _getattribute(module, name)
+        obj2 = reduce(getattr, name.split("."), module)
         # support annotations that cover up the global impl
         if obj2 is arg or getattr(obj2, "_remote_impl", None) is arg:
             return f"{module_name}.{name}"
