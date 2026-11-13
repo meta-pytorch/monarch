@@ -52,6 +52,7 @@ use crate::actor_mesh::ActorMeshRef;
 use crate::bootstrap::ProcStatus;
 use crate::casting::CAST_ACTOR_MESH_ID;
 use crate::casting::update_undeliverable_envelope_for_casting;
+use crate::host_mesh::host_agent::ProcState;
 use crate::mesh_id::ResourceId;
 use crate::proc_agent::ActorState;
 use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
@@ -450,6 +451,19 @@ pub(crate) fn proc_status_to_actor_status(proc_status: Option<ProcStatus>) -> Ac
             "the process this actor was running on failed: {}",
             status
         ))),
+    }
+}
+
+fn proc_state_to_actor_status(state: resource::State<ProcState>) -> ActorStatus {
+    let actor_status = proc_status_to_actor_status(state.state.and_then(|s| s.proc_status));
+    match (state.status, actor_status) {
+        (resource::Status::Timeout(timeout), _) => ActorStatus::generic_failure(format!(
+            "host unreachable: no status received from process within {timeout:?}"
+        )),
+        (resource::Status::Failed(reason), actor_status) if !actor_status.is_failed() => {
+            ActorStatus::generic_failure(reason)
+        }
+        (_, actor_status) => actor_status,
     }
 }
 
@@ -1194,15 +1208,17 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
         }
         if let Some(proc_states) = proc_states.unwrap() {
             // Check if the proc mesh is still alive.
-            if let Some((point, state)) = proc_states
-                .iter()
-                .find(|(_rank, state)| state.status.is_terminating())
-            {
+            if let Some((point, state)) = proc_states.iter().find(|(point, state)| {
+                state.status.is_terminating()
+                    && health_state
+                        .statuses
+                        .get(point)
+                        .is_some_and(|(status, _)| !status.is_terminating())
+            }) {
                 // TODO: allow "actor supervision event" to be general, and
                 // make the proc failure the cause. It is a hack to try to determine
                 // the correct status based on process exit status.
-                let actor_status =
-                    proc_status_to_actor_status(state.state.and_then(|s| s.proc_status));
+                let actor_status = proc_state_to_actor_status(state);
                 let stop_monitoring = actor_status.is_failed();
                 let display = crate::actor_display_name(supervision_display_name, &point);
                 let event = ActorSupervisionEvent::new(
@@ -1222,12 +1238,13 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
                         point.rank(),
                         resource::Status::Failed(event.to_string()),
                     ) {
-                        send_state_change(cx, point.rank(), event, mesh_name, true, health_state);
+                        send_state_change(cx, point.rank(), event, mesh_name, false, health_state);
                     }
                     return PollResult::StopMonitoring;
                 } else {
+                    health_state.mark_rank_terminating(point.rank(), resource::Status::Stopped);
                     send_state_change(cx, point.rank(), event, mesh_name, true, health_state);
-                    return PollResult::Reschedule;
+                    return PollResult::Processed { did_notify: true };
                 }
             }
         }
@@ -1651,7 +1668,7 @@ impl ProcMeshRef {
         health_state: &mut HealthState,
     ) -> bool {
         let create_rank = state.state.as_ref().map(|s| s.create_rank);
-        let actor_status = proc_status_to_actor_status(state.state.and_then(|s| s.proc_status));
+        let actor_status = proc_state_to_actor_status(state);
         let event = ActorSupervisionEvent::new(
             cx.instance().self_addr().clone(),
             Some(supervision_display_name.to_string()),
@@ -1676,8 +1693,12 @@ impl ProcMeshRef {
 mod tests {
     use std::ops::Deref;
     use std::time::Duration;
+    use std::time::SystemTime;
 
     use hyperactor::Actor;
+    use hyperactor::ActorRef;
+    #[cfg(fbcode_build)]
+    use hyperactor::Endpoint as _;
     use hyperactor::PortHandle;
     use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
@@ -1700,6 +1721,10 @@ mod tests {
     use ndslice::view::Ranked;
 
     use super::ACTOR_MESH_SUBSCRIBER_MESSAGE;
+    #[cfg(fbcode_build)]
+    use super::ActorMeshControlPlane;
+    #[cfg(fbcode_build)]
+    use super::ActorMeshController;
     use super::HealthState;
     use super::PollResult;
     use super::ProcMeshController;
@@ -1707,6 +1732,7 @@ mod tests {
     #[cfg(fbcode_build)]
     use super::SUPERVISION_POLL_FREQUENCY;
     use super::actor_state_to_supervision_events;
+    use super::proc_state_to_actor_status;
     use super::proc_status_to_actor_status;
     use super::send_heartbeat;
     use super::send_poll_failure;
@@ -1716,13 +1742,18 @@ mod tests {
     use crate::bootstrap::ProcStatus;
     use crate::casting::CAST_ACTOR_MESH_ID;
     #[cfg(fbcode_build)]
+    use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
+    #[cfg(fbcode_build)]
     use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
+    use crate::host_mesh::host_agent::ProcState;
     use crate::mesh_id::ActorMeshId;
     #[cfg(fbcode_build)]
     use crate::mesh_id::HostMeshId;
     use crate::mesh_id::ResourceId;
     use crate::proc_agent::ActorState;
     use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
+    #[cfg(fbcode_build)]
+    use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
     use crate::proc_mesh::USE_DIRECT_SPAWN;
     use crate::resource;
     use crate::supervision::MeshFailure;
@@ -2454,6 +2485,270 @@ mod tests {
             matches!(status, ActorStatus::Stopped(ref msg) if msg.contains("cleanly")),
             "expected Stopped, got {:?}",
             status
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_actor_owner_notified_on_host_crash() {
+        assert_host_exit_supervision(true).await;
+    }
+
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_actor_owner_not_notified_on_host_shutdown() {
+        assert_host_exit_supervision(false).await;
+    }
+
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_stopped_rank_does_not_hide_active_rank_host_loss() {
+        let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
+        let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, None);
+        let _idle = config.override_key(GET_PROC_STATE_MAX_IDLE, Duration::from_secs(1));
+        let _actor_idle = config.override_key(GET_ACTOR_STATE_MAX_IDLE, Duration::from_secs(1));
+        let _spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+
+        let instance = testing::instance();
+        let mut hosts = host_mesh_with_config(2).await;
+        let procs = hosts
+            .spawn(instance, "workers", Extent::unity(), None, None)
+            .await
+            .unwrap();
+        let child_name = ActorMeshId::instance(Label::new("stopped_and_active").unwrap());
+        let child = procs
+            .spawn_with_name::<testactor::TestActor, _>(
+                instance,
+                child_name.clone(),
+                &(),
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        let (owner, mut owner_rx) = instance.open_port::<MeshFailure>();
+        let mut controller: ActorMeshController<testactor::TestActor> = ResourceController::new(
+            ActorMeshControlPlane::new(child.deref().clone(), procs.deref().clone()),
+            None,
+            Some(owner.bind()),
+            crate::StatusMesh::from_single(child.region().clone(), resource::Status::Running),
+        );
+        let controller_instance = instance
+            .proc()
+            .actor_instance::<ActorMeshController<testactor::TestActor>>("manual_poll_controller")
+            .unwrap();
+        let cx = &controller_instance.instance;
+        child.get(0).unwrap().post(
+            instance,
+            testactor::CauseSupervisionEvent {
+                kind: testactor::SupervisionEventType::ProcessExit(0),
+                send_to_children: false,
+            },
+        );
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let states = procs.states(instance, None).await.unwrap().unwrap();
+                if states.get(0).unwrap().status == resource::Status::Stopped {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("rank 0 must exit cleanly while its host remains reachable");
+
+        let display = child_name.to_string();
+        let result = super::Controlled::poll_states(
+            &controller.mesh,
+            cx,
+            &display,
+            &mut controller.health_state,
+        )
+        .await;
+        assert!(matches!(result, PollResult::Processed { did_notify: true }));
+        assert!(!controller.health_state.all_terminating());
+        assert_eq!(owner_rx.try_recv().unwrap(), None);
+
+        hosts.children[0].start_kill().unwrap();
+        hosts.children[0].wait().await.unwrap();
+        let result = super::Controlled::poll_states(
+            &controller.mesh,
+            cx,
+            &display,
+            &mut controller.health_state,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            PollResult::Processed { did_notify: false }
+        ));
+        assert!(!controller.health_state.all_terminating());
+        assert_eq!(owner_rx.try_recv().unwrap(), None);
+
+        hosts.children[1].start_kill().unwrap();
+        hosts.children[1].wait().await.unwrap();
+        let result = super::Controlled::poll_states(
+            &controller.mesh,
+            cx,
+            &display,
+            &mut controller.health_state,
+        )
+        .await;
+        assert!(matches!(result, PollResult::StopMonitoring));
+        let failure = owner_rx.recv().await.unwrap();
+        assert_eq!(failure.actor_mesh_name, Some(display));
+        assert_eq!(failure.crashed_ranks, vec![1]);
+        assert_eq!(failure.event.actor_id, *child.get(1).unwrap().actor_addr());
+        assert!(failure.event.is_error());
+    }
+
+    #[cfg(fbcode_build)]
+    async fn assert_host_exit_supervision(crash: bool) {
+        let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
+        let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, None);
+        let _poll = config.override_key(SUPERVISION_POLL_FREQUENCY, Duration::from_secs(1));
+        let _idle = config.override_key(GET_PROC_STATE_MAX_IDLE, Duration::from_secs(1));
+        let _actor_idle = config.override_key(GET_ACTOR_STATE_MAX_IDLE, Duration::from_secs(1));
+        let _spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+
+        let instance = testing::instance();
+        let mut worker_hosts = host_mesh_with_config(1).await;
+        let workers = worker_hosts
+            .spawn(instance, "workers", Extent::unity(), None, None)
+            .await
+            .unwrap();
+        let child_name = ActorMeshId::instance(Label::new("host_crash_child").unwrap());
+        let (supervision_port, mut supervision_rx) = instance.open_port::<MeshFailure>();
+        let child = workers
+            .spawn_with_name::<testactor::TestActor, _>(
+                instance,
+                child_name.clone(),
+                &(),
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        let controller: ActorMeshController<testactor::TestActor> = ResourceController::new(
+            ActorMeshControlPlane::new(child.deref().clone(), workers.deref().clone()),
+            None,
+            Some(supervision_port.bind()),
+            crate::StatusMesh::from_single(child.region().clone(), resource::Status::Running),
+        );
+        let controller = instance.spawn_with_label("host_exit_controller", controller);
+
+        if crash {
+            worker_hosts.kill_hosts().await;
+        } else {
+            worker_hosts.shutdown(instance).await.unwrap();
+            worker_hosts.kill_hosts().await;
+        }
+
+        let timeout = Duration::from_secs(if crash { 10 } else { 3 });
+        let failure = tokio::time::timeout(timeout, supervision_rx.recv()).await;
+        controller.stop("test complete").unwrap();
+        if !crash {
+            assert!(
+                failure.is_err(),
+                "host shutdown must not notify the owner: {failure:?}"
+            );
+            return;
+        }
+        let failure = failure
+            .expect("host loss must reach the owner without calls to the child")
+            .unwrap();
+        assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
+        assert_eq!(failure.crashed_ranks, vec![0]);
+        assert!(failure.event.is_error());
+        assert!(
+            failure.event.to_string().contains("host unreachable"),
+            "{failure:?}"
+        );
+    }
+
+    #[test]
+    fn test_missing_proc_state_preserves_resource_status() {
+        for (status, is_error) in [
+            (resource::Status::Timeout(Duration::from_secs(1)), true),
+            (resource::Status::Failed("spawn failed".to_string()), true),
+            (resource::Status::Stopping, false),
+            (resource::Status::Stopped, false),
+            (resource::Status::NotExist, false),
+        ] {
+            let actor_status = proc_state_to_actor_status(resource::State {
+                id: ResourceId::instance(Label::new("proc").unwrap()),
+                status,
+                state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
+            });
+            assert_eq!(actor_status.is_failed(), is_error, "{actor_status:?}");
+        }
+    }
+
+    fn proc_state_with_status(
+        status: resource::Status,
+        proc_status: ProcStatus,
+    ) -> resource::State<ProcState> {
+        let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "proc");
+        resource::State {
+            id: ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned()),
+            status,
+            state: Some(ProcState {
+                mesh_agent: ActorRef::attest(proc_id.actor_addr("proc_agent")),
+                proc_id,
+                create_rank: 0,
+                bootstrap_command: None,
+                proc_status: Some(proc_status),
+            }),
+            generation: 0,
+            timestamp: SystemTime::now(),
+        }
+    }
+
+    #[test]
+    fn test_resource_failure_overrides_stale_proc_stop() {
+        for status in [
+            resource::Status::Timeout(Duration::from_secs(1)),
+            resource::Status::Failed("host unavailable".to_string()),
+        ] {
+            for proc_status in [
+                ProcStatus::Stopped {
+                    exit_code: 0,
+                    stderr_tail: vec![],
+                },
+                ProcStatus::Stopping {
+                    started_at: SystemTime::now(),
+                },
+            ] {
+                let actor_status = proc_state_to_actor_status(proc_state_with_status(
+                    status.clone(),
+                    proc_status.clone(),
+                ));
+                assert!(
+                    actor_status.is_failed(),
+                    "{status:?} with {proc_status:?}: {actor_status:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_resource_failure_preserves_known_proc_failure() {
+        let status = proc_state_to_actor_status(proc_state_with_status(
+            resource::Status::Failed("Killed(sig=9)".to_string()),
+            ProcStatus::Killed {
+                signal: 9,
+                core_dumped: false,
+            },
+        ));
+        assert_eq!(
+            status,
+            ActorStatus::generic_failure(
+                "the process this actor was running on failed: Killed(sig=9)"
+            )
         );
     }
 

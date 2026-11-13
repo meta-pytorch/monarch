@@ -46,6 +46,7 @@ from monarch._rust_bindings.monarch_hyperactor.testing import _handle_observer_c
 from monarch._src.actor.actor_mesh import (
     _client_context,
     Actor,
+    ActorError,
     attach,
     context,
     shutdown_context,
@@ -66,7 +67,8 @@ from monarch._src.job import host_metrics_actor
 from monarch._src.job.job import ProcessState
 from monarch._src.job.process import ProcessJob
 from monarch._src.job.telemetry_actor import TelemetryActor
-from monarch.config import configured
+from monarch.actor import MeshFailure
+from monarch.config import configured, parametrize_config
 from monarch.distributed_telemetry.engine import QueryEngine
 from scoped_state import scoped_state
 
@@ -180,6 +182,69 @@ class RankActor(Actor):
     @endpoint
     async def get_pid(self) -> int:
         return os.getpid()
+
+
+class HostFailureOwner(Actor):
+    def __init__(self, host: HostMesh) -> None:
+        self.worker = host.spawn_procs().spawn("worker", RankActor)
+        self.failures: list[str] = []
+
+    def __supervise__(self, failure: MeshFailure) -> bool:
+        self.failures.append(failure.mesh_name)
+        return True
+
+    @endpoint
+    async def worker_pid(self) -> int:
+        return await self.worker.get_pid.call_one()
+
+    @endpoint
+    async def failures_seen(self) -> list[str]:
+        return self.failures
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="uses Linux process sessions")
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("mode", ["proc", "host", "shutdown"])
+@parametrize_config(use_direct_spawn={False})
+@isolate_in_subprocess(env={"HYPERACTOR_MESH_SUPERVISION_POLL_FREQUENCY": "100ms"})
+def test_host_loss_reaches_owner(mode: str) -> None:
+    """Process and host crashes notify an idle mesh's owner; shutdown does not."""
+    with configured(
+        get_proc_state_max_idle="1s",
+        get_actor_state_max_idle="1s",
+    ):
+        job = ProcessJob({"hosts": 1})
+        try:
+            host = job.state(cached_path=None).hosts
+            owner = this_host().spawn_procs().spawn("owner", HostFailureOwner, host)
+            worker_pid = owner.worker_pid.call_one().get(timeout=30)
+            if mode == "proc":
+                os.kill(worker_pid, signal.SIGKILL)
+            elif mode == "host":
+                session = os.getsid(job._host_to_pid["hosts_0"].pid)
+                for pid in filter(str.isdigit, os.listdir("/proc")):
+                    with suppress(OSError):
+                        if os.getsid(int(pid)) == session:
+                            os.kill(int(pid), signal.SIGKILL)
+            else:
+                host.shutdown().get(timeout=30)
+
+            deadline = time.monotonic() + (3 if mode == "shutdown" else 15)
+            while time.monotonic() < deadline:
+                failures = owner.failures_seen.call_one().get(timeout=5)
+                if any(name.startswith("worker-") for name in failures):
+                    break
+                time.sleep(0.1)
+            assert any(name.startswith("worker-") for name in failures) == (
+                mode != "shutdown"
+            ), failures
+            if mode == "host":
+                with pytest.raises(
+                    ActorError, match="unreachable|supervision liveness failed"
+                ):
+                    owner.worker_pid.call_one().get(timeout=2)
+        finally:
+            job.kill()
 
 
 def is_process_running(pid: int) -> bool:
