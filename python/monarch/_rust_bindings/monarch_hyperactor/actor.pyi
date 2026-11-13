@@ -324,13 +324,20 @@ class QueuedSupervision:
 @final
 class QueuedUndeliverable:
     """
-    An undeliverable message queued for ``_handle_undeliverable_message``.
-    Report the verdict with exactly one of ``_handled`` or ``_raised``.
+    An undeliverable message queued for the delivery-failure callback named by
+    ``handler``. Report the verdict with exactly one of ``_handled`` or
+    ``_raised``.
     """
 
     @property
     def context(self) -> Any:
-        """The PyContext to run ``_handle_undeliverable_message`` with."""
+        """The PyContext to run the delivery-failure callback with."""
+        ...
+
+    @property
+    def handler(self) -> str:
+        """The name of the actor callback to run: ``_handle_undeliverable_message``,
+        ``_handle_invalid_reference``, or ``_handle_expired_delivery``."""
         ...
 
     @property
