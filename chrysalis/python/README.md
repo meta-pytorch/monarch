@@ -256,6 +256,81 @@ kill -TERM "$relay_process"; wait "$relay_process"
 rm -rf "$sealed_postcard_dir"
 ```
 
+## Two relays joined over UDP
+
+A second Relay can join the first over UDP. Alice joins Relay 1 and Bob joins Relay 2, so Alice's postcard and streams cross both Relays:
+
+```text
+relay 1 ---  udp  --- relay 2
+  |                      |
+  |        unix:         |
+  |                      |
+ alice                  bob
+```
+
+With `--udp`, Relay's carrier is a pair, a `UdpCarrier` and a `VsockCarrier`. UDP comes first, so it faces Relay's parent and is the address Relay advertises. Children may join over either: Relay 2 joins Relay 1 over UDP, and Alice and Bob join their Relays over `unix:` as before:
+
+```python
+node = Node(identity, carrier=(UdpCarrier(bind=udp), VsockCarrier(listen=listen)), parent=parent)  # Relay
+```
+
+This is the host side of the VM edge. Each host's Relay would reach that host's microVMs over vsock and other hosts' Relays over UDP. Here Relay 1 stands for one host's Relay and Relay 2 for another's, both run on one host. Relay prints each of its addresses as `relay address <address>`, so Relay 2 can join Relay 1 at the UDP port the system chose for it.
+
+Continuing from the commands above, with a new run directory, write the identities with Relay 2's, start Relay 1, and read its UDP address:
+
+```sh
+sealed_postcard_dir=$(mktemp -d /tmp/sealed-postcard-py.XXXXXX)
+
+"$sealed_postcard" identities --out "$sealed_postcard_dir/ids" --relays 2 > "$sealed_postcard_dir/pids"
+alice_pid=$(awk '$1 == "alice" { print $2 }' "$sealed_postcard_dir/pids")
+relay_pid=$(awk '$1 == "relay" { print $2 }' "$sealed_postcard_dir/pids")
+relay2_pid=$(awk '$1 == "relay2" { print $2 }' "$sealed_postcard_dir/pids")
+bob_pid=$(awk '$1 == "bob" { print $2 }' "$sealed_postcard_dir/pids")
+
+SEALED_POSTCARD_IDENTITY=$(cat "$sealed_postcard_dir/ids/relay.pem") \
+  "$sealed_postcard" relay --udp 127.0.0.1:0 --listen "unix:$sealed_postcard_dir/r1" \
+  > "$sealed_postcard_dir/relay1.out" &
+relay1_process=$!
+until grep -qs '^relay address udp://' "$sealed_postcard_dir/relay1.out"; do sleep 0.1; done
+relay1_address=$(awk '$3 ~ /^udp:/ { print $3 }' "$sealed_postcard_dir/relay1.out")
+```
+
+Start Relay 2 joined to Relay 1, then Bob on Relay 2, then Alice on Relay 1:
+
+```sh
+SEALED_POSTCARD_IDENTITY=$(cat "$sealed_postcard_dir/ids/relay2.pem") \
+  "$sealed_postcard" relay --udp 127.0.0.1:0 --listen "unix:$sealed_postcard_dir/r2" \
+  --parent-pid "$relay_pid" --parent "$relay1_address" &
+relay2_process=$!
+
+SEALED_POSTCARD_IDENTITY=$(cat "$sealed_postcard_dir/ids/bob.pem") \
+  "$sealed_postcard" bob --parent-pid "$relay2_pid" \
+  --parent "unix:$sealed_postcard_dir/r2" --alice-pid "$alice_pid" &
+bob_process=$!
+
+SEALED_POSTCARD_IDENTITY=$(cat "$sealed_postcard_dir/ids/alice.pem") \
+  "$sealed_postcard" alice --parent-pid "$relay_pid" \
+  --parent "unix:$sealed_postcard_dir/r1" --bob-pid "$bob_pid" && echo "alice: done"
+```
+
+Stop Bob, who prints the same report as with one Relay:
+
+```sh
+kill -TERM "$bob_process"; wait "$bob_process"
+```
+
+```text
+bob served 33 streams, all from alice: true
+```
+
+Then stop Relay 2 and Relay 1, and delete the run directory:
+
+```sh
+kill -TERM "$relay2_process"; wait "$relay2_process"
+kill -TERM "$relay1_process"; wait "$relay1_process"
+rm -rf "$sealed_postcard_dir"
+```
+
 ## The API used here
 
 - `generate_test_identities(count)` returns PEM identity bundles signed by one new test certificate authority.
