@@ -267,6 +267,12 @@ class Instance(abc.ABC):
         ...
 
     @abstractmethod
+    def _inject_failure(self, reason: Optional[str] = None) -> None:
+        """Abort this actor with a reason that marks the failure as injected,
+        so ``MeshFailure.is_injected`` is true for it."""
+        ...
+
+    @abstractmethod
     def _execution_start(self, name: str) -> int:
         """
         Producer write-side for the mesh `execution` field: record the start
@@ -1540,9 +1546,9 @@ async def _callback_loop(
     self_instance: "Instance",
 ) -> None:
     """
-    Runs ``__supervise__`` for each supervision event and
-    ``_handle_undeliverable_message`` for each undeliverable message, one at a
-    time, as a task beside ``_dispatch_loop`` on the actor's event loop.
+    Runs ``__supervise__`` for each supervision event and the matching
+    delivery-failure callback for each undeliverable message, one at a time,
+    as a task beside ``_dispatch_loop`` on the actor's event loop.
     Called from Rust Actor::init.
 
     This lets these callbacks run at any await point of an endpoint, or between
@@ -1556,8 +1562,8 @@ async def _callback_loop(
             if isinstance(item, QueuedSupervision):
                 callback = actor.__supervise__(item.context, item.failure)
             else:
-                callback = actor._handle_undeliverable_message(
-                    item.context, item.envelope
+                callback = actor._handle_delivery_failure(
+                    item.context, item.handler, item.envelope
                 )
             # A separate task, so a `CancelledError` raised by the callback is
             # reported as its verdict rather than stopping this loop. Only
@@ -1639,8 +1645,9 @@ def _finish_queued_message(msg: "QueuedMessage", panic_flag: _QueuePanicFlag) ->
 # SA-5 (kind before spawn): on the ProcMesh route, `_actor_kind` decides an
 #   actor class's kind before the native spawn, and rejects a class whose
 #   endpoints mix kinds or whose hooks don't match it: a sync actor's
-#   `__cleanup__`, `__supervise__`, and `_handle_undeliverable_message` must be
-#   sync, and an async-endpoint actor's `__cleanup__` must be async. The
+#   `__cleanup__`, `__supervise__`, and delivery-failure callbacks
+#   (`_handle_undeliverable_message`, `_handle_invalid_reference`,
+#   `_handle_expired_delivery`) must be sync, and an async-endpoint actor's `__cleanup__` must be async. The
 #   root-client and low-level routes state `ActorKind.ASYNC`.
 
 
@@ -2028,31 +2035,34 @@ class _Actor:
                 pdb_wrapper.post_mortem(exc_tb)
                 self._maybe_exit_debugger(do_continue=False)
 
-    async def _handle_undeliverable_message(
-        self, cx: Context, message: UndeliverableMessageEnvelope
+    async def _handle_delivery_failure(
+        self, cx: Context, handler: str, message: UndeliverableMessageEnvelope
     ) -> bool:
-        """Dispatch the user's ``_handle_undeliverable_message``, supporting
-        sync and async user methods the same way as ``__supervise__``."""
-        handle_undeliverable = self._user_handle_undeliverable(cx)
-        if handle_undeliverable is None:
+        """Dispatch the user's delivery-failure callback named ``handler``
+        (``_handle_undeliverable_message``, ``_handle_invalid_reference``, or
+        ``_handle_expired_delivery``), supporting sync and async user methods
+        the same way as ``__supervise__``."""
+        callback = self._user_delivery_failure_handler(cx, handler)
+        if callback is None:
             return False
-        if inspect.iscoroutinefunction(handle_undeliverable):
-            return await handle_undeliverable(message)
+        if inspect.iscoroutinefunction(callback):
+            return await callback(message)
         with fake_sync_state():
-            return handle_undeliverable(message)
+            return callback(message)
 
-    def _user_handle_undeliverable(
-        self, cx: Context
+    def _user_delivery_failure_handler(
+        self, cx: Context, handler: str
     ) -> Callable[[UndeliverableMessageEnvelope], Any] | None:
-        """The user's undeliverable-message callback, with its context set."""
+        """The user's delivery-failure callback named ``handler``, with its
+        context set."""
         _set_context(cx)
-        return getattr(self.instance, "_handle_undeliverable_message", None)
+        return getattr(self.instance, handler, None)
 
     def _run_undeliverable(self, item: QueuedUndeliverable) -> None:
-        """Run a sync actor's undeliverable-message callback on its driver and
+        """Run a sync actor's delivery-failure callback on its driver and
         report the verdict on ``item``."""
         try:
-            callback = self._user_handle_undeliverable(item.context)
+            callback = self._user_delivery_failure_handler(item.context, item.handler)
             handled = callback is not None and bool(callback(item.envelope))
         except Exception as e:
             item._raised(e)
@@ -2211,7 +2221,6 @@ def _actor_kind(Class: type) -> ActorKind:
                 sync_endpoints.append(attr_name)
     cleanup = getattr(Class, "__cleanup__", None)
     supervise = getattr(Class, "__supervise__", None)
-    handle_undeliverable = getattr(Class, "_handle_undeliverable_message", None)
     # None means there is no override.
     async_cleanup = (
         inspect.iscoroutinefunction(cleanup) if _is_user_override(cleanup) else None
@@ -2219,7 +2228,6 @@ def _actor_kind(Class: type) -> ActorKind:
     async_supervise = (
         inspect.iscoroutinefunction(supervise) if _is_user_override(supervise) else None
     )
-    async_handle_undeliverable = inspect.iscoroutinefunction(handle_undeliverable)
 
     if sync_endpoints and async_endpoints:
         raise ValueError(
@@ -2246,13 +2254,17 @@ def _actor_kind(Class: type) -> ActorKind:
             "Make sure __supervise__ is also synchronous. "
             f"sync: {sync_endpoints}"
         )
-    if sync_endpoints and async_handle_undeliverable:
-        raise ValueError(
-            f"{Class} has sync endpoints, but an async "
-            "_handle_undeliverable_message. Make sure "
-            "_handle_undeliverable_message is also synchronous. "
-            f"sync: {sync_endpoints}"
-        )
+    for handler in (
+        "_handle_undeliverable_message",
+        "_handle_invalid_reference",
+        "_handle_expired_delivery",
+    ):
+        if sync_endpoints and inspect.iscoroutinefunction(getattr(Class, handler, None)):
+            raise ValueError(
+                f"{Class} has sync endpoints, but an async {handler}. "
+                f"Make sure {handler} is also synchronous. "
+                f"sync: {sync_endpoints}"
+            )
     return ActorKind.SYNC if sync_endpoints else ActorKind.ASYNC
 
 
@@ -2322,6 +2334,25 @@ class Actor(MeshTrait):
         stops; a sync actor finishes a callback it has started and drops one it
         has not."""
         # Return False to indicate that the undeliverable message was not handled.
+        return False
+
+    def _handle_invalid_reference(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool | Awaitable[bool]:
+        """Called when a message sent by this actor uses an invalid destination
+        reference, for example a stale reference to an actor that failed.
+        Return True to handle the failure, or False to use the default
+        behavior, which fails this actor. Sync/async and scheduling rules are
+        the same as for ``_handle_undeliverable_message``."""
+        return False
+
+    def _handle_expired_delivery(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool | Awaitable[bool]:
+        """Called when a message sent by this actor expires before delivery.
+        Return True to handle the failure, or False to use the default
+        behavior, which fails this actor. Sync/async and scheduling rules are
+        the same as for ``_handle_undeliverable_message``."""
         return False
 
     @_doc_stub
