@@ -117,8 +117,8 @@ CONTROL_PORT = 9000
 # Unix listener for that VM.
 RELAY_PORT = 5001
 
-# Location of the Rust binary installed in each guest's root filesystem.
-GUEST_BINARY = "/usr/local/bin/sealed-postcard"
+# Where every guest image built by `guest_rootfs.bzl` holds its program.
+GUEST_PROGRAM = "/usr/local/bin/guest-program"
 # Kernel boot options: serial console, read-only root disk, and fc_agent.py
 # as the first process.
 BOOT_ARGS = (
@@ -405,7 +405,7 @@ async def _boot(guest: _Vm, inputs: Inputs, command: dict[str, object]) -> None:
             "boot_args": BOOT_ARGS,
         },
         # Both VMs use this read-only root filesystem. It contains
-        # fc_agent.py and the Rust binary at GUEST_BINARY.
+        # fc_agent.py and the Rust binary at GUEST_PROGRAM.
         "drives": [
             {
                 "drive_id": "root",
@@ -635,7 +635,7 @@ def _guest_command(role_args: list[str], identity: str) -> dict[str, object]:
     connection; fc_agent.py receives it and starts the process.
     """
     return {
-        "executable": GUEST_BINARY,
+        "executable": GUEST_PROGRAM,
         "argv": ["sealed-postcard", *role_args],
         "env": {"SEALED_POSTCARD_IDENTITY": identity},
         "cwd": "/",
