@@ -399,6 +399,7 @@ class RuntimeProfiler:
 
         # This cannot be merged to the previous for loop. A deadlock can happen.
         for _ in ranks:
+            # pyrefly: ignore [unbound-name]
             ret.append(conn.recv())
 
         clean_ret = []
