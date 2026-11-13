@@ -45,14 +45,14 @@ guest kernel. The first build of the kernel and image takes several minutes.
 ```sh
 cd ~/fbsource
 buck2 build @fbcode//mode/dev-nosan \
-  fbcode//monarch/chrysalis/python/tests:sealed_postcard_guest_rootfs \
+  fbcode//monarch/chrysalis/python/examples:sealed_postcard_guest_rootfs \
   fbcode//monarch/chrysalis/crates/chrysalis:sealed-postcard \
   fbcode//cse/firecracker:fcexe \
   fbcode//cse/firecracker:firecracker.kernel.vmlinux \
   --show-full-output > /tmp/sealed-postcard-outputs
 
 output() { awk -v target="$1" '$1 == target { print $2 }' /tmp/sealed-postcard-outputs; }
-export CHR_FC_ROOTFS=$(output fbcode//monarch/chrysalis/python/tests:sealed_postcard_guest_rootfs)
+export CHR_FC_ROOTFS=$(output fbcode//monarch/chrysalis/python/examples:sealed_postcard_guest_rootfs)
 export SEALED_POSTCARD=$(output fbcode//monarch/chrysalis/crates/chrysalis:sealed-postcard)
 export CHR_FC_FIRECRACKER=$(output fbcode//cse/firecracker:fcexe)/firecracker
 export CHR_FC_KERNEL=$(output fbcode//cse/firecracker:firecracker.kernel.vmlinux)
@@ -86,7 +86,7 @@ tmux split-window -t "$session:microvms" "tail -n +1 -F $sealed_postcard_dir/rel
 tmux split-window -t "$session:microvms" "tail -n +1 -F $sealed_postcard_dir/b/console.log"
 tmux split-window -t "$session:microvms" -c "$HOME/fbsource" \
   "/usr/local/fbcode/platform010/bin/python3.12 \
-   fbcode/monarch/chrysalis/python/tests/sealed_postcard_microvms.py \
+   fbcode/monarch/chrysalis/python/examples/sealed_postcard_microvms.py \
    --run-dir $sealed_postcard_dir"
 tmux select-layout -t "$session:microvms" tiled
 tmux select-pane -t "$session:microvms.0" -T 'Alice: VM A console'

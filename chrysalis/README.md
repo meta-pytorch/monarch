@@ -164,7 +164,7 @@ datagrams without seeing the postcard's plaintext:
 ```
 
 The three roles are the unchanged Rust binary. A Python program on the host,
-[`python/tests/sealed_postcard_microvms.py`](python/tests/sealed_postcard_microvms.py),
+[`python/examples/sealed_postcard_microvms.py`](python/examples/sealed_postcard_microvms.py),
 boots the two VMs, starts Relay, checks the outcome and releases every process
 it started.
 
