@@ -207,6 +207,20 @@ class TestPoint(TestCase):
         point_11 = Point(11, shape)
         self.assertEqual(str(point_11), "{'label0': 2/3, 'label1': 3/4}")
 
+    def test_point_missing_label(self) -> None:
+        # `monarch.actor.Point` (what `ValueMesh.items()` yields) is a
+        # `collections.abc.Mapping`, so a missing label is a KeyError.
+        from monarch.actor import Point as MeshPoint
+
+        point = MeshPoint(5, Extent(["gpus"], [8]))
+        self.assertEqual(point["gpus"], 5)
+        with self.assertRaises(KeyError):
+            point["hosts"]
+        self.assertNotIn("hosts", point)
+        self.assertIn("gpus", point)
+        self.assertEqual(point.get("hosts", 0), 0)
+        self.assertEqual(point.get("gpus"), 5)
+
 
 class TestSelection(TestCase):
     def test_constants(self) -> None:
