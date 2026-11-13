@@ -24,11 +24,11 @@ use datafusion::arrow::compute::BatchCoalescer;
 use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::dataframe::DataFrame;
 use datafusion::datasource::MemTable;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result as DFResult;
-use datafusion::logical_expr::col;
+use datafusion::execution::SendableRecordBatchStream;
+use datafusion::prelude::SQLOptions;
 use datafusion::prelude::SessionContext;
 use hyperactor as reference;
 use hyperactor::Endpoint as _;
@@ -460,17 +460,6 @@ fn scan_coalescer(schema: SchemaRef) -> BatchCoalescer {
         .with_biggest_coalesce_batch_size(Some(SCAN_BYPASS_COALESCE_ROWS))
 }
 
-/// Schema of the batches a scan emits.
-///
-/// `BatchCoalescer` needs its schema up front, so the zero-column projection
-/// that COUNT(*) uses has to be applied here as well as to each batch.
-fn scan_output_schema(stream_schema: SchemaRef, is_empty_projection: bool) -> DFResult<SchemaRef> {
-    if is_empty_projection {
-        return Ok(Arc::new(stream_schema.project(&[])?));
-    }
-    Ok(stream_schema)
-}
-
 /// Serialize `batch` and post it to `dest_ref`, tagged with the posting
 /// collector's address.
 ///
@@ -497,43 +486,44 @@ fn post_batch(
     Ok(())
 }
 
-fn build_scan_dataframe(
-    ctx: &SessionContext,
-    table: Arc<dyn TableProvider>,
-    projection: Option<&[usize]>,
-    where_clause: Option<&str>,
-    limit: Option<usize>,
-) -> DFResult<DataFrame> {
-    let schema = table.schema();
-    let mut dataframe = ctx.read_table(table)?;
-    if let Some(where_clause) = where_clause {
-        let filter = dataframe.parse_sql_expr(where_clause)?;
-        dataframe = dataframe.filter(filter)?;
+/// Coalesce `stream`'s batches and post each to `dest_ref`, returning how
+/// many were posted.
+async fn post_stream(
+    mut stream: SendableRecordBatchStream,
+    rank: usize,
+    instance: &Instance<PythonActor>,
+    dest_ref: &reference::PortRef<QueryResponse>,
+) -> DFResult<usize> {
+    use futures::StreamExt;
+
+    let mut coalescer = scan_coalescer(stream.schema());
+    let mut count: usize = 0;
+    let mut rows: usize = 0;
+
+    while let Some(result) = stream.next().await {
+        coalescer.push_batch(result?)?;
+        while let Some(coalesced) = coalescer.next_completed_batch() {
+            post_batch(&coalesced, instance, dest_ref)?;
+            count += 1;
+            rows += coalesced.num_rows();
+        }
+    }
+    coalescer.finish_buffered_batch()?;
+    while let Some(coalesced) = coalescer.next_completed_batch() {
+        post_batch(&coalesced, instance, dest_ref)?;
+        count += 1;
+        rows += coalesced.num_rows();
     }
 
-    dataframe = match projection {
-        Some([]) => dataframe.select_exprs(&["NULL as fake_column"])?,
-        Some(projection) => {
-            let columns = projection
-                .iter()
-                .map(|&index| {
-                    schema
-                        .fields()
-                        .get(index)
-                        .map(|field| col(field.name()))
-                        .ok_or_else(|| {
-                            datafusion::error::DataFusionError::Plan(format!(
-                                "projection index {index} out of range"
-                            ))
-                        })
-                })
-                .collect::<DFResult<Vec<_>>>()?;
-            dataframe.select(columns)?
-        }
-        None => dataframe,
-    };
-
-    dataframe.limit(0, limit)
+    // Counted after posting, so the log never reports rows that
+    // failed to reach the root.
+    tracing::info!(
+        "Scanner {}: local scan complete, sent {} batches ({} rows)",
+        rank,
+        count,
+        rows
+    );
+    Ok(count)
 }
 
 #[pyclass(
@@ -712,23 +702,12 @@ impl DatabaseScanner {
     ///
     /// Args:
     ///     dest: The destination PortId to send results to
-    ///     table_name: Name of the table to scan
-    ///     projection: Optional list of column indices to project
-    ///     limit: Optional row limit
-    ///     filter_expr: Optional SQL WHERE clause
+    ///     sql: Read-only query over this collector's tables
     ///
     /// Returns:
     ///     This collector's actor address, which tags every batch it sent,
     ///     and the number of batches sent
-    fn scan(
-        &self,
-        py: Python<'_>,
-        dest: &PyPortId,
-        table_name: String,
-        projection: Option<Vec<usize>>,
-        limit: Option<usize>,
-        filter_expr: Option<String>,
-    ) -> PyResult<(PyActorAddr, usize)> {
+    fn scan(&self, py: Python<'_>, dest: &PyPortId, sql: String) -> PyResult<(PyActorAddr, usize)> {
         // Get actor instance from context and extract the Rust Instance once.
         // The `PyRef` is dropped here so no Python borrow is held while the
         // GIL is released below.
@@ -747,16 +726,7 @@ impl DatabaseScanner {
         // Execute scan, streaming batches directly to destination. The scan
         // does not touch Python, so release the GIL to let other Python
         // threads in this process run meanwhile.
-        let batch_count = py.detach(|| {
-            self.execute_scan_streaming(
-                &table_name,
-                projection,
-                filter_expr,
-                limit,
-                &instance,
-                &dest_ref,
-            )
-        })?;
+        let batch_count = py.detach(|| self.execute_scan_streaming(&sql, &instance, &dest_ref))?;
         Ok((instance.self_addr().clone().into(), batch_count))
     }
 }
@@ -1126,89 +1096,46 @@ impl DatabaseScanner {
         self.store.clone()
     }
 
+    /// Run the read-only query `sql` over this collector's tables, streaming
+    /// its batches to `dest_ref`.
     fn execute_scan_streaming(
         &self,
-        table_name: &str,
-        projection: Option<Vec<usize>>,
-        where_clause: Option<String>,
-        limit: Option<usize>,
+        sql: &str,
         instance: &Instance<PythonActor>,
         dest_ref: &reference::PortRef<QueryResponse>,
     ) -> PyResult<usize> {
-        let rank = self.rank;
-
-        // Get the LiveTableData's MemTable
-        let mem_table = {
+        let tables: Vec<(String, Arc<MemTable>)> = {
             let guard = self
                 .store
                 .inner
                 .lock()
                 .map_err(|_| PyException::new_err("lock poisoned"))?;
-            let table_data = guard
-                .get(table_name)
-                .ok_or_else(|| PyException::new_err(format!("table '{}' not found", table_name)))?;
-            table_data.mem_table()
+            guard
+                .iter()
+                .map(|(name, table_data)| (name.clone(), table_data.mem_table()))
+                .collect()
         };
-
-        // Handle empty projection (e.g., for COUNT(*) queries)
-        // DataFusion may request 0 columns but we still need row counts
-        let is_empty_projection = matches!(&projection, Some(proj) if proj.is_empty());
-
-        // Execute and stream batches directly to destination
-        let batch_count = get_tokio_runtime()
+        get_tokio_runtime()
             .block_on(async {
-                use futures::StreamExt;
-
-                let df = build_scan_dataframe(
-                    &self.scan_session,
-                    mem_table,
-                    projection.as_deref(),
-                    where_clause.as_deref(),
-                    limit,
-                )?;
-                let mut stream = df.execute_stream().await?;
-                let mut coalescer =
-                    scan_coalescer(scan_output_schema(stream.schema(), is_empty_projection)?);
-                let mut count: usize = 0;
-                let mut rows: usize = 0;
-
-                while let Some(result) = stream.next().await {
-                    let batch = result?;
-
-                    // For empty projection, project to empty schema
-                    let batch = if is_empty_projection {
-                        batch.project(&[])?
-                    } else {
-                        batch
-                    };
-
-                    coalescer.push_batch(batch)?;
-                    while let Some(coalesced) = coalescer.next_completed_batch() {
-                        post_batch(&coalesced, instance, dest_ref)?;
-                        count += 1;
-                        rows += coalesced.num_rows();
+                // A table's `MemTable` never changes, so each is registered once.
+                let ctx = &self.scan_session;
+                for (name, table) in tables {
+                    if !ctx.table_exist(name.as_str())? {
+                        ctx.register_table(name, table)?;
                     }
                 }
-                coalescer.finish_buffered_batch()?;
-                while let Some(coalesced) = coalescer.next_completed_batch() {
-                    post_batch(&coalesced, instance, dest_ref)?;
-                    count += 1;
-                    rows += coalesced.num_rows();
-                }
-
-                // Counted after posting, so the log never reports rows that
-                // failed to reach the root.
-                tracing::info!(
-                    "Scanner {}: local scan complete, sent {} batches ({} rows)",
-                    rank,
-                    count,
-                    rows
-                );
-                Ok::<usize, datafusion::error::DataFusionError>(count)
+                let options = SQLOptions::new()
+                    .with_allow_ddl(false)
+                    .with_allow_dml(false)
+                    .with_allow_statements(false);
+                let stream = ctx
+                    .sql_with_options(sql, options)
+                    .await?
+                    .execute_stream()
+                    .await?;
+                post_stream(stream, self.rank, instance, dest_ref).await
             })
-            .map_err(|e| PyException::new_err(e.to_string()))?;
-
-        Ok(batch_count)
+            .map_err(|e| PyException::new_err(e.to_string()))
     }
 }
 
@@ -1245,6 +1172,7 @@ mod tests {
     use datafusion::arrow::array::DictionaryArray;
     use datafusion::arrow::array::Int32Array;
     use datafusion::arrow::array::Int64Array;
+    use datafusion::arrow::array::NullArray;
     use datafusion::arrow::array::StringArray;
     use datafusion::arrow::array::StringDictionaryBuilder;
     use datafusion::arrow::array::UInt64Array;
@@ -1751,45 +1679,6 @@ mod tests {
         table.apply_retention("t", "1=1").await.unwrap();
 
         assert_eq!(row_count(&table).await, 3);
-    }
-
-    #[tokio::test]
-    async fn test_build_scan_dataframe_applies_filter_projection_and_limit() {
-        let table = LiveTableData::new("t", make_batch(&[]).schema(), None);
-        table.push(make_batch(&[1, 2, 3, 4])).await;
-        let schema = table.schema();
-        let ctx = SessionContext::new();
-
-        let dataframe =
-            build_scan_dataframe(&ctx, table.mem_table(), Some(&[0]), Some("x >= 2"), Some(2))
-                .unwrap();
-        let batches = dataframe.collect().await.unwrap();
-        let batch = concat_batches(&schema, &batches).unwrap();
-        let values = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .unwrap();
-
-        assert_eq!(values.values(), &[2, 3]);
-    }
-
-    #[test]
-    fn test_build_scan_dataframe_rejects_out_of_range_projection() {
-        let table = LiveTableData::new("t", make_batch(&[]).schema(), None);
-        let ctx = SessionContext::new();
-
-        let error = build_scan_dataframe(&ctx, table.mem_table(), Some(&[1]), None, None)
-            .expect_err("out-of-range projection should fail");
-
-        assert!(
-            matches!(
-                &error,
-                datafusion::error::DataFusionError::Plan(message)
-                    if message == "projection index 1 out of range"
-            ),
-            "unexpected error: {error}"
-        );
     }
 
     #[tokio::test]
@@ -2901,22 +2790,12 @@ mod tests {
         assert_eq!(row_count(&table).await, 10, "retention kept every row");
     }
 
-    /// Drive the coalescer exactly as `execute_scan_streaming` does, through the
-    /// same `scan_output_schema` and `scan_coalescer` the scan path uses,
-    /// returning the batches that would have been posted.
-    fn run_coalescer(input: Vec<RecordBatch>, is_empty_projection: bool) -> Vec<RecordBatch> {
-        // `input` carries the stream's own schema, unprojected, so the schema
-        // and the per-batch projection are derived here the same way the scan
-        // loop derives them.
-        let schema = scan_output_schema(input[0].schema(), is_empty_projection).unwrap();
-        let mut coalescer = scan_coalescer(schema);
+    /// Drive the coalescer exactly as `post_stream` does, returning the
+    /// batches that would have been posted.
+    fn run_coalescer(input: Vec<RecordBatch>) -> Vec<RecordBatch> {
+        let mut coalescer = scan_coalescer(input[0].schema());
         let mut posted = Vec::new();
         for batch in input {
-            let batch = if is_empty_projection {
-                batch.project(&[]).unwrap()
-            } else {
-                batch
-            };
             coalescer.push_batch(batch).unwrap();
             while let Some(coalesced) = coalescer.next_completed_batch() {
                 posted.push(coalesced);
@@ -2952,7 +2831,7 @@ mod tests {
         let rows = SCAN_TARGET_BATCH_ROWS * 2 + 5;
         let input: Vec<RecordBatch> = (0..rows).map(|i| make_batch(&[i as i64])).collect();
 
-        let posted = run_coalescer(input, false);
+        let posted = run_coalescer(input);
 
         assert_eq!(
             posted.len(),
@@ -2988,7 +2867,7 @@ mod tests {
         assert_eq!(batch.num_rows(), SCAN_TARGET_BATCH_ROWS);
         let original = batch.column(0).clone();
 
-        let posted = run_coalescer(vec![batch], false);
+        let posted = run_coalescer(vec![batch]);
 
         assert_eq!(posted.len(), 1, "one batch in, one batch out");
         assert_eq!(posted[0].num_rows(), SCAN_TARGET_BATCH_ROWS);
@@ -3004,7 +2883,7 @@ mod tests {
     fn test_scan_coalescer_drops_empty_batches() {
         let input: Vec<RecordBatch> = (0..100).map(|_| make_batch(&[])).collect();
 
-        let posted = run_coalescer(input, false);
+        let posted = run_coalescer(input);
 
         assert!(posted.is_empty(), "empty batches should post no messages");
     }
@@ -3013,34 +2892,36 @@ mod tests {
     // truncate every result smaller than the target.
     #[test]
     fn test_scan_coalescer_flushes_remainder() {
-        let posted = run_coalescer(vec![make_batch(&[1, 2]), make_batch(&[3])], false);
+        let posted = run_coalescer(vec![make_batch(&[1, 2]), make_batch(&[3])]);
 
         assert_eq!(posted.len(), 1, "a short scan posts a single batch");
         assert_eq!(values_of(&posted), vec![1, 2, 3]);
     }
 
-    // COUNT(*) scans project to zero columns, where the row count lives in
-    // RecordBatch metadata rather than in any array. Coalescing and then the
-    // Arrow IPC roundtrip must both carry it: if either dropped it, every
-    // COUNT(*) in the dashboard would silently return 0.
+    // Collectors answer COUNT(*) scans with a single null column, which has
+    // no buffers, so the row count lives in the array length. Coalescing and
+    // then the Arrow IPC roundtrip must both carry it: if either dropped it,
+    // every COUNT(*) in the dashboard would silently return 0.
     #[test]
-    fn test_empty_projection_survives_coalesce_and_ipc_roundtrip() {
-        // Batches go in with columns, as they arrive from the stream; the
-        // zero-column projection is applied by the scan path being exercised.
-        let input = vec![make_batch(&[1, 2]), make_batch(&[3])];
+    fn test_null_column_rows_survive_coalesce_and_ipc_roundtrip() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "fake_column",
+            DataType::Null,
+            true,
+        )]));
+        let input = [2, 1]
+            .map(|rows| {
+                RecordBatch::try_new(schema.clone(), vec![Arc::new(NullArray::new(rows))]).unwrap()
+            })
+            .to_vec();
 
-        let posted = run_coalescer(input, true);
+        let posted = run_coalescer(input);
 
         assert_eq!(posted.len(), 1);
-        assert_eq!(posted[0].num_columns(), 0, "projection yields no columns");
-        assert_eq!(
-            posted[0].num_rows(),
-            3,
-            "2+1 zero-column rows coalesce to 3"
-        );
+        assert_eq!(posted[0].num_rows(), 3, "2+1 null rows coalesce to 3");
 
-        let wire = serialize_batch(&posted[0]).expect("serialize zero-column batch");
-        let decoded = deserialize_one_batch(&wire).expect("decode zero-column batch");
+        let wire = serialize_batch(&posted[0]).expect("serialize null-column batch");
+        let decoded = deserialize_one_batch(&wire).expect("decode null-column batch");
 
         assert_eq!(
             decoded.num_rows(),

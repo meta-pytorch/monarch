@@ -13,6 +13,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_pyarrow::PyArrowType;
+use datafusion::arrow::datatypes::DataType;
+use datafusion::arrow::datatypes::Field;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::error::Result as ArrowResult;
@@ -24,6 +27,7 @@ use datafusion::datasource::MemTable;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::error::Result as DFResult;
+use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::Expr;
 use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::logical_expr::TableType;
@@ -36,6 +40,8 @@ use datafusion::physical_plan::PlanProperties;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::execution_plan::Boundedness;
 use datafusion::physical_plan::execution_plan::EmissionType;
+use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::projection::ProjectionExpr;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::SessionConfig;
 use datafusion::prelude::SessionContext;
@@ -46,6 +52,9 @@ use hyperactor::Instance;
 use hyperactor::config::MESSAGE_DELIVERY_TIMEOUT;
 use hyperactor::context::Mailbox as MailboxTrait;
 use hyperactor::mailbox::PortReceiver;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::declare_attrs;
 use monarch_gil::GilSite;
 use monarch_gil::monarch_with_gil;
 use monarch_gil::monarch_with_gil_blocking;
@@ -61,6 +70,18 @@ use pyo3::types::PyModule;
 use tokio::sync::mpsc;
 
 use crate::QueryResponse;
+use crate::pushdown::CollectorTables;
+use crate::pushdown::PushDownCollectorAggregates;
+
+declare_attrs! {
+    /// Run the collector-local part of each telemetry aggregate on the
+    /// collectors, which return partial results instead of rows.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_TELEMETRY_AGGREGATE_PUSHDOWN".to_string()),
+        Some("telemetry_aggregate_pushdown".to_string()),
+    ))
+    pub attr TELEMETRY_AGGREGATE_PUSHDOWN: bool = true;
+}
 
 enum QueryStreamMessage {
     Batch(RecordBatch),
@@ -357,6 +378,169 @@ impl std::fmt::Debug for DistributedTableProvider {
     }
 }
 
+/// The collectors a query engine scans.
+struct Collectors {
+    actor: Py<PyAny>,
+    instance: Instance<PythonActor>,
+}
+
+impl std::fmt::Debug for Collectors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Collectors").finish()
+    }
+}
+
+impl CollectorTables for Collectors {
+    fn is_collector_table(&self, provider: &dyn TableProvider) -> bool {
+        provider.as_any().is::<DistributedTableProvider>()
+    }
+
+    fn sql_table(&self, sql: String, schema: SchemaRef) -> Arc<dyn TableProvider> {
+        let (actor, instance) = monarch_with_gil_blocking(GilSite::Convert, |py| {
+            (self.actor.clone_ref(py), self.instance.clone_for_py())
+        });
+        Arc::new(CollectorSqlTable {
+            sql,
+            schema,
+            actor,
+            instance,
+        })
+    }
+}
+
+/// The concatenated results of a query run on every collector.
+struct CollectorSqlTable {
+    sql: String,
+    schema: SchemaRef,
+    actor: Py<PyAny>,
+    instance: Instance<PythonActor>,
+}
+
+impl std::fmt::Debug for CollectorSqlTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CollectorSqlTable")
+            .field("sql", &self.sql)
+            .finish()
+    }
+}
+
+#[async_trait::async_trait]
+impl TableProvider for CollectorSqlTable {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        _filters: &[Expr],
+        limit: Option<usize>,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        collector_scan(
+            &self.actor,
+            &self.instance,
+            &format!("({}) AS pushed", self.sql),
+            &self.schema,
+            projection,
+            None,
+            limit,
+        )
+    }
+}
+
+/// The column a collector returns for a projection of no columns.
+const ROWS_COLUMN: &str = "fake_column";
+
+/// Quote `name` as a SQL identifier.
+fn quote_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// The query each collector runs for a scan of `from`, and the schema of its
+/// rows. Collectors answer a projection of no columns with one null column,
+/// which carries the row count.
+fn scan_sql(
+    from: &str,
+    schema: &SchemaRef,
+    projection: Option<&Vec<usize>>,
+    where_clause: Option<&str>,
+    limit: Option<usize>,
+) -> DFResult<(String, SchemaRef)> {
+    let (columns, schema) = match projection {
+        Some(projection) if projection.is_empty() => (
+            format!("NULL AS {ROWS_COLUMN}"),
+            Arc::new(Schema::new(vec![Field::new(
+                ROWS_COLUMN,
+                DataType::Null,
+                true,
+            )])),
+        ),
+        Some(projection) => {
+            let schema = Arc::new(schema.project(projection)?);
+            let columns: Vec<String> = schema
+                .fields()
+                .iter()
+                .map(|field| quote_identifier(field.name()))
+                .collect();
+            (columns.join(", "), schema)
+        }
+        None => ("*".to_string(), schema.clone()),
+    };
+    let mut sql = format!("SELECT {columns} FROM {from}");
+    if let Some(where_clause) = where_clause {
+        sql.push_str(&format!(" WHERE {where_clause}"));
+    }
+    if let Some(limit) = limit {
+        sql.push_str(&format!(" LIMIT {limit}"));
+    }
+    Ok((sql, schema))
+}
+
+/// Plan a scan of `from` that runs on every collector and streams the rows to
+/// this root.
+fn collector_scan(
+    actor: &Py<PyAny>,
+    instance: &Instance<PythonActor>,
+    from: &str,
+    schema: &SchemaRef,
+    projection: Option<&Vec<usize>>,
+    where_clause: Option<&str>,
+    limit: Option<usize>,
+) -> DFResult<Arc<dyn ExecutionPlan>> {
+    let (sql, schema) = scan_sql(from, schema, projection, where_clause, limit)?;
+    let (actor, instance) = monarch_with_gil_blocking(GilSite::Convert, |py| {
+        (actor.clone_ref(py), instance.clone_for_py())
+    });
+    let exec: Arc<dyn ExecutionPlan> = Arc::new(DistributedExec {
+        sql,
+        schema: schema.clone(),
+        actor,
+        instance,
+        properties: PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ),
+    });
+    if projection.is_some_and(|projection| projection.is_empty()) {
+        return Ok(Arc::new(ProjectionExec::try_new(
+            Vec::<ProjectionExpr>::new(),
+            exec,
+        )?));
+    }
+    Ok(exec)
+}
+
 fn expr_to_sql_string(expr: &Expr) -> Option<String> {
     expr_to_sql(expr).ok().map(|sql| sql.to_string())
 }
@@ -396,51 +580,33 @@ impl TableProvider for DistributedTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
-        let where_clauses: Vec<String> = filters.iter().filter_map(expr_to_sql_string).collect();
+        let where_clauses: Vec<String> = filters
+            .iter()
+            .filter_map(expr_to_sql_string)
+            .map(|filter| format!("({filter})"))
+            .collect();
         let where_clause = if where_clauses.is_empty() {
             None
         } else {
             Some(where_clauses.join(" AND "))
         };
 
-        let output_schema = match projection {
-            Some(proj) => Arc::new(datafusion::arrow::datatypes::Schema::new(
-                proj.iter()
-                    .filter_map(|&i| self.schema.fields().get(i).cloned())
-                    .collect::<Vec<_>>(),
-            )),
-            None => self.schema.clone(),
-        };
-
-        // Clone actor and instance for the execution plan
-        let (actor, instance) = monarch_with_gil_blocking(GilSite::Convert, |py| {
-            (self.actor.clone_ref(py), self.instance.clone_for_py())
-        });
-
-        Ok(Arc::new(DistributedExec {
-            table_name: self.table_name.clone(),
-            schema: output_schema.clone(),
-            projection: projection.cloned(),
-            where_clause,
+        collector_scan(
+            &self.actor,
+            &self.instance,
+            &quote_identifier(&self.table_name),
+            &self.schema,
+            projection,
+            where_clause.as_deref(),
             limit,
-            actor,
-            instance,
-            properties: PlanProperties::new(
-                EquivalenceProperties::new(output_schema),
-                Partitioning::UnknownPartitioning(1),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            ),
-        }))
+        )
     }
 }
 
 struct DistributedExec {
-    table_name: String,
+    /// The query each collector runs over its own tables.
+    sql: String,
     schema: SchemaRef,
-    projection: Option<Vec<usize>>,
-    where_clause: Option<String>,
-    limit: Option<usize>,
     actor: Py<PyAny>,
     instance: Instance<PythonActor>,
     properties: PlanProperties,
@@ -449,14 +615,14 @@ struct DistributedExec {
 impl std::fmt::Debug for DistributedExec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DistributedExec")
-            .field("table_name", &self.table_name)
+            .field("sql", &self.sql)
             .finish()
     }
 }
 
 impl DisplayAs for DistributedExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "DistributedExec: table={}", self.table_name)
+        write!(f, "DistributedExec: sql={}", self.sql)
     }
 }
 
@@ -505,14 +671,7 @@ impl ExecutionPlan for DistributedExec {
                     .getattr("query_scan")?
                     .cast_into::<ActorEndpoint>()
                     .map_err(PyErr::from)?;
-                let args = (
-                    dest_port_id,
-                    self.table_name.clone(),
-                    self.projection.clone(),
-                    self.limit,
-                    self.where_clause.clone(),
-                )
-                    .into_pyobject(py)?;
+                let args = (dest_port_id, self.sql.clone()).into_pyobject(py)?;
                 Ok(scan.borrow().call_future(py, &args, None)?)
             },
         )
@@ -668,7 +827,18 @@ impl QueryEngine {
         let config = SessionConfig::new()
             .with_information_schema(true)
             .with_target_partitions(1);
-        let ctx = SessionContext::new_with_config(config);
+        let mut state = SessionStateBuilder::new()
+            .with_config(config)
+            .with_default_features();
+        if hyperactor_config::global::get(TELEMETRY_AGGREGATE_PUSHDOWN) {
+            state = state.with_optimizer_rule(Arc::new(PushDownCollectorAggregates::new(
+                Arc::new(Collectors {
+                    actor: actor.clone_ref(py),
+                    instance: instance.clone_for_py(),
+                }),
+            )));
+        }
+        let ctx = SessionContext::new_with_state(state.build());
 
         for table_name in &tables {
             // Get schema from actor via endpoint call
@@ -706,9 +876,8 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use datafusion::arrow::array::Int64Array;
-    use datafusion::arrow::datatypes::DataType;
-    use datafusion::arrow::datatypes::Field;
-    use datafusion::arrow::datatypes::Schema;
+    use datafusion::arrow::compute::concat_batches;
+    use datafusion::datasource::MemTable;
     use hyperactor::ProcAddr;
     use hyperactor::channel::ChannelAddr;
 
@@ -915,5 +1084,77 @@ mod tests {
         tracker.on_counts(vec![(root.clone(), 1), (root, 1)]);
 
         assert_failed(&mut receiver);
+    }
+
+    fn scan_test_context() -> (SessionContext, SchemaRef) {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Int64, false),
+            Field::new("y", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+                Arc::new(Int64Array::from(vec![10, 20, 30, 40])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        ctx.register_table(
+            "t",
+            Arc::new(MemTable::try_new(schema.clone(), vec![vec![batch]]).unwrap()),
+        )
+        .unwrap();
+        (ctx, schema)
+    }
+
+    async fn run_scan_sql(
+        projection: Option<&Vec<usize>>,
+        where_clause: Option<&str>,
+        limit: Option<usize>,
+    ) -> (SchemaRef, Vec<RecordBatch>) {
+        let (ctx, schema) = scan_test_context();
+        let (sql, schema) = scan_sql(
+            &quote_identifier("t"),
+            &schema,
+            projection,
+            where_clause,
+            limit,
+        )
+        .unwrap();
+        let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+        for batch in &batches {
+            assert_eq!(batch.schema(), schema, "{sql}");
+        }
+        (schema, batches)
+    }
+
+    #[tokio::test]
+    async fn test_scan_sql_applies_filter_projection_and_limit() {
+        let (schema, batches) = run_scan_sql(Some(&vec![1]), Some("(x >= 2)"), Some(2)).await;
+        let batch = concat_batches(&schema, &batches).unwrap();
+        let values = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(values.values(), &[20, 30]);
+    }
+
+    #[tokio::test]
+    async fn test_scan_sql_of_no_columns_returns_the_rows() {
+        let (_, batches) = run_scan_sql(Some(&vec![]), Some("(x >= 2)"), None).await;
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 3);
+    }
+
+    #[test]
+    fn test_scan_sql_rejects_out_of_range_projection() {
+        let (_, schema) = scan_test_context();
+        assert!(scan_sql("t", &schema, Some(&vec![2]), None, None).is_err());
+    }
+
+    #[test]
+    fn test_quote_identifier_escapes_quotes() {
+        assert_eq!(quote_identifier("a\"b"), "\"a\"\"b\"");
     }
 }

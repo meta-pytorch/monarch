@@ -73,12 +73,10 @@ class DatabaseScanner:
     def scan(
         self,
         dest: object,
-        table_name: str,
-        projection: Optional[List[int]] = None,
-        limit: Optional[int] = None,
-        filter_expr: Optional[str] = None,
+        sql: str,
     ) -> Tuple[ActorAddr, int]:
-        """Perform a scan, sending results directly to the dest port.
+        """Run the read-only query `sql` over this collector's tables, sending
+        its batches directly to the dest port.
 
         Returns this collector's actor address, which tags every batch it
         sent, and the number of batches sent.

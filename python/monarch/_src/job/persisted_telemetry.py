@@ -93,31 +93,19 @@ class PersistedTelemetryActor(Actor):
     def scan(
         self,
         dest: PortId,
-        table_name: str,
-        projection: list[int] | None,
-        limit: int | None,
-        filter_expr: str | None,
+        sql: str,
     ) -> list[tuple[ActorAddr, int]]:
         """Scan the loaded store and return this collector's batch count."""
-        return [
-            self._scanner_or_raise().scan(
-                dest, table_name, projection, limit, filter_expr
-            )
-        ]
+        return [self._scanner_or_raise().scan(dest, sql)]
 
     @endpoint
     def query_scan(
         self,
         dest: PortId,
-        table_name: str,
-        projection: list[int] | None,
-        limit: int | None,
-        filter_expr: str | None,
+        sql: str,
     ) -> None:
         """Scan the loaded store and post its batch count to the query engine."""
-        batch_count = self._scanner_or_raise().scan(
-            dest, table_name, projection, limit, filter_expr
-        )
+        batch_count = self._scanner_or_raise().scan(dest, sql)
         _post_scan_counts(context().actor_instance._as_rust(), dest, [batch_count])
 
 
