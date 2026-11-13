@@ -14,14 +14,21 @@ by his PID and sends him a postcard through Relay, checks his acknowledgement,
 then opens 32 numbered streams that Bob echoes. Bob checks that every stream
 came from Alice.
 
-Each role is one mode of this program, with the command line of the Rust
-`sealed-postcard` example's role modes. Every mode except `identities` reads
-its identity bundle from `SEALED_POSTCARD_IDENTITY`:
+With `--carol`, Alice also has a child, Carol: a second node in Alice's
+process, which joins Alice over loopback UDP. After Alice's exchanges, Carol
+sends Bob her own postcard, through Alice and Relay. Alice forwards it but
+can't read it. Bob, given `--carol-pid`, checks that it came from Carol and
+counts it apart from Alice's streams.
 
-    sealed_postcard identities --out <dir>
+Each role is one mode of this program, with the command line of the Rust
+`sealed-postcard` example's role modes, plus Carol's options. Every mode
+except `identities` reads its identity bundle from `SEALED_POSTCARD_IDENTITY`,
+and Alice with `--carol` reads Carol's from `SEALED_POSTCARD_CAROL_IDENTITY`:
+
+    sealed_postcard identities --out <dir> [--carol]
     sealed_postcard relay --listen <addr>...
-    sealed_postcard alice --parent-pid <pid> --parent <addr> --bob-pid <pid>
-    sealed_postcard bob --parent-pid <pid> --parent <addr> --alice-pid <pid>
+    sealed_postcard alice --parent-pid <pid> --parent <addr> --bob-pid <pid> [--carol]
+    sealed_postcard bob --parent-pid <pid> --parent <addr> --alice-pid <pid> [--carol-pid <pid>]
 """
 
 import argparse
@@ -38,6 +45,7 @@ from chrysalis._rust_bindings import (
     Node,
     Pid,
     Stream,
+    UdpCarrier,
     VsockCarrier,
 )
 
@@ -53,16 +61,20 @@ ROLES = ("alice", "relay", "bob")
 
 @dataclass
 class Served:
-    """The streams Bob has answered, and whether Alice opened every one."""
+    """The streams Bob has answered apart from Carol's, whether Alice opened
+    every one, and how many postcards Carol sent."""
 
     count: int = 0
     all_from_alice: bool = True
+    carol_postcards: int = 0
 
 
-def write_identities(out: Path) -> None:
-    """Write mutually trusted identity bundles for the roles and print their PIDs."""
+def write_identities(out: Path, carol: bool) -> None:
+    """Write mutually trusted identity bundles for the roles, and Carol's if
+    asked, and print their PIDs."""
     out.mkdir(parents=True, exist_ok=True)
-    for name, bundle in zip(ROLES, generate_test_identities(len(ROLES))):
+    roles = ROLES + ("carol",) if carol else ROLES
+    for name, bundle in zip(roles, generate_test_identities(len(roles))):
         # The file gets mode 0600 before any key bytes exist, and `O_EXCL`
         # refuses a file or symlink already at this path.
         fd = os.open(out / f"{name}.pem", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -131,13 +143,31 @@ async def exchange_numbered_streams(node: Node, bob: Pid) -> None:
             raise ValueError(f"Bob returned {echo!r} for stream {number}")
 
 
-async def run_alice(identity: Identity, parent: tuple[Pid, str], bob: Pid) -> None:
-    """Join Relay, then complete both exchanges with Bob."""
-    node = Node(identity, carrier=VsockCarrier(), parent=parent)
+async def run_alice(
+    identity: Identity, parent: tuple[Pid, str], bob: Pid, carol: Identity | None
+) -> None:
+    """Join Relay, then complete both exchanges with Bob.
+
+    Given `carol`, Alice's carrier is the pair `(VsockCarrier(), UdpCarrier())`:
+    she joins Relay over vsock and serves Carol over loopback UDP. Carol, a
+    second node in this process, then sends Bob her own postcard.
+    """
+    carrier = VsockCarrier() if carol is None else (VsockCarrier(), UdpCarrier())
+    node = Node(identity, carrier=carrier, parent=parent)
+    child: Node | None = None
     try:
+        if carol is not None:
+            # Alice's vsock carrier only connects, so her one address is her
+            # UDP address, where Carol joins her.
+            (address,) = node.addresses
+            child = Node(carol, parent=(identity.pid, address))
         await exchange_postcard(node, bob)
         await exchange_numbered_streams(node, bob)
+        if child is not None:
+            await exchange_postcard(child, bob)
     finally:
+        if child is not None:
+            await child.close()
         await node.close()
 
 
@@ -151,36 +181,51 @@ async def run_relay(identity: Identity, listen: list[str]) -> None:
         await node.close()
 
 
-async def answer(stream: Stream, first: bool) -> None:
-    """Acknowledge the postcard on the first stream, and echo every later one."""
-    if first:
-        if await read_bounded(stream, len(POSTCARD)) != POSTCARD:
-            raise ValueError("Alice sent the wrong postcard")
-        await stream.write(ACKNOWLEDGEMENT)
-    else:
-        number = await read_bounded(stream, 1)
-        if len(number) != 1:
-            raise ValueError("numbered stream did not contain one byte")
-        await stream.write(number)
+async def acknowledge_postcard(stream: Stream, sender: str) -> None:
+    """Check the postcard on `stream`, then acknowledge it."""
+    if await read_bounded(stream, len(POSTCARD)) != POSTCARD:
+        raise ValueError(f"{sender} sent the wrong postcard")
+    await stream.write(ACKNOWLEDGEMENT)
     await stream.finish()
 
 
-async def serve(node: Node, alice: Pid, served: Served) -> None:
+async def answer(stream: Stream, first: bool) -> None:
+    """Acknowledge the postcard on the first stream, and echo every later one."""
+    if first:
+        await acknowledge_postcard(stream, "Alice")
+        return
+    number = await read_bounded(stream, 1)
+    if len(number) != 1:
+        raise ValueError("numbered stream did not contain one byte")
+    await stream.write(number)
+    await stream.finish()
+
+
+async def serve(node: Node, alice: Pid, carol: Pid | None, served: Served) -> None:
     """Answer streams one at a time, recording each in `served`."""
     while True:
         # `accept` returns the PID that the stream's mutual TLS authenticated.
         source, stream = await node.accept()
+        # Carol's streams are postcards, counted apart from the rest, so they
+        # can't change which stream is Alice's postcard.
+        if carol is not None and source == carol:
+            await acknowledge_postcard(stream, "Carol")
+            served.carol_postcards += 1
+            continue
         await answer(stream, first=served.count == 0)
         served.count += 1
         served.all_from_alice = served.all_from_alice and source == alice
 
 
-async def run_bob(identity: Identity, parent: tuple[Pid, str], alice: Pid) -> Served:
-    """Join Relay and answer Alice's streams until Ctrl-C or SIGTERM."""
+async def run_bob(
+    identity: Identity, parent: tuple[Pid, str], alice: Pid, carol: Pid | None
+) -> Served:
+    """Join Relay and answer Alice's streams, and Carol's if given, until
+    Ctrl-C or SIGTERM."""
     stop = stop_requested()
     node = Node(identity, carrier=VsockCarrier(), parent=parent)
     served = Served()
-    serving = asyncio.create_task(serve(node, alice, served))
+    serving = asyncio.create_task(serve(node, alice, carol, served))
     stopping = asyncio.create_task(stop.wait())
     try:
         await asyncio.wait({serving, stopping}, return_when=asyncio.FIRST_COMPLETED)
@@ -203,6 +248,9 @@ def parse_args() -> argparse.Namespace:
         "identities", help="write identity bundles for Alice, Relay, and Bob"
     )
     identities.add_argument("--out", type=Path, required=True)
+    identities.add_argument(
+        "--carol", action="store_true", help="also write Carol's identity bundle"
+    )
 
     relay = modes.add_parser("relay", help="run Relay, the namespace root")
     relay.add_argument("--listen", action="append", required=True)
@@ -211,11 +259,17 @@ def parse_args() -> argparse.Namespace:
     alice.add_argument("--parent-pid", type=Pid, required=True)
     alice.add_argument("--parent", required=True)
     alice.add_argument("--bob-pid", type=Pid, required=True)
+    alice.add_argument(
+        "--carol",
+        action="store_true",
+        help="serve Carol, who sends Bob her own postcard",
+    )
 
     bob = modes.add_parser("bob", help="run Bob until Ctrl-C or SIGTERM")
     bob.add_argument("--parent-pid", type=Pid, required=True)
     bob.add_argument("--parent", required=True)
     bob.add_argument("--alice-pid", type=Pid, required=True)
+    bob.add_argument("--carol-pid", type=Pid, help="also expect Carol's postcard")
 
     return parser.parse_args()
 
@@ -229,20 +283,31 @@ def main() -> None:
     args = parse_args()
     match args.mode:
         case "identities":
-            write_identities(args.out)
+            write_identities(args.out, args.carol)
         case "relay":
             asyncio.run(run_relay(role_identity(), args.listen))
         case "alice":
             parent = (args.parent_pid, args.parent)
-            asyncio.run(run_alice(role_identity(), parent, args.bob_pid))
+            carol = (
+                Identity.from_pem(os.environ["SEALED_POSTCARD_CAROL_IDENTITY"])
+                if args.carol
+                else None
+            )
+            asyncio.run(run_alice(role_identity(), parent, args.bob_pid, carol))
         case "bob":
             parent = (args.parent_pid, args.parent)
-            served = asyncio.run(run_bob(role_identity(), parent, args.alice_pid))
+            served = asyncio.run(
+                run_bob(role_identity(), parent, args.alice_pid, args.carol_pid)
+            )
             all_from_alice = str(served.all_from_alice).lower()
             print(
                 f"bob served {served.count} streams, all from alice: {all_from_alice}"
             )
-            if served.count != STREAM_COUNT + 1 or not served.all_from_alice:
+            alice_ok = served.count == STREAM_COUNT + 1 and served.all_from_alice
+            carol_ok = args.carol_pid is None or served.carol_postcards == 1
+            if args.carol_pid is not None:
+                print(f"bob got postcards from carol: {served.carol_postcards}")
+            if not (alice_ok and carol_ok):
                 raise SystemExit(1)
 
 

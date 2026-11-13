@@ -186,6 +186,76 @@ kill -TERM "$relay_process"; wait "$relay_process"
 rm -rf "$sealed_postcard_dir"
 ```
 
+## Alice's child, Carol
+
+Alice can serve a child of her own. With `--carol`, she starts Carol, a second node in her process, and Carol joins her over loopback UDP:
+
+```text
+        relay
+       /     \
+   unix:     unix:
+     /         \
+  alice        bob
+    |
+   udp
+    |
+  carol
+```
+
+Alice's carrier is then a pair, a `VsockCarrier` and a `UdpCarrier`. The first carrier of a pair faces the node's parent and is the address it advertises; children may join over either:
+
+```python
+node = Node(identity, carrier=(VsockCarrier(), UdpCarrier()), parent=parent)  # Alice
+child = Node(carol, parent=(identity.pid, address))  # Carol, at Alice's UDP address
+```
+
+After Alice's exchanges, Carol sends Bob her own postcard. It travels from Carol to Alice to Relay to Bob. Alice forwards it but can't read it: Carol's connection to Bob is encrypted end to end, as Alice's is through Relay. Bob checks that it came from Carol's PID. Inside a Firecracker microVM, Alice and Carol would share Alice's VM, Alice's `unix:` link to Relay would be vsock, and Carol's UDP would be the VM's own loopback.
+
+Continuing from the commands above, with a new run directory, write the identities with Carol's, then start Relay, Bob with Carol's PID, and Alice with Carol's bundle:
+
+```sh
+sealed_postcard_dir=$(mktemp -d /tmp/sealed-postcard-py.XXXXXX)
+
+"$sealed_postcard" identities --out "$sealed_postcard_dir/ids" --carol > "$sealed_postcard_dir/pids"
+alice_pid=$(awk '$1 == "alice" { print $2 }' "$sealed_postcard_dir/pids")
+relay_pid=$(awk '$1 == "relay" { print $2 }' "$sealed_postcard_dir/pids")
+bob_pid=$(awk '$1 == "bob" { print $2 }' "$sealed_postcard_dir/pids")
+carol_pid=$(awk '$1 == "carol" { print $2 }' "$sealed_postcard_dir/pids")
+
+SEALED_POSTCARD_IDENTITY=$(cat "$sealed_postcard_dir/ids/relay.pem") \
+  "$sealed_postcard" relay --listen "unix:$sealed_postcard_dir/r" &
+relay_process=$!
+
+SEALED_POSTCARD_IDENTITY=$(cat "$sealed_postcard_dir/ids/bob.pem") \
+  "$sealed_postcard" bob --parent-pid "$relay_pid" \
+  --parent "unix:$sealed_postcard_dir/r" --alice-pid "$alice_pid" \
+  --carol-pid "$carol_pid" &
+bob_process=$!
+
+SEALED_POSTCARD_IDENTITY=$(cat "$sealed_postcard_dir/ids/alice.pem") \
+SEALED_POSTCARD_CAROL_IDENTITY=$(cat "$sealed_postcard_dir/ids/carol.pem") \
+  "$sealed_postcard" alice --parent-pid "$relay_pid" \
+  --parent "unix:$sealed_postcard_dir/r" --bob-pid "$bob_pid" --carol && echo "alice: done"
+```
+
+Stop Bob. He reports Alice's streams as before, then Carol's postcard, and exits successfully only if both are right:
+
+```sh
+kill -TERM "$bob_process"; wait "$bob_process"
+```
+
+```text
+bob served 33 streams, all from alice: true
+bob got postcards from carol: 1
+```
+
+Then stop Relay and delete the run directory:
+
+```sh
+kill -TERM "$relay_process"; wait "$relay_process"
+rm -rf "$sealed_postcard_dir"
+```
+
 ## The API used here
 
 - `generate_test_identities(count)` returns PEM identity bundles signed by one new test certificate authority.
@@ -193,7 +263,7 @@ rm -rf "$sealed_postcard_dir"
 - `Pid(value)` parses a complete 32-digit hexadecimal process ID. PIDs compare and hash by value.
 - `UdpCarrier(bind="127.0.0.1:0")` describes a UDP binding. The default address limits it to loopback, and port `0` asks the operating system to choose an available port. `Node` creates this carrier when none is supplied.
 - `VsockCarrier(listen=...)` frames datagrams onto byte streams. It listens at each `unix:<path>` or `native:<cid>:<port>` address in `listen`; with none, the node only connects to its parent.
-- `Node(identity, carrier=..., parent=...)` starts a namespace root or joins one parent. `addresses` reports its bound UDP address or its vsock listen addresses, `dial(pid)` opens a stream to a visible PID, `accept()` waits for a peer to open one, and `close()` shuts the node down.
+- `Node(identity, carrier=..., parent=...)` starts a namespace root or joins one parent. `carrier` is one carrier, or a pair of one `UdpCarrier` and one `VsockCarrier` in either order, whose first carrier faces the parent. `addresses` reports its bound UDP address or its vsock listen addresses, a pair's first carrier's addresses coming first, `dial(pid)` opens a stream to a visible PID, `accept()` waits for a peer to open one, and `close()` shuts the node down.
 - `Stream.write(data)` sends all the bytes, `finish()` closes the send side, and `read(max_bytes)` reads the next available bytes or returns `b""` after the peer finishes.
 - `ChrysalisError` reports node and transport failures. Invalid input raises `ValueError`, and a wrong type or out-of-range integer raises `TypeError` or `OverflowError`.
 
@@ -203,5 +273,5 @@ The complete experimental signatures are in [`chrysalis/_rust_bindings/__init__.
 
 - The bindings are private and experimental. Importing `chrysalis._rust_bindings` does not establish a public or stable Python API.
 - `generate_test_identities` creates test credentials whose certificates name `localhost`. The current binding uses that fixed TLS server name.
-- A node binds one carrier.
+- A node binds one carrier, or one UDP and one vsock carrier as a pair, which joins its parent over its first carrier.
 - A UDP node advertises the address it binds. It cannot bind an unspecified address such as `0.0.0.0` while advertising a different reachable address.

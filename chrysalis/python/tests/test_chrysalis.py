@@ -112,6 +112,11 @@ def _pair(
 def _udp_port(node: Node) -> int:
     """Return the port of a node's one loopback UDP address."""
     (address,) = node.addresses
+    return _loopback_port(address)
+
+
+def _loopback_port(address: str) -> int:
+    """Return the port of a loopback UDP address, which must not be 0."""
     match = re.fullmatch(r"udp://127\.0\.0\.1:(\d+)", address)
     assert match, address
     port = int(match[1])
@@ -449,8 +454,9 @@ def test_bad_arguments() -> None:
     peer-name `VsockCarrier` address; a peer-name parent address; a malformed
     or unspecified `UdpCarrier` bind address; a UDP parent address with an
     unspecified IP or port 0, which no node can be reached at; a parent address
-    that belongs to the other carrier; and zero or negative read sizes. Reject
-    a carrier of the wrong type with `TypeError`.
+    that belongs to the other carrier, or, for a pair, to its second carrier;
+    and zero or negative read sizes. Reject with `TypeError` a carrier of the
+    wrong type, including a pair of two carriers of one kind.
 
     Invariants: CPY-2, CPY-3, CPY-4, CPY-7.
     Registry: `crates/chrysalis-extension/src/lib.rs`.
@@ -491,6 +497,34 @@ def test_bad_arguments() -> None:
         not_a_carrier: Any = "udp"
         with pytest.raises(TypeError):
             Node(alice_id, carrier=not_a_carrier)
+        same_kind: list[Any] = [
+            (UdpCarrier(), UdpCarrier()),
+            (VsockCarrier(), VsockCarrier()),
+        ]
+        for pair in same_kind:
+            with pytest.raises(TypeError, match="one UdpCarrier and one VsockCarrier"):
+                Node(alice_id, carrier=pair)
+        three: Any = (UdpCarrier(), VsockCarrier(), VsockCarrier())
+        with pytest.raises(TypeError):
+            Node(alice_id, carrier=three)
+        with pytest.raises(ValueError, match="specific IP and a non-zero port"):
+            Node(
+                alice_id,
+                carrier=(UdpCarrier(), VsockCarrier()),
+                parent=(bob_id.pid, "udp://0.0.0.0:5000"),
+            )
+        with pytest.raises(ValueError, match="udp://<ip>:<port>"):
+            Node(
+                alice_id,
+                carrier=(UdpCarrier(), VsockCarrier()),
+                parent=(bob_id.pid, "unix:/tmp/x"),
+            )
+        with pytest.raises(ValueError, match="unix:, native:, or hybrid:"):
+            Node(
+                alice_id,
+                carrier=(VsockCarrier(), UdpCarrier()),
+                parent=(bob_id.pid, "udp://127.0.0.1:5000"),
+            )
         alice, bob = _pair(alice_id, bob_id)
         try:
             stream = await _dial_when_visible(alice, bob_id.pid)
@@ -574,6 +608,162 @@ def test_addresses() -> None:
             assert dialer.addresses == []
         finally:
             await _close_all(*udp, listener, dialer)
+
+    with _socket_dir() as directory:
+        asyncio.run(scenario(directory))
+
+
+async def _postcard_both_ways(
+    sender: Node, sender_pid: Pid, receiver: Node, receiver_pid: Pid
+) -> None:
+    """Send a postcard from `sender` to `receiver` and read the acknowledgement,
+    then open a stream from `receiver` back to `sender`.
+
+    Each side checks the PID the other authenticated as, so a hop that answered
+    in a peer's place would fail the check.
+    """
+
+    async def send() -> bytes:
+        stream = await _dial_when_visible(sender, receiver_pid)
+        await stream.write(POSTCARD)
+        await stream.finish()
+        return await _read_to_end(stream)
+
+    async def receive() -> tuple[Pid, bytes]:
+        source, stream = await receiver.accept()
+        postcard = await _read_to_end(stream)
+        await stream.write(ACKNOWLEDGEMENT)
+        await stream.finish()
+        return source, postcard
+
+    acknowledgement, (source, postcard) = await asyncio.gather(send(), receive())
+    assert source == sender_pid, "the receiver should see the sender's PID"
+    assert postcard == POSTCARD
+    assert acknowledgement == ACKNOWLEDGEMENT
+
+    async def answer_back() -> None:
+        stream = await _dial_when_visible(receiver, sender_pid)
+        await stream.write(ACKNOWLEDGEMENT)
+        await stream.finish()
+        # The sender finishes its side once it has read everything.
+        await _read_to_end(stream)
+
+    async def accept_back() -> tuple[Pid, bytes]:
+        source, stream = await sender.accept()
+        message = await _read_to_end(stream)
+        await stream.finish()
+        return source, message
+
+    _, (back_source, back) = await asyncio.gather(answer_back(), accept_back())
+    assert back_source == receiver_pid, "the sender should see the receiver's PID"
+    assert back == ACKNOWLEDGEMENT
+
+
+def test_postcard_from_alices_child() -> None:
+    """Send a postcard from Carol, Alice's child, to Bob through Alice and Relay.
+
+    Relay is the root, on a `VsockCarrier` with a `unix:` listener. Alice's
+    carrier is the pair `(VsockCarrier(), UdpCarrier())`, the guest side of the
+    guest/host edge: she joins Relay over vsock and serves Carol over loopback
+    UDP. Carol joins Alice at Alice's UDP address, and Bob joins Relay. Bob must
+    see Carol's authenticated PID, and must then reach Carol in the other
+    direction. Relay reaches Carol only through Alice's advertised locator, her
+    vsock address, so that stream fails if a pair advertised its second carrier.
+
+    Invariants: CPY-2, CPY-3, CPY-9.
+    Registry: `crates/chrysalis-extension/src/lib.rs`.
+    """
+
+    async def scenario(directory: Path) -> None:
+        relay_id, alice_id, carol_id, bob_id = _identities(4)
+        listen = f"unix:{directory}/r"
+        relay = Node(relay_id, carrier=VsockCarrier(listen=[listen]))
+        alice = Node(
+            alice_id,
+            carrier=(VsockCarrier(), UdpCarrier()),
+            parent=(relay_id.pid, listen),
+        )
+        carol = Node(carol_id, parent=(alice_id.pid, alice.addresses[0]))
+        bob = Node(bob_id, carrier=VsockCarrier(), parent=(relay_id.pid, listen))
+        try:
+            await asyncio.wait_for(
+                _postcard_both_ways(carol, carol_id.pid, bob, bob_id.pid), 30
+            )
+        finally:
+            await _close_all(carol, alice, bob, relay)
+
+    with _socket_dir() as directory:
+        asyncio.run(scenario(directory))
+
+
+def test_postcard_through_two_relays() -> None:
+    """Send a postcard from Alice to Bob through two Relays joined over UDP.
+
+    Each Relay's carrier is the pair `(UdpCarrier(), VsockCarrier(listen=...))`,
+    the host side of the guest/host edge. Relay 1 is the root; Relay 2 joins it
+    over UDP. Alice joins Relay 1 and Bob joins Relay 2, each over vsock with a
+    `unix:` endpoint. Bob must see Alice's authenticated PID, and must then reach
+    Alice in the other direction. Without a pair's vsock carrier no one listens
+    at the `unix:` paths; without its UDP carrier Relay 2 can't join Relay 1.
+
+    Invariants: CPY-2, CPY-3, CPY-9.
+    Registry: `crates/chrysalis-extension/src/lib.rs`.
+    """
+
+    async def scenario(directory: Path) -> None:
+        relay1_id, alice_id, relay2_id, bob_id = _identities(4)
+        r1, r2 = f"unix:{directory}/r1", f"unix:{directory}/r2"
+        relay1 = Node(relay1_id, carrier=(UdpCarrier(), VsockCarrier(listen=[r1])))
+        alice = Node(alice_id, carrier=VsockCarrier(), parent=(relay1_id.pid, r1))
+        relay2 = Node(
+            relay2_id,
+            carrier=(UdpCarrier(), VsockCarrier(listen=[r2])),
+            parent=(relay1_id.pid, relay1.addresses[0]),
+        )
+        bob = Node(bob_id, carrier=VsockCarrier(), parent=(relay2_id.pid, r2))
+        try:
+            await asyncio.wait_for(
+                _postcard_both_ways(alice, alice_id.pid, bob, bob_id.pid), 30
+            )
+        finally:
+            await _close_all(alice, bob, relay2, relay1)
+
+    with _socket_dir() as directory:
+        asyncio.run(scenario(directory))
+
+
+def test_pair_addresses() -> None:
+    """Report a pair node's addresses: its primary's, then its other carrier's.
+
+    A pair with UDP first reports its loopback `udp://` address, with the port
+    the system chose, then its vsock `listen` address. The reverse order
+    reports them the other way round. A pair whose vsock carrier only connects,
+    as Alice's does when she serves Carol, reports only its UDP address.
+
+    Invariant: CPY-9.
+    Registry: `crates/chrysalis-extension/src/lib.rs`.
+    """
+
+    async def scenario(directory: Path) -> None:
+        udp_first_id, vsock_first_id, connecting_id = _identities(3)
+        v1, v2 = f"unix:{directory}/v1", f"unix:{directory}/v2"
+        udp_first = Node(
+            udp_first_id, carrier=(UdpCarrier(), VsockCarrier(listen=[v1]))
+        )
+        vsock_first = Node(
+            vsock_first_id, carrier=(VsockCarrier(listen=[v2]), UdpCarrier())
+        )
+        connecting = Node(connecting_id, carrier=(VsockCarrier(), UdpCarrier()))
+        try:
+            udp, vsock = udp_first.addresses
+            _loopback_port(udp)
+            assert vsock == v1
+            vsock, udp = vsock_first.addresses
+            assert vsock == v2
+            _loopback_port(udp)
+            _udp_port(connecting)
+        finally:
+            await _close_all(udp_first, vsock_first, connecting)
 
     with _socket_dir() as directory:
         asyncio.run(scenario(directory))
