@@ -43,12 +43,39 @@ pub trait Actor: Sized + Send + 'static {
         Ok(!event.is_error())
     }
 
-    async fn handle_undeliverable_message(
+    async fn handle_delivery_failure_event(
         &mut self,
         cx: &Instance<Self>,
         envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        handle_undeliverable_message(cx, envelope)
+        handle_delivery_failure_event(self, cx, envelope).await
+    }
+
+    async fn handle_invalid_reference(
+        &mut self,
+        cx: &Instance<Self>,
+        invalid: InvalidReference,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        handle_invalid_reference(cx, invalid, envelope)
+    }
+
+    async fn handle_expired_delivery(
+        &mut self,
+        cx: &Instance<Self>,
+        expired: ExpiredDelivery,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        handle_expired_delivery(cx, expired, envelope)
+    }
+
+    async fn handle_undeliverable_message(
+        &mut self,
+        cx: &Instance<Self>,
+        reason: UndeliverableReason,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        handle_undeliverable_message(cx, reason, envelope)
     }
 
     fn display_name(&self) -> Option<String> {
@@ -170,19 +197,54 @@ fn display_name(&self) -> Option<String> {
 
 This method allows an actor to provide a custom display name for use in supervision error messages and logging. By default, it returns `None`, causing the runtime to use the `ActorId` for display purposes.
 
-## Undeliverables: `handle_undeliverable_message`
+## Delivery failure hooks
 
 ```rust
-async fn handle_undeliverable_message(
+async fn handle_delivery_failure_event(
     &mut self,
     cx: &Instance<Self>,
     envelope: Undeliverable<MessageEnvelope>,
 ) -> Result<(), anyhow::Error> {
-    handle_undeliverable_message(cx, envelope)
+    handle_delivery_failure_event(self, cx, envelope).await
 }
 ```
-This method is called when a message sent by this actor fails to be delivered. The default implementation calls the free function `handle_undeliverable_message`, which:
-- Asserts that the message was indeed sent by this actor.
-- Returns an error: `Err(UndeliverableMessageError::DeliveryFailure(...))`
 
-This signals that the actor considers this delivery failure to be a fatal error. You may override this method to suppress the failure or to implement custom fallback behavior.
+The runtime invokes `handle_delivery_failure_event` when delivery of a message
+sent by this actor fails. The notification contains either the returned envelope
+or a `DeliveryFailureReport` if the original payload is unavailable. Use
+`envelope.root_delivery_failure()` to inspect the original structured failure.
+Failures on the return path do not replace that first failure.
+
+The default generic handler dispatches on the root `DeliveryFailureKind`:
+
+| Kind | Hook | Default result |
+| --- | --- | --- |
+| `InvalidReference` | `handle_invalid_reference(cx, invalid, envelope)` | `Err`: fails the sending actor |
+| `Expired` | `handle_expired_delivery(cx, expired, envelope)` | `Err`: fails the sending actor |
+| `Undeliverable` | `handle_undeliverable_message(cx, reason, envelope)` | `Ok(())` for `PortGone` and ordinary transport failures; `Err` for `TransportFailureReason::OversizedFrame` |
+
+An unclassified failure returns `Err`.
+
+Override a specific hook to change one category's policy. For example,
+`handle_invalid_reference` can absorb `InvalidReferenceReason::ActorStopped` and
+`ActorFailed` for replies to terminal recipients, while retaining errors for
+unbound handlers or protocol mismatches. `handle_expired_delivery` is appropriate
+when the application deliberately tolerates losing a message that exhausted its
+hop TTL. `handle_undeliverable_message` can update bookkeeping for dropped reply
+ports or make a transport failure fatal. `PortGone` is already absorbed by default.
+
+Override `handle_delivery_failure_event` for a policy that spans categories. This
+replaces its default dispatch; call the free
+`hyperactor::actor::handle_delivery_failure_event(self, cx, envelope).await` to
+delegate to the specific hooks. The free functions for each specific hook apply
+that hook's Rust default.
+
+Python actors expose the corresponding `_handle_delivery_failure_event`,
+`_handle_invalid_reference`, `_handle_expired_delivery`, and
+`_handle_undeliverable_message` methods. Each receives an
+`UndeliverableMessageEnvelope`; `root_delivery_failure()` exposes enum mirrors
+through `monarch.actor`. A generic Python override takes precedence over specific
+Python overrides. Returning `True` absorbs the event, while `False` retains the
+existing Python behavior directly, without calling another Python hook. Returned
+messages use the corresponding Rust default; metadata-only reports remain fatal
+unless explicitly handled, including `PortGone` reports.

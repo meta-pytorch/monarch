@@ -866,6 +866,107 @@ If `__supervise__` raises an Exception of any kind, it will be considered a new 
 We make no guarantees about how many times `__supervise__` will be called.
 If you own a mesh of N actors, each of which generates a supervision error, it may be called anywhere between 1 and N times inclusive.
 
+(delivery-failure-hooks)=
+### Delivery failure hooks
+
+Delivery failure hooks run on the actor that sent a message when the runtime
+reports that the message could not be delivered. `__supervise__` handles failures
+in resources the actor owns. A delivery failure describes a particular send;
+it can occur while the destination actor is still running.
+
+All four hooks receive an `UndeliverableMessageEnvelope` and return a boolean.
+Returning `True` absorbs the failure. Returning `False` preserves the existing
+default behavior. Exposing these hooks does not install a custom policy; actors
+without overrides keep their prior failure behavior.
+
+For notifications that return the original message, the defaults are:
+
+| Hook | Failures it receives | Default when it returns `False` | When to customize it |
+| --- | --- | --- | --- |
+| `_handle_invalid_reference(message)` | Invalid recipients: stopped or failed actors, absent actors or procs, unbound handlers, unallocated ports, or protocol mismatches | Fails the sending actor | Treat selected terminal recipients as expected, such as a reply to a caller that has stopped, while preserving errors for invalid addresses and protocol mistakes |
+| `_handle_expired_delivery(message)` | A message exhausted its delivery hop TTL | Fails the sending actor | Deliberately discard expired work if the application can tolerate losing that message; otherwise retain the default so routing problems surface |
+| `_handle_undeliverable_message(message)` | Transport failures, or `PortGone` when a port's recipient is gone | Absorbs `PortGone` and ordinary transport failures; an `OversizedFrame` fails the sending actor | Update request bookkeeping when a reply port is dropped, record transport diagnostics, or raise an exception to make transport failure fatal |
+| `_handle_delivery_failure_event(message)` | Every delivery failure, including notifications without a classified reason | Applies the default for the original failure kind; an unclassified failure fails the sending actor | Implement a policy or logging that spans several failure kinds |
+
+Metadata-only failure reports remain fatal unless a hook handles them. In
+particular, an unhandled `PortGone` report fails the sending actor, while an
+unhandled returned `PortGone` message is absorbed. This preserves the existing
+Python behavior for both forms.
+
+**Choose a specific hook when your policy applies to one failure kind.** For
+example, customizing `_handle_invalid_reference` leaves TTL expiration and
+transport handling at their defaults. Customize `_handle_undeliverable_message`
+when you need to track dropped reply ports or change transport policy;
+`PortGone` is already absorbed by default.
+
+**A generic override takes precedence over all three specific hooks.** If you
+override `_handle_delivery_failure_event`, the specific Python hooks are not
+called. Returning `False` from the generic hook applies the existing default directly;
+there is no fallthrough to another Python hook. Logging in the generic hook and
+returning `False` preserves the existing defaults but bypasses any specific Python
+overrides.
+
+#### Inspecting the failure reason
+
+Import the failure types from `monarch.actor`. The enum mirrors are implemented
+in the Rust Python bindings. `message.root_delivery_failure()` returns a
+`DeliveryFailure`, or `None` if there is no classified reason. It selects the
+original failure; later failures encountered on the return path do not replace it.
+
+| `DeliveryFailure` property | Value |
+| --- | --- |
+| `kind` | `DeliveryFailureKind.InvalidReference`, `.Undeliverable`, or `.Expired` |
+| `invalid_reference_reason` | An `InvalidReferenceReason`, such as `.ActorStopped`, `.ActorFailed`, or `.HandlerNotBound`; `None` for other kinds |
+| `undeliverable_reason` | `UndeliverableReason.Transport` or `.PortGone`; `None` for other kinds |
+| `transport_failure_reason` | A `TransportFailureReason`, such as `.ChannelClosed`, `.DialFailed`, `.NoRoute`, or `.OversizedFrame`; `None` for non-transport failures |
+| `target` | The string address of the target named by the failure |
+
+The following opt-in example shows an actor that deliberately tolerates replies
+to callers that have stopped. This policy applies only to actors that define
+this override:
+
+```python
+from monarch.actor import Actor, InvalidReferenceReason, UndeliverableMessageEnvelope
+
+
+class ReplySender(Actor):
+    def _handle_invalid_reference(self, message: UndeliverableMessageEnvelope) -> bool:
+        failure = message.root_delivery_failure()
+        assert failure is not None
+        return failure.invalid_reference_reason in (
+            InvalidReferenceReason.ActorStopped,
+            InvalidReferenceReason.ActorFailed,
+        )
+```
+
+This preserves the default errors for other invalid references. `HandlerNotBound`
+also occurs when a handler was never registered. A dropped reply port is reported
+as `PortGone`; neither reason establishes that the actor itself stopped.
+
+A transport failure does not establish whether the destination actor stopped or
+failed. During draining, a handler may reject new work with `PortGone`, so the
+absence of `ActorStopped` or `ActorFailed` also does not establish that the actor
+is alive. Current channel delivery timeouts can surface as `ChannelClosed`; the
+presence of `TransportFailureReason.AckTimedOut` in the enum does not guarantee
+that every timeout is reported separately.
+
+Notifications can contain only failure metadata: check `message.has_payload` to
+see whether the original message was returned. `root_delivery_failure()`,
+`sender()`, and `error_msg()` work for both forms. `dest()` requires a port
+destination; use `failure.target` for a report whose target is an actor or another
+endpoint.
+
+#### Callback scheduling and errors
+
+An actor with async endpoints may implement each hook with `def` or `async def`.
+An actor whose endpoints are all synchronous requires synchronous hooks. An async
+hook is awaited on the actor's event loop, alongside endpoint execution; a sync
+actor runs its hook on its driver thread between messages. Hooks share the
+callback queue with `__supervise__`, and run one at a time. If a hook raises, the
+sending actor fails with that exception.
+
+When the sending actor stops, a pending async callback is cancelled. A sync actor
+finishes a callback that has started and drops callbacks it has not started.
 
 ---
 

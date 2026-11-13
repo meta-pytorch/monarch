@@ -324,13 +324,13 @@ class QueuedSupervision:
 @final
 class QueuedUndeliverable:
     """
-    An undeliverable message queued for ``_handle_undeliverable_message``.
+    An undeliverable message queued for the delivery-failure hooks.
     Report the verdict with exactly one of ``_handled`` or ``_raised``.
     """
 
     @property
     def context(self) -> Any:
-        """The PyContext to run ``_handle_undeliverable_message`` with."""
+        """The PyContext to run the delivery-failure hook with."""
         ...
 
     @property

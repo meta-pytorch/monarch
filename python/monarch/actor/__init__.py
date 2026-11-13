@@ -10,6 +10,14 @@ Monarch Actor API - Public interface for actor functionality.
 """
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
+from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+    DeliveryFailure,
+    DeliveryFailureKind,
+    InvalidReferenceReason,
+    TransportFailureReason,
+    UndeliverableMessageEnvelope,
+    UndeliverableReason,
+)
 from monarch._rust_bindings.monarch_hyperactor.proc import ProcId, Uid
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
@@ -60,6 +68,12 @@ __all__ = [
     "Accumulator",
     "Actor",
     "ActorError",
+    "DeliveryFailure",
+    "DeliveryFailureKind",
+    "InvalidReferenceReason",
+    "TransportFailureReason",
+    "UndeliverableMessageEnvelope",
+    "UndeliverableReason",
     "current_actor_name",
     "as_endpoint",
     "current_rank",

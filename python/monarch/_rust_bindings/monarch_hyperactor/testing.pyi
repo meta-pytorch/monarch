@@ -7,10 +7,15 @@
 from typing import Any, Callable, final, TypeVar
 
 from monarch._rust_bindings.monarch_hyperactor.actor import SyncInbox
+from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.handle import _HandleCompleter, Handle
 from monarch._rust_bindings.monarch_hyperactor.pympsc import PyTestSender
 
 T = TypeVar("T")
+
+def _post_delivery_failure(instance: Instance, kind: str, report: bool) -> None:
+    """Post a fixed Rust delivery-failure witness to an actor's callback path."""
+    ...
 
 def _call_in_tokio_context(f: Callable[[], T]) -> T:
     """Call a plain function on this thread with Tokio's runtime context active.

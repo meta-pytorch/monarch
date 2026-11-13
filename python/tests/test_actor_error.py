@@ -198,6 +198,27 @@ class SyncActorWithAsyncUndeliverable(Actor):
         return True
 
 
+class SyncActorWithAsyncDeliveryFailure(SyncPingActor):
+    async def _handle_delivery_failure_event(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        return True
+
+
+class SyncActorWithAsyncInvalidReference(SyncPingActor):
+    async def _handle_invalid_reference(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        return True
+
+
+class SyncActorWithAsyncExpiredDelivery(SyncPingActor):
+    async def _handle_expired_delivery(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        return True
+
+
 class SyncActorWithAsyncCleanup(Actor):
     @endpoint
     def ping(self) -> int:
@@ -247,6 +268,9 @@ def test_actor_kind() -> None:
         (AsyncActorWithSyncCleanup, "synchronous __cleanup__"),
         (SyncActorWithAsyncSupervise, "async __supervise__"),
         (SyncActorWithAsyncUndeliverable, "async _handle_undeliverable_message"),
+        (SyncActorWithAsyncDeliveryFailure, "async _handle_delivery_failure_event"),
+        (SyncActorWithAsyncInvalidReference, "async _handle_invalid_reference"),
+        (SyncActorWithAsyncExpiredDelivery, "async _handle_expired_delivery"),
     ],
 )
 @pytest.mark.timeout(60)
