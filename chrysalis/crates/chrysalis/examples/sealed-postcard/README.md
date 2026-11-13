@@ -9,6 +9,10 @@ postcard, and receives an acknowledgement. Relay forwards the encrypted QUIC
 datagrams without terminating the application connection or understanding the
 postcard.
 
+The example has a Rust implementation, which this page walks through, and a
+Python one. [Other ways to run it](#other-ways-to-run-it) shows every way to run
+either.
+
 ## What is this program?
 
 The program creates three Chrysalis nodes in a tree:
@@ -229,8 +233,12 @@ contained the postcard's plaintext. Neither Alice nor Bob has a listening
 socket, so everything between them crosses Relay. After stopping the roles, deleting the run
 directory removes their private keys.
 
-Continue with [`separate-processes.md`](separate-processes.md) for a copyable
-three-pane tmux walkthrough.
+## Other ways to run it
 
-[`firecracker.md`](firecracker.md) runs the same roles with Alice and Bob in
-Firecracker microVMs and Relay on the host.
+| Run | Rust | Python |
+|---|---|---|
+| All three nodes in one process | this page | none; [`hello_world.py`](../../../../python/README.md) is the smaller in-process tutorial |
+| Separate processes | [`separate-processes.md`](separate-processes.md) | [`python/README.md`](../../../../python/README.md#run-the-roles-as-separate-processes) |
+| With Alice's child, Carol | none | [`python/README.md`](../../../../python/README.md#alices-child-carol) |
+| Through two Relays joined over UDP | none | [`python/README.md`](../../../../python/README.md#two-relays-joined-over-udp) |
+| Alice and Bob in Firecracker microVMs | [`firecracker.md`](firecracker.md) | none |
