@@ -8,6 +8,7 @@
 
 from typing import Iterable
 
+import pytest
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape, Slice
 
 
@@ -39,3 +40,25 @@ def test_len() -> None:
 
     mesh = Mesh(shape, [1, 2, 3, 4, 5, 6])
     assert 6 == len(mesh)
+
+
+def test_flatten_contiguous_with_size_one_dim() -> None:
+    # A 2x4 mesh sliced to replicas=1:2, gpus=0:2 keeps the stride of the
+    # size-1 "replicas" dimension, but its ranks (4, 5) are contiguous.
+    s = Slice(offset=0, sizes=[2, 4], strides=[4, 1])
+    mesh = Mesh(Shape(["replicas", "gpus"], s), list(range(8)))
+    sub = mesh.slice(replicas=slice(1, 2), gpus=slice(0, 2))
+
+    flat = sub.flatten("rank")
+    assert list(flat._ndslice) == [4, 5]
+    assert flat._ndslice.strides == [1]
+
+
+def test_flatten_sparse_mesh_still_rejected() -> None:
+    # gpus=0:1 leaves ranks 0 and 4, which are not contiguous.
+    s = Slice(offset=0, sizes=[2, 4], strides=[4, 1])
+    mesh = Mesh(Shape(["replicas", "gpus"], s), list(range(8)))
+    sub = mesh.slice(gpus=slice(0, 1))
+
+    with pytest.raises(ValueError, match="cannot flatten sparse mesh"):
+        sub.flatten("rank")

@@ -186,7 +186,14 @@ class MeshTrait(ABC):
             list(reversed(dense_strides[:-1])),
             dense_strides[-1],
         )
-        if dense_strides != ndslice.strides:
+        # A dimension of size 1 never steps, so its stride does not affect
+        # which ranks the mesh covers.
+        if any(
+            size != 1 and stride != dense_stride
+            for size, stride, dense_stride in zip(
+                ndslice.sizes, ndslice.strides, dense_strides
+            )
+        ):
             raise ValueError(
                 f"cannot flatten sparse mesh: {ndslice.strides=} != {dense_strides=}"
             )
