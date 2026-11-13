@@ -303,7 +303,7 @@ def reduce_prop(tensor, *args, **kwargs):
 def reduce(
     tensor: torch.Tensor,
     dst: int | None = None,
-    op: dist.ReduceOp = dist.ReduceOp.SUM,
+    op: dist.ReduceOp | dist.ReduceOp.RedOpType = dist.ReduceOp.SUM,
     group=None,
     group_dst: int | None = None,
 ) -> torch.Tensor:
