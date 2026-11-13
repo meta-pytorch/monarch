@@ -30,7 +30,7 @@ import pytest
 GUEST_PROGRAM = "/usr/local/bin/guest-program"
 # The host port fc_agent.py connects to for its command.
 CONTROL_PORT = 9000
-# As in sealed_postcard_microvms.py: fc_agent.py is the guest's first process.
+# As in firecracker/microvm.py: fc_agent.py is the guest's first process.
 BOOT_ARGS = (
     "console=ttyS0 reboot=k panic=1 pci=off quiet root=/dev/vda ro init=/fc_agent.py"
 )

@@ -33,27 +33,28 @@ how two of them get a VM.
 
 - A Linux devserver with this checkout at `~/fbsource` and read and write
   access to `/dev/kvm`. No root access or host network setup is needed.
-- The host Python `/usr/local/fbcode/platform010/bin/python3.12`. Use that path,
-  not `python3`, which may be an older system Python on a devserver.
 - tmux.
 
 ## Build the Inputs
 
-Buck builds the guest image, the Rust example, the Firecracker binary and the
-guest kernel. The first build of the kernel and image takes several minutes.
+Buck builds the guest image, the Rust example, the demo program, the
+Firecracker binary and the guest kernel. The first build of the kernel and
+image takes several minutes.
 
 ```sh
 cd ~/fbsource
 buck2 build @fbcode//mode/dev-nosan \
-  fbcode//monarch/chrysalis/python/examples:sealed_postcard_guest_rootfs \
+  fbcode//monarch/chrysalis/crates/chrysalis:sealed_postcard_guest_rootfs \
   fbcode//monarch/chrysalis/crates/chrysalis:sealed-postcard \
+  fbcode//monarch/chrysalis/python/examples:sealed_postcard_microvms \
   fbcode//cse/firecracker:fcexe \
   fbcode//cse/firecracker:firecracker.kernel.vmlinux \
   --show-full-output > /tmp/sealed-postcard-outputs
 
 output() { awk -v target="$1" '$1 == target { print $2 }' /tmp/sealed-postcard-outputs; }
-export CHR_FC_ROOTFS=$(output fbcode//monarch/chrysalis/python/examples:sealed_postcard_guest_rootfs)
+export CHR_FC_ROOTFS=$(output fbcode//monarch/chrysalis/crates/chrysalis:sealed_postcard_guest_rootfs)
 export SEALED_POSTCARD=$(output fbcode//monarch/chrysalis/crates/chrysalis:sealed-postcard)
+export SEALED_POSTCARD_MICROVMS=$(output fbcode//monarch/chrysalis/python/examples:sealed_postcard_microvms)
 export CHR_FC_FIRECRACKER=$(output fbcode//cse/firecracker:fcexe)/firecracker
 export CHR_FC_KERNEL=$(output fbcode//cse/firecracker:firecracker.kernel.vmlinux)
 ```
@@ -84,10 +85,8 @@ tmux set-option -t "$session" remain-on-exit on
 tmux set-option -t "$session" pane-border-status top
 tmux split-window -t "$session:microvms" "tail -n +1 -F $sealed_postcard_dir/relay.log"
 tmux split-window -t "$session:microvms" "tail -n +1 -F $sealed_postcard_dir/b/console.log"
-tmux split-window -t "$session:microvms" -c "$HOME/fbsource" \
-  "/usr/local/fbcode/platform010/bin/python3.12 \
-   fbcode/monarch/chrysalis/python/examples/sealed_postcard_microvms.py \
-   --run-dir $sealed_postcard_dir"
+tmux split-window -t "$session:microvms" \
+  "$SEALED_POSTCARD_MICROVMS --run-dir $sealed_postcard_dir"
 tmux select-layout -t "$session:microvms" tiled
 tmux select-pane -t "$session:microvms.0" -T 'Alice: VM A console'
 tmux select-pane -t "$session:microvms.1" -T 'Relay: host'
@@ -190,8 +189,8 @@ if nothing from the run is still running:
 
 ```sh
 tmux kill-session -t "$session"
-pgrep -af "$sealed_postcard_dir"; status=$?
-if [ "$status" -eq 1 ]; then
+pgrep -af "$sealed_postcard_dir"; pgrep_status=$?
+if [ "$pgrep_status" -eq 1 ]; then
   rm -rf "$sealed_postcard_dir"
 else
   echo "kept $sealed_postcard_dir: stop the processes listed above first"
@@ -205,7 +204,7 @@ Relay, or fails, the directory stays: stop those processes, as described under
 ## The Automated Test
 
 The same program is the core of an automated test, which runs the exchange and
-five checks of its cleanup and interrupt handling:
+two checks of how it releases the identity generator:
 
 ```sh
 buck test @fbcode//mode/dev-nosan \
@@ -213,12 +212,12 @@ buck test @fbcode//mode/dev-nosan \
   -- --print-passing-details
 ```
 
-On a host with usable KVM it reports six passing tests and no skips. Without
-KVM the microVM test is skipped and the other five still run.
+On a host with usable KVM it reports three passing tests and no skips. Without
+KVM the microVM test is skipped and the other two still run.
 
 ## Buck Only
 
-Buck builds the guest image, Firecracker, the kernel and the Rust example, and
-runs the automated test. The tmux demo runs the Python program against those
-Buck outputs. Cargo still builds and runs the Rust example as before, but it
+Buck builds the guest image, Firecracker, the kernel, the Rust example and the
+demo program, and runs the automated test. The tmux demo runs that program
+against those Buck outputs. Cargo still builds and runs the Rust example as before, but it
 doesn't build the image or run anything in a VM.

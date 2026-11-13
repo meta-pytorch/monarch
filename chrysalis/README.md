@@ -170,7 +170,8 @@ it started.
 
 It needs a Linux devserver with read and write access to `/dev/kvm`; no root
 access or host network setup. Buck builds the guest image, Firecracker, the
-guest kernel and the Rust example. Run the automated test with:
+guest kernel, the Rust example and the Python program. Run the automated test
+with:
 
 ```bash
 buck test @fbcode//mode/dev-nosan \
@@ -178,17 +179,15 @@ buck test @fbcode//mode/dev-nosan \
   -- --print-passing-details
 ```
 
-With usable KVM it reports six passing tests and no skips: Alice exits
+With usable KVM it reports three passing tests and no skips: Alice exits
 successfully, Bob reports `bob served 33 streams, all from alice: true`, and
 Relay reports forwarded traffic, no postcard plaintext and a complete log.
-Without KVM the microVM test is skipped and the five cleanup and interrupt
-tests still run. A failed run prints whichever VM consoles and Relay log exist,
-releases every process it started, and keeps its run directory if a process
-couldn't be confirmed stopped.
+Without KVM the microVM test is skipped and the two cleanup tests still run. A
+failed run prints whichever VM consoles and Relay log exist, releases every
+process it started, and keeps its run directory if a process couldn't be
+confirmed stopped.
 
 [`firecracker.md`](crates/chrysalis/examples/sealed-postcard/firecracker.md)
 runs the same example by hand in a tmux session, with each role's output in its
-own pane. That walkthrough needs the host Python
-`/usr/local/fbcode/platform010/bin/python3.12` and tmux. This example is
-Buck-only: Cargo still runs the Rust example, but it doesn't build the image or
-start a VM.
+own pane. That walkthrough needs tmux. This example is Buck-only: Cargo still
+runs the Rust example, but it doesn't build the image or start a VM.
