@@ -32,15 +32,81 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use hyperactor::Endpoint as _;
+use hyperactor::EndpointLocation;
+use hyperactor::mailbox::DeliveryFailure;
+use hyperactor::mailbox::DeliveryFailureReport;
+use hyperactor::mailbox::ExpiredDelivery;
+use hyperactor::mailbox::InvalidReference;
+use hyperactor::mailbox::InvalidReferenceReason;
+use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::PortGone;
+use hyperactor::mailbox::TransportFailure;
+use hyperactor::mailbox::TransportFailureReason;
+use hyperactor::mailbox::Undeliverable;
+use hyperactor::mailbox::UndeliverableReason;
+use hyperactor_config::Flattrs;
 use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tokio::sync::oneshot;
 
+use crate::context::PyInstance;
 use crate::handle::PyHandle;
 use crate::handle::PyHandleCompleter;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::signal_safe_block_on;
+
+/// Send one of the fixed delivery-failure witnesses through the actor runtime.
+/// This tests Python callback dispatch, not how a destination fails delivery.
+#[pyfunction]
+fn _post_delivery_failure(instance: &PyInstance, kind: &str, report: bool) -> PyResult<()> {
+    let dest = instance
+        .self_addr()
+        .port_addr(hyperactor::Port::handler::<crate::actor::PythonMessage>());
+    let failure = match kind {
+        "stopped" | "failed" | "unbound" => DeliveryFailure::new(InvalidReference::new(
+            dest.clone(),
+            match kind {
+                "stopped" => InvalidReferenceReason::ActorStopped,
+                "failed" => InvalidReferenceReason::ActorFailed,
+                _ => InvalidReferenceReason::HandlerNotBound,
+            },
+        )),
+        "expired" => DeliveryFailure::new(ExpiredDelivery::new(dest.clone())),
+        "port_gone" => DeliveryFailure::new(UndeliverableReason::PortGone(PortGone::new(
+            dest.clone(),
+            None,
+        ))),
+        "channel_closed" => {
+            DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                dest.clone(),
+                TransportFailureReason::ChannelClosed {
+                    addr: hyperactor::channel::ChannelAddr::any(
+                        hyperactor::channel::ChannelTransport::Local,
+                    ),
+                },
+            )))
+        }
+        _ => return Err(PyValueError::new_err("unknown delivery-failure witness")),
+    };
+    let message = if report {
+        Undeliverable::report(DeliveryFailureReport::new(
+            instance.self_addr().clone(),
+            EndpointLocation::Port(dest),
+            None,
+            failure,
+        ))
+    } else {
+        let mut envelope =
+            MessageEnvelope::serialize(instance.self_addr().clone(), dest, &(), Flattrs::new())
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        envelope.push_delivery_failure(failure);
+        Undeliverable::message(envelope)
+    };
+    instance.port().post(&**instance, message);
+    Ok(())
+}
 
 /// The value a successful probe publishes. Fixed, because the probe accepts no
 /// caller-supplied producer or value.
@@ -306,6 +372,7 @@ fn _call_in_tokio_context(f: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(_post_delivery_failure, module)?)?;
     module.add_class::<PyTestStruct>()?;
     module.add_function(wrap_pyfunction!(_make_test_struct, module)?)?;
     module.add_class::<PyHandleProbe>()?;

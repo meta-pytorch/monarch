@@ -63,6 +63,7 @@ from monarch._rust_bindings.monarch_hyperactor.endpoint import ActorEndpoint
 from monarch._rust_bindings.monarch_hyperactor.handle import WouldBlockRuntime
 from monarch._rust_bindings.monarch_hyperactor.logging import log_endpoint_exception
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+    DeliveryFailureKind,
     Mailbox,
     OncePortRef,
     PortRef,
@@ -1541,7 +1542,7 @@ async def _callback_loop(
 ) -> None:
     """
     Runs ``__supervise__`` for each supervision event and
-    ``_handle_undeliverable_message`` for each undeliverable message, one at a
+    delivery-failure hooks for each undeliverable message, one at a
     time, as a task beside ``_dispatch_loop`` on the actor's event loop.
     Called from Rust Actor::init.
 
@@ -1556,7 +1557,7 @@ async def _callback_loop(
             if isinstance(item, QueuedSupervision):
                 callback = actor.__supervise__(item.context, item.failure)
             else:
-                callback = actor._handle_undeliverable_message(
+                callback = actor._handle_delivery_failure_event(
                     item.context, item.envelope
                 )
             # A separate task, so a `CancelledError` raised by the callback is
@@ -1639,7 +1640,7 @@ def _finish_queued_message(msg: "QueuedMessage", panic_flag: _QueuePanicFlag) ->
 # SA-5 (kind before spawn): on the ProcMesh route, `_actor_kind` decides an
 #   actor class's kind before the native spawn, and rejects a class whose
 #   endpoints mix kinds or whose hooks don't match it: a sync actor's
-#   `__cleanup__`, `__supervise__`, and `_handle_undeliverable_message` must be
+#   `__cleanup__`, `__supervise__`, and delivery-failure hooks must be
 #   sync, and an async-endpoint actor's `__cleanup__` must be async. The
 #   root-client and low-level routes state `ActorKind.ASYNC`.
 
@@ -2028,12 +2029,11 @@ class _Actor:
                 pdb_wrapper.post_mortem(exc_tb)
                 self._maybe_exit_debugger(do_continue=False)
 
-    async def _handle_undeliverable_message(
+    async def _handle_delivery_failure_event(
         self, cx: Context, message: UndeliverableMessageEnvelope
     ) -> bool:
-        """Dispatch the user's ``_handle_undeliverable_message``, supporting
-        sync and async user methods the same way as ``__supervise__``."""
-        handle_undeliverable = self._user_handle_undeliverable(cx)
+        """Dispatch a delivery-failure hook on an async actor."""
+        handle_undeliverable = self._user_handle_delivery_failure(cx, message)
         if handle_undeliverable is None:
             return False
         if inspect.iscoroutinefunction(handle_undeliverable):
@@ -2041,18 +2041,31 @@ class _Actor:
         with fake_sync_state():
             return handle_undeliverable(message)
 
-    def _user_handle_undeliverable(
-        self, cx: Context
+    def _user_handle_delivery_failure(
+        self, cx: Context, message: UndeliverableMessageEnvelope
     ) -> Callable[[UndeliverableMessageEnvelope], Any] | None:
-        """The user's undeliverable-message callback, with its context set."""
+        """Select the generic override, or the hook for the root failure kind."""
         _set_context(cx)
-        return getattr(self.instance, "_handle_undeliverable_message", None)
+        callback = getattr(self.instance, "_handle_delivery_failure_event", None)
+        if _is_user_override(callback):
+            return callback
+        failure = message.root_delivery_failure()
+        if failure is None:
+            return None
+        if failure.kind == DeliveryFailureKind.InvalidReference:
+            hook = "_handle_invalid_reference"
+        elif failure.kind == DeliveryFailureKind.Expired:
+            hook = "_handle_expired_delivery"
+        else:
+            hook = "_handle_undeliverable_message"
+        callback = getattr(self.instance, hook, None)
+        return callback if _is_user_override(callback) else None
 
     def _run_undeliverable(self, item: QueuedUndeliverable) -> None:
         """Run a sync actor's undeliverable-message callback on its driver and
         report the verdict on ``item``."""
         try:
-            callback = self._user_handle_undeliverable(item.context)
+            callback = self._user_handle_delivery_failure(item.context, item.envelope)
             handled = callback is not None and bool(callback(item.envelope))
         except Exception as e:
             item._raised(e)
@@ -2211,7 +2224,6 @@ def _actor_kind(Class: type) -> ActorKind:
                 sync_endpoints.append(attr_name)
     cleanup = getattr(Class, "__cleanup__", None)
     supervise = getattr(Class, "__supervise__", None)
-    handle_undeliverable = getattr(Class, "_handle_undeliverable_message", None)
     # None means there is no override.
     async_cleanup = (
         inspect.iscoroutinefunction(cleanup) if _is_user_override(cleanup) else None
@@ -2219,7 +2231,6 @@ def _actor_kind(Class: type) -> ActorKind:
     async_supervise = (
         inspect.iscoroutinefunction(supervise) if _is_user_override(supervise) else None
     )
-    async_handle_undeliverable = inspect.iscoroutinefunction(handle_undeliverable)
 
     if sync_endpoints and async_endpoints:
         raise ValueError(
@@ -2246,13 +2257,22 @@ def _actor_kind(Class: type) -> ActorKind:
             "Make sure __supervise__ is also synchronous. "
             f"sync: {sync_endpoints}"
         )
-    if sync_endpoints and async_handle_undeliverable:
-        raise ValueError(
-            f"{Class} has sync endpoints, but an async "
-            "_handle_undeliverable_message. Make sure "
-            "_handle_undeliverable_message is also synchronous. "
-            f"sync: {sync_endpoints}"
-        )
+    for hook in (
+        "_handle_delivery_failure_event",
+        "_handle_invalid_reference",
+        "_handle_expired_delivery",
+        "_handle_undeliverable_message",
+    ):
+        callback = getattr(Class, hook, None)
+        if (
+            sync_endpoints
+            and _is_user_override(callback)
+            and inspect.iscoroutinefunction(callback)
+        ):
+            raise ValueError(
+                f"{Class} has sync endpoints, but an async {hook}. "
+                f"Make sure {hook} is also synchronous. sync: {sync_endpoints}"
+            )
     return ActorKind.SYNC if sync_endpoints else ActorKind.ASYNC
 
 
@@ -2308,13 +2328,65 @@ class Actor(MeshTrait):
         )
 
     # Methods to be (optionally) overridden by user code
+    @_doc_stub
+    def _handle_delivery_failure_event(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool | Awaitable[bool]:
+        """Handle any delivery failure, overriding the kind-specific hooks.
+
+        Inspect ``message.root_delivery_failure()`` for its kind and reason.
+        Return True to absorb the failure or False to retain the existing
+        default directly, without calling a kind-specific Python hook.
+        Unhandled metadata-only reports remain fatal; returned messages use
+        the Rust default for their failure kind.
+        Prefer a kind-specific override when your policy applies to only one
+        failure kind. An async actor may use a sync or async override; a sync
+        actor requires a sync override. Callbacks share the lifecycle and
+        scheduling described by ``_handle_undeliverable_message``.
+        """
+        return False
+
+    @_doc_stub
+    def _handle_invalid_reference(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool | Awaitable[bool]:
+        """Handle an invalid destination, including a stopped or failed actor.
+
+        ``message.root_delivery_failure().invalid_reference_reason`` gives
+        the reason. Return True to absorb the failure; False fails this actor.
+        This hook runs when ``_handle_delivery_failure_event`` is not overridden.
+        Customize it for expected terminal recipients while preserving errors
+        for other invalid references. ``HandlerNotBound`` also occurs when a
+        handler was never registered; a dropped reply port is ``PortGone``.
+        """
+        return False
+
+    @_doc_stub
+    def _handle_expired_delivery(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool | Awaitable[bool]:
+        """Handle a message that exceeded its delivery hop TTL.
+
+        Return True to absorb the failure; False fails this actor. This hook
+        runs when ``_handle_delivery_failure_event`` is not overridden.
+        Customize it only when the application deliberately tolerates losing
+        a message that exhausted its hop TTL.
+        """
+        return False
+
+    @_doc_stub
     def _handle_undeliverable_message(
         self, message: UndeliverableMessageEnvelope
     ) -> bool | Awaitable[bool]:
-        """If a message sent by this actor cannot be delivered to its destination, this
-        method is called. The default implementation returns False, indicating that the
-        undeliverable message was not handled. Returning True indicates that the message
-        was handled in some way and does not need to be escalated as an error.
+        """Handle a transport failure or a destination port whose recipient is gone.
+
+        This hook runs when ``_handle_delivery_failure_event`` is not overridden.
+        Return True to absorb the failure or False to retain the existing default
+        handling. Inspect ``message.root_delivery_failure()`` for its reason.
+        For returned messages, the default absorbs ``PortGone`` and ordinary
+        transport failures; ``OversizedFrame`` fails this actor. Unhandled
+        metadata-only reports remain fatal. Customize this hook for request
+        bookkeeping or diagnostics, or raise to make transport failure fatal.
 
         This may be sync or async for an async actor; a sync actor requires a
         sync override. It runs one callback at a time alongside

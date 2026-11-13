@@ -56,6 +56,63 @@ Each publicly exposed function of the actor is annotated with `@endpoint`:
 .. autofunction:: concurrent_endpoint
 
 
+Delivery Failure Hooks
+======================
+
+These hooks run on the actor that sent an undeliverable message. Choose a
+kind-specific hook for a policy that applies only to invalid references,
+expired deliveries, or transport and port failures. A generic override takes
+precedence over all kind-specific Python hooks. Returning ``True`` absorbs
+the failure; returning ``False`` preserves the existing default, without
+calling another Python hook. See :ref:`delivery-failure-hooks` for the default
+behaviors, examples, and callback scheduling.
+
+Actors without overrides keep their existing failure behavior. For returned
+messages, invalid references and TTL expiration are fatal; ``PortGone`` and
+ordinary transport failures are absorbed, while ``OversizedFrame`` is fatal.
+Unhandled metadata-only reports remain fatal, including ``PortGone`` reports.
+
+.. automethod:: Actor._handle_delivery_failure_event
+
+.. automethod:: Actor._handle_invalid_reference
+
+.. automethod:: Actor._handle_expired_delivery
+
+.. automethod:: Actor._handle_undeliverable_message
+
+Failure Details
+--------------
+
+``UndeliverableMessageEnvelope.root_delivery_failure()`` returns the original
+structured failure. ``kind`` identifies its category. The applicable reason
+property is ``invalid_reference_reason``, ``undeliverable_reason``, or
+``transport_failure_reason``; the other properties return ``None``. The enums
+below are exported from ``monarch.actor`` and implemented in the Rust bindings.
+
+.. autoclass:: UndeliverableMessageEnvelope
+   :members: sender, dest, error_msg, root_delivery_failure, has_payload
+   :undoc-members:
+
+.. autoclass:: DeliveryFailure
+   :members: kind, invalid_reference_reason, undeliverable_reason, transport_failure_reason, target
+   :undoc-members:
+
+.. autoclass:: DeliveryFailureKind
+   :members:
+   :undoc-members:
+
+.. autoclass:: InvalidReferenceReason
+   :members:
+   :undoc-members:
+
+.. autoclass:: UndeliverableReason
+   :members:
+   :undoc-members:
+
+.. autoclass:: TransportFailureReason
+   :members:
+   :undoc-members:
+
 
 Messaging Actor
 ===============

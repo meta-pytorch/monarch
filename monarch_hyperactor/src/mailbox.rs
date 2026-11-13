@@ -14,6 +14,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use hyperactor::Endpoint as _;
+use hyperactor::EndpointLocation;
 use hyperactor::Mailbox;
 use hyperactor::OncePortHandle;
 use hyperactor::PortHandle;
@@ -22,11 +23,16 @@ use hyperactor::accum::Accumulator;
 use hyperactor::accum::CommReducer;
 use hyperactor::accum::ReducerFactory;
 use hyperactor::accum::ReducerSpec;
+use hyperactor::mailbox::DeliveryFailure;
+use hyperactor::mailbox::DeliveryFailureKind;
+use hyperactor::mailbox::InvalidReferenceReason;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
+use hyperactor::mailbox::TransportFailureReason;
 use hyperactor::mailbox::Undeliverable;
+use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::mailbox::monitored_return_handle;
 use hyperactor_config::Flattrs;
 use monarch_types::PickledPyObject;
@@ -457,6 +463,169 @@ impl PythonPortReceiver {
     }
 }
 
+/// The category of a delivery failure.
+#[pyclass(
+    name = "DeliveryFailureKind",
+    module = "monarch._rust_bindings.monarch_hyperactor.mailbox",
+    eq
+)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PyDeliveryFailureKind {
+    InvalidReference,
+    Undeliverable,
+    Expired,
+}
+
+/// Why a destination reference is invalid.
+#[pyclass(
+    name = "InvalidReferenceReason",
+    module = "monarch._rust_bindings.monarch_hyperactor.mailbox",
+    eq
+)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PyInvalidReferenceReason {
+    ProcNotExist,
+    RouteNotExist,
+    ActorNotExist,
+    HandlerNotBound,
+    ActorStopped,
+    ActorFailed,
+    PortNeverAllocated,
+    ProtocolMismatch,
+    WrongMailboxOwner,
+}
+
+impl From<&InvalidReferenceReason> for PyInvalidReferenceReason {
+    fn from(reason: &InvalidReferenceReason) -> Self {
+        match reason {
+            InvalidReferenceReason::ProcNotExist => Self::ProcNotExist,
+            InvalidReferenceReason::RouteNotExist => Self::RouteNotExist,
+            InvalidReferenceReason::ActorNotExist => Self::ActorNotExist,
+            InvalidReferenceReason::HandlerNotBound => Self::HandlerNotBound,
+            InvalidReferenceReason::ActorStopped => Self::ActorStopped,
+            InvalidReferenceReason::ActorFailed => Self::ActorFailed,
+            InvalidReferenceReason::PortNeverAllocated => Self::PortNeverAllocated,
+            InvalidReferenceReason::ProtocolMismatch => Self::ProtocolMismatch,
+            InvalidReferenceReason::WrongMailboxOwner => Self::WrongMailboxOwner,
+        }
+    }
+}
+
+/// A transport failure or a destination port whose recipient is gone.
+#[pyclass(
+    name = "UndeliverableReason",
+    module = "monarch._rust_bindings.monarch_hyperactor.mailbox",
+    eq
+)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PyUndeliverableReason {
+    Transport,
+    PortGone,
+}
+
+/// Why transport could not deliver a message.
+#[pyclass(
+    name = "TransportFailureReason",
+    module = "monarch._rust_bindings.monarch_hyperactor.mailbox",
+    eq
+)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PyTransportFailureReason {
+    ChannelClosed,
+    AckTimedOut,
+    DialFailed,
+    NoRoute,
+    OversizedFrame,
+    LinkUnavailable,
+    ForwarderUnavailable,
+}
+
+impl From<&TransportFailureReason> for PyTransportFailureReason {
+    fn from(reason: &TransportFailureReason) -> Self {
+        match reason {
+            TransportFailureReason::ChannelClosed { .. } => Self::ChannelClosed,
+            TransportFailureReason::AckTimedOut { .. } => Self::AckTimedOut,
+            TransportFailureReason::DialFailed { .. } => Self::DialFailed,
+            TransportFailureReason::NoRoute => Self::NoRoute,
+            TransportFailureReason::OversizedFrame { .. } => Self::OversizedFrame,
+            TransportFailureReason::LinkUnavailable(_) => Self::LinkUnavailable,
+            TransportFailureReason::ForwarderUnavailable => Self::ForwarderUnavailable,
+        }
+    }
+}
+
+/// A structured Rust delivery failure exposed to Python.
+#[pyclass(
+    frozen,
+    name = "DeliveryFailure",
+    module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
+)]
+#[derive(Clone, Debug)]
+pub struct PyDeliveryFailure {
+    inner: DeliveryFailure,
+}
+
+#[pymethods]
+impl PyDeliveryFailure {
+    #[getter]
+    fn kind(&self) -> PyDeliveryFailureKind {
+        match &self.inner.kind {
+            DeliveryFailureKind::InvalidReference(_) => PyDeliveryFailureKind::InvalidReference,
+            DeliveryFailureKind::Undeliverable(_) => PyDeliveryFailureKind::Undeliverable,
+            DeliveryFailureKind::Expired(_) => PyDeliveryFailureKind::Expired,
+        }
+    }
+
+    #[getter]
+    fn invalid_reference_reason(&self) -> Option<PyInvalidReferenceReason> {
+        match &self.inner.kind {
+            DeliveryFailureKind::InvalidReference(invalid) => Some((&invalid.reason).into()),
+            _ => None,
+        }
+    }
+
+    #[getter]
+    fn undeliverable_reason(&self) -> Option<PyUndeliverableReason> {
+        match &self.inner.kind {
+            DeliveryFailureKind::Undeliverable(UndeliverableReason::Transport(_)) => {
+                Some(PyUndeliverableReason::Transport)
+            }
+            DeliveryFailureKind::Undeliverable(UndeliverableReason::PortGone(_)) => {
+                Some(PyUndeliverableReason::PortGone)
+            }
+            _ => None,
+        }
+    }
+
+    #[getter]
+    fn transport_failure_reason(&self) -> Option<PyTransportFailureReason> {
+        match &self.inner.kind {
+            DeliveryFailureKind::Undeliverable(UndeliverableReason::Transport(transport)) => {
+                Some((&transport.reason).into())
+            }
+            _ => None,
+        }
+    }
+
+    #[getter]
+    fn target(&self) -> String {
+        match &self.inner.kind {
+            DeliveryFailureKind::InvalidReference(invalid) => invalid.target.to_string(),
+            DeliveryFailureKind::Expired(expired) => expired.target.to_string(),
+            DeliveryFailureKind::Undeliverable(UndeliverableReason::Transport(transport)) => {
+                transport.target.to_string()
+            }
+            DeliveryFailureKind::Undeliverable(UndeliverableReason::PortGone(port)) => {
+                port.port.to_string()
+            }
+        }
+    }
+
+    fn __str__(&self) -> String {
+        self.inner.render_bounded()
+    }
+}
+
 #[derive(Debug)]
 #[pyclass(
     name = "UndeliverableMessageEnvelope",
@@ -498,19 +667,28 @@ impl PythonUndeliverableMessageEnvelope {
     }
 
     fn sender(&self) -> PyResult<PyActorAddr> {
-        let envelope = self.inner()?.as_message().ok_or_else(|| {
-            PyErr::new::<PyRuntimeError, _>("undeliverable message reports do not have an envelope")
-        })?;
+        let sender = match self.inner()? {
+            Undeliverable::Returned(envelope) => envelope.sender(),
+            Undeliverable::Report(report) => &report.sender,
+        };
         Ok(PyActorAddr {
-            inner: envelope.sender().clone(),
+            inner: sender.clone(),
         })
     }
 
     fn dest(&self) -> PyResult<PyPortId> {
-        let envelope = self.inner()?.as_message().ok_or_else(|| {
-            PyErr::new::<PyRuntimeError, _>("undeliverable message reports do not have an envelope")
-        })?;
-        let port_id: hyperactor::PortAddr = envelope.dest().clone();
+        let port_id = match self.inner()? {
+            Undeliverable::Returned(envelope) => envelope.dest(),
+            Undeliverable::Report(report) => match &report.dest {
+                EndpointLocation::Port(port) => port,
+                _ => {
+                    return Err(PyRuntimeError::new_err(
+                        "delivery failure target is not a port",
+                    ));
+                }
+            },
+        }
+        .clone();
         Ok(port_id.into())
     }
 
@@ -521,6 +699,19 @@ impl PythonUndeliverableMessageEnvelope {
             }
             Undeliverable::Report(report) => Ok(report.error_msg().unwrap_or_default()),
         }
+    }
+
+    fn root_delivery_failure(&self) -> PyResult<Option<PyDeliveryFailure>> {
+        Ok(self
+            .inner()?
+            .root_delivery_failure()
+            .cloned()
+            .map(|inner| PyDeliveryFailure { inner }))
+    }
+
+    #[getter]
+    fn has_payload(&self) -> PyResult<bool> {
+        Ok(self.inner()?.as_message().is_some())
     }
 }
 
@@ -855,6 +1046,11 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PythonOncePortRef>()?;
     hyperactor_mod.add_class::<PythonOncePortReceiver>()?;
     hyperactor_mod.add_class::<PythonUndeliverableMessageEnvelope>()?;
+    hyperactor_mod.add_class::<PyDeliveryFailure>()?;
+    hyperactor_mod.add_class::<PyDeliveryFailureKind>()?;
+    hyperactor_mod.add_class::<PyInvalidReferenceReason>()?;
+    hyperactor_mod.add_class::<PyUndeliverableReason>()?;
+    hyperactor_mod.add_class::<PyTransportFailureReason>()?;
     Ok(())
 }
 

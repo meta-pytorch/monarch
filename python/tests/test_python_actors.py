@@ -24,7 +24,7 @@ import unittest.mock
 import warnings
 from tempfile import TemporaryDirectory
 from types import ModuleType
-from typing import Any, cast, Dict, Iterator, NamedTuple, Tuple
+from typing import Any, Awaitable, cast, Dict, Iterator, NamedTuple, Tuple
 
 import cloudpickle
 import monarch.actor
@@ -37,12 +37,19 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 from monarch._rust_bindings.monarch_hyperactor.handle import _new_handle_pair
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+    DeliveryFailureKind,
+    InvalidReferenceReason,
     PortId,
     PortRef,
+    TransportFailureReason,
     UndeliverableMessageEnvelope,
+    UndeliverableReason,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
-from monarch._rust_bindings.monarch_hyperactor.testing import _handle_observer_count
+from monarch._rust_bindings.monarch_hyperactor.testing import (
+    _handle_observer_count,
+    _post_delivery_failure,
+)
 from monarch._src.actor import actor_mesh
 from monarch._src.actor.actor_mesh import ActorError, ActorMesh, Channel, context, Port
 from monarch._src.actor.host_mesh import _spawn_admin, HostMesh, this_host, this_proc
@@ -1535,6 +1542,195 @@ async def test_undeliverable_message_with_override() -> None:
     assert sender != ""
     assert "bogus" in dest
     assert error_msg is not None
+
+
+class DeliveryFailureHooks(Actor):
+    def __init__(self, receiver: UndeliverableMessageReceiver):
+        self._receiver = receiver
+        self._witness = ""
+        self._report = False
+
+    def _send_failure(self, kind: str, report: bool) -> None:
+        self._witness = kind
+        self._report = report
+        _post_delivery_failure(context().actor_instance._as_rust(), kind, report)
+
+    def _record_failure(self, hook: str, message: UndeliverableMessageEnvelope) -> bool:
+        failure = message.root_delivery_failure()
+        assert failure is not None
+        assert message.has_payload == (not self._report)
+        assert failure.target == str(message.dest())
+        assert message.sender() == context().actor_instance.actor_id
+        if self._witness in ("stopped", "failed", "unbound"):
+            assert failure.kind == DeliveryFailureKind.InvalidReference
+            assert (
+                failure.invalid_reference_reason
+                == {
+                    "stopped": InvalidReferenceReason.ActorStopped,
+                    "failed": InvalidReferenceReason.ActorFailed,
+                    "unbound": InvalidReferenceReason.HandlerNotBound,
+                }[self._witness]
+            )
+            assert failure.undeliverable_reason is None
+        elif self._witness == "expired":
+            assert failure.kind == DeliveryFailureKind.Expired
+            assert failure.invalid_reference_reason is None
+        elif self._witness == "port_gone":
+            assert failure.kind == DeliveryFailureKind.Undeliverable
+            assert failure.undeliverable_reason == UndeliverableReason.PortGone
+            assert failure.transport_failure_reason is None
+        else:
+            assert failure.kind == DeliveryFailureKind.Undeliverable
+            assert failure.undeliverable_reason == UndeliverableReason.Transport
+            assert (
+                failure.transport_failure_reason == TransportFailureReason.ChannelClosed
+            )
+        self._receiver.receive_undeliverable.broadcast(
+            str(message.sender()), hook, message.error_msg()
+        )
+        return True
+
+    def _handle_invalid_reference(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool | Awaitable[bool]:
+        return self._record_failure("invalid", message)
+
+    def _handle_expired_delivery(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool | Awaitable[bool]:
+        return self._record_failure("expired", message)
+
+    def _handle_undeliverable_message(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        return self._record_failure("undeliverable", message)
+
+
+class SyncDeliveryFailureSender(DeliveryFailureHooks):
+    @endpoint
+    def send_failure(self, kind: str, report: bool) -> None:
+        self._send_failure(kind, report)
+
+
+class AsyncDeliveryFailureSender(DeliveryFailureHooks):
+    @endpoint
+    async def send_failure(self, kind: str, report: bool) -> None:
+        self._send_failure(kind, report)
+
+    async def _handle_invalid_reference(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        await asyncio.sleep(0)
+        return self._record_failure("invalid", message)
+
+    async def _handle_expired_delivery(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        await asyncio.sleep(0)
+        return self._record_failure("expired", message)
+
+
+class GenericDeliveryFailureSender(SyncDeliveryFailureSender):
+    def _handle_delivery_failure_event(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        return self._record_failure("generic", message)
+
+
+@pytest.mark.parametrize(
+    "actor_class",
+    [
+        SyncDeliveryFailureSender,
+        AsyncDeliveryFailureSender,
+        GenericDeliveryFailureSender,
+    ],
+)
+@pytest.mark.parametrize("report", [False, True])
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+async def test_delivery_failure_hooks(
+    actor_class: type[SyncDeliveryFailureSender] | type[AsyncDeliveryFailureSender],
+    report: bool,
+) -> None:
+    proc = this_proc()
+    receiver = proc.spawn("failure_receiver", UndeliverableMessageReceiver)
+    sender = proc.spawn("failure_sender", actor_class, receiver)
+    for kind, hook in (
+        ("stopped", "invalid"),
+        ("failed", "invalid"),
+        ("unbound", "invalid"),
+        ("expired", "expired"),
+        ("port_gone", "undeliverable"),
+        ("channel_closed", "undeliverable"),
+    ):
+        await sender.send_failure.call(kind, report)
+        _, observed_hook, error = await receiver.get_messages.call_one()
+        assert observed_hook == (
+            "generic" if actor_class is GenericDeliveryFailureSender else hook
+        )
+        assert error
+    await sender.stop()
+    await receiver.stop()
+
+
+class DecliningDeliveryFailureSender(SyncDeliveryFailureSender):
+    def _handle_invalid_reference(self, message: UndeliverableMessageEnvelope) -> bool:
+        return False
+
+    def _handle_expired_delivery(self, message: UndeliverableMessageEnvelope) -> bool:
+        return False
+
+    def _handle_undeliverable_message(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        return False
+
+    def __cleanup__(self, exc: Exception | None) -> None:
+        self._receiver.receive_undeliverable.broadcast("", "cleanup", str(exc))
+
+
+class DefaultDeliveryFailureSender(Actor):
+    def __init__(self, receiver: UndeliverableMessageReceiver):
+        self._receiver = receiver
+
+    @endpoint
+    def send_failure(self, kind: str, report: bool) -> None:
+        _post_delivery_failure(context().actor_instance._as_rust(), kind, report)
+
+    def __cleanup__(self, exc: Exception | None) -> None:
+        self._receiver.receive_undeliverable.broadcast("", "cleanup", str(exc))
+
+
+@pytest.mark.parametrize(
+    "actor_class", [DecliningDeliveryFailureSender, DefaultDeliveryFailureSender]
+)
+@pytest.mark.parametrize(
+    "kind,report,error_text",
+    [
+        ("stopped", False, "actor stopped"),
+        ("expired", False, "ttl expired"),
+        ("port_gone", True, "port gone"),
+        ("channel_closed", True, "channel closed"),
+    ],
+)
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+async def test_unhandled_delivery_failure_preserves_default(
+    actor_class: type[DecliningDeliveryFailureSender]
+    | type[DefaultDeliveryFailureSender],
+    kind: str,
+    report: bool,
+    error_text: str,
+) -> None:
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    proc = this_proc()
+    receiver = proc.spawn("failure_receiver", UndeliverableMessageReceiver)
+    sender = proc.spawn("failure_sender", actor_class, receiver)
+    await sender.send_failure.call(kind, report)
+    _, hook, error = await receiver.get_messages.call_one()
+    assert hook == "cleanup"
+    assert error_text in error
+    await receiver.stop()
 
 
 class BlockingUndeliverableSender(Actor):

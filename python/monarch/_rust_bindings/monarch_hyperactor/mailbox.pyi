@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+from enum import Enum
 from typing import Any, final, Protocol
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
@@ -220,6 +221,66 @@ class Reducer(Protocol):
     This method's Rust counterpart is `CommReducer::reduce`.
     """
 
+class DeliveryFailureKind(Enum):
+    """The category of a delivery failure."""
+
+    InvalidReference = 0
+    Undeliverable = 1
+    Expired = 2
+
+class InvalidReferenceReason(Enum):
+    """Why a destination reference is invalid."""
+
+    ProcNotExist = 0
+    RouteNotExist = 1
+    ActorNotExist = 2
+    HandlerNotBound = 3
+    ActorStopped = 4
+    ActorFailed = 5
+    PortNeverAllocated = 6
+    ProtocolMismatch = 7
+    WrongMailboxOwner = 8
+
+class UndeliverableReason(Enum):
+    """A transport failure or a port whose recipient is gone."""
+
+    Transport = 0
+    PortGone = 1
+
+class TransportFailureReason(Enum):
+    """Why transport could not deliver a message."""
+
+    ChannelClosed = 0
+    AckTimedOut = 1
+    DialFailed = 2
+    NoRoute = 3
+    OversizedFrame = 4
+    LinkUnavailable = 5
+    ForwarderUnavailable = 6
+
+@final
+class DeliveryFailure:
+    """Structured details of a Rust delivery failure."""
+    @property
+    def kind(self) -> DeliveryFailureKind: ...
+    @property
+    def invalid_reference_reason(self) -> InvalidReferenceReason | None:
+        """The invalid-reference reason, or None for another failure kind."""
+        ...
+    @property
+    def undeliverable_reason(self) -> UndeliverableReason | None:
+        """The undeliverable reason, or None for another failure kind."""
+        ...
+    @property
+    def transport_failure_reason(self) -> TransportFailureReason | None:
+        """The transport reason, or None for another failure kind."""
+        ...
+    @property
+    def target(self) -> str:
+        """The delivery target named by the failure."""
+        ...
+    def __str__(self) -> str: ...
+
 class UndeliverableMessageEnvelope:
     """
     An envelope representing a message that could not be delivered.
@@ -242,4 +303,11 @@ class UndeliverableMessageEnvelope:
         """
         The error message describing why the message could not be delivered.
         """
+        ...
+    def root_delivery_failure(self) -> DeliveryFailure | None:
+        """The original failure, excluding failures on the return path."""
+        ...
+    @property
+    def has_payload(self) -> bool:
+        """Whether the original message was returned with the failure."""
         ...
