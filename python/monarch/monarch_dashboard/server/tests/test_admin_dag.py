@@ -120,6 +120,90 @@ class AdminDagTest(unittest.TestCase):
             )
         )
 
+    def test_sidecar_host_is_labeled_and_not_the_controller(self) -> None:
+        hosts = {
+            "controller": "unix:@controller",
+            "sidecar": "unix:@sidecar",
+        }
+        host_ref = {
+            name: f"host:host_agent.service<{name}>@{addr}"
+            for name, addr in hosts.items()
+        }
+        proc_ref = {name: f"local<{name}>@{addr}" for name, addr in hosts.items()}
+        client_ref = {
+            name: f"client.local<{name}>@{addr}" for name, addr in hosts.items()
+        }
+
+        def query(sql: str, _params=()):
+            if " FROM nodes " in sql:
+                return [{"node_id": "root", "node_kind": "root"}] + [
+                    {"node_id": ref, "node_kind": kind}
+                    for name in hosts
+                    for ref, kind in (
+                        (host_ref[name], "host"),
+                        (proc_ref[name], "proc"),
+                        (client_ref[name], "actor"),
+                    )
+                ]
+            if " FROM children " in sql:
+                return [
+                    {
+                        "parent_id": parent,
+                        "child_id": child,
+                        "is_system": child == client_ref[name],
+                        "child_sort_key": 0,
+                    }
+                    for name in hosts
+                    for parent, child in (
+                        ("root", host_ref[name]),
+                        (host_ref[name], proc_ref[name]),
+                        (proc_ref[name], client_ref[name]),
+                    )
+                ]
+            if " FROM host_nodes " in sql:
+                return [
+                    {"node_id": host_ref[name], "addr": addr, "hostname": "devvm"}
+                    for name, addr in hosts.items()
+                ]
+            if " FROM actor_nodes " in sql:
+                return [
+                    {
+                        "node_id": client_ref[name],
+                        "actor_status": "idle",
+                        "is_system": True,
+                    }
+                    for name in hosts
+                ]
+            return []
+
+        def host_labels(hide_system: bool) -> dict:
+            with (
+                patch.object(
+                    admin_dag.db, "_query_one", return_value={"snapshot_id": "s"}
+                ),
+                patch.object(admin_dag.db, "_query", side_effect=query),
+            ):
+                result = admin_dag.build_admin_dag(
+                    hide_system=hide_system, sidecar_addr=hosts["sidecar"]
+                )
+            return {
+                n["entity_id"]: n["label"]
+                for n in result["nodes"]
+                if n["tier"] == "host"
+            }
+
+        self.assertEqual(
+            host_labels(hide_system=True),
+            {host_ref["controller"]: "@controller (controller)"},
+        )
+        self.assertEqual(
+            host_labels(hide_system=False),
+            {
+                host_ref["controller"]: "@controller (controller)",
+                host_ref["sidecar"]: "Job sidecar",
+            },
+        )
+
     def test_no_snapshot_is_pending_not_partial(self) -> None:
         with patch.object(admin_dag.db, "_query_one", return_value=None):
             result = admin_dag.build_admin_dag()

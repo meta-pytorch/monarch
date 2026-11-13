@@ -84,7 +84,7 @@ test("node labels remove identity suffixes and give hosts readable names", () =>
   assert.equal(cleanNodeLabel("trainer[o7B7whEtk1W]@tcp://worker:1234", "actor"), "trainer");
   assert.equal(cleanNodeLabel("worker-0<fa4wpgPjMyD>", "proc"), "worker-0");
   assert.equal(cleanNodeLabel("ipc:///tmp/session/hosts_0", "host"), "hosts_0");
-  assert.equal(cleanNodeLabel("@91ytVCObcks", "host"), "controller");
+  assert.equal(cleanNodeLabel("@91ytVCObcks", "host"), "@91ytVCObcks");
   assert.equal(cleanNodeLabel("control (controller)", "host"), "control");
 });
 

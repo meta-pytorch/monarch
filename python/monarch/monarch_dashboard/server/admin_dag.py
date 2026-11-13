@@ -33,14 +33,14 @@ _DISPLAY_ID_COMPONENT_RE = re.compile(
 
 
 def _is_client_actor(ref: str) -> bool:
-    """The root client actor (client[0]) is the user's entrypoint.
+    """The root client actor (``client``) is the process's entrypoint.
 
     It is marked ``is_system`` by the admin API and listed in
     ``system_children``, but it sends all user-visible messages
     (e.g. accumulate_gradients, get_status) to user actors. Keeping
     it in the DAG preserves message edge visibility.
     """
-    return ref.endswith(",client[0]")
+    return ref.split(".", 1)[0] == "client" or ref.endswith(",client[0]")
 
 
 def _format_display_id_component(component: str) -> str:
@@ -118,8 +118,15 @@ _LATEST_SNAPSHOT_SQL = (
 )
 
 
-def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
+def build_admin_dag(
+    hide_system: bool = True, sidecar_addr: Optional[str] = None
+) -> Dict[str, Any]:
     """Build a 4-tier DAG (Host → Proc → Actor) from snapshot tables.
+
+    ``sidecar_addr`` is the channel address of the job sidecar process
+    serving the dashboard. Its host is labeled as the sidecar, hidden with
+    system actors, and never taken for the controller, although it also
+    runs a root client actor.
 
     Returns the nodes and edges plus snapshot availability metadata.
     """
@@ -188,6 +195,14 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
     host_info: Dict[str, Dict] = {h["node_id"]: h for h in host_rows}
     proc_info: Dict[str, Dict] = {p["node_id"]: p for p in proc_rows}
     actor_info: Dict[str, Dict] = {a["node_id"]: a for a in actor_rows}
+    sidecar_host_ref = next(
+        (
+            ref
+            for ref, h in host_info.items()
+            if sidecar_addr is not None and h.get("addr") == sidecar_addr
+        ),
+        None,
+    )
 
     # Build parent → children map and system_children set per parent.
     children_map: Dict[str, List[str]] = {}
@@ -236,8 +251,13 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
         if ntype == "error":
             continue
 
+        if ref == sidecar_host_ref and hide_system:
+            continue
+
         # Derive label for this node.
-        if ntype == "host":
+        if ref == sidecar_host_ref:
+            label = "Job sidecar"
+        elif ntype == "host":
             h = host_info.get(ref, {})
             label = _derive_label(ref, ntype, addr=h.get("addr", ""))
         else:
@@ -295,9 +315,13 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
             )
 
         # Detect the controller host by looking for the root client
-        # actor (client[0]) in proc children. Only the controller
-        # process has this actor; worker procs do not.
-        if ntype == "proc" and any(c.endswith(",client[0]") for c in child_refs):
+        # actor in proc children. Worker procs do not have one; the
+        # sidecar does, so its host is excluded.
+        if (
+            ntype == "proc"
+            and parent_ref != sidecar_host_ref
+            and any(_is_client_actor(c) for c in child_refs)
+        ):
             controller_host_ref = parent_ref
 
         # Enqueue children.
