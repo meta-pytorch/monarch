@@ -14,6 +14,7 @@ use ndslice::Shape;
 use ndslice::Slice;
 use ndslice::View;
 use pyo3::IntoPyObjectExt;
+use pyo3::exceptions::PyKeyError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -393,8 +394,10 @@ impl PyPoint {
         }
     }
     fn __getitem__(&self, label: &str) -> PyResult<usize> {
+        // `monarch.actor.Point` is a `collections.abc.Mapping`, whose `in`
+        // and `get()` rely on a missing label raising KeyError.
         let index = self.extent.position(label).ok_or_else(|| {
-            PyErr::new::<PyValueError, _>(format!("Dimension '{}' not found", label))
+            PyErr::new::<PyKeyError, _>(format!("Dimension '{}' not found", label))
         })?;
         let point = self.extent.point_of_rank(self.rank).map_pyerr()?;
         Ok(point.coords()[index])
