@@ -3846,7 +3846,7 @@ impl<A: Actor> Instance<A> {
                 timestamp: now,
                 id: hyperactor_telemetry::generate_status_event_id(message_id),
                 message_id,
-                status: "active".to_string(),
+                status: "active",
             });
         }
 
@@ -3882,7 +3882,7 @@ impl<A: Actor> Instance<A> {
                 timestamp: std::time::SystemTime::now(),
                 id: hyperactor_telemetry::generate_status_event_id(message_id),
                 message_id,
-                status: status.to_string(),
+                status,
             });
         }
 

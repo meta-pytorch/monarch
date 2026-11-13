@@ -580,13 +580,13 @@ pub struct QueuedMessage {
     pub correlation_id: Option<u64>,
 }
 
-fn report_message_status(message_id: Option<u64>, status: &str) {
+fn report_message_status(message_id: Option<u64>, status: &'static str) {
     if let Some(message_id) = message_id {
         hyperactor_telemetry::notify_message_status(hyperactor_telemetry::MessageStatusEvent {
             timestamp: std::time::SystemTime::now(),
             id: hyperactor_telemetry::generate_status_event_id(message_id),
             message_id,
-            status: status.to_string(),
+            status,
         });
     }
 }
