@@ -82,7 +82,8 @@ use crate::resource::Status;
 use crate::supervision::MeshFailure;
 
 declare_attrs! {
-    /// Whether ordinary instance actor mesh spawns use the direct spawn path.
+    /// Whether instance actor mesh spawns, including system actors, use the
+    /// direct spawn path.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_MESH_USE_DIRECT_SPAWN".to_string()),
         Some("use_direct_spawn".to_string()),
@@ -952,6 +953,8 @@ impl ProcMeshRef {
     /// This is the underlying implementation used by [`spawn`]; it
     /// differs only in that the actor mesh id is passed explicitly
     /// rather than as a `&str`.
+    /// System actor meshes with instance ids also follow [`USE_DIRECT_SPAWN`];
+    /// `is_system_actor` suppresses the controller on the managed path.
     ///
     /// Bounds:
     /// - `A: Actor` - the actor actually runs inside each proc.
@@ -1016,13 +1019,7 @@ impl ProcMeshRef {
         C::A: Handler<MeshFailure>,
     {
         let spawned = self
-            .spawn_mesh_inner(
-                cx,
-                actor_mesh_id,
-                params,
-                supervision_display_name.clone(),
-                is_system_actor,
-            )
+            .spawn_mesh_inner(cx, actor_mesh_id, params, supervision_display_name.clone())
             .await?;
         match spawned {
             SpawnedActorMesh::Data(mesh) => Ok(mesh),
@@ -1063,12 +1060,8 @@ impl ProcMeshRef {
         actor_mesh_id: ActorMeshId,
         params: &A::Params,
         supervision_display_name: Option<String>,
-        is_system_actor: bool,
     ) -> crate::Result<SpawnedActorMesh<A>> {
-        if hyperactor_config::global::get(USE_DIRECT_SPAWN)
-            && !is_system_actor
-            && actor_mesh_id.uid().is_instance()
-        {
+        if hyperactor_config::global::get(USE_DIRECT_SPAWN) && actor_mesh_id.uid().is_instance() {
             return self
                 .spawn_data(cx, actor_mesh_id, params, supervision_display_name)
                 .await
@@ -1081,7 +1074,7 @@ impl ProcMeshRef {
         Ok(SpawnedActorMesh::Managed { mesh, statuses })
     }
 
-    /// The managed spawn path used by singleton services and ordinary instance
+    /// The managed spawn path for explicit singleton ids and for instance
     /// spawns when [`USE_DIRECT_SPAWN`] is disabled: the create/update cast,
     /// the accumulator port, the bounded
     /// `GetRankStatus::wait` with terminal / timeout mapping, mesh
@@ -1090,7 +1083,7 @@ impl ProcMeshRef {
     /// controller construction (`cx.instance().port().bind()`), which the
     /// bounded caller layers on afterward. Returns the mesh together with the
     /// final `StatusMesh` (moved into the controller for non-system actors;
-    /// discarded otherwise — system actors and the controllerless path).
+    /// discarded for system actors).
     async fn spawn_managed_mesh_inner<A: RemoteSpawn, C: context::Actor>(
         &self,
         cx: &C,
@@ -2119,6 +2112,26 @@ mod tests {
             "disabled direct spawn should return a managed mesh"
         );
 
+        let system_actor: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_with_name(
+                instance,
+                ActorMeshId::instance(Label::strip("configured_managed_system_actor")),
+                &(),
+                None,
+                true,
+            )
+            .await
+            .expect("spawn managed system actor");
+        assert!(
+            system_actor
+                .as_managed()
+                .expect("disabled direct spawn should return a managed system mesh")
+                .controller()
+                .is_none(),
+            "managed system mesh should have no controller"
+        );
+        testactor::assert_casting_correctness(&system_actor, instance, None).await;
+
         actor_mesh
             .stop(instance, "test complete".to_string())
             .expect("stop managed actor mesh");
@@ -2179,20 +2192,28 @@ mod tests {
             "service spawn should ignore the data mesh flag"
         );
 
-        let system_actor: ActorMesh<testactor::TestActor> = proc_mesh
+        let mut system_actor: ActorMesh<testactor::TestActor> = proc_mesh
             .spawn_with_name(
                 instance,
-                ActorMeshId::instance(Label::strip("configured_managed_system_actor")),
+                ActorMeshId::instance(Label::strip("configured_data_system_actor")),
                 &(),
                 None,
                 true,
             )
             .await
-            .expect("spawn managed system actor");
+            .expect("spawn data system actor");
         assert!(
-            system_actor.as_managed().is_some(),
-            "system actor spawn should ignore the direct spawn flag"
+            system_actor.as_managed().is_none(),
+            "configured system actor spawn should return a data mesh"
         );
+        testactor::assert_casting_correctness(&system_actor, instance, None).await;
+        system_actor
+            .stop(instance, "test complete".to_string())
+            .expect("stop data system actor mesh");
+        system_actor
+            .wait_for_terminal(instance)
+            .await
+            .expect("wait for data system actor mesh to stop");
 
         actor_mesh
             .stop(instance, "test complete".to_string())
@@ -2204,6 +2225,102 @@ mod tests {
         hm.shutdown(instance)
             .await
             .expect("host mesh shutdown should complete");
+    }
+
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn test_system_actor_init_failure_reports_via_supervision() {
+        let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, true);
+        let instance = testing::instance();
+        let mut owner = instance
+            .proc()
+            .actor_instance::<testing::TestRootClient>("failed_system_owner")
+            .expect("create owner instance");
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(
+                instance,
+                "system_init_failure",
+                extent!(gpus = 1),
+                None,
+                None,
+            )
+            .await
+            .expect("spawn proc mesh");
+        let mesh_id = ActorMeshId::instance(Label::strip("failed_system_actor"));
+        let mesh: ActorMesh<testactor::FailingCreateTestActor> = proc_mesh
+            .spawn_with_name(&owner.instance, mesh_id.clone(), &(), None, true)
+            .await
+            .expect("data system spawn returns before construction finishes");
+        let error = mesh
+            .wait_started(&owner.instance)
+            .await
+            .expect_err("failed system actor construction must end the startup wait");
+        assert!(matches!(error, crate::Error::ActorSpawnError { .. }));
+        let event = tokio::time::timeout(Duration::from_secs(30), owner.supervision.recv())
+            .await
+            .expect("system actor failure should reach its owner")
+            .expect("owner supervision channel should stay open");
+        assert!(event.is_error());
+        assert_eq!(
+            event.labels.get(crate::actor_mesh::ACTOR_MESH_ID),
+            Some(mesh_id)
+        );
+        assert!(
+            event.to_string().contains("test failure"),
+            "system actor supervision should retain the construction error: {event}"
+        );
+        owner.instance.stop_children("test complete").await;
+        owner.instance.close_client("test complete");
+        hm.shutdown(instance).await.expect("shut down host mesh");
+    }
+
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn test_system_actor_stops_with_requester() {
+        let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, true);
+        let instance = testing::instance();
+        let owner = instance
+            .proc()
+            .actor_instance::<testing::TestRootClient>("stopping_system_owner")
+            .expect("create owner instance");
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(instance, "system_owner_stop", extent!(gpus = 2), None, None)
+            .await
+            .expect("spawn proc mesh");
+        let mesh: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_with_name(
+                &owner.instance,
+                ActorMeshId::instance(Label::strip("owned_system_actor")),
+                &(),
+                None,
+                true,
+            )
+            .await
+            .expect("spawn system actor mesh");
+        testactor::assert_casting_correctness(&mesh, instance, None).await;
+        let monitor = mesh.monitor(instance);
+        owner.instance.stop_children("owner stopping").await;
+        owner.instance.close_client("owner stopped");
+        let outcomes = tokio::time::timeout(Duration::from_secs(30), monitor.wait_all_terminal())
+            .await
+            .expect("system actors should terminate with their requester");
+        assert!(
+            outcomes.iter().all(|outcome| matches!(
+                outcome,
+                MonitorFailure::ActorStopped { .. } | MonitorFailure::ActorGone { .. }
+            )),
+            "requester teardown should stop every system actor: {outcomes:?}"
+        );
+        let survivor: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn(instance, "surviving_proc", &())
+            .await
+            .expect("requester teardown should keep the target procs alive");
+        testactor::assert_casting_correctness(&survivor, instance, None).await;
+        hm.shutdown(instance).await.expect("shut down host mesh");
     }
 
     #[async_timed_test(timeout_secs = 300)]
