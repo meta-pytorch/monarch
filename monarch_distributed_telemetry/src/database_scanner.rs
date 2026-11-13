@@ -1359,17 +1359,20 @@ mod tests {
         ingest_batch(scanner, ACTORS, actors.drain_to_record_batch().unwrap()).await;
 
         let mut spans = SpanBuffer::default();
-        for (id, timestamp_us, parent_id) in [(9, old_us, None), (10, fresh_us, Some(9))] {
+        for (id, name, timestamp_us, parent_id) in [
+            (9, "span-9", old_us, None),
+            (10, "span-10", fresh_us, Some(9)),
+        ] {
             spans.insert(Span {
                 process_id: "test",
                 id,
-                name: format!("span-{id}"),
-                target: "test".to_string(),
-                level: "INFO".to_string(),
+                name,
+                target: "test",
+                level: "INFO",
                 fields_json: "{}".to_string(),
                 timestamp_us,
                 parent_id,
-                thread_name: "test".to_string(),
+                thread_name: "test",
                 file: None,
                 line: None,
             });
@@ -1382,7 +1385,7 @@ mod tests {
                 process_id: "test",
                 id: 9,
                 timestamp_us,
-                event_type: event_type.to_string(),
+                event_type,
             });
         }
         ingest_batch(
@@ -1395,14 +1398,14 @@ mod tests {
         let mut events = EventBuffer::default();
         for (name, timestamp_us) in [("old", old_us), ("fresh", fresh_us)] {
             events.insert(Event {
-                name: name.to_string(),
-                target: "test".to_string(),
-                level: "INFO".to_string(),
+                name,
+                target: "test",
+                level: "INFO",
                 fields_json: "{}".to_string(),
                 timestamp_us,
                 parent_span: Some(9),
-                thread_id: "1".to_string(),
-                thread_name: "test".to_string(),
+                thread_id: "1",
+                thread_name: "test",
                 module_path: None,
                 file: None,
                 line: None,

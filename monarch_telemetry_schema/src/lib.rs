@@ -96,14 +96,14 @@ pub mod trace_tables {
     pub struct Span {
         pub process_id: &'static str,
         pub id: u64,
-        pub name: String,
-        pub target: String,
-        pub level: String,
+        pub name: &'static str,
+        pub target: &'static str,
+        pub level: &'static str,
         pub fields_json: String,
         pub timestamp_us: i64,
         pub parent_id: Option<u64>,
-        pub thread_name: String,
-        pub file: Option<String>,
+        pub thread_name: &'static str,
+        pub file: Option<&'static str>,
         pub line: Option<u32>,
     }
 
@@ -113,22 +113,22 @@ pub mod trace_tables {
         pub process_id: &'static str,
         pub id: u64,
         pub timestamp_us: i64,
-        pub event_type: String,
+        pub event_type: &'static str,
     }
 
     /// Row data for the events table.
     #[derive(RecordBatchRow)]
     pub struct Event {
-        pub name: String,
-        pub target: String,
-        pub level: String,
+        pub name: &'static str,
+        pub target: &'static str,
+        pub level: &'static str,
         pub fields_json: String,
         pub timestamp_us: i64,
         pub parent_span: Option<u64>,
-        pub thread_id: String,
-        pub thread_name: String,
-        pub module_path: Option<String>,
-        pub file: Option<String>,
+        pub thread_id: &'static str,
+        pub thread_name: &'static str,
+        pub module_path: Option<&'static str>,
+        pub file: Option<&'static str>,
         pub line: Option<u32>,
     }
 }
@@ -462,14 +462,14 @@ mod tests {
         buffer.insert(Span {
             process_id: "process",
             id: 7,
-            name: "span".to_string(),
-            target: "target".to_string(),
-            level: "INFO".to_string(),
+            name: "span",
+            target: "target",
+            level: "INFO",
             fields_json: "{}".to_string(),
             timestamp_us: 123,
             parent_id: None,
-            thread_name: "main".to_string(),
-            file: Some("lib.rs".to_string()),
+            thread_name: "main",
+            file: Some("lib.rs"),
             line: Some(42),
         });
 

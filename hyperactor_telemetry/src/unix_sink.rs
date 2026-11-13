@@ -302,14 +302,14 @@ impl UnixSocketSink {
                 inner.spans_buffer.insert(Span {
                     process_id: PROCESS_ID.as_str(),
                     id: *id,
-                    name: name.to_string(),
-                    target: target.to_string(),
-                    level: level.to_string(),
+                    name,
+                    target,
+                    level: level.as_str(),
                     fields_json: fields_to_json(fields),
                     timestamp_us: timestamp_to_micros(timestamp),
                     parent_id: *parent_id,
-                    thread_name: thread_name.to_string(),
-                    file: file.map(|s| s.to_string()),
+                    thread_name,
+                    file: *file,
                     line: *line,
                 });
             }
@@ -318,7 +318,7 @@ impl UnixSocketSink {
                     process_id: PROCESS_ID.as_str(),
                     id: *id,
                     timestamp_us: timestamp_to_micros(timestamp),
-                    event_type: "enter".to_string(),
+                    event_type: "enter",
                 });
             }
             TraceEvent::SpanExit { id, timestamp, .. } => {
@@ -326,7 +326,7 @@ impl UnixSocketSink {
                     process_id: PROCESS_ID.as_str(),
                     id: *id,
                     timestamp_us: timestamp_to_micros(timestamp),
-                    event_type: "exit".to_string(),
+                    event_type: "exit",
                 });
             }
             TraceEvent::SpanClose { id, timestamp } => {
@@ -334,7 +334,7 @@ impl UnixSocketSink {
                     process_id: PROCESS_ID.as_str(),
                     id: *id,
                     timestamp_us: timestamp_to_micros(timestamp),
-                    event_type: "close".to_string(),
+                    event_type: "close",
                 });
             }
             TraceEvent::Event {
@@ -351,16 +351,16 @@ impl UnixSocketSink {
                 line,
             } => {
                 inner.events_buffer.insert(Event {
-                    name: name.to_string(),
-                    target: target.to_string(),
-                    level: level.to_string(),
+                    name,
+                    target,
+                    level: level.as_str(),
                     fields_json: fields_to_json(fields),
                     timestamp_us: timestamp_to_micros(timestamp),
                     parent_span: *parent_span,
-                    thread_id: thread_id.to_string(),
-                    thread_name: thread_name.to_string(),
-                    module_path: module_path.map(|s| s.to_string()),
-                    file: file.map(|s| s.to_string()),
+                    thread_id,
+                    thread_name,
+                    module_path: *module_path,
+                    file: *file,
                     line: *line,
                 });
             }
