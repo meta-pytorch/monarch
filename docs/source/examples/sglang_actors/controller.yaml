@@ -1,0 +1,69 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+# Controller pod for the SGLang rollout-engine example.
+# Includes RBAC for creating MonarchMesh resources and watching pods, and
+# installs the same SGLang and Monarch environment as the engine pods.
+#
+# Prerequisites:
+# - monarch-tests namespace created
+# - Monarch operator installed
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sglang-controller
+  namespace: monarch-tests
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sglang-controller
+  namespace: monarch-tests
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["monarch.pytorch.org"]
+    resources: ["monarchmeshes"]
+    verbs: ["create", "get", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sglang-controller
+  namespace: monarch-tests
+subjects:
+  - kind: ServiceAccount
+    name: sglang-controller
+    namespace: monarch-tests
+roleRef:
+  kind: Role
+  name: sglang-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sglang-controller
+  namespace: monarch-tests
+spec:
+  serviceAccountName: sglang-controller
+  containers:
+    - name: controller
+      image: ghcr.io/astral-sh/uv:python3.12-trixie
+      command: ["/bin/bash", "-c"]
+      args:
+        - |
+          uv venv -q /opt/sglang --python 3.12 && \
+          VIRTUAL_ENV=/opt/sglang uv pip install -q sglang==0.5.23 torchmonarch kubernetes && \
+          touch /tmp/ready && sleep infinity
+      resources:
+        requests: {cpu: "4", memory: 16Gi}
+      readinessProbe:
+        exec: {command: ["test", "-f", "/tmp/ready"]}
+        periodSeconds: 5
+        failureThreshold: 240

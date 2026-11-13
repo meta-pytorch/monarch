@@ -40,6 +40,7 @@
 |---------|----------|
 | grpo_actor.py | `docs/source/examples/grpo_actor.py` |
 | gpu_sharing.py | `docs/source/examples/gpu_sharing.py` |
+| sglang_actors.py | `docs/source/examples/sglang_actors.py` |
 | distributed_tensors.py | `docs/source/examples/distributed_tensors.py` |
 | ping_pong.py | `docs/source/examples/ping_pong.py` |
 | crawler.py | `docs/source/examples/crawler.py` |
