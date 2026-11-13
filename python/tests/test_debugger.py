@@ -60,6 +60,9 @@ from scoped_state import scoped_state
 TActor = TypeVar("TActor", bound=Actor)
 
 
+# CPython 3.13+ stops on the `breakpoint()` line itself; earlier versions stop on the next line.
+_BREAKPOINT_STOP_OFFSET: int = 0 if sys.version_info >= (3, 13) else 1
+
 debug_env = {
     _MONARCH_DEBUG_SERVER_HOST_ENV_VAR: "0.0.0.0",
     _MONARCH_DEBUG_SERVER_PORT_ENV_VAR: "0",
@@ -164,10 +167,8 @@ async def _test_debug(nested: bool) -> None:
         input_mock = AsyncMock()
         input_mock.side_effect = [
             f"attach {name} 1",
-            "n",
-            "n",
-            "n",
-            "n",
+            # Step from the breakpoint to the return from `to_debug`.
+            *["n"] * (5 - _BREAKPOINT_STOP_OFFSET),
             "detach",
             f"attach {name} 1",
             "detach",
@@ -862,10 +863,8 @@ async def test_debug_cli():
         debug_cli_stdin.writelines(
             [
                 f"attach {name} 1\n".encode(),
-                b"n\n",
-                b"n\n",
-                b"n\n",
-                b"n\n",
+                # Step from the breakpoint to the return from `to_debug`.
+                *[b"n\n"] * (5 - _BREAKPOINT_STOP_OFFSET),
                 b"detach\n",
                 f"attach {name} 1\n".encode(),
                 b"print('test separator')\n",
@@ -1068,6 +1067,17 @@ function_closure_source = """def func_closure(arg, bp):
 """
 
 
+_CLASS_CLOSURE_STOP_LINENO: int = 13 + _BREAKPOINT_STOP_OFFSET
+_FUNCTION_CLOSURE_STOP_LINENO: int = 4 + _BREAKPOINT_STOP_OFFSET
+
+
+def _closure_stop_location(
+    filename: str, source: str, lineno: int, function: str
+) -> str:
+    line = source.splitlines()[lineno - 1].strip()
+    return f"> {filename}({lineno}){function}()\n-> {line}"
+
+
 def _exec_source(source, filename):
     """Execute source code as if it came from the given filename.
 
@@ -1220,12 +1230,17 @@ async def test_debug_with_pickle_by_value():
             fut = debugee.debug_class_closure.call_one(class_closure)
             breakpoints = await _wait_for_breakpoints(debug_controller, 1)
             assert breakpoints[0].function == "class_closure.get_arg"
-            assert breakpoints[0].lineno == 14
+            assert breakpoints[0].lineno == _CLASS_CLOSURE_STOP_LINENO
 
             await debug_controller.blocking_enter.call_one()
 
             assert (
-                "> /tmp/monarch_test/class_closure.py(14)get_arg()\n-> return self.arg"
+                _closure_stop_location(
+                    "/tmp/monarch_test/class_closure.py",
+                    class_closure_source,
+                    _CLASS_CLOSURE_STOP_LINENO,
+                    "get_arg",
+                )
                 in outputs
             )
 
@@ -1234,7 +1249,7 @@ async def test_debug_with_pickle_by_value():
             fut = debugee.debug_func.call_one(func_bp_false, class_closure)
             breakpoints = await _wait_for_breakpoints(debug_controller, 1)
             assert breakpoints[0].function == "class_closure.get_arg"
-            assert breakpoints[0].lineno == 14
+            assert breakpoints[0].lineno == _CLASS_CLOSURE_STOP_LINENO
 
             await debug_controller.blocking_enter.call_one()
 
@@ -1244,7 +1259,12 @@ async def test_debug_with_pickle_by_value():
                     "-> return internal().get_arg() + arg"
                 ),
                 "\n",
-                "> /tmp/monarch_test/class_closure.py(14)get_arg()\n-> return self.arg",
+                _closure_stop_location(
+                    "/tmp/monarch_test/class_closure.py",
+                    class_closure_source,
+                    _CLASS_CLOSURE_STOP_LINENO,
+                    "get_arg",
+                ),
                 "\n",
                 "(Pdb) ",
             ]
@@ -1258,12 +1278,17 @@ async def test_debug_with_pickle_by_value():
             fut = debugee.debug_func.call_one(func_bp_true, class_closure)
             breakpoints = await _wait_for_breakpoints(debug_controller, 1)
             assert breakpoints[0].function == "function_closure.func"
-            assert breakpoints[0].lineno == 5
+            assert breakpoints[0].lineno == _FUNCTION_CLOSURE_STOP_LINENO
 
             await debug_controller.blocking_enter.call_one()
 
             assert (
-                "> /tmp/monarch_test/function_closure.py(5)func()\n-> return internal().get_arg() + arg"
+                _closure_stop_location(
+                    "/tmp/monarch_test/function_closure.py",
+                    function_closure_source,
+                    _FUNCTION_CLOSURE_STOP_LINENO,
+                    "func",
+                )
                 in outputs
             )
             assert "Breakpoint 1 at /tmp/monarch_test/class_closure.py:10" in outputs
@@ -1280,7 +1305,7 @@ async def test_debug_with_pickle_by_value():
 
             breakpoints = await _wait_for_breakpoints(debug_controller, 1)
             assert breakpoints[0].function == "class_closure.get_arg"
-            assert breakpoints[0].lineno == 14
+            assert breakpoints[0].lineno == _CLASS_CLOSURE_STOP_LINENO
 
             await debug_controller.blocking_enter.call_one()
 
