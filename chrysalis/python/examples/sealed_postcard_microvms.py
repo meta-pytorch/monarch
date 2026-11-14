@@ -9,9 +9,10 @@
 Postcard connections
 --------------------
 
-Alice, Bob and Relay are roles of the same Rust `sealed-postcard` binary.
-Alice and Bob each run in their own microVM. The Relay role runs on the
-host, is the namespace root, and forwards their encrypted datagrams. Alice
+Alice, Bob and Relay are roles of one sealed-postcard program: the Rust
+`sealed-postcard` binary, or the Python `sealed_postcard.py`. Alice and Bob
+each run in their own microVM. The Relay role runs on the host, is the
+namespace root, and forwards their encrypted datagrams. Alice
 and Bob each dial host vsock port 5001, and Firecracker delivers each
 connection to Relay's Unix listener for that VM:
 
@@ -24,35 +25,45 @@ Build inputs
 ------------
 
 Before running this Python program, set four environment variables to the
-paths of the Buck-built files it needs:
+paths of the Buck-built files it needs. Both languages need:
 
 - `CHR_FC_FIRECRACKER`: the Firecracker executable run on the host.
 - `CHR_FC_KERNEL`: the Linux kernel booted inside each VM.
-- `CHR_FC_ROOTFS`: the guest root filesystem containing `fc_agent.py` and
-  the Rust binary.
+
+The Rust roles, the default, also need:
+
+- `CHR_FC_ROOTFS`: a `rust_guest_rootfs` image of the Rust binary, which
+  the guests run at `GUEST_PROGRAM`.
 - `SEALED_POSTCARD`: the host copy of the Rust binary, used to generate
+  identities and run Relay.
+
+The Python roles, with `--language python`, need instead:
+
+- `CHR_FC_PYTHON_ROOTFS`: a `python_guest_rootfs` image of the Python
+  program, which the guests run at `GUEST_PROGRAM`.
+- `SEALED_POSTCARD_PYTHON`: the Python program, run on the host to generate
   identities and run Relay.
 
 These variables supply file paths to this Python program. The separate
 `SEALED_POSTCARD_IDENTITY` variable supplies an identity bundle to each
-Rust role, as described below.
+role, as described below.
 
 Preparing identities
 --------------------
 
-Before starting any role, this Python program runs the Rust binary on the
-host with `identities --out <run_dir>/ids`. The Rust binary creates
-`alice.pem`, `relay.pem` and `bob.pem` in that directory. Each bundle contains
-the role's certificate and private key, plus the shared certificate they
-trust, so the roles can authenticate one another.
+Before starting any role, this Python program runs the sealed-postcard
+program on the host with `identities --out <run_dir>/ids`. The program
+creates `alice.pem`, `relay.pem` and `bob.pem` in that directory. Each
+bundle contains the role's certificate and private key, plus the shared
+certificate they trust, so the roles can authenticate one another.
 
-The Rust binary reads its identity bundle from the
-`SEALED_POSTCARD_IDENTITY` environment variable.
+Each role reads its identity bundle from the `SEALED_POSTCARD_IDENTITY`
+environment variable.
 
-For Relay, this Python program sets the variable when starting the binary
+For Relay, this Python program sets the variable when starting the program
 on the host. For Alice and Bob, it puts the variable's name and value in
 the JSON startup command. `fc_agent.py` sets that environment variable
-when starting the binary inside the VM.
+when starting the program inside the VM.
 
 Starting the roles
 ------------------
@@ -62,7 +73,7 @@ with Alice and VM B with Bob. Each VM starts `fc_agent.py` as its first
 process.
 
 This Python program sends `fc_agent.py` a JSON command over the control
-connection described below. The command names the binary and its arguments,
+connection described below. The command names the program and its arguments,
 including `alice` or `bob`. `fc_agent.py` starts that command inside the VM.
 
 VM control
@@ -92,10 +103,12 @@ standalone demo.
 The guides under `crates/chrysalis/examples/sealed-postcard/` explain:
 
 - `firecracker.md`: prerequisites, build commands, environment variables and
-  running this VM demo in tmux.
+  running this VM demo in tmux, with the Rust roles.
 - `separate-processes.md`: running the same three roles as host processes,
   without VMs.
 - `README.md`: what the postcard exchange demonstrates.
+
+`python/firecracker.md` runs the same demo with the Python roles.
 """
 
 from __future__ import annotations
@@ -132,7 +145,7 @@ SUN_PATH_MAX = 107
 
 # Expected Bob report, checked in VM B's console log after Firecracker exits.
 BOB_REPORT = "bob served 33 streams, all from alice: true"
-# Require Relay's report to say it observed at least one datagram,
+# Require the Rust Relay's report to say it observed at least one datagram,
 # saw no postcard plaintext, and its bounded observation log dropped no datagrams.
 RELAY_REPORT = (
     r"relay observed [1-9][0-9]* datagrams, "
@@ -166,6 +179,33 @@ class ScenarioError(Exception):
 
 
 @dataclass(frozen=True)
+class RustRoles:
+    """The Rust `sealed-postcard` binary and its guest image."""
+
+    # The host copy, which generates identities and runs Relay.
+    binary: Path
+    # A `rust_guest_rootfs` image of the same binary, which Alice and Bob run
+    # at GUEST_PROGRAM.
+    rootfs: Path
+
+
+@dataclass(frozen=True)
+class PythonRoles:
+    """The Python `sealed_postcard.py` program and its guest image."""
+
+    # The program, run on the host to generate identities and run Relay.
+    program: Path
+    # A `python_guest_rootfs` image of the same program, which Alice and Bob
+    # run at GUEST_PROGRAM.
+    rootfs: Path
+
+
+# The roles of one run, in one language. Each carries its own guest image, so
+# a run can't boot the other language's image.
+Roles = RustRoles | PythonRoles
+
+
+@dataclass(frozen=True)
 class Inputs:
     """The Buck-built programs and image one run needs."""
 
@@ -173,24 +213,34 @@ class Inputs:
     firecracker: Path
     # Linux kernel booted inside each VM.
     kernel: Path
-    # Guest root filesystem containing fc_agent.py and the Rust binary.
-    rootfs: Path
-    # The same Rust binary implements Alice, Bob and Relay. This host copy
-    # generates identities and runs Relay; Alice and Bob use the guest copy.
-    sealed_postcard: Path
+    # The sealed-postcard program and guest image for the run's language.
+    roles: Roles
 
     @classmethod
-    def from_env(cls) -> Inputs:
-        """Read the four build paths from this Python program's environment.
+    def from_env(cls, language: str) -> Inputs:
+        """Read the four build paths for `language`, `"rust"` or `"python"`,
+        from this Python program's environment.
 
         Resolve each path and require it to name an existing file. Raise
-        `ScenarioError` if a variable is unset or its path is not a file.
+        `MicroVmError` if a variable is unset or empty or its path is not a
+        file, and `ScenarioError` for any other language.
         """
+        match language:
+            case "rust":
+                roles: Roles = RustRoles(
+                    binary=built("SEALED_POSTCARD"), rootfs=built("CHR_FC_ROOTFS")
+                )
+            case "python":
+                roles = PythonRoles(
+                    program=built("SEALED_POSTCARD_PYTHON"),
+                    rootfs=built("CHR_FC_PYTHON_ROOTFS"),
+                )
+            case _:
+                raise ScenarioError(f"no sealed-postcard roles in {language!r}")
         return cls(
             firecracker=built("CHR_FC_FIRECRACKER"),
             kernel=built("CHR_FC_KERNEL"),
-            rootfs=built("CHR_FC_ROOTFS"),
-            sealed_postcard=built("SEALED_POSTCARD"),
+            roles=roles,
         )
 
 
@@ -200,7 +250,7 @@ def _say(message: str) -> None:
 
 
 class _Relay:
-    """Host-side handle for the Rust Relay role, which runs directly on the host.
+    """Host-side handle for the Relay role, which runs directly on the host.
 
     A process group is a set of processes that can be signaled together.
     `start` gives Relay its own session and process group, separate from
@@ -221,7 +271,7 @@ class _Relay:
     async def start(
         cls, binary: Path, args: list[str], identity: str, log: Path
     ) -> _Relay:
-        """Start the Rust binary's Relay role as a new process on the host.
+        """Start the program's Relay role as a new process on the host.
 
         Run `binary relay` with `args`. Supply the identity bundle's contents
         through `SEALED_POSTCARD_IDENTITY`, preserving the host environment.
@@ -309,17 +359,35 @@ class _Child:
             raise TimeoutError(f"process {self.process.pid} was not reaped") from None
 
 
-def _guest_command(role_args: list[str], identity: str) -> dict[str, object]:
+def _host_program(roles: Roles) -> Path:
+    """The program that generates identities and runs Relay on the host."""
+    match roles:
+        case RustRoles(binary=binary):
+            return binary
+        case PythonRoles(program=program):
+            return program
+
+
+def _guest_command(
+    roles: Roles, role_args: list[str], identity: str
+) -> dict[str, object]:
     """Build the request telling fc_agent.py to start Alice or Bob inside its VM.
 
-    Name the guest's Rust binary, its arguments, identity bundle environment
-    variable and working directory. `identity` contains the bundle's text,
-    not a file path. `MicroVm.boot` sends this dictionary as JSON over the control
-    connection; fc_agent.py receives it and starts the process.
+    Name the guest's program, its arguments, identity bundle environment
+    variable and working directory. Every guest image holds its program at
+    `GUEST_PROGRAM`; only the program's name, argv[0], differs by language.
+    `identity` contains the bundle's text, not a file path. `MicroVm.boot`
+    sends this dictionary as JSON over the control connection; fc_agent.py
+    receives it and starts the process.
     """
+    match roles:
+        case RustRoles():
+            name = "sealed-postcard"
+        case PythonRoles():
+            name = "sealed_postcard"
     return {
         "executable": GUEST_PROGRAM,
-        "argv": ["sealed-postcard", *role_args],
+        "argv": [name, *role_args],
         "env": {"SEALED_POSTCARD_IDENTITY": identity},
         "cwd": "/",
     }
@@ -330,16 +398,16 @@ async def _identities(
 ) -> dict[str, str]:
     """Generate Alice, Relay and Bob's identity bundles on the host.
 
-    The Rust binary writes `alice.pem`, `relay.pem` and `bob.pem` under
+    The program writes `alice.pem`, `relay.pem` and `bob.pem` under
     `<run_dir>/ids`. Return a dictionary mapping each role name to its
     certificate-derived Chrysalis PID: the identity peers authenticate,
     not an OS process ID. `_start_roles` supplies these IDs and bundles
     when starting the roles.
     """
-    # Run the Rust binary's `identities` command as a short-lived host process.
+    # Run the program's `identities` command as a short-lived host process.
     # It writes the bundles to disk and prints their role names and PIDs.
     process = await asyncio.create_subprocess_exec(
-        str(inputs.sealed_postcard),
+        str(_host_program(inputs.roles)),
         "identities",
         "--out",
         str(run_dir / "ids"),
@@ -388,7 +456,7 @@ async def _start_roles(
     relay_args = ["--listen", f"unix:{alice_vm.uds}_{RELAY_PORT}"]
     relay_args += ["--listen", f"unix:{bob_vm.uds}_{RELAY_PORT}"]
     relay = await _Relay.start(
-        inputs.sealed_postcard,
+        _host_program(inputs.roles),
         relay_args,
         (ids / "relay.pem").read_text(),
         run_dir / "relay.log",
@@ -411,8 +479,8 @@ async def _start_roles(
     await alice_vm.boot(
         inputs.firecracker,
         inputs.kernel,
-        inputs.rootfs,
-        _guest_command(alice, (ids / "alice.pem").read_text()),
+        inputs.roles.rootfs,
+        _guest_command(inputs.roles, alice, (ids / "alice.pem").read_text()),
     )
 
     _say(f"booting VM B with Bob, dialing the host on vsock port {RELAY_PORT}")
@@ -425,8 +493,8 @@ async def _start_roles(
     await bob_vm.boot(
         inputs.firecracker,
         inputs.kernel,
-        inputs.rootfs,
-        _guest_command(bob, (ids / "bob.pem").read_text()),
+        inputs.roles.rootfs,
+        _guest_command(inputs.roles, bob, (ids / "bob.pem").read_text()),
     )
     return alice_vm, relay, bob_vm
 
@@ -437,7 +505,8 @@ async def _check_outcomes(
     """Confirm the exchange succeeded and stop the remaining roles.
 
     Alice exits when her exchange completes. Stop Bob and Relay afterwards
-    and require successful exits and their expected reports. Wait for each
+    and require successful exits and their expected reports; the Python Relay
+    keeps no recorder, so it has no report to check. Wait for each
     VM's Firecracker process to exit, and reject any still running from this run.
     """
     # Alice exits on her own after the postcard and numbered streams complete.
@@ -465,10 +534,16 @@ async def _check_outcomes(
     # Relay runs on the host: stop and await its process before reading its log.
     _say("stopping Relay with SIGTERM")
     status = await relay.stop(RELAY_STOP_TIMEOUT)
-    report = re.search(RELAY_REPORT, relay.log.read_text(errors="replace"))
-    if status != 0 or report is None:
+    if status != 0:
         raise ScenarioError(f"Relay exited with {status}; see {relay.log}")
-    _say(report.group(0))
+    match inputs.roles:
+        case RustRoles():
+            report = re.search(RELAY_REPORT, relay.log.read_text(errors="replace"))
+            if report is None:
+                raise ScenarioError(f"Relay's report is missing from {relay.log}")
+            _say(report.group(0))
+        case PythonRoles():
+            _say("Relay exited successfully")
 
     # Check for any Firecracker process from this run that survived its role.
     if left := _vmms_in(run_dir, inputs.firecracker):
@@ -588,9 +663,16 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="a fresh, empty, short directory for this run; it is kept afterwards",
     )
-    run_dir = parser.parse_args(argv).run_dir.resolve()
+    parser.add_argument(
+        "--language",
+        choices=("rust", "python"),
+        default="rust",
+        help="which sealed-postcard program runs the roles",
+    )
+    args = parser.parse_args(argv)
+    run_dir = args.run_dir.resolve()
     try:
-        inputs = Inputs.from_env()
+        inputs = Inputs.from_env(args.language)
         _check_run_dir(run_dir)
         if (reason := kvm_unavailable()) is not None:
             raise ScenarioError(reason)

@@ -8,6 +8,9 @@ Alice sends Bob the postcard and checks his acknowledgement, then opens 32 more
 streams that Bob echoes. Relay forwards every encrypted datagram between the
 two VMs and never sees the postcard's plaintext.
 
+For the Python roles, and for running a Python program of your own in a microVM,
+see [`python/firecracker.md`](../../../../python/firecracker.md).
+
 ## What Runs Where
 
 ```text
