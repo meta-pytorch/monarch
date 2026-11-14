@@ -1180,6 +1180,80 @@ config_mesh = ValueMesh(shape, configs)
 actors = procs.spawn("actors", ConfigActor, config_mesh)
 ```
 
+### 5. HTTP Endpoints
+
+Some clients cannot send Monarch messages: an agent harness in a sandbox, for
+example, expects to reach a model over an OpenAI-compatible HTTP API. An actor
+can serve such clients with `monarch.actor.http.HttpServer`. Monarch's Rust
+runtime accepts connections, parses and routes requests, and writes responses
+without holding the GIL; only the handler runs in Python.
+
+```python
+from monarch.actor import Actor, endpoint
+from monarch.actor.http import HttpServer, Request, Response, StreamingResponse
+
+class Generator(Actor):
+    def __init__(self) -> None:
+        # Listen on every interface so other hosts can connect (use "::" on IPv6).
+        self.http = HttpServer(host="0.0.0.0")
+        self.http.post("/v1/completions", self.complete)
+        self.http.get("/v1/models/{model}", self.model)
+
+    @endpoint
+    async def serve(self) -> str:
+        await self.http.start()
+        return self.http.url
+
+    async def complete(self, request: Request) -> Response | StreamingResponse:
+        body = request.json()
+        if body.get("stream"):
+            return StreamingResponse(
+                self.tokens(body["prompt"]), content_type="text/event-stream"
+            )
+        return Response.json({"text": await self.generate(body["prompt"])})
+
+    async def model(self, request: Request) -> Response:
+        return Response.json({"id": request.path_params["model"]})
+
+    async def __cleanup__(self, exc: Exception | None) -> None:
+        await self.http.stop()
+
+generators = procs.spawn("generators", Generator)
+urls = generators.serve.call().get()  # one URL per actor in the mesh
+```
+
+Each request runs as a task on the actor's event loop:
+
+- Handlers run concurrently with each other and with the actor's endpoints.
+  They share the actor's state without locks and can call other actors'
+  endpoints. Like an endpoint, a handler must not block the event loop.
+- If a handler raises, the client receives a 500 response, the exception is
+  logged, and the actor keeps running.
+- If the client disconnects before the response is complete, the handler's
+  task is cancelled. A `StreamingResponse` generator is cancelled at the
+  `yield` it is suspended on, so its `finally` blocks run.
+- A `StreamingResponse` sends each chunk as it is produced and waits for a
+  slow client instead of queueing the whole body.
+- `stop()` stops accepting connections at once, gives requests in flight a
+  grace period to finish, and then fails the rest with 503. The default
+  grace period is one second, because `__cleanup__` must return within
+  `HYPERACTOR_CLEANUP_TIMEOUT` (3 seconds by default). To let long requests
+  finish, call `stop(grace=...)` from an endpoint before stopping the actor.
+
+`HttpServer.url` is the address to give clients. A server listening on every
+interface advertises the address Monarch's own `tcp` transport would advertise
+for the host; pass `advertised_host` to override it. With `port=0`, the default,
+every actor in a mesh gets its own free port.
+
+The server speaks plain HTTP and does not authenticate clients, so it listens
+only on the loopback interface unless you pass `host`. Listen on other
+interfaces only on a network you trust.
+
+Through Monarch's metrics the server reports `http_server_requests` and
+`http_server_request_duration_us`, labeled by actor, method, route and status,
+and `http_server_requests_in_flight`, labeled by actor. Requests are logged at
+debug level only.
+
 ---
 
 ## CPU/NUMA Binding

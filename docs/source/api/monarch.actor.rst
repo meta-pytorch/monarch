@@ -56,6 +56,29 @@ Each publicly exposed function of the actor is annotated with `@endpoint`:
 .. autofunction:: concurrent_endpoint
 
 
+HTTP Endpoints
+==============
+
+.. currentmodule:: monarch.actor.http
+
+An actor can serve HTTP requests to clients that cannot send Monarch messages.
+See the HTTP Endpoints section of :doc:`../actors` for a walkthrough.
+
+.. autoclass:: HttpServer
+   :members:
+
+.. autoclass:: Request
+   :members:
+
+.. autoclass:: Response
+   :members:
+
+.. autoclass:: StreamingResponse
+   :members:
+
+.. currentmodule:: monarch.actor
+
+
 Delivery Failure Hooks
 ======================
 

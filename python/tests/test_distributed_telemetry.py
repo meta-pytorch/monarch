@@ -8,6 +8,7 @@
 
 """Tests for distributed telemetry with automatic callback registration."""
 
+import asyncio
 import json
 import os
 import shutil
@@ -17,6 +18,8 @@ import threading
 import time
 import types
 import unittest.mock
+import urllib.error
+import urllib.request
 import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -46,6 +49,7 @@ from monarch._src.job.job_sidecar import find_job_sidecar
 from monarch._src.job.persisted_telemetry import open_persisted_engine
 from monarch._src.job.telemetry_ingest import encode_frame, FrameWriter
 from monarch.actor import span
+from monarch.actor.http import HttpServer, Request, Response
 from monarch.config import configured
 from monarch.distributed_telemetry.engine import QueryEngine
 from monarch.job import MeshAdminConfig, ProcessJob, TelemetryConfig
@@ -2166,6 +2170,66 @@ def test_custom_metric() -> None:
             "operation": "predict",
             "outcome": "success",
         }
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_http_server_metrics() -> None:
+    """Test that an HTTP server counts its requests by route and status."""
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+
+        def fetch(url: str) -> int:
+            try:
+                with urllib.request.urlopen(url, timeout=30) as response:
+                    return response.status
+            except urllib.error.HTTPError as error:
+                return error.code
+
+        async def serve_requests() -> list[int]:
+            async def item(request: Request) -> Response:
+                return Response("ok")
+
+            server = HttpServer()
+            server.get("/items/{item}", item)
+            await server.start()
+            try:
+                return [
+                    await asyncio.to_thread(fetch, server.url + path)
+                    for path in ("/items/1", "/items/2", "/missing")
+                ]
+            finally:
+                await server.stop()
+
+        assert asyncio.run(serve_requests()) == [200, 200, 404]
+
+        # Sums are deltas, so one series may arrive as several rows.
+        def counts() -> Counter[tuple[str, str, str]]:
+            rows = _sidecar_query_rows(
+                state,
+                "SELECT attributes_json, sum_u64 FROM metric_sums "
+                "WHERE name = 'http_server_requests'",
+            )
+            totals: Counter[tuple[str, str, str]] = Counter()
+            for row in rows:
+                attributes = json.loads(row["attributes_json"])
+                assert "actor" in attributes, attributes
+                key = (attributes["method"], attributes["route"], attributes["status"])
+                totals[key] += row["sum_u64"]
+            return totals
+
+        expected = {
+            # Labeled with the route's pattern, not the path requested.
+            ("GET", "/items/{item}", "200"): 2,
+            ("GET", "unmatched", "404"): 1,
+        }
+        deadline = time.monotonic() + 40.0
+        while counts() != expected and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert counts() == expected
 
 
 @pytest.mark.timeout(120)
