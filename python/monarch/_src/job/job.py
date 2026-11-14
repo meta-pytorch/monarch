@@ -128,12 +128,15 @@ class BashActor(Actor):
         }
 
     def _expand_subdir(self, output_dir: str) -> str:
-        if "$SUBDIR" not in output_dir:
+        """Expand ``${dim}`` to this rank's coordinate and ``$SUBDIR`` to its key."""
+        if "$" not in output_dir:
             return output_dir
         from monarch.actor import context
 
-        rank = context().actor_instance.rank
-        subdir = "_".join(f"{k}_{v}" for k, v in dict(rank).items())
+        rank = dict(context().actor_instance.rank)
+        for k, v in rank.items():
+            output_dir = output_dir.replace(f"${{{k}}}", str(v))
+        subdir = "_".join(f"{k}_{v}" for k, v in rank.items())
         return output_dir.replace("$SUBDIR", subdir)
 
     @endpoint

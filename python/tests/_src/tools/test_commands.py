@@ -7,8 +7,10 @@
 # pyre-strict
 
 import asyncio
+import io
 import tempfile
 import unittest
+import uuid
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -602,6 +604,72 @@ class TestExecPythonExecutable(unittest.TestCase):
         execute.return_value.get.side_effect = RuntimeError("Python bootstrap failed")
         with self.assertRaisesRegex(RuntimeError, "Python bootstrap failed"):
             commands.exec_on_job(["train.py"], python_executable="/missing/python")
+
+
+class TestExecOutputDir(unittest.TestCase):
+    @mock.patch("uuid.uuid4", return_value=uuid.UUID("12345678" * 4))
+    @mock.patch("monarch._src.job.job.exec_command")
+    @mock.patch("monarch._src.tools.commands.load_current_job")
+    def test_each_process_gets_its_own_output_dir(
+        self, load_job: MagicMock, execute: MagicMock, _uuid4: MagicMock
+    ) -> None:
+        cases: list[tuple[str | None, dict[str, int] | None, str, str]] = [
+            (
+                None,
+                {"gpu": 2},
+                "/tmp/monarch_exec_12345678/$SUBDIR",
+                "Output → /tmp/monarch_exec_12345678/<process>/ on each worker\n"
+                "  e.g. /tmp/monarch_exec_12345678/hosts_0_gpu_0/stdout.txt on hosts_0",
+            ),
+            # Without --per-host, each host is one process.
+            (
+                None,
+                None,
+                "/tmp/monarch_exec_12345678/$SUBDIR",
+                "Output → /tmp/monarch_exec_12345678/<process>/ on each worker\n"
+                "  e.g. /tmp/monarch_exec_12345678/hosts_0/stdout.txt on hosts_0",
+            ),
+            (
+                "/logs",
+                {"gpu": 2},
+                "/logs/exec_outputs/12345678/$SUBDIR",
+                "Output → /mnt/logs/<host>/exec_outputs/12345678/<process>/\n"
+                "  e.g. /mnt/logs/hosts_0/exec_outputs/12345678/hosts_0_gpu_0/stdout.txt",
+            ),
+            # A gather mount's $SUBDIR keeps naming the host, not the process.
+            (
+                "/logs/$SUBDIR",
+                {"gpu": 2},
+                "/logs/hosts_${hosts}/exec_outputs/12345678/$SUBDIR",
+                "Output → /mnt/logs/<host>/exec_outputs/12345678/<process>/\n"
+                "  e.g. /mnt/logs/hosts_0/exec_outputs/12345678/hosts_0_gpu_0/stdout.txt",
+            ),
+        ]
+        for remote, per_host, output_dir, report in cases:
+            with (
+                self.subTest(remote=remote, per_host=per_host),
+                mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                job = load_job.return_value
+                job.state.return_value._hosts = {
+                    "workers": MagicMock(extent={"hosts": 2})
+                }
+                job._components.mounts._mounts._gather_entries = (
+                    []
+                    if remote is None
+                    else [
+                        MagicMock(
+                            remote_mount_point=remote, local_mount_point="/mnt/logs"
+                        )
+                    ]
+                )
+                job._components.mounts.python_executable_for_mesh.return_value = None
+                execute.return_value.get.return_value = 0
+
+                commands.exec_on_job(["true"], run_all=True, per_host=per_host)
+
+                self.assertEqual(execute.call_args.kwargs["output_dir"], output_dir)
+                self.assertEqual(stdout.getvalue(), f"{report}\n")
 
 
 class TestShellOnJob(unittest.TestCase):

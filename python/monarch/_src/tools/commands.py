@@ -584,17 +584,26 @@ def _parse_point(s: str) -> dict[str, int]:
     return result
 
 
-def _output_dir_for_job(job: "Any") -> tuple[str, str]:
+def _output_dir_for_job(
+    job: "Any", host_mesh: HostMesh, per_host: Optional[dict[str, int]]
+) -> tuple[str, str]:
     """Return ``(output_dir_on_workers, human_report)`` for a multi-rank exec.
 
     If the job has a gather mount with a string remote_mount_point, the output
     directory is placed inside the gathered path so files are accessible on
     the client via the FUSE mount.  Otherwise falls back to a temp dir in
-    ``/tmp`` on the workers.
+    ``/tmp`` on the workers.  Pass the result through
+    :func:`_process_output_dir` to give each process its own directory.
+
+    The report ends with the first process's ``stdout.txt`` on *host_mesh*
+    as an example path.
     """
     import uuid as _uuid
 
     run_id = _uuid.uuid4().hex[:8]
+    host_dims = list(host_mesh.extent.keys())
+    host_key = "_".join(f"{dim}_0" for dim in host_dims)
+    process_key = "_".join(f"{dim}_0" for dim in [*host_dims, *(per_host or {})])
     entries = job._components.mounts._mounts._gather_entries
     if entries:
         entry = entries[0]
@@ -603,12 +612,29 @@ def _output_dir_for_job(job: "Any") -> tuple[str, str]:
             output_dir = os.path.join(remote, "exec_outputs", run_id)
             local = entry.local_mount_point
             report = (
-                f"Output → {local}/<rank>/exec_outputs/{run_id}/\n"
-                f"  e.g. {local}/hosts_0/exec_outputs/{run_id}/stdout.txt"
+                f"Output → {local}/<host>/exec_outputs/{run_id}/<process>/\n"
+                f"  e.g. {local}/{host_key}/exec_outputs/{run_id}/{process_key}/stdout.txt"
             )
             return output_dir, report
     output_dir = f"/tmp/monarch_exec_{run_id}"
-    return output_dir, f"Output → {output_dir}/ on each worker"
+    report = (
+        f"Output → {output_dir}/<process>/ on each worker\n"
+        f"  e.g. {output_dir}/{process_key}/stdout.txt on {host_key}"
+    )
+    return output_dir, report
+
+
+def _process_output_dir(output_dir: str, host_mesh: HostMesh) -> str:
+    """Give each process spawned on *host_mesh* its own directory.
+
+    Workers expand ``$SUBDIR`` to the process's full rank key (for example
+    ``hosts_0_gpu_1``) and ``${dim}`` to its coordinate in *dim*. A gather
+    mount expands ``$SUBDIR`` in its remote path to the host's key, so that
+    occurrence is rewritten from the host dimensions alone to keep the files
+    inside the gathered directory.
+    """
+    host_key = "_".join(f"{dim}_${{{dim}}}" for dim in host_mesh.extent.keys())
+    return os.path.join(output_dir.replace("$SUBDIR", host_key), "$SUBDIR")
 
 
 def _kill_job(job: JobTrait, host_meshes: Iterable[HostMesh]) -> None:
@@ -709,7 +735,7 @@ def exec_on_job(
     if is_streaming:
         output_dir = None
     else:
-        output_dir, report = _output_dir_for_job(job)
+        output_dir, report = _output_dir_for_job(job, target_meshes[0][1], per_host)
         print(report)
 
     # ── Execute ────────────────────────────────────────────────────────────
@@ -742,7 +768,11 @@ def exec_on_job(
                 cmd,
                 env=mesh_env,
                 workdir=workdir,
-                output_dir=output_dir,
+                output_dir=(
+                    None
+                    if output_dir is None
+                    else _process_output_dir(output_dir, host_mesh)
+                ),
                 rank=rank,
                 point=point,
                 per_host=per_host,

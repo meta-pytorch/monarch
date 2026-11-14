@@ -32,6 +32,7 @@ import monarch._src.job.job_sidecar as js
 import monarch._src.job.mount_config as mc
 import psutil
 import pytest
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.handle import (
     _new_handle_pair,
     Handle,
@@ -72,6 +73,7 @@ from monarch._src.job.once_daemon import (
 from monarch._src.job.process import ProcessJob
 from monarch.actor import context as current_context, Future, HostMesh
 from monarch.config import configured, get_global_config
+from scoped_state import scoped_state
 
 
 def test_explicit_uid_values_are_instance_identities() -> None:
@@ -2839,6 +2841,24 @@ def test_exec_command_output_dir_suppresses_printing(capsys):
     )
     exec_command(host_mesh, ["echo", "hi"], output_dir="/tmp/out").get()
     assert "SHOULD_NOT_PRINT" not in capsys.readouterr().out
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_exec_command_gives_each_process_its_own_output_files(tmp_path):
+    """Processes on one host write their output files to separate directories."""
+    with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
+        returncode = exec_command(
+            state.hosts,
+            ["bash", "-c", "echo $MONARCH_RANK_hosts $MONARCH_RANK_gpu"],
+            output_dir=str(tmp_path / "hosts_${hosts}" / "$SUBDIR"),
+            per_host={"gpu": 2},
+        ).get()
+    assert returncode == 0
+    for host in range(2):
+        for gpu in range(2):
+            process_dir = tmp_path / f"hosts_{host}" / f"hosts_{host}_gpu_{gpu}"
+            assert (process_dir / "stdout.txt").read_text() == f"{host} {gpu}\n"
 
 
 @pytest.mark.timeout(10)

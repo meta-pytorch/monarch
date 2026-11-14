@@ -70,7 +70,7 @@ timeout 1800 "$MON" exec --all --per-host gpu=8 \
     -- bash -c 'python train.py 2>&1'
 
 echo "### per-worker import seconds + train step/loss/mfu (read before kill tears down the gather mount):"
-grep -hE 'step:|^[0-9]+\.[0-9]+$' "$LOGS"/hosts_*/exec_outputs/*/stdout.txt 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | tail -40
+grep -hE 'step:|^[0-9]+\.[0-9]+$' "$LOGS"/hosts_*/exec_outputs/*/*/stdout.txt 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | tail -40
 
 echo "### kill (wall)"
 time "$MON" kill

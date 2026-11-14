@@ -509,7 +509,9 @@ def test_cli_records_one_invocation_across_meshes_with_rank_results(
     spec._components.mounts.python_executable_for_mesh.return_value = None
     monkeypatch.setattr(commands, "load_current_job", lambda: spec)
     monkeypatch.setattr(
-        commands, "_output_dir_for_job", lambda job: ("/tmp/output", "Output directory")
+        commands,
+        "_output_dir_for_job",
+        lambda job, host_mesh, per_host: ("/tmp/output", "Output directory"),
     )
     calls = []
 

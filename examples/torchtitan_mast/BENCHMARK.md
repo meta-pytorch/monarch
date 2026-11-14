@@ -268,7 +268,7 @@ Bump `TITAN_TRAINING_STEPS` higher for a longer run. 300 steps is the smoke-test
 Tail rank 0's per-worker stdout for live step lines:
 
 ```bash
-tail -f /home/cpuhrsch/torchtitan_logs/hosts_0/exec_outputs/*/stdout.txt | grep step:
+tail -f ${TITAN_LOG_DIR:-$HOME/torchtitan_logs}/hosts_0/exec_outputs/*/hosts_0_gpu_0/stdout.txt | grep step:
 ```
 
 ### Refresh measurements
