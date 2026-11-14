@@ -1,0 +1,1351 @@
+# monarch.actor
+
+The `monarch.actor` module provides the actor-based programming model for distributed computation. See [Getting Started](../generated/examples/getting_started.html) for an overview.
+
+# Creating Actors
+
+Actors are created on multidimensional meshes of processes that
+are launched across hosts. HostMesh represents a mesh of hosts. ProcMesh is a mesh of processes.
+
+*class*monarch.actor.HostMesh(*hy_host_mesh*, *region*, *stream_logs*, *is_fake_in_process*, *code_sync_proc_mesh*)[[source]](../_modules/monarch/_src/actor/host_mesh.html#HostMesh)
+
+Bases: `MeshTrait`
+
+HostMesh represents a collection of compute hosts that can be used to spawn
+processes and actors.
+
+Can be used as an async context manager, which will shut down the hosts on
+exit:
+```
+host_mesh = job.state().hosts
+async with host_mesh:
+
+> # spawn proc meshes, actor meshes, etc.
+
+# shutdown() is called automatically on exit.
+```
+
+If you don't want to shutdown the hosts, you don't need to use it as a
+context manager.
+
+spawn_procs(*per_host=None*, *bootstrap=None*, *name=None*, *proc_bind=None*, *bootstrap_command=None*)[[source]](../_modules/monarch/_src/actor/host_mesh.html#HostMesh.spawn_procs)
+
+Spawn a ProcMesh onto this host mesh.
+
+Parameters:
+
+- **per_host** ([*Dict*](https://docs.python.org/3/library/typing.html#typing.Dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*int*](https://docs.python.org/3/builtins/functions.html#int)*]**|**None*) - shape of procs per host, e.g. `{"gpus": 4}`.
+- **bootstrap** ([*Callable*](https://docs.python.org/3/library/typing.html#typing.Callable)*[**[**]**,**None**]**|*[*Callable*](https://docs.python.org/3/library/typing.html#typing.Callable)*[**[**]**,*[*Awaitable*](https://docs.python.org/3/library/typing.html#typing.Awaitable)*[**None**]**]**|**None*) - optional setup callable run on each proc.
+- **name** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - optional name for the proc mesh.
+- **proc_bind** ([*list*](https://docs.python.org/3/builtins/stdtypes.html#list)*[*[*dict*](https://docs.python.org/3/builtins/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*]**]**|**None*) - optional per-process CPU/NUMA binding config.
+Length must equal `math.prod(per_host.values())`.
+Each dict maps binding keys (`cpunodebind`,
+`membind`, `physcpubind`, `cpus`) to values.
+- **bootstrap_command** (*BootstrapCommand**|*[*Callable*](https://docs.python.org/3/library/typing.html#typing.Callable)*[**[**Point**]**,**BootstrapCommand**]**|**None*) - optional BootstrapCommand or callable that
+returns a BootstrapCommand for each coordinate. The callable
+receives a `Point` (combined coordinate across host and
+per_host dimensions). This allows full customization of the
+bootstrap command per coordinate. The callable runs once per
+rank, in rank order, on the calling thread before spawning
+begins; its errors raise from this call.
+
+*property*region*: Region*
+
+*property*stream_logs*: [bool](https://docs.python.org/3/builtins/functions.html#bool)*
+
+with_python_executable(*python_executable*)[[source]](../_modules/monarch/_src/actor/host_mesh.html#HostMesh.with_python_executable)
+
+Return a new HostMesh that will use the given Python executable when
+spawning procs. Procs spawned from this mesh will also inherit this
+Python executable when they call `this_host().spawn_procs(...)`.
+
+Parameters:
+
+**python_executable** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - Path to the Python executable to use.
+
+Returns:
+
+A new HostMesh configured to use the specified Python executable.
+
+Return type:
+
+*HostMesh*
+
+*property*is_fake_in_process*: [bool](https://docs.python.org/3/builtins/functions.html#bool)*
+
+shutdown()[[source]](../_modules/monarch/_src/actor/host_mesh.html#HostMesh.shutdown)
+
+Shutdown the host mesh and all of its processes. It will throw an exception
+if this host mesh is a *reference* rather than *owned*, which can happen
+if this HostMesh object was received from a remote actor or if it was
+produced by slicing.
+After shutting down, the hosts in this mesh will be unusable, and no new
+HostMeshes will be able to connect to them.
+If you want to stop everything on the host but keep them available for
+new clients, use stop() instead.
+
+This is run automatically on __aexit__ when used as an async context manager.
+
+Returns:
+
+A future that completes when the host mesh has been shut down.
+
+Return type:
+
+Future[None]
+
+stop()[[source]](../_modules/monarch/_src/actor/host_mesh.html#HostMesh.stop)
+
+Stop the host mesh, releasing all resources but keeping worker
+processes alive for reconnection. A new HostMesh can be created that
+points to the same hosts.
+
+Like shutdown, this throws if the host mesh is a reference
+rather than owned.
+
+Returns:
+
+A future that completes when the host mesh has been stopped.
+
+Return type:
+
+Future[None]
+
+set_proc_launcher(*launcher*, *params=None*)[[source]](../_modules/monarch/_src/actor/host_mesh.html#HostMesh.set_proc_launcher)
+
+Install a Python proc launcher on every host of this mesh.
+
+Calling this method alone does not start installation. Await the
+returned Future or call `.get()` to start it and wait for completion.
+
+Each host constructs `launcher(params)` on its system proc. Procs
+spawned on the host afterwards are launched, stopped and reported on
+by that launcher instead of the built-in one. Wait for the returned
+Future before spawning procs on these hosts: a host that has already
+spawned a proc keeps the launcher it used, and installing there fails.
+The launcher stays installed for the lifetime of each host process,
+including across `stop()` and later clients.
+
+Parameters:
+
+- **launcher** ([*Type*](https://docs.python.org/3/library/typing.html#typing.Type)*[**ProcLauncher**]*) - A subclass of
+`monarch._src.actor.proc_launcher.ProcLauncher`.
+- **params** ([*dict*](https://docs.python.org/3/builtins/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*Any*](https://docs.python.org/3/library/typing.html#typing.Any)*]**|**None*) - Picklable configuration passed to the launcher's
+constructor on every host.
+
+Returns:
+
+Completes once every host has installed the
+launcher. Raises an error naming each host that failed; hosts
+that succeeded keep the launcher.
+
+Return type:
+
+Future[None]
+
+*async*sync_workspace(*workspace*, *conda=False*, *auto_reload=False*)[[source]](../_modules/monarch/_src/actor/host_mesh.html#HostMesh.sync_workspace)
+
+Sync local code changes to the remote hosts.
+
+Parameters:
+
+- **workspace** (*Workspace*) - The workspace to sync.
+- **conda** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - If True, also sync the currently activated conda env.
+- **auto_reload** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - If True, automatically reload the workspace on changes.
+
+*property*initialized*: Future[[Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]]*
+
+Future completes with 'True' when the HostMesh has initialized.
+Because HostMesh are remote objects, there is no guarantee that the HostMesh is
+still usable after this completes, only that at some point in the past it was usable.
+
+*property*extent*: Extent*
+
+flatten(*name*)
+
+Returns a new device mesh with all dimensions flattened into a single dimension
+with the given name.
+
+Currently this supports only dense meshes: that is, all ranks must be contiguous
+in the mesh.
+
+rename(***kwargs*)
+
+Returns a new device mesh with some of dimensions renamed.
+Dimensions not mentioned are retained:
+
+> new_mesh = mesh.rename(host='dp', gpu='tp')
+
+size(*dim=None*)
+
+Returns the number of elements (total) of the subset of mesh asked for.
+If dims is None, returns the total number of devices in the mesh.
+
+*property*sizes*: [dict](https://docs.python.org/3/builtins/stdtypes.html#dict)[[str](https://docs.python.org/3/builtins/stdtypes.html#str), [int](https://docs.python.org/3/builtins/functions.html#int)]*
+
+slice(***kwargs*)
+
+Select along named dimensions. Integer values remove
+dimensions, slice objects keep dimensions but restrict them.
+
+Examples: mesh.slice(batch=3, gpu=slice(2, 6))
+
+split(***kwargs*)
+
+Returns a new device mesh with some dimensions of this mesh split.
+For instance, this call splits the host dimension into dp and pp dimensions,
+The size of 'pp' is specified and the dimension size is derived from it:
+
+> new_mesh = mesh.split(host=('dp', 'pp'), gpu=('tp','cp'), pp=16, cp=2)
+
+Dimensions not specified will remain unchanged.
+
+*class*monarch.actor.ProcMesh(*hy_proc_mesh*, *host_mesh*, *region*, *root_region*, *_device_mesh=None*)[[source]](../_modules/monarch/_src/actor/proc_mesh.html#ProcMesh)
+
+Bases: `MeshTrait`
+
+A distributed mesh of processes for actor computation.
+
+ProcMesh represents a collection of processes that can spawn and manage actors.
+It provides the foundation for distributed actor systems by managing process
+allocation, lifecycle, and communication across multiple hosts and devices.
+
+The ProcMesh supports spawning actors, monitoring process health, logging
+configuration, and code synchronization across distributed processes.
+
+*property*initialized*: Future[[Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]]*
+
+Future completes with 'True' when the ProcMesh has initialized.
+Because ProcMesh are remote objects, there is no guarantee that the ProcMesh is
+still usable after this completes, only that at some point in the past it was usable.
+
+*property*host_mesh*: HostMesh*
+
+spawn(*name*, *Class*, **args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/proc_mesh.html#ProcMesh.spawn)
+
+Spawn a T-typed actor mesh on the process mesh.
+
+Args:
+- name: The name of the actor.
+- Class: The class of the actor to spawn.
+- args: Positional arguments to pass to the actor's constructor.
+- kwargs: Keyword arguments to pass to the actor's constructor.
+
+Returns:
+- The actor mesh reference typed as T.
+
+Note:
+
+The method returns immediately, initializing the underlying actor instances
+asynchronously. Thus, return of this method does not guarantee the actor's
+__init__ has be executed; but rather that __init__ will be executed before the
+first call to the actor's endpoints.
+
+Nonblocking enhances composition, permitting the user to easily pipeline mesh
+creation, for exmaple to construct complex mesh object graphs without introducing
+additional latency.
+
+If __init__ fails, the actor will be stopped and a supervision event will
+be raised.
+
+*classmethod*from_host_mesh(*host_mesh*, *hy_proc_mesh*, *region*, *setup=None*, *_attach_controller_controller=True*)[[source]](../_modules/monarch/_src/actor/proc_mesh.html#ProcMesh.from_host_mesh)
+
+to_table()[[source]](../_modules/monarch/_src/actor/proc_mesh.html#ProcMesh.to_table)
+
+activate()[[source]](../_modules/monarch/_src/actor/proc_mesh.html#ProcMesh.activate)
+
+Activate the device mesh. Operations done from insided this context manager will be
+distributed tensor operations. Each operation will be excuted on each device in the mesh.
+
+See [https://meta-pytorch.org/monarch/generated/examples/distributed_tensors.html](https://meta-pytorch.org/monarch/generated/examples/distributed_tensors.html) for more information
+
+> with mesh.activate():
+> 
+> t = torch.rand(3, 4, device="cuda")
+
+rank_tensor(*dim*)[[source]](../_modules/monarch/_src/actor/proc_mesh.html#ProcMesh.rank_tensor)
+
+rank_tensors()[[source]](../_modules/monarch/_src/actor/proc_mesh.html#ProcMesh.rank_tensors)
+
+stop(*reason='stopped by client'*)[[source]](../_modules/monarch/_src/actor/proc_mesh.html#ProcMesh.stop)
+
+This will stop all processes (and actors) in the mesh and
+release any resources associated with the mesh. The returned Future
+completes once every proc has stopped, failed, or timed out.
+
+*property*extent*: Extent*
+
+flatten(*name*)
+
+Returns a new device mesh with all dimensions flattened into a single dimension
+with the given name.
+
+Currently this supports only dense meshes: that is, all ranks must be contiguous
+in the mesh.
+
+rename(***kwargs*)
+
+Returns a new device mesh with some of dimensions renamed.
+Dimensions not mentioned are retained:
+
+> new_mesh = mesh.rename(host='dp', gpu='tp')
+
+size(*dim=None*)
+
+Returns the number of elements (total) of the subset of mesh asked for.
+If dims is None, returns the total number of devices in the mesh.
+
+*property*sizes*: [dict](https://docs.python.org/3/builtins/stdtypes.html#dict)[[str](https://docs.python.org/3/builtins/stdtypes.html#str), [int](https://docs.python.org/3/builtins/functions.html#int)]*
+
+slice(***kwargs*)
+
+Select along named dimensions. Integer values remove
+dimensions, slice objects keep dimensions but restrict them.
+
+Examples: mesh.slice(batch=3, gpu=slice(2, 6))
+
+split(***kwargs*)
+
+Returns a new device mesh with some dimensions of this mesh split.
+For instance, this call splits the host dimension into dp and pp dimensions,
+The size of 'pp' is specified and the dimension size is derived from it:
+
+> new_mesh = mesh.split(host=('dp', 'pp'), gpu=('tp','cp'), pp=16, cp=2)
+
+Dimensions not specified will remain unchanged.
+
+monarch.actor.get_or_spawn_controller(*name*, *Class*, **args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/proc_mesh.html#get_or_spawn_controller)
+
+Creates a singleton actor (controller) indexed by name, or if it already exists, returns the
+existing actor.
+
+Parameters:
+
+- **name** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)) - The unique name of the actor, used as a key for retrieval.
+- **Class** (*Type*) - The class of the actor to spawn. Must be a subclass of Actor.
+- ***args** (*Any*) - Positional arguments to pass to the actor constructor.
+- ****kwargs** (*Any*) - Keyword arguments to pass to the actor constructor.
+
+Returns:
+
+A Future that resolves to a reference to the actor.
+
+Return type:
+
+*Future*[*TActor*]
+
+monarch.actor.this_host()[[source]](../_modules/monarch/_src/actor/host_mesh.html#this_host)
+
+The current machine.
+
+This is just shorthand for looking it up via the context
+
+monarch.actor.this_proc()[[source]](../_modules/monarch/_src/actor/host_mesh.html#this_proc)
+
+The current singleton process that this specific actor is
+running on
+
+monarch.actor.default_bootstrap_cmd()[[source]](../_modules/monarch/_src/actor/host_mesh.html#default_bootstrap_cmd)
+
+Get the default bootstrap command for the current environment.
+
+Returns a BootstrapCommand configured with the current Python executable.
+Spawned procs inherit the environment of the host that spawns them; the
+command does not carry the caller's environment. This can be used as a
+base for customization with `with_env()` or by modifying its attributes
+directly. In `with_env()`, a `None` value removes a variable from the
+inherited environment; set `inherit_env = False` to start from an empty
+environment instead.
+
+Returns:
+
+The default bootstrap command.
+
+Return type:
+
+BootstrapCommand
+
+monarch.actor.enable_transport(*transport*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#enable_transport)
+
+Allow monarch to communicate with transport type 'transport'
+This must be called before any other calls in the monarch API.
+If it isn't called, we will implicitly call
+monarch.enable_transport(ChannelTransport.Unix) on the first monarch call.
+
+Currently only one transport type may be enabled at one time.
+In the future we may allow multiple to be enabled.
+
+Supported transport values:
+
+- ChannelTransport enum: ChannelTransport.Unix, ChannelTransport.TcpWithHostname, etc.
+- string short cuts for the ChannelTransport enum:
+
+- "tcp": ChannelTransport.TcpWithHostname
+- "ipc": ChannelTransport.Unix
+- "metatls": ChannelTransport.MetaTlsWithIpV6
+- "metatls-hostname": ChannelTransport.MetaTlsWithHostname
+- "tls": ChannelTransport.Tls (uses configurable TLS certs)
+- ZMQ-style URL format string for explicit address, e.g.:
+
+- "[tcp://127.0.0.1:8080](tcp://127.0.0.1:8080)"
+
+For Meta usage, use metatls-hostname
+
+# Defining Actors
+
+All actor classes subclass the Actor base object, which provides them mesh slicing API.
+Each publicly exposed function of the actor is annotated with @endpoint:
+
+*class*monarch.actor.Actor[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Actor)
+
+Bases: `MeshTrait`
+
+Base class for actors.
+
+Subclass `Actor` to define an actor, and decorate the methods that form
+its public API with `@endpoint`. Actors are spawned onto a `ProcMesh`
+(for example with `this_proc().spawn(...)`), after which their endpoints
+are invoked remotely through the messaging adverbs. Each actor processes its
+messages sequentially and participates in the supervision tree.
+
+An endpoint that calls `os.fork()` must not let the child return or
+await into the copied event loop; the child must end in `os._exit()` or
+`os.exec*()`, and under asyncio's default event-loop policy may run a
+fresh loop with `asyncio.run()` first (WF-3 in
+`monarch/_src/actor/bootstrap.py`).
+
+*property*logger*: [Logger](https://docs.python.org/3/library/logging.html#logging.Logger)*
+
+*property*initialized*: [Any](https://docs.python.org/3/library/typing.html#typing.Any)*
+
+stop(*reason='stopped by client'*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Actor.stop)
+
+*property*extent*: Extent*
+
+flatten(*name*)
+
+Returns a new device mesh with all dimensions flattened into a single dimension
+with the given name.
+
+Currently this supports only dense meshes: that is, all ranks must be contiguous
+in the mesh.
+
+rename(***kwargs*)
+
+Returns a new device mesh with some of dimensions renamed.
+Dimensions not mentioned are retained:
+
+> new_mesh = mesh.rename(host='dp', gpu='tp')
+
+size(*dim=None*)
+
+Returns the number of elements (total) of the subset of mesh asked for.
+If dims is None, returns the total number of devices in the mesh.
+
+*property*sizes*: [dict](https://docs.python.org/3/builtins/stdtypes.html#dict)[[str](https://docs.python.org/3/builtins/stdtypes.html#str), [int](https://docs.python.org/3/builtins/functions.html#int)]*
+
+slice(***kwargs*)
+
+Select along named dimensions. Integer values remove
+dimensions, slice objects keep dimensions but restrict them.
+
+Examples: mesh.slice(batch=3, gpu=slice(2, 6))
+
+split(***kwargs*)
+
+Returns a new device mesh with some dimensions of this mesh split.
+For instance, this call splits the host dimension into dp and pp dimensions,
+The size of 'pp' is specified and the dimension size is derived from it:
+
+> new_mesh = mesh.split(host=('dp', 'pp'), gpu=('tp','cp'), pp=16, cp=2)
+
+Dimensions not specified will remain unchanged.
+
+monarch.actor.endpoint(*method: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Concatenate](https://docs.python.org/3/library/typing.html#typing.Concatenate)[[Any](https://docs.python.org/3/library/typing.html#typing.Any), P]], [Awaitable](https://docs.python.org/3/library/typing.html#typing.Awaitable)[R]]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointProperty[P, R][[source]](../_modules/monarch/_src/actor/endpoint.html#endpoint)
+
+monarch.actor.endpoint(*method: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Concatenate](https://docs.python.org/3/library/typing.html#typing.Concatenate)[[Any](https://docs.python.org/3/library/typing.html#typing.Any), P]], R]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointProperty[P, R]
+
+monarch.actor.endpoint(***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointIfy
+
+monarch.actor.endpoint(*method: Callable[Concatenate[Any, 'Port[R]', P], Awaitable[[None](https://docs.python.org/3/builtins/constants.html#None)]]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointProperty[P, R]
+
+monarch.actor.endpoint(*method: Callable[Concatenate[Any, 'Port[R]', P], [None](https://docs.python.org/3/builtins/constants.html#None)]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → EndpointProperty[P, R]
+
+monarch.actor.endpoint(***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/builtins/functions.html#bool) = True*) → PortedEndpointIfy
+
+Mark an `Actor` method as an endpoint callable from other actors.
+
+An endpoint defines part of an actor's public API. Once the actor is
+spawned onto a mesh, you invoke its endpoints through messaging adverbs
+(`call`, `call_one`, `choose`, `stream`, `broadcast`, and
+`rref`) rather than calling the method directly. Each adverb controls how
+the message is delivered and how the response is returned. Endpoint methods
+may be synchronous or `async`.
+
+Apply it bare or with options:
+
+```
+class Counter(Actor):
+ @endpoint
+ def increment(self) -> int:
+ ...
+
+ @endpoint(explicit_response_port=True)
+ async def stream_results(self, port: Port[int]) -> None:
+ ...
+```
+
+Parameters:
+
+- **method** - The actor method to wrap. Supplied automatically when the
+decorator is applied without parentheses; leave it unset when
+passing options.
+- **propagate** - Controls how the tensor engine infers output tensor shapes
+for `rref` without running the endpoint. Pass a callable that
+takes the endpoint's arguments (excluding `self`) and returns
+tensors of the shapes the endpoint would produce, or one of the
+strings `"cached"`, `"inspect"`, or `"mocked"`. Defaults to
+`None`, which matters only for endpoints used with distributed
+tensors.
+- **explicit_response_port** - When `True`, the endpoint receives a `Port`
+as its first argument (after `self`) and is responsible for
+sending its result through that port instead of returning a value.
+This supports custom response protocols, such as sending several
+responses or deferring one. The method's return annotation should
+be `None`.
+- **instrument** - When `True` (the default), wrap each invocation in a
+tracing span named for the method.
+
+Returns:
+
+An `EndpointProperty` descriptor. Accessing it on a spawned actor
+yields an `Endpoint` exposing the messaging adverbs.
+
+monarch.actor.concurrent_endpoint(*method=None*, ***, *propagate=None*, *explicit_response_port=False*, *instrument=True*)[[source]](../_modules/monarch/_src/actor/concurrent.html#concurrent_endpoint)
+
+Run one async actor endpoint as an `asyncio` background task.
+
+The decorator accepts the same endpoint options as `@endpoint`. It
+rewrites the endpoint to use an explicit response port, schedules the
+original async body as a task, and returns immediately so that the actor can
+handle another queued message.
+
+If two messages from the same source actor call `@concurrent_endpoint`
+methods on the same target actor, the first endpoint body starts before the
+second. This is only a start-order guarantee: the first endpoint runs until
+its first `await`, not to completion, before the second starts.
+
+While an actor has queued messages, it periodically yields to its event
+loop, so queued concurrent calls start without waiting for one another and
+other ready tasks on the loop are not starved. How often it yields is an
+implementation detail and may change. This does not limit how long one
+endpoint body runs before its first `await`.
+
+If you mix `@concurrent_endpoint` with normal `@endpoint` methods, a
+normal endpoint that follows a concurrent endpoint may run before the
+concurrent endpoint body has started.
+
+Outstanding tasks created by this decorator are cancelled and awaited
+before user `__cleanup__` runs. This is a cleanup-time guarantee only:
+meshes owned by the actor may already have been stopped by the core actor
+lifecycle before these tasks are cancelled. General pending tasks on the
+actor's asyncio loop are cancelled later, after user `__cleanup__`
+completes.
+
+If the endpoint body raises an exception that it does not forward through
+its response port, the actor fails with a supervision error, just as an
+exception escaping an `@endpoint(explicit_response_port=True)` method
+does. This follows the principle of no silent errors. To report an error to
+the caller without failing the actor, forward it through the port (for
+example, `port.exception(e)`); to recover, catch it inside the endpoint.
+
+More complex protocols can still use `@endpoint(explicit_response_port=True)`
+and manage response ports manually.
+
+# Delivery Failure Hooks
+
+These hooks run on the actor that sent an undeliverable message. Choose a
+kind-specific hook for a policy that applies only to invalid references,
+expired deliveries, or transport and port failures. A generic override takes
+precedence over all kind-specific Python hooks. Returning `True` absorbs
+the failure; returning `False` preserves the existing default, without
+calling another Python hook. See [Delivery failure hooks](../actors.html#delivery-failure-hooks) for the default
+behaviors, examples, and callback scheduling.
+
+Actors without overrides keep their existing failure behavior. For returned
+messages, invalid references and TTL expiration are fatal; `PortGone` and
+ordinary transport failures are absorbed, while `OversizedFrame` is fatal.
+Unhandled metadata-only reports remain fatal, including `PortGone` reports.
+
+Actor._handle_delivery_failure_event(*message*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Actor._handle_delivery_failure_event)
+
+Handle any delivery failure, overriding the kind-specific hooks.
+
+Inspect `message.root_delivery_failure()` for its kind and reason.
+Return True to absorb the failure or False to retain the existing
+default directly, without calling a kind-specific Python hook.
+Unhandled metadata-only reports remain fatal; returned messages use
+the Rust default for their failure kind.
+Prefer a kind-specific override when your policy applies to only one
+failure kind. An async actor may use a sync or async override; a sync
+actor requires a sync override. Callbacks share the lifecycle and
+scheduling described by `_handle_undeliverable_message`.
+
+Actor._handle_invalid_reference(*message*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Actor._handle_invalid_reference)
+
+Handle an invalid destination, including a stopped or failed actor.
+
+`message.root_delivery_failure().invalid_reference_reason` gives
+the reason. Return True to absorb the failure; False fails this actor.
+This hook runs when `_handle_delivery_failure_event` is not overridden.
+Customize it for expected terminal recipients while preserving errors
+for other invalid references. `HandlerNotBound` also occurs when a
+handler was never registered; a dropped reply port is `PortGone`.
+
+Actor._handle_expired_delivery(*message*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Actor._handle_expired_delivery)
+
+Handle a message that exceeded its delivery hop TTL.
+
+Return True to absorb the failure; False fails this actor. This hook
+runs when `_handle_delivery_failure_event` is not overridden.
+Customize it only when the application deliberately tolerates losing
+a message that exhausted its hop TTL.
+
+Actor._handle_undeliverable_message(*message*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Actor._handle_undeliverable_message)
+
+Handle a transport failure or a destination port whose recipient is gone.
+
+This hook runs when `_handle_delivery_failure_event` is not overridden.
+Return True to absorb the failure or False to retain the existing default
+handling. Inspect `message.root_delivery_failure()` for its reason.
+For returned messages, the default absorbs `PortGone` and ordinary
+transport failures; `OversizedFrame` fails this actor. Unhandled
+metadata-only reports remain fatal. Customize this hook for request
+bookkeeping or diagnostics, or raise to make transport failure fatal.
+
+This may be sync or async for an async actor; a sync actor requires a
+sync override. It runs one callback at a time alongside
+`__supervise__`. A pending async-actor call is cancelled if the actor
+stops; a sync actor finishes a callback it has started and drops one it
+has not.
+
+## Failure Details
+
+`UndeliverableMessageEnvelope.root_delivery_failure()` returns the original
+structured failure. `kind` identifies its category. The applicable reason
+property is `invalid_reference_reason`, `undeliverable_reason`, or
+`transport_failure_reason`; the other properties return `None`. The enums
+below are exported from `monarch.actor` and implemented in the Rust bindings.
+
+*class*monarch.actor.UndeliverableMessageEnvelope
+
+dest()
+
+error_msg()
+
+has_payload
+
+root_delivery_failure()
+
+sender()
+
+*class*monarch.actor.DeliveryFailure
+
+A structured Rust delivery failure exposed to Python.
+
+invalid_reference_reason
+
+kind
+
+target
+
+transport_failure_reason
+
+undeliverable_reason
+
+*class*monarch.actor.DeliveryFailureKind
+
+The category of a delivery failure.
+
+Expired*= DeliveryFailureKind.Expired*
+
+InvalidReference*= DeliveryFailureKind.InvalidReference*
+
+Undeliverable*= DeliveryFailureKind.Undeliverable*
+
+*class*monarch.actor.InvalidReferenceReason
+
+Why a destination reference is invalid.
+
+ActorFailed*= InvalidReferenceReason.ActorFailed*
+
+ActorNotExist*= InvalidReferenceReason.ActorNotExist*
+
+ActorStopped*= InvalidReferenceReason.ActorStopped*
+
+HandlerNotBound*= InvalidReferenceReason.HandlerNotBound*
+
+PortNeverAllocated*= InvalidReferenceReason.PortNeverAllocated*
+
+ProcNotExist*= InvalidReferenceReason.ProcNotExist*
+
+ProtocolMismatch*= InvalidReferenceReason.ProtocolMismatch*
+
+RouteNotExist*= InvalidReferenceReason.RouteNotExist*
+
+WrongMailboxOwner*= InvalidReferenceReason.WrongMailboxOwner*
+
+*class*monarch.actor.UndeliverableReason
+
+A transport failure or a destination port whose recipient is gone.
+
+PortGone*= UndeliverableReason.PortGone*
+
+Transport*= UndeliverableReason.Transport*
+
+*class*monarch.actor.TransportFailureReason
+
+Why transport could not deliver a message.
+
+AckTimedOut*= TransportFailureReason.AckTimedOut*
+
+ChannelClosed*= TransportFailureReason.ChannelClosed*
+
+DialFailed*= TransportFailureReason.DialFailed*
+
+ForwarderUnavailable*= TransportFailureReason.ForwarderUnavailable*
+
+LinkUnavailable*= TransportFailureReason.LinkUnavailable*
+
+NoRoute*= TransportFailureReason.NoRoute*
+
+OversizedFrame*= TransportFailureReason.OversizedFrame*
+
+# Messaging Actor
+
+Messaging is done through the "adverbs" defined for each endpoint
+
+*class*monarch.actor.Endpoint(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint)
+
+Bases: [`Protocol`](https://docs.python.org/3/library/typing.html#typing.Protocol)[`P`, `R`]
+
+A callable endpoint on a spawned actor or actor mesh.
+
+Accessing an `@endpoint` method on a spawned actor yields an `Endpoint`
+rather than calling the method directly. Its methods are the messaging
+adverbs that send a message to the actor(s) and control how responses are
+returned: `call`, `call_one`, `choose`, `stream`, `broadcast`,
+and `rref`.
+
+choose(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.choose)
+
+Send to a randomly selected actor and return a Future for its result.
+The reply is received eagerly, but success is unpickled only on first
+observation. Later observers share its Python value. Dropping the
+Future stops neither the call nor collection.
+
+Each call independently selects an actor uniformly at random. Selection
+does not account for actor load, so calls are balanced only across many
+calls. Use `call_one` on a slice of the mesh when placement must be
+deterministic.
+
+call_one(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.call_one)
+
+Send to exactly one actor and return a Future for its result.
+
+Receive the reply eagerly; unpickle success on first observation and
+share that value with later observers. Ignored successes are not unpickled.
+
+call(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.call)
+
+Send to all actors and return a Future for their ValueMesh.
+
+Receive the replies eagerly; build the ValueMesh on first observation
+and share it with later observers. If no reply carries mesh references,
+elements stay pickled until accessed. Ignored successes are not built.
+
+stream(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.stream)
+
+Send to all actors now and return an iterator of Futures.
+
+Replies arrive and queue eagerly. Each item takes and unpickles one
+queued reply only when first observed. Each next() uses one iteration
+slot; dropping an item unobserved leaves one reply unread after the
+slots are exhausted. Observe every item taken to read every reply.
+
+broadcast(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.broadcast)
+
+Fire-and-forget broadcast to all actors without waiting for actors to
+acknowledge receipt.
+
+In other words, the return of this method does not guarrantee the
+delivery of the message.
+
+rref(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.rref)
+
+*class*monarch.actor.Future[[source]](../_modules/monarch/_src/actor/future.html#Future)
+
+Bases: [`Generic`](https://docs.python.org/3/library/typing.html#typing.Generic)[`R`]
+
+A result returned by Monarch asynchronous operations.
+
+Use `get()` from synchronous code. On an asyncio loop, use `await` or
+`as_asyncio()`. Future objects cannot be constructed directly, and like
+`asyncio.Future` they cannot be pickled.
+
+get(*timeout=None*)[[source]](../_modules/monarch/_src/actor/future.html#Future.get)
+
+Get the result of the Future.
+
+Caveats:
+
+This method is designed to be used in places where event loops are not available. Besides that, you should
+avoid using this method if possible. Instead, use as_asyncio() (or await). This is because when Future.get() is called from
+within an active event loop, it blocks synchronously and does not yield control. That may degrade performance
+by preventing other tasks from running, and can potentially cause deadlocks if this future depends on them.
+
+Except for a Future returned by a @returns_future function, a timeout never consumes the Future: on TimeoutError the underlying task keeps running, so a later get()/await still observes its result.
+
+For a Future returned by a @returns_future function, the first get() runs the body on the calling thread's event loop, as asyncio.run does.
+If it times out or is interrupted, the body is cancelled and the Future fails with TimeoutError or CancelledError; nothing resumes it.
+Inside running asyncio code, get() runs the body the same way on a short-lived helper thread and waits for it;
+inside a body that a get() is driving, it raises WouldBlockRuntime.
+
+examples:
+
+This is not recommended because fut.get() blocks the event loop and might lead to issues explained above.
+```
+def inner_func(fut):
+
+> result = fut.get()
+> # ...
+
+async def out_func(fut):
+
+inner_func(fut)
+
+```
+
+This is okay because everything is running synchronously.
+```
+def inner_func(fut):
+
+> result = fut.get()
+> # ...
+
+def main():
+
+# ...
+inner_func(fut)
+
+```
+
+as_asyncio()[[source]](../_modules/monarch/_src/actor/future.html#Future.as_asyncio)
+
+Return a standard `asyncio.Future` that resolves when this Future
+does.
+
+Requires a running event loop; off a loop it raises `RuntimeError`
+**without** starting the underlying operation, so a later `get()`
+still observes it. Observation is non-consuming:
+repeated `as_asyncio()`/`await` each return a fresh loop-local future
+observing the same result.
+
+result(*timeout=None*)[[source]](../_modules/monarch/_src/actor/future.html#Future.result)
+
+exception(*timeout=None*)[[source]](../_modules/monarch/_src/actor/future.html#Future.exception)
+
+*class*monarch.actor.ValueMesh(*shape*, *values*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#ValueMesh)
+
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
+
+get(*rank*)
+
+Get value by linear rank (0..num_ranks-1).
+
+item(***kwargs*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#ValueMesh.item)
+
+Get the value at the given coordinates.
+
+Parameters:
+
+**kwargs** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Coordinates to get the value at.
+
+Returns:
+
+Value at the given coordinate.
+
+Raises:
+
+[**KeyError**](https://docs.python.org/3/builtins/exceptions.html#KeyError) - If invalid coordinates are provided.
+
+Return type:
+
+*R*
+
+items()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#ValueMesh.items)
+
+Generator that returns values for the provided coordinates.
+
+Returns:
+
+Values at all coordinates.
+
+Return type:
+
+[*Iterable*](https://docs.python.org/3/library/typing.html#typing.Iterable)[[*Tuple*](https://docs.python.org/3/library/typing.html#typing.Tuple)[*Point*, *R*]]
+
+values()
+
+Return the values in region/iteration order as a Python list.
+
+*property*extent*: Extent*
+
+flatten(*name*)
+
+Returns a new device mesh with all dimensions flattened into a single dimension
+with the given name.
+
+Currently this supports only dense meshes: that is, all ranks must be contiguous
+in the mesh.
+
+*static*from_indexed(*shape*, *pairs*)
+
+Build from (rank, value) pairs with last-write-wins semantics.
+
+rename(***kwargs*)
+
+Returns a new device mesh with some of dimensions renamed.
+Dimensions not mentioned are retained:
+
+> new_mesh = mesh.rename(host='dp', gpu='tp')
+
+size(*dim=None*)
+
+Returns the number of elements (total) of the subset of mesh asked for.
+If dims is None, returns the total number of devices in the mesh.
+
+*property*sizes*: [dict](https://docs.python.org/3/builtins/stdtypes.html#dict)[[str](https://docs.python.org/3/builtins/stdtypes.html#str), [int](https://docs.python.org/3/builtins/functions.html#int)]*
+
+slice(***kwargs*)
+
+Select along named dimensions. Integer values remove
+dimensions, slice objects keep dimensions but restrict them.
+
+Examples: mesh.slice(batch=3, gpu=slice(2, 6))
+
+split(***kwargs*)
+
+Returns a new device mesh with some dimensions of this mesh split.
+For instance, this call splits the host dimension into dp and pp dimensions,
+The size of 'pp' is specified and the dimension size is derived from it:
+
+> new_mesh = mesh.split(host=('dp', 'pp'), gpu=('tp','cp'), pp=16, cp=2)
+
+Dimensions not specified will remain unchanged.
+
+*class*monarch.actor.ActorError(*exception*, *message='A remote actor call has failed.'*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#ActorError)
+
+Bases: [`Exception`](https://docs.python.org/3/builtins/exceptions.html#Exception)
+
+Deterministic problem with the user's code.
+For example, an OOM resulting in trying to allocate too much GPU memory, or violating
+some invariant enforced by the various APIs.
+
+__init__(*exception*, *message='A remote actor call has failed.'*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#ActorError.__init__)
+
+add_note()
+
+Exception.add_note(note) -
+add a note to the exception
+
+args
+
+with_traceback()
+
+Exception.with_traceback(tb) -
+set self.__traceback__ to tb and return self.
+
+*class*monarch.actor.Accumulator(*endpoint*, *identity*, *combine*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Accumulator)
+
+Bases: [`Generic`](https://docs.python.org/3/library/typing.html#typing.Generic)[`P`, `R`, `A`]
+
+Accumulate the result of a broadcast invocation of an endpoint
+across a sliced mesh.
+
+Usage:
+
+```
+>>> counter = Accumulator(Actor.increment, 0, lambda x, y: x + y)
+```
+
+__init__(*endpoint*, *identity*, *combine*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Accumulator.__init__)
+
+Parameters:
+
+- **endpoint** (*Endpoint**[**~P**,**R**]*) - Endpoint to accumulate the result of.
+- **identity** (*A*) - Initial value of the accumulated value before the first combine invocation.
+- **combine** ([*Callable*](https://docs.python.org/3/library/typing.html#typing.Callable)*[**[**A**,**R**]**,**A**]*) - Lambda invoked for combining the result of the endpoint with the accumulated value.
+
+accumulate(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Accumulator.accumulate)
+
+Accumulate the result of the endpoint invocation.
+
+The endpoint invocation starts when this method is called; a failure to
+start it raises here. The fold remains lazy and begins when the returned
+Future is first observed.
+
+An `await` runs the fold on the awaiting loop. `.get()` runs it on
+a private loop on the calling thread. This keeps a sync actor's endpoint
+and nested Monarch Future work on its driver thread, without creating a
+helper thread. Inside an `@returns_future` body, nested Futures must
+instead be awaited; calling `.get()` raises `WouldBlockRuntime`.
+Other code that calls `.get()` from a thread already running an event
+loop warns and falls back to a short-lived helper thread, while still
+blocking the caller's loop.
+
+Parameters:
+
+- **args** (*~P*) - Arguments to pass to the endpoint.
+- **kwargs** (*~P*) - Keyword arguments to pass to the endpoint.
+
+Returns:
+
+Future that resolves to the accumulated value.
+
+Return type:
+
+*Future*[*A*]
+
+monarch.actor.send(*endpoint*, *args*, *kwargs*, *port=None*, *selection='all'*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#send)
+
+> Fire-and-forget broadcast invocation of the endpoint across a given selection of the mesh.
+> 
+> 
+> 
+> 
+> This sends the message to all actors but does not wait for any result. Use the port provided to
+> send the response back to the caller.
+
+Parameters:
+
+- **endpoint** (*Endpoint**[**~P**,**R**]*) - Endpoint to invoke.
+- **args** ([*Tuple*](https://docs.python.org/3/library/typing.html#typing.Tuple)*[*[*Any*](https://docs.python.org/3/library/typing.html#typing.Any)*,**...**]*) - Arguments to pass to the endpoint.
+- **kwargs** ([*Dict*](https://docs.python.org/3/library/typing.html#typing.Dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*Any*](https://docs.python.org/3/library/typing.html#typing.Any)*]*) - Keyword arguments to pass to the endpoint.
+- **port** (*Port**|**None*) - Handle to send the response to.
+- **selection** ([*Literal*](https://docs.python.org/3/library/typing.html#typing.Literal)*[**'all'**,**'choose'**]*) - Selection query representing a subset of the mesh.
+
+*class*monarch.actor.Channel[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Channel)
+
+Bases: [`Generic`](https://docs.python.org/3/library/typing.html#typing.Generic)[`R`]
+
+An advanced low level API for a communication channel used for message passing
+between actors.
+
+Provides static methods to create communication channels with port pairs
+for sending and receiving messages of type R.
+
+*static*open(*once=False*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Channel.open)
+
+*static*open_ranked(*once=False*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Channel.open_ranked)
+
+*class*monarch.actor.Port(*port_ref*, *instance*, *rank*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Port)
+
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
+
+A port that sends messages to a remote receiver.
+Wraps an EitherPortRef with the actor instance needed for sending.
+
+send(*obj*)
+
+exception(*e*)
+
+return_undeliverable
+
+*class*monarch.actor.PortReceiver(*mailbox*, *receiver*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#PortReceiver)
+
+Bases: [`Generic`](https://docs.python.org/3/library/typing.html#typing.Generic)[`R`]
+
+Receiver for messages sent through a communication channel.
+
+Handles receiving R-typed objects sent from a corresponding Port.
+
+recv()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#PortReceiver.recv)
+
+Return a Future for one message from this receiver, decoded to its value.
+
+The receive starts when the Future is first observed; a Future that is
+never observed takes nothing. Every observer of the Future shares its one
+result, and a timed-out or interrupted `get()` leaves the receive
+running; observe the same Future again to obtain its result.
+
+Once an observation has started the receive, dropping the Future requests
+a stop once no observer remains. This is cooperative: a message arriving
+before the stop is processed can still be taken. Cancelling `await` or
+`as_asyncio()` leaves an internal native waiter alive, so that receive
+continues until a message arrives or receiving fails.
+
+ranked()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#PortReceiver.ranked)
+
+monarch.actor.as_endpoint(*not_an_endpoint: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*) → Endpoint[P, R][[source]](../_modules/monarch/_src/actor/actor_mesh.html#as_endpoint)
+
+monarch.actor.as_endpoint(*not_an_endpoint: Callable[Concatenate['PortProtocol[R]', P], [None](https://docs.python.org/3/builtins/constants.html#None)]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*) → Endpoint[P, R]
+
+Treat an actor method that is not an `@endpoint` as one.
+
+Use this to call a plain method of a spawned actor through the messaging
+adverbs when the method was not decorated with `@endpoint`, for example
+`as_endpoint(actor.method).call(...)`. The options match those of
+`endpoint`. On an actor whose endpoints are all `def`, the method must
+be a plain `def` as well: the actor has no event loop, so an `async def`
+method fails with `TypeError`.
+
+Parameters:
+
+- **not_an_endpoint** - An unannotated method of a spawned actor.
+- **propagate** - Tensor-shape propagation for `rref`; see `endpoint`.
+- **explicit_response_port** - When `True`, the method receives a `Port`
+as its first argument and sends its result through it; see
+`endpoint`.
+
+Returns:
+
+An `Endpoint` exposing the messaging adverbs.
+
+Raises:
+
+[**ValueError**](https://docs.python.org/3/builtins/exceptions.html#ValueError) - If `not_an_endpoint` is not a method of a spawned actor.
+
+# Context API
+
+Use these functions to identify the actor associated with the currently executing code. Inside an endpoint, this is the worker actor. In ordinary controller code, it is the controller's root client actor.
+
+monarch.actor.current_actor_name()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#current_actor_name)
+
+Return the actor id of the currently executing actor as a string.
+
+monarch.actor.current_rank()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#current_rank)
+
+Return the current message's position within its mesh as a `Point`.
+
+monarch.actor.current_size()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#current_size)
+
+Return the size of each mesh dimension for the current message.
+
+The result maps each dimension label to the number of actors along it.
+
+monarch.actor.context()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#context)
+
+Return the `Context` for the currently executing actor.
+
+Call this from within an endpoint to inspect the running actor and the
+current message's position in the mesh. Outside an actor (on the client) it
+returns the root client context. Raises `WouldBlockRuntime` rather than
+attempting fresh root-client bootstrap from inside a Tokio runtime; an
+already-initialized client can still be reused there.
+
+`shutdown_context()` always targets the process's client; it does not
+use this function to select an actor to stop.
+
+*class*monarch.actor.Context[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Context)
+
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
+
+actor_instance
+
+message_rank
+
+*class*monarch.actor.Point(*rank*, *extent*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Point)
+
+Bases: `Point`, [`Mapping`](https://docs.python.org/3/library/collections.abc.html#collections.abc.Mapping)
+
+A coordinate within a mesh.
+
+A `Point` maps each mesh dimension label (for example `"hosts"` or
+`"gpus"`) to its integer index along that dimension. It behaves as a
+read-only mapping, so `point["gpus"]` is the index along the `"gpus"`
+dimension. `current_rank` and `Context.message_rank` return the
+`Point` that locates the current actor within the mesh that received the
+message.
+
+extent
+
+get(*k*[, *d*]) → D[k] if k in D, else d. d defaults to None.
+
+items() → a set-like object providing a view on D's items
+
+keys() → a set-like object providing a view on D's keys
+
+rank
+
+size(*label*)
+
+values() → an object providing a view on D's values
+
+*class*monarch.actor.Extent(*labels*, *sizes*)
+
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
+
+keys()
+
+nelements
+
+region
+
+# Client Shutdown
+
+Call `shutdown_context()` from the user's Python controller program when it has finished using Monarch. This ends the lifetime of that process's client; the client cannot be restarted in the same process. `context()` is not used to select an actor to stop: the target is the process's client. It is not a shutdown callback to run once per host in a HostMesh. Use a mesh's own stop or shutdown method when you want to stop only that mesh and continue using the client.
+
+Monarch registers client shutdown automatically for normal Python interpreter exit. Call it explicitly when you need to wait for shutdown before continuing or exiting:
+
+```
+from monarch.actor import shutdown_context
+
+# After the controller has finished all Monarch work:
+shutdown = shutdown_context()
+shutdown.get(timeout=30)
+```
+
+An async controller can await the returned Future instead. Keep the Future from the call that starts shutdown: later calls return already-completed Futures and do not wait for an earlier shutdown still in progress. Dropping the first Future does not cancel native shutdown.
+
+This is not enforced by a controller-only caller check. In a worker process without an initialized client, the call does nothing and does not create a client. A worker's actor context is not a client. If a worker separately initializes its own client, `shutdown_context()` applies to that client.
+
+monarch.actor.shutdown_context(*host_timeout=None*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#shutdown_context)
+
+Shut down this Python process's Monarch client.
+
+Call this from the user's Python controller program when it has finished
+using Monarch, not to stop one actor or mesh. Monarch also calls it
+automatically at normal Python interpreter exit. Once shut down, the
+client cannot be restarted in the same process. This does not exit the
+controller program.
+
+Monarch creates one root client actor for the user's Python controller
+process. The controller's meshes share that root client; it is not created
+once per host or worker. The root client runs on a local Monarch host.
+That host may also have user procs created through
+`this_host().spawn_procs(...)`. This shuts down those procs, then stops
+the root client, attempts its final flush and closes the transports.
+It does not send a shutdown request to each host in an arbitrary HostMesh.
+
+Shutdown makes these guarantees about actors:
+
+- The root client's proc, `this_proc()`, is destroyed: every actor on it
+is told to stop so it can run `__cleanup__`.
+- Shutdown waits on all actors at once, for a bounded time derived from
+`host_timeout` and capped at 0.5 seconds for each of its waits. If an
+actor is still cleaning up after that, shutdown stops waiting for it and
+continues.
+- Some of those actors own meshes of other actors, local or remote. Their
+cleanup sends those actors a stop without waiting for it to be
+acknowledged. Once the stop is delivered, which the final flush attempts,
+each owned actor is stopping or already terminal, and handles no further
+messages other than status queries.
+
+This uses the process's initialized client, not the current actor returned
+by `context()`. There is no controller-only caller check. A worker with
+no initialized client gets an already-completed future without creating
+a client or stopping its current actor. If a worker separately initializes
+its own client, this operation applies to that client. A no-client call
+does not prevent a client created later from being shut down.
+
+With an initialized client, the first call starts shutdown before it
+returns. Keep that returned future and call `.get()` or await it if you
+need to wait for completion. Dropping it does not cancel native shutdown.
+Later calls return already-completed futures, even while the first
+shutdown is still running; calling again is not a way to wait for it.
+
+Parameters:
+
+**host_timeout** ([*float*](https://docs.python.org/3/builtins/functions.html#float)*|**None*) - Timeout in seconds passed to the local host's user-proc
+shutdown. The host and root client's final gateway flushes are
+also capped by this value, as are the root client's waits for
+actors to clean up (each also capped at 0.5 seconds to keep
+process exit prompt). Defaults to a fixed 10 seconds, the same
+as the default `HYPERACTOR_MESH_TERMINATE_TIMEOUT`, but not
+read from that or any other setting. This is not an overall
+time limit on waiting for shutdown to finish. A supplied
+timeout must be finite, non-negative and less than 2**64
+seconds; an invalid timeout does not claim shutdown.
+
+Returns:
+
+Reports completion for the call that starts shutdown.
+
+Already complete if no client exists or shutdown was already
+claimed. Final flushes are best-effort; completion does not
+guarantee that every message was delivered.
+
+Return type:
+
+Future[None]
+
+# Supervision
+
+Types used for error handling and supervision in actor meshes.
+
+*class*monarch.actor.MeshFailure
+
+Bases: [`object`](https://docs.python.org/3/builtins/functions.html#object)
+
+mesh
+
+mesh_name
+
+report()
+
+monarch.actor.unhandled_fault_hook(*failure*)[[source]](../_modules/monarch/_src/actor/supervision.html#unhandled_fault_hook)
+
+When a supervision event is unhandled and is propagated back to the client,
+this hook is called.
+The default implementation is to exit the process with error code 1
+after logging the event.
+If this function raises any exception (including BaseException classes such
+as SystemExit from sys.exit), this fault is considered unhandled.
+Any normal return value will cause the fault to be dropped. Logs will be
+written containing the failure message in either case.
+
+To customize this behavior, overwrite this function in your client code like so:
+```
+import monarch.actor
+
+def my_unhandled_fault_hook(failure: MeshFailure) -> None:
+
+# log it, add metrics, etc.
+print(f"Mesh failure was not handled: {failure}")
+# To ignore this error, return any value (including None) without an exception.
+
+monarch.actor.unhandled_fault_hook = my_unhandled_fault_hook
+```
+
+If the fault is unhandled, it exits the main thread by delivering a KeyboardInterrupt.
+This is done because the Python Interpreter can only be finalized to run
+destructors and atexit hooks from the main thread. So if you see a
+"KeyboardInterrupt" happening that you didn't send, it's because there was
+an unhandled fault.
+
+# Telemetry
+
+Utilities for tracing actor execution.
+
+monarch.actor.traced(*fn: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]*) → [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R][[source]](../_modules/monarch/_src/actor/telemetry.html#traced)
+
+monarch.actor.traced(***, *name: [str](https://docs.python.org/3/builtins/stdtypes.html#str)*) → [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]], [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]]
+
+Decorator that wraps a function in a telemetry span.
+
+Works with both sync and async functions. The span is automatically
+associated with the current actor context, if any. When no name is
+provided, the function's `__name__` is used as the span name.
+
+Usage:
+
+```
+@traced
+async def do_work():
+ ...
+
+@traced(name="custom_name")
+def compute():
+ ...
+```

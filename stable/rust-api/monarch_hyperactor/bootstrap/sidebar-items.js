@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["WorkerAddress"],"fn":["attach_to_workers","bootstrap_main","register_python_bindings","start_worker_loop_forever","start_worker_loop_until_shutdown"]};

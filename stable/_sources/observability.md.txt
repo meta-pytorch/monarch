@@ -1,0 +1,182 @@
+# Observability
+
+Monarch provides one observability setup with four complementary job-local
+surfaces: distributed telemetry for SQL analysis, the Monarch Dashboard for
+visual monitoring, `monarch profile` for actor activity traces, and the Mesh
+Admin TUI for live diagnostics. Enable telemetry on a job to support all four
+surfaces consistently. OpenTelemetry supplies metrics to distributed telemetry
+and can independently export metrics, logs, and spans to external backends.
+
+## Choose a surface
+
+| Use case | Surface | What it provides |
+|----------|---------|------------------|
+| Query actor, mesh, message, trace, metric, and host resource history | [Distributed telemetry](distributed-telemetry) | DataFusion SQL across host-local collectors |
+| Inspect saved telemetry after a job stops | [Telemetry persistence](telemetry-persistence) | SQL and dashboards over persisted Arrow data |
+| Monitor topology, status, failures, traffic, and resources in a browser | [Monarch Dashboard](monarch-dashboard) | Live summaries, hierarchy views, host and GPU resources, and a job DAG |
+| Trace endpoint calls and handler execution across a job | [Actor profiling](profiling) | Perfetto traces grouped by process and actor, with call-to-handler links |
+| Diagnose a running mesh from a terminal | [Mesh Admin TUI](admin-tui) | Live topology, health checks, and py-spy stack traces |
+| Export metrics, logs, and spans to an external backend | [OpenTelemetry](opentelemetry) | OTLP export to systems such as Prometheus and Loki |
+
+The dashboard and profiler read distributed telemetry. The TUI reads the Mesh
+Admin API. Periodic mesh-admin snapshots also flow into telemetry so the
+dashboard can show the live administrative topology.
+
+Distributed telemetry is a job-scoped, in-memory query system. OpenTelemetry
+export to an external backend can run alongside it on the same job.
+
+## Enable observability
+
+Configure observability before calling `state()`:
+
+```python
+from monarch.job import ProcessJob, TelemetryConfig
+
+job = ProcessJob({"workers": 2}).enable_telemetry(
+    TelemetryConfig(
+        retention_secs=3600,
+        include_dashboard=True,
+        dashboard_port=8265,
+        snapshot_interval_secs=30,
+    )
+)
+state = job.state(cached_path=None)
+```
+
+`enable_telemetry()` also enables mesh admin and periodic introspection
+snapshots. Adapt the example to your existing `LocalJob`, `ProcessJob`,
+`SlurmJob`, or `KubernetesJob` rather than creating a second job.
+
+The returned state exposes each surface:
+
+```python
+print(state.dashboard_url)
+print(state.admin_url)
+
+client = state.query_engine_client
+if client is None:
+    raise RuntimeError("telemetry did not start")
+
+result = client.query(
+    "SELECT new_status, COUNT(*) AS count "
+    "FROM actor_status_events GROUP BY new_status"
+)
+print(result["rows"])
+```
+
+Use `state.dashboard_url` in a browser. Pass `state.admin_url` to
+`monarch-tui --addr`.
+
+The job sidecar runs the admin server for the life of the job, so later
+`state()` calls and `monarch` commands reuse it. If the admin address (default
+`[::]:1729`) is taken, `state()` raises. Stop the other process, or pass
+`MeshAdminConfig(admin_addr=...)`.
+
+## Metrics
+
+Monarch records its built-in metrics through one process-global OpenTelemetry
+meter provider. Libraries record counters, gauges, and histograms without
+choosing a destination. Independent readers can send the same instruments to
+job-local distributed telemetry, an external OTLP endpoint, or both.
+
+| Path | Enablement | Destination | Primary use |
+|------|------------|-------------|-------------|
+| Distributed telemetry | `job.enable_telemetry(...)` | Job-local SQL tables | Debugging and analysis within the current job |
+| OTLP | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry Collector over OTLP/HTTP | External aggregation, monitoring, and visualization |
+
+See [Metrics](metrics) for provider scope, collection and flushing behavior,
+configuration, and both export paths.
+
+## Host and GPU metrics
+
+Each telemetry host also records its own resource usage, so you can line up
+actor and message activity with what the machine was doing at the time.
+
+| Table | Default | Contents |
+|-------|---------|----------|
+| `host_metrics` | Every second | CPU utilization and count, load averages, memory, swap, cumulative network and disk byte counters, and free space on `/` and `/tmp` |
+| `gpu_metrics` | Every second | Per-GPU utilization, memory used and total, temperature, and power, read through NVML |
+
+Samplers run next to each host's telemetry collector, including the client
+host, and write one row per host, or one row per GPU, per interval. Both tables
+follow `retention_secs`. A host without NVIDIA GPUs or NVML skips GPU sampling
+and leaves `gpu_metrics` empty. See
+[Distributed telemetry](distributed-telemetry) for columns, row keys, and
+example queries.
+
+To turn either sampler off, set its interval to `0`:
+
+```python
+TelemetryConfig(host_metrics_interval_secs=0, gpu_metrics_interval_secs=0)
+```
+
+For example, this query reports each GPU's average utilization over the last
+five minutes:
+
+```sql
+SELECT hostname, gpu_index, AVG(utilization_percent) AS avg_util,
+  MAX(memory_used_bytes) AS max_memory_used
+FROM gpu_metrics
+WHERE timestamp_us > (SELECT MAX(timestamp_us) FROM gpu_metrics) - 300000000
+GROUP BY hostname, gpu_index
+ORDER BY hostname, gpu_index
+```
+
+## Data flow
+
+```text
+actor and proc events ──> host-local collectors ──> distributed query engine
+                                                        ├─> SQL query client
+                                                        ├─> Monarch Dashboard
+                                                        └─> monarch profile ──> Perfetto trace
+
+host and GPU samplers ──> host-local collectors
+
+OTel instruments ──> process-global meter provider ──┬─> UDS metric exporter
+                                                     │        └─> host-local collectors
+                                                     └─> external metric exporter
+
+live mesh ──> Mesh Admin API ──────────────────────────────> Mesh Admin TUI
+     └──────> periodic snapshots ──> distributed telemetry ─> Dashboard DAG
+```
+
+Telemetry collection and distributed query fan-out are best-effort. A failed
+or slow worker collector can reduce query coverage without failing the job.
+Telemetry tables are in memory and belong to the current job allocation; they
+are not a durable event archive.
+
+## Configuration
+
+| `TelemetryConfig` field | Default | Effect |
+|-------------------------|---------|--------|
+| `retention_secs` | `3600` | Retention window for message, trace, and metric tables; `0` disables retention |
+| `include_dashboard` | `False` | Advertise the browser dashboard |
+| `dashboard_port` | `8265` | Preferred dashboard port; use `0` for an ephemeral port |
+| `snapshot_interval_secs` | `30` | Mesh-introspection snapshot interval; `0` disables periodic snapshots |
+| `host_metrics_interval_secs` | `1.0` | `host_metrics` sampling interval on every telemetry host; `0` disables host sampling |
+| `gpu_metrics_interval_secs` | `1.0` | `gpu_metrics` sampling interval on every telemetry host; `0` disables GPU sampling |
+
+For an admin server without distributed telemetry, call `job.enable_admin()`.
+That supports the TUI, but it does not provide the dashboard or SQL history.
+
+## Next steps
+
+- [Understand metric collection and export](metrics)
+- [Query distributed telemetry](distributed-telemetry)
+- [Save and analyze telemetry after shutdown](telemetry-persistence)
+- [Profile actor activity](profiling)
+- [Use the Monarch Dashboard](monarch-dashboard)
+- [Diagnose a mesh with the Admin TUI](admin-tui)
+- [Export metrics and logs with OpenTelemetry](./generated/examples/otel_collector)
+
+```{toctree}
+:maxdepth: 1
+:hidden:
+distributed-telemetry
+telemetry-persistence
+profiling
+metrics
+opentelemetry
+admin-tui
+monarch-dashboard
+```

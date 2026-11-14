@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["DriverMode","Role"],"fn":["main","parse_args","read_token","run_driver","run_proc","run_spawner","take_value","write_text"],"struct":["Calculate","CalculationResult","Calculator","Crash","Driver","DriverArgs","ProcArgs","SpawnerArgs","SpawnerBootstrap"],"type":["DemoToken"]};

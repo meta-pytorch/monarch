@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["pickle","pickle_to_part","push_mesh_reference_if_active","register_python_bindings"],"struct":["PendingMessage","PicklingState","PicklingStateInner"]};

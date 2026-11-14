@@ -1,0 +1,726 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `hyperactor/src/child_process.rs`."><title>child_process.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-0c87338a.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.99.0-nightly (d453bdd8f 2026-08-14)" data-channel="nightly" data-search-js="search-cf4fc35e.js" data-stringdex-js="stringdex-b5109af9.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-9f56287d.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">hyperactor/</div>child_process.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
+<a href=#2 id=2 data-nosnippet>2</a> * Copyright (c) Meta Platforms, Inc. and affiliates.
+<a href=#3 id=3 data-nosnippet>3</a> * All rights reserved.
+<a href=#4 id=4 data-nosnippet>4</a> *
+<a href=#5 id=5 data-nosnippet>5</a> * This source code is licensed under the BSD-style license found in the
+<a href=#6 id=6 data-nosnippet>6</a> * LICENSE file in the root directory of this source tree.
+<a href=#7 id=7 data-nosnippet>7</a> */
+<a href=#8 id=8 data-nosnippet>8</a>
+<a href=#9 id=9 data-nosnippet>9</a></span><span class="doccomment">//! Spawns child processes from a thread that lives as long as the process.
+<a href=#10 id=10 data-nosnippet>10</a>//!
+<a href=#11 id=11 data-nosnippet>11</a>//! On Linux, `prctl(PR_SET_PDEATHSIG)` fires when the *thread* that forked a
+<a href=#12 id=12 data-nosnippet>12</a>//! child exits, not when the child's parent process exits. A child forked
+<a href=#13 id=13 data-nosnippet>13</a>//! from a tokio worker therefore dies with that worker, and tokio can retire a
+<a href=#14 id=14 data-nosnippet>14</a>//! worker at any time, for example after `block_in_place`. Children that arm
+<a href=#15 id=15 data-nosnippet>15</a>//! the death signal must be forked here instead, by one thread that never
+<a href=#16 id=16 data-nosnippet>16</a>//! exits, so the signal fires only when the parent process does.
+<a href=#17 id=17 data-nosnippet>17</a>//!
+<a href=#18 id=18 data-nosnippet>18</a>//! # Invariants
+<a href=#19 id=19 data-nosnippet>19</a>//!
+<a href=#20 id=20 data-nosnippet>20</a>//! - **CPS-1 (spawner-outlives-children):** every child returned by
+<a href=#21 id=21 data-nosnippet>21</a>//!   [`spawn_child`] is forked by the child-spawner thread, which does not
+<a href=#22 id=22 data-nosnippet>22</a>//!   exit while the process runs. Its request sender is never dropped, and a
+<a href=#23 id=23 data-nosnippet>23</a>//!   panic while spawning a command or dropping it is contained inside the
+<a href=#24 id=24 data-nosnippet>24</a>//!   thread's loop.
+<a href=#25 id=25 data-nosnippet>25</a>//! - **CPS-2 (caller-runtime):** the returned [`Child`] is registered with the
+<a href=#26 id=26 data-nosnippet>26</a>//!   runtime that called [`spawn_child`]: the caller's handle is taken before
+<a href=#27 id=27 data-nosnippet>27</a>//!   the request is sent and entered on the spawner thread for the spawn.
+<a href=#28 id=28 data-nosnippet>28</a>//! - **CPS-3 (no-silent-fallback):** [`spawn_child`] never forks on the
+<a href=#29 id=29 data-nosnippet>29</a>//!   calling thread; it has no path that calls [`Command::spawn`] there.
+<a href=#30 id=30 data-nosnippet>30</a>//! - **CPS-4 (caller-owns-child):** the child returned by a successful
+<a href=#31 id=31 data-nosnippet>31</a>//!   [`spawn_child`] belongs to its caller from the moment the call returns:
+<a href=#32 id=32 data-nosnippet>32</a>//!   the handoff is synchronous, so there is no cancellation point between the
+<a href=#33 id=33 data-nosnippet>33</a>//!   fork and the return. A spawn that panics after forking, as tokio does for
+<a href=#34 id=34 data-nosnippet>34</a>//!   a runtime without I/O, returns an error and leaves that child
+<a href=#35 id=35 data-nosnippet>35</a>//!   unregistered.
+<a href=#36 id=36 data-nosnippet>36</a>
+<a href=#37 id=37 data-nosnippet>37</a></span><span class="kw">use </span>std::any::Any;
+<a href=#38 id=38 data-nosnippet>38</a><span class="kw">use </span>std::io;
+<a href=#39 id=39 data-nosnippet>39</a><span class="kw">use </span>std::mem;
+<a href=#40 id=40 data-nosnippet>40</a><span class="kw">use </span>std::panic::AssertUnwindSafe;
+<a href=#41 id=41 data-nosnippet>41</a><span class="kw">use </span>std::panic::catch_unwind;
+<a href=#42 id=42 data-nosnippet>42</a><span class="kw">use </span>std::sync::OnceLock;
+<a href=#43 id=43 data-nosnippet>43</a><span class="kw">use </span>std::sync::mpsc;
+<a href=#44 id=44 data-nosnippet>44</a><span class="kw">use </span>std::thread;
+<a href=#45 id=45 data-nosnippet>45</a>
+<a href=#46 id=46 data-nosnippet>46</a><span class="kw">use </span>tokio::process::Child;
+<a href=#47 id=47 data-nosnippet>47</a><span class="kw">use </span>tokio::process::Command;
+<a href=#48 id=48 data-nosnippet>48</a><span class="kw">use </span>tokio::runtime::Handle;
+<a href=#49 id=49 data-nosnippet>49</a>
+<a href=#50 id=50 data-nosnippet>50</a><span class="doccomment">/// Name of the thread that forks every child spawned through [`spawn_child`].
+<a href=#51 id=51 data-nosnippet>51</a>/// Linux keeps the first 15 bytes of a thread name.
+<a href=#52 id=52 data-nosnippet>52</a></span><span class="kw">const </span>SPAWNER_THREAD_NAME: <span class="kw-2">&amp;</span>str = <span class="string">"child-spawner"</span>;
+<a href=#53 id=53 data-nosnippet>53</a>
+<a href=#54 id=54 data-nosnippet>54</a><span class="doccomment">/// A caller's spawn request to the child-spawner thread.
+<a href=#55 id=55 data-nosnippet>55</a></span><span class="kw">struct </span>Request {
+<a href=#56 id=56 data-nosnippet>56</a>    <span class="doccomment">/// The command to spawn on that thread, rather than on the caller's thread.
+<a href=#57 id=57 data-nosnippet>57</a>    </span>command: Command,
+<a href=#58 id=58 data-nosnippet>58</a>
+<a href=#59 id=59 data-nosnippet>59</a>    <span class="doccomment">/// The caller's tokio runtime. The spawner enters it before spawning so
+<a href=#60 id=60 data-nosnippet>60</a>    /// the child is registered with this runtime, not a runtime of its own.
+<a href=#61 id=61 data-nosnippet>61</a>    </span>runtime: Handle,
+<a href=#62 id=62 data-nosnippet>62</a>
+<a href=#63 id=63 data-nosnippet>63</a>    <span class="doccomment">/// Sends the child or spawn error back to the caller that made this request.
+<a href=#64 id=64 data-nosnippet>64</a>    </span>reply: mpsc::Sender&lt;io::Result&lt;Child&gt;&gt;,
+<a href=#65 id=65 data-nosnippet>65</a>}
+<a href=#66 id=66 data-nosnippet>66</a>
+<a href=#67 id=67 data-nosnippet>67</a><span class="doccomment">/// Request sender, initialized when the child-spawner thread starts. A failed
+<a href=#68 id=68 data-nosnippet>68</a>/// start leaves it unset, so later callers can retry. Once stored, the sender
+<a href=#69 id=69 data-nosnippet>69</a>/// is never dropped, keeping the thread's request loop alive.
+<a href=#70 id=70 data-nosnippet>70</a></span><span class="kw">static </span>SPAWNER: OnceLock&lt;mpsc::Sender&lt;Request&gt;&gt; = OnceLock::new();
+<a href=#71 id=71 data-nosnippet>71</a>
+<a href=#72 id=72 data-nosnippet>72</a><span class="doccomment">/// Spawns `command` on a thread that stays alive until this process exits.
+<a href=#73 id=73 data-nosnippet>73</a>/// The returned child is registered with the caller's tokio runtime.
+<a href=#74 id=74 data-nosnippet>74</a>///
+<a href=#75 id=75 data-nosnippet>75</a>/// Use this when the child will call `prctl(PR_SET_PDEATHSIG, SIGKILL)`.
+<a href=#76 id=76 data-nosnippet>76</a>/// Linux then kills the child when the thread that forked it exits, even
+<a href=#77 id=77 data-nosnippet>77</a>/// if the parent process is still running. A tokio worker can be retired;
+<a href=#78 id=78 data-nosnippet>78</a>/// the child-spawner thread stays alive, so retiring a worker cannot kill
+<a href=#79 id=79 data-nosnippet>79</a>/// the child.
+<a href=#80 id=80 data-nosnippet>80</a>///
+<a href=#81 id=81 data-nosnippet>81</a>/// This helper does not set the death signal; the child sets it itself.
+<a href=#82 id=82 data-nosnippet>82</a>///
+<a href=#83 id=83 data-nosnippet>83</a>/// Blocks the caller until spawning succeeds or fails. Requests from all
+<a href=#84 id=84 data-nosnippet>84</a>/// callers are handled one at a time.
+<a href=#85 id=85 data-nosnippet>85</a>///
+<a href=#86 id=86 data-nosnippet>86</a>/// Returns an error if the caller has no current tokio runtime, the
+<a href=#87 id=87 data-nosnippet>87</a>/// child-spawner thread cannot be started, or spawning fails or panics.
+<a href=#88 id=88 data-nosnippet>88</a></span><span class="kw">pub fn </span>spawn_child(command: Command) -&gt; io::Result&lt;Child&gt; {
+<a href=#89 id=89 data-nosnippet>89</a>    <span class="comment">// CPS-2: register the child with the caller's runtime, not the spawner's.
+<a href=#90 id=90 data-nosnippet>90</a>    </span><span class="kw">let </span>runtime = Handle::try_current().map_err(io::Error::other)<span class="question-mark">?</span>;
+<a href=#91 id=91 data-nosnippet>91</a>    <span class="kw">let </span>(reply, result) = mpsc::channel();
+<a href=#92 id=92 data-nosnippet>92</a>    <span class="comment">// CPS-3: on failure, return an error; never spawn on the caller's thread.
+<a href=#93 id=93 data-nosnippet>93</a>    </span>spawner()<span class="question-mark">?
+<a href=#94 id=94 data-nosnippet>94</a>        </span>.send(Request {
+<a href=#95 id=95 data-nosnippet>95</a>            command,
+<a href=#96 id=96 data-nosnippet>96</a>            runtime,
+<a href=#97 id=97 data-nosnippet>97</a>            reply,
+<a href=#98 id=98 data-nosnippet>98</a>        })
+<a href=#99 id=99 data-nosnippet>99</a>        .map_err(|<span class="kw">_</span>| io::Error::other(<span class="string">"the child-spawner thread has exited"</span>))<span class="question-mark">?</span>;
+<a href=#100 id=100 data-nosnippet>100</a>    <span class="comment">// CPS-4: if we awaited the reply, the caller's task could be cancelled
+<a href=#101 id=101 data-nosnippet>101</a>    // after the child starts but before it receives the handle needed to
+<a href=#102 id=102 data-nosnippet>102</a>    // wait for or stop that child. Wait synchronously so cancellation cannot
+<a href=#103 id=103 data-nosnippet>103</a>    // interrupt this handoff.
+<a href=#104 id=104 data-nosnippet>104</a>    </span>result
+<a href=#105 id=105 data-nosnippet>105</a>        .recv()
+<a href=#106 id=106 data-nosnippet>106</a>        .map_err(|<span class="kw">_</span>| io::Error::other(<span class="string">"the child-spawner thread dropped the request"</span>))<span class="question-mark">?
+<a href=#107 id=107 data-nosnippet>107</a></span>}
+<a href=#108 id=108 data-nosnippet>108</a>
+<a href=#109 id=109 data-nosnippet>109</a><span class="doccomment">/// Returns the request sender for the OS thread used by [`spawn_child`].
+<a href=#110 id=110 data-nosnippet>110</a>///
+<a href=#111 id=111 data-nosnippet>111</a>/// On first use, creates a channel and starts one OS thread running
+<a href=#112 id=112 data-nosnippet>112</a>/// [`serve`] to receive the requests and spawn children. [`SPAWNER`] keeps
+<a href=#113 id=113 data-nosnippet>113</a>/// the sender, so later calls use the same thread rather than start another.
+<a href=#114 id=114 data-nosnippet>114</a>///
+<a href=#115 id=115 data-nosnippet>115</a>/// If starting the thread fails, returns the error and leaves [`SPAWNER`]
+<a href=#116 id=116 data-nosnippet>116</a>/// uninitialized, allowing a later call to try again.
+<a href=#117 id=117 data-nosnippet>117</a></span><span class="kw">fn </span>spawner() -&gt; io::Result&lt;<span class="kw-2">&amp;</span><span class="lifetime">'static </span>mpsc::Sender&lt;Request&gt;&gt; {
+<a href=#118 id=118 data-nosnippet>118</a>    SPAWNER.get_or_try_init(|| {
+<a href=#119 id=119 data-nosnippet>119</a>        <span class="kw">let </span>(sender, requests) = mpsc::channel();
+<a href=#120 id=120 data-nosnippet>120</a>        thread::Builder::new()
+<a href=#121 id=121 data-nosnippet>121</a>            .name(SPAWNER_THREAD_NAME.to_string())
+<a href=#122 id=122 data-nosnippet>122</a>            .spawn(<span class="kw">move </span>|| serve(requests))<span class="question-mark">?</span>;
+<a href=#123 id=123 data-nosnippet>123</a>        <span class="prelude-val">Ok</span>(sender)
+<a href=#124 id=124 data-nosnippet>124</a>    })
+<a href=#125 id=125 data-nosnippet>125</a>}
+<a href=#126 id=126 data-nosnippet>126</a>
+<a href=#127 id=127 data-nosnippet>127</a><span class="doccomment">/// Runs the request loop on the child-spawner OS thread.
+<a href=#128 id=128 data-nosnippet>128</a>///
+<a href=#129 id=129 data-nosnippet>129</a>/// Waits for a request, enters the caller's tokio runtime, spawns the
+<a href=#130 id=130 data-nosnippet>130</a>/// child, and sends the result back to that caller. Requests are handled
+<a href=#131 id=131 data-nosnippet>131</a>/// one at a time.
+<a href=#132 id=132 data-nosnippet>132</a>///
+<a href=#133 id=133 data-nosnippet>133</a>/// [`SPAWNER`] keeps the channel open for the process's lifetime. Panics
+<a href=#134 id=134 data-nosnippet>134</a>/// while spawning or dropping a command are caught so this thread keeps
+<a href=#135 id=135 data-nosnippet>135</a>/// running and children spawned earlier do not lose their parent thread.
+<a href=#136 id=136 data-nosnippet>136</a></span><span class="kw">fn </span>serve(requests: mpsc::Receiver&lt;Request&gt;) {
+<a href=#137 id=137 data-nosnippet>137</a>    <span class="comment">// CPS-1: `SPAWNER` keeps the channel open for the process's lifetime.
+<a href=#138 id=138 data-nosnippet>138</a>    // When there are no requests, this OS thread blocks waiting for the
+<a href=#139 id=139 data-nosnippet>139</a>    // next one rather than exiting.
+<a href=#140 id=140 data-nosnippet>140</a>    </span><span class="kw">for </span>Request {
+<a href=#141 id=141 data-nosnippet>141</a>        <span class="kw-2">mut </span>command,
+<a href=#142 id=142 data-nosnippet>142</a>        runtime,
+<a href=#143 id=143 data-nosnippet>143</a>        reply,
+<a href=#144 id=144 data-nosnippet>144</a>    } <span class="kw">in </span>requests
+<a href=#145 id=145 data-nosnippet>145</a>    {
+<a href=#146 id=146 data-nosnippet>146</a>        <span class="comment">// CPS-1: a panic must not end this thread and trigger the parent-death
+<a href=#147 id=147 data-nosnippet>147</a>        // signals of children it spawned earlier. Catch it and return an error
+<a href=#148 id=148 data-nosnippet>148</a>        // to this caller instead. For example, tokio can start the child and then
+<a href=#149 id=149 data-nosnippet>149</a>        // panic because the caller's runtime has I/O disabled.
+<a href=#150 id=150 data-nosnippet>150</a>        </span><span class="kw">let </span>result = catch_unwind(AssertUnwindSafe(|| {
+<a href=#151 id=151 data-nosnippet>151</a>            <span class="comment">// CPS-2: make the caller's tokio runtime current on this OS thread
+<a href=#152 id=152 data-nosnippet>152</a>            // so `spawn` registers the child with it. The `_runtime` guard
+<a href=#153 id=153 data-nosnippet>153</a>            // restores the previous runtime context when this block ends,
+<a href=#154 id=154 data-nosnippet>154</a>            // including on panic.
+<a href=#155 id=155 data-nosnippet>155</a>            </span><span class="kw">let </span>_runtime = runtime.enter();
+<a href=#156 id=156 data-nosnippet>156</a>            command.spawn()
+<a href=#157 id=157 data-nosnippet>157</a>        }))
+<a href=#158 id=158 data-nosnippet>158</a>        .unwrap_or_else(|panic| {
+<a href=#159 id=159 data-nosnippet>159</a>            <span class="comment">// CPS-1: copy the panic's description into the error, then forget
+<a href=#160 id=160 data-nosnippet>160</a>            // its payload without running its destructor. That destructor could
+<a href=#161 id=161 data-nosnippet>161</a>            // panic again, ending this thread and killing earlier children.
+<a href=#162 id=162 data-nosnippet>162</a>            </span><span class="prelude-val">Err</span>(io::Error::other(describe_and_forget(
+<a href=#163 id=163 data-nosnippet>163</a>                panic,
+<a href=#164 id=164 data-nosnippet>164</a>                <span class="string">"spawning the child"</span>,
+<a href=#165 id=165 data-nosnippet>165</a>            )))
+<a href=#166 id=166 data-nosnippet>166</a>        });
+<a href=#167 id=167 data-nosnippet>167</a>        <span class="comment">// CPS-1: the command owns caller state, such as a `pre_exec` closure's
+<a href=#168 id=168 data-nosnippet>168</a>        // captures, whose destructor could panic. Drop it inside the unwind
+<a href=#169 id=169 data-nosnippet>169</a>        // boundary too, and forget any payload unread, since its destructor is
+<a href=#170 id=170 data-nosnippet>170</a>        // caller code. Nothing is logged here: a `tracing` subscriber is caller
+<a href=#171 id=171 data-nosnippet>171</a>        // code as well. CPS-4: a child that was spawned is still handed over.
+<a href=#172 id=172 data-nosnippet>172</a>        </span><span class="kw">if let </span><span class="prelude-val">Err</span>(panic) = catch_unwind(AssertUnwindSafe(<span class="kw">move </span>|| drop(command))) {
+<a href=#173 id=173 data-nosnippet>173</a>            mem::forget(panic);
+<a href=#174 id=174 data-nosnippet>174</a>        }
+<a href=#175 id=175 data-nosnippet>175</a>        <span class="comment">// A caller that has gone away no longer wants the result.
+<a href=#176 id=176 data-nosnippet>176</a>        </span><span class="kw">let _ </span>= reply.send(result);
+<a href=#177 id=177 data-nosnippet>177</a>    }
+<a href=#178 id=178 data-nosnippet>178</a>}
+<a href=#179 id=179 data-nosnippet>179</a>
+<a href=#180 id=180 data-nosnippet>180</a><span class="doccomment">/// Describes a caught panic, then forgets its payload. CPS-1: the payload can
+<a href=#181 id=181 data-nosnippet>181</a>/// be caller code whose destructor panics again, which would unwind this
+<a href=#182 id=182 data-nosnippet>182</a>/// thread, so its destructor must never run here.
+<a href=#183 id=183 data-nosnippet>183</a></span><span class="kw">fn </span>describe_and_forget(panic: Box&lt;<span class="kw">dyn </span>Any + Send&gt;, what: <span class="kw-2">&amp;</span>str) -&gt; String {
+<a href=#184 id=184 data-nosnippet>184</a>    <span class="kw">let </span>description = <span class="macro">format!</span>(<span class="string">"{what} panicked: {}"</span>, panic_message(panic.as_ref()));
+<a href=#185 id=185 data-nosnippet>185</a>    mem::forget(panic);
+<a href=#186 id=186 data-nosnippet>186</a>    description
+<a href=#187 id=187 data-nosnippet>187</a>}
+<a href=#188 id=188 data-nosnippet>188</a>
+<a href=#189 id=189 data-nosnippet>189</a><span class="doccomment">/// Borrows the message from a `&amp;str` or `String` panic payload.
+<a href=#190 id=190 data-nosnippet>190</a>/// For other payloads, returns a fixed description without invoking
+<a href=#191 id=191 data-nosnippet>191</a>/// caller-supplied formatting code.
+<a href=#192 id=192 data-nosnippet>192</a></span><span class="kw">fn </span>panic_message(panic: <span class="kw-2">&amp;</span>(<span class="kw">dyn </span>Any + Send)) -&gt; <span class="kw-2">&amp;</span>str {
+<a href=#193 id=193 data-nosnippet>193</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(message) = panic.downcast_ref::&lt;<span class="kw-2">&amp;</span>str&gt;() {
+<a href=#194 id=194 data-nosnippet>194</a>        message
+<a href=#195 id=195 data-nosnippet>195</a>    } <span class="kw">else if let </span><span class="prelude-val">Some</span>(message) = panic.downcast_ref::&lt;String&gt;() {
+<a href=#196 id=196 data-nosnippet>196</a>        message
+<a href=#197 id=197 data-nosnippet>197</a>    } <span class="kw">else </span>{
+<a href=#198 id=198 data-nosnippet>198</a>        <span class="string">"a non-string panic payload"
+<a href=#199 id=199 data-nosnippet>199</a>    </span>}
+<a href=#200 id=200 data-nosnippet>200</a>}
+<a href=#201 id=201 data-nosnippet>201</a>
+<a href=#202 id=202 data-nosnippet>202</a><span class="attr">#[cfg(all(test, target_os = <span class="string">"linux"</span>))]
+<a href=#203 id=203 data-nosnippet>203</a></span><span class="kw">mod </span>tests {
+<a href=#204 id=204 data-nosnippet>204</a>    <span class="kw">use </span>std::fs;
+<a href=#205 id=205 data-nosnippet>205</a>    <span class="kw">use </span>std::fs::File;
+<a href=#206 id=206 data-nosnippet>206</a>    <span class="kw">use </span>std::io::Read;
+<a href=#207 id=207 data-nosnippet>207</a>    <span class="kw">use </span>std::os::fd::AsRawFd;
+<a href=#208 id=208 data-nosnippet>208</a>    <span class="kw">use </span>std::os::fd::FromRawFd;
+<a href=#209 id=209 data-nosnippet>209</a>    <span class="kw">use </span>std::os::fd::OwnedFd;
+<a href=#210 id=210 data-nosnippet>210</a>    <span class="kw">use </span>std::os::unix::process::ExitStatusExt;
+<a href=#211 id=211 data-nosnippet>211</a>    <span class="kw">use </span>std::panic::panic_any;
+<a href=#212 id=212 data-nosnippet>212</a>    <span class="kw">use </span>std::process::Stdio;
+<a href=#213 id=213 data-nosnippet>213</a>    <span class="kw">use </span>std::ptr;
+<a href=#214 id=214 data-nosnippet>214</a>    <span class="kw">use </span>std::time::Duration;
+<a href=#215 id=215 data-nosnippet>215</a>    <span class="kw">use </span>std::time::Instant;
+<a href=#216 id=216 data-nosnippet>216</a>
+<a href=#217 id=217 data-nosnippet>217</a>    <span class="kw">use </span>nix::unistd::gettid;
+<a href=#218 id=218 data-nosnippet>218</a>    <span class="kw">use </span>tokio::runtime::Runtime;
+<a href=#219 id=219 data-nosnippet>219</a>
+<a href=#220 id=220 data-nosnippet>220</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#221 id=221 data-nosnippet>221</a>
+<a href=#222 id=222 data-nosnippet>222</a>    <span class="doccomment">/// How long a child must keep running to count as having survived.
+<a href=#223 id=223 data-nosnippet>223</a>    </span><span class="kw">const </span>SURVIVAL_WAIT: Duration = Duration::from_secs(<span class="number">1</span>);
+<a href=#224 id=224 data-nosnippet>224</a>    <span class="doccomment">/// Upper bound on any wait for a child to exit.
+<a href=#225 id=225 data-nosnippet>225</a>    </span><span class="kw">const </span>EXIT_WAIT: Duration = Duration::from_secs(<span class="number">10</span>);
+<a href=#226 id=226 data-nosnippet>226</a>
+<a href=#227 id=227 data-nosnippet>227</a>    <span class="doccomment">/// Builds a command to run `sleep &lt;seconds&gt;` with a parent-death signal.
+<a href=#228 id=228 data-nosnippet>228</a>    ///
+<a href=#229 id=229 data-nosnippet>229</a>    /// `pre_exec` runs in the child before starting `sleep` and asks Linux to
+<a href=#230 id=230 data-nosnippet>230</a>    /// send SIGKILL when the forking thread exits. `kill_on_drop` is separate:
+<a href=#231 id=231 data-nosnippet>231</a>    /// it kills the child if a failing test drops its `Child` handle. Tests
+<a href=#232 id=232 data-nosnippet>232</a>    /// keep that handle alive while checking the parent-death signal.
+<a href=#233 id=233 data-nosnippet>233</a>    </span><span class="kw">fn </span>sleep_with_death_signal(seconds: <span class="kw-2">&amp;</span>str) -&gt; Command {
+<a href=#234 id=234 data-nosnippet>234</a>        <span class="kw">let </span><span class="kw-2">mut </span>command = Command::new(<span class="string">"sleep"</span>);
+<a href=#235 id=235 data-nosnippet>235</a>        command.arg(seconds).kill_on_drop(<span class="bool-val">true</span>);
+<a href=#236 id=236 data-nosnippet>236</a>        <span class="comment">// SAFETY: the closure runs in the forked child before exec, where only
+<a href=#237 id=237 data-nosnippet>237</a>        // async-signal-safe calls are allowed. It calls `prctl`, which is, with
+<a href=#238 id=238 data-nosnippet>238</a>        // constant arguments, and `last_os_error`, which reads `errno` and does
+<a href=#239 id=239 data-nosnippet>239</a>        // not allocate.
+<a href=#240 id=240 data-nosnippet>240</a>        </span><span class="kw">unsafe </span>{
+<a href=#241 id=241 data-nosnippet>241</a>            command.pre_exec(|| {
+<a href=#242 id=242 data-nosnippet>242</a>                <span class="kw">if </span>libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != <span class="number">0 </span>{
+<a href=#243 id=243 data-nosnippet>243</a>                    <span class="kw">return </span><span class="prelude-val">Err</span>(io::Error::last_os_error());
+<a href=#244 id=244 data-nosnippet>244</a>                }
+<a href=#245 id=245 data-nosnippet>245</a>                <span class="prelude-val">Ok</span>(())
+<a href=#246 id=246 data-nosnippet>246</a>            });
+<a href=#247 id=247 data-nosnippet>247</a>        }
+<a href=#248 id=248 data-nosnippet>248</a>        command
+<a href=#249 id=249 data-nosnippet>249</a>    }
+<a href=#250 id=250 data-nosnippet>250</a>
+<a href=#251 id=251 data-nosnippet>251</a>    <span class="doccomment">/// Requests a child from a temporary OS thread and joins that thread
+<a href=#252 id=252 data-nosnippet>252</a>    /// before returning the child handle to the test.
+<a href=#253 id=253 data-nosnippet>253</a>    ///
+<a href=#254 id=254 data-nosnippet>254</a>    /// `spawn` selects either [`spawn_child`] or ordinary `Command::spawn`,
+<a href=#255 id=255 data-nosnippet>255</a>    /// allowing both paths to use the same setup. The temporary thread enters
+<a href=#256 id=256 data-nosnippet>256</a>    /// the test's runtime so either path can register the child with tokio.
+<a href=#257 id=257 data-nosnippet>257</a>    </span><span class="kw">fn </span>spawn_from_short_lived_thread(
+<a href=#258 id=258 data-nosnippet>258</a>        command: Command,
+<a href=#259 id=259 data-nosnippet>259</a>        spawn: <span class="kw">fn</span>(Command) -&gt; io::Result&lt;Child&gt;,
+<a href=#260 id=260 data-nosnippet>260</a>    ) -&gt; Child {
+<a href=#261 id=261 data-nosnippet>261</a>        <span class="kw">let </span>runtime = Handle::current();
+<a href=#262 id=262 data-nosnippet>262</a>        thread::spawn(<span class="kw">move </span>|| {
+<a href=#263 id=263 data-nosnippet>263</a>            <span class="comment">// A new OS thread has no current tokio runtime of its own.
+<a href=#264 id=264 data-nosnippet>264</a>            // Use the test's runtime while making the spawn request.
+<a href=#265 id=265 data-nosnippet>265</a>            </span><span class="kw">let </span>_runtime = runtime.enter();
+<a href=#266 id=266 data-nosnippet>266</a>            spawn(command)
+<a href=#267 id=267 data-nosnippet>267</a>        })
+<a href=#268 id=268 data-nosnippet>268</a>        .join()
+<a href=#269 id=269 data-nosnippet>269</a>        .expect(<span class="string">"the spawning thread panicked"</span>)
+<a href=#270 id=270 data-nosnippet>270</a>        .expect(<span class="string">"spawn the child"</span>)
+<a href=#271 id=271 data-nosnippet>271</a>    }
+<a href=#272 id=272 data-nosnippet>272</a>
+<a href=#273 id=273 data-nosnippet>273</a>    <span class="doccomment">/// Watches `child` for `wait`, returning false if an exit is observed.
+<a href=#274 id=274 data-nosnippet>274</a>    ///
+<a href=#275 id=275 data-nosnippet>275</a>    /// A child being alive immediately after spawning is not enough: poll
+<a href=#276 id=276 data-nosnippet>276</a>    /// throughout the observation period to allow a death signal to arrive.
+<a href=#277 id=277 data-nosnippet>277</a>    </span><span class="kw">async fn </span>keeps_running(child: <span class="kw-2">&amp;mut </span>Child, wait: Duration) -&gt; bool {
+<a href=#278 id=278 data-nosnippet>278</a>        <span class="kw">let </span>deadline = Instant::now() + wait;
+<a href=#279 id=279 data-nosnippet>279</a>        <span class="kw">while </span>Instant::now() &lt; deadline {
+<a href=#280 id=280 data-nosnippet>280</a>            <span class="kw">if </span>child.try_wait().expect(<span class="string">"poll the child"</span>).is_some() {
+<a href=#281 id=281 data-nosnippet>281</a>                <span class="kw">return </span><span class="bool-val">false</span>;
+<a href=#282 id=282 data-nosnippet>282</a>            }
+<a href=#283 id=283 data-nosnippet>283</a>            <span class="comment">// Yield between polls so the test's runtime can keep running.
+<a href=#284 id=284 data-nosnippet>284</a>            </span>tokio::time::sleep(Duration::from_millis(<span class="number">50</span>)).<span class="kw">await</span>;
+<a href=#285 id=285 data-nosnippet>285</a>        }
+<a href=#286 id=286 data-nosnippet>286</a>        <span class="bool-val">true
+<a href=#287 id=287 data-nosnippet>287</a>    </span>}
+<a href=#288 id=288 data-nosnippet>288</a>
+<a href=#289 id=289 data-nosnippet>289</a>    <span class="doccomment">/// Kills the test child and waits at most [`EXIT_WAIT`] to reap it.
+<a href=#290 id=290 data-nosnippet>290</a>    /// Sending the kill alone would not collect the child's exit status or
+<a href=#291 id=291 data-nosnippet>291</a>    /// remove its remaining OS process record.
+<a href=#292 id=292 data-nosnippet>292</a>    </span><span class="kw">async fn </span>kill(<span class="kw-2">mut </span>child: Child) {
+<a href=#293 id=293 data-nosnippet>293</a>        child.start_kill().expect(<span class="string">"kill the child"</span>);
+<a href=#294 id=294 data-nosnippet>294</a>        tokio::time::timeout(EXIT_WAIT, child.wait())
+<a href=#295 id=295 data-nosnippet>295</a>            .<span class="kw">await
+<a href=#296 id=296 data-nosnippet>296</a>            </span>.expect(<span class="string">"the child exited"</span>)
+<a href=#297 id=297 data-nosnippet>297</a>            .expect(<span class="string">"reap the child"</span>);
+<a href=#298 id=298 data-nosnippet>298</a>    }
+<a href=#299 id=299 data-nosnippet>299</a>
+<a href=#300 id=300 data-nosnippet>300</a>    <span class="doccomment">/// Whether the test child's `/proc/&lt;pid&gt;` entry has disappeared.
+<a href=#301 id=301 data-nosnippet>301</a>    /// An exited but unreaped child still has an entry, so checking this
+<a href=#302 id=302 data-nosnippet>302</a>    /// distinguishes completed cleanup from merely stopping the process.
+<a href=#303 id=303 data-nosnippet>303</a>    </span><span class="kw">fn </span>is_gone(pid: u32) -&gt; bool {
+<a href=#304 id=304 data-nosnippet>304</a>        fs::metadata(<span class="macro">format!</span>(<span class="string">"/proc/{pid}"</span>)).is_err()
+<a href=#305 id=305 data-nosnippet>305</a>    }
+<a href=#306 id=306 data-nosnippet>306</a>
+<a href=#307 id=307 data-nosnippet>307</a>    <span class="doccomment">/// Builds a `true` command whose child writes its PID to a pipe before
+<a href=#308 id=308 data-nosnippet>308</a>    /// exec. Returns the command and the pipe's read end for the test.
+<a href=#309 id=309 data-nosnippet>309</a>    ///
+<a href=#310 id=310 data-nosnippet>310</a>    /// The no-I/O test makes tokio panic after starting the child but before
+<a href=#311 id=311 data-nosnippet>311</a>    /// returning a `Child` handle. This PID report lets the test reap that
+<a href=#312 id=312 data-nosnippet>312</a>    /// exact child directly, without relying on tokio or scanning processes.
+<a href=#313 id=313 data-nosnippet>313</a>    </span><span class="kw">fn </span>true_reporting_pid() -&gt; (Command, File) {
+<a href=#314 id=314 data-nosnippet>314</a>        <span class="comment">// Both ends close at exec, so the executed program does not retain
+<a href=#315 id=315 data-nosnippet>315</a>        // these descriptors. The PID report happens before that point.
+<a href=#316 id=316 data-nosnippet>316</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>fds = [<span class="number">0</span>; <span class="number">2</span>];
+<a href=#317 id=317 data-nosnippet>317</a>        <span class="comment">// SAFETY: `fds` is a writable array of two `c_int`s, as `pipe2`
+<a href=#318 id=318 data-nosnippet>318</a>        // requires.
+<a href=#319 id=319 data-nosnippet>319</a>        </span><span class="kw">let </span>rc = <span class="kw">unsafe </span>{ libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+<a href=#320 id=320 data-nosnippet>320</a>        <span class="macro">assert_eq!</span>(rc, <span class="number">0</span>, <span class="string">"pipe2: {}"</span>, io::Error::last_os_error());
+<a href=#321 id=321 data-nosnippet>321</a>
+<a href=#322 id=322 data-nosnippet>322</a>        <span class="comment">// SAFETY: `pipe2` succeeded, so both descriptors are open and owned by
+<a href=#323 id=323 data-nosnippet>323</a>        // nothing else.
+<a href=#324 id=324 data-nosnippet>324</a>        </span><span class="kw">let </span>(read, write) = <span class="kw">unsafe </span>{ (OwnedFd::from_raw_fd(fds[<span class="number">0</span>]), OwnedFd::from_raw_fd(fds[<span class="number">1</span>])) };
+<a href=#325 id=325 data-nosnippet>325</a>        <span class="kw">let </span><span class="kw-2">mut </span>command = Command::new(<span class="string">"true"</span>);
+<a href=#326 id=326 data-nosnippet>326</a>        <span class="comment">// SAFETY: the closure runs in the forked child before exec, where only
+<a href=#327 id=327 data-nosnippet>327</a>        // async-signal-safe calls are allowed. `getpid` and `write` are, and
+<a href=#328 id=328 data-nosnippet>328</a>        // `last_os_error` only reads `errno`. The write end is open in the
+<a href=#329 id=329 data-nosnippet>329</a>        // child because `O_CLOEXEC` closes it only at exec, and the closure
+<a href=#330 id=330 data-nosnippet>330</a>        // keeps the `OwnedFd` alive in this process until the command drops.
+<a href=#331 id=331 data-nosnippet>331</a>        </span><span class="kw">unsafe </span>{
+<a href=#332 id=332 data-nosnippet>332</a>            command.pre_exec(<span class="kw">move </span>|| {
+<a href=#333 id=333 data-nosnippet>333</a>                <span class="kw">let </span>pid = libc::getpid().to_ne_bytes();
+<a href=#334 id=334 data-nosnippet>334</a>                <span class="kw">if </span>libc::write(write.as_raw_fd(), pid.as_ptr().cast(), pid.len())
+<a href=#335 id=335 data-nosnippet>335</a>                    != pid.len() <span class="kw">as </span>isize
+<a href=#336 id=336 data-nosnippet>336</a>                {
+<a href=#337 id=337 data-nosnippet>337</a>                    <span class="kw">return </span><span class="prelude-val">Err</span>(io::Error::last_os_error());
+<a href=#338 id=338 data-nosnippet>338</a>                }
+<a href=#339 id=339 data-nosnippet>339</a>                <span class="prelude-val">Ok</span>(())
+<a href=#340 id=340 data-nosnippet>340</a>            });
+<a href=#341 id=341 data-nosnippet>341</a>        }
+<a href=#342 id=342 data-nosnippet>342</a>        (command, File::from(read))
+<a href=#343 id=343 data-nosnippet>343</a>    }
+<a href=#344 id=344 data-nosnippet>344</a>
+<a href=#345 id=345 data-nosnippet>345</a>    <span class="doccomment">/// Reaps the unregistered test child `pid` within [`EXIT_WAIT`].
+<a href=#346 id=346 data-nosnippet>346</a>    ///
+<a href=#347 id=347 data-nosnippet>347</a>    /// There is no tokio `Child` handle for this process, so the test must
+<a href=#348 id=348 data-nosnippet>348</a>    /// collect its exit directly. `WNOHANG` lets us poll with a deadline
+<a href=#349 id=349 data-nosnippet>349</a>    /// rather than block indefinitely inside `waitpid`.
+<a href=#350 id=350 data-nosnippet>350</a>    </span><span class="kw">fn </span>reap(pid: libc::pid_t) {
+<a href=#351 id=351 data-nosnippet>351</a>        <span class="kw">let </span>deadline = Instant::now() + EXIT_WAIT;
+<a href=#352 id=352 data-nosnippet>352</a>        <span class="kw">loop </span>{
+<a href=#353 id=353 data-nosnippet>353</a>            <span class="comment">// SAFETY: `waitpid` takes a PID, a status pointer that may be
+<a href=#354 id=354 data-nosnippet>354</a>            // null, and flags. `pid` is this process's child, unregistered with
+<a href=#355 id=355 data-nosnippet>355</a>            // tokio, so nothing else reaps it.
+<a href=#356 id=356 data-nosnippet>356</a>            </span><span class="kw">match unsafe </span>{ libc::waitpid(pid, ptr::null_mut(), libc::WNOHANG) } {
+<a href=#357 id=357 data-nosnippet>357</a>                <span class="number">0 </span>=&gt; {
+<a href=#358 id=358 data-nosnippet>358</a>                    <span class="comment">// The child has not exited yet. Retry only while the
+<a href=#359 id=359 data-nosnippet>359</a>                    // cleanup deadline allows it.
+<a href=#360 id=360 data-nosnippet>360</a>                    </span><span class="macro">assert!</span>(Instant::now() &lt; deadline, <span class="string">"child {pid} was never reaped"</span>);
+<a href=#361 id=361 data-nosnippet>361</a>                    thread::sleep(Duration::from_millis(<span class="number">10</span>));
+<a href=#362 id=362 data-nosnippet>362</a>                }
+<a href=#363 id=363 data-nosnippet>363</a>                reaped <span class="kw">if </span>reaped == pid =&gt; <span class="kw">return</span>,
+<a href=#364 id=364 data-nosnippet>364</a>                <span class="kw">_ </span>=&gt; <span class="macro">panic!</span>(<span class="string">"waitpid({pid}): {}"</span>, io::Error::last_os_error()),
+<a href=#365 id=365 data-nosnippet>365</a>            }
+<a href=#366 id=366 data-nosnippet>366</a>        }
+<a href=#367 id=367 data-nosnippet>367</a>    }
+<a href=#368 id=368 data-nosnippet>368</a>
+<a href=#369 id=369 data-nosnippet>369</a>    <span class="comment">// CPS-1: the requesting thread can exit without killing the child.
+<a href=#370 id=370 data-nosnippet>370</a>    </span><span class="attr">#[tokio::test]
+<a href=#371 id=371 data-nosnippet>371</a>    </span><span class="kw">async fn </span>child_outlives_the_thread_that_requested_it() {
+<a href=#372 id=372 data-nosnippet>372</a>        <span class="comment">// The temporary thread calls `spawn_child`, so the child-spawner
+<a href=#373 id=373 data-nosnippet>373</a>        // thread actually forks the child. The temporary thread is joined
+<a href=#374 id=374 data-nosnippet>374</a>        // before this call returns.
+<a href=#375 id=375 data-nosnippet>375</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>child = spawn_from_short_lived_thread(sleep_with_death_signal(<span class="string">"60"</span>), spawn_child);
+<a href=#376 id=376 data-nosnippet>376</a>
+<a href=#377 id=377 data-nosnippet>377</a>        <span class="comment">// The requesting thread has exited, but the forking thread is still
+<a href=#378 id=378 data-nosnippet>378</a>        // alive, so the child must keep running.
+<a href=#379 id=379 data-nosnippet>379</a>        </span><span class="macro">assert!</span>(
+<a href=#380 id=380 data-nosnippet>380</a>            keeps_running(<span class="kw-2">&amp;mut </span>child, SURVIVAL_WAIT).<span class="kw">await</span>,
+<a href=#381 id=381 data-nosnippet>381</a>            <span class="string">"the child died with the thread that requested it"
+<a href=#382 id=382 data-nosnippet>382</a>        </span>);
+<a href=#383 id=383 data-nosnippet>383</a>
+<a href=#384 id=384 data-nosnippet>384</a>        <span class="comment">// Kill and reap the test child.
+<a href=#385 id=385 data-nosnippet>385</a>        </span>kill(child).<span class="kw">await</span>;
+<a href=#386 id=386 data-nosnippet>386</a>    }
+<a href=#387 id=387 data-nosnippet>387</a>
+<a href=#388 id=388 data-nosnippet>388</a>    <span class="comment">// CPS-1: comparison case for the preceding test. Without `spawn_child`,
+<a href=#389 id=389 data-nosnippet>389</a>    // the child must die when the temporary thread that forked it exits.
+<a href=#390 id=390 data-nosnippet>390</a>    </span><span class="attr">#[tokio::test]
+<a href=#391 id=391 data-nosnippet>391</a>    </span><span class="kw">async fn </span>child_forked_by_an_exiting_thread_is_killed() {
+<a href=#392 id=392 data-nosnippet>392</a>        <span class="comment">// Spawn directly on the temporary OS thread. The helper joins that
+<a href=#393 id=393 data-nosnippet>393</a>        // thread before returning, so we know it has exited.
+<a href=#394 id=394 data-nosnippet>394</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>child =
+<a href=#395 id=395 data-nosnippet>395</a>            spawn_from_short_lived_thread(sleep_with_death_signal(<span class="string">"60"</span>), |<span class="kw-2">mut </span>command| {
+<a href=#396 id=396 data-nosnippet>396</a>                command.spawn()
+<a href=#397 id=397 data-nosnippet>397</a>            });
+<a href=#398 id=398 data-nosnippet>398</a>
+<a href=#399 id=399 data-nosnippet>399</a>        <span class="comment">// The test passes when the parent-death signal kills the child.
+<a href=#400 id=400 data-nosnippet>400</a>        // Bound the wait so a missing signal fails rather than hangs.
+<a href=#401 id=401 data-nosnippet>401</a>        </span><span class="kw">let </span>status = tokio::time::timeout(EXIT_WAIT, child.wait())
+<a href=#402 id=402 data-nosnippet>402</a>            .<span class="kw">await
+<a href=#403 id=403 data-nosnippet>403</a>            </span>.expect(<span class="string">"the death signal killed the child"</span>)
+<a href=#404 id=404 data-nosnippet>404</a>            .expect(<span class="string">"reap the child"</span>);
+<a href=#405 id=405 data-nosnippet>405</a>        <span class="macro">assert_eq!</span>(status.signal(), <span class="prelude-val">Some</span>(libc::SIGKILL));
+<a href=#406 id=406 data-nosnippet>406</a>    }
+<a href=#407 id=407 data-nosnippet>407</a>
+<a href=#408 id=408 data-nosnippet>408</a>    <span class="comment">// CPS-1: a panicking spawn must not kill earlier children or prevent
+<a href=#409 id=409 data-nosnippet>409</a>    // later requests from being completed.
+<a href=#410 id=410 data-nosnippet>410</a>    </span><span class="attr">#[tokio::test]
+<a href=#411 id=411 data-nosnippet>411</a>    </span><span class="kw">async fn </span>panicking_request_leaves_the_spawner_running() {
+<a href=#412 id=412 data-nosnippet>412</a>        <span class="comment">// If the shared spawning thread exits, this child's parent-death
+<a href=#413 id=413 data-nosnippet>413</a>        // signal will kill it.
+<a href=#414 id=414 data-nosnippet>414</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>earlier = spawn_child(sleep_with_death_signal(<span class="string">"60"</span>)).expect(<span class="string">"spawn the child"</span>);
+<a href=#415 id=415 data-nosnippet>415</a>
+<a href=#416 id=416 data-nosnippet>416</a>        <span class="comment">// Force a panic on the spawning thread: tokio starts `true`, but
+<a href=#417 id=417 data-nosnippet>417</a>        // cannot register it with a runtime whose I/O driver is disabled.
+<a href=#418 id=418 data-nosnippet>418</a>        // Build and drop that runtime on a plain OS thread, because tokio
+<a href=#419 id=419 data-nosnippet>419</a>        // does not allow a runtime to be dropped inside an async task.
+<a href=#420 id=420 data-nosnippet>420</a>        </span><span class="kw">let </span>(result, <span class="kw-2">mut </span>reported_pid) = thread::spawn(|| {
+<a href=#421 id=421 data-nosnippet>421</a>            <span class="kw">let </span>without_io = tokio::runtime::Builder::new_current_thread()
+<a href=#422 id=422 data-nosnippet>422</a>                .build()
+<a href=#423 id=423 data-nosnippet>423</a>                .expect(<span class="string">"build a runtime without I/O"</span>);
+<a href=#424 id=424 data-nosnippet>424</a>            <span class="kw">let </span>_runtime = without_io.enter();
+<a href=#425 id=425 data-nosnippet>425</a>            <span class="kw">let </span>(command, reported_pid) = true_reporting_pid();
+<a href=#426 id=426 data-nosnippet>426</a>            (spawn_child(command), reported_pid)
+<a href=#427 id=427 data-nosnippet>427</a>        })
+<a href=#428 id=428 data-nosnippet>428</a>        .join()
+<a href=#429 id=429 data-nosnippet>429</a>        .expect(<span class="string">"the requesting thread panicked"</span>);
+<a href=#430 id=430 data-nosnippet>430</a>
+<a href=#431 id=431 data-nosnippet>431</a>        <span class="comment">// The child started, but failed registration left us without a Child
+<a href=#432 id=432 data-nosnippet>432</a>        // handle. Read the PID it sent through the pipe and reap it directly.
+<a href=#433 id=433 data-nosnippet>433</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>pid = [<span class="number">0</span>; size_of::&lt;libc::pid_t&gt;()];
+<a href=#434 id=434 data-nosnippet>434</a>        reported_pid
+<a href=#435 id=435 data-nosnippet>435</a>            .read_exact(<span class="kw-2">&amp;mut </span>pid)
+<a href=#436 id=436 data-nosnippet>436</a>            .expect(<span class="string">"the unregistered child reported its PID"</span>);
+<a href=#437 id=437 data-nosnippet>437</a>        reap(libc::pid_t::from_ne_bytes(pid));
+<a href=#438 id=438 data-nosnippet>438</a>
+<a href=#439 id=439 data-nosnippet>439</a>        <span class="comment">// The spawning panic must have been caught and returned as an error.
+<a href=#440 id=440 data-nosnippet>440</a>        </span><span class="kw">let </span>error = result.expect_err(<span class="string">"spawning into a runtime without I/O fails"</span>);
+<a href=#441 id=441 data-nosnippet>441</a>        <span class="macro">assert!</span>(
+<a href=#442 id=442 data-nosnippet>442</a>            error.to_string().contains(<span class="string">"panicked"</span>),
+<a href=#443 id=443 data-nosnippet>443</a>            <span class="string">"unexpected error: {error}"
+<a href=#444 id=444 data-nosnippet>444</a>        </span>);
+<a href=#445 id=445 data-nosnippet>445</a>
+<a href=#446 id=446 data-nosnippet>446</a>        <span class="comment">// The earlier child must survive: the panic must not have ended
+<a href=#447 id=447 data-nosnippet>447</a>        // the shared thread that forked it.
+<a href=#448 id=448 data-nosnippet>448</a>        </span><span class="macro">assert!</span>(
+<a href=#449 id=449 data-nosnippet>449</a>            keeps_running(<span class="kw-2">&amp;mut </span>earlier, SURVIVAL_WAIT).<span class="kw">await</span>,
+<a href=#450 id=450 data-nosnippet>450</a>            <span class="string">"an earlier child died after a request panicked"
+<a href=#451 id=451 data-nosnippet>451</a>        </span>);
+<a href=#452 id=452 data-nosnippet>452</a>
+<a href=#453 id=453 data-nosnippet>453</a>        <span class="comment">// The spawning thread must also remain able to complete new requests.
+<a href=#454 id=454 data-nosnippet>454</a>        </span><span class="kw">let </span>later = spawn_child(Command::new(<span class="string">"true"</span>)).expect(<span class="string">"spawn after the panic"</span>);
+<a href=#455 id=455 data-nosnippet>455</a>        <span class="kw">let </span>status = tokio::time::timeout(EXIT_WAIT, later.wait_with_output())
+<a href=#456 id=456 data-nosnippet>456</a>            .<span class="kw">await
+<a href=#457 id=457 data-nosnippet>457</a>            </span>.expect(<span class="string">"the later child exited"</span>)
+<a href=#458 id=458 data-nosnippet>458</a>            .expect(<span class="string">"reap the later child"</span>)
+<a href=#459 id=459 data-nosnippet>459</a>            .status;
+<a href=#460 id=460 data-nosnippet>460</a>        <span class="macro">assert!</span>(status.success());
+<a href=#461 id=461 data-nosnippet>461</a>
+<a href=#462 id=462 data-nosnippet>462</a>        <span class="comment">// Kill and reap the long-running test child.
+<a href=#463 id=463 data-nosnippet>463</a>        </span>kill(earlier).<span class="kw">await</span>;
+<a href=#464 id=464 data-nosnippet>464</a>    }
+<a href=#465 id=465 data-nosnippet>465</a>
+<a href=#466 id=466 data-nosnippet>466</a>    <span class="doccomment">/// Captured by a command's callback to make command destruction panic
+<a href=#467 id=467 data-nosnippet>467</a>    /// after spawning succeeds. Its panic carries [`PayloadPanicsOnDrop`]
+<a href=#468 id=468 data-nosnippet>468</a>    /// rather than a string, so disposing of that payload is tested too.
+<a href=#469 id=469 data-nosnippet>469</a>    </span><span class="kw">struct </span>PanicOnDrop;
+<a href=#470 id=470 data-nosnippet>470</a>
+<a href=#471 id=471 data-nosnippet>471</a>    <span class="kw">impl </span>Drop <span class="kw">for </span>PanicOnDrop {
+<a href=#472 id=472 data-nosnippet>472</a>        <span class="kw">fn </span>drop(<span class="kw-2">&amp;mut </span><span class="self">self</span>) {
+<a href=#473 id=473 data-nosnippet>473</a>            panic_any(PayloadPanicsOnDrop);
+<a href=#474 id=474 data-nosnippet>474</a>        }
+<a href=#475 id=475 data-nosnippet>475</a>    }
+<a href=#476 id=476 data-nosnippet>476</a>
+<a href=#477 id=477 data-nosnippet>477</a>    <span class="doccomment">/// The first panic's payload. Dropping it after catching that panic
+<a href=#478 id=478 data-nosnippet>478</a>    /// causes another panic, so the spawner must forget it instead.
+<a href=#479 id=479 data-nosnippet>479</a>    </span><span class="kw">struct </span>PayloadPanicsOnDrop;
+<a href=#480 id=480 data-nosnippet>480</a>
+<a href=#481 id=481 data-nosnippet>481</a>    <span class="kw">impl </span>Drop <span class="kw">for </span>PayloadPanicsOnDrop {
+<a href=#482 id=482 data-nosnippet>482</a>        <span class="kw">fn </span>drop(<span class="kw-2">&amp;mut </span><span class="self">self</span>) {
+<a href=#483 id=483 data-nosnippet>483</a>            <span class="macro">panic!</span>(<span class="string">"the panic payload panicked on drop"</span>);
+<a href=#484 id=484 data-nosnippet>484</a>        }
+<a href=#485 id=485 data-nosnippet>485</a>    }
+<a href=#486 id=486 data-nosnippet>486</a>
+<a href=#487 id=487 data-nosnippet>487</a>    <span class="comment">// CPS-1, CPS-4: command destruction can panic after spawning succeeds.
+<a href=#488 id=488 data-nosnippet>488</a>    // Catching that panic must preserve the child handoff and keep the
+<a href=#489 id=489 data-nosnippet>489</a>    // spawning thread alive, even when the panic payload's drop panics too.
+<a href=#490 id=490 data-nosnippet>490</a>    </span><span class="attr">#[tokio::test]
+<a href=#491 id=491 data-nosnippet>491</a>    </span><span class="kw">async fn </span>command_destructor_panic_leaves_the_spawner_running() {
+<a href=#492 id=492 data-nosnippet>492</a>        <span class="comment">// This child's death signal detects whether command cleanup ends
+<a href=#493 id=493 data-nosnippet>493</a>        // the shared thread that forked it.
+<a href=#494 id=494 data-nosnippet>494</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>earlier = spawn_child(sleep_with_death_signal(<span class="string">"60"</span>)).expect(<span class="string">"spawn the child"</span>);
+<a href=#495 id=495 data-nosnippet>495</a>
+<a href=#496 id=496 data-nosnippet>496</a>        <span class="comment">// The callback itself succeeds. Its captured value panics only
+<a href=#497 id=497 data-nosnippet>497</a>        // when the parent drops the command after the spawn attempt.
+<a href=#498 id=498 data-nosnippet>498</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>command = Command::new(<span class="string">"true"</span>);
+<a href=#499 id=499 data-nosnippet>499</a>        <span class="kw">let </span>capture = PanicOnDrop;
+<a href=#500 id=500 data-nosnippet>500</a>        <span class="comment">// SAFETY: the closure runs in the forked child before exec and makes
+<a href=#501 id=501 data-nosnippet>501</a>        // no calls at all; it only holds `capture`, which is dropped in this
+<a href=#502 id=502 data-nosnippet>502</a>        // process when the command is, never in the child.
+<a href=#503 id=503 data-nosnippet>503</a>        </span><span class="kw">unsafe </span>{
+<a href=#504 id=504 data-nosnippet>504</a>            command.pre_exec(<span class="kw">move </span>|| {
+<a href=#505 id=505 data-nosnippet>505</a>                <span class="kw">let _ </span>= <span class="kw-2">&amp;</span>capture;
+<a href=#506 id=506 data-nosnippet>506</a>                <span class="prelude-val">Ok</span>(())
+<a href=#507 id=507 data-nosnippet>507</a>            });
+<a href=#508 id=508 data-nosnippet>508</a>        }
+<a href=#509 id=509 data-nosnippet>509</a>
+<a href=#510 id=510 data-nosnippet>510</a>        <span class="comment">// A successful spawn must still return its child despite the
+<a href=#511 id=511 data-nosnippet>511</a>        // command-drop panic. `true` should then exit successfully.
+<a href=#512 id=512 data-nosnippet>512</a>        </span><span class="kw">let </span>child = spawn_child(command).expect(<span class="string">"the child is handed over"</span>);
+<a href=#513 id=513 data-nosnippet>513</a>        <span class="kw">let </span>status = tokio::time::timeout(EXIT_WAIT, child.wait_with_output())
+<a href=#514 id=514 data-nosnippet>514</a>            .<span class="kw">await
+<a href=#515 id=515 data-nosnippet>515</a>            </span>.expect(<span class="string">"the child exited"</span>)
+<a href=#516 id=516 data-nosnippet>516</a>            .expect(<span class="string">"reap the child"</span>)
+<a href=#517 id=517 data-nosnippet>517</a>            .status;
+<a href=#518 id=518 data-nosnippet>518</a>        <span class="macro">assert!</span>(status.success());
+<a href=#519 id=519 data-nosnippet>519</a>
+<a href=#520 id=520 data-nosnippet>520</a>        <span class="comment">// Earlier children must not be killed by the cleanup panic.
+<a href=#521 id=521 data-nosnippet>521</a>        </span><span class="macro">assert!</span>(
+<a href=#522 id=522 data-nosnippet>522</a>            keeps_running(<span class="kw-2">&amp;mut </span>earlier, SURVIVAL_WAIT).<span class="kw">await</span>,
+<a href=#523 id=523 data-nosnippet>523</a>            <span class="string">"an earlier child died after a command's destructor panicked"
+<a href=#524 id=524 data-nosnippet>524</a>        </span>);
+<a href=#525 id=525 data-nosnippet>525</a>
+<a href=#526 id=526 data-nosnippet>526</a>        <span class="comment">// The shared thread must still receive and complete new requests.
+<a href=#527 id=527 data-nosnippet>527</a>        </span><span class="kw">let </span>later = spawn_child(Command::new(<span class="string">"true"</span>)).expect(<span class="string">"spawn after the panic"</span>);
+<a href=#528 id=528 data-nosnippet>528</a>        <span class="kw">let </span>status = tokio::time::timeout(EXIT_WAIT, later.wait_with_output())
+<a href=#529 id=529 data-nosnippet>529</a>            .<span class="kw">await
+<a href=#530 id=530 data-nosnippet>530</a>            </span>.expect(<span class="string">"the later child exited"</span>)
+<a href=#531 id=531 data-nosnippet>531</a>            .expect(<span class="string">"reap the later child"</span>)
+<a href=#532 id=532 data-nosnippet>532</a>            .status;
+<a href=#533 id=533 data-nosnippet>533</a>        <span class="macro">assert!</span>(status.success());
+<a href=#534 id=534 data-nosnippet>534</a>
+<a href=#535 id=535 data-nosnippet>535</a>        <span class="comment">// Kill and reap the long-running test child.
+<a href=#536 id=536 data-nosnippet>536</a>        </span>kill(earlier).<span class="kw">await</span>;
+<a href=#537 id=537 data-nosnippet>537</a>    }
+<a href=#538 id=538 data-nosnippet>538</a>
+<a href=#539 id=539 data-nosnippet>539</a>    <span class="comment">// Check the test fixture itself: failure while owning a child must
+<a href=#540 id=540 data-nosnippet>540</a>    // leave that child killed and reaped, not running or left as a zombie.
+<a href=#541 id=541 data-nosnippet>541</a>    </span><span class="attr">#[tokio::test]
+<a href=#542 id=542 data-nosnippet>542</a>    </span><span class="kw">async fn </span>failing_test_leaves_no_child_behind() {
+<a href=#543 id=543 data-nosnippet>543</a>        <span class="kw">let </span>child = spawn_child(sleep_with_death_signal(<span class="string">"60"</span>)).expect(<span class="string">"spawn the child"</span>);
+<a href=#544 id=544 data-nosnippet>544</a>        <span class="kw">let </span>pid = child.id().expect(<span class="string">"a running child has a PID"</span>);
+<a href=#545 id=545 data-nosnippet>545</a>
+<a href=#546 id=546 data-nosnippet>546</a>        <span class="comment">// Move the handle into a task and force it to panic. Unwinding
+<a href=#547 id=547 data-nosnippet>547</a>        // drops the handle, invoking the fixture's kill-on-drop behavior.
+<a href=#548 id=548 data-nosnippet>548</a>        </span><span class="kw">let </span>failed = tokio::spawn(<span class="kw">async move </span>{
+<a href=#549 id=549 data-nosnippet>549</a>            <span class="kw">let </span>_child = child;
+<a href=#550 id=550 data-nosnippet>550</a>            <span class="macro">panic!</span>(<span class="string">"forced test failure"</span>);
+<a href=#551 id=551 data-nosnippet>551</a>        })
+<a href=#552 id=552 data-nosnippet>552</a>        .<span class="kw">await</span>;
+<a href=#553 id=553 data-nosnippet>553</a>        <span class="macro">assert!</span>(failed.is_err(), <span class="string">"the forced failure did not fail"</span>);
+<a href=#554 id=554 data-nosnippet>554</a>
+<a href=#555 id=555 data-nosnippet>555</a>        <span class="comment">// Killing is not enough: an unreaped child still has a /proc entry.
+<a href=#556 id=556 data-nosnippet>556</a>        // Tokio reaps dropped children when its runtime next parks. Yield
+<a href=#557 id=557 data-nosnippet>557</a>        // while checking for removal, with a deadline on the cleanup wait.
+<a href=#558 id=558 data-nosnippet>558</a>        </span><span class="kw">let </span>deadline = Instant::now() + EXIT_WAIT;
+<a href=#559 id=559 data-nosnippet>559</a>        <span class="kw">while </span>!is_gone(pid) {
+<a href=#560 id=560 data-nosnippet>560</a>            <span class="macro">assert!</span>(
+<a href=#561 id=561 data-nosnippet>561</a>                Instant::now() &lt; deadline,
+<a href=#562 id=562 data-nosnippet>562</a>                <span class="string">"child {pid} outlived the failed test or was never reaped"
+<a href=#563 id=563 data-nosnippet>563</a>            </span>);
+<a href=#564 id=564 data-nosnippet>564</a>            tokio::time::sleep(Duration::from_millis(<span class="number">50</span>)).<span class="kw">await</span>;
+<a href=#565 id=565 data-nosnippet>565</a>        }
+<a href=#566 id=566 data-nosnippet>566</a>    }
+<a href=#567 id=567 data-nosnippet>567</a>
+<a href=#568 id=568 data-nosnippet>568</a>    <span class="comment">// CPS-2: spawning on another OS thread must still leave the caller's
+<a href=#569 id=569 data-nosnippet>569</a>    // runtime able to read the child's pipes and await its exit.
+<a href=#570 id=570 data-nosnippet>570</a>    </span><span class="attr">#[tokio::test]
+<a href=#571 id=571 data-nosnippet>571</a>    </span><span class="kw">async fn </span>child_is_driven_by_the_callers_runtime() {
+<a href=#572 id=572 data-nosnippet>572</a>        <span class="comment">// Capture stdout so the test exercises asynchronous pipe reading,
+<a href=#573 id=573 data-nosnippet>573</a>        // not just the process's exit status.
+<a href=#574 id=574 data-nosnippet>574</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>command = Command::new(<span class="string">"echo"</span>);
+<a href=#575 id=575 data-nosnippet>575</a>        command.arg(<span class="string">"hello"</span>).stdout(Stdio::piped());
+<a href=#576 id=576 data-nosnippet>576</a>        <span class="kw">let </span>child = spawn_child(command).expect(<span class="string">"spawn the child"</span>);
+<a href=#577 id=577 data-nosnippet>577</a>
+<a href=#578 id=578 data-nosnippet>578</a>        <span class="comment">// Await output and exit on the test's runtime, not on the spawning
+<a href=#579 id=579 data-nosnippet>579</a>        // thread. A broken registration must fail rather than wait forever.
+<a href=#580 id=580 data-nosnippet>580</a>        </span><span class="kw">let </span>output = tokio::time::timeout(EXIT_WAIT, child.wait_with_output())
+<a href=#581 id=581 data-nosnippet>581</a>            .<span class="kw">await
+<a href=#582 id=582 data-nosnippet>582</a>            </span>.expect(<span class="string">"the child exited"</span>)
+<a href=#583 id=583 data-nosnippet>583</a>            .expect(<span class="string">"read the child's output"</span>);
+<a href=#584 id=584 data-nosnippet>584</a>        <span class="macro">assert!</span>(output.status.success());
+<a href=#585 id=585 data-nosnippet>585</a>        <span class="macro">assert_eq!</span>(output.stdout, <span class="string">b"hello\n"</span>);
+<a href=#586 id=586 data-nosnippet>586</a>    }
+<a href=#587 id=587 data-nosnippet>587</a>
+<a href=#588 id=588 data-nosnippet>588</a>    <span class="comment">// An ordinary spawn failure must reach the caller with its original
+<a href=#589 id=589 data-nosnippet>589</a>    // I/O error kind, rather than being mistaken for a panic.
+<a href=#590 id=590 data-nosnippet>590</a>    </span><span class="attr">#[tokio::test]
+<a href=#591 id=591 data-nosnippet>591</a>    </span><span class="kw">async fn </span>spawn_errors_propagate() {
+<a href=#592 id=592 data-nosnippet>592</a>        <span class="kw">let </span>error = spawn_child(Command::new(<span class="string">"/nonexistent/hyperactor-child-process"</span>))
+<a href=#593 id=593 data-nosnippet>593</a>            .expect_err(<span class="string">"spawning a nonexistent program fails"</span>);
+<a href=#594 id=594 data-nosnippet>594</a>        <span class="macro">assert_eq!</span>(error.kind(), io::ErrorKind::NotFound);
+<a href=#595 id=595 data-nosnippet>595</a>    }
+<a href=#596 id=596 data-nosnippet>596</a>
+<a href=#597 id=597 data-nosnippet>597</a>    <span class="comment">// CPS-2: a caller without an entered tokio runtime gets an error.
+<a href=#598 id=598 data-nosnippet>598</a>    // This plain test runs without the runtime provided by `tokio::test`.
+<a href=#599 id=599 data-nosnippet>599</a>    </span><span class="attr">#[test]
+<a href=#600 id=600 data-nosnippet>600</a>    </span><span class="kw">fn </span>spawning_outside_a_runtime_fails() {
+<a href=#601 id=601 data-nosnippet>601</a>        spawn_child(Command::new(<span class="string">"true"</span>)).expect_err(<span class="string">"spawning outside a runtime fails"</span>);
+<a href=#602 id=602 data-nosnippet>602</a>    }
+<a href=#603 id=603 data-nosnippet>603</a>
+<a href=#604 id=604 data-nosnippet>604</a>    <span class="doccomment">/// Sets up the worker-retirement scenario from meta-pytorch/monarch#5248.
+<a href=#605 id=605 data-nosnippet>605</a>    ///
+<a href=#606 id=606 data-nosnippet>606</a>    /// A one-worker runtime requests a death-signal child using `spawn`.
+<a href=#607 id=607 data-nosnippet>607</a>    /// `block_in_place` then moves the worker role to another OS thread,
+<a href=#608 id=608 data-nosnippet>608</a>    /// letting the original thread retire from the blocking pool. The test
+<a href=#609 id=609 data-nosnippet>609</a>    /// must observe that original thread's exit, not merely the role moving.
+<a href=#610 id=610 data-nosnippet>610</a>    ///
+<a href=#611 id=611 data-nosnippet>611</a>    /// Returns both the child and the still-live runtime. The calling test
+<a href=#612 id=612 data-nosnippet>612</a>    /// can then check the child while ruling out runtime shutdown as the
+<a href=#613 id=613 data-nosnippet>613</a>    /// cause of its death. `spawn` selects our helper or ordinary spawning.
+<a href=#614 id=614 data-nosnippet>614</a>    </span><span class="kw">fn </span>spawn_then_retire_worker(spawn: <span class="kw">fn</span>(Command) -&gt; io::Result&lt;Child&gt;) -&gt; (Child, Runtime) {
+<a href=#615 id=615 data-nosnippet>615</a>        <span class="comment">// Keep the blocking pool's idle-thread lifetime short so the old
+<a href=#616 id=616 data-nosnippet>616</a>        // worker can retire during the test. The runtime itself stays alive.
+<a href=#617 id=617 data-nosnippet>617</a>        </span><span class="kw">let </span>runtime = tokio::runtime::Builder::new_multi_thread()
+<a href=#618 id=618 data-nosnippet>618</a>            .worker_threads(<span class="number">1</span>)
+<a href=#619 id=619 data-nosnippet>619</a>            .thread_keep_alive(Duration::from_millis(<span class="number">100</span>))
+<a href=#620 id=620 data-nosnippet>620</a>            .enable_all()
+<a href=#621 id=621 data-nosnippet>621</a>            .build()
+<a href=#622 id=622 data-nosnippet>622</a>            .expect(<span class="string">"build a one-worker runtime"</span>);
+<a href=#623 id=623 data-nosnippet>623</a>
+<a href=#624 id=624 data-nosnippet>624</a>        <span class="comment">// `block_on` alone runs its main future on the calling thread.
+<a href=#625 id=625 data-nosnippet>625</a>        // Use `tokio::spawn` to make the request from a runtime worker,
+<a href=#626 id=626 data-nosnippet>626</a>        // and record that worker's OS thread ID before the request.
+<a href=#627 id=627 data-nosnippet>627</a>        </span><span class="kw">let </span>(child, worker) = runtime.block_on(<span class="kw">async </span>{
+<a href=#628 id=628 data-nosnippet>628</a>            tokio::spawn(<span class="kw">async move </span>{
+<a href=#629 id=629 data-nosnippet>629</a>                <span class="kw">let </span>worker = gettid();
+<a href=#630 id=630 data-nosnippet>630</a>                (
+<a href=#631 id=631 data-nosnippet>631</a>                    spawn(sleep_with_death_signal(<span class="string">"60"</span>)).expect(<span class="string">"spawn the child"</span>),
+<a href=#632 id=632 data-nosnippet>632</a>                    worker,
+<a href=#633 id=633 data-nosnippet>633</a>                )
+<a href=#634 id=634 data-nosnippet>634</a>            })
+<a href=#635 id=635 data-nosnippet>635</a>            .<span class="kw">await
+<a href=#636 id=636 data-nosnippet>636</a>            </span>.expect(<span class="string">"the spawning task panicked"</span>)
+<a href=#637 id=637 data-nosnippet>637</a>        });
+<a href=#638 id=638 data-nosnippet>638</a>
+<a href=#639 id=639 data-nosnippet>639</a>        runtime.block_on(<span class="kw">async </span>{
+<a href=#640 id=640 data-nosnippet>640</a>            <span class="comment">// `block_in_place` lets another thread take over the worker's
+<a href=#641 id=641 data-nosnippet>641</a>            // async work. A short call can reclaim that work before the
+<a href=#642 id=642 data-nosnippet>642</a>            // replacement starts, so retry until a probe sees a new thread.
+<a href=#643 id=643 data-nosnippet>643</a>            </span><span class="kw">for _ in </span><span class="number">0</span>..<span class="number">100 </span>{
+<a href=#644 id=644 data-nosnippet>644</a>                tokio::spawn(<span class="kw">async </span>{
+<a href=#645 id=645 data-nosnippet>645</a>                    tokio::task::block_in_place(|| thread::sleep(Duration::from_millis(<span class="number">10</span>)));
+<a href=#646 id=646 data-nosnippet>646</a>                })
+<a href=#647 id=647 data-nosnippet>647</a>                .<span class="kw">await
+<a href=#648 id=648 data-nosnippet>648</a>                </span>.expect(<span class="string">"the blocking task panicked"</span>);
+<a href=#649 id=649 data-nosnippet>649</a>
+<a href=#650 id=650 data-nosnippet>650</a>                <span class="comment">// Run the probe as a task too, so its ID belongs to the
+<a href=#651 id=651 data-nosnippet>651</a>                // current worker rather than the thread driving `block_on`.
+<a href=#652 id=652 data-nosnippet>652</a>                </span><span class="kw">let </span>current = tokio::spawn(<span class="kw">async </span>{ gettid() })
+<a href=#653 id=653 data-nosnippet>653</a>                    .<span class="kw">await
+<a href=#654 id=654 data-nosnippet>654</a>                    </span>.expect(<span class="string">"the probe task panicked"</span>);
+<a href=#655 id=655 data-nosnippet>655</a>                <span class="kw">if </span>current != worker {
+<a href=#656 id=656 data-nosnippet>656</a>                    <span class="kw">return</span>;
+<a href=#657 id=657 data-nosnippet>657</a>                }
+<a href=#658 id=658 data-nosnippet>658</a>            }
+<a href=#659 id=659 data-nosnippet>659</a>            <span class="macro">panic!</span>(<span class="string">"the worker role never left thread {worker}"</span>);
+<a href=#660 id=660 data-nosnippet>660</a>        });
+<a href=#661 id=661 data-nosnippet>661</a>
+<a href=#662 id=662 data-nosnippet>662</a>        <span class="comment">// The role has moved, but the old OS thread may still be alive in
+<a href=#663 id=663 data-nosnippet>663</a>        // the blocking pool. Wait for its /proc entry to disappear before
+<a href=#664 id=664 data-nosnippet>664</a>        // checking the child; fail if the thread never actually exits.
+<a href=#665 id=665 data-nosnippet>665</a>        </span><span class="kw">let </span>deadline = Instant::now() + EXIT_WAIT;
+<a href=#666 id=666 data-nosnippet>666</a>        <span class="kw">while </span>fs::metadata(<span class="macro">format!</span>(<span class="string">"/proc/self/task/{worker}"</span>)).is_ok() {
+<a href=#667 id=667 data-nosnippet>667</a>            <span class="macro">assert!</span>(Instant::now() &lt; deadline, <span class="string">"thread {worker} never retired"</span>);
+<a href=#668 id=668 data-nosnippet>668</a>            thread::sleep(Duration::from_millis(<span class="number">50</span>));
+<a href=#669 id=669 data-nosnippet>669</a>        }
+<a href=#670 id=670 data-nosnippet>670</a>        (child, runtime)
+<a href=#671 id=671 data-nosnippet>671</a>    }
+<a href=#672 id=672 data-nosnippet>672</a>
+<a href=#673 id=673 data-nosnippet>673</a>    <span class="comment">// CPS-1: retiring the requesting tokio worker must not kill a child
+<a href=#674 id=674 data-nosnippet>674</a>    // forked by the process-lifetime spawning thread.
+<a href=#675 id=675 data-nosnippet>675</a>    </span><span class="attr">#[test]
+<a href=#676 id=676 data-nosnippet>676</a>    </span><span class="kw">fn </span>child_survives_its_worker_retiring_after_block_in_place() {
+<a href=#677 id=677 data-nosnippet>677</a>        <span class="comment">// Return only once the worker that requested the spawn has exited.
+<a href=#678 id=678 data-nosnippet>678</a>        // `spawn_child` forks on the shared OS thread instead of that worker.
+<a href=#679 id=679 data-nosnippet>679</a>        </span><span class="kw">let </span>(<span class="kw-2">mut </span>child, runtime) = spawn_then_retire_worker(spawn_child);
+<a href=#680 id=680 data-nosnippet>680</a>        runtime.block_on(<span class="kw">async </span>{
+<a href=#681 id=681 data-nosnippet>681</a>            <span class="comment">// The runtime remains alive, but the original worker is gone.
+<a href=#682 id=682 data-nosnippet>682</a>            // Its retirement must not trigger this child's death signal.
+<a href=#683 id=683 data-nosnippet>683</a>            </span><span class="macro">assert!</span>(
+<a href=#684 id=684 data-nosnippet>684</a>                keeps_running(<span class="kw-2">&amp;mut </span>child, SURVIVAL_WAIT).<span class="kw">await</span>,
+<a href=#685 id=685 data-nosnippet>685</a>                <span class="string">"the child died when its spawning worker retired"
+<a href=#686 id=686 data-nosnippet>686</a>            </span>);
+<a href=#687 id=687 data-nosnippet>687</a>
+<a href=#688 id=688 data-nosnippet>688</a>            <span class="comment">// Kill and reap the test child while its runtime is still alive.
+<a href=#689 id=689 data-nosnippet>689</a>            </span>kill(child).<span class="kw">await</span>;
+<a href=#690 id=690 data-nosnippet>690</a>        });
+<a href=#691 id=691 data-nosnippet>691</a>    }
+<a href=#692 id=692 data-nosnippet>692</a>
+<a href=#693 id=693 data-nosnippet>693</a>    <span class="comment">// CPS-1: comparison case. Direct spawning on a tokio worker must
+<a href=#694 id=694 data-nosnippet>694</a>    // reproduce the bug: worker retirement kills the death-signal child.
+<a href=#695 id=695 data-nosnippet>695</a>    </span><span class="attr">#[test]
+<a href=#696 id=696 data-nosnippet>696</a>    </span><span class="kw">fn </span>child_forked_on_a_worker_dies_when_it_retires() {
+<a href=#697 id=697 data-nosnippet>697</a>        <span class="comment">// Use ordinary `spawn`, making that worker the child's forking
+<a href=#698 id=698 data-nosnippet>698</a>        // thread. The helper waits for the worker's OS thread to exit.
+<a href=#699 id=699 data-nosnippet>699</a>        </span><span class="kw">let </span>(<span class="kw-2">mut </span>child, runtime) = spawn_then_retire_worker(|<span class="kw-2">mut </span>command| command.spawn());
+<a href=#700 id=700 data-nosnippet>700</a>        runtime.block_on(<span class="kw">async </span>{
+<a href=#701 id=701 data-nosnippet>701</a>            <span class="comment">// The parent process and runtime are alive. The test passes
+<a href=#702 id=702 data-nosnippet>702</a>            // only if the worker's exit nevertheless kills the child.
+<a href=#703 id=703 data-nosnippet>703</a>            </span><span class="kw">let </span>status = tokio::time::timeout(EXIT_WAIT, child.wait())
+<a href=#704 id=704 data-nosnippet>704</a>                .<span class="kw">await
+<a href=#705 id=705 data-nosnippet>705</a>                </span>.expect(<span class="string">"the death signal killed the child"</span>)
+<a href=#706 id=706 data-nosnippet>706</a>                .expect(<span class="string">"reap the child"</span>);
+<a href=#707 id=707 data-nosnippet>707</a>            <span class="macro">assert_eq!</span>(status.signal(), <span class="prelude-val">Some</span>(libc::SIGKILL));
+<a href=#708 id=708 data-nosnippet>708</a>        });
+<a href=#709 id=709 data-nosnippet>709</a>    }
+<a href=#710 id=710 data-nosnippet>710</a>
+<a href=#711 id=711 data-nosnippet>711</a>    <span class="comment">// ── Child-spawner invariant coverage ──
+<a href=#712 id=712 data-nosnippet>712</a>    // CPS-1: child_outlives_the_thread_that_requested_it (witnessed by
+<a href=#713 id=713 data-nosnippet>713</a>    //        child_forked_by_an_exiting_thread_is_killed),
+<a href=#714 id=714 data-nosnippet>714</a>    //        child_survives_its_worker_retiring_after_block_in_place (witnessed
+<a href=#715 id=715 data-nosnippet>715</a>    //        by child_forked_on_a_worker_dies_when_it_retires),
+<a href=#716 id=716 data-nosnippet>716</a>    //        panicking_request_leaves_the_spawner_running,
+<a href=#717 id=717 data-nosnippet>717</a>    //        command_destructor_panic_leaves_the_spawner_running
+<a href=#718 id=718 data-nosnippet>718</a>    // CPS-2: child_is_driven_by_the_callers_runtime, spawning_outside_a_runtime_fails
+<a href=#719 id=719 data-nosnippet>719</a>    // CPS-3: by inspection: `spawn_child` has no path that calls
+<a href=#720 id=720 data-nosnippet>720</a>    //        `Command::spawn` on the calling thread
+<a href=#721 id=721 data-nosnippet>721</a>    // CPS-4: by inspection: `spawn_child` is synchronous;
+<a href=#722 id=722 data-nosnippet>722</a>    //        command_destructor_panic_leaves_the_spawner_running checks that a
+<a href=#723 id=723 data-nosnippet>723</a>    //        spawned child is handed over even when the command's drop panics
+<a href=#724 id=724 data-nosnippet>724</a>    // Fixture cleanup: failing_test_leaves_no_child_behind
+<a href=#725 id=725 data-nosnippet>725</a></span>}
+</code></pre></div></section></main></body></html>

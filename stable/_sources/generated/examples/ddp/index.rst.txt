@@ -1,0 +1,86 @@
+
+
+.. _sphx_glr_generated_examples_ddp:
+
+DDP Examples
+============
+
+Examples demonstrating Distributed Data Parallel (DDP) training with Monarch.
+
+
+.. raw:: html
+
+  <div id='sg-tag-list' class='sphx-glr-tag-list'></div>
+
+
+.. raw:: html
+
+    <div class="sphx-glr-thumbnails">
+
+.. thumbnail-parent-div-open
+
+.. raw:: html
+
+    <div class="sphx-glr-thumbcontainer" tooltip="This example demonstrates how to run PyTorch&#x27;s Distributed Data Parallel (DDP) using Monarch&#x27;s SPMDActor. The actor configures torch elastic environment variables and executes the training script, replicating torchrun behavior.">
+
+.. only:: html
+
+  .. image:: /generated/examples/ddp/images/thumb/sphx_glr_spmd_ddp_thumb.png
+    :alt:
+
+  :doc:`/generated/examples/ddp/spmd_ddp`
+
+.. raw:: html
+
+      <div class="sphx-glr-thumbnail-title">DDP using SPMDActor</div>
+    </div>
+
+
+.. raw:: html
+
+    <div class="sphx-glr-thumbcontainer" tooltip="This example demonstrates how to use monarch.job.spmd (``serve()`` and run_spmd()) to launch PyTorch DDP training. It shows single-node training with a local scheduler and multi-node training with slurm.">
+
+.. only:: html
+
+  .. image:: /generated/examples/ddp/images/thumb/sphx_glr_spmd_job_thumb.png
+    :alt:
+
+  :doc:`/generated/examples/ddp/spmd_job`
+
+.. raw:: html
+
+      <div class="sphx-glr-thumbnail-title">SPMD Job Example</div>
+    </div>
+
+
+.. raw:: html
+
+    <div class="sphx-glr-thumbcontainer" tooltip="This tutorial extends the spmd_ddp tutorial to run PyTorch&#x27;s Distributed Data Parallel (DDP) on Kubernetes using Monarch&#x27;s SPMDActor and KubernetesJob.">
+
+.. only:: html
+
+  .. image:: /generated/examples/ddp/images/thumb/sphx_glr_kubernetes_ddp_thumb.png
+    :alt:
+
+  :doc:`/generated/examples/ddp/kubernetes_ddp`
+
+.. raw:: html
+
+      <div class="sphx-glr-thumbnail-title">DDP on Kubernetes</div>
+    </div>
+
+
+.. thumbnail-parent-div-close
+
+.. raw:: html
+
+    </div>
+
+
+.. toctree::
+   :hidden:
+
+   /generated/examples/ddp/spmd_ddp
+   /generated/examples/ddp/spmd_job
+   /generated/examples/ddp/kubernetes_ddp
+

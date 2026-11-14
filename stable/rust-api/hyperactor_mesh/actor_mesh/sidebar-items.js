@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ActorMeshRef"],"static":["ACTOR_MESH_ID","SUPERVISION_WATCHDOG_TIMEOUT"],"struct":["ActorMesh","DataActorMesh","ManagedActorMeshRef"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["DataType","NcclError","NcclStatus","RawNcclError"],"struct":["NcclGroupTicket"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["END_FRAME"],"enum":["ReadOutcome"],"fn":["check_payload_len","check_table_name_len","encode_frame","is_reserved"],"struct":["FrameReader","RawFrame"]};
