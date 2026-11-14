@@ -164,7 +164,7 @@ class Counter(metrics.Counter):
     inner: PyCounter
 
     def __init__(self, name: str) -> None:
-        # pyrefly: ignore [missing-attribute]
+        # pyrefly: ignore [abstract-method-call, missing-attribute]
         super().__init__(name)
         self.inner = PyCounter(name)
 
@@ -184,7 +184,7 @@ class UpDownCounter(metrics.UpDownCounter):
     inner: PyUpDownCounter
 
     def __init__(self, name: str) -> None:
-        # pyrefly: ignore [missing-attribute]
+        # pyrefly: ignore [abstract-method-call, missing-attribute]
         super().__init__(name)
         self.inner = PyUpDownCounter(name)
 
@@ -204,7 +204,7 @@ class Histogram(metrics.Histogram):
     inner: PyHistogram
 
     def __init__(self, name: str) -> None:
-        # pyrefly: ignore [missing-attribute]
+        # pyrefly: ignore [abstract-method-call, missing-attribute]
         super().__init__(name)
         self.inner = PyHistogram(name)
 
