@@ -241,4 +241,4 @@ directory removes their private keys.
 | Separate processes | [`separate-processes.md`](separate-processes.md) | [`python/README.md`](../../../../python/README.md#run-the-roles-as-separate-processes) |
 | With Alice's child, Carol | none | [`python/README.md`](../../../../python/README.md#alices-child-carol) |
 | Through two Relays joined over UDP | none | [`python/README.md`](../../../../python/README.md#two-relays-joined-over-udp) |
-| Alice and Bob in Firecracker microVMs | [`firecracker.md`](firecracker.md) | none |
+| Alice and Bob in Firecracker microVMs | [`firecracker.md`](firecracker.md) | [`python/firecracker.md`](../../../../python/firecracker.md) |

@@ -186,6 +186,8 @@ kill -TERM "$relay_process"; wait "$relay_process"
 rm -rf "$sealed_postcard_dir"
 ```
 
+[`firecracker.md`](firecracker.md) runs the same roles with Alice and Bob each in a Firecracker microVM, and shows how to run a program of your own in one.
+
 ## Alice's child, Carol
 
 Alice can serve a child of her own. With `--carol`, she starts Carol, a second node in her process, and Carol joins her over loopback UDP:

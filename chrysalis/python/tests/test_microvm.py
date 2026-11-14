@@ -24,6 +24,7 @@ import tempfile
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
+from types import FrameType
 
 import microvm
 import pytest
@@ -298,3 +299,36 @@ def test_cleanup_failure_after_a_signal_is_reported() -> None:
         )
     finally:
         shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def test_an_empty_input_variable_is_reported_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty variable, as a guide's build step leaves when it ran in another
+    shell, is reported as unset rather than resolved to the working directory."""
+    monkeypatch.setenv("CHR_FC_FIRECRACKER", "")
+    with pytest.raises(microvm.MicroVmError) as raised:
+        microvm.built("CHR_FC_FIRECRACKER")
+    assert str(raised.value) == "CHR_FC_FIRECRACKER is not set"
+
+
+def _sentinel(signum: int, frame: FrameType | None) -> None:
+    """A caller's own handler, which `run_cli` must put back."""
+
+
+def test_run_cli_puts_back_the_signal_handlers_it_replaced() -> None:
+    signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    saved = {sig: signal.getsignal(sig) for sig in signals}
+
+    async def scenario() -> None:
+        pass
+
+    try:
+        for sig in signals:
+            signal.signal(sig, _sentinel)
+        assert microvm.run_cli(scenario, print) == 0
+        assert [signal.getsignal(sig) for sig in signals] == [_sentinel] * 3
+    finally:
+        for sig, handler in saved.items():
+            if handler is not None:
+                signal.signal(sig, handler)

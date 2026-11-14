@@ -39,7 +39,7 @@ _RECOVERY_TIMEOUT = 5
 def test_sealed_postcard_across_microvms() -> None:
     if (reason := microvm.kvm_unavailable()) is not None:
         pytest.skip(reason)
-    inputs = microvms.Inputs.from_env()
+    inputs = microvms.Inputs.from_env("rust")
     run_dir = Path(tempfile.mkdtemp(dir="/tmp", prefix="chr-fc-"))
     asyncio.run(microvms.run_scenario(run_dir, inputs))
     assert not run_dir.exists(), "a fully released run should remove its directory"
@@ -76,8 +76,7 @@ def test_identity_generation_is_released_when_interrupted(
     inputs = microvms.Inputs(
         firecracker=generator,
         kernel=generator,
-        rootfs=generator,
-        sealed_postcard=generator,
+        roles=microvms.RustRoles(binary=generator, rootfs=generator),
     )
     # The test keeps its own handle on every process the run starts, so its
     # recovery doesn't depend on the code under test.

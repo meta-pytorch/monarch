@@ -58,10 +58,10 @@ def built(var: str) -> Path:
     """Read a build input's path from the environment variable named by `var`.
 
     Return its absolute path. Raise `MicroVmError` if the variable is unset
-    or the path does not name an existing file.
+    or empty, or the path does not name an existing file.
     """
     value = os.environ.get(var)
-    if value is None:
+    if not value:
         raise MicroVmError(f"{var} is not set")
     path = Path(value).resolve()
     if not path.is_file():
@@ -397,7 +397,8 @@ async def run_with_signals(
     The first SIGINT, SIGTERM or SIGHUP cancels the run, letting the
     scenario enter its `finally` block and release its processes.
     Ignore later signals so another cancellation cannot interrupt those
-    cleanup waits. Remove the signal handlers when the run ends.
+    cleanup waits. When the run ends, remove the handlers and put back the
+    ones they replaced.
     """
     loop = asyncio.get_running_loop()
     # Run the scenario as a task that the signal handler can cancel.
@@ -418,6 +419,8 @@ async def run_with_signals(
     # The scenario task doesn't run until this coroutine awaits, so the
     # handlers are installed before it acquires anything.
     signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    # Removing a loop handler leaves the default, not the handler it replaced.
+    previous = {signum: signal.getsignal(signum) for signum in signals}
     for signum in signals:
         loop.add_signal_handler(signum, request_stop, signum)
     try:
@@ -428,6 +431,9 @@ async def run_with_signals(
         # Remove our handlers whether the run succeeded, failed or was cancelled.
         for signum in signals:
             loop.remove_signal_handler(signum)
+            # `None` is a handler not installed from Python; it can't be put back.
+            if (handler := previous[signum]) is not None:
+                signal.signal(signum, handler)
 
 
 def run_cli(scenario: Callable[[], Awaitable[None]], say: Callable[[str], None]) -> int:
