@@ -16,8 +16,8 @@ run directory only after all of them have stopped.
 
 `run_cli` is the wrapper for command-line programs that manage VMs. The caller
 gives it the operation to run; it returns 0 on success and 1 on failure or
-interruption. Ctrl-C, SIGTERM or SIGHUP cancels the operation, which then runs
-its cleanup before `run_cli` returns.
+interruption. Ctrl-C, SIGTERM or SIGHUP stops the operation so its cleanup can
+finish before `run_cli` returns.
 
 For example, `sealed_postcard_microvms.py` gives `run_cli` the operation that
 starts Relay, boots Alice and Bob's VMs, checks their exchange and cleans up.
@@ -351,7 +351,22 @@ async def cleanup(
     The run directory is removed only when every release returned and the
     caller doesn't keep it. Otherwise a process in it may still be running, so
     it stays, and the first failure is raised.
+
+    Cancelling the caller doesn't interrupt the releases. They finish first;
+    then the cancellation is raised, or the failure if a release failed.
     """
+    releases = asyncio.ensure_future(_release_all(owners, run_dir, keep_run_dir))
+    try:
+        await asyncio.shield(releases)
+    except asyncio.CancelledError:
+        await releases
+        raise
+
+
+async def _release_all(
+    owners: Sequence[Owner], run_dir: Path, keep_run_dir: bool
+) -> None:
+    """`cleanup`'s releases, in a task that cancelling its caller can't reach."""
     first: Exception | asyncio.CancelledError | None = None
     for owner in reversed(owners):
         try:
