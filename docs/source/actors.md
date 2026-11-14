@@ -1194,7 +1194,7 @@ from monarch.actor.http import HttpServer, Request, Response, StreamingResponse
 
 class Generator(Actor):
     def __init__(self) -> None:
-        # Listen on every interface so other hosts can connect.
+        # Listen on every interface so other hosts can connect (use "::" on IPv6).
         self.http = HttpServer(host="0.0.0.0")
         self.http.post("/v1/completions", self.complete)
         self.http.get("/v1/models/{model}", self.model)

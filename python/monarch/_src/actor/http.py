@@ -17,6 +17,7 @@ loop of the actor that started the server.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import ipaddress
 import json
 import logging
@@ -29,13 +30,18 @@ from monarch._rust_bindings.monarch_hyperactor.http import (
     HttpBodyWriter,
     HttpRequest,
     HttpServer as _HttpServer,
-    routable_host,
     SIGNAL_CLOSED,
     SIGNAL_DISCONNECTED,
     SIGNAL_DRAINED,
 )
-from monarch._src.actor.mpsc import Receiver
+from monarch._rust_bindings.monarch_hyperactor.pympsc import Receiver
 from monarch._src.actor.telemetry import span
+
+# `@rust_struct` attaches `Receiver._event` and `Event.wait`/`Event.clear` as
+# import side effects; load both modules eagerly so lazy-import builds apply
+# the patches before `_run` calls them on Rust-created instances.
+importlib.import_module("monarch._src.actor.mpsc")
+importlib.import_module("monarch._src.actor.waker")
 
 _logger: logging.Logger = logging.getLogger(__name__)
 
@@ -424,7 +430,7 @@ class HttpServer:
             host = server.host
             if ipaddress.ip_address(host).is_unspecified:
                 try:
-                    host = routable_host()
+                    host = server.routable_host()
                 except (OSError, RuntimeError) as error:
                     raise RuntimeError(
                         f"cannot tell which address reaches this host ({error}); "
@@ -478,8 +484,11 @@ class HttpServer:
             # instead. This does nothing once the server is shutting down.
             server.shutdown(0)
             # Once the channel has closed its descriptor stays readable, so
-            # stop watching it.
-            loop.remove_reader(wake._read_fd)
+            # stop watching it and clear _event_loop so Event.__del__ does not
+            # remove it a second time.
+            if wake._event_loop is not None:
+                wake._event_loop.remove_reader(wake._read_fd)
+                wake._event_loop = None
             leftover = [in_flight.task for in_flight in self._in_flight.values()]
             for task in leftover:
                 task.cancel()

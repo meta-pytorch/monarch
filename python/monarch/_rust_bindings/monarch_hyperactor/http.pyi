@@ -8,7 +8,7 @@
 
 from typing import final
 
-from monarch._src.actor.mpsc import Receiver
+from monarch._rust_bindings.monarch_hyperactor.pympsc import Receiver
 
 SIGNAL_DISCONNECTED: int
 """Signal kind: the request's client went away before its response was complete."""
@@ -122,12 +122,12 @@ class HttpServer:
         """The port the server is bound to."""
         ...
 
+    def routable_host(self) -> str:
+        """An address of this host that other hosts can use to reach this
+        server when bound to all interfaces."""
+        ...
+
     def shutdown(self, grace_seconds: float) -> None:
         """Stop accepting connections and give requests in flight
         `grace_seconds` to finish. Later calls do nothing."""
         ...
-
-def routable_host() -> str:
-    """An address of this host that other hosts can use to reach a server
-    bound to all interfaces."""
-    ...

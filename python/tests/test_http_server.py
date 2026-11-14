@@ -10,7 +10,9 @@
 
 import asyncio
 import contextlib
+import gc
 import http.client
+import ipaddress
 import json
 import socket
 import time
@@ -607,15 +609,21 @@ async def test_url_names_a_host_other_machines_can_use() -> None:
     await discovered.start()
     try:
         # Whether this machine's host name resolves to a routable address
-        # depends on where the test runs.
+        # depends on where the test runs, but a 0.0.0.0 listener must never
+        # advertise an IPv6 address.
         try:
             host = urlsplit(discovered.url).hostname
         except RuntimeError as error:
             assert "advertised_host" in str(error)
         else:
+            assert host is not None
             assert host not in ("0.0.0.0", "127.0.0.1", "localhost")
+            assert isinstance(ipaddress.ip_address(host), ipaddress.IPv4Address)
     finally:
         await discovered.stop()
+    # Event.__del__ runs on garbage collection; ensure _run cleared _event_loop
+    # so collecting the stopped pump's Event does not touch the loop again.
+    gc.collect()
 
 
 class Backend(Actor):

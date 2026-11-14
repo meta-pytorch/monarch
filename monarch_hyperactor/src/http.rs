@@ -11,7 +11,7 @@
 //! The server runs on Monarch's tokio runtime. Accepting connections, parsing,
 //! routing, reading request bodies, writing responses, metrics and access logs
 //! all happen here. A request that matches a route is sent to Python over a
-//! [`pympsc`](crate::pympsc) channel as a [`PyHttpRequest`]; Python answers
+//! [`pympsc`] channel as a [`PyHttpRequest`]; Python answers
 //! through that object. `monarch._src.actor.http` is the Python half.
 //!
 //! Invariants:
@@ -23,15 +23,15 @@
 //!   A second answer raises in Python.
 //! - **H-3 (client gone):** if a request's connection goes away before the
 //!   server has taken a complete response for it, Python receives
-//!   [`Signal::Disconnected`], so the handler can be cancelled. The signal can
+//!   `Signal::Disconnected`, so the handler can be cancelled. The signal can
 //!   arrive after Python has answered; Python ignores signals for requests it
 //!   has finished.
-//! - **H-4 (shutdown):** after [`PyHttpServer::shutdown`] the server accepts
+//! - **H-4 (shutdown):** after `PyHttpServer::shutdown` the server accepts
 //!   no connection, lets requests in flight finish for the grace period, then
-//!   fails the rest. [`Signal::Closed`] is the last thing Python receives.
+//!   fails the rest. `Signal::Closed` is the last thing Python receives.
 //! - **H-5 (bounded response queue):** a response stream's writer is told to
-//!   wait once [`STREAM_HIGH_WATER`] bytes are queued, and receives
-//!   [`Signal::Drained`] when the queue falls to [`STREAM_LOW_WATER`].
+//!   wait once `STREAM_HIGH_WATER` bytes are queued, and receives
+//!   `Signal::Drained` when the queue falls to `STREAM_LOW_WATER`.
 
 use std::future::IntoFuture;
 use std::io;
@@ -954,6 +954,40 @@ async fn serve(
     let _ = events.send(Signal::Closed);
 }
 
+/// Which IP address families can reach an unspecified listener.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ListenerFamily {
+    V4Only,
+    V6Only,
+    DualStack,
+}
+
+impl ListenerFamily {
+    fn detect(listener: &std::net::TcpListener, local_addr: &SocketAddr) -> Self {
+        match local_addr {
+            SocketAddr::V4(_) => Self::V4Only,
+            SocketAddr::V6(_) => {
+                match nix::sys::socket::getsockopt(listener, nix::sys::socket::sockopt::Ipv6V6Only)
+                {
+                    Ok(false) => Self::DualStack,
+                    // If IPV6_V6ONLY is enabled or cannot be queried, only
+                    // advertise IPv6 addresses so we never hand out an IPv4
+                    // URL that cannot connect to this socket.
+                    Ok(true) | Err(_) => Self::V6Only,
+                }
+            }
+        }
+    }
+
+    fn accepts(self, addr: &IpAddr) -> bool {
+        match self {
+            Self::V4Only => addr.is_ipv4(),
+            Self::V6Only => addr.is_ipv6(),
+            Self::DualStack => true,
+        }
+    }
+}
+
 /// A running HTTP server. Dropping it stops the server at once.
 #[pyclass(
     name = "HttpServer",
@@ -962,6 +996,7 @@ async fn serve(
 )]
 pub struct PyHttpServer {
     local_addr: SocketAddr,
+    family: ListenerFamily,
     /// Taken by the first call to `shutdown`.
     shutdown: Mutex<Option<oneshot::Sender<Duration>>>,
 }
@@ -984,6 +1019,7 @@ impl PyHttpServer {
         let listener = std::net::TcpListener::bind((host, port))?;
         listener.set_nonblocking(true)?;
         let local_addr = listener.local_addr()?;
+        let family = ListenerFamily::detect(&listener, &local_addr);
         let (events, receiver) = pympsc::channel().map_pyerr()?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let (abort_tx, abort_rx) = watch::channel(false);
@@ -999,6 +1035,7 @@ impl PyHttpServer {
         Ok((
             PyHttpServer {
                 local_addr,
+                family,
                 shutdown: Mutex::new(Some(shutdown_tx)),
             },
             receiver,
@@ -1015,6 +1052,29 @@ impl PyHttpServer {
     #[getter]
     fn port(&self) -> u16 {
         self.local_addr.port()
+    }
+
+    /// An address of this host that other hosts can use to reach this server
+    /// when bound to all interfaces: the first routable address its host name
+    /// resolves to whose family this listener accepts.
+    fn routable_host(&self, py: Python<'_>) -> PyResult<String> {
+        let hostname = nix::unistd::gethostname()
+            .map_err(io::Error::from)?
+            .into_string()
+            .map_err(|_| PyRuntimeError::new_err("the host name is not valid UTF-8"))?;
+        let addresses = py.detach(|| (hostname.as_str(), 0).to_socket_addrs())?;
+        select_routable_ip(addresses.map(|addr| addr.ip()), self.family)
+            .map(|ip| ip.to_string())
+            .ok_or_else(|| {
+                let detail = match self.family {
+                    ListenerFamily::V4Only => {
+                        "resolves to no routable IPv4 address (server is bound to 0.0.0.0; bind to \"::\" for IPv6)"
+                    }
+                    ListenerFamily::V6Only => "resolves to no routable IPv6 address",
+                    ListenerFamily::DualStack => "resolves to no address other hosts can reach",
+                };
+                PyRuntimeError::new_err(format!("host name {hostname:?} {detail}"))
+            })
     }
 
     /// Stop accepting connections and give requests in flight
@@ -1044,25 +1104,13 @@ fn is_routable(addr: &IpAddr) -> bool {
         }
 }
 
-/// An address of this host that other hosts can use to reach a server bound
-/// to all interfaces: the first routable address its host name resolves to,
-/// as `ChannelAddr::any` chooses for Monarch's own `tcp` transport.
-#[pyfunction]
-fn routable_host(py: Python<'_>) -> PyResult<String> {
-    let hostname = nix::unistd::gethostname()
-        .map_err(io::Error::from)?
-        .into_string()
-        .map_err(|_| PyRuntimeError::new_err("the host name is not valid UTF-8"))?;
-    let addresses = py.detach(|| (hostname.as_str(), 0).to_socket_addrs())?;
+fn select_routable_ip(
+    addresses: impl IntoIterator<Item = IpAddr>,
+    family: ListenerFamily,
+) -> Option<IpAddr> {
     addresses
-        .map(|addr| addr.ip())
-        .find(is_routable)
-        .map(|ip| ip.to_string())
-        .ok_or_else(|| {
-            PyRuntimeError::new_err(format!(
-                "host name {hostname:?} resolves to no address other hosts can reach"
-            ))
-        })
+        .into_iter()
+        .find(|addr| family.accepts(addr) && is_routable(addr))
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1072,12 +1120,6 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add("SIGNAL_DISCONNECTED", Signal::DISCONNECTED)?;
     hyperactor_mod.add("SIGNAL_DRAINED", Signal::DRAINED)?;
     hyperactor_mod.add("SIGNAL_CLOSED", Signal::CLOSED)?;
-    let routable_host = wrap_pyfunction!(routable_host, hyperactor_mod)?;
-    routable_host.setattr(
-        "__module__",
-        "monarch._rust_bindings.monarch_hyperactor.http",
-    )?;
-    hyperactor_mod.add_function(routable_host)?;
     Ok(())
 }
 
@@ -1217,5 +1259,57 @@ mod tests {
         assert!(!routable("::1"));
         assert!(!routable("169.254.1.1"));
         assert!(!routable("fe80::1"));
+    }
+
+    #[test]
+    fn test_select_routable_ip_matches_listener_family() {
+        let parse =
+            |addrs: &[&str]| -> Vec<IpAddr> { addrs.iter().map(|s| s.parse().unwrap()).collect() };
+        let v6: IpAddr = "2001:db8::1".parse().unwrap();
+        let v4: IpAddr = "10.0.0.5".parse().unwrap();
+
+        // An IPv4-only listener (0.0.0.0) skips IPv6 addresses even when DNS
+        // returns IPv6 first, and returns None on IPv6-only hosts.
+        assert_eq!(
+            select_routable_ip(
+                parse(&["::1", "2001:db8::1", "10.0.0.5"]),
+                ListenerFamily::V4Only
+            ),
+            Some(v4)
+        );
+        assert_eq!(
+            select_routable_ip(parse(&["2001:db8::1"]), ListenerFamily::V4Only),
+            None
+        );
+
+        // An IPv6-only listener (:: with IPV6_V6ONLY=1) skips IPv4 addresses.
+        assert_eq!(
+            select_routable_ip(
+                parse(&["127.0.0.1", "10.0.0.5", "2001:db8::1"]),
+                ListenerFamily::V6Only
+            ),
+            Some(v6)
+        );
+        assert_eq!(
+            select_routable_ip(parse(&["10.0.0.5"]), ListenerFamily::V6Only),
+            None
+        );
+
+        // A dual-stack listener (:: with IPV6_V6ONLY=0) accepts whichever
+        // routable family resolves first.
+        assert_eq!(
+            select_routable_ip(
+                parse(&["fe80::1", "10.0.0.5", "2001:db8::1"]),
+                ListenerFamily::DualStack
+            ),
+            Some(v4)
+        );
+        assert_eq!(
+            select_routable_ip(
+                parse(&["127.0.0.1", "2001:db8::1", "10.0.0.5"]),
+                ListenerFamily::DualStack
+            ),
+            Some(v6)
+        );
     }
 }
