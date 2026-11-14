@@ -11,15 +11,15 @@
         :class: sphx-glr-download-link-note
 
         :ref:`Go to the end <sphx_glr_download_generated_examples_otel_collector.py>`
-        to download the full example code
+        to download the full example code.
 
 .. rst-class:: sphx-glr-example-title
 
 .. _sphx_glr_generated_examples_otel_collector.py:
 
 
-Exporting Metrics and Logs with OpenTelemetry
-==============================================
+Exporting Metrics, Logs, and Traces with OpenTelemetry
+======================================================
 
 This example shows how to export Monarch's built-in metrics and logs to an
 `OpenTelemetry Collector <https://opentelemetry.io/docs/collector/>`_ and
@@ -28,11 +28,14 @@ full observability stack on Kubernetes using the
 `Monarch CRD and operator <https://github.com/meta-pytorch/monarch-kubernetes/>`_.
 
 When ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set, Monarch's telemetry layer exports
-metrics and logs via OTLP/HTTP to the specified collector. Metrics are exported
-automatically. Log export uses the unified tracing layer, which is enabled
-by default and wires up the OTLP log sink.
+metrics, logs, and spans via OTLP/HTTP to the specified collector. Metrics are
+exported automatically. Log and span export use the unified tracing layer,
+which is enabled by default and wires up the OTLP log and span sinks. A log
+record emitted inside a span carries that span's trace and span IDs.
 Built-in actor system metrics (mailbox posts, messages sent/received, queue
-sizes, etc.) and log events are exported with no code changes.
+sizes, etc.), log events, and spans are exported with no code changes. This
+example prints spans with the collector's debug exporter; add a tracing backend
+such as Jaeger or Grafana Tempo to visualize them.
 
 External OTLP export is independent of distributed telemetry. When a job also
 enables distributed telemetry, the same OTel metric provider feeds a job-local
@@ -196,32 +199,11 @@ Cleanup
 Configuration
 -------------
 
-.. list-table::
-   :header-rows: 1
+The controller and worker pods set ``OTEL_EXPORTER_OTLP_ENDPOINT`` to the
+collector service. See :doc:`/opentelemetry` for every export setting, the
+resource attributes attached to each signal, and delivery limitations.
 
-   * - Environment Variable
-     - Default
-     - Description
-   * - ``OTEL_EXPORTER_OTLP_ENDPOINT``
-     - (unset)
-     - Collector endpoint. When set, enables OTLP metric and log export.
-   * - ``OTEL_SERVICE_NAME``
-     - ``unknown_service``
-     - Service name attached to all exported telemetry.
-   * - ``OTEL_METRIC_EXPORT_INTERVAL``
-     - ``1s``
-     - How often the periodic metric reader pushes to the exporter.
-   * - ``ENABLE_OTEL_METRICS``
-     - ``true``
-     - Set to ``false`` to disable OTel metrics entirely.
-   * - ``OTEL_EXPORTER_OTLP_HEADERS``
-     - (unset)
-     - Additional headers for the OTLP exporter (e.g., auth tokens).
-   * - ``OTEL_EXPORTER_OTLP_TIMEOUT``
-     - (unset)
-     - Timeout for OTLP export requests.
-
-.. GENERATED FROM PYTHON SOURCE LINES 215-221
+.. GENERATED FROM PYTHON SOURCE LINES 197-203
 
 Controller Script
 -----------------
@@ -230,9 +212,9 @@ exercises them to generate metrics and log events. Both the controller
 and worker pods have ``OTEL_EXPORTER_OTLP_ENDPOINT`` set, so all telemetry
 is automatically forwarded to the collector.
 
-.. GENERATED FROM PYTHON SOURCE LINES 221-238
+.. GENERATED FROM PYTHON SOURCE LINES 203-220
 
-.. code-block:: default
+.. code-block:: Python
 
 
     import argparse
@@ -252,13 +234,13 @@ is automatically forwarded to the collector.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 239-240
+.. GENERATED FROM PYTHON SOURCE LINES 221-222
 
 Define an actor that performs work to generate telemetry.
 
-.. GENERATED FROM PYTHON SOURCE LINES 240-265
+.. GENERATED FROM PYTHON SOURCE LINES 222-247
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -286,13 +268,13 @@ Define an actor that performs work to generate telemetry.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 266-267
+.. GENERATED FROM PYTHON SOURCE LINES 248-249
 
 Build the worker pod template with OTEL environment variables.
 
-.. GENERATED FROM PYTHON SOURCE LINES 267-300
+.. GENERATED FROM PYTHON SOURCE LINES 249-278
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -313,10 +295,6 @@ Build the worker pod template with OTEL environment variables.
                                 value=_OTEL_ENDPOINT,
                             ),
                             V1EnvVar(
-                                name="OTEL_SERVICE_NAME",
-                                value="monarch-worker",
-                            ),
-                            V1EnvVar(
                                 name="MONARCH_FILE_LOG",
                                 value="trace",
                             ),
@@ -328,14 +306,14 @@ Build the worker pod template with OTEL environment variables.
 
 
 
-.. GENERATED FROM PYTHON SOURCE LINES 301-303
+.. GENERATED FROM PYTHON SOURCE LINES 279-281
 
 The main function provisions workers, spawns actors, and runs several
 rounds of work to produce a stream of metrics and logs.
 
-.. GENERATED FROM PYTHON SOURCE LINES 303-373
+.. GENERATED FROM PYTHON SOURCE LINES 281-351
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -388,12 +366,12 @@ rounds of work to produce a stream of metrics and logs.
                     f"    {result['hostname']}: computed {result['iterations']} iterations"
                 )
 
-        # Wait for the periodic metric reader and log sink to flush.
-        print("Waiting for metrics and logs to flush to collector...")
+        # Wait for the periodic metric reader and the log and span sinks to flush.
+        print("Waiting for metrics, logs, and spans to flush to collector...")
         time.sleep(10)
 
         print()
-        print("Verify metrics and logs in the OTEL collector logs:")
+        print("Verify metrics, logs, and spans in the OTEL collector logs:")
         print("  kubectl logs -n monarch-tests deployment/otel-collector --tail=100")
         print()
         print("Scrape Prometheus endpoint:")
@@ -409,27 +387,23 @@ rounds of work to produce a stream of metrics and logs.
         main()
 
 
-.. rst-class:: sphx-glr-timing
-
-   **Total running time of the script:** (0 minutes 0.000 seconds)
-
-
 .. _sphx_glr_download_generated_examples_otel_collector.py:
 
 .. only:: html
 
   .. container:: sphx-glr-footer sphx-glr-footer-example
 
+    .. container:: sphx-glr-download sphx-glr-download-jupyter
 
-
+      :download:`Download Jupyter notebook: otel_collector.ipynb <otel_collector.ipynb>`
 
     .. container:: sphx-glr-download sphx-glr-download-python
 
       :download:`Download Python source code: otel_collector.py <otel_collector.py>`
 
-    .. container:: sphx-glr-download sphx-glr-download-jupyter
+    .. container:: sphx-glr-download sphx-glr-download-zip
 
-      :download:`Download Jupyter notebook: otel_collector.ipynb <otel_collector.ipynb>`
+      :download:`Download zipped: otel_collector.zip <otel_collector.zip>`
 
 
 .. only:: html

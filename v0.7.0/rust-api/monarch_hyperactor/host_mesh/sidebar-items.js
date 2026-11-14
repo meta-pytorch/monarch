@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["python_client_root","register_python_bindings"],"struct":["PyBootstrapCommand","PyMeshAdminRef","PythonClientRoot"]};

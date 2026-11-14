@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="This example demonstrates how to make a simplistic distributed web crawler with Monarch actors including: Creating a singleton QueueActor, Providing that QueueActor to multiple CrawlActors, Having ..." />
 
-    <title>Distributed Web Crawler &#8212; Monarch v0.7.0 documentation</title>
+    <title>Distributed Web Crawler &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,15 +50,17 @@
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../_static/documentation_options.js?v=b3dab91b"></script>
     <script src="../../_static/doctools.js?v=888ff710"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="../../_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'generated/examples/crawler';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/generated/examples/crawler.html" />
@@ -84,7 +86,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="api">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +200,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -563,8 +565,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -649,6 +669,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -662,7 +688,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1248,6 +1298,7 @@ document.write(`
 <li class="toctree-l1"><a class="reference internal" href="grpo_yield.html">GRPO with Direct Port Messaging</a></li>
 <li class="toctree-l1"><a class="reference internal" href="grpo/kubernetes_grpo.html">GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="gpu_sharing.html">Sharing GPUs Between Actors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sglang_actors.html">SGLang Rollout Engines</a></li>
 <li class="toctree-l1"><a class="reference internal" href="distributed_tensors.html">Distributed Tensors in Monarch</a></li>
 
 
@@ -1259,7 +1310,7 @@ document.write(`
 
 
 <li class="toctree-l1"><a class="reference internal" href="debugging.html">Debugging Python Actors with pdb in Monarch</a></li>
-<li class="toctree-l1"><a class="reference internal" href="otel_collector.html">Exporting Metrics and Logs with OpenTelemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="otel_collector.html">Exporting Metrics, Logs, and Traces with OpenTelemetry</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://docs.pytorch.org/tutorials/intermediate/monarch_distributed_tutorial.html">Multinode Slurm Tutorial</a></li>
 </ul>
 </div>
@@ -1366,7 +1417,7 @@ document.write(`
   <div class="sphx-glr-download-link-note admonition note">
 <p class="admonition-title">Note</p>
 <p><a class="reference internal" href="#sphx-glr-download-generated-examples-crawler-py"><span class="std std-ref">Go to the end</span></a>
-to download the full example code</p>
+to download the full example code.</p>
 </div>
 <section class="sphx-glr-example-title" id="distributed-web-crawler">
 <span id="sphx-glr-generated-examples-crawler-py"></span><h1>Distributed Web Crawler<a class="headerlink" href="#distributed-web-crawler" title="Link to this heading">#</a></h1>
@@ -1381,147 +1432,142 @@ Monarch actors including:</p>
 <p>The queue uses a local deque and stores response ports for waiters when empty.
 An auxiliary set is used to avoid duplicates. Thread-safety is not required
 because in Monarch each actor handles its messages sequentially.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">Import libraries and set tuneable configuration values.</span>
-<span class="sd">&quot;&quot;&quot;</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">collections</span><span class="w"> </span><span class="kn">import</span> <a href="https://docs.python.org/3/library/collections.html#collections.deque" title="collections.deque" class="sphx-glr-backref-module-collections sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">deque</span></a>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <a href="https://docs.python.org/3/library/typing.html#typing.Optional" title="typing.Optional" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Optional</span></a><span class="p">,</span> <a href="https://docs.python.org/3/library/typing.html#typing.Set" title="typing.Set" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">Set</span></a><span class="p">,</span> <a href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="typing.Tuple" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Tuple</span></a>
-<span class="kn">from</span><span class="w"> </span><span class="nn">urllib.parse</span><span class="w"> </span><span class="kn">import</span> <a href="https://docs.python.org/3/library/urllib.parse.html#urllib.parse.urlparse" title="urllib.parse.urlparse" class="sphx-glr-backref-module-urllib-parse sphx-glr-backref-type-py-function"><span class="n">urlparse</span></a><span class="p">,</span> <a href="https://docs.python.org/3/library/urllib.parse.html#urllib.parse.urlunparse" title="urllib.parse.urlunparse" class="sphx-glr-backref-module-urllib-parse sphx-glr-backref-type-py-function"><span class="n">urlunparse</span></a>
-
-<span class="kn">import</span><span class="w"> </span><span class="nn">requests</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">bs4</span><span class="w"> </span><span class="kn">import</span> <span class="n">BeautifulSoup</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">Actor</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">endpoint</span><span class="p">,</span> <span class="n">Port</span><span class="p">,</span> <span class="n">ProcMesh</span><span class="p">,</span> <span class="n">this_host</span>
-
-<span class="c1"># Configuration</span>
-<span class="n">BASE</span> <span class="o">=</span> <span class="s2">&quot;https://meta-pytorch.org/monarch/&quot;</span>
-<span class="n">DEPTH</span> <span class="o">=</span> <span class="mi">3</span>
-<span class="n">NUM_CRAWLERS</span> <span class="o">=</span> <span class="mi">8</span>
-<span class="n">TIMEOUT</span> <span class="o">=</span> <span class="mi">5</span>
-</pre></div>
-</div>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">QueueActor</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">    Define the QueueActor class.</span>
-<span class="sd">    - Holds a deque for items and a list of waiting ports.</span>
-<span class="sd">    - When get() is called and queue is empty, the port is stored.</span>
-<span class="sd">    - When insert() is called, it either wakes a waiter or enqueues the item.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">q</span><span class="p">:</span> <a href="https://docs.python.org/3/library/collections.html#collections.deque" title="collections.deque" class="sphx-glr-backref-module-collections sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">deque</span></a> <span class="o">=</span> <a href="https://docs.python.org/3/library/collections.html#collections.deque" title="collections.deque" class="sphx-glr-backref-module-collections sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">deque</span></a><span class="p">()</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">seen_links</span><span class="p">:</span> <a href="https://docs.python.org/3/library/typing.html#typing.Set" title="typing.Set" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">Set</span></a><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">waiters</span><span class="p">:</span> <a href="https://docs.python.org/3/library/collections.html#collections.deque" title="collections.deque" class="sphx-glr-backref-module-collections sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">deque</span></a><span class="p">[</span><span class="n">Port</span><span class="p">[</span><a href="https://docs.python.org/3/library/typing.html#typing.Optional" title="typing.Optional" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Optional</span></a><span class="p">[</span><a href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="typing.Tuple" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Tuple</span></a><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]]]]</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/collections.html#collections.deque" title="collections.deque" class="sphx-glr-backref-module-collections sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">deque</span></a><span class="p">()</span>
-
-    <span class="nd">@endpoint</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">insert</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">item</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">depth</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="k">if</span> <span class="n">item</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">seen_links</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">seen_links</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
-            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">waiters</span><span class="p">:</span>
-                <span class="n">port</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">waiters</span><span class="o">.</span><span class="n">popleft</span><span class="p">()</span>
-                <span class="n">port</span><span class="o">.</span><span class="n">send</span><span class="p">((</span><span class="n">item</span><span class="p">,</span> <span class="n">depth</span><span class="p">))</span>
-            <span class="k">else</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">q</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">item</span><span class="p">,</span> <span class="n">depth</span><span class="p">))</span>
-
-    <span class="nd">@endpoint</span><span class="p">(</span><span class="n">explicit_response_port</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">get</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">port</span><span class="p">:</span> <span class="n">Port</span><span class="p">[</span><a href="https://docs.python.org/3/library/typing.html#typing.Optional" title="typing.Optional" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Optional</span></a><span class="p">[</span><a href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="typing.Tuple" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Tuple</span></a><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]]])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">q</span><span class="p">:</span>
-            <span class="n">port</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">q</span><span class="o">.</span><span class="n">popleft</span><span class="p">())</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">waiters</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">port</span><span class="p">)</span>
-</pre></div>
-</div>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">CrawlActor</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">    Define the CrawlActor class.</span>
-<span class="sd">    - Takes in all queues, but slices down to only use the first one.</span>
-<span class="sd">    - Runs a crawl() process that continuously takes items off the central queue,</span>
-<span class="sd">      parses them, and adds links it finds back to the queue.</span>
-<span class="sd">    - Crawls to a configured depth and terminates after the queue is empty for</span>
-<span class="sd">      a configured number of seconds.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">all_queues</span><span class="p">:</span> <span class="n">QueueActor</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">target_queue</span><span class="p">:</span> <span class="n">QueueActor</span> <span class="o">=</span> <span class="n">all_queues</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">procs</span><span class="o">=</span><span class="nb">slice</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">processed</span> <span class="o">=</span> <span class="mi">0</span>
-
-    <span class="nd">@staticmethod</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">normalize_url</span><span class="p">(</span><span class="n">url</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-        <span class="n">p</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/urllib.parse.html#urllib.parse.urlparse" title="urllib.parse.urlparse" class="sphx-glr-backref-module-urllib-parse sphx-glr-backref-type-py-function"><span class="n">urlparse</span></a><span class="p">(</span><span class="n">url</span><span class="p">)</span>
-        <span class="n">normalized</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/urllib.parse.html#urllib.parse.urlunparse" title="urllib.parse.urlunparse" class="sphx-glr-backref-module-urllib-parse sphx-glr-backref-type-py-function"><span class="n">urlunparse</span></a><span class="p">((</span><span class="n">p</span><span class="o">.</span><span class="n">scheme</span><span class="p">,</span> <span class="n">p</span><span class="o">.</span><span class="n">netloc</span><span class="p">,</span> <span class="n">p</span><span class="o">.</span><span class="n">path</span><span class="p">,</span> <span class="n">p</span><span class="o">.</span><span class="n">params</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">))</span>
-        <span class="k">return</span> <span class="n">normalized</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">_crawl_internal</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">target</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">depth</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">response</span> <span class="o">=</span> <span class="n">requests</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">target</span><span class="p">)</span>
-        <span class="n">response_size_kb</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">response</span><span class="o">.</span><span class="n">content</span><span class="p">)</span> <span class="o">/</span> <span class="mi">1024</span>
-        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;    - </span><span class="si">{</span><span class="n">target</span><span class="si">}</span><span class="s2"> was </span><span class="si">{</span><span class="n">response_size_kb</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> KB&quot;</span><span class="p">)</span>
-        <span class="n">parsed</span> <span class="o">=</span> <span class="n">BeautifulSoup</span><span class="p">(</span><span class="n">response</span><span class="o">.</span><span class="n">content</span><span class="p">,</span> <span class="s2">&quot;html.parser&quot;</span><span class="p">)</span>
-
-        <span class="n">anchors</span> <span class="o">=</span> <span class="n">parsed</span><span class="o">.</span><span class="n">find_all</span><span class="p">(</span><span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="n">href</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-        <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">anchors</span><span class="p">:</span>
-            <span class="n">link</span> <span class="o">=</span> <span class="n">a</span><span class="p">[</span><span class="s2">&quot;href&quot;</span><span class="p">]</span> <span class="k">if</span> <span class="s2">&quot;https://&quot;</span> <span class="ow">in</span> <span class="n">a</span><span class="p">[</span><span class="s2">&quot;href&quot;</span><span class="p">]</span> <span class="k">else</span> <span class="n">BASE</span> <span class="o">+</span> <span class="n">a</span><span class="p">[</span><span class="s2">&quot;href&quot;</span><span class="p">]</span>
-
-            <span class="c1"># Stop at the target depth and only follow links on our base site.</span>
-            <span class="k">if</span> <span class="n">depth</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">BASE</span> <span class="ow">in</span> <span class="n">link</span><span class="p">:</span>
-                <span class="n">normalized_link</span> <span class="o">=</span> <span class="n">CrawlActor</span><span class="o">.</span><span class="n">normalize_url</span><span class="p">(</span><span class="n">link</span><span class="p">)</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">target_queue</span><span class="o">.</span><span class="n">insert</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span><span class="n">normalized_link</span><span class="p">,</span> <span class="n">depth</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span>
-
-    <span class="nd">@endpoint</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">crawl</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
-        <span class="n">rank</span> <span class="o">=</span> <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">actor_instance</span><span class="o">.</span><span class="n">rank</span>
-
-        <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
-            <span class="k">try</span><span class="p">:</span>
-                <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">target_queue</span><span class="o">.</span><span class="n">get</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">TIMEOUT</span><span class="p">)</span>
-            <span class="k">except</span> <span class="ne">TimeoutError</span><span class="p">:</span>
-                <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Queue has no items, returning done value.&quot;</span><span class="p">)</span>
-                <span class="n">result</span> <span class="o">=</span> <span class="kc">None</span>
-            <span class="k">if</span> <span class="n">result</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="k">break</span>
-            <span class="n">url</span><span class="p">,</span> <span class="n">depth</span> <span class="o">=</span> <span class="n">result</span>
-            <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Crawler #</span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> found </span><span class="si">{</span><span class="n">url</span><span class="si">}</span><span class="s2"> @ depth=</span><span class="si">{</span><span class="n">depth</span><span class="si">}</span><span class="s2">.&quot;</span><span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_crawl_internal</span><span class="p">(</span><span class="n">url</span><span class="p">,</span> <span class="n">depth</span><span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">processed</span> <span class="o">+=</span> <span class="mi">1</span>
-
-        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">processed</span>
-</pre></div>
-</div>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
-    <span class="n">start_time</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/time.html#time.time" title="time.time" class="sphx-glr-backref-module-time sphx-glr-backref-type-py-function"><span class="n">time</span><span class="o">.</span><span class="n">time</span></a><span class="p">()</span>
-
-    <span class="c1"># Start up a ProcMesh.</span>
-    <span class="n">local_proc_mesh</span><span class="p">:</span> <span class="n">ProcMesh</span> <span class="o">=</span> <span class="n">this_host</span><span class="p">()</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span>
-        <span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;procs&quot;</span><span class="p">:</span> <span class="n">NUM_CRAWLERS</span><span class="p">}</span>
-    <span class="p">)</span>
-
-    <span class="c1"># Create queues across the mesh and use slice to target the first one.</span>
-    <span class="n">all_queues</span> <span class="o">=</span> <span class="n">local_proc_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;queues&quot;</span><span class="p">,</span> <span class="n">QueueActor</span><span class="p">)</span>
-    <span class="n">target_queue</span> <span class="o">=</span> <span class="n">all_queues</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">procs</span><span class="o">=</span><span class="nb">slice</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
-
-    <span class="c1"># Prime the queue with the base URL we want to crawl.</span>
-    <span class="n">target_queue</span><span class="o">.</span><span class="n">insert</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span><span class="n">BASE</span><span class="p">,</span> <span class="n">DEPTH</span><span class="p">)</span>
-
-    <span class="c1"># Make the crawlers and pass in the queues.</span>
-    <span class="n">crawlers</span> <span class="o">=</span> <span class="n">local_proc_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;crawlers&quot;</span><span class="p">,</span> <span class="n">CrawlActor</span><span class="p">,</span> <span class="n">all_queues</span><span class="p">)</span>
-
-    <span class="c1"># Run the crawlers; display the count of documents they crawled when done.</span>
-    <span class="n">results</span> <span class="o">=</span> <span class="n">crawlers</span><span class="o">.</span><span class="n">crawl</span><span class="o">.</span><span class="n">call</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-
-    <span class="c1"># Shut down all our resources.</span>
-    <span class="n">local_proc_mesh</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-
-    <span class="c1"># Log results.</span>
-    <span class="n">pages</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">v</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="k">for</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">results</span><span class="o">.</span><span class="n">items</span><span class="p">())</span>
-    <span class="n">duration</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/time.html#time.time" title="time.time" class="sphx-glr-backref-module-time sphx-glr-backref-type-py-function"><span class="n">time</span><span class="o">.</span><span class="n">time</span></a><span class="p">()</span> <span class="o">-</span> <span class="n">start_time</span>
-    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Finished - Found </span><span class="si">{</span><span class="n">pages</span><span class="si">}</span><span class="s2"> in </span><span class="si">{</span><span class="n">duration</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> seconds.</span><span class="se">\n</span><span class="si">{</span><span class="n">results</span><span class="si">}</span><span class="s2">.&quot;</span><span class="p">)</span>
-</pre></div>
-</div>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">Run main.</span>
-<span class="sd">&quot;&quot;&quot;</span>
-<span class="n">main</span><span class="p">()</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="sd">&quot;&quot;&quot;
+Import libraries and set tuneable configuration values.
+&quot;&quot;&quot;</span><span class="w">
+</span><span class="kn">import</span><span class="w"> </span><span class="nn">time</span><span class="w">
+</span><span class="kn">from</span><span class="w"> </span><span class="nn">collections</span><span class="w"> </span><span class="kn">import</span> <a class="sphx-glr-backref-module-collections sphx-glr-backref-type-py-class sphx-glr-backref-instance reference external" href="https://docs.python.org/3/library/collections.html#collections.deque" title="collections.deque"><span class="n">deque</span></a><span class="w">
+</span><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <a class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data reference external" href="https://docs.python.org/3/library/typing.html#typing.Optional" title="typing.Optional"><span class="n">Optional</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-class sphx-glr-backref-instance reference external" href="https://docs.python.org/3/library/typing.html#typing.Set" title="typing.Set"><span class="n">Set</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="typing.Tuple"><span class="n">Tuple</span></a><span class="w">
+</span><span class="kn">from</span><span class="w"> </span><span class="nn">urllib</span><span class="nn">.</span><span class="nn">parse</span><span class="w"> </span><span class="kn">import</span> <a class="sphx-glr-backref-module-urllib-parse sphx-glr-backref-type-py-function reference external" href="https://docs.python.org/3/library/urllib.parse.html#urllib.parse.urlparse" title="urllib.parse.urlparse"><span class="n">urlparse</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-urllib-parse sphx-glr-backref-type-py-function reference external" href="https://docs.python.org/3/library/urllib.parse.html#urllib.parse.urlunparse" title="urllib.parse.urlunparse"><span class="n">urlunparse</span></a><span class="w">
+</span><span class="w">
+</span><span class="kn">import</span><span class="w"> </span><span class="nn">requests</span><span class="w">
+</span><span class="kn">from</span><span class="w"> </span><span class="nn">bs4</span><span class="w"> </span><span class="kn">import</span> <span class="n">BeautifulSoup</span><span class="w">
+</span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch</span><span class="nn">.</span><span class="nn">actor</span><span class="w"> </span><span class="kn">import</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.Actor" title="monarch.actor.Actor"><span class="n">Actor</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.context" title="monarch.actor.context"><span class="n">context</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.endpoint" title="monarch.actor.endpoint"><span class="n">endpoint</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.Port" title="monarch.actor.Port"><span class="n">Port</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.ProcMesh" title="monarch.actor.ProcMesh"><span class="n">ProcMesh</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.this_host" title="monarch.actor.this_host"><span class="n">this_host</span></a><span class="w">
+</span><span class="w">
+</span><span class="c1"># Configuration</span><span class="w">
+</span><span class="n">BASE</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="s2">https://meta-pytorch.org/monarch/</span><span class="s2">&quot;</span><span class="w">
+</span><span class="n">DEPTH</span> <span class="o">=</span> <span class="mi">3</span><span class="w">
+</span><span class="n">NUM_CRAWLERS</span> <span class="o">=</span> <span class="mi">8</span><span class="w">
+</span><span class="n">TIMEOUT</span> <span class="o">=</span> <span class="mi">5</span><span class="w">
+</span></pre></div></div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="k">class</span><span class="w"> </span><span class="nc">QueueActor</span><span class="p">(</span><a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.Actor" title="monarch.actor.Actor"><span class="n">Actor</span></a><span class="p">)</span><span class="p">:</span><span class="w">
+</span><span class="w">    </span><span class="sd">&quot;&quot;&quot;
+    Define the QueueActor class.
+    - Holds a deque for items and a list of waiting ports.
+    - When get() is called and queue is empty, the port is stored.
+    - When insert() is called, it either wakes a waiter or enqueues the item.
+    &quot;&quot;&quot;</span><span class="w">
+</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">q</span><span class="p">:</span> <a class="sphx-glr-backref-module-collections sphx-glr-backref-type-py-class sphx-glr-backref-instance reference external" href="https://docs.python.org/3/library/collections.html#collections.deque" title="collections.deque"><span class="n">deque</span></a> <span class="o">=</span> <a class="sphx-glr-backref-module-collections sphx-glr-backref-type-py-class sphx-glr-backref-instance reference external" href="https://docs.python.org/3/library/collections.html#collections.deque" title="collections.deque"><span class="n">deque</span></a><span class="p">(</span><span class="p">)</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">seen_links</span><span class="p">:</span> <a class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-class sphx-glr-backref-instance reference external" href="https://docs.python.org/3/library/typing.html#typing.Set" title="typing.Set"><span class="n">Set</span></a><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">waiters</span><span class="p">:</span> <a class="sphx-glr-backref-module-collections sphx-glr-backref-type-py-class sphx-glr-backref-instance reference external" href="https://docs.python.org/3/library/collections.html#collections.deque" title="collections.deque"><span class="n">deque</span></a><span class="p">[</span><a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.Port" title="monarch.actor.Port"><span class="n">Port</span></a><span class="p">[</span><a class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data reference external" href="https://docs.python.org/3/library/typing.html#typing.Optional" title="typing.Optional"><span class="n">Optional</span></a><span class="p">[</span><a class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="typing.Tuple"><span class="n">Tuple</span></a><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span><span class="p">]</span><span class="p">]</span><span class="p">]</span> <span class="o">=</span> <a class="sphx-glr-backref-module-collections sphx-glr-backref-type-py-class sphx-glr-backref-instance reference external" href="https://docs.python.org/3/library/collections.html#collections.deque" title="collections.deque"><span class="n">deque</span></a><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="nd">&#64;endpoint</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="nf">insert</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">item</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">depth</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="kc">None</span><span class="p">:</span><span class="w">
+</span>        <span class="k">if</span> <span class="n">item</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">seen_links</span><span class="p">:</span><span class="w">
+</span>            <span class="bp">self</span><span class="o">.</span><span class="n">seen_links</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">item</span><span class="p">)</span><span class="w">
+</span>            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">waiters</span><span class="p">:</span><span class="w">
+</span>                <span class="n">port</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">waiters</span><span class="o">.</span><span class="n">popleft</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>                <span class="n">port</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">depth</span><span class="p">)</span><span class="p">)</span><span class="w">
+</span>            <span class="k">else</span><span class="p">:</span><span class="w">
+</span>                <span class="bp">self</span><span class="o">.</span><span class="n">q</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">depth</span><span class="p">)</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="nd">&#64;endpoint</span><span class="p">(</span><span class="n">explicit_response_port</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="nf">get</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">port</span><span class="p">:</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.Port" title="monarch.actor.Port"><span class="n">Port</span></a><span class="p">[</span><a class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data reference external" href="https://docs.python.org/3/library/typing.html#typing.Optional" title="typing.Optional"><span class="n">Optional</span></a><span class="p">[</span><a class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="typing.Tuple"><span class="n">Tuple</span></a><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span><span class="p">]</span><span class="p">]</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="kc">None</span><span class="p">:</span><span class="w">
+</span>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">q</span><span class="p">:</span><span class="w">
+</span>            <span class="n">port</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">q</span><span class="o">.</span><span class="n">popleft</span><span class="p">(</span><span class="p">)</span><span class="p">)</span><span class="w">
+</span>        <span class="k">else</span><span class="p">:</span><span class="w">
+</span>            <span class="bp">self</span><span class="o">.</span><span class="n">waiters</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">port</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="k">class</span><span class="w"> </span><span class="nc">CrawlActor</span><span class="p">(</span><a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.Actor" title="monarch.actor.Actor"><span class="n">Actor</span></a><span class="p">)</span><span class="p">:</span><span class="w">
+</span><span class="w">    </span><span class="sd">&quot;&quot;&quot;
+    Define the CrawlActor class.
+    - Takes in all queues, but slices down to only use the first one.
+    - Runs a crawl() process that continuously takes items off the central queue,
+      parses them, and adds links it finds back to the queue.
+    - Crawls to a configured depth and terminates after the queue is empty for
+      a configured number of seconds.
+    &quot;&quot;&quot;</span><span class="w">
+</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">all_queues</span><span class="p">:</span> <span class="n">QueueActor</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">target_queue</span><span class="p">:</span> <span class="n">QueueActor</span> <span class="o">=</span> <span class="n">all_queues</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">procs</span><span class="o">=</span><span class="nb">slice</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span><span class="p">)</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">processed</span> <span class="o">=</span> <span class="mi">0</span><span class="w">
+</span><span class="w">
+</span>    <span class="nd">&#64;staticmethod</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="nf">normalize_url</span><span class="p">(</span><span class="n">url</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="nb">str</span><span class="p">:</span><span class="w">
+</span>        <span class="n">p</span> <span class="o">=</span> <a class="sphx-glr-backref-module-urllib-parse sphx-glr-backref-type-py-function reference external" href="https://docs.python.org/3/library/urllib.parse.html#urllib.parse.urlparse" title="urllib.parse.urlparse"><span class="n">urlparse</span></a><span class="p">(</span><span class="n">url</span><span class="p">)</span><span class="w">
+</span>        <span class="n">normalized</span> <span class="o">=</span> <a class="sphx-glr-backref-module-urllib-parse sphx-glr-backref-type-py-function reference external" href="https://docs.python.org/3/library/urllib.parse.html#urllib.parse.urlunparse" title="urllib.parse.urlunparse"><span class="n">urlunparse</span></a><span class="p">(</span><span class="p">(</span><span class="n">p</span><span class="o">.</span><span class="n">scheme</span><span class="p">,</span> <span class="n">p</span><span class="o">.</span><span class="n">netloc</span><span class="p">,</span> <span class="n">p</span><span class="o">.</span><span class="n">path</span><span class="p">,</span> <span class="n">p</span><span class="o">.</span><span class="n">params</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span><span class="w">
+</span>        <span class="k">return</span> <span class="n">normalized</span><span class="w">
+</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="nf">_crawl_internal</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">target</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">depth</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="kc">None</span><span class="p">:</span><span class="w">
+</span>        <span class="n">response</span> <span class="o">=</span> <span class="n">requests</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">target</span><span class="p">)</span><span class="w">
+</span>        <span class="n">response_size_kb</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">response</span><span class="o">.</span><span class="n">content</span><span class="p">)</span> <span class="o">/</span> <span class="mi">1024</span><span class="w">
+</span>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="s2">    - </span><span class="si">{</span><span class="n">target</span><span class="si">}</span><span class="s2"> was </span><span class="si">{</span><span class="n">response_size_kb</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> KB</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span>        <span class="n">parsed</span> <span class="o">=</span> <span class="n">BeautifulSoup</span><span class="p">(</span><span class="n">response</span><span class="o">.</span><span class="n">content</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">html.parser</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>        <span class="n">anchors</span> <span class="o">=</span> <span class="n">parsed</span><span class="o">.</span><span class="n">find_all</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">a</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">href</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span><span class="w">
+</span>        <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">anchors</span><span class="p">:</span><span class="w">
+</span>            <span class="n">link</span> <span class="o">=</span> <span class="n">a</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">href</span><span class="s2">&quot;</span><span class="p">]</span> <span class="k">if</span> <span class="s2">&quot;</span><span class="s2">https://</span><span class="s2">&quot;</span> <span class="ow">in</span> <span class="n">a</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">href</span><span class="s2">&quot;</span><span class="p">]</span> <span class="k">else</span> <span class="n">BASE</span> <span class="o">+</span> <span class="n">a</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">href</span><span class="s2">&quot;</span><span class="p">]</span><span class="w">
+</span><span class="w">
+</span>            <span class="c1"># Stop at the target depth and only follow links on our base site.</span><span class="w">
+</span>            <span class="k">if</span> <span class="n">depth</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">BASE</span> <span class="ow">in</span> <span class="n">link</span><span class="p">:</span><span class="w">
+</span>                <span class="n">normalized_link</span> <span class="o">=</span> <span class="n">CrawlActor</span><span class="o">.</span><span class="n">normalize_url</span><span class="p">(</span><span class="n">link</span><span class="p">)</span><span class="w">
+</span>                <span class="bp">self</span><span class="o">.</span><span class="n">target_queue</span><span class="o">.</span><span class="n">insert</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span><span class="n">normalized_link</span><span class="p">,</span> <span class="n">depth</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="nd">&#64;endpoint</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="nf">crawl</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-</span><span class="o">&gt;</span> <span class="nb">int</span><span class="p">:</span><span class="w">
+</span>        <span class="n">rank</span> <span class="o">=</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.context" title="monarch.actor.context"><span class="n">context</span></a><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">actor_instance</span><span class="o">.</span><span class="n">rank</span><span class="w">
+</span><span class="w">
+</span>        <span class="k">while</span> <span class="kc">True</span><span class="p">:</span><span class="w">
+</span>            <span class="k">try</span><span class="p">:</span><span class="w">
+</span>                <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">target_queue</span><span class="o">.</span><span class="n">get</span><span class="o">.</span><span class="n">call_one</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">TIMEOUT</span><span class="p">)</span><span class="w">
+</span>            <span class="k">except</span> <span class="ne">TimeoutError</span><span class="p">:</span><span class="w">
+</span>                <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">Queue has no items, returning done value.</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span>                <span class="n">result</span> <span class="o">=</span> <span class="kc">None</span><span class="w">
+</span>            <span class="k">if</span> <span class="n">result</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span><span class="w">
+</span>                <span class="k">break</span><span class="w">
+</span>            <span class="n">url</span><span class="p">,</span> <span class="n">depth</span> <span class="o">=</span> <span class="n">result</span><span class="w">
+</span>            <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="s2">Crawler #</span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> found </span><span class="si">{</span><span class="n">url</span><span class="si">}</span><span class="s2"> &#64; depth=</span><span class="si">{</span><span class="n">depth</span><span class="si">}</span><span class="s2">.</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span>            <span class="bp">self</span><span class="o">.</span><span class="n">_crawl_internal</span><span class="p">(</span><span class="n">url</span><span class="p">,</span> <span class="n">depth</span><span class="p">)</span><span class="w">
+</span>            <span class="bp">self</span><span class="o">.</span><span class="n">processed</span> <span class="o">+</span><span class="o">=</span> <span class="mi">1</span><span class="w">
+</span><span class="w">
+</span>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">processed</span><span class="w">
+</span></pre></div></div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">(</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="n">start_time</span> <span class="o">=</span> <a class="sphx-glr-backref-module-time sphx-glr-backref-type-py-function reference external" href="https://docs.python.org/3/library/time.html#time.time" title="time.time"><span class="n">time</span><span class="o">.</span><span class="n">time</span></a><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="c1"># Start up a ProcMesh.</span><span class="w">
+</span>    <span class="n">local_proc_mesh</span><span class="p">:</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.ProcMesh" title="monarch.actor.ProcMesh"><span class="n">ProcMesh</span></a> <span class="o">=</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.this_host" title="monarch.actor.this_host"><span class="n">this_host</span></a><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="w">
+</span>        <span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">procs</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">NUM_CRAWLERS</span><span class="p">}</span><span class="w">
+</span>    <span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="c1"># Create queues across the mesh and use slice to target the first one.</span><span class="w">
+</span>    <span class="n">all_queues</span> <span class="o">=</span> <span class="n">local_proc_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">queues</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">QueueActor</span><span class="p">)</span><span class="w">
+</span>    <span class="n">target_queue</span> <span class="o">=</span> <span class="n">all_queues</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">procs</span><span class="o">=</span><span class="nb">slice</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="c1"># Prime the queue with the base URL we want to crawl.</span><span class="w">
+</span>    <span class="n">target_queue</span><span class="o">.</span><span class="n">insert</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span><span class="n">BASE</span><span class="p">,</span> <span class="n">DEPTH</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="c1"># Make the crawlers and pass in the queues.</span><span class="w">
+</span>    <span class="n">crawlers</span> <span class="o">=</span> <span class="n">local_proc_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">crawlers</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">CrawlActor</span><span class="p">,</span> <span class="n">all_queues</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="c1"># Run the crawlers; display the count of documents they crawled when done.</span><span class="w">
+</span>    <span class="n">results</span> <span class="o">=</span> <span class="n">crawlers</span><span class="o">.</span><span class="n">crawl</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="c1"># Shut down all our resources.</span><span class="w">
+</span>    <span class="n">local_proc_mesh</span><span class="o">.</span><span class="n">stop</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="c1"># Log results.</span><span class="w">
+</span>    <span class="n">pages</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">v</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="k">for</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">results</span><span class="o">.</span><span class="n">items</span><span class="p">(</span><span class="p">)</span><span class="p">)</span><span class="w">
+</span>    <span class="n">duration</span> <span class="o">=</span> <a class="sphx-glr-backref-module-time sphx-glr-backref-type-py-function reference external" href="https://docs.python.org/3/library/time.html#time.time" title="time.time"><span class="n">time</span><span class="o">.</span><span class="n">time</span></a><span class="p">(</span><span class="p">)</span> <span class="o">-</span> <span class="n">start_time</span><span class="w">
+</span>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="s2">Finished - Found </span><span class="si">{</span><span class="n">pages</span><span class="si">}</span><span class="s2"> in </span><span class="si">{</span><span class="n">duration</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> seconds.</span><span class="se">\n</span><span class="si">{</span><span class="n">results</span><span class="si">}</span><span class="s2">.</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="sd">&quot;&quot;&quot;
+Run main.
+&quot;&quot;&quot;</span><span class="w">
+</span><span class="n">main</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 <section id="results">
 <h2>Results<a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
 <p>With NUM_CRAWLERS=1, this takes around 288 seconds:</p>
@@ -1547,13 +1593,15 @@ ValueMesh({procs: 8}):
 </div>
 <p>So, we see a near-linear improvement in crawling time from
 the concurrent crawlers using the central queue.</p>
-<p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 0.000 seconds)</p>
 <div class="sphx-glr-footer sphx-glr-footer-example docutils container" id="sphx-glr-download-generated-examples-crawler-py">
+<div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
+<p><a class="reference download internal" download="" href="../../_downloads/9f45441226a9b108d4c4b82933a23c72/crawler.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">crawler.ipynb</span></code></a></p>
+</div>
 <div class="sphx-glr-download sphx-glr-download-python docutils container">
 <p><a class="reference download internal" download="" href="../../_downloads/48169f6f3ee65fb6260e1006665d69b0/crawler.py"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Python</span> <span class="pre">source</span> <span class="pre">code:</span> <span class="pre">crawler.py</span></code></a></p>
 </div>
-<div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
-<p><a class="reference download internal" download="" href="../../_downloads/9f45441226a9b108d4c4b82933a23c72/crawler.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">crawler.ipynb</span></code></a></p>
+<div class="sphx-glr-download sphx-glr-download-zip docutils container">
+<p><a class="reference download internal" download="" href="../../_downloads/7844758cea65ab50ac9d06067593ebc7/crawler.zip"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">zipped:</span> <span class="pre">crawler.zip</span></code></a></p>
 </div>
 </div>
 <p class="sphx-glr-signature"><a class="reference external" href="https://sphinx-gallery.github.io">Gallery generated by Sphinx-Gallery</a></p>
@@ -1849,7 +1897,7 @@ the concurrent crawlers using the central queue.</p>
        "headline": "Distributed Web Crawler",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/generated/examples/crawler.html",
-       "articleBody": "Note Go to the end to download the full example code Distributed Web Crawler# This example demonstrates how to make a simplistic distributed web crawler with Monarch actors including: Creating a singleton QueueActor Providing that QueueActor to multiple CrawlActors Having CrawlActors add/remove items from the QueueActor as they crawl Retrieving results and cleaning up The queue uses a local deque and stores response ports for waiters when empty. An auxiliary set is used to avoid duplicates. Thread-safety is not required because in Monarch each actor handles its messages sequentially. \"\"\" Import libraries and set tuneable configuration values. \"\"\" import time from collections import deque from typing import Optional, Set, Tuple from urllib.parse import urlparse, urlunparse import requests from bs4 import BeautifulSoup from monarch.actor import Actor, context, endpoint, Port, ProcMesh, this_host # Configuration BASE = \"https://meta-pytorch.org/monarch/\" DEPTH = 3 NUM_CRAWLERS = 8 TIMEOUT = 5 class QueueActor(Actor): \"\"\" Define the QueueActor class. - Holds a deque for items and a list of waiting ports. - When get() is called and queue is empty, the port is stored. - When insert() is called, it either wakes a waiter or enqueues the item. \"\"\" def __init__(self): self.q: deque = deque() self.seen_links: Set[str] = set() self.waiters: deque[Port[Optional[Tuple[str, int]]]] = deque() @endpoint def insert(self, item: str, depth: int) -\u003e None: if item not in self.seen_links: self.seen_links.add(item) if self.waiters: port = self.waiters.popleft() port.send((item, depth)) else: self.q.append((item, depth)) @endpoint(explicit_response_port=True) def get(self, port: Port[Optional[Tuple[str, int]]]) -\u003e None: if self.q: port.send(self.q.popleft()) else: self.waiters.append(port) class CrawlActor(Actor): \"\"\" Define the CrawlActor class. - Takes in all queues, but slices down to only use the first one. - Runs a crawl() process that continuously takes items off the central queue, parses them, and adds links it finds back to the queue. - Crawls to a configured depth and terminates after the queue is empty for a configured number of seconds. \"\"\" def __init__(self, all_queues: QueueActor): self.target_queue: QueueActor = all_queues.slice(procs=slice(0, 1)) self.processed = 0 @staticmethod def normalize_url(url: str) -\u003e str: p = urlparse(url) normalized = urlunparse((p.scheme, p.netloc, p.path, p.params, \"\", \"\")) return normalized def _crawl_internal(self, target: str, depth: int) -\u003e None: response = requests.get(target) response_size_kb = len(response.content) / 1024 print(f\" - {target} was {response_size_kb:.2f} KB\") parsed = BeautifulSoup(response.content, \"html.parser\") anchors = parsed.find_all(\"a\", href=True) for a in anchors: link = a[\"href\"] if \"https://\" in a[\"href\"] else BASE + a[\"href\"] # Stop at the target depth and only follow links on our base site. if depth \u003e 0 and BASE in link: normalized_link = CrawlActor.normalize_url(link) self.target_queue.insert.broadcast(normalized_link, depth - 1) @endpoint def crawl(self) -\u003e int: rank = context().actor_instance.rank while True: try: result = self.target_queue.get.call_one().get(timeout=TIMEOUT) except TimeoutError: print(\"Queue has no items, returning done value.\") result = None if result is None: break url, depth = result print(f\"Crawler #{rank} found {url} @ depth={depth}.\") self._crawl_internal(url, depth) self.processed += 1 return self.processed def main(): start_time = time.time() # Start up a ProcMesh. local_proc_mesh: ProcMesh = this_host().spawn_procs( per_host={\"procs\": NUM_CRAWLERS} ) # Create queues across the mesh and use slice to target the first one. all_queues = local_proc_mesh.spawn(\"queues\", QueueActor) target_queue = all_queues.slice(procs=slice(0, 1)) # Prime the queue with the base URL we want to crawl. target_queue.insert.broadcast(BASE, DEPTH) # Make the crawlers and pass in the queues. crawlers = local_proc_mesh.spawn(\"crawlers\", CrawlActor, all_queues) # Run the crawlers; display the count of documents they crawled when done. results = crawlers.crawl.call().get() # Shut down all our resources. local_proc_mesh.stop().get() # Log results. pages = sum(v[1] for v in results.items()) duration = time.time() - start_time print(f\"Finished - Found {pages} in {duration:.2f} seconds.\\n{results}.\") \"\"\" Run main. \"\"\" main() Results# With NUM_CRAWLERS=1, this takes around 288 seconds: Finished - Found 3123 in 288.07 seconds. ValueMesh({procs: 1}): (({\u0027procs\u0027: 0/1}, 3123),). With NUM_CRAWLERS=8, this takes around 45 seconds: Finished - Found 3123 in 45.94 seconds. ValueMesh({procs: 8}): (({\u0027procs\u0027: 0/8}, 393), ({\u0027procs\u0027: 1/8}, 393), ({\u0027procs\u0027: 2/8}, 397), ({\u0027procs\u0027: 3/8}, 394), ({\u0027procs\u0027: 4/8}, 383), ({\u0027procs\u0027: 5/8}, 393), ({\u0027procs\u0027: 6/8}, 393), ({\u0027procs\u0027: 7/8}, 377)). So, we see a near-linear improvement in crawling time from the concurrent crawlers using the central queue. Total running time of the script: (0 minutes 0.000 seconds) Download Python source code: crawler.py Download Jupyter notebook: crawler.ipynb Gallery generated by Sphinx-Gallery",
+       "articleBody": "Note Go to the end to download the full example code. Distributed Web Crawler# This example demonstrates how to make a simplistic distributed web crawler with Monarch actors including: Creating a singleton QueueActor Providing that QueueActor to multiple CrawlActors Having CrawlActors add/remove items from the QueueActor as they crawl Retrieving results and cleaning up The queue uses a local deque and stores response ports for waiters when empty. An auxiliary set is used to avoid duplicates. Thread-safety is not required because in Monarch each actor handles its messages sequentially. \"\"\" Import libraries and set tuneable configuration values. \"\"\" import time from collections import deque from typing import Optional, Set, Tuple from urllib.parse import urlparse, urlunparse import requests from bs4 import BeautifulSoup from monarch.actor import Actor, context, endpoint, Port, ProcMesh, this_host # Configuration BASE = \"https://meta-pytorch.org/monarch/\" DEPTH = 3 NUM_CRAWLERS = 8 TIMEOUT = 5 class QueueActor(Actor): \"\"\" Define the QueueActor class. - Holds a deque for items and a list of waiting ports. - When get() is called and queue is empty, the port is stored. - When insert() is called, it either wakes a waiter or enqueues the item. \"\"\" def __init__(self): self.q: deque = deque() self.seen_links: Set[str] = set() self.waiters: deque[Port[Optional[Tuple[str, int]]]] = deque() @endpoint def insert(self, item: str, depth: int) -\u003e None: if item not in self.seen_links: self.seen_links.add(item) if self.waiters: port = self.waiters.popleft() port.send((item, depth)) else: self.q.append((item, depth)) @endpoint(explicit_response_port=True) def get(self, port: Port[Optional[Tuple[str, int]]]) -\u003e None: if self.q: port.send(self.q.popleft()) else: self.waiters.append(port) class CrawlActor(Actor): \"\"\" Define the CrawlActor class. - Takes in all queues, but slices down to only use the first one. - Runs a crawl() process that continuously takes items off the central queue, parses them, and adds links it finds back to the queue. - Crawls to a configured depth and terminates after the queue is empty for a configured number of seconds. \"\"\" def __init__(self, all_queues: QueueActor): self.target_queue: QueueActor = all_queues.slice(procs=slice(0, 1)) self.processed = 0 @staticmethod def normalize_url(url: str) -\u003e str: p = urlparse(url) normalized = urlunparse((p.scheme, p.netloc, p.path, p.params, \"\", \"\")) return normalized def _crawl_internal(self, target: str, depth: int) -\u003e None: response = requests.get(target) response_size_kb = len(response.content) / 1024 print(f\" - {target} was {response_size_kb:.2f} KB\") parsed = BeautifulSoup(response.content, \"html.parser\") anchors = parsed.find_all(\"a\", href=True) for a in anchors: link = a[\"href\"] if \"https://\" in a[\"href\"] else BASE + a[\"href\"] # Stop at the target depth and only follow links on our base site. if depth \u003e 0 and BASE in link: normalized_link = CrawlActor.normalize_url(link) self.target_queue.insert.broadcast(normalized_link, depth - 1) @endpoint def crawl(self) -\u003e int: rank = context().actor_instance.rank while True: try: result = self.target_queue.get.call_one().get(timeout=TIMEOUT) except TimeoutError: print(\"Queue has no items, returning done value.\") result = None if result is None: break url, depth = result print(f\"Crawler #{rank} found {url} @ depth={depth}.\") self._crawl_internal(url, depth) self.processed += 1 return self.processed def main(): start_time = time.time() # Start up a ProcMesh. local_proc_mesh: ProcMesh = this_host().spawn_procs( per_host={\"procs\": NUM_CRAWLERS} ) # Create queues across the mesh and use slice to target the first one. all_queues = local_proc_mesh.spawn(\"queues\", QueueActor) target_queue = all_queues.slice(procs=slice(0, 1)) # Prime the queue with the base URL we want to crawl. target_queue.insert.broadcast(BASE, DEPTH) # Make the crawlers and pass in the queues. crawlers = local_proc_mesh.spawn(\"crawlers\", CrawlActor, all_queues) # Run the crawlers; display the count of documents they crawled when done. results = crawlers.crawl.call().get() # Shut down all our resources. local_proc_mesh.stop().get() # Log results. pages = sum(v[1] for v in results.items()) duration = time.time() - start_time print(f\"Finished - Found {pages} in {duration:.2f} seconds.\\n{results}.\") \"\"\" Run main. \"\"\" main() Results# With NUM_CRAWLERS=1, this takes around 288 seconds: Finished - Found 3123 in 288.07 seconds. ValueMesh({procs: 1}): (({\u0027procs\u0027: 0/1}, 3123),). With NUM_CRAWLERS=8, this takes around 45 seconds: Finished - Found 3123 in 45.94 seconds. ValueMesh({procs: 8}): (({\u0027procs\u0027: 0/8}, 393), ({\u0027procs\u0027: 1/8}, 393), ({\u0027procs\u0027: 2/8}, 397), ({\u0027procs\u0027: 3/8}, 394), ({\u0027procs\u0027: 4/8}, 383), ({\u0027procs\u0027: 5/8}, 393), ({\u0027procs\u0027: 6/8}, 393), ({\u0027procs\u0027: 7/8}, 377)). So, we see a near-linear improvement in crawling time from the concurrent crawlers using the central queue. Download Jupyter notebook: crawler.ipynb Download Python source code: crawler.py Download zipped: crawler.zip Gallery generated by Sphinx-Gallery",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

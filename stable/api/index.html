@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The actor API for monarch is accessed through the monarch.actor package. The monarch package contains APIs related to computing with distributed tensors. The monarch.job package provides a declarat..." />
 
-    <title>Python API &#8212; Monarch v0.7.0 documentation</title>
+    <title>Python API &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,15 +50,17 @@
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../_static/documentation_options.js?v=b3dab91b"></script>
     <script src="../_static/doctools.js?v=888ff710"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="../_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'api/index';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/api/index.html" />
@@ -84,7 +86,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +200,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -563,8 +565,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -649,6 +669,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -662,7 +688,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1247,6 +1297,7 @@ document.write(`
 
 
 
+
 <li class="toctree-l1"><a class="reference internal" href="monarch.config.html">monarch.config</a></li>
 
 
@@ -1395,6 +1446,14 @@ The <a class="reference internal" href="monarch.spmd.html"><span class="doc">mon
 <li class="toctree-l2"><a class="reference internal" href="monarch.actor.html#monarch.actor.concurrent_endpoint"><code class="docutils literal notranslate"><span class="pre">concurrent_endpoint()</span></code></a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="monarch.actor.html#delivery-failure-hooks">Delivery Failure Hooks</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="monarch.actor.html#monarch.actor.Actor._handle_delivery_failure_event"><code class="docutils literal notranslate"><span class="pre">Actor._handle_delivery_failure_event()</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="monarch.actor.html#monarch.actor.Actor._handle_invalid_reference"><code class="docutils literal notranslate"><span class="pre">Actor._handle_invalid_reference()</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="monarch.actor.html#monarch.actor.Actor._handle_expired_delivery"><code class="docutils literal notranslate"><span class="pre">Actor._handle_expired_delivery()</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="monarch.actor.html#monarch.actor.Actor._handle_undeliverable_message"><code class="docutils literal notranslate"><span class="pre">Actor._handle_undeliverable_message()</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="monarch.actor.html#failure-details">Failure Details</a></li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="monarch.actor.html#messaging-actor">Messaging Actor</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="monarch.actor.html#monarch.actor.Endpoint"><code class="docutils literal notranslate"><span class="pre">Endpoint</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="monarch.actor.html#monarch.actor.Future"><code class="docutils literal notranslate"><span class="pre">Future</span></code></a></li>
@@ -1490,6 +1549,7 @@ The <a class="reference internal" href="monarch.spmd.html"><span class="doc">mon
 <li class="toctree-l2"><a class="reference internal" href="monarch.job.html#localjob">LocalJob</a></li>
 <li class="toctree-l2"><a class="reference internal" href="monarch.job.html#processjob">ProcessJob</a></li>
 <li class="toctree-l2"><a class="reference internal" href="monarch.job.html#slurmjob">SlurmJob</a></li>
+<li class="toctree-l2"><a class="reference internal" href="monarch.job.html#pbsjob">PBSJob</a></li>
 <li class="toctree-l2"><a class="reference internal" href="monarch.job.html#kubernetesjob">KubernetesJob</a></li>
 </ul>
 </li>
@@ -1842,7 +1902,7 @@ The <a class="reference internal" href="monarch.spmd.html"><span class="doc">mon
        "headline": "Python API",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/api/index.html",
-       "articleBody": "Python API# Note This documents Monarch\u2019s public APIs - the stable, supported interfaces. The actor API for monarch is accessed through the monarch.actor package. The monarch package contains APIs related to computing with distributed tensors. The monarch.job package provides a declarative interface for managing distributed job resources. The monarch.rdma package provides RDMA support for high-performance networking. The monarch.spmd package provides primitives for running torchrun-style SPMD scripts over Monarch meshes. monarch.actor Creating Actors HostMesh ProcMesh get_or_spawn_controller() this_host() this_proc() default_bootstrap_cmd() enable_transport() Defining Actors Actor endpoint() concurrent_endpoint() Messaging Actor Endpoint Future ValueMesh ActorError Accumulator send() Channel Port PortReceiver as_endpoint() Context API current_actor_name() current_rank() current_size() context() Context Point Extent Client Shutdown shutdown_context() Supervision MeshFailure unhandled_fault_hook() Telemetry traced() monarch.config Configuration API configure() configured() get_global_config() get_runtime_config() clear_runtime_config() Configuration Keys Performance and Transport Timeouts Logging Message Handling Message Encoding Mesh Bootstrap Runtime and Buffering Mesh Configuration Mesh Admin Mesh Attach Validation and Error Handling Examples Basic Configuration Temporary Configuration (Testing) Nested Overrides Duration Formats Environment Variable Override See Also monarch.job Job Model Job State JobState Interactive Shell shell() Port Forwarding PortForwarder Job Base Class JobTrait Observability TelemetryConfig MeshAdminConfig Job Implementations LocalJob ProcessJob SlurmJob KubernetesJob Serialization job_load() job_loads() SPMD Jobs monarch Tensor Stream remote() coalescing() get_active_mesh() no_mesh() to_mesh() slice_mesh() get_active_stream() reduce() reduce_() call_on_shard_and_fetch() fetch_shard() inspect() show() grad_function() grad_generator() timer() world_mesh() function_resolvers() Types Extent Shape Selection NDSlice OpaqueRef Future Distributed Computing RemoteProcessGroup Simulation Simulator set_meta() Builtins monarch.rdma RDMA Buffer RDMABuffer RDMA Actions RDMAAction Utility Functions is_ibverbs_available() is_rdma_available() get_rdma_backend() monarch.spmd Environment Setup SPMD Actor",
+       "articleBody": "Python API# Note This documents Monarch\u2019s public APIs - the stable, supported interfaces. The actor API for monarch is accessed through the monarch.actor package. The monarch package contains APIs related to computing with distributed tensors. The monarch.job package provides a declarative interface for managing distributed job resources. The monarch.rdma package provides RDMA support for high-performance networking. The monarch.spmd package provides primitives for running torchrun-style SPMD scripts over Monarch meshes. monarch.actor Creating Actors HostMesh ProcMesh get_or_spawn_controller() this_host() this_proc() default_bootstrap_cmd() enable_transport() Defining Actors Actor endpoint() concurrent_endpoint() Delivery Failure Hooks Actor._handle_delivery_failure_event() Actor._handle_invalid_reference() Actor._handle_expired_delivery() Actor._handle_undeliverable_message() Failure Details Messaging Actor Endpoint Future ValueMesh ActorError Accumulator send() Channel Port PortReceiver as_endpoint() Context API current_actor_name() current_rank() current_size() context() Context Point Extent Client Shutdown shutdown_context() Supervision MeshFailure unhandled_fault_hook() Telemetry traced() monarch.config Configuration API configure() configured() get_global_config() get_runtime_config() clear_runtime_config() Configuration Keys Performance and Transport Timeouts Logging Message Handling Message Encoding Mesh Bootstrap Runtime and Buffering Mesh Configuration Mesh Admin Mesh Attach Validation and Error Handling Examples Basic Configuration Temporary Configuration (Testing) Nested Overrides Duration Formats Environment Variable Override See Also monarch.job Job Model Job State JobState Interactive Shell shell() Port Forwarding PortForwarder Job Base Class JobTrait Observability TelemetryConfig MeshAdminConfig Job Implementations LocalJob ProcessJob SlurmJob PBSJob KubernetesJob Serialization job_load() job_loads() SPMD Jobs monarch Tensor Stream remote() coalescing() get_active_mesh() no_mesh() to_mesh() slice_mesh() get_active_stream() reduce() reduce_() call_on_shard_and_fetch() fetch_shard() inspect() show() grad_function() grad_generator() timer() world_mesh() function_resolvers() Types Extent Shape Selection NDSlice OpaqueRef Future Distributed Computing RemoteProcessGroup Simulation Simulator set_meta() Builtins monarch.rdma RDMA Buffer RDMABuffer RDMA Actions RDMAAction Utility Functions is_ibverbs_available() is_rdma_available() get_rdma_backend() monarch.spmd Environment Setup SPMD Actor",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

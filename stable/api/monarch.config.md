@@ -104,9 +104,15 @@ prefix_with_rank: Prefix log lines with rank information.
 
 actor_spawn_max_idle: Maximum idle time while spawning actors (humantime).
 get_actor_state_max_idle: Maximum idle time for actor state queries (humantime).
+use_direct_spawn: Use data-backed actor meshes for ordinary instance actor mesh spawns.
+data_supervision_timeout: Maximum gap between data worker keepalives before notifying
+
+> the owner (humantime, default 30s); workers send keepalives every 5s. Independent of
+> mesh_orphan_timeout, which should be at least as long.
+
 supervision_watchdog_timeout: Watchdog timeout for the actor-mesh supervision stream; prolonged
 
-> silence is interpreted as the controller being unreachable (humantime).
+silence is interpreted as the controller being unreachable (humantime).
 - **timeouts** - proc_stop_max_idle: Maximum idle time while stopping procs (humantime).
 get_proc_state_max_idle: Maximum idle time for proc state queries (humantime).
 - **admin** (*Mesh*) - 

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["GPU_METRICS","HOST_METRICS"],"struct":["GpuMetric","GpuMetricBuffer","HostMetric","HostMetricBuffer"]};

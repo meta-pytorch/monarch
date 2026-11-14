@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"derive":["Diff","Patch"],"enum":["Error","OptionPatch"],"macro":[["impl_simple_diff",1],["impl_tuple_diff_patch",1]],"mod":["watch"],"struct":["HashMapPatch","VecPatch"],"trait":["Diff","Patch"]};

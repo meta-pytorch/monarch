@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["IbvDeviceTarget","PeerDeviceAffinityPolicy"],"fn":["get_cuda_device_to_ibv_devices","get_pci_address","resolve_target","select_optimal_ibv_devices"]};

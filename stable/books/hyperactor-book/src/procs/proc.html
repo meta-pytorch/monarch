@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="A Proc is the fundamental container for actors in hyperactor. It provides the runtime context for actor execution: it owns actor lifecycle, delivers messages to its local actors, and hosts supervis..." />
 
-    <title>Proc &#8212; Monarch v0.7.0 documentation</title>
+    <title>Proc &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,15 +50,17 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/documentation_options.js?v=b3dab91b"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="../../../../_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/procs/proc';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/procs/proc.html" />
@@ -82,7 +84,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +198,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -561,8 +563,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -647,6 +667,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -660,7 +686,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1336,7 +1386,6 @@ lookup rather than dialing.</p>
 <h2>Construction<a class="headerlink" href="#construction" title="Link to this heading">#</a></h2>
 <p>Build a proc with the builder, choosing how it attaches to a gateway:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// Default: attach to the process-wide `Gateway::global()`.</span>
-<span class="c1">// (Legacy pseudo-singleton ids are reserved for host-scoped construction.)</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">proc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Proc</span><span class="p">::</span><span class="n">builder</span><span class="p">().</span><span class="n">proc_id</span><span class="p">(</span><span class="n">id</span><span class="p">).</span><span class="n">build</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
 
 <span class="c1">// Attach to a caller-provided gateway — e.g. a host wiring its procs</span>
@@ -1676,7 +1725,7 @@ of its <code class="docutils literal notranslate"><span class="pre">ActorId</spa
        "headline": "Proc",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/procs/proc.html",
-       "articleBody": "Proc# A Proc is the fundamental container for actors in hyperactor. It provides the runtime context for actor execution: it owns actor lifecycle, delivers messages to its local actors, and hosts supervision state. A proc is not a network endpoint by itself. It reaches\u2014and is reached by\u2014 the outside world only through a Gateway, its connectivity boundary. Every proc is attached to exactly one gateway; outbound messages flow through that gateway, and inbound messages for the proc arrive via the gateway\u2019s ingress path. Procs that share a gateway reach each other by an in-gateway lookup rather than dialing. Construction# Build a proc with the builder, choosing how it attaches to a gateway: // Default: attach to the process-wide `Gateway::global()`. // (Legacy pseudo-singleton ids are reserved for host-scoped construction.) let proc = Proc::builder().proc_id(id).build()?; // Attach to a caller-provided gateway \u2014 e.g. a host wiring its procs // into the one gateway it owns. Accepts any proc id. let proc = Proc::builder().shared_gateway(gateway.clone()).build()?; Convenience constructors cover common cases: Proc::isolated() \u2014 a random-id proc on a fresh local-only gateway (Gateway::isolated()); outbound to unknown destinations is undeliverable. Useful in tests. Proc::configured(proc_id, forwarder) \u2014 wraps Gateway::configured(location, forwarder) so the proc advertises location and uses forwarder for egress. Proc::direct(addr, name) \u2014 a direct-addressed proc served on its own channel. The proc\u2019s gateway is reachable via Proc::gateway(). Proc identity and addressing# ProcId is pure identity. ProcAddr pairs that id with the Location where the proc is reachable: let addr: ChannelAddr = \"unix:@abc123\".parse()?; let proc_addr = ProcAddr::instance(addr, \"service\"); A proc is reached through its gateway\u2019s advertised location. On a host, spawned children are advertised through the host frontend with a Via(child_uid, frontend_addr) location, so the host gateway can peel the child uid and forward to the child gateway peer. See ProcId for identity details and Addr for addressable references. Egress through the gateway# When an actor sends a message to an actor in another proc, the message leaves the proc through its gateway, which applies the single routing decision: deliver to a local proc, forward to a child proc or a known peer by peeling its Via hop, or hand to the forwarder for everything else. Spawned children are just peers keyed by their child uid. The default forwarder is a DialMailboxRouter, which looks up the target\u2019s address and dials it. Local proc bypass# For procs that run in separate processes on the same host, same-host proc-to-proc traffic can skip the host round-trip. At spawn time the proc manager gives the child gateway a LocalProcDialer forwarder that dials a sibling proc directly over its Unix socket when the destination is local, and falls back to the host backend otherwise: let backend_sender = MailboxClient::dial(backend_addr); let proc_forwarder = LocalProcDialer::new(host_frontend_addr, socket_dir, backend_sender); let proc = Proc::configured(proc_id, proc_forwarder.boxed()); This reduces message copies and keeps the host agent off the hot path for intra-host traffic. See hyperactor_mesh::bootstrap::mailbox::LocalProcDialer. Spawning actors# Once you have a proc, spawn actors within it: let actor_handle = proc.spawn(\"my_actor\", MyActor::new())?; The spawned actor runs within this proc, inherits the proc\u2019s ProcId as part of its ActorId, and uses the proc\u2019s gateway for outbound messages. See RemoteSpawn for spawning details. See Also# Gateway \u2014 the connectivity boundary every proc attaches to Host \u2014 how hosts create and manage procs ProcId \u2014 proc addressing ActorId \u2014 how actors inherit proc identity",
+       "articleBody": "Proc# A Proc is the fundamental container for actors in hyperactor. It provides the runtime context for actor execution: it owns actor lifecycle, delivers messages to its local actors, and hosts supervision state. A proc is not a network endpoint by itself. It reaches\u2014and is reached by\u2014 the outside world only through a Gateway, its connectivity boundary. Every proc is attached to exactly one gateway; outbound messages flow through that gateway, and inbound messages for the proc arrive via the gateway\u2019s ingress path. Procs that share a gateway reach each other by an in-gateway lookup rather than dialing. Construction# Build a proc with the builder, choosing how it attaches to a gateway: // Default: attach to the process-wide `Gateway::global()`. let proc = Proc::builder().proc_id(id).build()?; // Attach to a caller-provided gateway \u2014 e.g. a host wiring its procs // into the one gateway it owns. Accepts any proc id. let proc = Proc::builder().shared_gateway(gateway.clone()).build()?; Convenience constructors cover common cases: Proc::isolated() \u2014 a random-id proc on a fresh local-only gateway (Gateway::isolated()); outbound to unknown destinations is undeliverable. Useful in tests. Proc::configured(proc_id, forwarder) \u2014 wraps Gateway::configured(location, forwarder) so the proc advertises location and uses forwarder for egress. Proc::direct(addr, name) \u2014 a direct-addressed proc served on its own channel. The proc\u2019s gateway is reachable via Proc::gateway(). Proc identity and addressing# ProcId is pure identity. ProcAddr pairs that id with the Location where the proc is reachable: let addr: ChannelAddr = \"unix:@abc123\".parse()?; let proc_addr = ProcAddr::instance(addr, \"service\"); A proc is reached through its gateway\u2019s advertised location. On a host, spawned children are advertised through the host frontend with a Via(child_uid, frontend_addr) location, so the host gateway can peel the child uid and forward to the child gateway peer. See ProcId for identity details and Addr for addressable references. Egress through the gateway# When an actor sends a message to an actor in another proc, the message leaves the proc through its gateway, which applies the single routing decision: deliver to a local proc, forward to a child proc or a known peer by peeling its Via hop, or hand to the forwarder for everything else. Spawned children are just peers keyed by their child uid. The default forwarder is a DialMailboxRouter, which looks up the target\u2019s address and dials it. Local proc bypass# For procs that run in separate processes on the same host, same-host proc-to-proc traffic can skip the host round-trip. At spawn time the proc manager gives the child gateway a LocalProcDialer forwarder that dials a sibling proc directly over its Unix socket when the destination is local, and falls back to the host backend otherwise: let backend_sender = MailboxClient::dial(backend_addr); let proc_forwarder = LocalProcDialer::new(host_frontend_addr, socket_dir, backend_sender); let proc = Proc::configured(proc_id, proc_forwarder.boxed()); This reduces message copies and keeps the host agent off the hot path for intra-host traffic. See hyperactor_mesh::bootstrap::mailbox::LocalProcDialer. Spawning actors# Once you have a proc, spawn actors within it: let actor_handle = proc.spawn(\"my_actor\", MyActor::new())?; The spawned actor runs within this proc, inherits the proc\u2019s ProcId as part of its ActorId, and uses the proc\u2019s gateway for outbound messages. See RemoteSpawn for spawning details. See Also# Gateway \u2014 the connectivity boundary every proc attaches to Host \u2014 how hosts create and manage procs ProcId \u2014 proc addressing ActorId \u2014 how actors inherit proc identity",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

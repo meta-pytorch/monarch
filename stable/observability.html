@@ -11,12 +11,12 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="http://pytorch.org/observability.html" />
 <meta property="og:site_name" content="Monarch" />
-<meta property="og:description" content="Monarch provides one observability setup with three complementary job-local surfaces: distributed telemetry for SQL analysis, the Monarch Dashboard for visual monitoring, and the Mesh Admin TUI for..." />
+<meta property="og:description" content="Monarch provides one observability setup with four complementary job-local surfaces: distributed telemetry for SQL analysis, the Monarch Dashboard for visual monitoring, monarch profile for actor a..." />
 <meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
 <meta property="og:image:alt" content="Monarch" />
-<meta name="description" content="Monarch provides one observability setup with three complementary job-local surfaces: distributed telemetry for SQL analysis, the Monarch Dashboard for visual monitoring, and the Mesh Admin TUI for..." />
+<meta name="description" content="Monarch provides one observability setup with four complementary job-local surfaces: distributed telemetry for SQL analysis, the Monarch Dashboard for visual monitoring, monarch profile for actor a..." />
 
-    <title>Observability &#8212; Monarch v0.7.0 documentation</title>
+    <title>Observability &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,15 +50,17 @@
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="_static/documentation_options.js?v=05c9169f"></script>
+    <script src="_static/documentation_options.js?v=b3dab91b"></script>
     <script src="_static/doctools.js?v=888ff710"></script>
     <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'observability';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/observability.html" />
@@ -84,7 +86,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +200,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -563,8 +565,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -649,6 +669,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -662,7 +688,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1240,7 +1290,10 @@ document.write(`
   <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
   <div class="bd-toc-item navbar-nav"><ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="distributed-telemetry.html">Distributed Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="telemetry-persistence.html">Telemetry persistence</a></li>
+<li class="toctree-l1"><a class="reference internal" href="profiling.html">Profiling Actor Activity</a></li>
 <li class="toctree-l1"><a class="reference internal" href="metrics.html">Metrics</a></li>
+<li class="toctree-l1"><a class="reference internal" href="opentelemetry.html">OpenTelemetry</a></li>
 <li class="toctree-l1"><a class="reference internal" href="admin-tui.html">Mesh Admin TUI</a></li>
 <li class="toctree-l1"><a class="reference internal" href="monarch-dashboard.html">Monarch Dashboard</a></li>
 </ul>
@@ -1338,12 +1391,12 @@ document.write(`
                   
   <section id="observability">
 <h1>Observability<a class="headerlink" href="#observability" title="Link to this heading">#</a></h1>
-<p>Monarch provides one observability setup with three complementary job-local
+<p>Monarch provides one observability setup with four complementary job-local
 surfaces: distributed telemetry for SQL analysis, the Monarch Dashboard for
-visual monitoring, and the Mesh Admin TUI for live diagnostics. Enable
-telemetry on a job to start all three data paths consistently. OpenTelemetry
-supplies metrics to distributed telemetry and can independently export metrics
-and logs to external backends.</p>
+visual monitoring, <code class="docutils literal notranslate"><span class="pre">monarch</span> <span class="pre">profile</span></code> for actor activity traces, and the Mesh
+Admin TUI for live diagnostics. Enable telemetry on a job to support all four
+surfaces consistently. OpenTelemetry supplies metrics to distributed telemetry
+and can independently export metrics, logs, and spans to external backends.</p>
 <section id="choose-a-surface">
 <h2>Choose a surface<a class="headerlink" href="#choose-a-surface" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1354,28 +1407,36 @@ and logs to external backends.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>Query actor, mesh, message, trace, and metric history</p></td>
+<tr class="row-even"><td><p>Query actor, mesh, message, trace, metric, and host resource history</p></td>
 <td><p><a class="reference internal" href="distributed-telemetry.html"><span class="doc std std-doc">Distributed telemetry</span></a></p></td>
 <td><p>DataFusion SQL across host-local collectors</p></td>
 </tr>
-<tr class="row-odd"><td><p>Monitor topology, status, failures, and traffic in a browser</p></td>
+<tr class="row-odd"><td><p>Inspect saved telemetry after a job stops</p></td>
+<td><p><a class="reference internal" href="telemetry-persistence.html"><span class="doc std std-doc">Telemetry persistence</span></a></p></td>
+<td><p>SQL and dashboards over persisted Arrow data</p></td>
+</tr>
+<tr class="row-even"><td><p>Monitor topology, status, failures, traffic, and resources in a browser</p></td>
 <td><p><a class="reference internal" href="monarch-dashboard.html"><span class="doc std std-doc">Monarch Dashboard</span></a></p></td>
-<td><p>Live summaries, hierarchy views, and a job DAG</p></td>
+<td><p>Live summaries, hierarchy views, host and GPU resources, and a job DAG</p></td>
+</tr>
+<tr class="row-odd"><td><p>Trace endpoint calls and handler execution across a job</p></td>
+<td><p><a class="reference internal" href="profiling.html"><span class="doc std std-doc">Actor profiling</span></a></p></td>
+<td><p>Perfetto traces grouped by process and actor, with call-to-handler links</p></td>
 </tr>
 <tr class="row-even"><td><p>Diagnose a running mesh from a terminal</p></td>
 <td><p><a class="reference internal" href="admin-tui.html"><span class="doc std std-doc">Mesh Admin TUI</span></a></p></td>
 <td><p>Live topology, health checks, and py-spy stack traces</p></td>
 </tr>
-<tr class="row-odd"><td><p>Export metrics and logs to an external backend</p></td>
-<td><p><a class="reference internal" href="generated/examples/otel_collector.html"><span class="doc std std-doc">OpenTelemetry and Grafana</span></a></p></td>
+<tr class="row-odd"><td><p>Export metrics, logs, and spans to an external backend</p></td>
+<td><p><a class="reference internal" href="opentelemetry.html"><span class="doc std std-doc">OpenTelemetry</span></a></p></td>
 <td><p>OTLP export to systems such as Prometheus and Loki</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>The dashboard reads distributed telemetry. The TUI reads the Mesh Admin API.
-Periodic mesh-admin snapshots also flow into telemetry so the dashboard can
-show the live administrative topology.</p>
+<p>The dashboard and profiler read distributed telemetry. The TUI reads the Mesh
+Admin API. Periodic mesh-admin snapshots also flow into telemetry so the
+dashboard can show the live administrative topology.</p>
 <p>Distributed telemetry is a job-scoped, in-memory query system. OpenTelemetry
 export to an external backend can run alongside it on the same job.</p>
 </section>
@@ -1415,6 +1476,10 @@ snapshots. Adapt the example to your existing <code class="docutils literal notr
 </div>
 <p>Use <code class="docutils literal notranslate"><span class="pre">state.dashboard_url</span></code> in a browser. Pass <code class="docutils literal notranslate"><span class="pre">state.admin_url</span></code> to
 <code class="docutils literal notranslate"><span class="pre">monarch-tui</span> <span class="pre">--addr</span></code>.</p>
+<p>The job sidecar runs the admin server for the life of the job, so later
+<code class="docutils literal notranslate"><span class="pre">state()</span></code> calls and <code class="docutils literal notranslate"><span class="pre">monarch</span></code> commands reuse it. If the admin address (default
+<code class="docutils literal notranslate"><span class="pre">[::]:1729</span></code>) is taken, <code class="docutils literal notranslate"><span class="pre">state()</span></code> raises. Stop the other process, or pass
+<code class="docutils literal notranslate"><span class="pre">MeshAdminConfig(admin_addr=...)</span></code>.</p>
 </section>
 <section id="metrics">
 <h2>Metrics<a class="headerlink" href="#metrics" title="Link to this heading">#</a></h2>
@@ -1447,15 +1512,62 @@ job-local distributed telemetry, an external OTLP endpoint, or both.</p>
 <p>See <a class="reference internal" href="metrics.html"><span class="doc std std-doc">Metrics</span></a> for provider scope, collection and flushing behavior,
 configuration, and both export paths.</p>
 </section>
+<section id="host-and-gpu-metrics">
+<h2>Host and GPU metrics<a class="headerlink" href="#host-and-gpu-metrics" title="Link to this heading">#</a></h2>
+<p>Each telemetry host also records its own resource usage, so you can line up
+actor and message activity with what the machine was doing at the time.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Table</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Contents</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">host_metrics</span></code></p></td>
+<td><p>Every second</p></td>
+<td><p>CPU utilization and count, load averages, memory, swap, cumulative network and disk byte counters, and free space on <code class="docutils literal notranslate"><span class="pre">/</span></code> and <code class="docutils literal notranslate"><span class="pre">/tmp</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gpu_metrics</span></code></p></td>
+<td><p>Every second</p></td>
+<td><p>Per-GPU utilization, memory used and total, temperature, and power, read through NVML</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Samplers run next to each host’s telemetry collector, including the client
+host, and write one row per host, or one row per GPU, per interval. Both tables
+follow <code class="docutils literal notranslate"><span class="pre">retention_secs</span></code>. A host without NVIDIA GPUs or NVML skips GPU sampling
+and leaves <code class="docutils literal notranslate"><span class="pre">gpu_metrics</span></code> empty. See
+<a class="reference internal" href="distributed-telemetry.html"><span class="doc std std-doc">Distributed telemetry</span></a> for columns, row keys, and
+example queries.</p>
+<p>To turn either sampler off, set its interval to <code class="docutils literal notranslate"><span class="pre">0</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">TelemetryConfig</span><span class="p">(</span><span class="n">host_metrics_interval_secs</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">gpu_metrics_interval_secs</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>For example, this query reports each GPU’s average utilization over the last
+five minutes:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">hostname</span><span class="p">,</span><span class="w"> </span><span class="n">gpu_index</span><span class="p">,</span><span class="w"> </span><span class="k">AVG</span><span class="p">(</span><span class="n">utilization_percent</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">avg_util</span><span class="p">,</span>
+<span class="w">  </span><span class="k">MAX</span><span class="p">(</span><span class="n">memory_used_bytes</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">max_memory_used</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">gpu_metrics</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">timestamp_us</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="k">MAX</span><span class="p">(</span><span class="n">timestamp_us</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">gpu_metrics</span><span class="p">)</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">300000000</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">hostname</span><span class="p">,</span><span class="w"> </span><span class="n">gpu_index</span>
+<span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">hostname</span><span class="p">,</span><span class="w"> </span><span class="n">gpu_index</span>
+</pre></div>
+</div>
+</section>
 <section id="data-flow">
 <h2>Data flow<a class="headerlink" href="#data-flow" title="Link to this heading">#</a></h2>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>actor and proc events ──&gt; host-local collectors ──&gt; distributed query engine
                                                         ├─&gt; SQL query client
-                                                        └─&gt; Monarch Dashboard
+                                                        ├─&gt; Monarch Dashboard
+                                                        └─&gt; monarch profile ──&gt; Perfetto trace
+
+host and GPU samplers ──&gt; host-local collectors
 
 OTel instruments ──&gt; process-global meter provider ──┬─&gt; UDS metric exporter
-                                                      │        └─&gt; host-local collectors
-                                                      └─&gt; external metric exporter
+                                                     │        └─&gt; host-local collectors
+                                                     └─&gt; external metric exporter
 
 live mesh ──&gt; Mesh Admin API ──────────────────────────────&gt; Mesh Admin TUI
      └──────&gt; periodic snapshots ──&gt; distributed telemetry ─&gt; Dashboard DAG
@@ -1492,6 +1604,14 @@ are not a durable event archive.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">30</span></code></p></td>
 <td><p>Mesh-introspection snapshot interval; <code class="docutils literal notranslate"><span class="pre">0</span></code> disables periodic snapshots</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">host_metrics_interval_secs</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1.0</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">host_metrics</span></code> sampling interval on every telemetry host; <code class="docutils literal notranslate"><span class="pre">0</span></code> disables host sampling</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gpu_metrics_interval_secs</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1.0</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">gpu_metrics</span></code> sampling interval on every telemetry host; <code class="docutils literal notranslate"><span class="pre">0</span></code> disables GPU sampling</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -1503,6 +1623,8 @@ That supports the TUI, but it does not provide the dashboard or SQL history.</p>
 <ul class="simple">
 <li><p><a class="reference internal" href="metrics.html"><span class="doc std std-doc">Understand metric collection and export</span></a></p></li>
 <li><p><a class="reference internal" href="distributed-telemetry.html"><span class="doc std std-doc">Query distributed telemetry</span></a></p></li>
+<li><p><a class="reference internal" href="telemetry-persistence.html"><span class="doc std std-doc">Save and analyze telemetry after shutdown</span></a></p></li>
+<li><p><a class="reference internal" href="profiling.html"><span class="doc std std-doc">Profile actor activity</span></a></p></li>
 <li><p><a class="reference internal" href="monarch-dashboard.html"><span class="doc std std-doc">Use the Monarch Dashboard</span></a></p></li>
 <li><p><a class="reference internal" href="admin-tui.html"><span class="doc std std-doc">Diagnose a mesh with the Admin TUI</span></a></p></li>
 <li><p><a class="reference internal" href="generated/examples/otel_collector.html"><span class="doc std std-doc">Export metrics and logs with OpenTelemetry</span></a></p></li>
@@ -1632,6 +1754,7 @@ That supports the TUI, but it does not provide the dashboard or SQL history.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choose-a-surface">Choose a surface</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#enable-observability">Enable observability</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#metrics">Metrics</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#host-and-gpu-metrics">Host and GPU metrics</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#data-flow">Data flow</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration">Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#next-steps">Next steps</a></li>
@@ -1806,7 +1929,7 @@ That supports the TUI, but it does not provide the dashboard or SQL history.</p>
        "headline": "Observability",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/observability.html",
-       "articleBody": "Observability# Monarch provides one observability setup with three complementary job-local surfaces: distributed telemetry for SQL analysis, the Monarch Dashboard for visual monitoring, and the Mesh Admin TUI for live diagnostics. Enable telemetry on a job to start all three data paths consistently. OpenTelemetry supplies metrics to distributed telemetry and can independently export metrics and logs to external backends. Choose a surface# Use case Surface What it provides Query actor, mesh, message, trace, and metric history Distributed telemetry DataFusion SQL across host-local collectors Monitor topology, status, failures, and traffic in a browser Monarch Dashboard Live summaries, hierarchy views, and a job DAG Diagnose a running mesh from a terminal Mesh Admin TUI Live topology, health checks, and py-spy stack traces Export metrics and logs to an external backend OpenTelemetry and Grafana OTLP export to systems such as Prometheus and Loki The dashboard reads distributed telemetry. The TUI reads the Mesh Admin API. Periodic mesh-admin snapshots also flow into telemetry so the dashboard can show the live administrative topology. Distributed telemetry is a job-scoped, in-memory query system. OpenTelemetry export to an external backend can run alongside it on the same job. Enable observability# Configure observability before calling state(): from monarch.job import ProcessJob, TelemetryConfig job = ProcessJob({\"workers\": 2}).enable_telemetry( TelemetryConfig( retention_secs=3600, include_dashboard=True, dashboard_port=8265, snapshot_interval_secs=30, ) ) state = job.state(cached_path=None) enable_telemetry() also enables mesh admin and periodic introspection snapshots. Adapt the example to your existing LocalJob, ProcessJob, SlurmJob, or KubernetesJob rather than creating a second job. The returned state exposes each surface: print(state.dashboard_url) print(state.admin_url) client = state.query_engine_client if client is None: raise RuntimeError(\"telemetry did not start\") result = client.query( \"SELECT new_status, COUNT(*) AS count \" \"FROM actor_status_events GROUP BY new_status\" ) print(result[\"rows\"]) Use state.dashboard_url in a browser. Pass state.admin_url to monarch-tui --addr. Metrics# Monarch records its built-in metrics through one process-global OpenTelemetry meter provider. Libraries record counters, gauges, and histograms without choosing a destination. Independent readers can send the same instruments to job-local distributed telemetry, an external OTLP endpoint, or both. Path Enablement Destination Primary use Distributed telemetry job.enable_telemetry(...) Job-local SQL tables Debugging and analysis within the current job OTLP OTEL_EXPORTER_OTLP_ENDPOINT OpenTelemetry Collector over OTLP/HTTP External aggregation, monitoring, and visualization See Metrics for provider scope, collection and flushing behavior, configuration, and both export paths. Data flow# actor and proc events \u2500\u2500\u003e host-local collectors \u2500\u2500\u003e distributed query engine \u251c\u2500\u003e SQL query client \u2514\u2500\u003e Monarch Dashboard OTel instruments \u2500\u2500\u003e process-global meter provider \u2500\u2500\u252c\u2500\u003e UDS metric exporter \u2502 \u2514\u2500\u003e host-local collectors \u2514\u2500\u003e external metric exporter live mesh \u2500\u2500\u003e Mesh Admin API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u003e Mesh Admin TUI \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u003e periodic snapshots \u2500\u2500\u003e distributed telemetry \u2500\u003e Dashboard DAG Telemetry collection and distributed query fan-out are best-effort. A failed or slow worker collector can reduce query coverage without failing the job. Telemetry tables are in memory and belong to the current job allocation; they are not a durable event archive. Configuration# TelemetryConfig field Default Effect retention_secs 3600 Retention window for message, trace, and metric tables; 0 disables retention include_dashboard False Advertise the browser dashboard dashboard_port 8265 Preferred dashboard port; use 0 for an ephemeral port snapshot_interval_secs 30 Mesh-introspection snapshot interval; 0 disables periodic snapshots For an admin server without distributed telemetry, call job.enable_admin(). That supports the TUI, but it does not provide the dashboard or SQL history. Next steps# Understand metric collection and export Query distributed telemetry Use the Monarch Dashboard Diagnose a mesh with the Admin TUI Export metrics and logs with OpenTelemetry",
+       "articleBody": "Observability# Monarch provides one observability setup with four complementary job-local surfaces: distributed telemetry for SQL analysis, the Monarch Dashboard for visual monitoring, monarch profile for actor activity traces, and the Mesh Admin TUI for live diagnostics. Enable telemetry on a job to support all four surfaces consistently. OpenTelemetry supplies metrics to distributed telemetry and can independently export metrics, logs, and spans to external backends. Choose a surface# Use case Surface What it provides Query actor, mesh, message, trace, metric, and host resource history Distributed telemetry DataFusion SQL across host-local collectors Inspect saved telemetry after a job stops Telemetry persistence SQL and dashboards over persisted Arrow data Monitor topology, status, failures, traffic, and resources in a browser Monarch Dashboard Live summaries, hierarchy views, host and GPU resources, and a job DAG Trace endpoint calls and handler execution across a job Actor profiling Perfetto traces grouped by process and actor, with call-to-handler links Diagnose a running mesh from a terminal Mesh Admin TUI Live topology, health checks, and py-spy stack traces Export metrics, logs, and spans to an external backend OpenTelemetry OTLP export to systems such as Prometheus and Loki The dashboard and profiler read distributed telemetry. The TUI reads the Mesh Admin API. Periodic mesh-admin snapshots also flow into telemetry so the dashboard can show the live administrative topology. Distributed telemetry is a job-scoped, in-memory query system. OpenTelemetry export to an external backend can run alongside it on the same job. Enable observability# Configure observability before calling state(): from monarch.job import ProcessJob, TelemetryConfig job = ProcessJob({\"workers\": 2}).enable_telemetry( TelemetryConfig( retention_secs=3600, include_dashboard=True, dashboard_port=8265, snapshot_interval_secs=30, ) ) state = job.state(cached_path=None) enable_telemetry() also enables mesh admin and periodic introspection snapshots. Adapt the example to your existing LocalJob, ProcessJob, SlurmJob, or KubernetesJob rather than creating a second job. The returned state exposes each surface: print(state.dashboard_url) print(state.admin_url) client = state.query_engine_client if client is None: raise RuntimeError(\"telemetry did not start\") result = client.query( \"SELECT new_status, COUNT(*) AS count \" \"FROM actor_status_events GROUP BY new_status\" ) print(result[\"rows\"]) Use state.dashboard_url in a browser. Pass state.admin_url to monarch-tui --addr. The job sidecar runs the admin server for the life of the job, so later state() calls and monarch commands reuse it. If the admin address (default [::]:1729) is taken, state() raises. Stop the other process, or pass MeshAdminConfig(admin_addr=...). Metrics# Monarch records its built-in metrics through one process-global OpenTelemetry meter provider. Libraries record counters, gauges, and histograms without choosing a destination. Independent readers can send the same instruments to job-local distributed telemetry, an external OTLP endpoint, or both. Path Enablement Destination Primary use Distributed telemetry job.enable_telemetry(...) Job-local SQL tables Debugging and analysis within the current job OTLP OTEL_EXPORTER_OTLP_ENDPOINT OpenTelemetry Collector over OTLP/HTTP External aggregation, monitoring, and visualization See Metrics for provider scope, collection and flushing behavior, configuration, and both export paths. Host and GPU metrics# Each telemetry host also records its own resource usage, so you can line up actor and message activity with what the machine was doing at the time. Table Default Contents host_metrics Every second CPU utilization and count, load averages, memory, swap, cumulative network and disk byte counters, and free space on / and /tmp gpu_metrics Every second Per-GPU utilization, memory used and total, temperature, and power, read through NVML Samplers run next to each host\u2019s telemetry collector, including the client host, and write one row per host, or one row per GPU, per interval. Both tables follow retention_secs. A host without NVIDIA GPUs or NVML skips GPU sampling and leaves gpu_metrics empty. See Distributed telemetry for columns, row keys, and example queries. To turn either sampler off, set its interval to 0: TelemetryConfig(host_metrics_interval_secs=0, gpu_metrics_interval_secs=0) For example, this query reports each GPU\u2019s average utilization over the last five minutes: SELECT hostname, gpu_index, AVG(utilization_percent) AS avg_util, MAX(memory_used_bytes) AS max_memory_used FROM gpu_metrics WHERE timestamp_us \u003e (SELECT MAX(timestamp_us) FROM gpu_metrics) - 300000000 GROUP BY hostname, gpu_index ORDER BY hostname, gpu_index Data flow# actor and proc events \u2500\u2500\u003e host-local collectors \u2500\u2500\u003e distributed query engine \u251c\u2500\u003e SQL query client \u251c\u2500\u003e Monarch Dashboard \u2514\u2500\u003e monarch profile \u2500\u2500\u003e Perfetto trace host and GPU samplers \u2500\u2500\u003e host-local collectors OTel instruments \u2500\u2500\u003e process-global meter provider \u2500\u2500\u252c\u2500\u003e UDS metric exporter \u2502 \u2514\u2500\u003e host-local collectors \u2514\u2500\u003e external metric exporter live mesh \u2500\u2500\u003e Mesh Admin API \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u003e Mesh Admin TUI \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u003e periodic snapshots \u2500\u2500\u003e distributed telemetry \u2500\u003e Dashboard DAG Telemetry collection and distributed query fan-out are best-effort. A failed or slow worker collector can reduce query coverage without failing the job. Telemetry tables are in memory and belong to the current job allocation; they are not a durable event archive. Configuration# TelemetryConfig field Default Effect retention_secs 3600 Retention window for message, trace, and metric tables; 0 disables retention include_dashboard False Advertise the browser dashboard dashboard_port 8265 Preferred dashboard port; use 0 for an ephemeral port snapshot_interval_secs 30 Mesh-introspection snapshot interval; 0 disables periodic snapshots host_metrics_interval_secs 1.0 host_metrics sampling interval on every telemetry host; 0 disables host sampling gpu_metrics_interval_secs 1.0 gpu_metrics sampling interval on every telemetry host; 0 disables GPU sampling For an admin server without distributed telemetry, call job.enable_admin(). That supports the TUI, but it does not provide the dashboard or SQL history. Next steps# Understand metric collection and export Query distributed telemetry Save and analyze telemetry after shutdown Profile actor activity Use the Monarch Dashboard Diagnose a mesh with the Admin TUI Export metrics and logs with OpenTelemetry",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

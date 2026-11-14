@@ -1,0 +1,794 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `monarch_extension/src/chain_broadcast.rs`."><title>chain_broadcast.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="_rust_bindings" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (c397dae80 2026-07-02)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">_rust_bindings/</div>chain_broadcast.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
+<a href=#2 id=2 data-nosnippet>2</a> * Copyright (c) Meta Platforms, Inc. and affiliates.
+<a href=#3 id=3 data-nosnippet>3</a> * All rights reserved.
+<a href=#4 id=4 data-nosnippet>4</a> *
+<a href=#5 id=5 data-nosnippet>5</a> * This source code is licensed under the BSD-style license found in the
+<a href=#6 id=6 data-nosnippet>6</a> * LICENSE file in the root directory of this source tree.
+<a href=#7 id=7 data-nosnippet>7</a> */
+<a href=#8 id=8 data-nosnippet>8</a>
+<a href=#9 id=9 data-nosnippet>9</a></span><span class="doccomment">//! Pipelined-chain bulk broadcast over hyperactor's channel transport.
+<a href=#10 id=10 data-nosnippet>10</a>//!
+<a href=#11 id=11 data-nosnippet>11</a>//! A leader streams a large block down an ordered chain of workers --
+<a href=#12 id=12 data-nosnippet>12</a>//! `leader -&gt; worker[0] -&gt; worker[1] -&gt; ... -&gt; worker[N-1]` -- where each
+<a href=#13 id=13 data-nosnippet>13</a>//! interior worker forwards every chunk to its successor the instant it lands
+<a href=#14 id=14 data-nosnippet>14</a>//! (temporal pipelining), so the source egresses ~one copy regardless of N.
+<a href=#15 id=15 data-nosnippet>15</a>//! This is the bandwidth-optimal large-block broadcast (NCCL's ring, MPI's
+<a href=#16 id=16 data-nosnippet>16</a>//! pipelined chain); it replaces a single-leader O(N) fan-out.
+<a href=#17 id=17 data-nosnippet>17</a>//!
+<a href=#18 id=18 data-nosnippet>18</a>//! Unlike a bolt-on transport, this reuses [`hyperactor::channel`]: connections
+<a href=#19 id=19 data-nosnippet>19</a>//! are persistent channel streams (the process default transport -- metatls in
+<a href=#20 id=20 data-nosnippet>20</a>//! cluster, for Meta mutual-TLS identity with no cert paths to read -- or any
+<a href=#21 id=21 data-nosnippet>21</a>//! transport `serve` is given), framing and reconnect live in the channel layer,
+<a href=#22 id=22 data-nosnippet>22</a>//! and addresses are exchanged as plain strings. The only new machinery here is the
+<a href=#23 id=23 data-nosnippet>23</a>//! chunk relay ([`forward`]) and a byte-counter recv-completion signal
+<a href=#24 id=24 data-nosnippet>24</a>//! ([`new_ctx`]/[`ctx_wait_into`]).
+<a href=#25 id=25 data-nosnippet>25</a>//!
+<a href=#26 id=26 data-nosnippet>26</a>//! The Python surface mirrors the C transport it supersedes so the remotemount
+<a href=#27 id=27 data-nosnippet>27</a>//! orchestration is unchanged: `serve` (bind a listener), `connect` (dial the
+<a href=#28 id=28 data-nosnippet>28</a>//! head/successor), `send_block` (prime the pipeline at the source), `forward`
+<a href=#29 id=29 data-nosnippet>29</a>//! (relay + deliver at each worker), and `new_ctx`/`ctx_wait_into`/`ctx_close`.
+<a href=#30 id=30 data-nosnippet>30</a>
+<a href=#31 id=31 data-nosnippet>31</a></span><span class="kw">use </span>std::collections::HashSet;
+<a href=#32 id=32 data-nosnippet>32</a><span class="kw">use </span>std::sync::Arc;
+<a href=#33 id=33 data-nosnippet>33</a><span class="kw">use </span>std::sync::Condvar;
+<a href=#34 id=34 data-nosnippet>34</a><span class="kw">use </span>std::sync::Mutex;
+<a href=#35 id=35 data-nosnippet>35</a><span class="kw">use </span>std::time::Duration;
+<a href=#36 id=36 data-nosnippet>36</a><span class="kw">use </span>std::time::Instant;
+<a href=#37 id=37 data-nosnippet>37</a>
+<a href=#38 id=38 data-nosnippet>38</a><span class="kw">use </span>bytes::Bytes;
+<a href=#39 id=39 data-nosnippet>39</a><span class="kw">use </span>hyperactor::Endpoint <span class="kw">as _</span>;
+<a href=#40 id=40 data-nosnippet>40</a><span class="kw">use </span>hyperactor::PortAddr;
+<a href=#41 id=41 data-nosnippet>41</a><span class="kw">use </span>hyperactor::PortRef;
+<a href=#42 id=42 data-nosnippet>42</a><span class="kw">use </span>hyperactor::channel;
+<a href=#43 id=43 data-nosnippet>43</a><span class="kw">use </span>hyperactor::channel::ChannelAddr;
+<a href=#44 id=44 data-nosnippet>44</a><span class="kw">use </span>hyperactor::channel::ChannelRx;
+<a href=#45 id=45 data-nosnippet>45</a><span class="kw">use </span>hyperactor::channel::ChannelTx;
+<a href=#46 id=46 data-nosnippet>46</a><span class="kw">use </span>hyperactor::channel::Rx;
+<a href=#47 id=47 data-nosnippet>47</a><span class="kw">use </span>hyperactor::channel::Tx;
+<a href=#48 id=48 data-nosnippet>48</a><span class="kw">use </span>hyperactor::mailbox::PortReceiver;
+<a href=#49 id=49 data-nosnippet>49</a><span class="kw">use </span>monarch_hyperactor::context::PyInstance;
+<a href=#50 id=50 data-nosnippet>50</a><span class="kw">use </span>pyo3::exceptions::PyRuntimeError;
+<a href=#51 id=51 data-nosnippet>51</a><span class="kw">use </span>pyo3::exceptions::PyValueError;
+<a href=#52 id=52 data-nosnippet>52</a><span class="kw">use </span>pyo3::prelude::<span class="kw-2">*</span>;
+<a href=#53 id=53 data-nosnippet>53</a><span class="kw">use </span>pyo3::types::PyBytes;
+<a href=#54 id=54 data-nosnippet>54</a><span class="kw">use </span>serde::Deserialize;
+<a href=#55 id=55 data-nosnippet>55</a><span class="kw">use </span>serde::Serialize;
+<a href=#56 id=56 data-nosnippet>56</a><span class="kw">use </span>serde_multipart::Part;
+<a href=#57 id=57 data-nosnippet>57</a><span class="kw">use </span>typeuri::Named;
+<a href=#58 id=58 data-nosnippet>58</a>
+<a href=#59 id=59 data-nosnippet>59</a><span class="doccomment">/// Default number of parallel TLS streams per hop, to fill the NIC (as the C ctcp
+<a href=#60 id=60 data-nosnippet>60</a>/// transport did). Delivery is offset-addressed, so the out-of-order arrival that
+<a href=#61 id=61 data-nosnippet>61</a>/// multi-stream allows is fine. Tradeoff vs the single ordered stream: the
+<a href=#62 id=62 data-nosnippet>62</a>/// unordered path does NOT retransmit on reconnect, so a mid-transfer connection
+<a href=#63 id=63 data-nosnippet>63</a>/// drop can lose a chunk (surfacing as a `ctx_wait_into` timeout, then a re-fault);
+<a href=#64 id=64 data-nosnippet>64</a>/// acceptable on a stable in-cluster fabric. `connect`/`forward` take the count as
+<a href=#65 id=65 data-nosnippet>65</a>/// an argument (this is only the default) so the caller can tune it per run without
+<a href=#66 id=66 data-nosnippet>66</a>/// a rebuild -- more streams fill a fatter cross-DC pipe, fewer reduce per-stream
+<a href=#67 id=67 data-nosnippet>67</a>/// ramp overhead on a short chain.
+<a href=#68 id=68 data-nosnippet>68</a></span><span class="kw">const </span>NUM_CBC_STREAMS: usize = <span class="number">32</span>;
+<a href=#69 id=69 data-nosnippet>69</a>
+<a href=#70 id=70 data-nosnippet>70</a><span class="doccomment">/// One frame of a block on the wire: a slice of the block plus enough header to
+<a href=#71 id=71 data-nosnippet>71</a>/// place it (`offset`) and to know when the block is complete (`total`). `tag`
+<a href=#72 id=72 data-nosnippet>72</a>/// is the block id, carried through for debugging / future multiplexing. `data`
+<a href=#73 id=73 data-nosnippet>73</a>/// is a `serde_multipart::Part` so the channel carries the payload out-of-band
+<a href=#74 id=74 data-nosnippet>74</a>/// (zero-copy) rather than bincode-encoding it byte by byte -- and forwarding it
+<a href=#75 id=75 data-nosnippet>75</a>/// (`Chunk::clone`) is a refcount bump, not a memcpy.
+<a href=#76 id=76 data-nosnippet>76</a></span><span class="attr">#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+<a href=#77 id=77 data-nosnippet>77</a></span><span class="kw">struct </span>Chunk {
+<a href=#78 id=78 data-nosnippet>78</a>    tag: u64,
+<a href=#79 id=79 data-nosnippet>79</a>    offset: u64,
+<a href=#80 id=80 data-nosnippet>80</a>    total: u64,
+<a href=#81 id=81 data-nosnippet>81</a>    data: Part,
+<a href=#82 id=82 data-nosnippet>82</a>}
+<a href=#83 id=83 data-nosnippet>83</a>
+<a href=#84 id=84 data-nosnippet>84</a><span class="doccomment">/// Recv-completion state, mirroring the byte-counter ctx of the C transport it
+<a href=#85 id=85 data-nosnippet>85</a>/// replaces. The relay stores each landed chunk as an `(offset, Bytes)` fragment
+<a href=#86 id=86 data-nosnippet>86</a>/// (a refcount bump + a push -- NO memcpy on the forwarding hot path); the block
+<a href=#87 id=87 data-nosnippet>87</a>/// is assembled from the fragments once, in `wait_into`, off that path. A running
+<a href=#88 id=88 data-nosnippet>88</a>/// `received` counter lets `wait` know when the whole block has landed. Delivery
+<a href=#89 id=89 data-nosnippet>89</a>/// is synchronous (one block in flight per mount), so the fragments are drained
+<a href=#90 id=90 data-nosnippet>90</a>/// and reused across blocks.
+<a href=#91 id=91 data-nosnippet>91</a></span><span class="kw">struct </span>Ctx {
+<a href=#92 id=92 data-nosnippet>92</a>    inner: Mutex&lt;CtxInner&gt;,
+<a href=#93 id=93 data-nosnippet>93</a>    cond: Condvar,
+<a href=#94 id=94 data-nosnippet>94</a>}
+<a href=#95 id=95 data-nosnippet>95</a>
+<a href=#96 id=96 data-nosnippet>96</a><span class="kw">struct </span>CtxInner {
+<a href=#97 id=97 data-nosnippet>97</a>    fragments: Vec&lt;(usize, Bytes)&gt;,
+<a href=#98 id=98 data-nosnippet>98</a>    <span class="doccomment">/// Offsets already delivered for the current block, so a duplicate chunk (a
+<a href=#99 id=99 data-nosnippet>99</a>    /// reconnect re-send on the unordered multi-stream path) is dropped instead of
+<a href=#100 id=100 data-nosnippet>100</a>    /// double-counting `received` and completing `wait` on a hole. Cleared when a
+<a href=#101 id=101 data-nosnippet>101</a>    /// block is drained or abandoned.
+<a href=#102 id=102 data-nosnippet>102</a>    </span>seen: HashSet&lt;usize&gt;,
+<a href=#103 id=103 data-nosnippet>103</a>    received: u64,
+<a href=#104 id=104 data-nosnippet>104</a>    closed: bool,
+<a href=#105 id=105 data-nosnippet>105</a>}
+<a href=#106 id=106 data-nosnippet>106</a>
+<a href=#107 id=107 data-nosnippet>107</a><span class="kw">impl </span>Ctx {
+<a href=#108 id=108 data-nosnippet>108</a>    <span class="kw">fn </span>new(_block_size: usize) -&gt; <span class="self">Self </span>{
+<a href=#109 id=109 data-nosnippet>109</a>        <span class="self">Self </span>{
+<a href=#110 id=110 data-nosnippet>110</a>            inner: Mutex::new(CtxInner {
+<a href=#111 id=111 data-nosnippet>111</a>                fragments: Vec::new(),
+<a href=#112 id=112 data-nosnippet>112</a>                seen: HashSet::new(),
+<a href=#113 id=113 data-nosnippet>113</a>                received: <span class="number">0</span>,
+<a href=#114 id=114 data-nosnippet>114</a>                closed: <span class="bool-val">false</span>,
+<a href=#115 id=115 data-nosnippet>115</a>            }),
+<a href=#116 id=116 data-nosnippet>116</a>            cond: Condvar::new(),
+<a href=#117 id=117 data-nosnippet>117</a>        }
+<a href=#118 id=118 data-nosnippet>118</a>    }
+<a href=#119 id=119 data-nosnippet>119</a>
+<a href=#120 id=120 data-nosnippet>120</a>    <span class="doccomment">/// Stash a landed chunk as an `(offset, Bytes)` fragment (zero-copy: a Bytes
+<a href=#121 id=121 data-nosnippet>121</a>    /// refcount bump + a Vec push, no memcpy) and bump the received counter,
+<a href=#122 id=122 data-nosnippet>122</a>    /// waking any parked `wait_into`. The actual assembly happens in `wait_into`,
+<a href=#123 id=123 data-nosnippet>123</a>    /// so the relay can forward the next chunk immediately.
+<a href=#124 id=124 data-nosnippet>124</a>    </span><span class="kw">fn </span>deliver(<span class="kw-2">&amp;</span><span class="self">self</span>, chunk: <span class="kw-2">&amp;</span>Chunk) {
+<a href=#125 id=125 data-nosnippet>125</a>        <span class="kw">let </span>bytes = chunk.data.to_bytes();
+<a href=#126 id=126 data-nosnippet>126</a>        <span class="kw">let </span>off = chunk.offset <span class="kw">as </span>usize;
+<a href=#127 id=127 data-nosnippet>127</a>        <span class="kw">let </span>len = bytes.len();
+<a href=#128 id=128 data-nosnippet>128</a>        <span class="kw">let </span><span class="kw-2">mut </span>inner = <span class="self">self</span>.inner.lock().expect(<span class="string">"ctx mutex poisoned"</span>);
+<a href=#129 id=129 data-nosnippet>129</a>        <span class="kw">if </span>!inner.seen.insert(off) {
+<a href=#130 id=130 data-nosnippet>130</a>            <span class="comment">// Duplicate offset (a reconnect re-sent a chunk on the unordered
+<a href=#131 id=131 data-nosnippet>131</a>            // multi-stream path). Counting it again would push `received` past the
+<a href=#132 id=132 data-nosnippet>132</a>            // block size while a real gap stays unfilled, so `wait` would complete
+<a href=#133 id=133 data-nosnippet>133</a>            // on a hole -- drop it; the first copy already landed.
+<a href=#134 id=134 data-nosnippet>134</a>            </span><span class="macro">tracing::warn!</span>(
+<a href=#135 id=135 data-nosnippet>135</a>                offset = off,
+<a href=#136 id=136 data-nosnippet>136</a>                <span class="string">"chain_broadcast: dropping duplicate chunk at already-received offset"
+<a href=#137 id=137 data-nosnippet>137</a>            </span>);
+<a href=#138 id=138 data-nosnippet>138</a>            <span class="kw">return</span>;
+<a href=#139 id=139 data-nosnippet>139</a>        }
+<a href=#140 id=140 data-nosnippet>140</a>        inner.fragments.push((off, bytes));
+<a href=#141 id=141 data-nosnippet>141</a>        inner.received += len <span class="kw">as </span>u64;
+<a href=#142 id=142 data-nosnippet>142</a>        drop(inner);
+<a href=#143 id=143 data-nosnippet>143</a>        <span class="self">self</span>.cond.notify_all();
+<a href=#144 id=144 data-nosnippet>144</a>    }
+<a href=#145 id=145 data-nosnippet>145</a>
+<a href=#146 id=146 data-nosnippet>146</a>    <span class="kw">fn </span>mark_closed(<span class="kw-2">&amp;</span><span class="self">self</span>) {
+<a href=#147 id=147 data-nosnippet>147</a>        <span class="self">self</span>.inner.lock().expect(<span class="string">"ctx mutex poisoned"</span>).closed = <span class="bool-val">true</span>;
+<a href=#148 id=148 data-nosnippet>148</a>        <span class="self">self</span>.cond.notify_all();
+<a href=#149 id=149 data-nosnippet>149</a>    }
+<a href=#150 id=150 data-nosnippet>150</a>
+<a href=#151 id=151 data-nosnippet>151</a>    <span class="doccomment">/// Block until `want` bytes of the current block have landed, then assemble
+<a href=#152 id=152 data-nosnippet>152</a>    /// them directly into `dst` (draining the counter by `want`) and return
+<a href=#153 id=153 data-nosnippet>153</a>    /// `true`. `false` means the predecessor closed before the block completed,
+<a href=#154 id=154 data-nosnippet>154</a>    /// or the timeout elapsed. `dst` must be at least `want` bytes and is
+<a href=#155 id=155 data-nosnippet>155</a>    /// expected pre-zeroed: a gap left by a malformed sender reads as zero
+<a href=#156 id=156 data-nosnippet>156</a>    /// without this re-zeroing, keeping the assemble to one copy per chunk
+<a href=#157 id=157 data-nosnippet>157</a>    /// straight into the caller's buffer, with no intermediate block.
+<a href=#158 id=158 data-nosnippet>158</a>    </span><span class="kw">fn </span>wait_into(<span class="kw-2">&amp;</span><span class="self">self</span>, dst: <span class="kw-2">&amp;mut </span>[u8], want: u64, timeout_ms: i64) -&gt; bool {
+<a href=#159 id=159 data-nosnippet>159</a>        <span class="kw">let </span><span class="kw-2">mut </span>inner = <span class="self">self</span>.inner.lock().expect(<span class="string">"ctx mutex poisoned"</span>);
+<a href=#160 id=160 data-nosnippet>160</a>        <span class="kw">let </span>deadline =
+<a href=#161 id=161 data-nosnippet>161</a>            (timeout_ms &gt;= <span class="number">0</span>).then(|| Instant::now() + Duration::from_millis(timeout_ms <span class="kw">as </span>u64));
+<a href=#162 id=162 data-nosnippet>162</a>        <span class="kw">while </span>inner.received &lt; want &amp;&amp; !inner.closed {
+<a href=#163 id=163 data-nosnippet>163</a>            <span class="kw">match </span>deadline {
+<a href=#164 id=164 data-nosnippet>164</a>                <span class="prelude-val">None </span>=&gt; inner = <span class="self">self</span>.cond.wait(inner).expect(<span class="string">"ctx cond poisoned"</span>),
+<a href=#165 id=165 data-nosnippet>165</a>                <span class="prelude-val">Some</span>(dl) =&gt; {
+<a href=#166 id=166 data-nosnippet>166</a>                    <span class="kw">let </span>now = Instant::now();
+<a href=#167 id=167 data-nosnippet>167</a>                    <span class="kw">if </span>now &gt;= dl {
+<a href=#168 id=168 data-nosnippet>168</a>                        <span class="kw">break</span>;
+<a href=#169 id=169 data-nosnippet>169</a>                    }
+<a href=#170 id=170 data-nosnippet>170</a>                    <span class="kw">let </span>(guard, <span class="kw">_</span>) = <span class="self">self
+<a href=#171 id=171 data-nosnippet>171</a>                        </span>.cond
+<a href=#172 id=172 data-nosnippet>172</a>                        .wait_timeout(inner, dl - now)
+<a href=#173 id=173 data-nosnippet>173</a>                        .expect(<span class="string">"ctx cond poisoned"</span>);
+<a href=#174 id=174 data-nosnippet>174</a>                    inner = guard;
+<a href=#175 id=175 data-nosnippet>175</a>                }
+<a href=#176 id=176 data-nosnippet>176</a>            }
+<a href=#177 id=177 data-nosnippet>177</a>        }
+<a href=#178 id=178 data-nosnippet>178</a>        <span class="kw">if </span>inner.received &lt; want {
+<a href=#179 id=179 data-nosnippet>179</a>            <span class="comment">// Timed out, or the predecessor closed mid-block. Drop the partial
+<a href=#180 id=180 data-nosnippet>180</a>            // fragments and reset the counter so the ctx (reused for the mount's life)
+<a href=#181 id=181 data-nosnippet>181</a>            // is clean for the next block; the design does not retransmit, so the
+<a href=#182 id=182 data-nosnippet>182</a>            // caller re-faults to trigger a fresh delivery.
+<a href=#183 id=183 data-nosnippet>183</a>            </span>inner.fragments.clear();
+<a href=#184 id=184 data-nosnippet>184</a>            inner.seen.clear();
+<a href=#185 id=185 data-nosnippet>185</a>            inner.received = <span class="number">0</span>;
+<a href=#186 id=186 data-nosnippet>186</a>            <span class="kw">return </span><span class="bool-val">false</span>;
+<a href=#187 id=187 data-nosnippet>187</a>        }
+<a href=#188 id=188 data-nosnippet>188</a>        <span class="comment">// Assemble the block from its fragments -- one copy per chunk, done ONCE
+<a href=#189 id=189 data-nosnippet>189</a>        // here (off the relay's forwarding path, not per hop) and straight into
+<a href=#190 id=190 data-nosnippet>190</a>        // `dst`. Drain so the ctx is clean for the next block. A fragment that
+<a href=#191 id=191 data-nosnippet>191</a>        // would overrun the buffer (a stray frame) is skipped rather than
+<a href=#192 id=192 data-nosnippet>192</a>        // panicking.
+<a href=#193 id=193 data-nosnippet>193</a>        </span><span class="macro">debug_assert!</span>(
+<a href=#194 id=194 data-nosnippet>194</a>            want <span class="kw">as </span>usize &lt;= dst.len(),
+<a href=#195 id=195 data-nosnippet>195</a>            <span class="string">"wait_into: dst ({} bytes) is smaller than want ({want})"</span>,
+<a href=#196 id=196 data-nosnippet>196</a>            dst.len()
+<a href=#197 id=197 data-nosnippet>197</a>        );
+<a href=#198 id=198 data-nosnippet>198</a>        <span class="kw">let </span>cap = (want <span class="kw">as </span>usize).min(dst.len());
+<a href=#199 id=199 data-nosnippet>199</a>        <span class="kw">let </span>frags = std::mem::take(<span class="kw-2">&amp;mut </span>inner.fragments);
+<a href=#200 id=200 data-nosnippet>200</a>        inner.seen.clear();
+<a href=#201 id=201 data-nosnippet>201</a>        <span class="kw">for </span>(off, b) <span class="kw">in </span>frags {
+<a href=#202 id=202 data-nosnippet>202</a>            <span class="kw">let </span>end = off.saturating_add(b.len());
+<a href=#203 id=203 data-nosnippet>203</a>            <span class="kw">if </span>end &lt;= cap {
+<a href=#204 id=204 data-nosnippet>204</a>                dst[off..end].copy_from_slice(<span class="kw-2">&amp;</span>b);
+<a href=#205 id=205 data-nosnippet>205</a>            } <span class="kw">else </span>{
+<a href=#206 id=206 data-nosnippet>206</a>                <span class="macro">tracing::warn!</span>(
+<a href=#207 id=207 data-nosnippet>207</a>                    offset = off,
+<a href=#208 id=208 data-nosnippet>208</a>                    len = b.len(),
+<a href=#209 id=209 data-nosnippet>209</a>                    cap = cap,
+<a href=#210 id=210 data-nosnippet>210</a>                    <span class="string">"chain_broadcast: dropping out-of-range fragment that would overrun the block"
+<a href=#211 id=211 data-nosnippet>211</a>                </span>);
+<a href=#212 id=212 data-nosnippet>212</a>            }
+<a href=#213 id=213 data-nosnippet>213</a>        }
+<a href=#214 id=214 data-nosnippet>214</a>        inner.received -= want;
+<a href=#215 id=215 data-nosnippet>215</a>        <span class="bool-val">true
+<a href=#216 id=216 data-nosnippet>216</a>    </span>}
+<a href=#217 id=217 data-nosnippet>217</a>}
+<a href=#218 id=218 data-nosnippet>218</a>
+<a href=#219 id=219 data-nosnippet>219</a><span class="attr">#[pyclass(
+<a href=#220 id=220 data-nosnippet>220</a>    name = <span class="string">"ChainCtx"</span>,
+<a href=#221 id=221 data-nosnippet>221</a>    module = <span class="string">"monarch._rust_bindings.monarch_extension.chain_broadcast"
+<a href=#222 id=222 data-nosnippet>222</a></span>)]
+<a href=#223 id=223 data-nosnippet>223</a></span><span class="kw">struct </span>PyCtx {
+<a href=#224 id=224 data-nosnippet>224</a>    ctx: Arc&lt;Ctx&gt;,
+<a href=#225 id=225 data-nosnippet>225</a>}
+<a href=#226 id=226 data-nosnippet>226</a>
+<a href=#227 id=227 data-nosnippet>227</a><span class="doccomment">/// Where a node's chunks arrive from.
+<a href=#228 id=228 data-nosnippet>228</a>///
+<a href=#229 id=229 data-nosnippet>229</a>/// Interior nodes are dialed by their predecessor -- one multi-stream `channel::serve`
+<a href=#230 id=230 data-nosnippet>230</a>/// listener, the fast in-cluster path. The head cannot be: its predecessor is the client,
+<a href=#231 id=231 data-nosnippet>231</a>/// which may reach the mesh only through a scheduler gateway, and a raw `channel::dial` is
+<a href=#232 id=232 data-nosnippet>232</a>/// not gateway-routed. A mailbox port is.
+<a href=#233 id=233 data-nosnippet>233</a>///
+<a href=#234 id=234 data-nosnippet>234</a>/// Both yield the same `Chunk`, so [`forward`] and everything downstream of it -- the
+<a href=#235 id=235 data-nosnippet>235</a>/// relay, the ctx, block assembly -- are identical either way.
+<a href=#236 id=236 data-nosnippet>236</a></span><span class="kw">enum </span>ChunkSource {
+<a href=#237 id=237 data-nosnippet>237</a>    Channel(ChannelRx&lt;Chunk&gt;),
+<a href=#238 id=238 data-nosnippet>238</a>    Port(PortReceiver&lt;Chunk&gt;),
+<a href=#239 id=239 data-nosnippet>239</a>}
+<a href=#240 id=240 data-nosnippet>240</a>
+<a href=#241 id=241 data-nosnippet>241</a><span class="kw">impl </span>ChunkSource {
+<a href=#242 id=242 data-nosnippet>242</a>    <span class="doccomment">/// Next chunk, or `None` at end-of-stream.
+<a href=#243 id=243 data-nosnippet>243</a>    ///
+<a href=#244 id=244 data-nosnippet>244</a>    /// The variants differ in a way that matters for the head. A `ChannelRx` ends as soon
+<a href=#245 id=245 data-nosnippet>245</a>    /// as the predecessor's connection drops, so the relay exits and `mark_closed()` wakes
+<a href=#246 id=246 data-nosnippet>246</a>    /// a parked `ctx_wait_into`. A bound `PortReceiver` ends only when every sender is
+<a href=#247 id=247 data-nosnippet>247</a>    /// gone, and the binding keeps one alive for the actor's lifetime -- so a client that
+<a href=#248 id=248 data-nosnippet>248</a>    /// disconnects, or simply stops sending, produces no end-of-stream at all.
+<a href=#249 id=249 data-nosnippet>249</a>    ///
+<a href=#250 id=250 data-nosnippet>250</a>    /// Accepted consequence: the head's relay runs until proc exit and holds its successor
+<a href=#251 id=251 data-nosnippet>251</a>    /// session open, and a head-side `ctx_wait_into` falls back to its timeout instead of
+<a href=#252 id=252 data-nosnippet>252</a>    /// being woken by predecessor loss. A port has no connection to lose, so "the
+<a href=#253 id=253 data-nosnippet>253</a>    /// predecessor is gone" is not observable. Interior nodes keep the prompt behaviour.
+<a href=#254 id=254 data-nosnippet>254</a>    </span><span class="kw">async fn </span>recv(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;Chunk&gt; {
+<a href=#255 id=255 data-nosnippet>255</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#256 id=256 data-nosnippet>256</a>            ChunkSource::Channel(rx) =&gt; rx.recv().<span class="kw">await</span>.ok(),
+<a href=#257 id=257 data-nosnippet>257</a>            ChunkSource::Port(rx) =&gt; rx.recv().<span class="kw">await</span>.ok(),
+<a href=#258 id=258 data-nosnippet>258</a>        }
+<a href=#259 id=259 data-nosnippet>259</a>    }
+<a href=#260 id=260 data-nosnippet>260</a>}
+<a href=#261 id=261 data-nosnippet>261</a>
+<a href=#262 id=262 data-nosnippet>262</a><span class="doccomment">/// A node's bound receive endpoint -- a dialable listener, or a mailbox port for the
+<a href=#263 id=263 data-nosnippet>263</a>/// head (see [`serve_port`]). Holds the receive end until [`forward`] consumes it to
+<a href=#264 id=264 data-nosnippet>264</a>/// run the relay.
+<a href=#265 id=265 data-nosnippet>265</a></span><span class="attr">#[pyclass(
+<a href=#266 id=266 data-nosnippet>266</a>    name = <span class="string">"ChainServer"</span>,
+<a href=#267 id=267 data-nosnippet>267</a>    module = <span class="string">"monarch._rust_bindings.monarch_extension.chain_broadcast"
+<a href=#268 id=268 data-nosnippet>268</a></span>)]
+<a href=#269 id=269 data-nosnippet>269</a></span><span class="kw">struct </span>PyChainServer {
+<a href=#270 id=270 data-nosnippet>270</a>    <span class="doccomment">/// Where the predecessor sends. A channel address for a listener-backed server, a
+<a href=#271 id=271 data-nosnippet>271</a>    /// port address for a port-backed one -- both rendered as strings, so a caller
+<a href=#272 id=272 data-nosnippet>272</a>    /// distributes this without caring which kind it got, exactly as the module already
+<a href=#273 id=273 data-nosnippet>273</a>    /// exchanges channel addresses.
+<a href=#274 id=274 data-nosnippet>274</a>    </span><span class="attr">#[pyo3(get)]
+<a href=#275 id=275 data-nosnippet>275</a>    </span>addr: String,
+<a href=#276 id=276 data-nosnippet>276</a>    rx: <span class="prelude-ty">Option</span>&lt;ChunkSource&gt;,
+<a href=#277 id=277 data-nosnippet>277</a>}
+<a href=#278 id=278 data-nosnippet>278</a>
+<a href=#279 id=279 data-nosnippet>279</a><span class="doccomment">/// A persistent connection to a successor (or the chain head), reused for every
+<a href=#280 id=280 data-nosnippet>280</a>/// block.
+<a href=#281 id=281 data-nosnippet>281</a></span><span class="attr">#[pyclass(
+<a href=#282 id=282 data-nosnippet>282</a>    name = <span class="string">"ChainSession"</span>,
+<a href=#283 id=283 data-nosnippet>283</a>    module = <span class="string">"monarch._rust_bindings.monarch_extension.chain_broadcast"
+<a href=#284 id=284 data-nosnippet>284</a></span>)]
+<a href=#285 id=285 data-nosnippet>285</a></span><span class="kw">struct </span>PyChainSession {
+<a href=#286 id=286 data-nosnippet>286</a>    tx: Arc&lt;ChannelTx&lt;Chunk&gt;&gt;,
+<a href=#287 id=287 data-nosnippet>287</a>}
+<a href=#288 id=288 data-nosnippet>288</a>
+<a href=#289 id=289 data-nosnippet>289</a><span class="kw">fn </span>parse_addr(addr: <span class="kw-2">&amp;</span>str) -&gt; PyResult&lt;ChannelAddr&gt; {
+<a href=#290 id=290 data-nosnippet>290</a>    addr.parse()
+<a href=#291 id=291 data-nosnippet>291</a>        .map_err(|e| PyRuntimeError::new_err(<span class="macro">format!</span>(<span class="string">"bad channel addr {addr}: {e}"</span>)))
+<a href=#292 id=292 data-nosnippet>292</a>}
+<a href=#293 id=293 data-nosnippet>293</a>
+<a href=#294 id=294 data-nosnippet>294</a><span class="doccomment">/// Create a recv-completion ctx sized to a single block.
+<a href=#295 id=295 data-nosnippet>295</a></span><span class="attr">#[pyfunction]
+<a href=#296 id=296 data-nosnippet>296</a></span><span class="kw">fn </span>new_ctx(block_size: usize) -&gt; PyCtx {
+<a href=#297 id=297 data-nosnippet>297</a>    PyCtx {
+<a href=#298 id=298 data-nosnippet>298</a>        ctx: Arc::new(Ctx::new(block_size)),
+<a href=#299 id=299 data-nosnippet>299</a>    }
+<a href=#300 id=300 data-nosnippet>300</a>}
+<a href=#301 id=301 data-nosnippet>301</a>
+<a href=#302 id=302 data-nosnippet>302</a><span class="doccomment">/// Bind a listener for the predecessor to dial. Returns the concrete bound
+<a href=#303 id=303 data-nosnippet>303</a>/// address (with its ephemeral port) as a string to distribute, plus the server
+<a href=#304 id=304 data-nosnippet>304</a>/// handle that [`forward`] consumes.
+<a href=#305 id=305 data-nosnippet>305</a>///
+<a href=#306 id=306 data-nosnippet>306</a>/// `bind_addr` chooses the transport. `None` defers to monarch's process-wide
+<a href=#307 id=307 data-nosnippet>307</a>/// default transport -- the same `default_transport` /
+<a href=#308 id=308 data-nosnippet>308</a>/// `HYPERACTOR_MESH_DEFAULT_TRANSPORT` knob every other serve site uses -- so the
+<a href=#309 id=309 data-nosnippet>309</a>/// chain listener binds whatever the rest of the worker's channels bind (metatls
+<a href=#310 id=310 data-nosnippet>310</a>/// in cluster: mutual-TLS identity, no cert paths to distribute). A caller without
+<a href=#311 id=311 data-nosnippet>311</a>/// Meta TLS infra (OSS, tests) flips that knob to e.g. tcp, or passes an explicit
+<a href=#312 id=312 data-nosnippet>312</a>/// address string here, e.g. `"tcp![::]:0"`; `connect` and `forward` dial whatever
+<a href=#313 id=313 data-nosnippet>313</a>/// transport the resulting address encodes, so no other knob is needed.
+<a href=#314 id=314 data-nosnippet>314</a></span><span class="attr">#[pyfunction]
+<a href=#315 id=315 data-nosnippet>315</a>#[pyo3(signature = (bind_addr=<span class="prelude-val">None</span>))]
+<a href=#316 id=316 data-nosnippet>316</a></span><span class="kw">fn </span>serve(bind_addr: <span class="prelude-ty">Option</span>&lt;String&gt;) -&gt; PyResult&lt;PyChainServer&gt; {
+<a href=#317 id=317 data-nosnippet>317</a>    <span class="kw">let </span>bind = <span class="kw">match </span>bind_addr {
+<a href=#318 id=318 data-nosnippet>318</a>        <span class="prelude-val">Some</span>(a) =&gt; parse_addr(<span class="kw-2">&amp;</span>a)<span class="question-mark">?</span>,
+<a href=#319 id=319 data-nosnippet>319</a>        <span class="prelude-val">None </span>=&gt; hyperactor_mesh::transport::default_bind_spec().binding_addr(),
+<a href=#320 id=320 data-nosnippet>320</a>    };
+<a href=#321 id=321 data-nosnippet>321</a>    <span class="comment">// channel::serve spawns its listener task, so it must run inside the shared
+<a href=#322 id=322 data-nosnippet>322</a>    // tokio runtime -- and on the SAME runtime as the relay task in `forward`, so
+<a href=#323 id=323 data-nosnippet>323</a>    // the listener and its consumer are never split across runtimes.
+<a href=#324 id=324 data-nosnippet>324</a>    </span><span class="kw">let </span>_guard = monarch_hyperactor::runtime::get_tokio_runtime().enter();
+<a href=#325 id=325 data-nosnippet>325</a>    <span class="kw">let </span>(addr, rx) = channel::serve::&lt;Chunk&gt;(bind)
+<a href=#326 id=326 data-nosnippet>326</a>        .map_err(|e| PyRuntimeError::new_err(<span class="macro">format!</span>(<span class="string">"serve failed: {e}"</span>)))<span class="question-mark">?</span>;
+<a href=#327 id=327 data-nosnippet>327</a>    <span class="prelude-val">Ok</span>(PyChainServer {
+<a href=#328 id=328 data-nosnippet>328</a>        addr: addr.to_string(),
+<a href=#329 id=329 data-nosnippet>329</a>        rx: <span class="prelude-val">Some</span>(ChunkSource::Channel(rx)),
+<a href=#330 id=330 data-nosnippet>330</a>    })
+<a href=#331 id=331 data-nosnippet>331</a>}
+<a href=#332 id=332 data-nosnippet>332</a>
+<a href=#333 id=333 data-nosnippet>333</a><span class="doccomment">/// Dial a successor (or the chain head). The connection is persistent and reused
+<a href=#334 id=334 data-nosnippet>334</a>/// for every block; dialing is lazy, so the peer need not be serving yet.
+<a href=#335 id=335 data-nosnippet>335</a>/// `num_streams` is the number of parallel streams to open (defaults to
+<a href=#336 id=336 data-nosnippet>336</a>/// [`NUM_CBC_STREAMS`]); the caller picks it at runtime to tune the pipe.
+<a href=#337 id=337 data-nosnippet>337</a></span><span class="attr">#[pyfunction]
+<a href=#338 id=338 data-nosnippet>338</a>#[pyo3(signature = (addr, num_streams = NUM_CBC_STREAMS))]
+<a href=#339 id=339 data-nosnippet>339</a></span><span class="kw">fn </span>connect(addr: <span class="kw-2">&amp;</span>str, num_streams: usize) -&gt; PyResult&lt;PyChainSession&gt; {
+<a href=#340 id=340 data-nosnippet>340</a>    <span class="comment">// unordered::dial opens `num_streams` parallel streams to fill the NIC; it
+<a href=#341 id=341 data-nosnippet>341</a>    // spawns sender tasks, so run it on the shared runtime.
+<a href=#342 id=342 data-nosnippet>342</a>    </span><span class="kw">let </span>_guard = monarch_hyperactor::runtime::get_tokio_runtime().enter();
+<a href=#343 id=343 data-nosnippet>343</a>    <span class="kw">let </span>tx = channel::unordered::dial::&lt;Chunk&gt;(parse_addr(addr)<span class="question-mark">?</span>, num_streams.max(<span class="number">1</span>))
+<a href=#344 id=344 data-nosnippet>344</a>        .map_err(|e| PyRuntimeError::new_err(<span class="macro">format!</span>(<span class="string">"dial {addr} failed: {e}"</span>)))<span class="question-mark">?</span>;
+<a href=#345 id=345 data-nosnippet>345</a>    <span class="prelude-val">Ok</span>(PyChainSession { tx: Arc::new(tx) })
+<a href=#346 id=346 data-nosnippet>346</a>}
+<a href=#347 id=347 data-nosnippet>347</a>
+<a href=#348 id=348 data-nosnippet>348</a><span class="doccomment">/// How many bytes of a `len`-byte block to send: the leading `size` if given,
+<a href=#349 id=349 data-nosnippet>349</a>/// otherwise all of it.
+<a href=#350 id=350 data-nosnippet>350</a></span><span class="kw">fn </span>payload_len(len: usize, size: <span class="prelude-ty">Option</span>&lt;usize&gt;) -&gt; PyResult&lt;usize&gt; {
+<a href=#351 id=351 data-nosnippet>351</a>    <span class="kw">match </span>size {
+<a href=#352 id=352 data-nosnippet>352</a>        <span class="prelude-val">None </span>=&gt; <span class="prelude-val">Ok</span>(len),
+<a href=#353 id=353 data-nosnippet>353</a>        <span class="prelude-val">Some</span>(n) <span class="kw">if </span>n &lt;= len =&gt; <span class="prelude-val">Ok</span>(n),
+<a href=#354 id=354 data-nosnippet>354</a>        <span class="prelude-val">Some</span>(n) =&gt; <span class="prelude-val">Err</span>(PyValueError::new_err(<span class="macro">format!</span>(
+<a href=#355 id=355 data-nosnippet>355</a>            <span class="string">"size {n} exceeds the {len}-byte block"
+<a href=#356 id=356 data-nosnippet>356</a>        </span>))),
+<a href=#357 id=357 data-nosnippet>357</a>    }
+<a href=#358 id=358 data-nosnippet>358</a>}
+<a href=#359 id=359 data-nosnippet>359</a>
+<a href=#360 id=360 data-nosnippet>360</a><span class="doccomment">/// Stripe `buf` into `chunk_size`-byte frames and post them to the peer. The chain
+<a href=#361 id=361 data-nosnippet>361</a>/// source calls this to prime the pipeline; interior nodes forward via the relay
+<a href=#362 id=362 data-nosnippet>362</a>/// in [`forward`]. If `size` is given, only the block's leading `size` bytes are sent.
+<a href=#363 id=363 data-nosnippet>363</a>/// Returns the number of bytes sent.
+<a href=#364 id=364 data-nosnippet>364</a></span><span class="attr">#[pyfunction]
+<a href=#365 id=365 data-nosnippet>365</a>#[pyo3(signature = (session, data, chunk_size, tag, size = <span class="prelude-val">None</span>))]
+<a href=#366 id=366 data-nosnippet>366</a></span><span class="kw">fn </span>send_block(
+<a href=#367 id=367 data-nosnippet>367</a>    py: Python&lt;<span class="lifetime">'_</span>&gt;,
+<a href=#368 id=368 data-nosnippet>368</a>    session: <span class="kw-2">&amp;</span>PyChainSession,
+<a href=#369 id=369 data-nosnippet>369</a>    data: <span class="kw-2">&amp;</span>Bound&lt;<span class="lifetime">'_</span>, PyBytes&gt;,
+<a href=#370 id=370 data-nosnippet>370</a>    chunk_size: usize,
+<a href=#371 id=371 data-nosnippet>371</a>    tag: u64,
+<a href=#372 id=372 data-nosnippet>372</a>    size: <span class="prelude-ty">Option</span>&lt;usize&gt;,
+<a href=#373 id=373 data-nosnippet>373</a>) -&gt; PyResult&lt;usize&gt; {
+<a href=#374 id=374 data-nosnippet>374</a>    <span class="comment">// Wrap the Python bytes as a shared Bytes with no payload copy: the wrapper
+<a href=#375 id=375 data-nosnippet>375</a>    // pins the PyBytes alive for the lifetime of every chunk sliced from it, so
+<a href=#376 id=376 data-nosnippet>376</a>    // the source egresses the block without ever copying it. This reuses the
+<a href=#377 id=377 data-nosnippet>377</a>    // buffers module's zero-copy PyBytes view (the same conversion
+<a href=#378 id=378 data-nosnippet>378</a>    // `Buffer::take_part` uses); each chunk is then a zero-copy slice of it
+<a href=#379 id=379 data-nosnippet>379</a>    // wrapped as a Part.
+<a href=#380 id=380 data-nosnippet>380</a>    </span><span class="kw">let </span>owned = monarch_hyperactor::buffers::py_bytes_to_bytes(data.clone().unbind());
+<a href=#381 id=381 data-nosnippet>381</a>    <span class="kw">let </span>total = payload_len(owned.len(), size)<span class="question-mark">?</span>;
+<a href=#382 id=382 data-nosnippet>382</a>    <span class="kw">let </span>chunk_size = chunk_size.max(<span class="number">1</span>);
+<a href=#383 id=383 data-nosnippet>383</a>    <span class="kw">let </span>tx = session.tx.clone();
+<a href=#384 id=384 data-nosnippet>384</a>    py.detach(|| {
+<a href=#385 id=385 data-nosnippet>385</a>        <span class="kw">let </span><span class="kw-2">mut </span>offset = <span class="number">0usize</span>;
+<a href=#386 id=386 data-nosnippet>386</a>        <span class="kw">while </span>offset &lt; total {
+<a href=#387 id=387 data-nosnippet>387</a>            <span class="kw">let </span>end = (offset + chunk_size).min(total);
+<a href=#388 id=388 data-nosnippet>388</a>            tx.post(Chunk {
+<a href=#389 id=389 data-nosnippet>389</a>                tag,
+<a href=#390 id=390 data-nosnippet>390</a>                offset: offset <span class="kw">as </span>u64,
+<a href=#391 id=391 data-nosnippet>391</a>                total: total <span class="kw">as </span>u64,
+<a href=#392 id=392 data-nosnippet>392</a>                data: Part::from(owned.slice(offset..end)),
+<a href=#393 id=393 data-nosnippet>393</a>            });
+<a href=#394 id=394 data-nosnippet>394</a>            offset = end;
+<a href=#395 id=395 data-nosnippet>395</a>        }
+<a href=#396 id=396 data-nosnippet>396</a>    });
+<a href=#397 id=397 data-nosnippet>397</a>    <span class="prelude-val">Ok</span>(total)
+<a href=#398 id=398 data-nosnippet>398</a>}
+<a href=#399 id=399 data-nosnippet>399</a>
+<a href=#400 id=400 data-nosnippet>400</a><span class="doccomment">/// Run the chain relay for this node: consume chunks from the bound listener
+<a href=#401 id=401 data-nosnippet>401</a>/// (`server`), forward each to the successor the instant it lands (if any), and
+<a href=#402 id=402 data-nosnippet>402</a>/// deliver it into the local recv ctx. Spawns on the shared tokio runtime and
+<a href=#403 id=403 data-nosnippet>403</a>/// returns immediately; the relay runs until the predecessor closes the
+<a href=#404 id=404 data-nosnippet>404</a>/// connection. A node with no successor is the chain tail (recv + deliver only).
+<a href=#405 id=405 data-nosnippet>405</a>/// `num_streams` (defaults to [`NUM_CBC_STREAMS`]) is how many parallel streams
+<a href=#406 id=406 data-nosnippet>406</a>/// this node opens to its successor, tuned at runtime to match the pipe.
+<a href=#407 id=407 data-nosnippet>407</a></span><span class="attr">#[pyfunction]
+<a href=#408 id=408 data-nosnippet>408</a>#[pyo3(signature = (server, successor, ctx, num_streams = NUM_CBC_STREAMS))]
+<a href=#409 id=409 data-nosnippet>409</a></span><span class="kw">fn </span>forward(
+<a href=#410 id=410 data-nosnippet>410</a>    server: <span class="kw-2">&amp;mut </span>PyChainServer,
+<a href=#411 id=411 data-nosnippet>411</a>    successor: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#412 id=412 data-nosnippet>412</a>    ctx: <span class="kw-2">&amp;</span>PyCtx,
+<a href=#413 id=413 data-nosnippet>413</a>    num_streams: usize,
+<a href=#414 id=414 data-nosnippet>414</a>) -&gt; PyResult&lt;()&gt; {
+<a href=#415 id=415 data-nosnippet>415</a>    <span class="kw">let </span><span class="kw-2">mut </span>rx = server
+<a href=#416 id=416 data-nosnippet>416</a>        .rx
+<a href=#417 id=417 data-nosnippet>417</a>        .take()
+<a href=#418 id=418 data-nosnippet>418</a>        .ok_or_else(|| PyRuntimeError::new_err(<span class="string">"forward: server already consumed"</span>))<span class="question-mark">?</span>;
+<a href=#419 id=419 data-nosnippet>419</a>    <span class="kw">let </span>ctx = ctx.ctx.clone();
+<a href=#420 id=420 data-nosnippet>420</a>    <span class="kw">let </span>runtime = monarch_hyperactor::runtime::get_tokio_runtime();
+<a href=#421 id=421 data-nosnippet>421</a>    <span class="comment">// Dial the successor up front (if any) so a malformed address or a failed dial
+<a href=#422 id=422 data-nosnippet>422</a>    // surfaces here as an error, instead of silently collapsing this node into the
+<a href=#423 id=423 data-nosnippet>423</a>    // chain tail and stranding every node downstream. `None` = this node is the tail
+<a href=#424 id=424 data-nosnippet>424</a>    // (recv + deliver only). Dialing is lazy, so the successor need not be serving yet.
+<a href=#425 id=425 data-nosnippet>425</a>    </span><span class="kw">let </span>succ_tx: <span class="prelude-ty">Option</span>&lt;ChannelTx&lt;Chunk&gt;&gt; = <span class="kw">match </span>successor {
+<a href=#426 id=426 data-nosnippet>426</a>        <span class="prelude-val">None </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#427 id=427 data-nosnippet>427</a>        <span class="prelude-val">Some</span>(addr) =&gt; {
+<a href=#428 id=428 data-nosnippet>428</a>            <span class="kw">let </span>parsed = parse_addr(<span class="kw-2">&amp;</span>addr)<span class="question-mark">?</span>;
+<a href=#429 id=429 data-nosnippet>429</a>            <span class="kw">let </span>_guard = runtime.enter();
+<a href=#430 id=430 data-nosnippet>430</a>            <span class="kw">let </span>tx =
+<a href=#431 id=431 data-nosnippet>431</a>                channel::unordered::dial::&lt;Chunk&gt;(parsed, num_streams.max(<span class="number">1</span>)).map_err(|e| {
+<a href=#432 id=432 data-nosnippet>432</a>                    PyRuntimeError::new_err(<span class="macro">format!</span>(<span class="string">"forward: dial successor {addr} failed: {e}"</span>))
+<a href=#433 id=433 data-nosnippet>433</a>                })<span class="question-mark">?</span>;
+<a href=#434 id=434 data-nosnippet>434</a>            <span class="prelude-val">Some</span>(tx)
+<a href=#435 id=435 data-nosnippet>435</a>        }
+<a href=#436 id=436 data-nosnippet>436</a>    };
+<a href=#437 id=437 data-nosnippet>437</a>    runtime.spawn(<span class="kw">async move </span>{
+<a href=#438 id=438 data-nosnippet>438</a>        <span class="kw">while let </span><span class="prelude-val">Some</span>(chunk) = rx.recv().<span class="kw">await </span>{
+<a href=#439 id=439 data-nosnippet>439</a>            <span class="comment">// Forward first so the successor starts receiving while we write
+<a href=#440 id=440 data-nosnippet>440</a>            // locally -- the temporal pipeline that makes the chain fast.
+<a href=#441 id=441 data-nosnippet>441</a>            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(tx) = <span class="kw-2">&amp;</span>succ_tx {
+<a href=#442 id=442 data-nosnippet>442</a>                tx.post(chunk.clone());
+<a href=#443 id=443 data-nosnippet>443</a>            }
+<a href=#444 id=444 data-nosnippet>444</a>            ctx.deliver(<span class="kw-2">&amp;</span>chunk);
+<a href=#445 id=445 data-nosnippet>445</a>        }
+<a href=#446 id=446 data-nosnippet>446</a>        ctx.mark_closed();
+<a href=#447 id=447 data-nosnippet>447</a>    });
+<a href=#448 id=448 data-nosnippet>448</a>    <span class="prelude-val">Ok</span>(())
+<a href=#449 id=449 data-nosnippet>449</a>}
+<a href=#450 id=450 data-nosnippet>450</a>
+<a href=#451 id=451 data-nosnippet>451</a><span class="doccomment">/// Block until `want` bytes of the current block have landed locally, then
+<a href=#452 id=452 data-nosnippet>452</a>/// assemble them straight into the caller's buffer at `dst_addr` (`dst_len`
+<a href=#453 id=453 data-nosnippet>453</a>/// bytes) -- the mount's `block_ptr` staging buffer -- draining the counter by
+<a href=#454 id=454 data-nosnippet>454</a>/// `want`. Writing directly into that buffer avoids materialising an
+<a href=#455 id=455 data-nosnippet>455</a>/// intermediate `bytes` and the extra copy from it into the mount buffer that a
+<a href=#456 id=456 data-nosnippet>456</a>/// return-by-value would cost; `receive_block` then freezes the buffer into the
+<a href=#457 id=457 data-nosnippet>457</a>/// served block with no further copy.
+<a href=#458 id=458 data-nosnippet>458</a></span><span class="attr">#[pyfunction]
+<a href=#459 id=459 data-nosnippet>459</a></span><span class="kw">fn </span>ctx_wait_into(
+<a href=#460 id=460 data-nosnippet>460</a>    py: Python&lt;<span class="lifetime">'_</span>&gt;,
+<a href=#461 id=461 data-nosnippet>461</a>    ctx: <span class="kw-2">&amp;</span>PyCtx,
+<a href=#462 id=462 data-nosnippet>462</a>    dst_addr: usize,
+<a href=#463 id=463 data-nosnippet>463</a>    dst_len: usize,
+<a href=#464 id=464 data-nosnippet>464</a>    want: u64,
+<a href=#465 id=465 data-nosnippet>465</a>    timeout_ms: i64,
+<a href=#466 id=466 data-nosnippet>466</a>) -&gt; PyResult&lt;()&gt; {
+<a href=#467 id=467 data-nosnippet>467</a>    <span class="kw">let </span>c = ctx.ctx.clone();
+<a href=#468 id=468 data-nosnippet>468</a>    <span class="kw">let </span>ok = py.detach(|| {
+<a href=#469 id=469 data-nosnippet>469</a>        <span class="comment">// SAFETY: `dst_addr`/`dst_len` are the return of `block_ptr`, i.e. the
+<a href=#470 id=470 data-nosnippet>470</a>        // mount's staging `BytesMut` for this block -- a live, non-null,
+<a href=#471 id=471 data-nosnippet>471</a>        // `AVAILABILITY_BLOCK_SIZE`-byte allocation that is never grown (so the
+<a href=#472 id=472 data-nosnippet>472</a>        // pointer stays valid) and that nothing else reads or writes between
+<a href=#473 id=473 data-nosnippet>473</a>        // `block_ptr` and `receive_block`, because delivery is one block in
+<a href=#474 id=474 data-nosnippet>474</a>        // flight per mount (block_ptr -&gt; ctx_wait_into -&gt; receive_block runs
+<a href=#475 id=475 data-nosnippet>475</a>        // sequentially on one actor task). So this slice is the unique writer for
+<a href=#476 id=476 data-nosnippet>476</a>        // the buffer over its whole lifetime here, is valid for `dst_len` bytes,
+<a href=#477 id=477 data-nosnippet>477</a>        // and `u8` needs no alignment; `wait_into` never writes past `dst.len()`.
+<a href=#478 id=478 data-nosnippet>478</a>        </span><span class="kw">let </span>dst = <span class="kw">unsafe </span>{ std::slice::from_raw_parts_mut(dst_addr <span class="kw">as </span><span class="kw-2">*mut </span>u8, dst_len) };
+<a href=#479 id=479 data-nosnippet>479</a>        c.wait_into(dst, want, timeout_ms)
+<a href=#480 id=480 data-nosnippet>480</a>    });
+<a href=#481 id=481 data-nosnippet>481</a>    <span class="kw">if </span>ok {
+<a href=#482 id=482 data-nosnippet>482</a>        <span class="prelude-val">Ok</span>(())
+<a href=#483 id=483 data-nosnippet>483</a>    } <span class="kw">else </span>{
+<a href=#484 id=484 data-nosnippet>484</a>        <span class="prelude-val">Err</span>(PyRuntimeError::new_err(<span class="macro">format!</span>(
+<a href=#485 id=485 data-nosnippet>485</a>            <span class="string">"ctx_wait_into: did not receive {want} bytes (predecessor closed or timed out)"
+<a href=#486 id=486 data-nosnippet>486</a>        </span>)))
+<a href=#487 id=487 data-nosnippet>487</a>    }
+<a href=#488 id=488 data-nosnippet>488</a>}
+<a href=#489 id=489 data-nosnippet>489</a>
+<a href=#490 id=490 data-nosnippet>490</a><span class="doccomment">/// Wake any parked `wait_into` and mark the ctx closed (mount teardown).
+<a href=#491 id=491 data-nosnippet>491</a></span><span class="attr">#[pyfunction]
+<a href=#492 id=492 data-nosnippet>492</a></span><span class="kw">fn </span>ctx_close(ctx: <span class="kw-2">&amp;</span>PyCtx) {
+<a href=#493 id=493 data-nosnippet>493</a>    ctx.ctx.mark_closed();
+<a href=#494 id=494 data-nosnippet>494</a>}
+<a href=#495 id=495 data-nosnippet>495</a>
+<a href=#496 id=496 data-nosnippet>496</a><span class="macro">macro_rules!</span> add_fn {
+<a href=#497 id=497 data-nosnippet>497</a>    (<span class="macro-nonterminal">$module</span>:expr, <span class="macro-nonterminal">$f</span>:ident) =&gt; {{
+<a href=#498 id=498 data-nosnippet>498</a>        <span class="kw">let </span>f = <span class="macro">wrap_pyfunction!</span>(<span class="macro-nonterminal">$f</span>, <span class="macro-nonterminal">$module</span>)<span class="question-mark">?</span>;
+<a href=#499 id=499 data-nosnippet>499</a>        f.setattr(
+<a href=#500 id=500 data-nosnippet>500</a>            <span class="string">"__module__"</span>,
+<a href=#501 id=501 data-nosnippet>501</a>            <span class="string">"monarch._rust_bindings.monarch_extension.chain_broadcast"</span>,
+<a href=#502 id=502 data-nosnippet>502</a>        )<span class="question-mark">?</span>;
+<a href=#503 id=503 data-nosnippet>503</a>        <span class="macro-nonterminal">$module</span>.add_function(f)<span class="question-mark">?</span>;
+<a href=#504 id=504 data-nosnippet>504</a>    }};
+<a href=#505 id=505 data-nosnippet>505</a>}
+<a href=#506 id=506 data-nosnippet>506</a>
+<a href=#507 id=507 data-nosnippet>507</a><span class="doccomment">/// Bind the chain HEAD's receive endpoint as a mailbox port, for a predecessor that
+<a href=#508 id=508 data-nosnippet>508</a>/// cannot dial this worker directly.
+<a href=#509 id=509 data-nosnippet>509</a>///
+<a href=#510 id=510 data-nosnippet>510</a>/// A `channel::dial` is point-to-point, so a client reaching the mesh only through a
+<a href=#511 id=511 data-nosnippet>511</a>/// scheduler gateway can never reach a `serve`d listener. A mailbox post is handed to the
+<a href=#512 id=512 data-nosnippet>512</a>/// proc's forwarder, which is exactly the layer `channel::dial` bypasses.
+<a href=#513 id=513 data-nosnippet>513</a>///
+<a href=#514 id=514 data-nosnippet>514</a>/// Only the head needs this; interior hops stay on [`serve`]'s multi-stream listener,
+<a href=#515 id=515 data-nosnippet>515</a>/// which is faster and routable in cluster. The returned `port_id` is picklable, and
+<a href=#516 id=516 data-nosnippet>516</a>/// `Chunk` rides the mailbox unchanged -- multipart keeps the payload out of band, so
+<a href=#517 id=517 data-nosnippet>517</a>/// forwarding is still a refcount bump.
+<a href=#518 id=518 data-nosnippet>518</a></span><span class="attr">#[pyfunction]
+<a href=#519 id=519 data-nosnippet>519</a></span><span class="kw">fn </span>serve_port(instance: <span class="kw-2">&amp;</span>PyInstance) -&gt; PyResult&lt;PyChainServer&gt; {
+<a href=#520 id=520 data-nosnippet>520</a>    <span class="kw">let </span>(handle, rx) = instance.open_port::&lt;Chunk&gt;();
+<a href=#521 id=521 data-nosnippet>521</a>    <span class="kw">let </span>port_ref = handle.bind();
+<a href=#522 id=522 data-nosnippet>522</a>    <span class="prelude-val">Ok</span>(PyChainServer {
+<a href=#523 id=523 data-nosnippet>523</a>        addr: port_ref.port_addr().to_string(),
+<a href=#524 id=524 data-nosnippet>524</a>        rx: <span class="prelude-val">Some</span>(ChunkSource::Port(rx)),
+<a href=#525 id=525 data-nosnippet>525</a>    })
+<a href=#526 id=526 data-nosnippet>526</a>}
+<a href=#527 id=527 data-nosnippet>527</a>
+<a href=#528 id=528 data-nosnippet>528</a><span class="doccomment">/// Check that `addr` names a well-formed port, and raise if not.
+<a href=#529 id=529 data-nosnippet>529</a>///
+<a href=#530 id=530 data-nosnippet>530</a>/// `send_block_to_port` posts fire-and-forget, so a malformed head address would otherwise
+<a href=#531 id=531 data-nosnippet>531</a>/// go unnoticed until the receiver's completion timeout, one block later and far from the
+<a href=#532 id=532 data-nosnippet>532</a>/// cause. Callers validate once at wiring time instead -- restoring the failure point the
+<a href=#533 id=533 data-nosnippet>533</a>/// old `connect()` gave them.
+<a href=#534 id=534 data-nosnippet>534</a></span><span class="attr">#[pyfunction]
+<a href=#535 id=535 data-nosnippet>535</a></span><span class="kw">fn </span>validate_port_addr(addr: <span class="kw-2">&amp;</span>str) -&gt; PyResult&lt;()&gt; {
+<a href=#536 id=536 data-nosnippet>536</a>    <span class="kw">let _</span>: PortAddr = addr
+<a href=#537 id=537 data-nosnippet>537</a>        .parse()
+<a href=#538 id=538 data-nosnippet>538</a>        .map_err(|e| PyRuntimeError::new_err(<span class="macro">format!</span>(<span class="string">"bad port addr {addr}: {e}"</span>)))<span class="question-mark">?</span>;
+<a href=#539 id=539 data-nosnippet>539</a>    <span class="prelude-val">Ok</span>(())
+<a href=#540 id=540 data-nosnippet>540</a>}
+<a href=#541 id=541 data-nosnippet>541</a>
+<a href=#542 id=542 data-nosnippet>542</a><span class="doccomment">/// Stripe `buf` into `chunk_size`-byte frames and post them to the head's mailbox port.
+<a href=#543 id=543 data-nosnippet>543</a>/// The [`send_block`] counterpart for a source that cannot dial the head.
+<a href=#544 id=544 data-nosnippet>544</a>///
+<a href=#545 id=545 data-nosnippet>545</a>/// Same zero-copy discipline as [`send_block`]: the block is wrapped once as a shared
+<a href=#546 id=546 data-nosnippet>546</a>/// `Bytes` and each chunk is a slice of it, so the source never copies the payload.
+<a href=#547 id=547 data-nosnippet>547</a>/// `size` limits the send to the block's leading bytes, as in [`send_block`].
+<a href=#548 id=548 data-nosnippet>548</a></span><span class="attr">#[pyfunction]
+<a href=#549 id=549 data-nosnippet>549</a>#[pyo3(signature = (instance, port, data, chunk_size, tag, size = <span class="prelude-val">None</span>))]
+<a href=#550 id=550 data-nosnippet>550</a></span><span class="kw">fn </span>send_block_to_port(
+<a href=#551 id=551 data-nosnippet>551</a>    py: Python&lt;<span class="lifetime">'_</span>&gt;,
+<a href=#552 id=552 data-nosnippet>552</a>    instance: <span class="kw-2">&amp;</span>PyInstance,
+<a href=#553 id=553 data-nosnippet>553</a>    port: <span class="kw-2">&amp;</span>str,
+<a href=#554 id=554 data-nosnippet>554</a>    data: <span class="kw-2">&amp;</span>Bound&lt;<span class="lifetime">'_</span>, PyBytes&gt;,
+<a href=#555 id=555 data-nosnippet>555</a>    chunk_size: usize,
+<a href=#556 id=556 data-nosnippet>556</a>    tag: u64,
+<a href=#557 id=557 data-nosnippet>557</a>    size: <span class="prelude-ty">Option</span>&lt;usize&gt;,
+<a href=#558 id=558 data-nosnippet>558</a>) -&gt; PyResult&lt;usize&gt; {
+<a href=#559 id=559 data-nosnippet>559</a>    <span class="comment">// `attest` is unchecked: the receiving port must be one minted by `serve_port`, i.e.
+<a href=#560 id=560 data-nosnippet>560</a>    // typed `Chunk`. Pointing this at any other port is a decode error on delivery.
+<a href=#561 id=561 data-nosnippet>561</a>    //
+<a href=#562 id=562 data-nosnippet>562</a>    // Posting is fire-and-forget, like `send_block` -- `Endpoint::post` returns `()`, so a
+<a href=#563 id=563 data-nosnippet>563</a>    // bad address cannot be reported here and this always returns `total`. It is not
+<a href=#564 id=564 data-nosnippet>564</a>    // swallowed, though: `attest` leaves `return_undeliverable` set, so an unroutable
+<a href=#565 id=565 data-nosnippet>565</a>    // chunk comes back to this actor as a delivery failure. What the CALLER sees first is
+<a href=#566 id=566 data-nosnippet>566</a>    // still the downstream `ctx_wait_into` timeout, so check the sender's delivery-failure
+<a href=#567 id=567 data-nosnippet>567</a>    // log before suspecting the chain. There is likewise no flow control: a whole block's
+<a href=#568 id=568 data-nosnippet>568</a>    // chunks are queued into the forwarder as fast as they are sliced.
+<a href=#569 id=569 data-nosnippet>569</a>    </span><span class="kw">let </span>port_addr: PortAddr = port
+<a href=#570 id=570 data-nosnippet>570</a>        .parse()
+<a href=#571 id=571 data-nosnippet>571</a>        .map_err(|e| PyRuntimeError::new_err(<span class="macro">format!</span>(<span class="string">"bad port addr {port}: {e}"</span>)))<span class="question-mark">?</span>;
+<a href=#572 id=572 data-nosnippet>572</a>    <span class="kw">let </span>port_ref = PortRef::&lt;Chunk&gt;::attest(port_addr);
+<a href=#573 id=573 data-nosnippet>573</a>    <span class="kw">let </span>owned = monarch_hyperactor::buffers::py_bytes_to_bytes(data.clone().unbind());
+<a href=#574 id=574 data-nosnippet>574</a>    <span class="kw">let </span>total = payload_len(owned.len(), size)<span class="question-mark">?</span>;
+<a href=#575 id=575 data-nosnippet>575</a>    <span class="kw">let </span>chunk_size = chunk_size.max(<span class="number">1</span>);
+<a href=#576 id=576 data-nosnippet>576</a>    <span class="kw">let </span>instance = instance.clone();
+<a href=#577 id=577 data-nosnippet>577</a>    py.detach(|| {
+<a href=#578 id=578 data-nosnippet>578</a>        <span class="kw">let </span><span class="kw-2">mut </span>offset = <span class="number">0usize</span>;
+<a href=#579 id=579 data-nosnippet>579</a>        <span class="kw">while </span>offset &lt; total {
+<a href=#580 id=580 data-nosnippet>580</a>            <span class="kw">let </span>end = (offset + chunk_size).min(total);
+<a href=#581 id=581 data-nosnippet>581</a>            (<span class="kw-2">&amp;</span>port_ref).post(
+<a href=#582 id=582 data-nosnippet>582</a>                <span class="kw-2">&amp;*</span>instance,
+<a href=#583 id=583 data-nosnippet>583</a>                Chunk {
+<a href=#584 id=584 data-nosnippet>584</a>                    tag,
+<a href=#585 id=585 data-nosnippet>585</a>                    offset: offset <span class="kw">as </span>u64,
+<a href=#586 id=586 data-nosnippet>586</a>                    total: total <span class="kw">as </span>u64,
+<a href=#587 id=587 data-nosnippet>587</a>                    data: Part::from(owned.slice(offset..end)),
+<a href=#588 id=588 data-nosnippet>588</a>                },
+<a href=#589 id=589 data-nosnippet>589</a>            );
+<a href=#590 id=590 data-nosnippet>590</a>            offset = end;
+<a href=#591 id=591 data-nosnippet>591</a>        }
+<a href=#592 id=592 data-nosnippet>592</a>    });
+<a href=#593 id=593 data-nosnippet>593</a>    <span class="prelude-val">Ok</span>(total)
+<a href=#594 id=594 data-nosnippet>594</a>}
+<a href=#595 id=595 data-nosnippet>595</a>
+<a href=#596 id=596 data-nosnippet>596</a><span class="kw">pub fn </span>register_python_bindings(module: <span class="kw-2">&amp;</span>Bound&lt;<span class="lifetime">'_</span>, PyModule&gt;) -&gt; PyResult&lt;()&gt; {
+<a href=#597 id=597 data-nosnippet>597</a>    module.add_class::&lt;PyCtx&gt;()<span class="question-mark">?</span>;
+<a href=#598 id=598 data-nosnippet>598</a>    module.add_class::&lt;PyChainServer&gt;()<span class="question-mark">?</span>;
+<a href=#599 id=599 data-nosnippet>599</a>    module.add_class::&lt;PyChainSession&gt;()<span class="question-mark">?</span>;
+<a href=#600 id=600 data-nosnippet>600</a>    <span class="macro">add_fn!</span>(module, new_ctx);
+<a href=#601 id=601 data-nosnippet>601</a>    <span class="macro">add_fn!</span>(module, serve);
+<a href=#602 id=602 data-nosnippet>602</a>    <span class="macro">add_fn!</span>(module, serve_port);
+<a href=#603 id=603 data-nosnippet>603</a>    <span class="macro">add_fn!</span>(module, connect);
+<a href=#604 id=604 data-nosnippet>604</a>    <span class="macro">add_fn!</span>(module, send_block);
+<a href=#605 id=605 data-nosnippet>605</a>    <span class="macro">add_fn!</span>(module, send_block_to_port);
+<a href=#606 id=606 data-nosnippet>606</a>    <span class="macro">add_fn!</span>(module, validate_port_addr);
+<a href=#607 id=607 data-nosnippet>607</a>    <span class="macro">add_fn!</span>(module, forward);
+<a href=#608 id=608 data-nosnippet>608</a>    <span class="macro">add_fn!</span>(module, ctx_wait_into);
+<a href=#609 id=609 data-nosnippet>609</a>    <span class="macro">add_fn!</span>(module, ctx_close);
+<a href=#610 id=610 data-nosnippet>610</a>    <span class="prelude-val">Ok</span>(())
+<a href=#611 id=611 data-nosnippet>611</a>}
+<a href=#612 id=612 data-nosnippet>612</a>
+<a href=#613 id=613 data-nosnippet>613</a><span class="attr">#[cfg(test)]
+<a href=#614 id=614 data-nosnippet>614</a></span><span class="kw">mod </span>tests {
+<a href=#615 id=615 data-nosnippet>615</a>    <span class="kw">use </span>hyperactor::channel::ChannelTransport;
+<a href=#616 id=616 data-nosnippet>616</a>    <span class="kw">use </span>hyperactor::channel::TcpMode;
+<a href=#617 id=617 data-nosnippet>617</a>
+<a href=#618 id=618 data-nosnippet>618</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#619 id=619 data-nosnippet>619</a>
+<a href=#620 id=620 data-nosnippet>620</a>    <span class="attr">#[test]
+<a href=#621 id=621 data-nosnippet>621</a>    </span><span class="kw">fn </span>payload_len_sends_whole_block_or_leading_bytes() {
+<a href=#622 id=622 data-nosnippet>622</a>        <span class="macro">assert_eq!</span>(payload_len(<span class="number">64</span>, <span class="prelude-val">None</span>).unwrap(), <span class="number">64</span>);
+<a href=#623 id=623 data-nosnippet>623</a>        <span class="macro">assert_eq!</span>(payload_len(<span class="number">64</span>, <span class="prelude-val">Some</span>(<span class="number">10</span>)).unwrap(), <span class="number">10</span>);
+<a href=#624 id=624 data-nosnippet>624</a>        <span class="macro">assert_eq!</span>(payload_len(<span class="number">64</span>, <span class="prelude-val">Some</span>(<span class="number">0</span>)).unwrap(), <span class="number">0</span>);
+<a href=#625 id=625 data-nosnippet>625</a>        <span class="macro">assert_eq!</span>(payload_len(<span class="number">64</span>, <span class="prelude-val">Some</span>(<span class="number">64</span>)).unwrap(), <span class="number">64</span>);
+<a href=#626 id=626 data-nosnippet>626</a>        <span class="macro">assert!</span>(payload_len(<span class="number">64</span>, <span class="prelude-val">Some</span>(<span class="number">65</span>)).is_err());
+<a href=#627 id=627 data-nosnippet>627</a>    }
+<a href=#628 id=628 data-nosnippet>628</a>
+<a href=#629 id=629 data-nosnippet>629</a>    <span class="doccomment">/// A two-hop chain over TCP (metatls needs Meta TLS infra not present in a
+<a href=#630 id=630 data-nosnippet>630</a>    /// unit test): source -&gt; relay -&gt; tail. The relay forwards each chunk to the
+<a href=#631 id=631 data-nosnippet>631</a>    /// tail as it lands; both the relay's and the tail's ctx must reconstruct the
+<a href=#632 id=632 data-nosnippet>632</a>    /// exact block, proving the transport + byte-counter completion end to end.
+<a href=#633 id=633 data-nosnippet>633</a>    </span><span class="attr">#[test]
+<a href=#634 id=634 data-nosnippet>634</a>    </span><span class="kw">fn </span>chain_relays_and_delivers_block() {
+<a href=#635 id=635 data-nosnippet>635</a>        <span class="kw">let </span>rt = tokio::runtime::Runtime::new().expect(<span class="string">"build tokio runtime"</span>);
+<a href=#636 id=636 data-nosnippet>636</a>        rt.block_on(<span class="kw">async </span>{
+<a href=#637 id=637 data-nosnippet>637</a>            <span class="kw">let </span>block: Vec&lt;u8&gt; = (<span class="number">0</span>..(<span class="number">3 </span>* <span class="number">1024 </span>* <span class="number">1024u32</span>)).map(|i| (i % <span class="number">251</span>) <span class="kw">as </span>u8).collect();
+<a href=#638 id=638 data-nosnippet>638</a>            <span class="kw">let </span>block_size = block.len();
+<a href=#639 id=639 data-nosnippet>639</a>            <span class="kw">let </span>any_tcp = || ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Localhost));
+<a href=#640 id=640 data-nosnippet>640</a>
+<a href=#641 id=641 data-nosnippet>641</a>            <span class="comment">// Tail: serve, relay into its ctx with no successor.
+<a href=#642 id=642 data-nosnippet>642</a>            </span><span class="kw">let </span>(tail_addr, <span class="kw-2">mut </span>tail_rx) = channel::serve::&lt;Chunk&gt;(any_tcp()).expect(<span class="string">"tail serve"</span>);
+<a href=#643 id=643 data-nosnippet>643</a>            <span class="kw">let </span>tail_ctx = Arc::new(Ctx::new(block_size));
+<a href=#644 id=644 data-nosnippet>644</a>            {
+<a href=#645 id=645 data-nosnippet>645</a>                <span class="kw">let </span>tail_ctx = tail_ctx.clone();
+<a href=#646 id=646 data-nosnippet>646</a>                tokio::spawn(<span class="kw">async move </span>{
+<a href=#647 id=647 data-nosnippet>647</a>                    <span class="kw">while let </span><span class="prelude-val">Ok</span>(chunk) = tail_rx.recv().<span class="kw">await </span>{
+<a href=#648 id=648 data-nosnippet>648</a>                        tail_ctx.deliver(<span class="kw-2">&amp;</span>chunk);
+<a href=#649 id=649 data-nosnippet>649</a>                    }
+<a href=#650 id=650 data-nosnippet>650</a>                    tail_ctx.mark_closed();
+<a href=#651 id=651 data-nosnippet>651</a>                });
+<a href=#652 id=652 data-nosnippet>652</a>            }
+<a href=#653 id=653 data-nosnippet>653</a>
+<a href=#654 id=654 data-nosnippet>654</a>            <span class="comment">// Relay: serve, forward each chunk to the tail as it lands.
+<a href=#655 id=655 data-nosnippet>655</a>            </span><span class="kw">let </span>(relay_addr, <span class="kw-2">mut </span>relay_rx) =
+<a href=#656 id=656 data-nosnippet>656</a>                channel::serve::&lt;Chunk&gt;(any_tcp()).expect(<span class="string">"relay serve"</span>);
+<a href=#657 id=657 data-nosnippet>657</a>            <span class="kw">let </span>relay_ctx = Arc::new(Ctx::new(block_size));
+<a href=#658 id=658 data-nosnippet>658</a>            {
+<a href=#659 id=659 data-nosnippet>659</a>                <span class="kw">let </span>relay_ctx = relay_ctx.clone();
+<a href=#660 id=660 data-nosnippet>660</a>                <span class="kw">let </span>tail_tx = channel::dial::&lt;Chunk&gt;(tail_addr).expect(<span class="string">"dial tail"</span>);
+<a href=#661 id=661 data-nosnippet>661</a>                tokio::spawn(<span class="kw">async move </span>{
+<a href=#662 id=662 data-nosnippet>662</a>                    <span class="kw">while let </span><span class="prelude-val">Ok</span>(chunk) = relay_rx.recv().<span class="kw">await </span>{
+<a href=#663 id=663 data-nosnippet>663</a>                        tail_tx.post(chunk.clone());
+<a href=#664 id=664 data-nosnippet>664</a>                        relay_ctx.deliver(<span class="kw-2">&amp;</span>chunk);
+<a href=#665 id=665 data-nosnippet>665</a>                    }
+<a href=#666 id=666 data-nosnippet>666</a>                    relay_ctx.mark_closed();
+<a href=#667 id=667 data-nosnippet>667</a>                });
+<a href=#668 id=668 data-nosnippet>668</a>            }
+<a href=#669 id=669 data-nosnippet>669</a>
+<a href=#670 id=670 data-nosnippet>670</a>            <span class="comment">// Source: stripe the block into 512 KiB chunks to the relay head.
+<a href=#671 id=671 data-nosnippet>671</a>            </span><span class="kw">let </span>head_tx = channel::dial::&lt;Chunk&gt;(relay_addr).expect(<span class="string">"dial relay"</span>);
+<a href=#672 id=672 data-nosnippet>672</a>            <span class="kw">let </span>chunk = <span class="number">512 </span>* <span class="number">1024usize</span>;
+<a href=#673 id=673 data-nosnippet>673</a>            <span class="kw">let </span><span class="kw-2">mut </span>offset = <span class="number">0usize</span>;
+<a href=#674 id=674 data-nosnippet>674</a>            <span class="kw">while </span>offset &lt; block_size {
+<a href=#675 id=675 data-nosnippet>675</a>                <span class="kw">let </span>end = (offset + chunk).min(block_size);
+<a href=#676 id=676 data-nosnippet>676</a>                head_tx.post(Chunk {
+<a href=#677 id=677 data-nosnippet>677</a>                    tag: <span class="number">0</span>,
+<a href=#678 id=678 data-nosnippet>678</a>                    offset: offset <span class="kw">as </span>u64,
+<a href=#679 id=679 data-nosnippet>679</a>                    total: block_size <span class="kw">as </span>u64,
+<a href=#680 id=680 data-nosnippet>680</a>                    data: Part::from(block[offset..end].to_vec()),
+<a href=#681 id=681 data-nosnippet>681</a>                });
+<a href=#682 id=682 data-nosnippet>682</a>                offset = end;
+<a href=#683 id=683 data-nosnippet>683</a>            }
+<a href=#684 id=684 data-nosnippet>684</a>
+<a href=#685 id=685 data-nosnippet>685</a>            <span class="kw">let </span><span class="kw-2">mut </span>relay_got = <span class="macro">vec!</span>[<span class="number">0u8</span>; block_size];
+<a href=#686 id=686 data-nosnippet>686</a>            <span class="macro">assert!</span>(
+<a href=#687 id=687 data-nosnippet>687</a>                relay_ctx.wait_into(<span class="kw-2">&amp;mut </span>relay_got, block_size <span class="kw">as </span>u64, <span class="number">30_000</span>),
+<a href=#688 id=688 data-nosnippet>688</a>                <span class="string">"relay received the whole block"
+<a href=#689 id=689 data-nosnippet>689</a>            </span>);
+<a href=#690 id=690 data-nosnippet>690</a>            <span class="kw">let </span><span class="kw-2">mut </span>tail_got = <span class="macro">vec!</span>[<span class="number">0u8</span>; block_size];
+<a href=#691 id=691 data-nosnippet>691</a>            <span class="macro">assert!</span>(
+<a href=#692 id=692 data-nosnippet>692</a>                tail_ctx.wait_into(<span class="kw-2">&amp;mut </span>tail_got, block_size <span class="kw">as </span>u64, <span class="number">30_000</span>),
+<a href=#693 id=693 data-nosnippet>693</a>                <span class="string">"tail received the whole block via the relay"
+<a href=#694 id=694 data-nosnippet>694</a>            </span>);
+<a href=#695 id=695 data-nosnippet>695</a>            <span class="macro">assert_eq!</span>(relay_got, block, <span class="string">"relay reconstructs the source block"</span>);
+<a href=#696 id=696 data-nosnippet>696</a>            <span class="macro">assert_eq!</span>(
+<a href=#697 id=697 data-nosnippet>697</a>                tail_got, block,
+<a href=#698 id=698 data-nosnippet>698</a>                <span class="string">"tail reconstructs the block forwarded through the relay"
+<a href=#699 id=699 data-nosnippet>699</a>            </span>);
+<a href=#700 id=700 data-nosnippet>700</a>        });
+<a href=#701 id=701 data-nosnippet>701</a>    }
+<a href=#702 id=702 data-nosnippet>702</a>
+<a href=#703 id=703 data-nosnippet>703</a>    <span class="doccomment">/// Many distinct blocks streamed over ONE persistent connection (the real
+<a href=#704 id=704 data-nosnippet>704</a>    /// remotemount flow: `send_block` reuses one Tx, `ctx_wait` drains one block
+<a href=#705 id=705 data-nosnippet>705</a>    /// per call), each verified byte-identical. This is the multi-block path the
+<a href=#706 id=706 data-nosnippet>706</a>    /// single-block test above does not cover -- the case that failed on MAST.
+<a href=#707 id=707 data-nosnippet>707</a>    </span><span class="attr">#[test]
+<a href=#708 id=708 data-nosnippet>708</a>    </span><span class="kw">fn </span>many_blocks_over_persistent_channel_are_byte_identical() {
+<a href=#709 id=709 data-nosnippet>709</a>        <span class="kw">let </span>rt = tokio::runtime::Runtime::new().expect(<span class="string">"build tokio runtime"</span>);
+<a href=#710 id=710 data-nosnippet>710</a>        rt.block_on(<span class="kw">async </span>{
+<a href=#711 id=711 data-nosnippet>711</a>            <span class="kw">let </span>block_size = <span class="number">16 </span>* <span class="number">1024 </span>* <span class="number">1024usize</span>;
+<a href=#712 id=712 data-nosnippet>712</a>            <span class="kw">let </span>chunk = <span class="number">4 </span>* <span class="number">1024 </span>* <span class="number">1024usize</span>;
+<a href=#713 id=713 data-nosnippet>713</a>            <span class="kw">let </span>any_tcp = ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Localhost));
+<a href=#714 id=714 data-nosnippet>714</a>
+<a href=#715 id=715 data-nosnippet>715</a>            <span class="kw">let </span>(addr, <span class="kw-2">mut </span>rx) = channel::serve::&lt;Chunk&gt;(any_tcp).expect(<span class="string">"serve"</span>);
+<a href=#716 id=716 data-nosnippet>716</a>            <span class="kw">let </span>ctx = Arc::new(Ctx::new(block_size));
+<a href=#717 id=717 data-nosnippet>717</a>            {
+<a href=#718 id=718 data-nosnippet>718</a>                <span class="kw">let </span>ctx = ctx.clone();
+<a href=#719 id=719 data-nosnippet>719</a>                tokio::spawn(<span class="kw">async move </span>{
+<a href=#720 id=720 data-nosnippet>720</a>                    <span class="kw">while let </span><span class="prelude-val">Ok</span>(c) = rx.recv().<span class="kw">await </span>{
+<a href=#721 id=721 data-nosnippet>721</a>                        ctx.deliver(<span class="kw-2">&amp;</span>c);
+<a href=#722 id=722 data-nosnippet>722</a>                    }
+<a href=#723 id=723 data-nosnippet>723</a>                    ctx.mark_closed();
+<a href=#724 id=724 data-nosnippet>724</a>                });
+<a href=#725 id=725 data-nosnippet>725</a>            }
+<a href=#726 id=726 data-nosnippet>726</a>
+<a href=#727 id=727 data-nosnippet>727</a>            <span class="comment">// ONE persistent Tx, reused for every block (as LeaderActor does).
+<a href=#728 id=728 data-nosnippet>728</a>            </span><span class="kw">let </span>tx = channel::dial::&lt;Chunk&gt;(addr).expect(<span class="string">"dial"</span>);
+<a href=#729 id=729 data-nosnippet>729</a>            <span class="kw">for </span>b <span class="kw">in </span><span class="number">0</span>..<span class="number">6u64 </span>{
+<a href=#730 id=730 data-nosnippet>730</a>                <span class="comment">// A distinct pattern per block so a stale/mixed buffer is caught.
+<a href=#731 id=731 data-nosnippet>731</a>                </span><span class="kw">let </span>block: Vec&lt;u8&gt; = (<span class="number">0</span>..block_size)
+<a href=#732 id=732 data-nosnippet>732</a>                    .map(|i| {
+<a href=#733 id=733 data-nosnippet>733</a>                        ((i <span class="kw">as </span>u64).wrapping_mul(<span class="number">31</span>).wrapping_add(b.wrapping_mul(<span class="number">97</span>)) % <span class="number">251</span>) <span class="kw">as </span>u8
+<a href=#734 id=734 data-nosnippet>734</a>                    })
+<a href=#735 id=735 data-nosnippet>735</a>                    .collect();
+<a href=#736 id=736 data-nosnippet>736</a>                <span class="kw">let </span><span class="kw-2">mut </span>off = <span class="number">0usize</span>;
+<a href=#737 id=737 data-nosnippet>737</a>                <span class="kw">while </span>off &lt; block_size {
+<a href=#738 id=738 data-nosnippet>738</a>                    <span class="kw">let </span>end = (off + chunk).min(block_size);
+<a href=#739 id=739 data-nosnippet>739</a>                    tx.post(Chunk {
+<a href=#740 id=740 data-nosnippet>740</a>                        tag: b,
+<a href=#741 id=741 data-nosnippet>741</a>                        offset: off <span class="kw">as </span>u64,
+<a href=#742 id=742 data-nosnippet>742</a>                        total: block_size <span class="kw">as </span>u64,
+<a href=#743 id=743 data-nosnippet>743</a>                        data: Part::from(block[off..end].to_vec()),
+<a href=#744 id=744 data-nosnippet>744</a>                    });
+<a href=#745 id=745 data-nosnippet>745</a>                    off = end;
+<a href=#746 id=746 data-nosnippet>746</a>                }
+<a href=#747 id=747 data-nosnippet>747</a>                <span class="kw">let </span><span class="kw-2">mut </span>got = <span class="macro">vec!</span>[<span class="number">0u8</span>; block_size];
+<a href=#748 id=748 data-nosnippet>748</a>                <span class="macro">assert!</span>(
+<a href=#749 id=749 data-nosnippet>749</a>                    ctx.wait_into(<span class="kw-2">&amp;mut </span>got, block_size <span class="kw">as </span>u64, <span class="number">30_000</span>),
+<a href=#750 id=750 data-nosnippet>750</a>                    <span class="string">"block {b} not received"
+<a href=#751 id=751 data-nosnippet>751</a>                </span>);
+<a href=#752 id=752 data-nosnippet>752</a>                <span class="macro">assert_eq!</span>(
+<a href=#753 id=753 data-nosnippet>753</a>                    got, block,
+<a href=#754 id=754 data-nosnippet>754</a>                    <span class="string">"block {b} byte-identical over the persistent channel"
+<a href=#755 id=755 data-nosnippet>755</a>                </span>);
+<a href=#756 id=756 data-nosnippet>756</a>            }
+<a href=#757 id=757 data-nosnippet>757</a>        });
+<a href=#758 id=758 data-nosnippet>758</a>    }
+<a href=#759 id=759 data-nosnippet>759</a>
+<a href=#760 id=760 data-nosnippet>760</a>    <span class="doccomment">/// `wait` drains exactly one block's worth per call and returns a fresh owned
+<a href=#761 id=761 data-nosnippet>761</a>    /// block each time, so a later block is never contaminated by an earlier one
+<a href=#762 id=762 data-nosnippet>762</a>    /// -- the synchronous one-block-in-flight pattern remotemount uses (the leader
+<a href=#763 id=763 data-nosnippet>763</a>    /// waits for every worker's `ctx_wait` of block N before sourcing block N+1).
+<a href=#764 id=764 data-nosnippet>764</a>    </span><span class="attr">#[test]
+<a href=#765 id=765 data-nosnippet>765</a>    </span><span class="kw">fn </span>ctx_wait_drains_each_block_without_contamination() {
+<a href=#766 id=766 data-nosnippet>766</a>        <span class="kw">let </span>ctx = Ctx::new(<span class="number">16</span>);
+<a href=#767 id=767 data-nosnippet>767</a>
+<a href=#768 id=768 data-nosnippet>768</a>        ctx.deliver(<span class="kw-2">&amp;</span>Chunk {
+<a href=#769 id=769 data-nosnippet>769</a>            tag: <span class="number">0</span>,
+<a href=#770 id=770 data-nosnippet>770</a>            offset: <span class="number">0</span>,
+<a href=#771 id=771 data-nosnippet>771</a>            total: <span class="number">16</span>,
+<a href=#772 id=772 data-nosnippet>772</a>            data: Part::from(<span class="macro">vec!</span>[<span class="number">1u8</span>; <span class="number">16</span>]),
+<a href=#773 id=773 data-nosnippet>773</a>        });
+<a href=#774 id=774 data-nosnippet>774</a>        <span class="kw">let </span><span class="kw-2">mut </span>first = <span class="macro">vec!</span>[<span class="number">0u8</span>; <span class="number">16</span>];
+<a href=#775 id=775 data-nosnippet>775</a>        <span class="macro">assert!</span>(ctx.wait_into(<span class="kw-2">&amp;mut </span>first, <span class="number">16</span>, <span class="number">0</span>), <span class="string">"block 0 ready"</span>);
+<a href=#776 id=776 data-nosnippet>776</a>        <span class="macro">assert_eq!</span>(first, <span class="macro">vec!</span>[<span class="number">1u8</span>; <span class="number">16</span>], <span class="string">"first wait drains block 0"</span>);
+<a href=#777 id=777 data-nosnippet>777</a>
+<a href=#778 id=778 data-nosnippet>778</a>        <span class="comment">// Block 1 gets a fresh owned block after block 0 was drained (counter back to 0).
+<a href=#779 id=779 data-nosnippet>779</a>        </span>ctx.deliver(<span class="kw-2">&amp;</span>Chunk {
+<a href=#780 id=780 data-nosnippet>780</a>            tag: <span class="number">1</span>,
+<a href=#781 id=781 data-nosnippet>781</a>            offset: <span class="number">0</span>,
+<a href=#782 id=782 data-nosnippet>782</a>            total: <span class="number">16</span>,
+<a href=#783 id=783 data-nosnippet>783</a>            data: Part::from(<span class="macro">vec!</span>[<span class="number">2u8</span>; <span class="number">16</span>]),
+<a href=#784 id=784 data-nosnippet>784</a>        });
+<a href=#785 id=785 data-nosnippet>785</a>        <span class="kw">let </span><span class="kw-2">mut </span>second = <span class="macro">vec!</span>[<span class="number">0u8</span>; <span class="number">16</span>];
+<a href=#786 id=786 data-nosnippet>786</a>        <span class="macro">assert!</span>(ctx.wait_into(<span class="kw-2">&amp;mut </span>second, <span class="number">16</span>, <span class="number">0</span>), <span class="string">"block 1 ready"</span>);
+<a href=#787 id=787 data-nosnippet>787</a>        <span class="macro">assert_eq!</span>(
+<a href=#788 id=788 data-nosnippet>788</a>            second,
+<a href=#789 id=789 data-nosnippet>789</a>            <span class="macro">vec!</span>[<span class="number">2u8</span>; <span class="number">16</span>],
+<a href=#790 id=790 data-nosnippet>790</a>            <span class="string">"second wait drains block 1 independently of block 0"
+<a href=#791 id=791 data-nosnippet>791</a>        </span>);
+<a href=#792 id=792 data-nosnippet>792</a>    }
+<a href=#793 id=793 data-nosnippet>793</a>}
+</code></pre></div></section></main></body></html>

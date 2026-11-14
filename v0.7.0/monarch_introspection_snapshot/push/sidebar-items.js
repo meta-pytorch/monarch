@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["SNAPSHOT_TABLE_NAMES"],"fn":["drain_to_batches","push_snapshot"],"type":["NamedBatch"]};

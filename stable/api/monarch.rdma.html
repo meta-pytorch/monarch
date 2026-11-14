@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The monarch.rdma module provides Remote Direct Memory Access (RDMA) support for high-performance networking and zero-copy data transfers between processes. See the Point-to-Point RDMA guide for an ..." />
 
-    <title>monarch.rdma &#8212; Monarch v0.7.0 documentation</title>
+    <title>monarch.rdma &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,15 +50,17 @@
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../_static/documentation_options.js?v=b3dab91b"></script>
     <script src="../_static/doctools.js?v=888ff710"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="../_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'api/monarch.rdma';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/api/monarch.rdma.html" />
@@ -84,7 +86,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +200,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -563,8 +565,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -649,6 +669,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -662,7 +688,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1247,6 +1297,7 @@ document.write(`
 
 
 
+
 <li class="toctree-l1"><a class="reference internal" href="monarch.config.html">monarch.config</a></li>
 
 
@@ -1393,7 +1444,7 @@ document.write(`
 Both CPU and GPU memory are supported.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>data</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="(in PyTorch v2.14)"><em>torch.Tensor</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#memoryview" title="(in Python v3.15)"><em>memoryview</em></a>) – torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous.
+<dd class="field-odd"><p><strong>data</strong> (<a class="reference internal" href="monarch.html#monarch.Tensor" title="monarch.Tensor"><em>Tensor</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#memoryview" title="(in Python v3.15)"><em>memoryview</em></a>) – torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous.
 If provided, addr and size must not be specified.</p>
 </dd>
 <dt class="field-even">Raises<span class="colon">:</span></dt>
@@ -1427,7 +1478,7 @@ If provided, addr and size must not be specified.</p>
 whose byte-size is at least <code class="docutils literal notranslate"><span class="pre">self.size()</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>dst</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="(in PyTorch v2.14)"><em>torch.Tensor</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#memoryview" title="(in Python v3.15)"><em>memoryview</em></a>) – Destination tensor or memoryview to read into.</p>
+<dd class="field-odd"><p><strong>dst</strong> (<a class="reference internal" href="monarch.html#monarch.Tensor" title="monarch.Tensor"><em>Tensor</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#memoryview" title="(in Python v3.15)"><em>memoryview</em></a>) – Destination tensor or memoryview to read into.</p>
 </dd>
 <dt class="field-even">Keyword Arguments<span class="colon">:</span></dt>
 <dd class="field-even"><p><strong>timeout</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em>, </em><em>optional</em>) – Timeout in seconds. Defaults to 60s.</p>
@@ -1456,7 +1507,7 @@ whose byte-size is at least <code class="docutils literal notranslate"><span cla
 whose byte-size is at most <code class="docutils literal notranslate"><span class="pre">self.size()</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>src</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="(in PyTorch v2.14)"><em>torch.Tensor</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#memoryview" title="(in Python v3.15)"><em>memoryview</em></a>) – Source tensor or memoryview containing the bytes to
+<dd class="field-odd"><p><strong>src</strong> (<a class="reference internal" href="monarch.html#monarch.Tensor" title="monarch.Tensor"><em>Tensor</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#memoryview" title="(in Python v3.15)"><em>memoryview</em></a>) – Source tensor or memoryview containing the bytes to
 write to the RDMA buffer.</p>
 </dd>
 <dt class="field-even">Keyword Arguments<span class="colon">:</span></dt>
@@ -1923,7 +1974,7 @@ is ambiguous and will be removed in a future release. Use
        "headline": "monarch.rdma",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/api/monarch.rdma.html",
-       "articleBody": "monarch.rdma# The monarch.rdma module provides Remote Direct Memory Access (RDMA) support for high-performance networking and zero-copy data transfers between processes. See the Point-to-Point RDMA guide for an overview. RDMA Buffer# class monarch.rdma.RDMABuffer(data)[source]# Bases: object __init__(data)[source]# RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews. Both CPU and GPU memory are supported. Parameters: data (torch.Tensor | memoryview) \u2013 torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous. If provided, addr and size must not be specified. Raises: ValueError \u2013 If data is not 1d contiguous, or if its size is 0. RuntimeError \u2013 If no RDMA backend is available on this platform. TODO: Create TensorBuffer, which will be main user API supporting non-contiguous tensors property backend: str# Return the RDMA backend in use (\u2018ibverbs\u2019). size()[source]# read_into(dst, *, timeout=60)[source]# Read data from this RDMABuffer into dst. dst must be a 1D contiguous tensor or c-contiguous memoryview whose byte-size is at least self.size(). Parameters: dst (torch.Tensor | memoryview) \u2013 Destination tensor or memoryview to read into. Keyword Arguments: timeout (int, optional) \u2013 Timeout in seconds. Defaults to 60s. Returns: A Monarch Future that resolves to None whenthe read completes. Return type: Future[None] Raises: ValueError \u2013 If dst is smaller than the RDMA buffer. write_from(src, *, timeout=60)[source]# Write data from src into this RDMABuffer. src must be a 1D contiguous tensor or c-contiguous memoryview whose byte-size is at most self.size(). Parameters: src (torch.Tensor | memoryview) \u2013 Source tensor or memoryview containing the bytes to write to the RDMA buffer. Keyword Arguments: timeout (int, optional) \u2013 Timeout in seconds. Defaults to 60s. Returns: A Monarch Future that resolves to None whenthe write completes. Return type: Future[None] Raises: ValueError \u2013 If src exceeds the RDMA buffer size. drop()[source]# Release the handle on the memory that the src holds to this memory. property owner: str# The owner reference (str) RDMA Actions# class monarch.rdma.RDMAAction[source]# Bases: object Schedule a batch of RDMA operations and submit them as one unit. All bookkeeping (per-op validation, intra-batch local-memory race detection, backend grouping, parallel dispatch) lives in the Rust _RdmaAction; this class is a thin wrapper around it. __init__()[source]# read_remote(dst, src)[source]# Queue a read from RDMA buffer src into local memory dst. write_remote(dst, src)[source]# Queue a write from local memory src into RDMA buffer dst. fetch_add(src, dst, add)[source]# compare_and_swap(src, dst, compare, swap)[source]# submit(*, timeout=60)[source]# Schedule the queued ops. Safe to call multiple times. The returned Future does not resolve until every op in the batch completes, or until the timeout is reached. If any op fails, the Future resolves with an exception. Utility Functions# monarch.rdma.is_ibverbs_available()[source]# Whether ibverbs RDMA hardware is available on this system. monarch.rdma.is_rdma_available()[source]# Whether RDMA over ibverbs is available on this system. Deprecated since version Monarch: now supports multiple RDMA backends, so is_rdma_available is ambiguous and will be removed in a future release. Use is_ibverbs_available() or get_rdma_backend() instead. monarch.rdma.get_rdma_backend()[source]# Return available RDMA backend. Returns: One of \u2018ibverbs\u2019, \u2018tcp\u2019, or \u2018none\u2019 indicating the available backend.Both Mellanox and EFA hardware are accessed through ibverbs. \u2018tcp\u2019 indicates the TCP fallback transport is enabled. Return type: str",
+       "articleBody": "monarch.rdma# The monarch.rdma module provides Remote Direct Memory Access (RDMA) support for high-performance networking and zero-copy data transfers between processes. See the Point-to-Point RDMA guide for an overview. RDMA Buffer# class monarch.rdma.RDMABuffer(data)[source]# Bases: object __init__(data)[source]# RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews. Both CPU and GPU memory are supported. Parameters: data (Tensor | memoryview) \u2013 torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous. If provided, addr and size must not be specified. Raises: ValueError \u2013 If data is not 1d contiguous, or if its size is 0. RuntimeError \u2013 If no RDMA backend is available on this platform. TODO: Create TensorBuffer, which will be main user API supporting non-contiguous tensors property backend: str# Return the RDMA backend in use (\u2018ibverbs\u2019). size()[source]# read_into(dst, *, timeout=60)[source]# Read data from this RDMABuffer into dst. dst must be a 1D contiguous tensor or c-contiguous memoryview whose byte-size is at least self.size(). Parameters: dst (Tensor | memoryview) \u2013 Destination tensor or memoryview to read into. Keyword Arguments: timeout (int, optional) \u2013 Timeout in seconds. Defaults to 60s. Returns: A Monarch Future that resolves to None whenthe read completes. Return type: Future[None] Raises: ValueError \u2013 If dst is smaller than the RDMA buffer. write_from(src, *, timeout=60)[source]# Write data from src into this RDMABuffer. src must be a 1D contiguous tensor or c-contiguous memoryview whose byte-size is at most self.size(). Parameters: src (Tensor | memoryview) \u2013 Source tensor or memoryview containing the bytes to write to the RDMA buffer. Keyword Arguments: timeout (int, optional) \u2013 Timeout in seconds. Defaults to 60s. Returns: A Monarch Future that resolves to None whenthe write completes. Return type: Future[None] Raises: ValueError \u2013 If src exceeds the RDMA buffer size. drop()[source]# Release the handle on the memory that the src holds to this memory. property owner: str# The owner reference (str) RDMA Actions# class monarch.rdma.RDMAAction[source]# Bases: object Schedule a batch of RDMA operations and submit them as one unit. All bookkeeping (per-op validation, intra-batch local-memory race detection, backend grouping, parallel dispatch) lives in the Rust _RdmaAction; this class is a thin wrapper around it. __init__()[source]# read_remote(dst, src)[source]# Queue a read from RDMA buffer src into local memory dst. write_remote(dst, src)[source]# Queue a write from local memory src into RDMA buffer dst. fetch_add(src, dst, add)[source]# compare_and_swap(src, dst, compare, swap)[source]# submit(*, timeout=60)[source]# Schedule the queued ops. Safe to call multiple times. The returned Future does not resolve until every op in the batch completes, or until the timeout is reached. If any op fails, the Future resolves with an exception. Utility Functions# monarch.rdma.is_ibverbs_available()[source]# Whether ibverbs RDMA hardware is available on this system. monarch.rdma.is_rdma_available()[source]# Whether RDMA over ibverbs is available on this system. Deprecated since version Monarch: now supports multiple RDMA backends, so is_rdma_available is ambiguous and will be removed in a future release. Use is_ibverbs_available() or get_rdma_backend() instead. monarch.rdma.get_rdma_backend()[source]# Return available RDMA backend. Returns: One of \u2018ibverbs\u2019, \u2018tcp\u2019, or \u2018none\u2019 indicating the available backend.Both Mellanox and EFA hardware are accessed through ibverbs. \u2018tcp\u2019 indicates the TCP fallback transport is enabled. Return type: str",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

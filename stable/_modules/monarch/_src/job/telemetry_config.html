@@ -7,7 +7,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.job.telemetry_config &#8212; Monarch v0.7.0 documentation</title>
+    <title>monarch._src.job.telemetry_config &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -29,11 +29,11 @@
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -41,17 +41,375 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/documentation_options.js?v=b3dab91b"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="../../../../_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
-    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
-    <script>mermaid.initialize({startOnLoad:true});</script>
+    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@12.1.0/dist/mermaid.esm.min.mjs";
+
+
+
+
+
+const initStyles = () => {
+    const defaultStyle = document.createElement('style');
+    defaultStyle.textContent = "pre.mermaid {\n    /* Same as .mermaid-container > pre */\n    display: block;\n    width: 100%;\n}\n\npre.mermaid > svg {\n    /* Same as .mermaid-container > pre > svg */\n    height: 500px;\n    width: 100%;\n    max-width: 100% !important;\n}";
+    document.head.appendChild(defaultStyle);
+
+    const fullscreenStyle = document.createElement('style');
+    fullscreenStyle.textContent = ".mermaid-container {\n    position: relative;\n    display: flex;\n    flex-direction: row;\n    width: 100%;\n}\n\n.mermaid-container > pre {\n    display: block;\n    width: 100%;\n}\n\n.mermaid-container > pre > svg {\n    height: 500px;\n    width: 100%;\n    max-width: 100% !important;\n}\n\n.mermaid-fullscreen-btn {\n    position: absolute;\n    width: 28px;\n    height: 28px;\n    background: rgba(255, 255, 255, 0.95);\n    border: 1px solid rgba(0, 0, 0, 0.3);\n    border-radius: 4px;\n    cursor: pointer;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    transition: all 0.2s;\n    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);\n    font-size: 14px;\n    line-height: 1;\n    padding: 0;\n    color: #333;\n}\n\n.mermaid-fullscreen-btn:hover {\n    opacity: 100% !important;\n    background: rgba(255, 255, 255, 1);\n    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);\n    transform: scale(1.1);\n}\n\n.mermaid-fullscreen-btn.dark-theme {\n    background: rgba(50, 50, 50, 0.95);\n    border: 1px solid rgba(255, 255, 255, 0.3);\n    color: #e0e0e0;\n}\n\n.mermaid-fullscreen-btn.dark-theme:hover {\n    background: rgba(60, 60, 60, 1);\n    box-shadow: 0 3px 10px rgba(255, 255, 255, 0.2);\n}\n\n.mermaid-fullscreen-modal {\n    display: none;\n    position: fixed !important;\n    top: 0 !important;\n    left: 0 !important;\n    width: 95vw;\n    height: 100vh;\n    background: rgba(255, 255, 255, 0.98);\n    z-index: 9999;\n    padding: 20px;\n    overflow: auto;\n}\n\n.mermaid-fullscreen-modal.dark-theme {\n    background: rgba(0, 0, 0, 0.98);\n}\n\n.mermaid-fullscreen-modal.active {\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen {\n    position: relative;\n    width: 95vw;\n    height: 90vh;\n    max-width: 95vw;\n    max-height: 90vh;\n    background: white;\n    border-radius: 8px;\n    padding: 20px;\n    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);\n    overflow: auto;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen.dark-theme {\n    background: #1a1a1a;\n    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);\n}\n\n.mermaid-container-fullscreen pre.mermaid {\n    width: 100%;\n    height: 100%;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen .mermaid svg {\n    height: 100% !important;\n    width: 100% !important;\n    cursor: grab;\n}\n\n.mermaid-fullscreen-close {\n    position: fixed !important;\n    top: 20px !important;\n    right: 20px !important;\n    width: 40px;\n    height: 40px;\n    background: rgba(255, 255, 255, 0.95);\n    border: 1px solid rgba(0, 0, 0, 0.2);\n    border-radius: 50%;\n    cursor: pointer;\n    z-index: 10000;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);\n    transition: all 0.2s;\n    font-size: 24px;\n    line-height: 1;\n    color: #333;\n}\n\n.mermaid-fullscreen-close:hover {\n    background: white;\n    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);\n    transform: scale(1.1);\n}\n\n.mermaid-fullscreen-close.dark-theme {\n    background: rgba(50, 50, 50, 0.95);\n    border: 1px solid rgba(255, 255, 255, 0.2);\n    color: #e0e0e0;\n}\n\n.mermaid-fullscreen-close.dark-theme:hover {\n    background: rgba(60, 60, 60, 1);\n    box-shadow: 0 6px 16px rgba(255, 255, 255, 0.2);\n}\n\n.mermaid-fullscreen-modal .mermaid-fullscreen-btn {\n    display: none !important;\n}";
+    document.head.appendChild(fullscreenStyle);
+}
+
+// Detect if page has dark background
+const isDarkTheme = () => {
+    // We use a set of heuristics:
+    // 1. Check for common dark mode classes or attributes
+    // 2. Check computed background color brightness
+    if (document.documentElement.classList.contains('dark') ||
+        document.documentElement.getAttribute('data-theme') === 'dark' ||
+        document.body.classList.contains('dark') ||
+        document.body.getAttribute('data-theme') === 'dark') {
+        // console.log("Dark theme detected via class/attribute");
+        return true;
+    }
+    if (document.documentElement.classList.contains('light') ||
+        document.documentElement.getAttribute('data-theme') === 'light' ||
+        document.body.classList.contains('light') ||
+        document.body.getAttribute('data-theme') === 'light') {
+        // console.log("Light theme detected via class/attribute");
+        return false;
+    }
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        // console.log("Dark theme detected via prefers-color-scheme");
+        return true;
+    }
+    const bgColor = window.getComputedStyle(document.body).backgroundColor;
+    const match = bgColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)/);
+    if (match) {
+        const r = parseInt(match[1]);
+        const g = parseInt(match[2]);
+        const b = parseInt(match[3]);
+        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+        // console.log("Background color brightness:", brightness);
+        return brightness < 128;
+    }
+    // console.log("No dark or light theme detected, defaulting to light theme");
+    return false;
+};
+
+let darkTheme = isDarkTheme();
+let modal = null;
+let modalContent = null;
+let previousScrollOffset = [window.scrollX, window.scrollY];
+let _lazyObserver = null;
+let _renderQueue = Promise.resolve();
+let closeModal = () => {};
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && modal?.classList.contains('active')) {
+        closeModal();
+    }
+});
+
+// Apply d3 zoom to each SVG. Idempotent: an SVG already wrapped is skipped,
+// so this is safe to call both for the initial batch and for diagrams that
+// render lazily once they become visible.
+const addZoomToSvgs = (svgs) => {
+    svgs.each(function() {
+        if (this.getAttribute('data-zoom-applied') === 'true') return;
+        var svg = d3.select(this);
+        svg.html("<g class='wrapper'>" + svg.html() + "</g>");
+        var inner = svg.select("g");
+        var zoom = d3.zoom().on("zoom", function(event) {
+            inner.attr("transform", event.transform);
+        });
+        svg.call(zoom);
+        this.setAttribute('data-zoom-applied', 'true');
+    });
+};
+
+const runMermaid = async (rerun) => {
+    console.log("Running mermaid diagrams, rerun =", rerun);
+    // clear all existing mermaid charts
+    let all_mermaids = document.querySelectorAll(".mermaid");
+
+    if (rerun) {
+        // Disconnect any previous lazy rendering observer
+        if (_lazyObserver) {
+            _lazyObserver.disconnect();
+            _lazyObserver = null;
+        }
+
+        all_mermaids.forEach((el) => {
+            el.removeAttribute('data-mermaid-deferred');
+            el.removeAttribute('data-mermaid-render-failed');
+            if(!el.hasAttribute("data-original-code")) {
+                // store original code
+                // console.log(`Storing original code for first run: `, el.innerHTML);
+                el.setAttribute('data-original-code', el.innerHTML);
+            }
+            if(el.getAttribute("data-processed") === "true") {
+                // remove and restore original
+                el.removeAttribute("data-processed");
+                // console.log(`Restoring original code for re-run: `, el.getAttribute('data-original-code'));
+                el.innerHTML = el.getAttribute('data-original-code');
+            } else {
+                // store original code
+                // console.log(`Storing original code for re-run: `, el.innerHTML);
+                el.setAttribute('data-original-code', el.innerHTML);
+            }
+        });
+
+        // Separate visible and hidden elements. Mermaid's layout engine measures
+        // text dimensions via the DOM, which fails for elements hidden by a parent
+        // (e.g., Reveal.js non-active slides, sphinx-design unopened tabs),
+        // producing broken SVGs. Render visible elements now, defer hidden ones.
+        const visible = [];
+        const hidden = [];
+        all_mermaids.forEach((el) => {
+            // offsetParent is null for display:none ancestors.
+            // getClientRects().length > 0 catches position:fixed elements
+            // (which also have null offsetParent but are still visible).
+            if (el.offsetParent !== null || el.getClientRects().length > 0) {
+                visible.push(el);
+            } else {
+                hidden.push(el);
+                el.setAttribute('data-mermaid-deferred', 'true');
+            }
+        });
+
+        if (visible.length > 0) {
+            try {
+                await mermaid.run({ nodes: visible });
+            } catch (e) {
+                console.error("Mermaid rendering failed:", e);
+            }
+        }
+
+        // Lazily render hidden elements when they become visible.
+        // Uses a promise chain (_renderQueue) to serialize rendering,
+        // since IntersectionObserver may report multiple entries at once
+        // and mermaid.run() is not safe to call concurrently.
+        if (hidden.length > 0) {
+            if (typeof IntersectionObserver === 'undefined') {
+                console.warn("IntersectionObserver not available; hidden mermaid diagrams will not render.");
+            } else {
+                _renderQueue = Promise.resolve();
+                _lazyObserver = new IntersectionObserver((entries) => {
+                    for (const entry of entries) {
+                        if (entry.isIntersecting && entry.target.getAttribute("data-processed") !== "true") {
+                            _lazyObserver.unobserve(entry.target);
+                            const el = entry.target;
+                            _renderQueue = _renderQueue.then(async () => {
+                                try {
+                                    await mermaid.run({ nodes: [el] });
+                                    el.removeAttribute('data-mermaid-deferred');
+                                    // Apply zoom to the now-rendered diagram, matching
+                                    // the decoration visible diagrams receive.
+                                    if (false) {
+                                        addZoomToSvgs(d3.selectAll("").select(function() {
+                                            return this.querySelector("svg");
+                                        }));
+                                    }
+                                } catch (e) {
+                                    console.error("Mermaid deferred rendering failed:", e);
+                                    el.removeAttribute('data-mermaid-deferred');
+                                    el.setAttribute('data-mermaid-render-failed', 'true');
+                                }
+                            });
+                        }
+                    }
+                });
+                hidden.forEach((el) => _lazyObserver.observe(el));
+            }
+        }
+    }
+
+    all_mermaids = document.querySelectorAll(".mermaid");
+    // Exclude deferred (hidden) and render-failed elements from completion checks
+    const mermaids_active = document.querySelectorAll(".mermaid:not([data-mermaid-deferred]):not([data-mermaid-render-failed])");
+    const mermaids_processed = document.querySelectorAll(".mermaid:not([data-mermaid-deferred]):not([data-mermaid-render-failed])[data-processed='true']");
+
+    if (false) {
+        const mermaids_to_add_zoom = 0 === -1 ? mermaids_active.length : 0;
+        if(mermaids_to_add_zoom > 0) {
+            var svgs = d3.selectAll("").select(function() {
+                return this.querySelector("svg");
+            });
+            // Wait until every active (visible) diagram has rendered. Deferred
+            // diagrams are excluded, so a fixed d3_node_count that counts a
+            // hidden diagram no longer loops forever waiting for its SVG.
+            if(mermaids_active.length !== mermaids_processed.length) {
+                setTimeout(() => runMermaid(false), 200);
+                return;
+            }
+            addZoomToSvgs(svgs);
+        }
+    } else if(mermaids_active.length !== mermaids_processed.length) {
+        // Wait for mermaid to process all diagrams
+        setTimeout(() => runMermaid(false), 200);
+        return;
+    }
+
+    // Stop here if not adding fullscreen capability
+    if (!true) return;
+
+    if (modal !== null ) {
+        // Destroy existing modal
+        modal.remove();
+        modal = null;
+        modalContent = null;
+    }
+
+    modal = document.createElement('div');
+    modal.className = 'mermaid-fullscreen-modal' + (darkTheme ? ' dark-theme' : '');
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-label', 'Fullscreen diagram viewer');
+    modal.innerHTML = `
+        <button class="mermaid-fullscreen-close${darkTheme ? ' dark-theme' : ''}" aria-label="Close fullscreen">✕</button>
+        <div class="mermaid-container-fullscreen${darkTheme ? ' dark-theme' : ''}"></div>
+    `;
+    document.body.appendChild(modal);
+
+    modalContent = modal.querySelector('.mermaid-container-fullscreen');
+    const closeBtn = modal.querySelector('.mermaid-fullscreen-close');
+
+    closeModal = () => {
+        modal.classList.remove('active');
+        modalContent.innerHTML = '';
+        document.body.style.overflow = ''
+        window.scrollTo({left: previousScrollOffset[0], top: previousScrollOffset[1], behavior: 'instant'});
+    };
+
+    closeBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+    });
+    document.querySelectorAll('.mermaid').forEach((mermaidDiv) => {
+        if (mermaidDiv.parentNode.classList.contains('mermaid-container') ||
+            mermaidDiv.closest('.mermaid-fullscreen-modal')) {
+            // Already processed, adjust button class if needed
+            const existingBtn = mermaidDiv.parentNode.querySelector('.mermaid-fullscreen-btn');
+            if (existingBtn) {
+                existingBtn.className = 'mermaid-fullscreen-btn' + (darkTheme ? ' dark-theme' : '');
+            }
+            return;
+        }
+
+        const container = document.createElement('div');
+        container.className = 'mermaid-container';
+        mermaidDiv.parentNode.insertBefore(container, mermaidDiv);
+        container.appendChild(mermaidDiv);
+
+        const fullscreenBtn = document.createElement('button');
+        fullscreenBtn.className = 'mermaid-fullscreen-btn' + (darkTheme ? ' dark-theme' : '');
+        fullscreenBtn.setAttribute('aria-label', 'View diagram in fullscreen');
+        fullscreenBtn.textContent = "\u26f6";
+        fullscreenBtn.style.opacity = "50%";
+
+        // Calculate dynamic position based on diagram's margin and padding
+        const diagramStyle = window.getComputedStyle(mermaidDiv);
+        const marginTop = parseFloat(diagramStyle.marginTop) || 0;
+        const marginRight = parseFloat(diagramStyle.marginRight) || 0;
+        const paddingTop = parseFloat(diagramStyle.paddingTop) || 0;
+        const paddingRight = parseFloat(diagramStyle.paddingRight) || 0;
+        fullscreenBtn.style.top = `${marginTop + paddingTop + 4}px`;
+        fullscreenBtn.style.right = `${marginRight + paddingRight + 4}px`;
+
+        fullscreenBtn.addEventListener('click', () => {
+            previousScrollOffset = [window.scrollX, window.scrollY];
+            const clone = mermaidDiv.cloneNode(true);
+            modalContent.innerHTML = '';
+            modalContent.appendChild(clone);
+
+            const svg = clone.querySelector('svg');
+            if (svg) {
+                svg.removeAttribute('width');
+                svg.removeAttribute('height');
+                svg.style.width = '100%';
+                svg.style.height = 'auto';
+                svg.style.maxWidth = '100%';
+                svg.style.display = 'block';
+
+                if (false) {
+                    setTimeout(() => {
+                        const g = svg.querySelector('g');
+                        if (g) {
+                            var svgD3 = d3.select(svg);
+                            svgD3.html("<g class='wrapper'>" + svgD3.html() + "</g>");
+                            var inner = svgD3.select("g");
+                            var zoom = d3.zoom().on("zoom", function(event) {
+                                inner.attr("transform", event.transform);
+                            });
+                            svgD3.call(zoom);
+                        }
+                    }, 100);
+                }
+            }
+
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        });
+        container.appendChild(fullscreenBtn);
+    });
+};
+
+
+
+const load = async () => {
+    initStyles();
+
+
+    await runMermaid(true);
+
+    const reRunIfThemeChanges = async () => {
+        const newDarkTheme = isDarkTheme();
+        if (newDarkTheme !== darkTheme) {
+            darkTheme = newDarkTheme;
+            console.log("Theme change detected, re-running mermaid with", darkTheme ? "dark" : "default", "theme");
+            await mermaid.initialize(
+                {...{"startOnLoad": false},
+                ...{ darkMode: darkTheme, theme: darkTheme ? "dark" : "default" },
+                }
+            );
+            await runMermaid(true);
+        }
+    };
+
+    // Update theme classes when theme changes
+    const themeObserver = new MutationObserver(reRunIfThemeChanges);
+    themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme']
+    });
+    themeObserver.observe(document.body, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme']
+    });
+};
+
+
+
+
+
+console.log("Initializing mermaid with", darkTheme ? "dark" : "default", "theme");
+mermaid.initialize(
+    {...{"startOnLoad": false},
+    ...{ darkMode: darkTheme, theme: darkTheme ? "dark" : "default" },
+    }
+);
+
+window.addEventListener("load", load);
+window.runMermaid = runMermaid;</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/job/telemetry_config';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/job/telemetry_config.html" />
@@ -75,7 +433,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -189,7 +547,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -554,8 +912,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -640,6 +1016,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -653,7 +1035,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -925,8 +1307,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1011,6 +1411,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1024,7 +1430,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1358,9 +1764,8 @@ document.write(`
 <span class="sd">materialised `host_meshes`; that second call creates telemetry host proc meshes</span>
 <span class="sd">for proc discovery. Remote jobs also activate one live `TelemetryActor`</span>
 <span class="sd">collector per host-local socket namespace and hand only those live worker refs</span>
-<span class="sd">to the client collector for query fan-out. Once mesh admin has spawned,</span>
-<span class="sd">`AdminComponent` calls `Telemetry.set_admin_url(...)`, which updates the sidecar</span>
-<span class="sd">process environment for dashboard requests such as pyspy dumps.</span>
+<span class="sd">to the client collector for query fan-out. The sidecar also hosts the job&#39;s</span>
+<span class="sd">mesh admin; see `AdminRequest` in `job_sidecar`.</span>
 <span class="sd">&quot;&quot;&quot;</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
@@ -1375,16 +1780,15 @@ document.write(`
     <span class="n">_set_unix_socket_sink_path</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job.job_sidecar</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">AdminUrlRequest</span><span class="p">,</span>
     <span class="n">find_job_sidecar</span><span class="p">,</span>
     <span class="n">get_job_sidecar</span><span class="p">,</span>
     <span class="n">TelemetryInfoRequest</span><span class="p">,</span>
     <span class="n">TelemetryRequest</span><span class="p">,</span>
 <span class="p">)</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job.telemetry_actor</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job.telemetry_actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">TelemetryActor</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job.telemetry_ingest</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">telemetry_socket_dir</span><span class="p">,</span>
     <span class="n">telemetry_socket_path</span><span class="p">,</span>
-    <span class="n">TelemetryActor</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">context</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">,</span> <span class="n">shutdown_context</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch.distributed_telemetry.engine</span><span class="w"> </span><span class="kn">import</span> <span class="n">QueryEngine</span>
@@ -1392,6 +1796,9 @@ document.write(`
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch.monarch_dashboard.server.query_engine_adapter</span><span class="w"> </span><span class="kn">import</span> <span class="n">QueryEngineAdapter</span>
 
 <span class="n">logger</span><span class="p">:</span> <span class="n">logging</span><span class="o">.</span><span class="n">Logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="c1"># Above the scanner&#39;s own 5 s bound on closing its persist log.</span>
+<span class="n">_PERSIST_CLOSE_TIMEOUT_SECS</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">10.0</span>
 
 <span class="n">_sidecar_socket_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="n">_startup_provider_registered</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
@@ -1408,21 +1815,47 @@ document.write(`
 <span class="sd">    called.</span>
 
 <span class="sd">    Args:</span>
-<span class="sd">        retention_secs: Retention window in seconds for message and trace</span>
-<span class="sd">            history. Trace tables are filtered independently by row timestamp.</span>
-<span class="sd">            0 disables retention.</span>
+<span class="sd">        retention_secs: Retention window in seconds for message and trace data</span>
+<span class="sd">            and command heartbeats. Final command outcomes, metadata, and rank</span>
+<span class="sd">            results follow actor history for the sidecar lifetime. 0 disables</span>
+<span class="sd">            time expiry.</span>
 <span class="sd">        include_dashboard: Whether to start the monarch dashboard web server.</span>
 <span class="sd">        dashboard_port: Preferred port for the dashboard.</span>
 <span class="sd">        snapshot_interval_secs: Interval in seconds between periodic mesh</span>
 <span class="sd">            introspection snapshots. Snapshots capture the mesh topology</span>
 <span class="sd">            into the telemetry query surface. The default is 30 seconds;</span>
 <span class="sd">            0 disables periodic capture.</span>
+<span class="sd">        host_metrics_interval_secs: Interval in seconds between host resource</span>
+<span class="sd">            samples (CPU, load, memory, swap, network, and disk) written to the</span>
+<span class="sd">            ``host_metrics`` table on every telemetry host. The default is</span>
+<span class="sd">            1 second; 0 disables host sampling.</span>
+<span class="sd">        gpu_metrics_interval_secs: Interval in seconds between per-device GPU</span>
+<span class="sd">            samples (utilization, memory, temperature, and power) written to</span>
+<span class="sd">            the ``gpu_metrics`` table through NVML. The default is 1 second;</span>
+<span class="sd">            0 disables GPU sampling, and hosts without NVIDIA GPUs or NVML</span>
+<span class="sd">            skip it.</span>
+<span class="sd">        persist_dir: Directory for crash-tolerant telemetry files; each</span>
+<span class="sd">            collector writes ``{persist_dir}/{apply_id}/{hostname}-{pid}/``.</span>
+<span class="sd">            Use a path that outlives the host, such as a shared mount. ``None``</span>
+<span class="sd">            disables persistence.</span>
+<span class="sd">            Use graceful job shutdown to drain queued batches and finalize the</span>
+<span class="sd">            log, then check readback&#39;s ``clean`` flag. After unexpected</span>
+<span class="sd">            termination, readback recovers complete frames and reports an</span>
+<span class="sd">            unclean log and any torn tail. Recent queued or unsynced data may</span>
+<span class="sd">            be missing.</span>
+<span class="sd">        client_persist_dir: Overrides ``persist_dir`` for the client collector</span>
+<span class="sd">            in the job sidecar, which runs where the job was applied. Defaults</span>
+<span class="sd">            to ``persist_dir``.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
     <span class="n">retention_secs</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3600</span>
     <span class="n">include_dashboard</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
     <span class="n">dashboard_port</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">8265</span>
-    <span class="n">snapshot_interval_secs</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span></div>
+    <span class="n">snapshot_interval_secs</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span>
+    <span class="n">host_metrics_interval_secs</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span>
+    <span class="n">gpu_metrics_interval_secs</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span>
+    <span class="n">persist_dir</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">client_persist_dir</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span></div>
 
 
 
@@ -1446,13 +1879,17 @@ document.write(`
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_config_from_wire</span><span class="p">(</span><span class="n">config</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">object</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">TelemetryConfig</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Rebuild a `TelemetryConfig` from the pickled wire dict. Only the three</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Rebuild a `TelemetryConfig` from the pickled wire dict. Only the</span>
 <span class="sd">    fields the telemetry handle acts on cross the wire; the rest take their</span>
 <span class="sd">    defaults.&quot;&quot;&quot;</span>
     <span class="k">return</span> <span class="n">TelemetryConfig</span><span class="p">(</span>
         <span class="n">retention_secs</span><span class="o">=</span><span class="n">cast</span><span class="p">(</span><span class="nb">int</span><span class="p">,</span> <span class="n">config</span><span class="p">[</span><span class="s2">&quot;retention_secs&quot;</span><span class="p">]),</span>
         <span class="n">include_dashboard</span><span class="o">=</span><span class="n">cast</span><span class="p">(</span><span class="nb">bool</span><span class="p">,</span> <span class="n">config</span><span class="p">[</span><span class="s2">&quot;include_dashboard&quot;</span><span class="p">]),</span>
         <span class="n">dashboard_port</span><span class="o">=</span><span class="n">cast</span><span class="p">(</span><span class="nb">int</span><span class="p">,</span> <span class="n">config</span><span class="p">[</span><span class="s2">&quot;dashboard_port&quot;</span><span class="p">]),</span>
+        <span class="n">host_metrics_interval_secs</span><span class="o">=</span><span class="n">cast</span><span class="p">(</span><span class="nb">float</span><span class="p">,</span> <span class="n">config</span><span class="p">[</span><span class="s2">&quot;host_metrics_interval_secs&quot;</span><span class="p">]),</span>
+        <span class="n">gpu_metrics_interval_secs</span><span class="o">=</span><span class="n">cast</span><span class="p">(</span><span class="nb">float</span><span class="p">,</span> <span class="n">config</span><span class="p">[</span><span class="s2">&quot;gpu_metrics_interval_secs&quot;</span><span class="p">]),</span>
+        <span class="n">persist_dir</span><span class="o">=</span><span class="n">cast</span><span class="p">(</span><span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span> <span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;persist_dir&quot;</span><span class="p">)),</span>
+        <span class="n">client_persist_dir</span><span class="o">=</span><span class="n">cast</span><span class="p">(</span><span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span> <span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;client_persist_dir&quot;</span><span class="p">)),</span>
     <span class="p">)</span>
 
 
@@ -1524,6 +1961,14 @@ document.write(`
                     <span class="s2">&quot;retention_secs&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="o">.</span><span class="n">retention_secs</span><span class="p">,</span>
                     <span class="s2">&quot;include_dashboard&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="o">.</span><span class="n">include_dashboard</span><span class="p">,</span>
                     <span class="s2">&quot;dashboard_port&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="o">.</span><span class="n">dashboard_port</span><span class="p">,</span>
+                    <span class="s2">&quot;host_metrics_interval_secs&quot;</span><span class="p">:</span> <span class="p">(</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="o">.</span><span class="n">host_metrics_interval_secs</span>
+                    <span class="p">),</span>
+                    <span class="s2">&quot;gpu_metrics_interval_secs&quot;</span><span class="p">:</span> <span class="p">(</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="o">.</span><span class="n">gpu_metrics_interval_secs</span>
+                    <span class="p">),</span>
+                    <span class="s2">&quot;persist_dir&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="o">.</span><span class="n">persist_dir</span><span class="p">,</span>
+                    <span class="s2">&quot;client_persist_dir&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="o">.</span><span class="n">client_persist_dir</span><span class="p">,</span>
                 <span class="p">},</span>
                 <span class="n">host_meshes</span><span class="o">=</span><span class="nb">dict</span><span class="p">(</span><span class="n">host_meshes</span> <span class="ow">or</span> <span class="p">{}),</span>
                 <span class="n">spawn_worker_collectors</span><span class="o">=</span><span class="n">spawn_worker_collectors</span><span class="p">,</span>
@@ -1544,24 +1989,6 @@ document.write(`
         <span class="p">):</span>
             <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;invalid job sidecar telemetry response: </span><span class="si">{</span><span class="n">response</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">result</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">set_admin_url</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">apply_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">admin_url</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Set the mesh-admin URL in the job sidecar process.&quot;&quot;&quot;</span>
-        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">apply_id</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
-            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;telemetry requires an active apply_id&quot;</span><span class="p">)</span>
-
-        <span class="n">response</span> <span class="o">=</span> <span class="p">(</span>
-            <span class="n">get_job_sidecar</span><span class="p">(</span><span class="n">apply_id</span><span class="p">)</span>
-            <span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="n">AdminUrlRequest</span><span class="p">(</span><span class="n">apply_id</span><span class="o">=</span><span class="n">apply_id</span><span class="p">,</span> <span class="n">admin_url</span><span class="o">=</span><span class="n">admin_url</span><span class="p">))</span>
-            <span class="o">.</span><span class="n">get</span><span class="p">()</span>
-        <span class="p">)</span>
-        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">response</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
-            <span class="n">error</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;error&quot;</span><span class="p">)</span>
-            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">error</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
-                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="n">error</span><span class="p">)</span>
-            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;unexpected admin URL response: </span><span class="si">{</span><span class="n">response</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">response</span> <span class="o">!=</span> <span class="s2">&quot;ok&quot;</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;unexpected admin URL response: </span><span class="si">{</span><span class="n">response</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span>
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">_TelemetryHandle</span><span class="p">:</span>
@@ -1641,6 +2068,10 @@ document.write(`
             <span class="n">TelemetryActor</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_apply_id</span><span class="p">,</span>
             <span class="n">config</span><span class="o">.</span><span class="n">retention_secs</span><span class="p">,</span>
+            <span class="n">config</span><span class="o">.</span><span class="n">host_metrics_interval_secs</span><span class="p">,</span>
+            <span class="n">config</span><span class="o">.</span><span class="n">gpu_metrics_interval_secs</span><span class="p">,</span>
+            <span class="n">config</span><span class="o">.</span><span class="n">persist_dir</span><span class="p">,</span>
+            <span class="n">config</span><span class="o">.</span><span class="n">client_persist_dir</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="c1"># `activate` is the actor&#39;s bind decision: it binds the Unix socket and</span>
         <span class="c1"># stands up the scanner for the sidecar host. The job sidecar is keyed</span>
@@ -1653,6 +2084,7 @@ document.write(`
             <span class="n">adapter</span><span class="o">=</span><span class="n">QueryEngineAdapter</span><span class="p">(</span><span class="n">query_engine</span><span class="p">),</span>
             <span class="n">port</span><span class="o">=</span><span class="n">config</span><span class="o">.</span><span class="n">dashboard_port</span><span class="p">,</span>
             <span class="n">include_dashboard</span><span class="o">=</span><span class="n">config</span><span class="o">.</span><span class="n">include_dashboard</span><span class="p">,</span>
+            <span class="n">sidecar_addr</span><span class="o">=</span><span class="n">actor_context</span><span class="o">.</span><span class="n">actor_instance</span><span class="o">.</span><span class="n">actor_id</span><span class="o">.</span><span class="n">addr</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="c1"># Self-activate the sidecar process&#39;s own `UnixSocketSink` against</span>
         <span class="c1"># the client socket so telemetry emitted *by* the sidecar (dashboard</span>
@@ -1698,6 +2130,14 @@ document.write(`
                     <span class="s2">&quot;failed to stop telemetry worker collectors&quot;</span><span class="p">,</span>
                     <span class="n">exc_info</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
                 <span class="p">)</span>
+            <span class="c1"># `shutdown_context` waits at most 0.5 s for `__cleanup__`, which</span>
+            <span class="c1"># is too short to finish the log on a slow mount.</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">client_actor</span><span class="o">.</span><span class="n">close_persist</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+                    <span class="n">timeout</span><span class="o">=</span><span class="n">_PERSIST_CLOSE_TIMEOUT_SECS</span>
+                <span class="p">)</span>
+            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;failed to close telemetry persist log&quot;</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
         <span class="c1"># Drain in-flight async work with a short cap. Beyond that, we</span>
         <span class="c1"># prefer a quick teardown over guaranteed completion — the sidecar</span>
         <span class="c1"># is being asked to die and the parent has already moved on.</span>
@@ -1890,7 +2330,7 @@ document.write(`
        "headline": "monarch._src.job.telemetry_config",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/job/telemetry_config.html",
-       "articleBody": "Source code for monarch._src.job.telemetry_config # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict \"\"\"Telemetry state hosted by the per-job sidecar. The job sidecar is a separate Python process keyed on the job\u0027s `apply_id`. Telemetry reuses that process to host the client-side `TelemetryActor` (collector + scanner + dashboard), ingest telemetry frames over a per-host Unix socket, and serve the dashboard\u0027s HTTP query API. Decoupling it from the parent job process means: - Telemetry state (in-memory DataFusion store) survives across `state()` calls and parent-process refreshes, so query results are stable across job restarts. - The dashboard server keeps running without the parent needing an event loop. - Producers on the same host write into one collector via a stable socket path, regardless of how many parent processes come and go. The parent talks to telemetry via two channels: - The job sidecar command socket: pickled `TelemetryRequest` control messages. - The telemetry data socket (`/tmp/monarch_\u003capply_id\u003e/telemetry.sock`): framed Arrow IPC from producers, decoded by Rust socket ingest into the collector\u0027s scanner. Lifecycle: `Telemetry.ensure_open(...)` is called during `JobTrait._connect`. The first call (`host_meshes={}`) opens the job sidecar\u0027s telemetry handle and activates the client process\u0027s `UnixSocketSink` before raw host meshes are materialized, so host-mesh creation events are captured. Jobs call it again with materialised `host_meshes`; that second call creates telemetry host proc meshes for proc discovery. Remote jobs also activate one live `TelemetryActor` collector per host-local socket namespace and hand only those live worker refs to the client collector for query fan-out. Once mesh admin has spawned, `AdminComponent` calls `Telemetry.set_admin_url(...)`, which updates the sidecar process environment for dashboard requests such as pyspy dumps. \"\"\" from __future__ import annotations import functools import logging import os from dataclasses import dataclass from typing import Any, Callable, cast, Mapping, TypedDict from monarch._rust_bindings.monarch_distributed_telemetry import ( _set_unix_socket_sink_path, ) from monarch._src.job.job_sidecar import ( AdminUrlRequest, find_job_sidecar, get_job_sidecar, TelemetryInfoRequest, TelemetryRequest, ) from monarch._src.job.telemetry_actor import ( telemetry_socket_dir, telemetry_socket_path, TelemetryActor, ) from monarch.actor import context, HostMesh, shutdown_context from monarch.distributed_telemetry.engine import QueryEngine from monarch.monarch_dashboard.server.app import start_telemetry_servers from monarch.monarch_dashboard.server.query_engine_adapter import QueryEngineAdapter logger: logging.Logger = logging.getLogger(__name__) _sidecar_socket_path: str | None = None _startup_provider_registered: bool = False [docs] @dataclass class TelemetryConfig: \"\"\"Configuration for automatic telemetry and snapshot startup. When configured via ``JobTrait.enable_telemetry``, telemetry, mesh admin, and optionally snapshots and a dashboard are started when ``state()`` is called. Args: retention_secs: Retention window in seconds for message and trace history. Trace tables are filtered independently by row timestamp. 0 disables retention. include_dashboard: Whether to start the monarch dashboard web server. dashboard_port: Preferred port for the dashboard. snapshot_interval_secs: Interval in seconds between periodic mesh introspection snapshots. Snapshots capture the mesh topology into the telemetry query surface. The default is 30 seconds; 0 disables periodic capture. \"\"\" retention_secs: int = 3600 include_dashboard: bool = False dashboard_port: int = 8265 snapshot_interval_secs: float = 30.0 # Successful response from the telemetry handle\u0027s `open_or_refresh` control message, # pickled back over the command socket. The error case rides on the same # wire as `{\"error\": traceback_str}` and is narrowed away by `ensure_open` # before the cast. class _TelemetryResponse(TypedDict): telemetry_url: str dashboard_url: str | None socket_path: str def _telemetry_response(response: object) -\u003e _TelemetryResponse: if not isinstance(response, dict): raise RuntimeError(f\"unexpected telemetry handle response: {response!r}\") error = response.get(\"error\") if isinstance(error, str): raise RuntimeError(error) return cast(_TelemetryResponse, response) def _config_from_wire(config: Mapping[str, object]) -\u003e TelemetryConfig: \"\"\"Rebuild a `TelemetryConfig` from the pickled wire dict. Only the three fields the telemetry handle acts on cross the wire; the rest take their defaults.\"\"\" return TelemetryConfig( retention_secs=cast(int, config[\"retention_secs\"]), include_dashboard=cast(bool, config[\"include_dashboard\"]), dashboard_port=cast(int, config[\"dashboard_port\"]), ) def install_sidecar_socket_sink(socket_path: str) -\u003e None: \"\"\"Install the sidecar telemetry socket sink locally and in future workers.\"\"\" global _sidecar_socket_path if _sidecar_socket_path not in (None, socket_path): logger.warning( \"replacing telemetry data socket path %s with %s\", _sidecar_socket_path, socket_path, ) _sidecar_socket_path = socket_path _ensure_setup_actor_telemetry_provider() _set_unix_socket_sink_path(socket_path) def _unix_socket_sink_startup() -\u003e Callable[[], None] | None: socket_path = _sidecar_socket_path if socket_path is None: return None return functools.partial(install_sidecar_socket_sink, socket_path) def _ensure_setup_actor_telemetry_provider() -\u003e None: \"\"\"Install the SetupActor provider that activates worker Unix sinks.\"\"\" global _startup_provider_registered if _startup_provider_registered: return from monarch._src.actor.proc_mesh import SetupActor SetupActor.register_startup_function(_unix_socket_sink_startup) _startup_provider_registered = True class Telemetry: \"\"\"Parent-process client for telemetry hosted by the job sidecar. Uses the sidecar prepared by the job connection, or launches an unattached one for directly reachable workers. `ensure_open` opens or refreshes the telemetry handle and forwards the host meshes for worker fan-out. \"\"\" def __init__(self, config: TelemetryConfig) -\u003e None: self._config: TelemetryConfig = config def ensure_open( self, apply_id: str, host_meshes: Mapping[str, HostMesh] | None = None, spawn_worker_collectors: bool = True, ) -\u003e _TelemetryResponse: \"\"\"Ensure the job sidecar\u0027s telemetry handle is open and refreshed.\"\"\" if not isinstance(apply_id, str): raise RuntimeError(\"telemetry requires an active apply_id\") socket_dir = telemetry_socket_dir(apply_id) os.makedirs(socket_dir, mode=0o700, exist_ok=True) os.chmod(socket_dir, 0o700) # The job connection prepares any scheduler gateway before components # run. Both phases below reuse that attached sidecar. guard = get_job_sidecar(apply_id) response = guard.send( TelemetryRequest( apply_id=apply_id, config={ \"retention_secs\": self._config.retention_secs, \"include_dashboard\": self._config.include_dashboard, \"dashboard_port\": self._config.dashboard_port, }, host_meshes=dict(host_meshes or {}), spawn_worker_collectors=spawn_worker_collectors, ) ).get() return _telemetry_response(response) def info(self, apply_id: str) -\u003e _TelemetryResponse: \"\"\"Return an existing telemetry endpoint without starting services.\"\"\" sidecar = find_job_sidecar(apply_id) if sidecar is None: raise RuntimeError(\"the job telemetry sidecar is not running\") response = sidecar.send(TelemetryInfoRequest(apply_id)).get() result = _telemetry_response(response) if ( not isinstance(result.get(\"telemetry_url\"), str) or not result[\"telemetry_url\"] ): raise RuntimeError(f\"invalid job sidecar telemetry response: {response!r}\") return result def set_admin_url(self, apply_id: str, admin_url: str) -\u003e None: \"\"\"Set the mesh-admin URL in the job sidecar process.\"\"\" if not isinstance(apply_id, str): raise RuntimeError(\"telemetry requires an active apply_id\") response = ( get_job_sidecar(apply_id) .send(AdminUrlRequest(apply_id=apply_id, admin_url=admin_url)) .get() ) if isinstance(response, dict): error = response.get(\"error\") if isinstance(error, str): raise RuntimeError(error) raise RuntimeError(f\"unexpected admin URL response: {response!r}\") if response != \"ok\": raise RuntimeError(f\"unexpected admin URL response: {response!r}\") class _TelemetryHandle: \"\"\"Live telemetry resources hosted inside the job sidecar worker. Owns the client `TelemetryActor` (which owns the scanner), the `QueryEngine` that backs the dashboard\u0027s `/api/query` route, and the dashboard server info. The job sidecar control loop drives `open_or_refresh` and `shutdown`. \"\"\" def __init__(self, apply_id: str) -\u003e None: self._apply_id: str = apply_id # `None` until the first `open_or_refresh` runs `_bootstrap`; serves as # the recorded config for drift detection. We intentionally do NOT restart # on drift \u2014 that would drop the in-memory store and re-bind the data socket, # defeating the point of the sidecar surviving across parent restarts. self._first_config: TelemetryConfig | None = None self._client_actor: Any | None = None self._query_engine: QueryEngine | None = None self._dashboard_info: dict[str, object] | None = None self._worker_collectors_started: bool = False @property def client_socket_path(self) -\u003e str: return telemetry_socket_path(self._apply_id) def open_or_refresh( self, host_meshes: Mapping[str, HostMesh], config: Mapping[str, object], spawn_worker_collectors: bool = True, ) -\u003e _TelemetryResponse: parsed = _config_from_wire(config) if self._first_config is None: self._bootstrap(parsed) self._first_config = parsed elif parsed != self._first_config: # Config drift is intentionally ignored. Restarting here would drop # the in-memory telemetry store and re-bind the data socket. logger.warning(\"telemetry handle config drift ignored\") if host_meshes and not self._worker_collectors_started: self._spawn_telemetry_actors( host_meshes, spawn_worker_collectors=spawn_worker_collectors, ) self._worker_collectors_started = True return self.info() def info(self) -\u003e _TelemetryResponse: \"\"\"Return the endpoint for this already-open telemetry handle.\"\"\" dashboard_info = self._dashboard_info if dashboard_info is None: raise RuntimeError(\"telemetry handle is not open\") api_url = dashboard_info[\"api_url\"] url = dashboard_info[\"url\"] if not isinstance(api_url, str) or ( url is not None and not isinstance(url, str) ): raise RuntimeError(f\"invalid dashboard info: {dashboard_info!r}\") return { \"telemetry_url\": api_url, \"dashboard_url\": url, \"socket_path\": self.client_socket_path, } def _bootstrap(self, config: TelemetryConfig) -\u003e None: # Reach the Python-wrapped `ProcMesh` via `monarch.actor.context()`. # The raw `PyProcMesh_Ref` returned by `bootstrap_host()` lacks # `.spawn`, so we cannot use it directly. actor_context = context() proc_mesh = actor_context.actor_instance.proc_mesh client_actor = proc_mesh.spawn( \"telemetry\", TelemetryActor, self._apply_id, config.retention_secs, ) # `activate` is the actor\u0027s bind decision: it binds the Unix socket and # stands up the scanner for the sidecar host. The job sidecar is keyed # by apply id, so this should be the only live collector for the local # socket namespace. client_actor.activate.call_one().get() query_engine = QueryEngine(client_actor) dashboard_info = start_telemetry_servers( adapter=QueryEngineAdapter(query_engine), port=config.dashboard_port, include_dashboard=config.include_dashboard, ) # Self-activate the sidecar process\u0027s own `UnixSocketSink` against # the client socket so telemetry emitted *by* the sidecar (dashboard # logs, query handler traces) flows into the same collector. Without # this the sidecar would be deaf to its own events. _set_unix_socket_sink_path(self.client_socket_path) self._client_actor = client_actor self._query_engine = query_engine self._dashboard_info = dashboard_info if config.include_dashboard: logger.info(\"Monarch Dashboard: %s\", dashboard_info[\"url\"]) def _spawn_telemetry_actors( self, host_meshes: Mapping[str, HostMesh], *, spawn_worker_collectors: bool = True, ) -\u003e None: client_actor = self._client_actor if client_actor is None: raise RuntimeError(\"telemetry handle has no client actor\") for host_mesh in host_meshes.values(): try: client_actor.start_worker_collector.call_one( host_mesh, spawn_worker_collectors, ).get() except Exception: logger.warning( \"failed to start worker telemetry collector\", exc_info=True, ) def shutdown(self) -\u003e None: client_actor = self._client_actor if client_actor is not None: try: client_actor.stop_worker_collectors.call_one().get(timeout=5.0) except Exception: logger.info( \"failed to stop telemetry worker collectors\", exc_info=True, ) # Drain in-flight async work with a short cap. Beyond that, we # prefer a quick teardown over guaranteed completion \u2014 the sidecar # is being asked to die and the parent has already moved on. try: shutdown_context().get(timeout=5.0) except TimeoutError: logger.info(\"telemetry handle shutdown timed out\") try: os.unlink(self.client_socket_path) except OSError: pass",
+       "articleBody": "Source code for monarch._src.job.telemetry_config # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict \"\"\"Telemetry state hosted by the per-job sidecar. The job sidecar is a separate Python process keyed on the job\u0027s `apply_id`. Telemetry reuses that process to host the client-side `TelemetryActor` (collector + scanner + dashboard), ingest telemetry frames over a per-host Unix socket, and serve the dashboard\u0027s HTTP query API. Decoupling it from the parent job process means: - Telemetry state (in-memory DataFusion store) survives across `state()` calls and parent-process refreshes, so query results are stable across job restarts. - The dashboard server keeps running without the parent needing an event loop. - Producers on the same host write into one collector via a stable socket path, regardless of how many parent processes come and go. The parent talks to telemetry via two channels: - The job sidecar command socket: pickled `TelemetryRequest` control messages. - The telemetry data socket (`/tmp/monarch_\u003capply_id\u003e/telemetry.sock`): framed Arrow IPC from producers, decoded by Rust socket ingest into the collector\u0027s scanner. Lifecycle: `Telemetry.ensure_open(...)` is called during `JobTrait._connect`. The first call (`host_meshes={}`) opens the job sidecar\u0027s telemetry handle and activates the client process\u0027s `UnixSocketSink` before raw host meshes are materialized, so host-mesh creation events are captured. Jobs call it again with materialised `host_meshes`; that second call creates telemetry host proc meshes for proc discovery. Remote jobs also activate one live `TelemetryActor` collector per host-local socket namespace and hand only those live worker refs to the client collector for query fan-out. The sidecar also hosts the job\u0027s mesh admin; see `AdminRequest` in `job_sidecar`. \"\"\" from __future__ import annotations import functools import logging import os from dataclasses import dataclass from typing import Any, Callable, cast, Mapping, TypedDict from monarch._rust_bindings.monarch_distributed_telemetry import ( _set_unix_socket_sink_path, ) from monarch._src.job.job_sidecar import ( find_job_sidecar, get_job_sidecar, TelemetryInfoRequest, TelemetryRequest, ) from monarch._src.job.telemetry_actor import TelemetryActor from monarch._src.job.telemetry_ingest import ( telemetry_socket_dir, telemetry_socket_path, ) from monarch.actor import context, HostMesh, shutdown_context from monarch.distributed_telemetry.engine import QueryEngine from monarch.monarch_dashboard.server.app import start_telemetry_servers from monarch.monarch_dashboard.server.query_engine_adapter import QueryEngineAdapter logger: logging.Logger = logging.getLogger(__name__) # Above the scanner\u0027s own 5 s bound on closing its persist log. _PERSIST_CLOSE_TIMEOUT_SECS: float = 10.0 _sidecar_socket_path: str | None = None _startup_provider_registered: bool = False [docs] @dataclass class TelemetryConfig: \"\"\"Configuration for automatic telemetry and snapshot startup. When configured via ``JobTrait.enable_telemetry``, telemetry, mesh admin, and optionally snapshots and a dashboard are started when ``state()`` is called. Args: retention_secs: Retention window in seconds for message and trace data and command heartbeats. Final command outcomes, metadata, and rank results follow actor history for the sidecar lifetime. 0 disables time expiry. include_dashboard: Whether to start the monarch dashboard web server. dashboard_port: Preferred port for the dashboard. snapshot_interval_secs: Interval in seconds between periodic mesh introspection snapshots. Snapshots capture the mesh topology into the telemetry query surface. The default is 30 seconds; 0 disables periodic capture. host_metrics_interval_secs: Interval in seconds between host resource samples (CPU, load, memory, swap, network, and disk) written to the ``host_metrics`` table on every telemetry host. The default is 1 second; 0 disables host sampling. gpu_metrics_interval_secs: Interval in seconds between per-device GPU samples (utilization, memory, temperature, and power) written to the ``gpu_metrics`` table through NVML. The default is 1 second; 0 disables GPU sampling, and hosts without NVIDIA GPUs or NVML skip it. persist_dir: Directory for crash-tolerant telemetry files; each collector writes ``{persist_dir}/{apply_id}/{hostname}-{pid}/``. Use a path that outlives the host, such as a shared mount. ``None`` disables persistence. Use graceful job shutdown to drain queued batches and finalize the log, then check readback\u0027s ``clean`` flag. After unexpected termination, readback recovers complete frames and reports an unclean log and any torn tail. Recent queued or unsynced data may be missing. client_persist_dir: Overrides ``persist_dir`` for the client collector in the job sidecar, which runs where the job was applied. Defaults to ``persist_dir``. \"\"\" retention_secs: int = 3600 include_dashboard: bool = False dashboard_port: int = 8265 snapshot_interval_secs: float = 30.0 host_metrics_interval_secs: float = 1.0 gpu_metrics_interval_secs: float = 1.0 persist_dir: str | None = None client_persist_dir: str | None = None # Successful response from the telemetry handle\u0027s `open_or_refresh` control message, # pickled back over the command socket. The error case rides on the same # wire as `{\"error\": traceback_str}` and is narrowed away by `ensure_open` # before the cast. class _TelemetryResponse(TypedDict): telemetry_url: str dashboard_url: str | None socket_path: str def _telemetry_response(response: object) -\u003e _TelemetryResponse: if not isinstance(response, dict): raise RuntimeError(f\"unexpected telemetry handle response: {response!r}\") error = response.get(\"error\") if isinstance(error, str): raise RuntimeError(error) return cast(_TelemetryResponse, response) def _config_from_wire(config: Mapping[str, object]) -\u003e TelemetryConfig: \"\"\"Rebuild a `TelemetryConfig` from the pickled wire dict. Only the fields the telemetry handle acts on cross the wire; the rest take their defaults.\"\"\" return TelemetryConfig( retention_secs=cast(int, config[\"retention_secs\"]), include_dashboard=cast(bool, config[\"include_dashboard\"]), dashboard_port=cast(int, config[\"dashboard_port\"]), host_metrics_interval_secs=cast(float, config[\"host_metrics_interval_secs\"]), gpu_metrics_interval_secs=cast(float, config[\"gpu_metrics_interval_secs\"]), persist_dir=cast(str | None, config.get(\"persist_dir\")), client_persist_dir=cast(str | None, config.get(\"client_persist_dir\")), ) def install_sidecar_socket_sink(socket_path: str) -\u003e None: \"\"\"Install the sidecar telemetry socket sink locally and in future workers.\"\"\" global _sidecar_socket_path if _sidecar_socket_path not in (None, socket_path): logger.warning( \"replacing telemetry data socket path %s with %s\", _sidecar_socket_path, socket_path, ) _sidecar_socket_path = socket_path _ensure_setup_actor_telemetry_provider() _set_unix_socket_sink_path(socket_path) def _unix_socket_sink_startup() -\u003e Callable[[], None] | None: socket_path = _sidecar_socket_path if socket_path is None: return None return functools.partial(install_sidecar_socket_sink, socket_path) def _ensure_setup_actor_telemetry_provider() -\u003e None: \"\"\"Install the SetupActor provider that activates worker Unix sinks.\"\"\" global _startup_provider_registered if _startup_provider_registered: return from monarch._src.actor.proc_mesh import SetupActor SetupActor.register_startup_function(_unix_socket_sink_startup) _startup_provider_registered = True class Telemetry: \"\"\"Parent-process client for telemetry hosted by the job sidecar. Uses the sidecar prepared by the job connection, or launches an unattached one for directly reachable workers. `ensure_open` opens or refreshes the telemetry handle and forwards the host meshes for worker fan-out. \"\"\" def __init__(self, config: TelemetryConfig) -\u003e None: self._config: TelemetryConfig = config def ensure_open( self, apply_id: str, host_meshes: Mapping[str, HostMesh] | None = None, spawn_worker_collectors: bool = True, ) -\u003e _TelemetryResponse: \"\"\"Ensure the job sidecar\u0027s telemetry handle is open and refreshed.\"\"\" if not isinstance(apply_id, str): raise RuntimeError(\"telemetry requires an active apply_id\") socket_dir = telemetry_socket_dir(apply_id) os.makedirs(socket_dir, mode=0o700, exist_ok=True) os.chmod(socket_dir, 0o700) # The job connection prepares any scheduler gateway before components # run. Both phases below reuse that attached sidecar. guard = get_job_sidecar(apply_id) response = guard.send( TelemetryRequest( apply_id=apply_id, config={ \"retention_secs\": self._config.retention_secs, \"include_dashboard\": self._config.include_dashboard, \"dashboard_port\": self._config.dashboard_port, \"host_metrics_interval_secs\": ( self._config.host_metrics_interval_secs ), \"gpu_metrics_interval_secs\": ( self._config.gpu_metrics_interval_secs ), \"persist_dir\": self._config.persist_dir, \"client_persist_dir\": self._config.client_persist_dir, }, host_meshes=dict(host_meshes or {}), spawn_worker_collectors=spawn_worker_collectors, ) ).get() return _telemetry_response(response) def info(self, apply_id: str) -\u003e _TelemetryResponse: \"\"\"Return an existing telemetry endpoint without starting services.\"\"\" sidecar = find_job_sidecar(apply_id) if sidecar is None: raise RuntimeError(\"the job telemetry sidecar is not running\") response = sidecar.send(TelemetryInfoRequest(apply_id)).get() result = _telemetry_response(response) if ( not isinstance(result.get(\"telemetry_url\"), str) or not result[\"telemetry_url\"] ): raise RuntimeError(f\"invalid job sidecar telemetry response: {response!r}\") return result class _TelemetryHandle: \"\"\"Live telemetry resources hosted inside the job sidecar worker. Owns the client `TelemetryActor` (which owns the scanner), the `QueryEngine` that backs the dashboard\u0027s `/api/query` route, and the dashboard server info. The job sidecar control loop drives `open_or_refresh` and `shutdown`. \"\"\" def __init__(self, apply_id: str) -\u003e None: self._apply_id: str = apply_id # `None` until the first `open_or_refresh` runs `_bootstrap`; serves as # the recorded config for drift detection. We intentionally do NOT restart # on drift \u2014 that would drop the in-memory store and re-bind the data socket, # defeating the point of the sidecar surviving across parent restarts. self._first_config: TelemetryConfig | None = None self._client_actor: Any | None = None self._query_engine: QueryEngine | None = None self._dashboard_info: dict[str, object] | None = None self._worker_collectors_started: bool = False @property def client_socket_path(self) -\u003e str: return telemetry_socket_path(self._apply_id) def open_or_refresh( self, host_meshes: Mapping[str, HostMesh], config: Mapping[str, object], spawn_worker_collectors: bool = True, ) -\u003e _TelemetryResponse: parsed = _config_from_wire(config) if self._first_config is None: self._bootstrap(parsed) self._first_config = parsed elif parsed != self._first_config: # Config drift is intentionally ignored. Restarting here would drop # the in-memory telemetry store and re-bind the data socket. logger.warning(\"telemetry handle config drift ignored\") if host_meshes and not self._worker_collectors_started: self._spawn_telemetry_actors( host_meshes, spawn_worker_collectors=spawn_worker_collectors, ) self._worker_collectors_started = True return self.info() def info(self) -\u003e _TelemetryResponse: \"\"\"Return the endpoint for this already-open telemetry handle.\"\"\" dashboard_info = self._dashboard_info if dashboard_info is None: raise RuntimeError(\"telemetry handle is not open\") api_url = dashboard_info[\"api_url\"] url = dashboard_info[\"url\"] if not isinstance(api_url, str) or ( url is not None and not isinstance(url, str) ): raise RuntimeError(f\"invalid dashboard info: {dashboard_info!r}\") return { \"telemetry_url\": api_url, \"dashboard_url\": url, \"socket_path\": self.client_socket_path, } def _bootstrap(self, config: TelemetryConfig) -\u003e None: # Reach the Python-wrapped `ProcMesh` via `monarch.actor.context()`. # The raw `PyProcMesh_Ref` returned by `bootstrap_host()` lacks # `.spawn`, so we cannot use it directly. actor_context = context() proc_mesh = actor_context.actor_instance.proc_mesh client_actor = proc_mesh.spawn( \"telemetry\", TelemetryActor, self._apply_id, config.retention_secs, config.host_metrics_interval_secs, config.gpu_metrics_interval_secs, config.persist_dir, config.client_persist_dir, ) # `activate` is the actor\u0027s bind decision: it binds the Unix socket and # stands up the scanner for the sidecar host. The job sidecar is keyed # by apply id, so this should be the only live collector for the local # socket namespace. client_actor.activate.call_one().get() query_engine = QueryEngine(client_actor) dashboard_info = start_telemetry_servers( adapter=QueryEngineAdapter(query_engine), port=config.dashboard_port, include_dashboard=config.include_dashboard, sidecar_addr=actor_context.actor_instance.actor_id.addr, ) # Self-activate the sidecar process\u0027s own `UnixSocketSink` against # the client socket so telemetry emitted *by* the sidecar (dashboard # logs, query handler traces) flows into the same collector. Without # this the sidecar would be deaf to its own events. _set_unix_socket_sink_path(self.client_socket_path) self._client_actor = client_actor self._query_engine = query_engine self._dashboard_info = dashboard_info if config.include_dashboard: logger.info(\"Monarch Dashboard: %s\", dashboard_info[\"url\"]) def _spawn_telemetry_actors( self, host_meshes: Mapping[str, HostMesh], *, spawn_worker_collectors: bool = True, ) -\u003e None: client_actor = self._client_actor if client_actor is None: raise RuntimeError(\"telemetry handle has no client actor\") for host_mesh in host_meshes.values(): try: client_actor.start_worker_collector.call_one( host_mesh, spawn_worker_collectors, ).get() except Exception: logger.warning( \"failed to start worker telemetry collector\", exc_info=True, ) def shutdown(self) -\u003e None: client_actor = self._client_actor if client_actor is not None: try: client_actor.stop_worker_collectors.call_one().get(timeout=5.0) except Exception: logger.info( \"failed to stop telemetry worker collectors\", exc_info=True, ) # `shutdown_context` waits at most 0.5 s for `__cleanup__`, which # is too short to finish the log on a slow mount. try: client_actor.close_persist.call_one().get( timeout=_PERSIST_CLOSE_TIMEOUT_SECS ) except Exception: logger.info(\"failed to close telemetry persist log\", exc_info=True) # Drain in-flight async work with a short cap. Beyond that, we # prefer a quick teardown over guaranteed completion \u2014 the sidecar # is being asked to die and the parent has already moved on. try: shutdown_context().get(timeout=5.0) except TimeoutError: logger.info(\"telemetry handle shutdown timed out\") try: os.unlink(self.client_socket_path) except OSError: pass",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

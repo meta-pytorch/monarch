@@ -67,113 +67,49 @@ So now we're down to the real root: `context()`. Everything hangs off of that.
 
 From monarch/\_src/actor/actor_mesh.py:
 ```python
-_context: contextvars.ContextVar[Context] = contextvars.ContextVar(
-    "monarch.actor_mesh._context"
-)
-```
-and:
-```python
 def context() -> Context:
-    c = _context.get(None)
+    c = _context.get()
     if c is None:
-        c = Context._root_client_context() # (1) ask Rust for a bare context
-        _context.set(c)
-
-        from monarch._src.actor.host_mesh import create_local_host_mesh
         from monarch._src.actor.proc_mesh import _get_controller_controller
 
-        c.actor_instance.proc_mesh = _root_proc_mesh.get() # (2) give it a proc mesh
-        _this_host_for_fake_in_process_host.get() # (3) make sure a host exists
-        c.actor_instance._controller_controller = _get_controller_controller()[1]  # (4) wire control plane
+        c = _client_context.get()
+        _set_context(c)
+        _, c.actor_instance._controller_controller = _get_controller_controller()
     return c
 ```
-So the logic is:
-  1. First call: no context yet → build one.
-  2. Later calls: return the same one from the ContextVar.
+`_context` is a context variable that holds the current actor's context. Outside any actor it is empty, so the first call takes the process's root client context from `_client_context`, a `_Lazy` that runs `_init_client_context` once, and then wires the control-plane actor into it.
 
-The interesting part is step (1) above — `Context._root_client_context()` — because that's where Python hands off to Rust.
+### 4. `_init_client_context` bootstraps a real local host
 
-### 4. What `Context._root_client_context()` does (Rust side)
-
-The Rust in context.rs:
-```rust
-#[staticmethod]
-fn _root_client_context(py: Python<'_>) -> PyResult<PyContext> {
-    let _guard = runtime::get_tokio_runtime().enter();
-    let instance: PyInstance = global_root_client().into();
-    Ok(PyContext {
-        instance: instance.into_pyobject(py)?.into(),
-        rank: Extent::unity().point_of_rank(0).unwrap(),
-    })
-}
-```
-What matters is the call to `global_root_client()`. That function, on the Rust side, basically does this:
-```rust
-pub fn global_root_client() -> &'static Instance<()> {
-    static GLOBAL_INSTANCE: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
-    &GLOBAL_INSTANCE.get_or_init(|| {
-        // 1. Make a direct proc for the client to live in.
-        let client_proc = Proc::direct(
-            ChannelAddr::any(default_transport()),
-            "mesh_root_client_proc".into(),
-        ).unwrap();
-
-        // 2. Start an actual actor instance in that proc, called "client".
-        let (client, handle) = client_proc.client("client").expect("root instance create");
-
-        (client, handle)
-    }).0
-}
-```
-So when `_root_client_context()` runs, it is really:
-1. Ensuring there is a single, global, direct-addressed proc called "`mesh_root_client_proc`".
-2. Spawning a "client" actor in it.
-3. Wrapping that actor as a Python `PyContext` and giving it rank 0.
-
-Notice what it doesn't do: it does not attach a proc mesh or a host mesh. Those Python-only fields are still `None` at this point.
-
-### 5. Python fills in the missing pieces
-
-That's why, back in Python, right after calling the Rust function, we do three extra things:
+Also from monarch/\_src/actor/actor_mesh.py:
 ```python
-c.actor_instance.proc_mesh = _root_proc_mesh.get()
-_this_host_for_fake_in_process_host.get()
-c.actor_instance._controller_controller = _get_controller_controller()[1]
+hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_host(
+    default_bootstrap_cmd(), via=via, bind_addr=bind_addr
+)
+
+ctx = Context._from_instance(hy_instance)
+token = _set_context(ctx)
+try:
+    py_host_mesh = HostMesh._from_rust(hy_host_mesh)
+    py_proc_mesh = ProcMesh._from_rust(hy_proc_mesh, py_host_mesh)
+    py_proc_mesh._start_root_logging()
+finally:
+    _reset_context(token)
+
+ctx.actor_instance.proc_mesh = py_proc_mesh
 ```
+`bootstrap_host` (monarch\_hyperactor/src/host\_mesh.rs) does the native work and returns three things:
+1. a host mesh for this machine, served on the default transport, so the client process is itself a host;
+2. the local proc mesh on that host, whose one proc is this process;
+3. the root client actor instance, on that proc.
 
-Here's what each does:
+Python then wraps them. `HostMesh._from_rust` and `ProcMesh._from_rust` wrap meshes that already exist, instead of spawning new ones through `HostMesh.spawn_procs` and `ProcMesh.from_host_mesh`. `_start_root_logging` gives the root client's proc mesh the logging that `from_host_mesh` gives every other proc mesh: a forwarding client and a Python log level that starts at `INFO`. The temporary `_set_context(ctx)` lets these wrappers call `context()` without recursing into the bootstrap.
 
-1.  `_root_proc_mesh: _Lazy["ProcMesh"] = _Lazy(_init_root_proc_mesh)`
-Defined as:
-```python
-def _init_root_proc_mesh() -> "ProcMesh":
-    from monarch._src.actor.host_mesh import fake_in_process_host
+### 5. Now `this_proc()` / `this_host()` work
 
-    return fake_in_process_host()._spawn_nonblocking(
-        name="root_client_proc_mesh",
-        per_host=Extent([], []),
-        setup=None,
-        _attach_controller_controller=False,
-    )
-```
-So this:
-- makes a fake in-process host,
-- spawns one proc on it,
-- that proc mesh is stored as `context().actor_instance.proc_mesh`. Later, when you call `this_proc()` (which reads `context().actor_instance.proc`), you're really just getting a slice of that stored `proc_mesh`.
-
-2.  `_this_host_for_fake_in_process_host: _Lazy["HostMesh"] = _Lazy(...)`
-
-This is the lazy "make me a host mesh" step. It spins up the local v1 host mesh using the same Rust path as the canonical bootstrap.
-
-3. `_get_controller_controller()[1]`
-And we stash the control-plane actor into `c.actor_instance._controller_controller` so later spawns have somewhere to go. We aren't going to unpack that here.
-
-6. Now `this_proc()` / `this_host()` work
-
-After that first `context()` run:
-- `context().actor_instance.proc` is set → so `this_proc()` returns a real `ProcMesh`
-- after the first `context()` run, the proc mesh you get (`context().actor_instance.proc`) was created from a host mesh, so it already carries a `host_mesh` reference — that’s why `this_host()` can just do `this_proc().host_mesh`.
-
+After the first `context()` call:
+- `context().actor_instance.proc` is the root client's proc, so `this_proc()` returns a real `ProcMesh`;
+- that `ProcMesh` carries the bootstrapped `HostMesh`, so `this_host()` is just `this_proc().host_mesh`.
 
 So the original Python snippet:
 ```python
@@ -181,6 +117,6 @@ mesh = this_host().spawn_procs(per_host={"gpus": 2})
 counter = mesh.spawn("counter", Counter, 1)
 ```
 works because:
-1. `this_host()` → got a `HostMesh` that Python created during `context()` bootstrap
+1. `this_host()` → the `HostMesh` that `bootstrap_host` created during `context()` bootstrap
 2. `spawn_procs(...)` → asks that host mesh (which is powered by the Rust v1 host mesh) to create procs
 3. `mesh.spawn(...)` → now that you have a `ProcMesh`, you can put actors on it

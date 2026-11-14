@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Monarch’s actor API does not assign GPUs to procs. A proc sees the devices that its CUDA_VISIBLE_DEVICES exposes, and nothing in Monarch reserves a device for one proc mesh. Placement is a choice o..." />
 
-    <title>Sharing GPUs Between Actors &#8212; Monarch v0.7.0 documentation</title>
+    <title>Sharing GPUs Between Actors &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,22 +50,24 @@
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../_static/documentation_options.js?v=b3dab91b"></script>
     <script src="../../_static/doctools.js?v=888ff710"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="../../_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'generated/examples/gpu_sharing';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/generated/examples/gpu_sharing.html" />
     <link rel="icon" href="../../_static/torch-monarch-icons.svg"/>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Distributed Tensors in Monarch" href="distributed_tensors.html" />
+    <link rel="next" title="SGLang Rollout Engines" href="sglang_actors.html" />
     <link rel="prev" title="GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)" href="grpo/kubernetes_grpo.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -84,7 +86,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="api">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +200,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -563,8 +565,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -649,6 +669,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -662,7 +688,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1248,6 +1298,7 @@ document.write(`
 <li class="toctree-l1"><a class="reference internal" href="grpo_yield.html">GRPO with Direct Port Messaging</a></li>
 <li class="toctree-l1"><a class="reference internal" href="grpo/kubernetes_grpo.html">GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Sharing GPUs Between Actors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sglang_actors.html">SGLang Rollout Engines</a></li>
 <li class="toctree-l1"><a class="reference internal" href="distributed_tensors.html">Distributed Tensors in Monarch</a></li>
 
 
@@ -1259,7 +1310,7 @@ document.write(`
 
 
 <li class="toctree-l1"><a class="reference internal" href="debugging.html">Debugging Python Actors with pdb in Monarch</a></li>
-<li class="toctree-l1"><a class="reference internal" href="otel_collector.html">Exporting Metrics and Logs with OpenTelemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="otel_collector.html">Exporting Metrics, Logs, and Traces with OpenTelemetry</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://docs.pytorch.org/tutorials/intermediate/monarch_distributed_tutorial.html">Multinode Slurm Tutorial</a></li>
 </ul>
 </div>
@@ -1366,7 +1417,7 @@ document.write(`
   <div class="sphx-glr-download-link-note admonition note">
 <p class="admonition-title">Note</p>
 <p><a class="reference internal" href="#sphx-glr-download-generated-examples-gpu-sharing-py"><span class="std std-ref">Go to the end</span></a>
-to download the full example code</p>
+to download the full example code.</p>
 </div>
 <section class="sphx-glr-example-title" id="sharing-gpus-between-actors">
 <span id="sphx-glr-generated-examples-gpu-sharing-py"></span><h1>Sharing GPUs Between Actors<a class="headerlink" href="#sharing-gpus-between-actors" title="Link to this heading">#</a></h1>
@@ -1391,68 +1442,66 @@ runs where <code class="docutils literal notranslate"><span class="pre">spawn_pr
 it is given rather than from its own environment.</p>
 <p>Two meshes with different lists, such as <code class="docutils literal notranslate"><span class="pre">on_gpus([0,</span> <span class="pre">1])</span></code> and <code class="docutils literal notranslate"><span class="pre">on_gpus([4,</span> <span class="pre">5])</span></code>,
 run on disjoint GPUs. Two meshes with the same list run on the same GPUs.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">functools</span><span class="w"> </span><span class="kn">import</span> <a href="https://docs.python.org/3/library/functools.html#functools.partial" title="functools.partial" class="sphx-glr-backref-module-functools sphx-glr-backref-type-py-function"><span class="n">partial</span></a>
-
-<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">Actor</span><span class="p">,</span> <span class="n">default_bootstrap_cmd</span><span class="p">,</span> <span class="n">endpoint</span><span class="p">,</span> <span class="n">this_host</span>
-
-<span class="n">DEVICE_IDS</span> <span class="o">=</span> <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span>
-<span class="n">HIDDEN</span> <span class="o">=</span> <span class="mi">1024</span>
-<span class="n">BATCH</span> <span class="o">=</span> <span class="mi">64</span>
-
-<span class="k">if</span> <span class="nb">max</span><span class="p">(</span><span class="n">DEVICE_IDS</span><span class="p">)</span> <span class="o">&gt;=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.cuda.device_count.html#torch.cuda.device_count" title="torch.cuda.device_count" class="sphx-glr-backref-module-torch-cuda sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">device_count</span></a><span class="p">():</span>
-    <span class="k">raise</span> <span class="ne">SystemExit</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;this host has no GPU </span><span class="si">{</span><span class="nb">max</span><span class="p">(</span><span class="n">DEVICE_IDS</span><span class="p">)</span><span class="si">}</span><span class="s2">; edit DEVICE_IDS&quot;</span><span class="p">)</span>
-
-
-<span class="k">def</span><span class="w"> </span><span class="nf">on_gpus</span><span class="p">(</span><span class="n">device_ids</span><span class="p">):</span>
-    <span class="n">base</span> <span class="o">=</span> <span class="n">default_bootstrap_cmd</span><span class="p">()</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">command</span><span class="p">(</span><span class="n">point</span><span class="p">):</span>
-        <span class="k">return</span> <span class="n">base</span><span class="o">.</span><span class="n">with_env</span><span class="p">({</span><span class="s2">&quot;CUDA_VISIBLE_DEVICES&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">device_ids</span><span class="p">[</span><span class="n">point</span><span class="p">[</span><span class="s2">&quot;gpus&quot;</span><span class="p">]])})</span>
-
-    <span class="k">return</span> <span class="n">command</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="kn">import</span><span class="w"> </span><span class="nn">os</span><span class="w">
+</span><span class="kn">from</span><span class="w"> </span><span class="nn">functools</span><span class="w"> </span><span class="kn">import</span> <a class="sphx-glr-backref-module-functools sphx-glr-backref-type-py-function reference external" href="https://docs.python.org/3/library/functools.html#functools.partial" title="functools.partial"><span class="n">partial</span></a><span class="w">
+</span><span class="w">
+</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span><span class="w">
+</span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch</span><span class="nn">.</span><span class="nn">actor</span><span class="w"> </span><span class="kn">import</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.Actor" title="monarch.actor.Actor"><span class="n">Actor</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.default_bootstrap_cmd" title="monarch.actor.default_bootstrap_cmd"><span class="n">default_bootstrap_cmd</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.endpoint" title="monarch.actor.endpoint"><span class="n">endpoint</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.this_host" title="monarch.actor.this_host"><span class="n">this_host</span></a><span class="w">
+</span><span class="w">
+</span><span class="n">DEVICE_IDS</span> <span class="o">=</span> <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span><span class="w">
+</span><span class="n">HIDDEN</span> <span class="o">=</span> <span class="mi">1024</span><span class="w">
+</span><span class="n">BATCH</span> <span class="o">=</span> <span class="mi">64</span><span class="w">
+</span><span class="w">
+</span><span class="k">if</span> <span class="nb">max</span><span class="p">(</span><span class="n">DEVICE_IDS</span><span class="p">)</span> <span class="o">&gt;</span><span class="o">=</span> <a class="sphx-glr-backref-module-torch-cuda sphx-glr-backref-type-py-function reference external" href="https://docs.pytorch.org/docs/stable/generated/torch.cuda.device_count.html#torch.cuda.device_count" title="torch.cuda.device_count"><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">device_count</span></a><span class="p">(</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="k">raise</span> <span class="ne">SystemExit</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="s2">this host has no GPU </span><span class="si">{</span><span class="nb">max</span><span class="p">(</span><span class="n">DEVICE_IDS</span><span class="p">)</span><span class="si">}</span><span class="s2">; edit DEVICE_IDS</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="w">
+</span><span class="k">def</span><span class="w"> </span><span class="nf">on_gpus</span><span class="p">(</span><span class="n">device_ids</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="n">base</span> <span class="o">=</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.default_bootstrap_cmd" title="monarch.actor.default_bootstrap_cmd"><span class="n">default_bootstrap_cmd</span></a><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="nf">command</span><span class="p">(</span><span class="n">point</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="k">return</span> <span class="n">base</span><span class="o">.</span><span class="n">with_env</span><span class="p">(</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">CUDA_VISIBLE_DEVICES</span><span class="s2">&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">device_ids</span><span class="p">[</span><span class="n">point</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">gpus</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">]</span><span class="p">)</span><span class="p">}</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="k">return</span> <span class="n">command</span><span class="w">
+</span></pre></div></div>
 </section>
 <section id="roles">
 <h2>Roles<a class="headerlink" href="#roles" title="Link to this heading">#</a></h2>
 <p>A policy that generates and a trainer that updates its weights. Both report their
 device and memory use; PyTorch’s memory counters are per process.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">GpuActor</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
-    <span class="nd">@endpoint</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">memory</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="k">return</span> <span class="p">{</span>
-            <span class="s2">&quot;gpu&quot;</span><span class="p">:</span> <a href="https://docs.python.org/3/library/os.html#os.environ" title="os.environ" class="sphx-glr-backref-module-os sphx-glr-backref-type-py-data"><span class="n">os</span><span class="o">.</span><span class="n">environ</span></a><span class="p">[</span><span class="s2">&quot;CUDA_VISIBLE_DEVICES&quot;</span><span class="p">],</span>
-            <span class="s2">&quot;allocated&quot;</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">memory_allocated</span><span class="p">(),</span>
-            <span class="s2">&quot;reserved&quot;</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">memory_reserved</span><span class="p">(),</span>
-        <span class="p">}</span>
-
-
-<span class="k">class</span><span class="w"> </span><span class="nc">Policy</span><span class="p">(</span><span class="n">GpuActor</span><span class="p">):</span>
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Linear.html#torch.nn.Linear" title="torch.nn.Linear" class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span></a><span class="p">(</span><span class="n">HIDDEN</span><span class="p">,</span> <span class="n">HIDDEN</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">&quot;cuda&quot;</span><span class="p">)</span>
-
-    <span class="nd">@endpoint</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">generate</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="k">with</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.no_grad.html#torch.no_grad" title="torch.no_grad" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span></a><span class="p">():</span>
-            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="p">(</span><a href="https://docs.pytorch.org/docs/stable/generated/torch.randn.html#torch.randn" title="torch.randn" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">randn</span></a><span class="p">(</span><span class="n">BATCH</span><span class="p">,</span> <span class="n">HIDDEN</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">&quot;cuda&quot;</span><span class="p">))</span><span class="o">.</span><span class="n">norm</span><span class="p">()</span><span class="o">.</span><span class="n">item</span><span class="p">()</span>
-
-
-<span class="k">class</span><span class="w"> </span><span class="nc">Trainer</span><span class="p">(</span><span class="n">GpuActor</span><span class="p">):</span>
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Linear.html#torch.nn.Linear" title="torch.nn.Linear" class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span></a><span class="p">(</span><span class="n">HIDDEN</span><span class="p">,</span> <span class="n">HIDDEN</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">&quot;cuda&quot;</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">optim</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.optim.SGD.html#torch.optim.SGD" title="torch.optim.SGD" class="sphx-glr-backref-module-torch-optim sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">SGD</span></a><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">parameters</span><span class="p">(),</span> <span class="n">lr</span><span class="o">=</span><span class="mf">1e-3</span><span class="p">,</span> <span class="n">foreach</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-
-    <span class="nd">@endpoint</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">train_step</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="n">loss</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="p">(</span><a href="https://docs.pytorch.org/docs/stable/generated/torch.randn.html#torch.randn" title="torch.randn" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">randn</span></a><span class="p">(</span><span class="n">BATCH</span><span class="p">,</span> <span class="n">HIDDEN</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">&quot;cuda&quot;</span><span class="p">))</span><span class="o">.</span><span class="n">pow</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span>
-        <span class="n">loss</span><span class="o">.</span><span class="n">backward</span><span class="p">()</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">step</span><span class="p">()</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">zero_grad</span><span class="p">()</span>
-        <span class="k">return</span> <span class="n">loss</span><span class="o">.</span><span class="n">item</span><span class="p">()</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="k">class</span><span class="w"> </span><span class="nc">GpuActor</span><span class="p">(</span><a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.Actor" title="monarch.actor.Actor"><span class="n">Actor</span></a><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="nd">&#64;endpoint</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="nf">memory</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="k">return</span> <span class="p">{</span><span class="w">
+</span>            <span class="s2">&quot;</span><span class="s2">gpu</span><span class="s2">&quot;</span><span class="p">:</span> <a class="sphx-glr-backref-module-os sphx-glr-backref-type-py-data reference external" href="https://docs.python.org/3/library/os.html#os.environ" title="os.environ"><span class="n">os</span><span class="o">.</span><span class="n">environ</span></a><span class="p">[</span><span class="s2">&quot;</span><span class="s2">CUDA_VISIBLE_DEVICES</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">,</span><span class="w">
+</span>            <span class="s2">&quot;</span><span class="s2">allocated</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">memory_allocated</span><span class="p">(</span><span class="p">)</span><span class="p">,</span><span class="w">
+</span>            <span class="s2">&quot;</span><span class="s2">reserved</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">memory_reserved</span><span class="p">(</span><span class="p">)</span><span class="p">,</span><span class="w">
+</span>        <span class="p">}</span><span class="w">
+</span><span class="w">
+</span><span class="w">
+</span><span class="k">class</span><span class="w"> </span><span class="nc">Policy</span><span class="p">(</span><span class="n">GpuActor</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="o">=</span> <a class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance reference external" href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Linear.html#torch.nn.Linear" title="torch.nn.Linear"><span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span></a><span class="p">(</span><span class="n">HIDDEN</span><span class="p">,</span> <span class="n">HIDDEN</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">cuda</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="nd">&#64;endpoint</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="nf">generate</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="k">with</span> <a class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance reference external" href="https://docs.pytorch.org/docs/stable/generated/torch.no_grad.html#torch.no_grad" title="torch.no_grad"><span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span></a><span class="p">(</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="p">(</span><a class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function reference external" href="https://docs.pytorch.org/docs/stable/generated/torch.randn.html#torch.randn" title="torch.randn"><span class="n">torch</span><span class="o">.</span><span class="n">randn</span></a><span class="p">(</span><span class="n">BATCH</span><span class="p">,</span> <span class="n">HIDDEN</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">cuda</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="w">
+</span><span class="k">class</span><span class="w"> </span><span class="nc">Trainer</span><span class="p">(</span><span class="n">GpuActor</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="o">=</span> <a class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance reference external" href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Linear.html#torch.nn.Linear" title="torch.nn.Linear"><span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span></a><span class="p">(</span><span class="n">HIDDEN</span><span class="p">,</span> <span class="n">HIDDEN</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">cuda</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">optim</span> <span class="o">=</span> <a class="sphx-glr-backref-module-torch-optim sphx-glr-backref-type-py-class sphx-glr-backref-instance reference external" href="https://docs.pytorch.org/docs/stable/generated/torch.optim.SGD.html#torch.optim.SGD" title="torch.optim.SGD"><span class="n">torch</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">SGD</span></a><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">parameters</span><span class="p">(</span><span class="p">)</span><span class="p">,</span> <span class="n">lr</span><span class="o">=</span><span class="mf">1e-3</span><span class="p">,</span> <span class="n">foreach</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="nd">&#64;endpoint</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="nf">train_step</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="n">loss</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="p">(</span><a class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function reference external" href="https://docs.pytorch.org/docs/stable/generated/torch.randn.html#torch.randn" title="torch.randn"><span class="n">torch</span><span class="o">.</span><span class="n">randn</span></a><span class="p">(</span><span class="n">BATCH</span><span class="p">,</span> <span class="n">HIDDEN</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">&quot;</span><span class="s2">cuda</span><span class="s2">&quot;</span><span class="p">)</span><span class="p">)</span><span class="o">.</span><span class="n">pow</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>        <span class="n">loss</span><span class="o">.</span><span class="n">backward</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">zero_grad</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>        <span class="k">return</span> <span class="n">loss</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 </section>
 <section id="concurrent-sharing">
 <h2>Concurrent sharing<a class="headerlink" href="#concurrent-sharing" title="Link to this heading">#</a></h2>
@@ -1464,24 +1513,23 @@ rather than <code class="docutils literal notranslate"><span class="pre">Exclusi
 process’s PyTorch allocator at a fraction of GPU memory, so a role that outgrows its
 share fails with an out-of-memory error in its own process instead of starving the
 other.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">policy_procs</span> <span class="o">=</span> <span class="n">this_host</span><span class="p">()</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span>
-    <span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;gpus&quot;</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">DEVICE_IDS</span><span class="p">)},</span>
-    <span class="n">bootstrap_command</span><span class="o">=</span><span class="n">on_gpus</span><span class="p">(</span><span class="n">DEVICE_IDS</span><span class="p">),</span>
-    <span class="n">bootstrap</span><span class="o">=</span><a href="https://docs.python.org/3/library/functools.html#functools.partial" title="functools.partial" class="sphx-glr-backref-module-functools sphx-glr-backref-type-py-function"><span class="n">partial</span></a><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">set_per_process_memory_fraction</span><span class="p">,</span> <span class="mf">0.3</span><span class="p">),</span>
-<span class="p">)</span>
-<span class="n">trainer_procs</span> <span class="o">=</span> <span class="n">this_host</span><span class="p">()</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span>
-    <span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;gpus&quot;</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">DEVICE_IDS</span><span class="p">)},</span>
-    <span class="n">bootstrap_command</span><span class="o">=</span><span class="n">on_gpus</span><span class="p">(</span><span class="n">DEVICE_IDS</span><span class="p">),</span>
-    <span class="n">bootstrap</span><span class="o">=</span><a href="https://docs.python.org/3/library/functools.html#functools.partial" title="functools.partial" class="sphx-glr-backref-module-functools sphx-glr-backref-type-py-function"><span class="n">partial</span></a><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">set_per_process_memory_fraction</span><span class="p">,</span> <span class="mf">0.6</span><span class="p">),</span>
-<span class="p">)</span>
-<span class="n">policy</span> <span class="o">=</span> <span class="n">policy_procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;policy&quot;</span><span class="p">,</span> <span class="n">Policy</span><span class="p">)</span>
-<span class="n">trainer</span> <span class="o">=</span> <span class="n">trainer_procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;trainer&quot;</span><span class="p">,</span> <span class="n">Trainer</span><span class="p">)</span>
-
-<span class="n">generated</span> <span class="o">=</span> <span class="n">policy</span><span class="o">.</span><span class="n">generate</span><span class="o">.</span><span class="n">call</span><span class="p">()</span>
-<span class="n">losses</span> <span class="o">=</span> <span class="n">trainer</span><span class="o">.</span><span class="n">train_step</span><span class="o">.</span><span class="n">call</span><span class="p">()</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;generated:&quot;</span><span class="p">,</span> <span class="n">generated</span><span class="o">.</span><span class="n">get</span><span class="p">()</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="n">gpus</span><span class="o">=</span><span class="mi">0</span><span class="p">),</span> <span class="s2">&quot;loss:&quot;</span><span class="p">,</span> <span class="n">losses</span><span class="o">.</span><span class="n">get</span><span class="p">()</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="n">gpus</span><span class="o">=</span><span class="mi">0</span><span class="p">))</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="n">policy_procs</span> <span class="o">=</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.this_host" title="monarch.actor.this_host"><span class="n">this_host</span></a><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="w">
+</span>    <span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">gpus</span><span class="s2">&quot;</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">DEVICE_IDS</span><span class="p">)</span><span class="p">}</span><span class="p">,</span><span class="w">
+</span>    <span class="n">bootstrap_command</span><span class="o">=</span><span class="n">on_gpus</span><span class="p">(</span><span class="n">DEVICE_IDS</span><span class="p">)</span><span class="p">,</span><span class="w">
+</span>    <span class="n">bootstrap</span><span class="o">=</span><a class="sphx-glr-backref-module-functools sphx-glr-backref-type-py-function reference external" href="https://docs.python.org/3/library/functools.html#functools.partial" title="functools.partial"><span class="n">partial</span></a><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">set_per_process_memory_fraction</span><span class="p">,</span> <span class="mf">0.3</span><span class="p">)</span><span class="p">,</span><span class="w">
+</span><span class="p">)</span><span class="w">
+</span><span class="n">trainer_procs</span> <span class="o">=</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.this_host" title="monarch.actor.this_host"><span class="n">this_host</span></a><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="w">
+</span>    <span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">gpus</span><span class="s2">&quot;</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">DEVICE_IDS</span><span class="p">)</span><span class="p">}</span><span class="p">,</span><span class="w">
+</span>    <span class="n">bootstrap_command</span><span class="o">=</span><span class="n">on_gpus</span><span class="p">(</span><span class="n">DEVICE_IDS</span><span class="p">)</span><span class="p">,</span><span class="w">
+</span>    <span class="n">bootstrap</span><span class="o">=</span><a class="sphx-glr-backref-module-functools sphx-glr-backref-type-py-function reference external" href="https://docs.python.org/3/library/functools.html#functools.partial" title="functools.partial"><span class="n">partial</span></a><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">set_per_process_memory_fraction</span><span class="p">,</span> <span class="mf">0.6</span><span class="p">)</span><span class="p">,</span><span class="w">
+</span><span class="p">)</span><span class="w">
+</span><span class="n">policy</span> <span class="o">=</span> <span class="n">policy_procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">policy</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">Policy</span><span class="p">)</span><span class="w">
+</span><span class="n">trainer</span> <span class="o">=</span> <span class="n">trainer_procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">trainer</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">Trainer</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="n">generated</span> <span class="o">=</span> <span class="n">policy</span><span class="o">.</span><span class="n">generate</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="n">losses</span> <span class="o">=</span> <span class="n">trainer</span><span class="o">.</span><span class="n">train_step</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">generated:</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">generated</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="n">gpus</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">loss:</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">losses</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="n">gpus</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 </section>
 <section id="taking-turns">
 <h2>Taking turns<a class="headerlink" href="#taking-turns" title="Link to this heading">#</a></h2>
@@ -1490,12 +1538,11 @@ waiting for each call before issuing the next, so only one role computes at a ti
 Both models stay resident. Taking turns avoids contention for compute, not memory:
 the caps above still apply, and each process’s PyTorch allocator keeps its cached
 blocks between turns.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">):</span>
-    <span class="n">policy</span><span class="o">.</span><span class="n">generate</span><span class="o">.</span><span class="n">call</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-    <span class="n">loss</span> <span class="o">=</span> <span class="n">trainer</span><span class="o">.</span><span class="n">train_step</span><span class="o">.</span><span class="n">call</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">()</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="n">gpus</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
-    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;step </span><span class="si">{</span><span class="n">step</span><span class="si">}</span><span class="s2">: loss=</span><span class="si">{</span><span class="n">loss</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="n">policy</span><span class="o">.</span><span class="n">generate</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>    <span class="n">loss</span> <span class="o">=</span> <span class="n">trainer</span><span class="o">.</span><span class="n">train_step</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="n">gpus</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span><span class="w">
+</span>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="s2">step </span><span class="si">{</span><span class="n">step</span><span class="si">}</span><span class="s2">: loss=</span><span class="si">{</span><span class="n">loss</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 </section>
 <section id="co-locating-actors-in-one-proc">
 <h2>Co-locating actors in one proc<a class="headerlink" href="#co-locating-actors-in-one-proc" title="Link to this heading">#</a></h2>
@@ -1505,30 +1552,31 @@ adds no context of its own. Actors in one proc share its fate: if the proc dies,
 both go with it.</p>
 <p>Because PyTorch’s memory counters are per process, the reference’s allocations
 appear in the trainer’s report rather than in one of their own.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">report</span><span class="p">(</span><span class="n">label</span><span class="p">,</span> <span class="n">role</span><span class="p">):</span>
-    <span class="k">for</span> <span class="n">usage</span> <span class="ow">in</span> <span class="n">role</span><span class="o">.</span><span class="n">memory</span><span class="o">.</span><span class="n">call</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">()</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
-        <span class="nb">print</span><span class="p">(</span><span class="n">label</span><span class="p">,</span> <span class="n">usage</span><span class="p">)</span>
-
-
-<span class="n">report</span><span class="p">(</span><span class="s2">&quot;policy&quot;</span><span class="p">,</span> <span class="n">policy</span><span class="p">)</span>
-<span class="n">report</span><span class="p">(</span><span class="s2">&quot;trainer&quot;</span><span class="p">,</span> <span class="n">trainer</span><span class="p">)</span>
-
-<span class="n">reference</span> <span class="o">=</span> <span class="n">trainer_procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;reference&quot;</span><span class="p">,</span> <span class="n">Policy</span><span class="p">)</span>
-<span class="n">reference</span><span class="o">.</span><span class="n">generate</span><span class="o">.</span><span class="n">call</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-<span class="n">report</span><span class="p">(</span><span class="s2">&quot;trainer + reference&quot;</span><span class="p">,</span> <span class="n">trainer</span><span class="p">)</span>
-
-<span class="n">policy_procs</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-<span class="n">trainer_procs</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Example completed successfully!&quot;</span><span class="p">)</span>
-</pre></div>
-</div>
-<p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 0.000 seconds)</p>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="k">def</span><span class="w"> </span><span class="nf">report</span><span class="p">(</span><span class="n">label</span><span class="p">,</span> <span class="n">role</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="k">for</span> <span class="n">usage</span> <span class="ow">in</span> <span class="n">role</span><span class="o">.</span><span class="n">memory</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">values</span><span class="p">(</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="nb">print</span><span class="p">(</span><span class="n">label</span><span class="p">,</span> <span class="n">usage</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="w">
+</span><span class="n">report</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">policy</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">policy</span><span class="p">)</span><span class="w">
+</span><span class="n">report</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">trainer</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">trainer</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="n">reference</span> <span class="o">=</span> <span class="n">trainer_procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">reference</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">Policy</span><span class="p">)</span><span class="w">
+</span><span class="n">reference</span><span class="o">.</span><span class="n">generate</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="n">report</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">trainer + reference</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">trainer</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="n">policy_procs</span><span class="o">.</span><span class="n">stop</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="n">trainer_procs</span><span class="o">.</span><span class="n">stop</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">Example completed successfully!</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 <div class="sphx-glr-footer sphx-glr-footer-example docutils container" id="sphx-glr-download-generated-examples-gpu-sharing-py">
+<div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
+<p><a class="reference download internal" download="" href="../../_downloads/9da5e1f98c97b0ea20d285e3c2bc597c/gpu_sharing.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">gpu_sharing.ipynb</span></code></a></p>
+</div>
 <div class="sphx-glr-download sphx-glr-download-python docutils container">
 <p><a class="reference download internal" download="" href="../../_downloads/ccb22b19282b0e3def66b5ccf46894e3/gpu_sharing.py"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Python</span> <span class="pre">source</span> <span class="pre">code:</span> <span class="pre">gpu_sharing.py</span></code></a></p>
 </div>
-<div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
-<p><a class="reference download internal" download="" href="../../_downloads/9da5e1f98c97b0ea20d285e3c2bc597c/gpu_sharing.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">gpu_sharing.ipynb</span></code></a></p>
+<div class="sphx-glr-download sphx-glr-download-zip docutils container">
+<p><a class="reference download internal" download="" href="../../_downloads/bbfcc776051888254e0ad2d63f780198/gpu_sharing.zip"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">zipped:</span> <span class="pre">gpu_sharing.zip</span></code></a></p>
 </div>
 </div>
 <p class="sphx-glr-signature"><a class="reference external" href="https://sphinx-gallery.github.io">Gallery generated by Sphinx-Gallery</a></p>
@@ -1587,11 +1635,11 @@ appear in the trainer’s report rather than in one of their own.</p>
       </div>
     </a>
     <a class="right-next"
-       href="distributed_tensors.html"
+       href="sglang_actors.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Distributed Tensors in Monarch</p>
+        <p class="prev-next-title">SGLang Rollout Engines</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1626,11 +1674,11 @@ appear in the trainer’s report rather than in one of their own.</p>
       </div>
     </a>
     <a class="right-next"
-       href="distributed_tensors.html"
+       href="sglang_actors.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Distributed Tensors in Monarch</p>
+        <p class="prev-next-title">SGLang Rollout Engines</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1828,7 +1876,7 @@ appear in the trainer’s report rather than in one of their own.</p>
        "headline": "Sharing GPUs Between Actors",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/generated/examples/gpu_sharing.html",
-       "articleBody": "Note Go to the end to download the full example code Sharing GPUs Between Actors# Monarch\u2019s actor API does not assign GPUs to procs. A proc sees the devices that its CUDA_VISIBLE_DEVICES exposes, and nothing in Monarch reserves a device for one proc mesh. Placement is a choice of each proc\u2019s environment, made with bootstrap_command, so two roles can share a GPU as easily as they can split a host. This example covers: Pinning proc meshes to GPUs Two roles sharing GPUs, concurrently or taking turns Co-locating actors in one proc The example runs one proc per GPU in DEVICE_IDS, which is [0, 1] by default. List any GPUs on your host, even just one. Pinning procs to GPUs# bootstrap_command accepts a callable that builds each proc\u2019s launch command from its coordinate. on_gpus(device_ids) maps coordinate gpus=i to GPU device_ids[i], so each proc sees exactly one device as cuda. The callable runs where spawn_procs is called, not on the host, so it takes GPUs from the list it is given rather than from its own environment. Two meshes with different lists, such as on_gpus([0, 1]) and on_gpus([4, 5]), run on disjoint GPUs. Two meshes with the same list run on the same GPUs. import os from functools import partial import torch from monarch.actor import Actor, default_bootstrap_cmd, endpoint, this_host DEVICE_IDS = [0, 1] HIDDEN = 1024 BATCH = 64 if max(DEVICE_IDS) \u003e= torch.cuda.device_count(): raise SystemExit(f\"this host has no GPU {max(DEVICE_IDS)}; edit DEVICE_IDS\") def on_gpus(device_ids): base = default_bootstrap_cmd() def command(point): return base.with_env({\"CUDA_VISIBLE_DEVICES\": str(device_ids[point[\"gpus\"]])}) return command Roles# A policy that generates and a trainer that updates its weights. Both report their device and memory use; PyTorch\u2019s memory counters are per process. class GpuActor(Actor): @endpoint def memory(self): return { \"gpu\": os.environ[\"CUDA_VISIBLE_DEVICES\"], \"allocated\": torch.cuda.memory_allocated(), \"reserved\": torch.cuda.memory_reserved(), } class Policy(GpuActor): def __init__(self): self.model = torch.nn.Linear(HIDDEN, HIDDEN, device=\"cuda\") @endpoint def generate(self): with torch.no_grad(): return self.model(torch.randn(BATCH, HIDDEN, device=\"cuda\")).norm().item() class Trainer(GpuActor): def __init__(self): self.model = torch.nn.Linear(HIDDEN, HIDDEN, device=\"cuda\") self.optim = torch.optim.SGD(self.model.parameters(), lr=1e-3, foreach=True) @endpoint def train_step(self): loss = self.model(torch.randn(BATCH, HIDDEN, device=\"cuda\")).pow(2).mean() loss.backward() self.optim.step() self.optim.zero_grad() return loss.item() Concurrent sharing# Both meshes get the same list, so policy proc i and trainer proc i share GPU DEVICE_IDS[i]. Each proc has its own CUDA context, and the driver time-slices between them. This requires the GPUs\u2019 compute mode to be Default rather than Exclusive_Process. bootstrap runs in each proc before any actor is spawned. Here it caps each process\u2019s PyTorch allocator at a fraction of GPU memory, so a role that outgrows its share fails with an out-of-memory error in its own process instead of starving the other. policy_procs = this_host().spawn_procs( per_host={\"gpus\": len(DEVICE_IDS)}, bootstrap_command=on_gpus(DEVICE_IDS), bootstrap=partial(torch.cuda.set_per_process_memory_fraction, 0.3), ) trainer_procs = this_host().spawn_procs( per_host={\"gpus\": len(DEVICE_IDS)}, bootstrap_command=on_gpus(DEVICE_IDS), bootstrap=partial(torch.cuda.set_per_process_memory_fraction, 0.6), ) policy = policy_procs.spawn(\"policy\", Policy) trainer = trainer_procs.spawn(\"trainer\", Trainer) generated = policy.generate.call() losses = trainer.train_step.call() print(\"generated:\", generated.get().item(gpus=0), \"loss:\", losses.get().item(gpus=0)) Taking turns# When generation and training alternate within a step, the controller orders them by waiting for each call before issuing the next, so only one role computes at a time. Both models stay resident. Taking turns avoids contention for compute, not memory: the caps above still apply, and each process\u2019s PyTorch allocator keeps its cached blocks between turns. for step in range(3): policy.generate.call().get() loss = trainer.train_step.call().get().item(gpus=0) print(f\"step {step}: loss={loss:.4f}\") Co-locating actors in one proc# A proc mesh can host several actors. A frozen reference model spawned on the trainer\u2019s procs shares the trainer\u2019s process, CUDA context, and memory cap, so it adds no context of its own. Actors in one proc share its fate: if the proc dies, both go with it. Because PyTorch\u2019s memory counters are per process, the reference\u2019s allocations appear in the trainer\u2019s report rather than in one of their own. def report(label, role): for usage in role.memory.call().get().values(): print(label, usage) report(\"policy\", policy) report(\"trainer\", trainer) reference = trainer_procs.spawn(\"reference\", Policy) reference.generate.call().get() report(\"trainer + reference\", trainer) policy_procs.stop().get() trainer_procs.stop().get() print(\"Example completed successfully!\") Total running time of the script: (0 minutes 0.000 seconds) Download Python source code: gpu_sharing.py Download Jupyter notebook: gpu_sharing.ipynb Gallery generated by Sphinx-Gallery",
+       "articleBody": "Note Go to the end to download the full example code. Sharing GPUs Between Actors# Monarch\u2019s actor API does not assign GPUs to procs. A proc sees the devices that its CUDA_VISIBLE_DEVICES exposes, and nothing in Monarch reserves a device for one proc mesh. Placement is a choice of each proc\u2019s environment, made with bootstrap_command, so two roles can share a GPU as easily as they can split a host. This example covers: Pinning proc meshes to GPUs Two roles sharing GPUs, concurrently or taking turns Co-locating actors in one proc The example runs one proc per GPU in DEVICE_IDS, which is [0, 1] by default. List any GPUs on your host, even just one. Pinning procs to GPUs# bootstrap_command accepts a callable that builds each proc\u2019s launch command from its coordinate. on_gpus(device_ids) maps coordinate gpus=i to GPU device_ids[i], so each proc sees exactly one device as cuda. The callable runs where spawn_procs is called, not on the host, so it takes GPUs from the list it is given rather than from its own environment. Two meshes with different lists, such as on_gpus([0, 1]) and on_gpus([4, 5]), run on disjoint GPUs. Two meshes with the same list run on the same GPUs. import os from functools import partial import torch from monarch.actor import Actor, default_bootstrap_cmd, endpoint, this_host DEVICE_IDS = [0, 1] HIDDEN = 1024 BATCH = 64 if max(DEVICE_IDS) \u003e= torch.cuda.device_count(): raise SystemExit(f\"this host has no GPU {max(DEVICE_IDS)}; edit DEVICE_IDS\") def on_gpus(device_ids): base = default_bootstrap_cmd() def command(point): return base.with_env({\"CUDA_VISIBLE_DEVICES\": str(device_ids[point[\"gpus\"]])}) return command Roles# A policy that generates and a trainer that updates its weights. Both report their device and memory use; PyTorch\u2019s memory counters are per process. class GpuActor(Actor): @endpoint def memory(self): return { \"gpu\": os.environ[\"CUDA_VISIBLE_DEVICES\"], \"allocated\": torch.cuda.memory_allocated(), \"reserved\": torch.cuda.memory_reserved(), } class Policy(GpuActor): def __init__(self): self.model = torch.nn.Linear(HIDDEN, HIDDEN, device=\"cuda\") @endpoint def generate(self): with torch.no_grad(): return self.model(torch.randn(BATCH, HIDDEN, device=\"cuda\")).norm().item() class Trainer(GpuActor): def __init__(self): self.model = torch.nn.Linear(HIDDEN, HIDDEN, device=\"cuda\") self.optim = torch.optim.SGD(self.model.parameters(), lr=1e-3, foreach=True) @endpoint def train_step(self): loss = self.model(torch.randn(BATCH, HIDDEN, device=\"cuda\")).pow(2).mean() loss.backward() self.optim.step() self.optim.zero_grad() return loss.item() Concurrent sharing# Both meshes get the same list, so policy proc i and trainer proc i share GPU DEVICE_IDS[i]. Each proc has its own CUDA context, and the driver time-slices between them. This requires the GPUs\u2019 compute mode to be Default rather than Exclusive_Process. bootstrap runs in each proc before any actor is spawned. Here it caps each process\u2019s PyTorch allocator at a fraction of GPU memory, so a role that outgrows its share fails with an out-of-memory error in its own process instead of starving the other. policy_procs = this_host().spawn_procs( per_host={\"gpus\": len(DEVICE_IDS)}, bootstrap_command=on_gpus(DEVICE_IDS), bootstrap=partial(torch.cuda.set_per_process_memory_fraction, 0.3), ) trainer_procs = this_host().spawn_procs( per_host={\"gpus\": len(DEVICE_IDS)}, bootstrap_command=on_gpus(DEVICE_IDS), bootstrap=partial(torch.cuda.set_per_process_memory_fraction, 0.6), ) policy = policy_procs.spawn(\"policy\", Policy) trainer = trainer_procs.spawn(\"trainer\", Trainer) generated = policy.generate.call() losses = trainer.train_step.call() print(\"generated:\", generated.get().item(gpus=0), \"loss:\", losses.get().item(gpus=0)) Taking turns# When generation and training alternate within a step, the controller orders them by waiting for each call before issuing the next, so only one role computes at a time. Both models stay resident. Taking turns avoids contention for compute, not memory: the caps above still apply, and each process\u2019s PyTorch allocator keeps its cached blocks between turns. for step in range(3): policy.generate.call().get() loss = trainer.train_step.call().get().item(gpus=0) print(f\"step {step}: loss={loss:.4f}\") Co-locating actors in one proc# A proc mesh can host several actors. A frozen reference model spawned on the trainer\u2019s procs shares the trainer\u2019s process, CUDA context, and memory cap, so it adds no context of its own. Actors in one proc share its fate: if the proc dies, both go with it. Because PyTorch\u2019s memory counters are per process, the reference\u2019s allocations appear in the trainer\u2019s report rather than in one of their own. def report(label, role): for usage in role.memory.call().get().values(): print(label, usage) report(\"policy\", policy) report(\"trainer\", trainer) reference = trainer_procs.spawn(\"reference\", Policy) reference.generate.call().get() report(\"trainer + reference\", trainer) policy_procs.stop().get() trainer_procs.stop().get() print(\"Example completed successfully!\") Download Jupyter notebook: gpu_sharing.ipynb Download Python source code: gpu_sharing.py Download zipped: gpu_sharing.zip Gallery generated by Sphinx-Gallery",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

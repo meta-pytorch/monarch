@@ -11,7 +11,7 @@
         :class: sphx-glr-download-link-note
 
         :ref:`Go to the end <sphx_glr_download_generated_examples_grpo_yield.py>`
-        to download the full example code
+        to download the full example code.
 
 .. rst-class:: sphx-glr-example-title
 
@@ -128,7 +128,7 @@ here.
 
 .. GENERATED FROM PYTHON SOURCE LINES 118-128
 
-.. code-block:: default
+.. code-block:: Python
 
     import asyncio
     import copy
@@ -155,7 +155,7 @@ ships the fresh weights to one of the generators.
 
 .. GENERATED FROM PYTHON SOURCE LINES 138-169
 
-.. code-block:: default
+.. code-block:: Python
 
 
     STATE_DIM = 4
@@ -196,7 +196,7 @@ Messages around the ring
 
 .. GENERATED FROM PYTHON SOURCE LINES 172-198
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -246,7 +246,7 @@ iterations, and vice versa.
 
 .. GENERATED FROM PYTHON SOURCE LINES 215-299
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -343,7 +343,7 @@ reward, forwards a ``ScoredRollout``.
 
 .. GENERATED FROM PYTHON SOURCE LINES 305-347
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -397,7 +397,7 @@ sampled actions so the trainer can compute a KL-to-reference penalty.
 
 .. GENERATED FROM PYTHON SOURCE LINES 352-394
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -455,7 +455,7 @@ fires the one-shot done port.
 
 .. GENERATED FROM PYTHON SOURCE LINES 403-486
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -560,7 +560,7 @@ All the controller does is:
 
 .. GENERATED FROM PYTHON SOURCE LINES 501-552
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -616,15 +616,10 @@ All the controller does is:
 
 .. GENERATED FROM PYTHON SOURCE LINES 553-555
 
-.. code-block:: default
+.. code-block:: Python
 
     if __name__ == "__main__":
         asyncio.run(main())
-
-
-.. rst-class:: sphx-glr-timing
-
-   **Total running time of the script:** (0 minutes 0.000 seconds)
 
 
 .. _sphx_glr_download_generated_examples_grpo_yield.py:
@@ -633,16 +628,17 @@ All the controller does is:
 
   .. container:: sphx-glr-footer sphx-glr-footer-example
 
+    .. container:: sphx-glr-download sphx-glr-download-jupyter
 
-
+      :download:`Download Jupyter notebook: grpo_yield.ipynb <grpo_yield.ipynb>`
 
     .. container:: sphx-glr-download sphx-glr-download-python
 
       :download:`Download Python source code: grpo_yield.py <grpo_yield.py>`
 
-    .. container:: sphx-glr-download sphx-glr-download-jupyter
+    .. container:: sphx-glr-download sphx-glr-download-zip
 
-      :download:`Download Jupyter notebook: grpo_yield.ipynb <grpo_yield.ipynb>`
+      :download:`Download zipped: grpo_yield.zip <grpo_yield.zip>`
 
 
 .. only:: html

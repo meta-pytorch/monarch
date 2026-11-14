@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Monarch v1’s logging subsystem streams stdout/ stderr from remote procs back to the client and lets Python control log delivery and levels. This section is written top-down: start with the big pict..." />
 
-    <title>Logging &#8212; Monarch v0.7.0 documentation</title>
+    <title>Logging &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,15 +50,17 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/documentation_options.js?v=b3dab91b"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="../../../../_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/logging/index';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/logging/index.html" />
@@ -82,7 +84,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +198,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -561,8 +563,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -647,6 +667,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -660,7 +686,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1327,7 +1377,7 @@ document.write(`
 <section id="what-s-in-this-section">
 <h2>What’s in this section<a class="headerlink" href="#what-s-in-this-section" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p><strong><a class="reference internal" href="overview.html"><span class="std std-doc">Overview</span></a></strong> — Python kickoff → Rust actors: how <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code> boots logging, what <code class="docutils literal notranslate"><span class="pre">LoggingManager</span></code> does, and what <code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.spawn(...)</span></code> creates.</p></li>
+<li><p><strong><a class="reference internal" href="overview.html"><span class="std std-doc">Overview</span></a></strong> — Python kickoff → Rust actors: how <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code> boots logging, what <code class="docutils literal notranslate"><span class="pre">LoggingManager</span></code> does, what <code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.spawn(...)</span></code> creates, and how the Python log level is set from the Python side.</p></li>
 <li><p><strong><a class="reference internal" href="forwarder.html"><span class="std std-doc">Forwarder internals</span></a></strong> — <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code>, <code class="docutils literal notranslate"><span class="pre">BOOTSTRAP_LOG_CHANNEL</span></code>, streaming vs. silent mode, and the versioned sync-flush path.</p></li>
 <li><p><strong><a class="reference internal" href="stream-forwarders.html"><span class="std std-doc">Stream forwarders</span></a></strong> — <code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code>, <code class="docutils literal notranslate"><span class="pre">tee</span></code>, <code class="docutils literal notranslate"><span class="pre">FileAppender</span></code>, <code class="docutils literal notranslate"><span class="pre">RotatingLineBuffer</span></code>; how raw bytes become lines sent to forwarders/files.</p></li>
 <li><p><strong><a class="reference internal" href="client.html"><span class="std std-doc">Client actor</span></a></strong> — <code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code> aggregation windows, similarity bucketing, flush barriers, and teardown.</p></li>
@@ -1341,8 +1391,8 @@ document.write(`
 <section id="quick-mental-model">
 <h2>Quick mental model<a class="headerlink" href="#quick-mental-model" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p><strong>Three moving parts</strong>: a client-side coordinator (<code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code>) and two per-proc meshes (<code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code> (optional), <code class="docutils literal notranslate"><span class="pre">LoggerRuntimeActor</span></code>).</p></li>
-<li><p><strong>Two planes</strong>: raw FD streams (stdout/stderr) → forwarders (if enabled); and Python logging (levels/handlers) → logger runtime.</p></li>
+<li><p><strong>Moving parts</strong>: a client-side coordinator (<code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code>) and one per-proc mesh (<code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code>, optional). The per-proc Python log level is set on the Python side by a <code class="docutils literal notranslate"><span class="pre">_LogLevelSetter</span></code> actor, keeping the Rust forwarding stack Python-free.</p></li>
+<li><p><strong>Two planes</strong>: raw FD streams (stdout/stderr) → forwarders (if enabled); and Python logging (levels) → the Python-side log-level actor.</p></li>
 <li><p><strong>Barriers</strong>: versioned sync flush guarantees all logs up to a point have been delivered.</p></li>
 <li><p><strong>Conditional forwarding</strong>: The <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code> mesh is only spawned if <code class="docutils literal notranslate"><span class="pre">MESH_ENABLE_LOG_FORWARDING</span></code> is true; otherwise logs stay local.</p></li>
 </ul>
@@ -1618,7 +1668,7 @@ document.write(`
        "headline": "Logging",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-mesh-book/src/logging/index.html",
-       "articleBody": "Logging# Monarch v1\u2019s logging subsystem streams stdout/stderr from remote procs back to the client and lets Python control log delivery and levels. This section is written top-down: start with the big picture, then dive into each component. What\u2019s in this section# Overview \u2014 Python kickoff \u2192 Rust actors: how ProcMesh boots logging, what LoggingManager does, and what LoggingMeshClient.spawn(...) creates. Forwarder internals \u2014 LogForwardActor, BOOTSTRAP_LOG_CHANNEL, streaming vs. silent mode, and the versioned sync-flush path. Stream forwarders \u2014 StreamFwder, tee, FileAppender, RotatingLineBuffer; how raw bytes become lines sent to forwarders/files. Client actor \u2014 LogClientActor aggregation windows, similarity bucketing, flush barriers, and teardown. Python control surface \u2014 logging_option(...), flush(), IPython cell-end flushers, FD capture. Config \u0026 env \u2014 Tunables like HYPERACTOR_READ_LOG_BUFFER, HYPERACTOR_FORCE_FILE_LOG, HYPERACTOR_PREFIX_WITH_RANK, defaults. Ordering \u2014 what is guaranteed (and what isn\u2019t) Teardown \u2014 barrier-before-stop, EOF handling, drop paths File aggregation \u2014 per-proc files on bootstrap hosts Quick mental model# Three moving parts: a client-side coordinator (LogClientActor) and two per-proc meshes (LogForwardActor (optional), LoggerRuntimeActor). Two planes: raw FD streams (stdout/stderr) \u2192 forwarders (if enabled); and Python logging (levels/handlers) \u2192 logger runtime. Barriers: versioned sync flush guarantees all logs up to a point have been delivered. Conditional forwarding: The LogForwardActor mesh is only spawned if MESH_ENABLE_LOG_FORWARDING is true; otherwise logs stay local. Quickstart (Python)# pm = host_mesh.spawn_procs(per_host={\"gpus\": 1}) await pm.logging_option( stream_to_client=True, aggregate_window_sec=3, level=logging.INFO, ) # \u2026run workload; logs stream back\u2026 await pm.stop() # does a blocking flush before teardown",
+       "articleBody": "Logging# Monarch v1\u2019s logging subsystem streams stdout/stderr from remote procs back to the client and lets Python control log delivery and levels. This section is written top-down: start with the big picture, then dive into each component. What\u2019s in this section# Overview \u2014 Python kickoff \u2192 Rust actors: how ProcMesh boots logging, what LoggingManager does, what LoggingMeshClient.spawn(...) creates, and how the Python log level is set from the Python side. Forwarder internals \u2014 LogForwardActor, BOOTSTRAP_LOG_CHANNEL, streaming vs. silent mode, and the versioned sync-flush path. Stream forwarders \u2014 StreamFwder, tee, FileAppender, RotatingLineBuffer; how raw bytes become lines sent to forwarders/files. Client actor \u2014 LogClientActor aggregation windows, similarity bucketing, flush barriers, and teardown. Python control surface \u2014 logging_option(...), flush(), IPython cell-end flushers, FD capture. Config \u0026 env \u2014 Tunables like HYPERACTOR_READ_LOG_BUFFER, HYPERACTOR_FORCE_FILE_LOG, HYPERACTOR_PREFIX_WITH_RANK, defaults. Ordering \u2014 what is guaranteed (and what isn\u2019t) Teardown \u2014 barrier-before-stop, EOF handling, drop paths File aggregation \u2014 per-proc files on bootstrap hosts Quick mental model# Moving parts: a client-side coordinator (LogClientActor) and one per-proc mesh (LogForwardActor, optional). The per-proc Python log level is set on the Python side by a _LogLevelSetter actor, keeping the Rust forwarding stack Python-free. Two planes: raw FD streams (stdout/stderr) \u2192 forwarders (if enabled); and Python logging (levels) \u2192 the Python-side log-level actor. Barriers: versioned sync flush guarantees all logs up to a point have been delivered. Conditional forwarding: The LogForwardActor mesh is only spawned if MESH_ENABLE_LOG_FORWARDING is true; otherwise logs stay local. Quickstart (Python)# pm = host_mesh.spawn_procs(per_host={\"gpus\": 1}) await pm.logging_option( stream_to_client=True, aggregate_window_sec=3, level=logging.INFO, ) # \u2026run workload; logs stream back\u2026 await pm.stop() # does a blocking flush before teardown",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

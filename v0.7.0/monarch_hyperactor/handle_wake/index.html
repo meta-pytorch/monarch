@@ -1,0 +1,30 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="GIL-free completion wake for `Handle.as_asyncio` (HDL-17 to HDL-21 in `crate::handle`)."><title>monarch_hyperactor::handle_wake - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (c397dae80 2026-07-02)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module handle_wake</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../monarch_hyperactor/index.html">monarch_<wbr>hyperactor</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate monarch_<wbr>hyperactor</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">monarch_hyperactor</a></div><h1>Module <span>handle_<wbr>wake</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/monarch_hyperactor/handle_wake.rs.html#9-1390">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>GIL-free completion wake for <code>Handle.as_asyncio</code> (HDL-17 to HDL-21 in
+<a href="../handle/index.html" title="mod monarch_hyperactor::handle"><code>crate::handle</code></a>).</p>
+<p>Each asyncio loop that can watch a file descriptor (<code>loop.add_reader</code>,
+which every selector-based loop, including all of Monarch’s, provides) gets
+one [<code>LoopWake</code>]: a queue of <code>u64</code> tokens and a non-blocking pipe whose read
+end the loop watches. A loop without <code>add_reader</code> keeps the
+<code>call_soon_threadsafe</code> path (HDL-21).</p>
+<p><code>waker</code> and <code>read_fd</code> are the two ends of the pipe; <code>tx</code> and <code>rx</code> are the
+two ends of the token queue. When a <code>Handle</code> completes, its Tokio observer
+pushes its token and writes one byte to the pipe ([<code>Notifier::notify</code>]),
+without the GIL. The byte only wakes the loop; the queue says which awaits
+completed. The loop’s reader drains the pipe, then the queue, and settles
+the future of each completed await.</p>
+<p>The loop’s selector is the channel’s only strong owner, through its
+<code>on_readable</code> callback. The registry holds the loop as a weak key and the
+channel through a weak reference. Each entry holds its pending await’s
+future strongly, because that reference is the waiting task’s only owner
+outside the task’s own cycle; asyncio holds tasks weakly. Closing the loop
+therefore releases the channel, its read end, its entries and their
+futures; the write end lasts until every notifier is done (HDL-20).
+<code>__traverse__</code> lets the garbage collector free an unclosed loop (HDL-19,
+which also records the case that is not freed):</p>
+<div class="example-wrap"><pre class="language-text"><code>registry:         weak(loop) ──▶ weak(LoopWake)
+loop&#39;s selector:  read_fd    ──▶ LoopWake.on_readable
+
+LoopWake
+  ├─ tx / rx    queue of u64 tokens
+  ├─ waker      pipe write end, shared with every Notifier
+  ├─ read_fd    pipe read end, registered with `add_reader`
+  └─ entries    token → (asyncio future, Handle)</code></pre></div></div></details></section></div></main></body></html>

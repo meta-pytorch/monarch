@@ -1,47 +1,53 @@
-# Python control surface
+# Python Control Surface
 
-## What it exposes
+## What It Exposes
 
-A small, explicit API to start logging for a `ProcMesh`, stream remote `stdout/stderr` back to your notebook/REPL, tune aggregation & verbosity, and perform a **versioned sync flush** before teardown.
+The Python API installs logging for a `ProcMesh`, streams remote stdout and stderr back to the notebook or REPL, adjusts aggregation and Python verbosity, and performs a versioned sync flush before teardown.
 
-> **Placement:** There is exactly one `LogClientActor`, and it runs inside the Python/driver process (your notebook/REPL). Python calls fan out to per-proc forwarders and back.
+There is exactly one `LogClientActor`, and it runs inside the Python driver process. Python calls fan out to per-proc forwarders and back.
 
-## API surface
+## API Surface
 
-### `LoggingMeshClient.spawn(instance, proc_mesh) -> PyPythonTask`
+### `LoggingMeshClient.spawn(instance, raw, *, stream_to_client, aggregate_window_sec) -> Handle[LoggingMeshClient]`
 
-Spawns:
+Starts immediately, waits for the raw proc-creation Handle, and then creates and configures:
 
-- a single `LogClientActor` (in the Python/driver process),
-- per-proc `LogForwardActor`s (in remote procs),
-- per-proc `LoggerRuntimeActor`s (Python logging runtime).
+- a single `LogClientActor` in the Python driver process;
+- per-proc `LogForwardActor`s when forwarding is enabled.
 
-### `LoggingMeshClient.set_mode(instance, stream_to_client: bool, aggregate_window_sec: Optional[int], level: int) -> None`
+Both are Rust actors. Python log levels are handled separately by the per-proc `_LogLevelSetter` actor that `LoggingManager` installs on an ordinary Python proc mesh.
 
-- Turns streaming on/off (`stream_to_client`).
-- Sets aggregation window (seconds) **only if** streaming is enabled.
-- Sets Python logging level in the per-proc `LoggerRuntimeActor`.
+### `LoggingMeshClient.set_mode(instance, stream_to_client: bool, aggregate_window_sec: Optional[int]) -> None`
 
-> **Constraint:** if `aggregate_window_sec` is `Some` while `stream_to_client` is `False`, `set_mode` raises a runtime error (see source).
+- Turns streaming on or off.
+- Sets the aggregation window only when streaming is enabled.
+
+If `aggregate_window_sec` is set while `stream_to_client` is false, `set_mode` raises a runtime error.
 
 ### `LoggingMeshClient.flush(instance) -> Handle[None]`
 
-Performs a **versioned sync flush** across all forwarders so the caller deterministically waits until "all logs up to now" are delivered. The flush starts during the call; the returned `Handle` completes when it has finished, and dropping the `Handle` does not cancel it.
-See: [Client actor → Barrier protocol](client.html#barrier-protocol-sync-flush) and [Forwarder internals](forwarder.html).
+Performs a versioned sync flush across all forwarders. The returned Handle completes after all logs through the chosen version have been delivered. Dropping the Handle does not cancel the flush.
 
-## Minimal example
+See [Client actor → Barrier protocol](client.html#barrier-protocol-sync-flush) and [Forwarder internals](forwarder.html).
+
+## Minimal Example
 
 ```
 from monarch._rust_bindings.monarch_hyperactor.logging import LoggingMeshClient
-import logging
 
-client = await LoggingMeshClient.spawn(instance, proc_mesh) # one client actor in driver
-client.set_mode(instance, stream_to_client=True, aggregate_window_sec=3, level=logging.INFO)
+client = await LoggingMeshClient.spawn(
+ instance,
+ raw_proc_handle,
+ stream_to_client=True,
+ aggregate_window_sec=3,
+)
 
-# ... run workload producing stdout/stderr in remote procs ...
+# Run work that produces stdout or stderr in remote procs.
 
-await client.flush(instance) # barrier: all logs observed up to this point
+await client.flush(instance)
 ```
+
+The Handle completes only after Rust actor creation and initial forwarding-mode submission succeed. At the `ProcMesh` layer, readiness also waits for `_LogLevelSetter` to apply the initial Python level. Later `pm.logging_option(...)` calls send stream and aggregation changes to `LoggingMeshClient` and broadcast Python level changes to `_LogLevelSetter`.
 
 ## Related
 

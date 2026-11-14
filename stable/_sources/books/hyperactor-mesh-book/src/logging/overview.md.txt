@@ -1,149 +1,79 @@
 # Logging
 
-## Python kickoff → Rust actors
+## Python Kickoff → Rust Actors
 
-### High-level flow
+### High-Level Flow
 
-1. Python `ProcMesh` boots and attaches a `LoggingManager`.
-2. On mesh init, Python asks Rust to spawn a logging stack via `LoggingMeshClient.spawn(...)`.
-3. Rust spawns:
-    * a `LogClientActor` in the *client process*
-    * a `LogForwardActor` mesh across all procs in the `ProcMesh`
-    * a `LoggerRuntimeActor` mesh (per-proc Python logging integration).
-4. Python configures behavior with `set_mode(...)` and can sync-flush logs via `flush(...)`.
+1. `ProcMesh.from_host_mesh` submits the pure-Rust logging client and a Python log-level actor against the raw proc-creation Handle.
+2. Native code waits for the procs, creates the forwarding actors, and applies the requested streaming and aggregation mode. The Python actor applies the initial root-logger level on each proc.
+3. Proc readiness waits for both logging paths. If user setup is needed, its actor spawns afterward, and ordinary user actors wait for its reply as well.
+4. Python can change the forwarding mode and Python log level afterward and flush logs before teardown.
 
-### Python entry point: `ProcMesh` wires up logging
+### Proc Initialization
 
-When a `ProcMesh` is constructed from a `HostMesh`, it defers init then calls into the logging manager:
 ```python
-# proc_mesh.py
-pm = ProcMesh(hy_proc_mesh, host_mesh, region, region, None)
-
-async def task(
-    pm: "ProcMesh",
-    hy_proc_mesh_task: "Shared[HyProcMesh]",
-    setup_actor: Optional["SetupActor"],
-    stream_log_to_client: bool,
-) → HyProcMesh:
-    hy_proc_mesh = await hy_proc_mesh_task
-
-    await pm._logging_manager.init(hy_proc_mesh, stream_log_to_client)
-    ...
-```
-
-`LoggingManager.init(...)` spawns the client:
-```python
-# actor/logging.py
-self._logging_mesh_client = await LoggingMeshClient.spawn(instance, proc_mesh=proc_mesh)
-self._logging_mesh_client.set_mode(
-  instance,
-  stream_to_client=stream_to_client,
-  aggregate_window_sec=3 if stream_to_client else None,
-  level=logging.INFO,
+pm = ProcMesh(raw, host_mesh, region, region, None)
+log = pm._logging_manager.start(instance, raw, host_mesh.stream_logs)
+level = pm._logging_manager.spawn_log_level_actor(pm, raw)
+logged = _after([log, level], raw)
+pm._proc_mesh = logged
+setup_actor = SetupActor.startup_actor_from_setup_function(
+    pm, logged, setup, run_startup_functions=_attach_controller_controller
 )
+if setup_actor is not None:
+    done = setup_actor.setup.call()._as_handle()
+    pm._proc_mesh = _after([logged, done], logged)
 ```
-Two public levers from Python:
-- `await pm.logging_option(stream_to_client=True, aggregate_window_sec=3, level=logging.INFO)`
-    - forward to `LoggingMeshClient.set_mode(...)` and (in notebooks), registers a cell-end flusher and enables FD capture so OS-level stdout/stderr show up.
-- `pm.stop()` (or `async with ProcMesh`) calls a blocking flush before tearing down the mesh.
+
+`logged` waits for both the Rust client and `_LogLevelSetter`, so the initial `INFO` level is applied before proc initialization completes.
+
+Client bootstrap builds the root client's proc mesh with `ProcMesh._from_rust`, not `from_host_mesh`, and `_start_root_logging` gives it the same logging: a forwarding client and an initial `INFO` level. Its only proc is the driver process, so the level is set directly instead of through `_LogLevelSetter`, and `logging_option(level=...)` updates the driver's root logger.
+
+The setup actor's init message reserves `logged`, not the completion that waits for its own reply. That avoids a dependency cycle. Waiting for `logged` before the setup reply also makes a logging failure the reported initialization error.
+
+### What Logging Installation Creates
+
+`LoggingMeshClient.spawn(instance, raw, stream_to_client=..., aggregate_window_sec=...)` starts native work immediately and returns a Handle. Dropping or timing out an observer does not cancel installation.
+
+After raw proc creation succeeds, it creates the pure-Rust forwarding stack:
+
+- one `LogClientActor` in the controller process, to aggregate output and coordinate flush barriers;
+- a `LogForwardActor` on each proc if `MESH_ENABLE_LOG_FORWARDING` is enabled.
+
+It then applies the initial streaming and aggregation mode. Creation or mode errors fail the Handle. `LoggingManager._logging_mesh_client` polls that Handle: it exposes a client only after installation succeeds, and returns `None` while pending or after failure.
+
+Separately, Python spawns `_LogLevelSetter` on each ordinary Python proc. Its constructor applies `logging.INFO`, and `pm.logging_option(...)` broadcasts later level changes to it. Neither Rust forwarding actor touches a Python runtime.
+
+In notebooks, `pm.logging_option(...)` also registers the cell-end flusher and enables FD capture. `ProcMesh.stop()` awaits the async flush before native stop.
 
 ---
 
-### Crossing the FFI: what `LoggingMeshClient.spawn(...)` does
+### Control Surface from Python to Rust
 
-Rust sets up the three actor pieces the Python side depends on:
-- `LogClientActor` (in the client proc): orchestrates flushes and aggregates client-side buffering.
-- `LogForwardActor` mesh (on every proc): receives stdout/stderr, forwards to the client (optionally aggregating).
-- `LoggerRuntimeActor` mesh (on every proc): controls the Python logging subsystem (log levels, handlers, etc).
+### `set_mode(stream_to_client, aggregate_window_sec)`
 
-#### Schematic (for orientation)
-```rust
-// One local client actor, plus two per-proc meshes:
-let client_actor = instance.proc().spawn("log_client", ()).await;
-let client_actor_ref = client_actor.bind();
-let forwarder_mesh = proc_mesh.spawn(cx_instance, "log_forwarder", &client_actor_ref).await;
-let logger_mesh = proc_mesh.spawn(cx_instance, "logger", &()).await;
-```
-
-#### Real code (trimmed to essentials)
-
-```rust
-// monarch_hyperactor logging.rs
-
-#[pymethods]
-impl LoggingMeshClient {
-    #[staticmethod]
-    fn spawn(instance: &PyInstance, proc_mesh: &PyProcMesh) -> PyResult<PyPythonTask> {
-        let proc_mesh = proc_mesh.mesh_ref()?;
-        let instance = instance.clone();
-
-        PyPythonTask::new(async move {
-            // 1) Client-side coordinator actor (in the client process)
-            let client_actor: ActorHandle<LogClientActor> =
-                instance_dispatch!(instance, async move |cx_instance| {
-                    cx_instance
-                        .proc()
-                        .spawn(&Name::new("log_client").to_string(), LogClientActor::default())
-                        .await
-                })?;
-            let client_actor_ref = client_actor.bind();
-
-            // 2) Per-proc forwarders (wired back to the client actor)
-            // Only spawned if MESH_ENABLE_LOG_FORWARDING is true
-            let forwarder_mesh = if hyperactor_config::global::get(MESH_ENABLE_LOG_FORWARDING) {
-                Some(instance_dispatch!(instance, async |cx_instance| {
-                    proc_mesh
-                        .spawn(cx_instance, "log_forwarder", &client_actor_ref)
-                        .await
-                }).map_err(anyhow::Error::from)?)
-            } else {
-                None
-            };
-
-            // 3) Per-proc Python logging integration (always spawned)
-            let logger_mesh = instance_dispatch!(instance, async |cx_instance| {
-                proc_mesh.spawn(cx_instance, "logger", &()).await
-            }).map_err(anyhow::Error::from)?;
-
-            Ok(Self { forwarder_mesh, logger_mesh, client_actor })
-        })
-    }
-}
-```
-#### What to notice:
-- `PyPythonTask::new(async move {...})`: bridges the Python call into Rust async, returning a task handle back to Python.
-- `instance_dispatch!`: executes the spawn on the correct actor instance context.
-- LogClientActor is spawned with `LogClientActor::default()`, not `()`.
-- Forwarder mesh is conditionally spawned only if `MESH_ENABLE_LOG_FORWARDING` is true; it's `Option<ActorMesh<LogForwardActor>>`.
-- Three things get created: one `LogClientActor` (client proc), **N** `LogForwardActor` (per remote proc, if enabled), **N** `LoggerRuntimeActor` (per remote proc).
-
----
-
-### Control surface from Python → Rust
-
-### `set_mode(stream_to_client, aggregate_window_sec_level)`
 ```rust
 // logging.rs (inside LoggingMeshClient::set_mode)
 if let Some(ref forwarder_mesh) = self.forwarder_mesh {
-    forwarder_mesh
-        .cast(cx, LogForwardMessage::SetMode { stream_to_client })?;
+    forwarder_mesh.cast(
+        instance.deref(),
+        LogForwardMessage::SetMode { stream_to_client },
+    )?;
 }
 
-self.logger_mesh
-    .cast(cx, LoggerRuntimeMessage::SetLogging { level })?;
-
-self.client_actor
-    .send(LogClientMessage::SetAggregate { aggregate_window_sec })?;
+self.client_actor.post(
+    instance.deref(),
+    LogClientMessage::SetAggregate { aggregate_window_sec },
+);
 ```
-- Forwarders (if they exist) decide whether to stream back to the client
-- LoggerRuntime sets Python logging level inside each remote process.
-- Client actor records/updates aggregation windowing behavior.
 
-> From Python you call await `pm.logging_option(...)`; under the hood that calls `set_mode(...)` and (if in a notebook) registers a cell-end flusher + enables FD capture so OS-level writes show up.
+- Forwarders, when present, decide whether to stream back to the client.
+- The client actor records the aggregation window.
+- Python logging level is not set here. `LoggingManager.logging_option(...)` broadcasts it to `_LogLevelSetter` on the Python side.
 
 ---
 
-### Sync flush barrier (`flush()`)
+### Sync Flush Barrier (`flush()`)
 
 ```rust
 // logging.rs
@@ -156,39 +86,39 @@ impl LoggingMeshClient {
         let (reply_tx, reply_rx) = cx.instance().open_once_port::<()>();
         let (version_tx, version_rx) = cx.instance().open_once_port::<u64>();
 
-        // 1) Ask the client actor to initiate a versioned sync flush.
-        client_actor.send(LogClientMessage::StartSyncFlush {
-            expected_procs: forwarder_mesh.region().num_ranks(),
-            reply: reply_tx.bind(),
-            version: version_tx.bind(),
-        })?;
+        client_actor.post(
+            cx,
+            LogClientMessage::StartSyncFlush {
+                expected_procs: forwarder_mesh.region().num_ranks(),
+                reply: reply_tx.bind(),
+                version: version_tx.bind(),
+            },
+        );
 
-        // 2) Wait for the chosen version.
         let version = version_rx.recv().await?;
-
-        // 3) Tell all forwarders to flush up to that version.
         forwarder_mesh.cast(cx, LogForwardMessage::ForceSyncFlush { version })?;
-
-        // 4) Wait for the all-clear from the client actor.
         reply_rx.recv().await?;
         Ok(())
     }
 }
 ```
-**Flow in one breath**: client allocates a version, forwarders drain/logs up to that version, client receives confirmations and signals the barrier is complete. Python's `LoggingManager.flush()` wraps this with a short timeout during teardown and cell ends.
+
+The client allocates a version, the forwarders drain logs through that version, and the client replies after every forwarder has reached the barrier. Python's `LoggingManager.flush()` wraps this with a short timeout during teardown and cell ends.
 
 ---
 
-### Teardown (client-side)
+### Teardown (Client Side)
 
 ```rust
 impl Drop for LoggingMeshClient {
     fn drop(&mut self) {
-        if let Err(e) = self.client_actor.drain_and_stop() {
-            // During shutdown, channels may already be closed.
-            tracing::debug!("error draining logging client actor during shutdown: {}", e);
-        }
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = self
+                .client_actor
+                .drain_and_stop("logging client shutdown");
+        }));
     }
 }
 ```
-This ensures the coordinator actor is drained/stopped when the Python object goes away. Separately, `ProcMesh.stop()` also does a blocking flush before it tears down the mesh.
+
+This drains and stops the coordinator when the Python object goes away. Separately, `ProcMesh.stop()` awaits the async flush before it tears down the mesh.

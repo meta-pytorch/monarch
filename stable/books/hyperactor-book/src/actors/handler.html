@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The Handler trait defines how an actor receives and responds to messages of a specific type. Each message type that an actor can handle must be declared by implementing this trait. The runtime invo..." />
 
-    <title>The Handler Trait &#8212; Monarch v0.7.0 documentation</title>
+    <title>The Handler Trait &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,15 +50,17 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/documentation_options.js?v=b3dab91b"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="../../../../_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/actors/handler';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/actors/handler.html" />
@@ -82,7 +84,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +198,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -561,8 +563,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -647,6 +667,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -660,7 +686,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1339,6 +1389,7 @@ document.write(`
 <li><p><code class="docutils literal notranslate"><span class="pre">cx</span></code> gives access to the actor’s runtime context, including its identity, mailbox, and any capabilities exposed by the <code class="docutils literal notranslate"><span class="pre">Context</span></code> type (such as spawning or reference resolution).</p></li>
 <li><p>The return value indicates whether the message was handled successfully.</p></li>
 </ul>
+<p>Returning <code class="docutils literal notranslate"><span class="pre">Err</span></code> fails the actor. Return an <code class="docutils literal notranslate"><span class="pre">ActorErrorKind</span></code> through <code class="docutils literal notranslate"><span class="pre">anyhow::Error</span></code> to preserve a structured failure, including through <code class="docutils literal notranslate"><span class="pre">anyhow::Context</span></code>. For example, <code class="docutils literal notranslate"><span class="pre">ActorErrorKind::UnhandledSupervisionEvent(Box::new(event))</span></code> retains <code class="docutils literal notranslate"><span class="pre">event</span></code> as the cause; the runtime adds this actor’s frame.</p>
 <p>An actor may implement <code class="docutils literal notranslate"><span class="pre">Handler&lt;M&gt;</span></code> multiple times — once for each message type <code class="docutils literal notranslate"><span class="pre">M</span></code> it supports.</p>
 </section>
 <section id="built-in-handlers">
@@ -1636,7 +1687,7 @@ document.write(`
        "headline": "The Handler Trait",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/actors/handler.html",
-       "articleBody": "The Handler Trait# The Handler trait defines how an actor receives and responds to messages of a specific type. Each message type that an actor can handle must be declared by implementing this trait. The runtime invokes the handle method when such a message is delivered. #[async_trait] pub trait Handler\u003cM\u003e: Actor { async fn handle(\u0026mut self, cx: \u0026Context\u003cSelf\u003e, message: M) -\u003e Result\u003c(), anyhow::Error\u003e; } Message Dispatch: handle# The handle method is invoked by the runtime whenever a message of type M arrives at a matching port on the actor. message is the received payload. cx gives access to the actor\u2019s runtime context, including its identity, mailbox, and any capabilities exposed by the Context type (such as spawning or reference resolution). The return value indicates whether the message was handled successfully. An actor may implement Handler\u003cM\u003e multiple times \u2014 once for each message type M it supports. Built-in Handlers# The runtime provides implementations of Handler\u003cM\u003e for a few internal message types: Handler\u003cSignal\u003e# This is a marker implementation indicating that all actors can receive Signal. The handler is not expected to be invoked directly \u2014 its real behavior is implemented inside the runtime. #[async_trait] impl\u003cA: Actor\u003e Handler\u003cSignal\u003e for A { async fn handle( \u0026mut self, _cx: \u0026Context\u003cSelf\u003e, _message: Signal, ) -\u003e Result\u003c(), anyhow::Error\u003e { unimplemented!(\"signal handler should not be called directly\") } } Multipart routed messages# let mut message = wirevalue::Any::\u003cwirevalue::encoding::Multipart\u003e::serialize(\u0026value)?; message.visit_multipart_parts_mut::\u003cPortRefRepr, anyhow::Error\u003e(|port| { port.update_port_addr(rewritten_addr); Ok(()) })?; Casting and accumulation routes serialized multipart messages through intermediate actors. Intermediate actors rewrite typed multipart parts directly, then forward the serialized message to the destination actor\u2019s ordinary typed handler port. This construct is used in the implementation of accumulation, a communication pattern where a message is multicast to multiple recipients and their replies are gathered\u2014possibly through intermediate actors\u2014before being sent back to the original sender. To enable this, selected fields such as PortRefs serialize as typed multipart parts. Intermediate nodes visit those part representations and rewrite the port addresses to point back to themselves. This ensures that replies from downstream actors are routed through the intermediate, enabling reply collection and reduction. Once a message reaches its destination, the mailbox deserializes the multipart payload as the actor\u2019s typed message and dispatches it to the actor\u2019s existing Handler\u003cM\u003e implementation. This allows actors to remain unaware of accumulation mechanics\u2014they can just implement Handler\u003cM\u003e as usual.",
+       "articleBody": "The Handler Trait# The Handler trait defines how an actor receives and responds to messages of a specific type. Each message type that an actor can handle must be declared by implementing this trait. The runtime invokes the handle method when such a message is delivered. #[async_trait] pub trait Handler\u003cM\u003e: Actor { async fn handle(\u0026mut self, cx: \u0026Context\u003cSelf\u003e, message: M) -\u003e Result\u003c(), anyhow::Error\u003e; } Message Dispatch: handle# The handle method is invoked by the runtime whenever a message of type M arrives at a matching port on the actor. message is the received payload. cx gives access to the actor\u2019s runtime context, including its identity, mailbox, and any capabilities exposed by the Context type (such as spawning or reference resolution). The return value indicates whether the message was handled successfully. Returning Err fails the actor. Return an ActorErrorKind through anyhow::Error to preserve a structured failure, including through anyhow::Context. For example, ActorErrorKind::UnhandledSupervisionEvent(Box::new(event)) retains event as the cause; the runtime adds this actor\u2019s frame. An actor may implement Handler\u003cM\u003e multiple times \u2014 once for each message type M it supports. Built-in Handlers# The runtime provides implementations of Handler\u003cM\u003e for a few internal message types: Handler\u003cSignal\u003e# This is a marker implementation indicating that all actors can receive Signal. The handler is not expected to be invoked directly \u2014 its real behavior is implemented inside the runtime. #[async_trait] impl\u003cA: Actor\u003e Handler\u003cSignal\u003e for A { async fn handle( \u0026mut self, _cx: \u0026Context\u003cSelf\u003e, _message: Signal, ) -\u003e Result\u003c(), anyhow::Error\u003e { unimplemented!(\"signal handler should not be called directly\") } } Multipart routed messages# let mut message = wirevalue::Any::\u003cwirevalue::encoding::Multipart\u003e::serialize(\u0026value)?; message.visit_multipart_parts_mut::\u003cPortRefRepr, anyhow::Error\u003e(|port| { port.update_port_addr(rewritten_addr); Ok(()) })?; Casting and accumulation routes serialized multipart messages through intermediate actors. Intermediate actors rewrite typed multipart parts directly, then forward the serialized message to the destination actor\u2019s ordinary typed handler port. This construct is used in the implementation of accumulation, a communication pattern where a message is multicast to multiple recipients and their replies are gathered\u2014possibly through intermediate actors\u2014before being sent back to the original sender. To enable this, selected fields such as PortRefs serialize as typed multipart parts. Intermediate nodes visit those part representations and rewrite the port addresses to point back to themselves. This ensures that replies from downstream actors are routed through the intermediate, enabling reply collection and reduction. Once a message reaches its destination, the mailbox deserializes the multipart payload as the actor\u2019s typed message and dispatches it to the actor\u2019s existing Handler\u003cM\u003e implementation. This allows actors to remain unaware of accumulation mechanics\u2014they can just implement Handler\u003cM\u003e as usual.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

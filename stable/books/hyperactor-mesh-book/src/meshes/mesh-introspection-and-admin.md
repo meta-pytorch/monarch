@@ -115,6 +115,7 @@ So `MeshAdminAgent` is the place where opaque references become typed navigation
 
 - `node_type = "host"`
 - `addr`
+- `hostname`
 - `num_procs`
 - `children`
 - `system_children`

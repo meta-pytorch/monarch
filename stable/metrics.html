@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Monarch records built-in counters, gauges, and histograms with OpenTelemetry(OTel). The same instruments can feed job-local distributed telemetry, an external OpenTelemetry Protocol (OTLP) endpoint..." />
 
-    <title>Metrics &#8212; Monarch v0.7.0 documentation</title>
+    <title>Metrics &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,23 +50,25 @@
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="_static/documentation_options.js?v=05c9169f"></script>
+    <script src="_static/documentation_options.js?v=b3dab91b"></script>
     <script src="_static/doctools.js?v=888ff710"></script>
     <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'metrics';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/metrics.html" />
     <link rel="icon" href="_static/torch-monarch-icons.svg"/>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Mesh Admin TUI" href="admin-tui.html" />
-    <link rel="prev" title="Distributed Telemetry" href="distributed-telemetry.html" />
+    <link rel="next" title="OpenTelemetry" href="opentelemetry.html" />
+    <link rel="prev" title="Profiling Actor Activity" href="profiling.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -84,7 +86,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +200,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -563,8 +565,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="#">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -649,6 +669,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -662,7 +688,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="#">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1240,7 +1290,10 @@ document.write(`
   <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
   <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="distributed-telemetry.html">Distributed Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="telemetry-persistence.html">Telemetry persistence</a></li>
+<li class="toctree-l1"><a class="reference internal" href="profiling.html">Profiling Actor Activity</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Metrics</a></li>
+<li class="toctree-l1"><a class="reference internal" href="opentelemetry.html">OpenTelemetry</a></li>
 <li class="toctree-l1"><a class="reference internal" href="admin-tui.html">Mesh Admin TUI</a></li>
 <li class="toctree-l1"><a class="reference internal" href="monarch-dashboard.html">Monarch Dashboard</a></li>
 </ul>
@@ -1522,10 +1575,11 @@ and SQL examples.</p>
                       └─&gt; external metrics backend
 </pre></div>
 </div>
-<p>In a build with OTLP support, setting <code class="docutils literal notranslate"><span class="pre">OTEL_EXPORTER_OTLP_ENDPOINT</span></code> enables an
-independent metric reader. It sends collections to the configured OpenTelemetry
-Collector over OTLP/HTTP. The collector controls routing, processing, and
-delivery to external metrics systems.</p>
+<p>Setting <code class="docutils literal notranslate"><span class="pre">OTEL_EXPORTER_OTLP_ENDPOINT</span></code> enables an independent metric reader. It
+sends collections to the configured OpenTelemetry Collector over OTLP/HTTP with
+cumulative temporality. The collector controls routing, processing, and
+delivery to external metrics systems. See <a class="reference internal" href="opentelemetry.html"><span class="doc std std-doc">OpenTelemetry</span></a> for
+export settings, resource attributes, and limitations.</p>
 <p>See <a class="reference internal" href="generated/examples/otel_collector.html"><span class="doc std std-doc">OpenTelemetry and Grafana</span></a> for a
 Kubernetes collector, Prometheus, and Grafana example.</p>
 </section>
@@ -1551,11 +1605,7 @@ Kubernetes collector, Prometheus, and Grafana example.</p>
 <td><p>Unset</p></td>
 <td><p>Enables OTLP metric export when configured</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">OTEL_SERVICE_NAME</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">unknown_service</span></code></p></td>
-<td><p>Sets the service name resource attribute</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">TelemetryConfig.retention_secs</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">TelemetryConfig.retention_secs</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">3600</span></code></p></td>
 <td><p>Retains distributed metric rows for this many seconds; <code class="docutils literal notranslate"><span class="pre">0</span></code> disables retention</p></td>
 </tr>
@@ -1568,6 +1618,7 @@ Kubernetes collector, Prometheus, and Grafana example.</p>
 <ul class="simple">
 <li><p><a class="reference internal" href="observability.html"><span class="doc std std-doc">Observability overview</span></a></p></li>
 <li><p><a class="reference internal" href="distributed-telemetry.html"><span class="doc std std-doc">Distributed Telemetry</span></a></p></li>
+<li><p><a class="reference internal" href="opentelemetry.html"><span class="doc std std-doc">OpenTelemetry</span></a></p></li>
 <li><p><a class="reference internal" href="generated/examples/otel_collector.html"><span class="doc std std-doc">OpenTelemetry and Grafana</span></a></p></li>
 </ul>
 </section>
@@ -1616,20 +1667,20 @@ Kubernetes collector, Prometheus, and Grafana example.</p>
 
 <div class="prev-next-area">
     <a class="left-prev"
-       href="distributed-telemetry.html"
+       href="profiling.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Distributed Telemetry</p>
+        <p class="prev-next-title">Profiling Actor Activity</p>
       </div>
     </a>
     <a class="right-next"
-       href="admin-tui.html"
+       href="opentelemetry.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Mesh Admin TUI</p>
+        <p class="prev-next-title">OpenTelemetry</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1655,20 +1706,20 @@ Kubernetes collector, Prometheus, and Grafana example.</p>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="distributed-telemetry.html"
+       href="profiling.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Distributed Telemetry</p>
+        <p class="prev-next-title">Profiling Actor Activity</p>
       </div>
     </a>
     <a class="right-next"
-       href="admin-tui.html"
+       href="opentelemetry.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Mesh Admin TUI</p>
+        <p class="prev-next-title">OpenTelemetry</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1869,7 +1920,7 @@ Kubernetes collector, Prometheus, and Grafana example.</p>
        "headline": "Metrics",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/metrics.html",
-       "articleBody": "Metrics# Monarch records built-in counters, gauges, and histograms with OpenTelemetry (OTel). The same instruments can feed job-local distributed telemetry, an external OpenTelemetry Protocol (OTLP) endpoint, or both. Start with the observability overview if you are choosing among Monarch\u2019s diagnostic surfaces. Recording model# One process-global OTel meter provider owns metric instruments and their readers. Libraries request a meter and record values without knowing which backends are active. Threads and libraries in the same Rust process share this provider. A different process, binary, or language runtime has its own provider and exports independently. Each instrument has a name, scope, unit, and type. The instrumentation code that records a point also selects its attribute set. OTel aggregates points by their complete identity, including attributes, so high-cardinality attributes create more time series and more rows at each collection interval. Independent periodic readers collect the same instruments for each enabled export path. OTEL_METRIC_EXPORT_INTERVAL controls their interval and defaults to one second. This provides low-latency visibility for short-lived jobs but produces more export traffic than typical monitoring intervals. Increase the interval for long-running jobs or high-cardinality instruments to reduce application and backend load. A slow or unavailable destination does not require different instrumentation for the other destinations. Record custom metrics# Use Monarch\u2019s process-global meter to create OpenTelemetry instruments. The same instrument feeds every enabled export path: from monarch.actor import get_meter requests = get_meter().create_counter(\"example.requests\") requests.add(1, {\"operation\": \"predict\", \"outcome\": \"success\"}) Create instruments once and reuse them. Use attributes only for bounded dimensions such as operation and outcome; request IDs and other unbounded values create a new time series for each value. Metric identity and context# An exported metric point combines context from several levels. Distributed telemetry preserves those levels separately: OTel concept Set by Meaning Distributed telemetry representation Resource attributes Meter-provider initialization Process-wide service and runtime identity shared by every metric, such as service.name resource_attributes_json Instrumentation scope The library requesting a meter The library or module that owns the instrument scope_name Instrument The instrument builder The metric name, unit, and aggregation type name, unit, and the selected metric table Point attributes Each record operation Dimensions for one measurement, such as operation or outcome attributes_json Point attributes are part of a metric series identity. Monarch\u2019s built-in instrumentation selects these attributes. If instrumentation code records the same instrument with {\"outcome\": \"success\"} and {\"outcome\": \"failure\"}, OTel creates two independently aggregated series and therefore up to two rows per collection interval. Instrumentation authors should use attributes for bounded dimensions, not request IDs, timestamps, or other values that grow without limit. Resource attributes describe the process rather than an individual measurement. Startup configuration selects supported values such as service.name before the process-global provider is built. These attributes are then copied into every distributed metric row and cannot change per measurement. Instrumentation scope is also separate from point attributes: it identifies the library that created the instrument and disambiguates same-named instruments from different libraries. When grouping or joining metric rows, treat resource attributes, scope, instrument metadata, and point attributes as the complete context. Distributed telemetry currently stores only the instrumentation scope name. OTel scope version, schema URL, and scope attributes are not included in the metric tables. Choose an export path# Path Enablement Destination Primary use Distributed telemetry job.enable_telemetry(...) Job-local SQL tables Debugging and analysis within the current job OTLP OTEL_EXPORTER_OTLP_ENDPOINT OpenTelemetry Collector over OTLP/HTTP External aggregation, monitoring, and visualization You can enable both paths. They share instruments and resource attributes but collect and export independently. Distributed telemetry path# OTel instruments \u2514\u2500\u003e periodic reader \u2514\u2500\u003e Unix Domain Socket (UDS) metric exporter \u2514\u2500\u003e host-local telemetry sidecar \u2514\u2500\u003e DataFusion SQL tables Calling job.enable_telemetry(...) activates the process-global Unix-socket sink. On each collection, the UDS exporter encodes non-empty aggregation buffers as Arrow batches and sends them to the host-local telemetry sidecar. The sidecar exposes three physical tables: Table Aggregation metric_gauges Gauge points metric_sums Counter and up-down-counter points metric_histograms Explicit histogram points and buckets The UDS exporter uses delta temporality, so each row describes one collection interval. Each unique metric name, scope, and attribute set produces its own row. Numeric values remain in separate f64, i64, and u64 columns rather than being converted to one common type. This path is job-local, in memory, and best-effort. Empty aggregation buffers produce no frame. A full producer queue, serialization failure, oversized frame, or socket failure drops the affected frame rather than blocking the application. Activating the socket starts delivery for future intervals; it does not replay metrics collected while the sink was inactive. Metric tables follow TelemetryConfig.retention_secs. See Distributed Telemetry for complete table contents and SQL examples. OTLP path# OTel instruments \u2514\u2500\u003e periodic reader \u2514\u2500\u003e OTLP metric exporter \u2514\u2500\u003e OpenTelemetry Collector \u2514\u2500\u003e external metrics backend In a build with OTLP support, setting OTEL_EXPORTER_OTLP_ENDPOINT enables an independent metric reader. It sends collections to the configured OpenTelemetry Collector over OTLP/HTTP. The collector controls routing, processing, and delivery to external metrics systems. See OpenTelemetry and Grafana for a Kubernetes collector, Prometheus, and Grafana example. Configuration# Setting Default Effect ENABLE_OTEL_METRICS true Enables Monarch OTel metric collection OTEL_METRIC_EXPORT_INTERVAL 1s Sets the periodic reader interval OTEL_EXPORTER_OTLP_ENDPOINT Unset Enables OTLP metric export when configured OTEL_SERVICE_NAME unknown_service Sets the service name resource attribute TelemetryConfig.retention_secs 3600 Retains distributed metric rows for this many seconds; 0 disables retention Related documentation# Observability overview Distributed Telemetry OpenTelemetry and Grafana",
+       "articleBody": "Metrics# Monarch records built-in counters, gauges, and histograms with OpenTelemetry (OTel). The same instruments can feed job-local distributed telemetry, an external OpenTelemetry Protocol (OTLP) endpoint, or both. Start with the observability overview if you are choosing among Monarch\u2019s diagnostic surfaces. Recording model# One process-global OTel meter provider owns metric instruments and their readers. Libraries request a meter and record values without knowing which backends are active. Threads and libraries in the same Rust process share this provider. A different process, binary, or language runtime has its own provider and exports independently. Each instrument has a name, scope, unit, and type. The instrumentation code that records a point also selects its attribute set. OTel aggregates points by their complete identity, including attributes, so high-cardinality attributes create more time series and more rows at each collection interval. Independent periodic readers collect the same instruments for each enabled export path. OTEL_METRIC_EXPORT_INTERVAL controls their interval and defaults to one second. This provides low-latency visibility for short-lived jobs but produces more export traffic than typical monitoring intervals. Increase the interval for long-running jobs or high-cardinality instruments to reduce application and backend load. A slow or unavailable destination does not require different instrumentation for the other destinations. Record custom metrics# Use Monarch\u2019s process-global meter to create OpenTelemetry instruments. The same instrument feeds every enabled export path: from monarch.actor import get_meter requests = get_meter().create_counter(\"example.requests\") requests.add(1, {\"operation\": \"predict\", \"outcome\": \"success\"}) Create instruments once and reuse them. Use attributes only for bounded dimensions such as operation and outcome; request IDs and other unbounded values create a new time series for each value. Metric identity and context# An exported metric point combines context from several levels. Distributed telemetry preserves those levels separately: OTel concept Set by Meaning Distributed telemetry representation Resource attributes Meter-provider initialization Process-wide service and runtime identity shared by every metric, such as service.name resource_attributes_json Instrumentation scope The library requesting a meter The library or module that owns the instrument scope_name Instrument The instrument builder The metric name, unit, and aggregation type name, unit, and the selected metric table Point attributes Each record operation Dimensions for one measurement, such as operation or outcome attributes_json Point attributes are part of a metric series identity. Monarch\u2019s built-in instrumentation selects these attributes. If instrumentation code records the same instrument with {\"outcome\": \"success\"} and {\"outcome\": \"failure\"}, OTel creates two independently aggregated series and therefore up to two rows per collection interval. Instrumentation authors should use attributes for bounded dimensions, not request IDs, timestamps, or other values that grow without limit. Resource attributes describe the process rather than an individual measurement. Startup configuration selects supported values such as service.name before the process-global provider is built. These attributes are then copied into every distributed metric row and cannot change per measurement. Instrumentation scope is also separate from point attributes: it identifies the library that created the instrument and disambiguates same-named instruments from different libraries. When grouping or joining metric rows, treat resource attributes, scope, instrument metadata, and point attributes as the complete context. Distributed telemetry currently stores only the instrumentation scope name. OTel scope version, schema URL, and scope attributes are not included in the metric tables. Choose an export path# Path Enablement Destination Primary use Distributed telemetry job.enable_telemetry(...) Job-local SQL tables Debugging and analysis within the current job OTLP OTEL_EXPORTER_OTLP_ENDPOINT OpenTelemetry Collector over OTLP/HTTP External aggregation, monitoring, and visualization You can enable both paths. They share instruments and resource attributes but collect and export independently. Distributed telemetry path# OTel instruments \u2514\u2500\u003e periodic reader \u2514\u2500\u003e Unix Domain Socket (UDS) metric exporter \u2514\u2500\u003e host-local telemetry sidecar \u2514\u2500\u003e DataFusion SQL tables Calling job.enable_telemetry(...) activates the process-global Unix-socket sink. On each collection, the UDS exporter encodes non-empty aggregation buffers as Arrow batches and sends them to the host-local telemetry sidecar. The sidecar exposes three physical tables: Table Aggregation metric_gauges Gauge points metric_sums Counter and up-down-counter points metric_histograms Explicit histogram points and buckets The UDS exporter uses delta temporality, so each row describes one collection interval. Each unique metric name, scope, and attribute set produces its own row. Numeric values remain in separate f64, i64, and u64 columns rather than being converted to one common type. This path is job-local, in memory, and best-effort. Empty aggregation buffers produce no frame. A full producer queue, serialization failure, oversized frame, or socket failure drops the affected frame rather than blocking the application. Activating the socket starts delivery for future intervals; it does not replay metrics collected while the sink was inactive. Metric tables follow TelemetryConfig.retention_secs. See Distributed Telemetry for complete table contents and SQL examples. OTLP path# OTel instruments \u2514\u2500\u003e periodic reader \u2514\u2500\u003e OTLP metric exporter \u2514\u2500\u003e OpenTelemetry Collector \u2514\u2500\u003e external metrics backend Setting OTEL_EXPORTER_OTLP_ENDPOINT enables an independent metric reader. It sends collections to the configured OpenTelemetry Collector over OTLP/HTTP with cumulative temporality. The collector controls routing, processing, and delivery to external metrics systems. See OpenTelemetry for export settings, resource attributes, and limitations. See OpenTelemetry and Grafana for a Kubernetes collector, Prometheus, and Grafana example. Configuration# Setting Default Effect ENABLE_OTEL_METRICS true Enables Monarch OTel metric collection OTEL_METRIC_EXPORT_INTERVAL 1s Sets the periodic reader interval OTEL_EXPORTER_OTLP_ENDPOINT Unset Enables OTLP metric export when configured TelemetryConfig.retention_secs 3600 Retains distributed metric rows for this many seconds; 0 disables retention Related documentation# Observability overview Distributed Telemetry OpenTelemetry OpenTelemetry and Grafana",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

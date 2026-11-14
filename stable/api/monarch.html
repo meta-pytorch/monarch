@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="These API functions define monarch’s distributed tensor computation API. See Distributed Tensors in Monarch for an overview. Types: Distributed Computing: Simulation: Builtins: Builtins for Monarch..." />
 
-    <title>monarch &#8212; Monarch v0.7.0 documentation</title>
+    <title>monarch &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,15 +50,17 @@
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../_static/documentation_options.js?v=b3dab91b"></script>
     <script src="../_static/doctools.js?v=888ff710"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="../_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'api/monarch';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/api/monarch.html" />
@@ -84,7 +86,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +200,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -563,8 +565,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -649,6 +669,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -662,7 +688,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1240,6 +1290,7 @@ document.write(`
   <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
   <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="monarch.actor.html">monarch.actor</a></li>
+
 
 
 
@@ -1669,7 +1720,8 @@ shard - a dictionary from mesh dimension name to coordinate of the shard</p>
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.grad_generator">
 <span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">grad_generator</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">roots</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">with_respect_to</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grad_roots</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/gradient_generator.html#grad_generator"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.grad_generator" title="Link to this definition">#</a></dt>
-<dd><dl class="field-list simple">
+<dd><p>Iterate gradients while restoring each operation’s mesh and stream.</p>
+<dl class="field-list simple">
 </dl>
 </dd></dl>
 
@@ -2401,7 +2453,7 @@ communicator for this PG on the given stream.</p>
        "headline": "monarch",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/api/monarch.html",
-       "articleBody": "monarch# These API functions define monarch\u2019s distributed tensor computation API. See Distributed Tensors in Monarch for an overview. class monarch.Tensor(fake, mesh, stream)[source]# Bases: Referenceable, BaseTensor A distributed tensor for distributed computation across device meshes. Tensor represents a distributed tensor that spans across multiple devices in a device mesh. It provides the same interface as PyTorch tensors but enables distributed operations and communication patterns. stream: Stream# mesh: DeviceMesh# ref: int | None# drop()[source]# property dropped# to_mesh(mesh, stream=None)[source]# Move data between one device mesh and another. Sizes of named dimensions must match. If mesh has dimensions that self.mesh does not, it will broadcast to those dimensions. broadcast:t.slice_mesh(batch=0).to_mesh(t.mesh) reduce_(dims, reduction=\u0027sum\u0027, scatter=False, mesh=None)[source]# reduce(dims, reduction=\u0027sum\u0027, scatter=False, mesh=None, _inplace=False, out=None)[source]# Perform a reduction operation along dim, and move the data to mesh. If mesh=None, then mesh=self.mesh \u2018stack\u2019 (gather) will concat the values along dim, and produce a local result tensor with an addition outer dimension of len(dim). If scatter=True, the local result tensor will be evenly split across dim. allreduce:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019sum\u2019) First reduces dim \u2018gpu\u2019 creating a local tensor with the \u2018gpu\u2019 dimension, then because output_mesh=input_mesh, and it still has dim \u2018gpu\u2019, we broadcast the result reduced tensor to all members of gpu. reducescatter:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019sum\u2019, scatter=True) Same as above except that scatter=True introduces a new \u2018gpu\u2019 dimension that is the result of splitting the local tensor across \u2018gpu\u2019 allgather:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019stack\u2019) First reduces dim \u2018gpu\u2019 creating a bigger local tensor, then because output_mesh=input_mesh, and it still has dim \u2018gpu\u2019, broadcasts the result concatenated tensor to all members of gpu. alltoall:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019stack\u2019, scatter=True) First reduces dim \u2018gpu\u2019 creating a bigger local tensor, then introduces a new \u2018gpu\u2019 dimension that is the result of splitting this (bigger) tensor across \u2018gpu\u2019. The result is the same dimension as the original tensor, but with each rank sending to all other ranks. gather (to dim 0):t.reduce(dims=\u2019gpu\u2019, reduction=\u2019stack\u2019, mesh=device_mesh(gpu=0)) First gathers dim \u2018gpu\u2019 and then places it on the first rank. t.mesh.gpu[0] doesn\u2019t have a \u2018gpu\u2019 dimension, but this is ok because we eliminated the \u2018gpu\u2019 dim via reduction. reduce:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019sum\u2019, mesh=device_mesh(gpu=0)) First reduces dim \u2018gpu\u2019 and then places it on the first rank. t.mesh.gpu[0] doesn\u2019t have a \u2018gpu\u2019 dimension, but this is ok because we eliminated the \u2018gpu\u2019 dim via reduction. Parameters: dims (Dims | str) \u2013 The dimensions along which to perform the reduction. reduction (_valid_reduce) \u2013 The type of reduction to perform. Defaults to \u201csum\u201d. scatter (bool) \u2013 If True, the local result tensor will be evenly split across dimensions. Defaults to False. mesh (Optional[\"DeviceMesh\"], optional) \u2013 The target mesh to move the data to. If None, uses self.mesh. Defaults to None. _inplace (bool) \u2013 If True, performs the operation in-place. Defaults to False. Note that not all the reduction operations support in-place. out (Optional[\"Tensor\"]) \u2013 The output tensor to store the result. If None, a new tensor will be created on the stream where the reduce operation executes. Defaults to None. Returns: The result of the reduction operation. Return type: Tensor slice_mesh(**kwargs)[source]# delete_ref(ref)[source]# class monarch.Stream(name, _default=False)[source]# Bases: object __init__(name, _default=False)[source]# activate()[source]# borrow(t, mutable=False)[source]# borrowed_tensor, borrow = self.borrow(t) Borrows tensor \u2018t\u2019 for use on this stream. The memory of t will stay alive until borrow.drop() is called, which will free t and and any of its alises on stream self and will cause t.stream to wait on self at that point so that the memory of t can be reused. If mutable then self can write to the storage of t, but t.stream cannot read or write t until, the borrow is returned (becomes free and a wait_for has been issued). If not mutable both self and t.stream can read from t\u2019s storage but neither can write to it. monarch.remote(function: Callable[[P], R], *, propagate: Any = None) \u2192 Remote[P, R][source]# monarch.remote(function: str, *, propagate: Literal[\u0027mocked\u0027, \u0027cached\u0027, \u0027inspect\u0027] | None = None) \u2192 Remote monarch.remote(function: str, *, propagate: Callable[[P], R]) \u2192 Remote[P, R] monarch.remote(*, propagate: Any = None) \u2192 RemoteIfy monarch.coalescing()[source]# monarch.get_active_mesh()[source]# monarch.no_mesh()# monarch.to_mesh(tensors, mesh, stream=None)[source]# Move all tensors in tensors to the given mesh. monarch.slice_mesh(tensors, **kwargs)[source]# Performs the slice_mesh operation for each tensor in tensors. monarch.get_active_stream()[source]# monarch.reduce(tensors, dims, reduction=\u0027sum\u0027, scatter=False, mesh=None, _inplace=False)[source]# Performs the tensor reduction operation for each tensor in tensors. :param tensors: The pytree of input tensors to reduce. :type tensors: pytree[\u201cTensor\u201d] :param dims: The dimensions along which to perform the reduction. :type dims: Dims | str :param reduction: The type of reduction to perform. Defaults to \u201csum\u201d. :type reduction: _valid_reduce :param scatter: If True, the local result tensor will be evenly split across dimensions. Defaults to False. Parameters: mesh (Optional[\"DeviceMesh\"], optional) \u2013 The target mesh to move the data to. If None, uses self.mesh. Defaults to None. _inplace (bool) \u2013 If True, performs the operation in-place. Defaults to False. Note that not all the reduction operations support in-place. monarch.reduce_(tensors, dims, reduction=\u0027sum\u0027, scatter=False, mesh=None)[source]# monarch.call_on_shard_and_fetch(remote, *args, shard=None, **kwargs)[source]# monarch.fetch_shard(obj, shard=None, **kwargs)[source]# Retrieve the shard at coordinates of the current device mesh of each tensor in obj. All tensors in obj will be fetched to the CPU device. obj - a pytree containing the tensors the fetch shard - a dictionary from mesh dimension name to coordinate of the shard If None, this will fetch from coordinate 0 for all dimensions (useful after all_reduce/all_gather) preprocess - a **kwargs - additional keyword arguments are added as entries to the shard dictionary monarch.inspect(obj, shard=None, **kwargs)[source]# monarch.show(obj, shard=None, **kwargs)[source]# monarch.grad_function(fn)[source]# monarch.grad_generator(roots=(), with_respect_to=(), grad_roots=())[source]# monarch.timer()# monarch.world_mesh(ctx, hosts, gpu_per_host, _processes=None)[source]# monarch.function_resolvers()# Built-in mutable sequence. If no argument is given, the constructor creates a new empty list. The argument must be an iterable if specified. Types# class monarch.Extent(labels, sizes)# Bases: object static from_bytes(bytes)# keys()# labels# nelements# region# sizes# class monarch.Shape(labels, slice)# Bases: object at(label, index)# coordinates(rank)# extent# static from_bytes(bytes)# index(**kwargs)# labels# ndslice# ranks()# region# select(label, slice)# static unity()# class monarch.Selection# Bases: object all()# Selects all elements in the mesh \u2014 use this to mean \u201croute to all nodes\u201d. The \u2018*\u2019 expression is automatically expanded to match the dimensionality of the slice. For example, in a 3D slice, the selection becomes *, *, *. any()# Selects one element nondeterministically \u2014 use this to mean \u201croute to a single random node\u201d. The \u2018?\u2019 expression is automatically expanded to match the dimensionality of the slice. For example, in a 3D slice, the selection becomes ?, ?, ?. from_string()# Parses a selection expression from a string. This allows you to construct a PySelection using the selection algebra surface syntax, such as \u201c(*, 0:4, ?)\u201d. Raises: ValueError \u2013 If the input string is not a valid selection expression. \u2013 Example PySelection.from_string(\u201c(*, 1:3, ?)\u201d) # subset of a mesh monarch.NDSlice# alias of Slice class monarch.OpaqueRef(value=None)[source]# Bases: object OpaqueRef is a reference to an object that is only resolvable on the worker This is used to pass objects from the controller to the worker across User Defined Functions Example:: def init_udf_worker():model = nn.Linear(3, 4) model_ref = OpaqueRef(model) return model_ref def run_step_worker(model_ref: OpaqueRef):model = model_ref.value # do something with model (e.g. forward pass # on Controller model_ref = init_udf() run_step(model_ref) __init__(value=None)[source]# property value: Any# check_worker(what)[source]# class monarch.Future(client)[source]# Bases: Generic[T] A future object representing the result of an asynchronous computation. Future provides a way to access the result of a computation that may not have completed yet. It allows for non-blocking execution and provides methods to wait for completion and retrieve results. Parameters: client (Client) \u2013 The client connection for handling the future __init__(client)[source]# result(timeout=None)[source]# done()[source]# exception(timeout=None)[source]# add_callback(callback)[source]# Distributed Computing# class monarch.RemoteProcessGroup(dims, device_mesh)[source]# Bases: Referenceable Client\u2019s view of a process group. __init__(dims, device_mesh)[source]# ensure_split_comm_remotely(stream)[source]# If we haven\u2019t already, send a message to the worker to split off a communicator for this PG on the given stream. delete_ref(ref)[source]# drop()[source]# size()[source]# property dropped# Simulation# class monarch.Simulator(hosts, gpus, *, simulate_mode=SimulatorBackendMode.SIMULATE, trace_mode=SimulatorTraceMode.STREAM_ONLY, upload_trace=False, trace_path=\u0027trace.json\u0027, command_history_path=\u0027command_history.pkl\u0027, group_workers=False, build_ir=False)[source]# Bases: monarch.set_meta(new_value)[source]# Context manager that sets metadata for simulator tasks created within its scope. Parameters: new_value \u2013 The metadata value to associate with tasks created in this context. Example: with set_meta(\"training_phase\"): # Tasks created here will have \"training_phase\" metadata ... Builtins# Builtins for Monarch is a set of remote function defintions for PyTorch functions and other utilities.",
+       "articleBody": "monarch# These API functions define monarch\u2019s distributed tensor computation API. See Distributed Tensors in Monarch for an overview. class monarch.Tensor(fake, mesh, stream)[source]# Bases: Referenceable, BaseTensor A distributed tensor for distributed computation across device meshes. Tensor represents a distributed tensor that spans across multiple devices in a device mesh. It provides the same interface as PyTorch tensors but enables distributed operations and communication patterns. stream: Stream# mesh: DeviceMesh# ref: int | None# drop()[source]# property dropped# to_mesh(mesh, stream=None)[source]# Move data between one device mesh and another. Sizes of named dimensions must match. If mesh has dimensions that self.mesh does not, it will broadcast to those dimensions. broadcast:t.slice_mesh(batch=0).to_mesh(t.mesh) reduce_(dims, reduction=\u0027sum\u0027, scatter=False, mesh=None)[source]# reduce(dims, reduction=\u0027sum\u0027, scatter=False, mesh=None, _inplace=False, out=None)[source]# Perform a reduction operation along dim, and move the data to mesh. If mesh=None, then mesh=self.mesh \u2018stack\u2019 (gather) will concat the values along dim, and produce a local result tensor with an addition outer dimension of len(dim). If scatter=True, the local result tensor will be evenly split across dim. allreduce:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019sum\u2019) First reduces dim \u2018gpu\u2019 creating a local tensor with the \u2018gpu\u2019 dimension, then because output_mesh=input_mesh, and it still has dim \u2018gpu\u2019, we broadcast the result reduced tensor to all members of gpu. reducescatter:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019sum\u2019, scatter=True) Same as above except that scatter=True introduces a new \u2018gpu\u2019 dimension that is the result of splitting the local tensor across \u2018gpu\u2019 allgather:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019stack\u2019) First reduces dim \u2018gpu\u2019 creating a bigger local tensor, then because output_mesh=input_mesh, and it still has dim \u2018gpu\u2019, broadcasts the result concatenated tensor to all members of gpu. alltoall:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019stack\u2019, scatter=True) First reduces dim \u2018gpu\u2019 creating a bigger local tensor, then introduces a new \u2018gpu\u2019 dimension that is the result of splitting this (bigger) tensor across \u2018gpu\u2019. The result is the same dimension as the original tensor, but with each rank sending to all other ranks. gather (to dim 0):t.reduce(dims=\u2019gpu\u2019, reduction=\u2019stack\u2019, mesh=device_mesh(gpu=0)) First gathers dim \u2018gpu\u2019 and then places it on the first rank. t.mesh.gpu[0] doesn\u2019t have a \u2018gpu\u2019 dimension, but this is ok because we eliminated the \u2018gpu\u2019 dim via reduction. reduce:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019sum\u2019, mesh=device_mesh(gpu=0)) First reduces dim \u2018gpu\u2019 and then places it on the first rank. t.mesh.gpu[0] doesn\u2019t have a \u2018gpu\u2019 dimension, but this is ok because we eliminated the \u2018gpu\u2019 dim via reduction. Parameters: dims (Dims | str) \u2013 The dimensions along which to perform the reduction. reduction (_valid_reduce) \u2013 The type of reduction to perform. Defaults to \u201csum\u201d. scatter (bool) \u2013 If True, the local result tensor will be evenly split across dimensions. Defaults to False. mesh (Optional[\"DeviceMesh\"], optional) \u2013 The target mesh to move the data to. If None, uses self.mesh. Defaults to None. _inplace (bool) \u2013 If True, performs the operation in-place. Defaults to False. Note that not all the reduction operations support in-place. out (Optional[\"Tensor\"]) \u2013 The output tensor to store the result. If None, a new tensor will be created on the stream where the reduce operation executes. Defaults to None. Returns: The result of the reduction operation. Return type: Tensor slice_mesh(**kwargs)[source]# delete_ref(ref)[source]# class monarch.Stream(name, _default=False)[source]# Bases: object __init__(name, _default=False)[source]# activate()[source]# borrow(t, mutable=False)[source]# borrowed_tensor, borrow = self.borrow(t) Borrows tensor \u2018t\u2019 for use on this stream. The memory of t will stay alive until borrow.drop() is called, which will free t and and any of its alises on stream self and will cause t.stream to wait on self at that point so that the memory of t can be reused. If mutable then self can write to the storage of t, but t.stream cannot read or write t until, the borrow is returned (becomes free and a wait_for has been issued). If not mutable both self and t.stream can read from t\u2019s storage but neither can write to it. monarch.remote(function: Callable[[P], R], *, propagate: Any = None) \u2192 Remote[P, R][source]# monarch.remote(function: str, *, propagate: Literal[\u0027mocked\u0027, \u0027cached\u0027, \u0027inspect\u0027] | None = None) \u2192 Remote monarch.remote(function: str, *, propagate: Callable[[P], R]) \u2192 Remote[P, R] monarch.remote(*, propagate: Any = None) \u2192 RemoteIfy monarch.coalescing()[source]# monarch.get_active_mesh()[source]# monarch.no_mesh()# monarch.to_mesh(tensors, mesh, stream=None)[source]# Move all tensors in tensors to the given mesh. monarch.slice_mesh(tensors, **kwargs)[source]# Performs the slice_mesh operation for each tensor in tensors. monarch.get_active_stream()[source]# monarch.reduce(tensors, dims, reduction=\u0027sum\u0027, scatter=False, mesh=None, _inplace=False)[source]# Performs the tensor reduction operation for each tensor in tensors. :param tensors: The pytree of input tensors to reduce. :type tensors: pytree[\u201cTensor\u201d] :param dims: The dimensions along which to perform the reduction. :type dims: Dims | str :param reduction: The type of reduction to perform. Defaults to \u201csum\u201d. :type reduction: _valid_reduce :param scatter: If True, the local result tensor will be evenly split across dimensions. Defaults to False. Parameters: mesh (Optional[\"DeviceMesh\"], optional) \u2013 The target mesh to move the data to. If None, uses self.mesh. Defaults to None. _inplace (bool) \u2013 If True, performs the operation in-place. Defaults to False. Note that not all the reduction operations support in-place. monarch.reduce_(tensors, dims, reduction=\u0027sum\u0027, scatter=False, mesh=None)[source]# monarch.call_on_shard_and_fetch(remote, *args, shard=None, **kwargs)[source]# monarch.fetch_shard(obj, shard=None, **kwargs)[source]# Retrieve the shard at coordinates of the current device mesh of each tensor in obj. All tensors in obj will be fetched to the CPU device. obj - a pytree containing the tensors the fetch shard - a dictionary from mesh dimension name to coordinate of the shard If None, this will fetch from coordinate 0 for all dimensions (useful after all_reduce/all_gather) preprocess - a **kwargs - additional keyword arguments are added as entries to the shard dictionary monarch.inspect(obj, shard=None, **kwargs)[source]# monarch.show(obj, shard=None, **kwargs)[source]# monarch.grad_function(fn)[source]# monarch.grad_generator(roots=(), with_respect_to=(), grad_roots=())[source]# Iterate gradients while restoring each operation\u2019s mesh and stream. monarch.timer()# monarch.world_mesh(ctx, hosts, gpu_per_host, _processes=None)[source]# monarch.function_resolvers()# Built-in mutable sequence. If no argument is given, the constructor creates a new empty list. The argument must be an iterable if specified. Types# class monarch.Extent(labels, sizes)# Bases: object static from_bytes(bytes)# keys()# labels# nelements# region# sizes# class monarch.Shape(labels, slice)# Bases: object at(label, index)# coordinates(rank)# extent# static from_bytes(bytes)# index(**kwargs)# labels# ndslice# ranks()# region# select(label, slice)# static unity()# class monarch.Selection# Bases: object all()# Selects all elements in the mesh \u2014 use this to mean \u201croute to all nodes\u201d. The \u2018*\u2019 expression is automatically expanded to match the dimensionality of the slice. For example, in a 3D slice, the selection becomes *, *, *. any()# Selects one element nondeterministically \u2014 use this to mean \u201croute to a single random node\u201d. The \u2018?\u2019 expression is automatically expanded to match the dimensionality of the slice. For example, in a 3D slice, the selection becomes ?, ?, ?. from_string()# Parses a selection expression from a string. This allows you to construct a PySelection using the selection algebra surface syntax, such as \u201c(*, 0:4, ?)\u201d. Raises: ValueError \u2013 If the input string is not a valid selection expression. \u2013 Example PySelection.from_string(\u201c(*, 1:3, ?)\u201d) # subset of a mesh monarch.NDSlice# alias of Slice class monarch.OpaqueRef(value=None)[source]# Bases: object OpaqueRef is a reference to an object that is only resolvable on the worker This is used to pass objects from the controller to the worker across User Defined Functions Example:: def init_udf_worker():model = nn.Linear(3, 4) model_ref = OpaqueRef(model) return model_ref def run_step_worker(model_ref: OpaqueRef):model = model_ref.value # do something with model (e.g. forward pass # on Controller model_ref = init_udf() run_step(model_ref) __init__(value=None)[source]# property value: Any# check_worker(what)[source]# class monarch.Future(client)[source]# Bases: Generic[T] A future object representing the result of an asynchronous computation. Future provides a way to access the result of a computation that may not have completed yet. It allows for non-blocking execution and provides methods to wait for completion and retrieve results. Parameters: client (Client) \u2013 The client connection for handling the future __init__(client)[source]# result(timeout=None)[source]# done()[source]# exception(timeout=None)[source]# add_callback(callback)[source]# Distributed Computing# class monarch.RemoteProcessGroup(dims, device_mesh)[source]# Bases: Referenceable Client\u2019s view of a process group. __init__(dims, device_mesh)[source]# ensure_split_comm_remotely(stream)[source]# If we haven\u2019t already, send a message to the worker to split off a communicator for this PG on the given stream. delete_ref(ref)[source]# drop()[source]# size()[source]# property dropped# Simulation# class monarch.Simulator(hosts, gpus, *, simulate_mode=SimulatorBackendMode.SIMULATE, trace_mode=SimulatorTraceMode.STREAM_ONLY, upload_trace=False, trace_path=\u0027trace.json\u0027, command_history_path=\u0027command_history.pkl\u0027, group_workers=False, build_ir=False)[source]# Bases: monarch.set_meta(new_value)[source]# Context manager that sets metadata for simulator tasks created within its scope. Parameters: new_value \u2013 The metadata value to associate with tasks created in this context. Example: with set_meta(\"training_phase\"): # Tasks created here will have \"training_phase\" metadata ... Builtins# Builtins for Monarch is a set of remote function defintions for PyTorch functions and other utilities.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

@@ -11,7 +11,7 @@
         :class: sphx-glr-download-link-note
 
         :ref:`Go to the end <sphx_glr_download_generated_examples_debugging.py>`
-        to download the full example code
+        to download the full example code.
 
 .. rst-class:: sphx-glr-example-title
 
@@ -44,7 +44,7 @@ at the moment.**
 
 .. GENERATED FROM PYTHON SOURCE LINES 33-64
 
-.. code-block:: default
+.. code-block:: Python
 
 
     from monarch.actor import Actor, current_rank, endpoint, this_host
@@ -92,7 +92,7 @@ Simply run your monarch program as usual with the desired values for host and po
 
 .. GENERATED FROM PYTHON SOURCE LINES 74-86
 
-.. code-block:: default
+.. code-block:: Python
 
 
     if __name__ == "__main__":
@@ -218,27 +218,23 @@ breakpoints and cast the "``continue``" ``pdb`` command to all ranks
 currently stopped at a breakpoint.
 
 
-.. rst-class:: sphx-glr-timing
-
-   **Total running time of the script:** (0 minutes 0.000 seconds)
-
-
 .. _sphx_glr_download_generated_examples_debugging.py:
 
 .. only:: html
 
   .. container:: sphx-glr-footer sphx-glr-footer-example
 
+    .. container:: sphx-glr-download sphx-glr-download-jupyter
 
-
+      :download:`Download Jupyter notebook: debugging.ipynb <debugging.ipynb>`
 
     .. container:: sphx-glr-download sphx-glr-download-python
 
       :download:`Download Python source code: debugging.py <debugging.py>`
 
-    .. container:: sphx-glr-download sphx-glr-download-jupyter
+    .. container:: sphx-glr-download sphx-glr-download-zip
 
-      :download:`Download Jupyter notebook: debugging.ipynb <debugging.ipynb>`
+      :download:`Download zipped: debugging.zip <debugging.zip>`
 
 
 .. only:: html

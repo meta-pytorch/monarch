@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["LoggerRuntimeMessage"],"fn":["register_python_bindings"],"struct":["LoggerRuntimeActor","LoggingMeshClient"],"trait":["LoggerRuntimeMessageClient","LoggerRuntimeMessageHandler"]};
+window.SIDEBAR_ITEMS = {"fn":["register_python_bindings"],"struct":["LoggingMeshClient"]};

@@ -11,7 +11,7 @@
         :class: sphx-glr-download-link-note
 
         :ref:`Go to the end <sphx_glr_download_generated_examples_distributed_tensors.py>`
-        to download the full example code
+        to download the full example code.
 
 .. rst-class:: sphx-glr-example-title
 
@@ -23,7 +23,7 @@ Distributed Tensors in Monarch
 
 .. GENERATED FROM PYTHON SOURCE LINES 11-20
 
-.. code-block:: default
+.. code-block:: Python
 
 
     import monarch
@@ -44,7 +44,7 @@ Here we create a mesh composed of the machine running the notebook:
 
 .. GENERATED FROM PYTHON SOURCE LINES 25-29
 
-.. code-block:: default
+.. code-block:: Python
 
 
     mesh = this_host().spawn_procs({"gpu": 8})
@@ -57,7 +57,7 @@ Without a mesh active, torch runs locally.
 
 .. GENERATED FROM PYTHON SOURCE LINES 31-34
 
-.. code-block:: default
+.. code-block:: Python
 
 
     torch.rand(3, 4)
@@ -69,7 +69,7 @@ Once active, torch runs on every device in the mesh.
 
 .. GENERATED FROM PYTHON SOURCE LINES 36-42
 
-.. code-block:: default
+.. code-block:: Python
 
 
     with mesh.activate():
@@ -84,7 +84,7 @@ Inspect moves rank0's copy of t to the notebook for debugging.
 
 .. GENERATED FROM PYTHON SOURCE LINES 44-49
 
-.. code-block:: default
+.. code-block:: Python
 
 
     monarch.inspect(t)
@@ -98,7 +98,7 @@ Providing coordinates lets us inspect other ranks copies.
 
 .. GENERATED FROM PYTHON SOURCE LINES 51-54
 
-.. code-block:: default
+.. code-block:: Python
 
 
     monarch.show(t, gpu=1)
@@ -114,7 +114,7 @@ performs that action to all of the tensors in the collection.
 
 .. GENERATED FROM PYTHON SOURCE LINES 60-65
 
-.. code-block:: default
+.. code-block:: Python
 
 
     with mesh.activate():
@@ -129,7 +129,7 @@ commands:
 
 .. GENERATED FROM PYTHON SOURCE LINES 68-84
 
-.. code-block:: default
+.. code-block:: Python
 
 
     try:
@@ -155,7 +155,7 @@ what works:
 
 .. GENERATED FROM PYTHON SOURCE LINES 87-100
 
-.. code-block:: default
+.. code-block:: Python
 
 
     N = 1
@@ -181,7 +181,7 @@ To compute across tensors in the mesh, we use special communication operators, a
 
 .. GENERATED FROM PYTHON SOURCE LINES 106-117
 
-.. code-block:: default
+.. code-block:: Python
 
 
     with mesh.activate():
@@ -204,7 +204,7 @@ We can also connect to remote GPUs reserved from some scheduler
 
 .. GENERATED FROM PYTHON SOURCE LINES 122-133
 
-.. code-block:: default
+.. code-block:: Python
 
 
     # NYI: schedule public API based on config, just fake it locally
@@ -227,7 +227,7 @@ Meshes can be renamed and reshaped to fit the parallelism desired.
 
 .. GENERATED FROM PYTHON SOURCE LINES 138-145
 
-.. code-block:: default
+.. code-block:: Python
 
 
     mesh_2d_parallel = remote_mesh.rename(host="dp", gpu="tp")
@@ -247,7 +247,7 @@ one mesh to another.
 
 .. GENERATED FROM PYTHON SOURCE LINES 151-157
 
-.. code-block:: default
+.. code-block:: Python
 
 
     pipeline_mesh = remote_mesh.rename(host="pp")
@@ -262,7 +262,7 @@ Initialize a model across multiple meshes
 
 .. GENERATED FROM PYTHON SOURCE LINES 159-186
 
-.. code-block:: default
+.. code-block:: Python
 
 
     layers_per_stage = 2
@@ -308,7 +308,7 @@ It returns an iterator that computes the grad parameters one at a time.
 
 .. GENERATED FROM PYTHON SOURCE LINES 198-214
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -339,7 +339,7 @@ It is another kind of mesh, which simulates rather than computes results for rea
 
 .. GENERATED FROM PYTHON SOURCE LINES 222-251
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -382,7 +382,7 @@ We introduce parallelism on a device via stream objects.
 
 .. GENERATED FROM PYTHON SOURCE LINES 258-262
 
-.. code-block:: default
+.. code-block:: Python
 
 
     main = monarch.get_active_stream()
@@ -408,7 +408,7 @@ The DDP example again, but using multiple streams.
 
 .. GENERATED FROM PYTHON SOURCE LINES 275-302
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -452,7 +452,7 @@ grad step but before we update the param.
 
 .. GENERATED FROM PYTHON SOURCE LINES 311-335
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -480,27 +480,23 @@ grad step but before we update the param.
     simulate()
 
 
-.. rst-class:: sphx-glr-timing
-
-   **Total running time of the script:** (0 minutes 0.000 seconds)
-
-
 .. _sphx_glr_download_generated_examples_distributed_tensors.py:
 
 .. only:: html
 
   .. container:: sphx-glr-footer sphx-glr-footer-example
 
+    .. container:: sphx-glr-download sphx-glr-download-jupyter
 
-
+      :download:`Download Jupyter notebook: distributed_tensors.ipynb <distributed_tensors.ipynb>`
 
     .. container:: sphx-glr-download sphx-glr-download-python
 
       :download:`Download Python source code: distributed_tensors.py <distributed_tensors.py>`
 
-    .. container:: sphx-glr-download sphx-glr-download-jupyter
+    .. container:: sphx-glr-download sphx-glr-download-zip
 
-      :download:`Download Jupyter notebook: distributed_tensors.ipynb <distributed_tensors.ipynb>`
+      :download:`Download zipped: distributed_tensors.zip <distributed_tensors.zip>`
 
 
 .. only:: html

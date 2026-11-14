@@ -11,7 +11,7 @@
         :class: sphx-glr-download-link-note
 
         :ref:`Go to the end <sphx_glr_download_generated_examples_ping_pong.py>`
-        to download the full example code
+        to download the full example code.
 
 .. rst-class:: sphx-glr-example-title
 
@@ -38,7 +38,7 @@ that can be called.
 
 .. GENERATED FROM PYTHON SOURCE LINES 25-40
 
-.. code-block:: default
+.. code-block:: Python
 
 
     from monarch.actor import Actor, current_rank, endpoint, this_host
@@ -62,7 +62,7 @@ Note: Meshes can be also be created on different nodes, but we're ignoring that 
 
 .. GENERATED FROM PYTHON SOURCE LINES 42-48
 
-.. code-block:: default
+.. code-block:: Python
 
 
     local_proc_mesh = this_host().spawn_procs(per_host={"gpus": NUM_ACTORS})
@@ -77,7 +77,7 @@ Once actors are spawned, we can call all of them simultaneously with `Actor.endp
 
 .. GENERATED FROM PYTHON SOURCE LINES 50-54
 
-.. code-block:: default
+.. code-block:: Python
 
 
     toy_actor.hello_world.call("hey there, from script!!").get()
@@ -90,7 +90,7 @@ We can also specify a single actor using the 'slice' API
 
 .. GENERATED FROM PYTHON SOURCE LINES 56-69
 
-.. code-block:: default
+.. code-block:: Python
 
 
     futures = []
@@ -115,7 +115,7 @@ the useful property of being able to communicate with one another.
 
 .. GENERATED FROM PYTHON SOURCE LINES 74-97
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -147,7 +147,7 @@ Spawn two different Actors in different meshes, with two instances each
 
 .. GENERATED FROM PYTHON SOURCE LINES 99-115
 
-.. code-block:: default
+.. code-block:: Python
 
 
     local_mesh_0 = this_host().spawn_procs(per_host={"gpus": 2})
@@ -172,7 +172,7 @@ Initialize each actor with references to each other
 
 .. GENERATED FROM PYTHON SOURCE LINES 117-122
 
-.. code-block:: default
+.. code-block:: Python
 
 
     actor_0.init.call(actor_1).get()
@@ -186,7 +186,7 @@ Send messages between actors
 
 .. GENERATED FROM PYTHON SOURCE LINES 124-132
 
-.. code-block:: default
+.. code-block:: Python
 
 
     # Actor 0 sends to Actor 1
@@ -198,27 +198,23 @@ Send messages between actors
     print("Example completed successfully!")
 
 
-.. rst-class:: sphx-glr-timing
-
-   **Total running time of the script:** (0 minutes 0.000 seconds)
-
-
 .. _sphx_glr_download_generated_examples_ping_pong.py:
 
 .. only:: html
 
   .. container:: sphx-glr-footer sphx-glr-footer-example
 
+    .. container:: sphx-glr-download sphx-glr-download-jupyter
 
-
+      :download:`Download Jupyter notebook: ping_pong.ipynb <ping_pong.ipynb>`
 
     .. container:: sphx-glr-download sphx-glr-download-python
 
       :download:`Download Python source code: ping_pong.py <ping_pong.py>`
 
-    .. container:: sphx-glr-download sphx-glr-download-jupyter
+    .. container:: sphx-glr-download sphx-glr-download-zip
 
-      :download:`Download Jupyter notebook: ping_pong.ipynb <ping_pong.ipynb>`
+      :download:`Download zipped: ping_pong.zip <ping_pong.zip>`
 
 
 .. only:: html

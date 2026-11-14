@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["register_python_bindings"],"struct":["ActorEndpoint","PyValueStream","RecordEndpointGuard","Remote"]};
+window.SIDEBAR_ITEMS = {"fn":["register_python_bindings"],"struct":["ActorEndpoint","PyValueStream","RecordEndpointGuard","Remote"],"type":["ReplyFuture"]};

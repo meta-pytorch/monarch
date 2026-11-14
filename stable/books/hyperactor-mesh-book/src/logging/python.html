@@ -7,16 +7,16 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta property="og:title" content="Python control surface" />
+<meta property="og:title" content="Python Control Surface" />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="http://pytorch.org/books/hyperactor-mesh-book/src/logging/python.html" />
 <meta property="og:site_name" content="Monarch" />
-<meta property="og:description" content="What it exposes: A small, explicit API to start logging for a ProcMesh, stream remote stdout/stderr back to your notebook/REPL, tune aggregation &amp; verbosity, and perform a versioned sync flush ..." />
+<meta property="og:description" content="What It Exposes: The Python API installs logging for a ProcMesh, streams remote stdout and stderr back to the notebook or REPL, adjusts aggregation and Python verbosity, and performs a versioned sy..." />
 <meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
 <meta property="og:image:alt" content="Monarch" />
-<meta name="description" content="What it exposes: A small, explicit API to start logging for a ProcMesh, stream remote stdout/stderr back to your notebook/REPL, tune aggregation &amp; verbosity, and perform a versioned sync flush ..." />
+<meta name="description" content="What It Exposes: The Python API installs logging for a ProcMesh, streams remote stdout and stderr back to the notebook or REPL, adjusts aggregation and Python verbosity, and performs a versioned sy..." />
 
-    <title>Python control surface &#8212; Monarch v0.7.0 documentation</title>
+    <title>Python Control Surface &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,15 +50,17 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../../_static/documentation_options.js?v=b3dab91b"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="../../../../_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/logging/python';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/logging/python.html" />
@@ -74,7 +76,7 @@
 <meta name="llm:site-type" content="documentation">
 <meta name="llm:framework" content="PyTorch">
 
-<meta name="llm:description" content="Python control surface - Documentation for Monarch, part of the PyTorch ecosystem.">
+<meta name="llm:description" content="Python Control Surface - Documentation for Monarch, part of the PyTorch ecosystem.">
 
 
 
@@ -82,7 +84,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +198,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -561,8 +563,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -647,6 +667,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -660,7 +686,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1307,7 +1357,7 @@ document.write(`
   <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
     
     <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-      <meta itemprop="name" content="Python control surface">
+      <meta itemprop="name" content="Python Control Surface">
       <meta itemprop="position" content="1">
     </div>
   </div>
@@ -1322,55 +1372,54 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="python-control-surface">
-<h1>Python control surface<a class="headerlink" href="#python-control-surface" title="Link to this heading">#</a></h1>
+<h1>Python Control Surface<a class="headerlink" href="#python-control-surface" title="Link to this heading">#</a></h1>
 <section id="what-it-exposes">
-<h2>What it exposes<a class="headerlink" href="#what-it-exposes" title="Link to this heading">#</a></h2>
-<p>A small, explicit API to start logging for a <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code>, stream remote <code class="docutils literal notranslate"><span class="pre">stdout/stderr</span></code> back to your notebook/REPL, tune aggregation &amp; verbosity, and perform a <strong>versioned sync flush</strong> before teardown.</p>
-<blockquote>
-<div><p><strong>Placement:</strong> There is exactly one <code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code>, and it runs inside the Python/driver process (your notebook/REPL). Python calls fan out to per-proc forwarders and back.</p>
-</div></blockquote>
+<h2>What It Exposes<a class="headerlink" href="#what-it-exposes" title="Link to this heading">#</a></h2>
+<p>The Python API installs logging for a <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code>, streams remote stdout and stderr back to the notebook or REPL, adjusts aggregation and Python verbosity, and performs a versioned sync flush before teardown.</p>
+<p>There is exactly one <code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code>, and it runs inside the Python driver process. Python calls fan out to per-proc forwarders and back.</p>
 </section>
 <section id="api-surface">
-<h2>API surface<a class="headerlink" href="#api-surface" title="Link to this heading">#</a></h2>
-<section id="loggingmeshclient-spawn-instance-proc-mesh-pypythontask">
-<h3><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.spawn(instance,</span> <span class="pre">proc_mesh)</span> <span class="pre">-&gt;</span> <span class="pre">PyPythonTask</span></code><a class="headerlink" href="#loggingmeshclient-spawn-instance-proc-mesh-pypythontask" title="Link to this heading">#</a></h3>
-<p>Spawns:</p>
+<h2>API Surface<a class="headerlink" href="#api-surface" title="Link to this heading">#</a></h2>
+<section id="loggingmeshclient-spawn-instance-raw-stream-to-client-aggregate-window-sec-handle-loggingmeshclient">
+<h3><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.spawn(instance,</span> <span class="pre">raw,</span> <span class="pre">*,</span> <span class="pre">stream_to_client,</span> <span class="pre">aggregate_window_sec)</span> <span class="pre">-&gt;</span> <span class="pre">Handle[LoggingMeshClient]</span></code><a class="headerlink" href="#loggingmeshclient-spawn-instance-raw-stream-to-client-aggregate-window-sec-handle-loggingmeshclient" title="Link to this heading">#</a></h3>
+<p>Starts immediately, waits for the raw proc-creation Handle, and then creates and configures:</p>
 <ul class="simple">
-<li><p>a single <code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code> (in the Python/driver process),</p></li>
-<li><p>per-proc <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code>s (in remote procs),</p></li>
-<li><p>per-proc <code class="docutils literal notranslate"><span class="pre">LoggerRuntimeActor</span></code>s (Python logging runtime).</p></li>
+<li><p>a single <code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code> in the Python driver process;</p></li>
+<li><p>per-proc <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code>s when forwarding is enabled.</p></li>
 </ul>
+<p>Both are Rust actors. Python log levels are handled separately by the per-proc <code class="docutils literal notranslate"><span class="pre">_LogLevelSetter</span></code> actor that <code class="docutils literal notranslate"><span class="pre">LoggingManager</span></code> installs on an ordinary Python proc mesh.</p>
 </section>
-<section id="loggingmeshclient-set-mode-instance-stream-to-client-bool-aggregate-window-sec-optional-int-level-int-none">
-<h3><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.set_mode(instance,</span> <span class="pre">stream_to_client:</span> <span class="pre">bool,</span> <span class="pre">aggregate_window_sec:</span> <span class="pre">Optional[int],</span> <span class="pre">level:</span> <span class="pre">int)</span> <span class="pre">-&gt;</span> <span class="pre">None</span></code><a class="headerlink" href="#loggingmeshclient-set-mode-instance-stream-to-client-bool-aggregate-window-sec-optional-int-level-int-none" title="Link to this heading">#</a></h3>
+<section id="loggingmeshclient-set-mode-instance-stream-to-client-bool-aggregate-window-sec-optional-int-none">
+<h3><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.set_mode(instance,</span> <span class="pre">stream_to_client:</span> <span class="pre">bool,</span> <span class="pre">aggregate_window_sec:</span> <span class="pre">Optional[int])</span> <span class="pre">-&gt;</span> <span class="pre">None</span></code><a class="headerlink" href="#loggingmeshclient-set-mode-instance-stream-to-client-bool-aggregate-window-sec-optional-int-none" title="Link to this heading">#</a></h3>
 <ul class="simple">
-<li><p>Turns streaming on/off (<code class="docutils literal notranslate"><span class="pre">stream_to_client</span></code>).</p></li>
-<li><p>Sets aggregation window (seconds) <strong>only if</strong> streaming is enabled.</p></li>
-<li><p>Sets Python logging level in the per-proc <code class="docutils literal notranslate"><span class="pre">LoggerRuntimeActor</span></code>.</p></li>
+<li><p>Turns streaming on or off.</p></li>
+<li><p>Sets the aggregation window only when streaming is enabled.</p></li>
 </ul>
-<blockquote>
-<div><p><strong>Constraint:</strong> if <code class="docutils literal notranslate"><span class="pre">aggregate_window_sec</span></code> is <code class="docutils literal notranslate"><span class="pre">Some</span></code> while <code class="docutils literal notranslate"><span class="pre">stream_to_client</span></code> is <code class="docutils literal notranslate"><span class="pre">False</span></code>, <code class="docutils literal notranslate"><span class="pre">set_mode</span></code> raises a runtime error (see source).</p>
-</div></blockquote>
+<p>If <code class="docutils literal notranslate"><span class="pre">aggregate_window_sec</span></code> is set while <code class="docutils literal notranslate"><span class="pre">stream_to_client</span></code> is false, <code class="docutils literal notranslate"><span class="pre">set_mode</span></code> raises a runtime error.</p>
 </section>
 <section id="loggingmeshclient-flush-instance-handle-none">
 <h3><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.flush(instance)</span> <span class="pre">-&gt;</span> <span class="pre">Handle[None]</span></code><a class="headerlink" href="#loggingmeshclient-flush-instance-handle-none" title="Link to this heading">#</a></h3>
-<p>Performs a <strong>versioned sync flush</strong> across all forwarders so the caller deterministically waits until “all logs up to now” are delivered. The flush starts during the call; the returned <code class="docutils literal notranslate"><span class="pre">Handle</span></code> completes when it has finished, and dropping the <code class="docutils literal notranslate"><span class="pre">Handle</span></code> does not cancel it.
-See: <a class="reference internal" href="client.html#barrier-protocol-sync-flush"><span class="std std-ref">Client actor → Barrier protocol</span></a> and <a class="reference internal" href="forwarder.html"><span class="std std-doc">Forwarder internals</span></a>.</p>
+<p>Performs a versioned sync flush across all forwarders. The returned Handle completes after all logs through the chosen version have been delivered. Dropping the Handle does not cancel the flush.</p>
+<p>See <a class="reference internal" href="client.html#barrier-protocol-sync-flush"><span class="std std-ref">Client actor → Barrier protocol</span></a> and <a class="reference internal" href="forwarder.html"><span class="std std-doc">Forwarder internals</span></a>.</p>
 </section>
 </section>
 <section id="minimal-example">
-<h2>Minimal example<a class="headerlink" href="#minimal-example" title="Link to this heading">#</a></h2>
+<h2>Minimal Example<a class="headerlink" href="#minimal-example" title="Link to this heading">#</a></h2>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.logging</span><span class="w"> </span><span class="kn">import</span> <span class="n">LoggingMeshClient</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 
-<span class="n">client</span> <span class="o">=</span> <span class="k">await</span> <span class="n">LoggingMeshClient</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="n">instance</span><span class="p">,</span> <span class="n">proc_mesh</span><span class="p">)</span>  <span class="c1"># one client actor in driver</span>
-<span class="n">client</span><span class="o">.</span><span class="n">set_mode</span><span class="p">(</span><span class="n">instance</span><span class="p">,</span> <span class="n">stream_to_client</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">aggregate_window_sec</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">level</span><span class="o">=</span><span class="n">logging</span><span class="o">.</span><span class="n">INFO</span><span class="p">)</span>
+<span class="n">client</span> <span class="o">=</span> <span class="k">await</span> <span class="n">LoggingMeshClient</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span>
+    <span class="n">instance</span><span class="p">,</span>
+    <span class="n">raw_proc_handle</span><span class="p">,</span>
+    <span class="n">stream_to_client</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">aggregate_window_sec</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>
+<span class="p">)</span>
 
-<span class="c1"># … run workload producing stdout/stderr in remote procs …</span>
+<span class="c1"># Run work that produces stdout or stderr in remote procs.</span>
 
-<span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">flush</span><span class="p">(</span><span class="n">instance</span><span class="p">)</span>  <span class="c1"># barrier: all logs observed up to this point</span>
+<span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">flush</span><span class="p">(</span><span class="n">instance</span><span class="p">)</span>
 </pre></div>
 </div>
+<p>The Handle completes only after Rust actor creation and initial forwarding-mode submission succeed. At the <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code> layer, readiness also waits for <code class="docutils literal notranslate"><span class="pre">_LogLevelSetter</span></code> to apply the initial Python level. Later <code class="docutils literal notranslate"><span class="pre">pm.logging_option(...)</span></code> calls send stream and aggregation changes to <code class="docutils literal notranslate"><span class="pre">LoggingMeshClient</span></code> and broadcast Python level changes to <code class="docutils literal notranslate"><span class="pre">_LogLevelSetter</span></code>.</p>
 </section>
 <section id="related">
 <h2>Related<a class="headerlink" href="#related" title="Link to this heading">#</a></h2>
@@ -1463,14 +1512,14 @@ See: <a class="reference internal" href="client.html#barrier-protocol-sync-flush
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-it-exposes">What it exposes</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#api-surface">API surface</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#loggingmeshclient-spawn-instance-proc-mesh-pypythontask"><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.spawn(instance,</span> <span class="pre">proc_mesh)</span> <span class="pre">-&gt;</span> <span class="pre">PyPythonTask</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#loggingmeshclient-set-mode-instance-stream-to-client-bool-aggregate-window-sec-optional-int-level-int-none"><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.set_mode(instance,</span> <span class="pre">stream_to_client:</span> <span class="pre">bool,</span> <span class="pre">aggregate_window_sec:</span> <span class="pre">Optional[int],</span> <span class="pre">level:</span> <span class="pre">int)</span> <span class="pre">-&gt;</span> <span class="pre">None</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-it-exposes">What It Exposes</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#api-surface">API Surface</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#loggingmeshclient-spawn-instance-raw-stream-to-client-aggregate-window-sec-handle-loggingmeshclient"><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.spawn(instance,</span> <span class="pre">raw,</span> <span class="pre">*,</span> <span class="pre">stream_to_client,</span> <span class="pre">aggregate_window_sec)</span> <span class="pre">-&gt;</span> <span class="pre">Handle[LoggingMeshClient]</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#loggingmeshclient-set-mode-instance-stream-to-client-bool-aggregate-window-sec-optional-int-none"><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.set_mode(instance,</span> <span class="pre">stream_to_client:</span> <span class="pre">bool,</span> <span class="pre">aggregate_window_sec:</span> <span class="pre">Optional[int])</span> <span class="pre">-&gt;</span> <span class="pre">None</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#loggingmeshclient-flush-instance-handle-none"><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.flush(instance)</span> <span class="pre">-&gt;</span> <span class="pre">Handle[None]</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#minimal-example">Minimal example</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#minimal-example">Minimal Example</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#related">Related</a></li>
 </ul>
   </nav></div>
@@ -1639,11 +1688,11 @@ See: <a class="reference internal" href="client.html#barrier-protocol-sync-flush
     {
        "@context": "https://schema.org",
        "@type": "Article",
-       "name": "Python control surface",
-       "headline": "Python control surface",
+       "name": "Python Control Surface",
+       "headline": "Python Control Surface",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-mesh-book/src/logging/python.html",
-       "articleBody": "Python control surface# What it exposes# A small, explicit API to start logging for a ProcMesh, stream remote stdout/stderr back to your notebook/REPL, tune aggregation \u0026 verbosity, and perform a versioned sync flush before teardown. Placement: There is exactly one LogClientActor, and it runs inside the Python/driver process (your notebook/REPL). Python calls fan out to per-proc forwarders and back. API surface# LoggingMeshClient.spawn(instance, proc_mesh) -\u003e PyPythonTask# Spawns: a single LogClientActor (in the Python/driver process), per-proc LogForwardActors (in remote procs), per-proc LoggerRuntimeActors (Python logging runtime). LoggingMeshClient.set_mode(instance, stream_to_client: bool, aggregate_window_sec: Optional[int], level: int) -\u003e None# Turns streaming on/off (stream_to_client). Sets aggregation window (seconds) only if streaming is enabled. Sets Python logging level in the per-proc LoggerRuntimeActor. Constraint: if aggregate_window_sec is Some while stream_to_client is False, set_mode raises a runtime error (see source). LoggingMeshClient.flush(instance) -\u003e Handle[None]# Performs a versioned sync flush across all forwarders so the caller deterministically waits until \u201call logs up to now\u201d are delivered. The flush starts during the call; the returned Handle completes when it has finished, and dropping the Handle does not cancel it. See: Client actor \u2192 Barrier protocol and Forwarder internals. Minimal example# from monarch._rust_bindings.monarch_hyperactor.logging import LoggingMeshClient import logging client = await LoggingMeshClient.spawn(instance, proc_mesh) # one client actor in driver client.set_mode(instance, stream_to_client=True, aggregate_window_sec=3, level=logging.INFO) # \u2026 run workload producing stdout/stderr in remote procs \u2026 await client.flush(instance) # barrier: all logs observed up to this point Related# Client actor \u2014 aggregation, similarity bucketing, barriers Forwarder internals \u2014 in-band LogMessage::{Log, Flush} Stream forwarders \u2014 FD capture, tee, local files",
+       "articleBody": "Python Control Surface# What It Exposes# The Python API installs logging for a ProcMesh, streams remote stdout and stderr back to the notebook or REPL, adjusts aggregation and Python verbosity, and performs a versioned sync flush before teardown. There is exactly one LogClientActor, and it runs inside the Python driver process. Python calls fan out to per-proc forwarders and back. API Surface# LoggingMeshClient.spawn(instance, raw, *, stream_to_client, aggregate_window_sec) -\u003e Handle[LoggingMeshClient]# Starts immediately, waits for the raw proc-creation Handle, and then creates and configures: a single LogClientActor in the Python driver process; per-proc LogForwardActors when forwarding is enabled. Both are Rust actors. Python log levels are handled separately by the per-proc _LogLevelSetter actor that LoggingManager installs on an ordinary Python proc mesh. LoggingMeshClient.set_mode(instance, stream_to_client: bool, aggregate_window_sec: Optional[int]) -\u003e None# Turns streaming on or off. Sets the aggregation window only when streaming is enabled. If aggregate_window_sec is set while stream_to_client is false, set_mode raises a runtime error. LoggingMeshClient.flush(instance) -\u003e Handle[None]# Performs a versioned sync flush across all forwarders. The returned Handle completes after all logs through the chosen version have been delivered. Dropping the Handle does not cancel the flush. See Client actor \u2192 Barrier protocol and Forwarder internals. Minimal Example# from monarch._rust_bindings.monarch_hyperactor.logging import LoggingMeshClient client = await LoggingMeshClient.spawn( instance, raw_proc_handle, stream_to_client=True, aggregate_window_sec=3, ) # Run work that produces stdout or stderr in remote procs. await client.flush(instance) The Handle completes only after Rust actor creation and initial forwarding-mode submission succeed. At the ProcMesh layer, readiness also waits for _LogLevelSetter to apply the initial Python level. Later pm.logging_option(...) calls send stream and aggregation changes to LoggingMeshClient and broadcast Python level changes to _LogLevelSetter. Related# Client actor \u2014 aggregation, similarity bucketing, barriers Forwarder internals \u2014 in-band LogMessage::{Log, Flush} Stream forwarders \u2014 FD capture, tee, local files",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

@@ -202,6 +202,8 @@ monarch.grad_function(*fn*)[[source]](../_modules/monarch/gradient_generator.htm
 
 monarch.grad_generator(*roots=()*, *with_respect_to=()*, *grad_roots=()*)[[source]](../_modules/monarch/gradient_generator.html#grad_generator)
 
+Iterate gradients while restoring each operation's mesh and stream.
+
 monarch.timer()
 
 monarch.world_mesh(*ctx*, *hosts*, *gpu_per_host*, *_processes=None*)[[source]](../_modules/monarch/world_mesh.html#world_mesh)

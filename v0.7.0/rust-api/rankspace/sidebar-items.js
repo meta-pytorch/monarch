@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["RankMask","RankSpaceError"],"mod":["strategy","view"],"struct":["Coord","Dim","DimRange","Extent","Rank","RankBounds","RankRect","RankRectRanks","RankSpace"]};

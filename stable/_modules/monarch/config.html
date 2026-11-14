@@ -7,7 +7,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch.config &#8212; Monarch v0.7.0 documentation</title>
+    <title>monarch.config &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -29,11 +29,11 @@
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -41,17 +41,375 @@
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../_static/documentation_options.js?v=b3dab91b"></script>
     <script src="../../_static/doctools.js?v=888ff710"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="../../_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="../../_static/design-tabs.js?v=f930bc37"></script>
-    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
-    <script>mermaid.initialize({startOnLoad:true});</script>
+    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@12.1.0/dist/mermaid.esm.min.mjs";
+
+
+
+
+
+const initStyles = () => {
+    const defaultStyle = document.createElement('style');
+    defaultStyle.textContent = "pre.mermaid {\n    /* Same as .mermaid-container > pre */\n    display: block;\n    width: 100%;\n}\n\npre.mermaid > svg {\n    /* Same as .mermaid-container > pre > svg */\n    height: 500px;\n    width: 100%;\n    max-width: 100% !important;\n}";
+    document.head.appendChild(defaultStyle);
+
+    const fullscreenStyle = document.createElement('style');
+    fullscreenStyle.textContent = ".mermaid-container {\n    position: relative;\n    display: flex;\n    flex-direction: row;\n    width: 100%;\n}\n\n.mermaid-container > pre {\n    display: block;\n    width: 100%;\n}\n\n.mermaid-container > pre > svg {\n    height: 500px;\n    width: 100%;\n    max-width: 100% !important;\n}\n\n.mermaid-fullscreen-btn {\n    position: absolute;\n    width: 28px;\n    height: 28px;\n    background: rgba(255, 255, 255, 0.95);\n    border: 1px solid rgba(0, 0, 0, 0.3);\n    border-radius: 4px;\n    cursor: pointer;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    transition: all 0.2s;\n    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);\n    font-size: 14px;\n    line-height: 1;\n    padding: 0;\n    color: #333;\n}\n\n.mermaid-fullscreen-btn:hover {\n    opacity: 100% !important;\n    background: rgba(255, 255, 255, 1);\n    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);\n    transform: scale(1.1);\n}\n\n.mermaid-fullscreen-btn.dark-theme {\n    background: rgba(50, 50, 50, 0.95);\n    border: 1px solid rgba(255, 255, 255, 0.3);\n    color: #e0e0e0;\n}\n\n.mermaid-fullscreen-btn.dark-theme:hover {\n    background: rgba(60, 60, 60, 1);\n    box-shadow: 0 3px 10px rgba(255, 255, 255, 0.2);\n}\n\n.mermaid-fullscreen-modal {\n    display: none;\n    position: fixed !important;\n    top: 0 !important;\n    left: 0 !important;\n    width: 95vw;\n    height: 100vh;\n    background: rgba(255, 255, 255, 0.98);\n    z-index: 9999;\n    padding: 20px;\n    overflow: auto;\n}\n\n.mermaid-fullscreen-modal.dark-theme {\n    background: rgba(0, 0, 0, 0.98);\n}\n\n.mermaid-fullscreen-modal.active {\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen {\n    position: relative;\n    width: 95vw;\n    height: 90vh;\n    max-width: 95vw;\n    max-height: 90vh;\n    background: white;\n    border-radius: 8px;\n    padding: 20px;\n    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);\n    overflow: auto;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen.dark-theme {\n    background: #1a1a1a;\n    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);\n}\n\n.mermaid-container-fullscreen pre.mermaid {\n    width: 100%;\n    height: 100%;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen .mermaid svg {\n    height: 100% !important;\n    width: 100% !important;\n    cursor: grab;\n}\n\n.mermaid-fullscreen-close {\n    position: fixed !important;\n    top: 20px !important;\n    right: 20px !important;\n    width: 40px;\n    height: 40px;\n    background: rgba(255, 255, 255, 0.95);\n    border: 1px solid rgba(0, 0, 0, 0.2);\n    border-radius: 50%;\n    cursor: pointer;\n    z-index: 10000;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);\n    transition: all 0.2s;\n    font-size: 24px;\n    line-height: 1;\n    color: #333;\n}\n\n.mermaid-fullscreen-close:hover {\n    background: white;\n    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);\n    transform: scale(1.1);\n}\n\n.mermaid-fullscreen-close.dark-theme {\n    background: rgba(50, 50, 50, 0.95);\n    border: 1px solid rgba(255, 255, 255, 0.2);\n    color: #e0e0e0;\n}\n\n.mermaid-fullscreen-close.dark-theme:hover {\n    background: rgba(60, 60, 60, 1);\n    box-shadow: 0 6px 16px rgba(255, 255, 255, 0.2);\n}\n\n.mermaid-fullscreen-modal .mermaid-fullscreen-btn {\n    display: none !important;\n}";
+    document.head.appendChild(fullscreenStyle);
+}
+
+// Detect if page has dark background
+const isDarkTheme = () => {
+    // We use a set of heuristics:
+    // 1. Check for common dark mode classes or attributes
+    // 2. Check computed background color brightness
+    if (document.documentElement.classList.contains('dark') ||
+        document.documentElement.getAttribute('data-theme') === 'dark' ||
+        document.body.classList.contains('dark') ||
+        document.body.getAttribute('data-theme') === 'dark') {
+        // console.log("Dark theme detected via class/attribute");
+        return true;
+    }
+    if (document.documentElement.classList.contains('light') ||
+        document.documentElement.getAttribute('data-theme') === 'light' ||
+        document.body.classList.contains('light') ||
+        document.body.getAttribute('data-theme') === 'light') {
+        // console.log("Light theme detected via class/attribute");
+        return false;
+    }
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        // console.log("Dark theme detected via prefers-color-scheme");
+        return true;
+    }
+    const bgColor = window.getComputedStyle(document.body).backgroundColor;
+    const match = bgColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)/);
+    if (match) {
+        const r = parseInt(match[1]);
+        const g = parseInt(match[2]);
+        const b = parseInt(match[3]);
+        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+        // console.log("Background color brightness:", brightness);
+        return brightness < 128;
+    }
+    // console.log("No dark or light theme detected, defaulting to light theme");
+    return false;
+};
+
+let darkTheme = isDarkTheme();
+let modal = null;
+let modalContent = null;
+let previousScrollOffset = [window.scrollX, window.scrollY];
+let _lazyObserver = null;
+let _renderQueue = Promise.resolve();
+let closeModal = () => {};
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && modal?.classList.contains('active')) {
+        closeModal();
+    }
+});
+
+// Apply d3 zoom to each SVG. Idempotent: an SVG already wrapped is skipped,
+// so this is safe to call both for the initial batch and for diagrams that
+// render lazily once they become visible.
+const addZoomToSvgs = (svgs) => {
+    svgs.each(function() {
+        if (this.getAttribute('data-zoom-applied') === 'true') return;
+        var svg = d3.select(this);
+        svg.html("<g class='wrapper'>" + svg.html() + "</g>");
+        var inner = svg.select("g");
+        var zoom = d3.zoom().on("zoom", function(event) {
+            inner.attr("transform", event.transform);
+        });
+        svg.call(zoom);
+        this.setAttribute('data-zoom-applied', 'true');
+    });
+};
+
+const runMermaid = async (rerun) => {
+    console.log("Running mermaid diagrams, rerun =", rerun);
+    // clear all existing mermaid charts
+    let all_mermaids = document.querySelectorAll(".mermaid");
+
+    if (rerun) {
+        // Disconnect any previous lazy rendering observer
+        if (_lazyObserver) {
+            _lazyObserver.disconnect();
+            _lazyObserver = null;
+        }
+
+        all_mermaids.forEach((el) => {
+            el.removeAttribute('data-mermaid-deferred');
+            el.removeAttribute('data-mermaid-render-failed');
+            if(!el.hasAttribute("data-original-code")) {
+                // store original code
+                // console.log(`Storing original code for first run: `, el.innerHTML);
+                el.setAttribute('data-original-code', el.innerHTML);
+            }
+            if(el.getAttribute("data-processed") === "true") {
+                // remove and restore original
+                el.removeAttribute("data-processed");
+                // console.log(`Restoring original code for re-run: `, el.getAttribute('data-original-code'));
+                el.innerHTML = el.getAttribute('data-original-code');
+            } else {
+                // store original code
+                // console.log(`Storing original code for re-run: `, el.innerHTML);
+                el.setAttribute('data-original-code', el.innerHTML);
+            }
+        });
+
+        // Separate visible and hidden elements. Mermaid's layout engine measures
+        // text dimensions via the DOM, which fails for elements hidden by a parent
+        // (e.g., Reveal.js non-active slides, sphinx-design unopened tabs),
+        // producing broken SVGs. Render visible elements now, defer hidden ones.
+        const visible = [];
+        const hidden = [];
+        all_mermaids.forEach((el) => {
+            // offsetParent is null for display:none ancestors.
+            // getClientRects().length > 0 catches position:fixed elements
+            // (which also have null offsetParent but are still visible).
+            if (el.offsetParent !== null || el.getClientRects().length > 0) {
+                visible.push(el);
+            } else {
+                hidden.push(el);
+                el.setAttribute('data-mermaid-deferred', 'true');
+            }
+        });
+
+        if (visible.length > 0) {
+            try {
+                await mermaid.run({ nodes: visible });
+            } catch (e) {
+                console.error("Mermaid rendering failed:", e);
+            }
+        }
+
+        // Lazily render hidden elements when they become visible.
+        // Uses a promise chain (_renderQueue) to serialize rendering,
+        // since IntersectionObserver may report multiple entries at once
+        // and mermaid.run() is not safe to call concurrently.
+        if (hidden.length > 0) {
+            if (typeof IntersectionObserver === 'undefined') {
+                console.warn("IntersectionObserver not available; hidden mermaid diagrams will not render.");
+            } else {
+                _renderQueue = Promise.resolve();
+                _lazyObserver = new IntersectionObserver((entries) => {
+                    for (const entry of entries) {
+                        if (entry.isIntersecting && entry.target.getAttribute("data-processed") !== "true") {
+                            _lazyObserver.unobserve(entry.target);
+                            const el = entry.target;
+                            _renderQueue = _renderQueue.then(async () => {
+                                try {
+                                    await mermaid.run({ nodes: [el] });
+                                    el.removeAttribute('data-mermaid-deferred');
+                                    // Apply zoom to the now-rendered diagram, matching
+                                    // the decoration visible diagrams receive.
+                                    if (false) {
+                                        addZoomToSvgs(d3.selectAll("").select(function() {
+                                            return this.querySelector("svg");
+                                        }));
+                                    }
+                                } catch (e) {
+                                    console.error("Mermaid deferred rendering failed:", e);
+                                    el.removeAttribute('data-mermaid-deferred');
+                                    el.setAttribute('data-mermaid-render-failed', 'true');
+                                }
+                            });
+                        }
+                    }
+                });
+                hidden.forEach((el) => _lazyObserver.observe(el));
+            }
+        }
+    }
+
+    all_mermaids = document.querySelectorAll(".mermaid");
+    // Exclude deferred (hidden) and render-failed elements from completion checks
+    const mermaids_active = document.querySelectorAll(".mermaid:not([data-mermaid-deferred]):not([data-mermaid-render-failed])");
+    const mermaids_processed = document.querySelectorAll(".mermaid:not([data-mermaid-deferred]):not([data-mermaid-render-failed])[data-processed='true']");
+
+    if (false) {
+        const mermaids_to_add_zoom = 0 === -1 ? mermaids_active.length : 0;
+        if(mermaids_to_add_zoom > 0) {
+            var svgs = d3.selectAll("").select(function() {
+                return this.querySelector("svg");
+            });
+            // Wait until every active (visible) diagram has rendered. Deferred
+            // diagrams are excluded, so a fixed d3_node_count that counts a
+            // hidden diagram no longer loops forever waiting for its SVG.
+            if(mermaids_active.length !== mermaids_processed.length) {
+                setTimeout(() => runMermaid(false), 200);
+                return;
+            }
+            addZoomToSvgs(svgs);
+        }
+    } else if(mermaids_active.length !== mermaids_processed.length) {
+        // Wait for mermaid to process all diagrams
+        setTimeout(() => runMermaid(false), 200);
+        return;
+    }
+
+    // Stop here if not adding fullscreen capability
+    if (!true) return;
+
+    if (modal !== null ) {
+        // Destroy existing modal
+        modal.remove();
+        modal = null;
+        modalContent = null;
+    }
+
+    modal = document.createElement('div');
+    modal.className = 'mermaid-fullscreen-modal' + (darkTheme ? ' dark-theme' : '');
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-label', 'Fullscreen diagram viewer');
+    modal.innerHTML = `
+        <button class="mermaid-fullscreen-close${darkTheme ? ' dark-theme' : ''}" aria-label="Close fullscreen">✕</button>
+        <div class="mermaid-container-fullscreen${darkTheme ? ' dark-theme' : ''}"></div>
+    `;
+    document.body.appendChild(modal);
+
+    modalContent = modal.querySelector('.mermaid-container-fullscreen');
+    const closeBtn = modal.querySelector('.mermaid-fullscreen-close');
+
+    closeModal = () => {
+        modal.classList.remove('active');
+        modalContent.innerHTML = '';
+        document.body.style.overflow = ''
+        window.scrollTo({left: previousScrollOffset[0], top: previousScrollOffset[1], behavior: 'instant'});
+    };
+
+    closeBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+    });
+    document.querySelectorAll('.mermaid').forEach((mermaidDiv) => {
+        if (mermaidDiv.parentNode.classList.contains('mermaid-container') ||
+            mermaidDiv.closest('.mermaid-fullscreen-modal')) {
+            // Already processed, adjust button class if needed
+            const existingBtn = mermaidDiv.parentNode.querySelector('.mermaid-fullscreen-btn');
+            if (existingBtn) {
+                existingBtn.className = 'mermaid-fullscreen-btn' + (darkTheme ? ' dark-theme' : '');
+            }
+            return;
+        }
+
+        const container = document.createElement('div');
+        container.className = 'mermaid-container';
+        mermaidDiv.parentNode.insertBefore(container, mermaidDiv);
+        container.appendChild(mermaidDiv);
+
+        const fullscreenBtn = document.createElement('button');
+        fullscreenBtn.className = 'mermaid-fullscreen-btn' + (darkTheme ? ' dark-theme' : '');
+        fullscreenBtn.setAttribute('aria-label', 'View diagram in fullscreen');
+        fullscreenBtn.textContent = "\u26f6";
+        fullscreenBtn.style.opacity = "50%";
+
+        // Calculate dynamic position based on diagram's margin and padding
+        const diagramStyle = window.getComputedStyle(mermaidDiv);
+        const marginTop = parseFloat(diagramStyle.marginTop) || 0;
+        const marginRight = parseFloat(diagramStyle.marginRight) || 0;
+        const paddingTop = parseFloat(diagramStyle.paddingTop) || 0;
+        const paddingRight = parseFloat(diagramStyle.paddingRight) || 0;
+        fullscreenBtn.style.top = `${marginTop + paddingTop + 4}px`;
+        fullscreenBtn.style.right = `${marginRight + paddingRight + 4}px`;
+
+        fullscreenBtn.addEventListener('click', () => {
+            previousScrollOffset = [window.scrollX, window.scrollY];
+            const clone = mermaidDiv.cloneNode(true);
+            modalContent.innerHTML = '';
+            modalContent.appendChild(clone);
+
+            const svg = clone.querySelector('svg');
+            if (svg) {
+                svg.removeAttribute('width');
+                svg.removeAttribute('height');
+                svg.style.width = '100%';
+                svg.style.height = 'auto';
+                svg.style.maxWidth = '100%';
+                svg.style.display = 'block';
+
+                if (false) {
+                    setTimeout(() => {
+                        const g = svg.querySelector('g');
+                        if (g) {
+                            var svgD3 = d3.select(svg);
+                            svgD3.html("<g class='wrapper'>" + svgD3.html() + "</g>");
+                            var inner = svgD3.select("g");
+                            var zoom = d3.zoom().on("zoom", function(event) {
+                                inner.attr("transform", event.transform);
+                            });
+                            svgD3.call(zoom);
+                        }
+                    }, 100);
+                }
+            }
+
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        });
+        container.appendChild(fullscreenBtn);
+    });
+};
+
+
+
+const load = async () => {
+    initStyles();
+
+
+    await runMermaid(true);
+
+    const reRunIfThemeChanges = async () => {
+        const newDarkTheme = isDarkTheme();
+        if (newDarkTheme !== darkTheme) {
+            darkTheme = newDarkTheme;
+            console.log("Theme change detected, re-running mermaid with", darkTheme ? "dark" : "default", "theme");
+            await mermaid.initialize(
+                {...{"startOnLoad": false},
+                ...{ darkMode: darkTheme, theme: darkTheme ? "dark" : "default" },
+                }
+            );
+            await runMermaid(true);
+        }
+    };
+
+    // Update theme classes when theme changes
+    const themeObserver = new MutationObserver(reRunIfThemeChanges);
+    themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme']
+    });
+    themeObserver.observe(document.body, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme']
+    });
+};
+
+
+
+
+
+console.log("Initializing mermaid with", darkTheme ? "dark" : "default", "theme");
+mermaid.initialize(
+    {...{"startOnLoad": false},
+    ...{ darkMode: darkTheme, theme: darkTheme ? "dark" : "default" },
+    }
+);
+
+window.addEventListener("load", load);
+window.runMermaid = runMermaid;</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/config';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/config.html" />
@@ -75,7 +433,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -189,7 +547,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -554,8 +912,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -640,6 +1016,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -653,7 +1035,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -925,8 +1307,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1011,6 +1411,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1024,7 +1430,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1399,6 +1805,8 @@ document.write(`
             <span class="n">prefix_with_rank</span><span class="p">:</span> <span class="n">NotRequired</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span>
             <span class="n">actor_spawn_max_idle</span><span class="p">:</span> <span class="n">NotRequired</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
             <span class="n">get_actor_state_max_idle</span><span class="p">:</span> <span class="n">NotRequired</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+            <span class="n">use_direct_spawn</span><span class="p">:</span> <span class="n">NotRequired</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span>
+            <span class="n">data_supervision_timeout</span><span class="p">:</span> <span class="n">NotRequired</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
             <span class="n">supervision_watchdog_timeout</span><span class="p">:</span> <span class="n">NotRequired</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
             <span class="n">proc_stop_max_idle</span><span class="p">:</span> <span class="n">NotRequired</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
             <span class="n">get_proc_state_max_idle</span><span class="p">:</span> <span class="n">NotRequired</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
@@ -1495,6 +1903,10 @@ document.write(`
 <span class="sd">        Proc mesh timeouts:</span>
 <span class="sd">            actor_spawn_max_idle: Maximum idle time while spawning actors (humantime).</span>
 <span class="sd">            get_actor_state_max_idle: Maximum idle time for actor state queries (humantime).</span>
+<span class="sd">            use_direct_spawn: Use data-backed actor meshes for ordinary instance actor mesh spawns.</span>
+<span class="sd">            data_supervision_timeout: Maximum gap between data worker keepalives before notifying</span>
+<span class="sd">                the owner (humantime, default 30s); workers send keepalives every 5s. Independent of</span>
+<span class="sd">                mesh_orphan_timeout, which should be at least as long.</span>
 <span class="sd">            supervision_watchdog_timeout: Watchdog timeout for the actor-mesh supervision stream; prolonged</span>
 <span class="sd">                silence is interpreted as the controller being unreachable (humantime).</span>
 
@@ -2021,7 +2433,7 @@ document.write(`
        "headline": "monarch.config",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/config.html",
-       "articleBody": "Source code for monarch.config # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe \"\"\"Configuration utilities for Monarch. This module provides utilities for managing Monarch\u0027s runtime configuration, particularly useful for testing and temporary configuration overrides. \"\"\" import contextlib import sys from typing import Any, Callable, Dict, Iterator, TYPE_CHECKING, TypedDict from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport from monarch._rust_bindings.monarch_hyperactor.config import ( clear_runtime_config as _clear_runtime_config, configure as _configure, Encoding, get_global_config as _get_global_config, get_runtime_config as _get_runtime_config, ) __all__ = [ \"clear_runtime_config\", \"configure\", \"configured\", \"Encoding\", \"get_global_config\", \"get_runtime_config\", \"parametrize_config\", \"parametrize_config_pointwise\", ] if TYPE_CHECKING: if sys.version_info \u003e= (3, 12): from typing import NotRequired, Unpack class ConfigureArgs(TypedDict): default_transport: NotRequired[ChannelTransport | str] enable_log_forwarding: NotRequired[bool] enable_file_capture: NotRequired[bool] tail_log_lines: NotRequired[int] codec_max_frame_length: NotRequired[int] message_delivery_timeout: NotRequired[str] host_spawn_ready_timeout: NotRequired[str] mesh_proc_spawn_max_idle: NotRequired[str] process_exit_timeout: NotRequired[str] message_ack_time_interval: NotRequired[str] message_ack_every_n_messages: NotRequired[int] message_ttl_default: NotRequired[int] split_max_buffer_size: NotRequired[int] split_max_buffer_age: NotRequired[str] stop_actor_timeout: NotRequired[str] cleanup_timeout: NotRequired[str] default_encoding: NotRequired[Encoding] channel_net_rx_buffer_full_check_interval: NotRequired[str] channel_tcp_congestion: NotRequired[str] message_latency_sampling_rate: NotRequired[float] enable_dest_actor_reordering_buffer: NotRequired[bool] mesh_bootstrap_enable_pdeathsig: NotRequired[bool] mesh_terminate_concurrency: NotRequired[int] mesh_terminate_timeout: NotRequired[str] small_write_threshold: NotRequired[int] max_cast_dimension_size: NotRequired[int] remote_alloc_bind_to_inaddr_any: NotRequired[bool] remote_alloc_bootstrap_addr: NotRequired[str] remote_alloc_allowed_port_range: NotRequired[slice] read_log_buffer: NotRequired[int] force_file_log: NotRequired[bool] prefix_with_rank: NotRequired[bool] actor_spawn_max_idle: NotRequired[str] get_actor_state_max_idle: NotRequired[str] supervision_watchdog_timeout: NotRequired[str] proc_stop_max_idle: NotRequired[str] get_proc_state_max_idle: NotRequired[str] mesh_admin_addr: NotRequired[str] mesh_attach_config_timeout: NotRequired[str] mesh_orphan_timeout: NotRequired[str] pyspy_bin: NotRequired[str] rdma_allow_tcp_fallback: NotRequired[bool] rdma_disable_ibverbs: NotRequired[bool] rdma_max_chunk_size_mb: NotRequired[int] rdma_ibverbs_target: NotRequired[str] rdma_peer_device_affinity: NotRequired[str] rdma_max_nics_per_buffer: NotRequired[int | None] rdma_min_stripe_size_kb: NotRequired[int] rdma_qps_per_cq: NotRequired[int] rdma_cq_poller_per_device: NotRequired[bool] rdma_runtime_worker_threads: NotRequired[int] # pyrefly: ignore [invalid-annotation] ConfigureKwargsType = Unpack[ConfigureArgs] else: ConfigureKwargsType = object [docs] def configure(**kwargs: \"ConfigureKwargsType\") -\u003e None: \"\"\"Configure Hyperactor runtime defaults for this process. This updates the **Runtime** configuration layer from Python, setting transports, logging behavior, timeouts, and other runtime parameters. All duration parameters accept humantime strings like ``\"30s\"``, ``\"5m\"``, ``\"2h\"``, or ``\"1h 30m\"``. Args: Transport configuration: default_transport: Default channel transport for actor communication. Can be a ChannelTransport enum or explicit address string. Basic logging behavior: enable_log_forwarding: Forward child stdout/stderr through the mesh. enable_file_capture: Persist child stdout/stderr to per-host files. tail_log_lines: Number of log lines to retain in memory. Message encoding and delivery: codec_max_frame_length: Maximum serialized message size in bytes. message_delivery_timeout: Max delivery time (humantime). Core mesh timeouts: host_spawn_ready_timeout: Max host bootstrapping time (humantime). mesh_proc_spawn_max_idle: Max idle time while spawning procs (humantime). Hyperactor timeouts and message handling: process_exit_timeout: Timeout for process exit (humantime). message_ack_time_interval: Time interval for message acknowledgments (humantime). message_ack_every_n_messages: Acknowledge every N messages. message_ttl_default: Default message time-to-live. split_max_buffer_size: Maximum buffer size for message splitting (bytes). split_max_buffer_age: Maximum age for split message buffers (humantime). stop_actor_timeout: Timeout for stopping actors (humantime). cleanup_timeout: Timeout for cleanup operations (humantime). default_encoding: Default message encoding (Encoding.Bincode, Encoding.Json, or Encoding.Multipart). channel_net_rx_buffer_full_check_interval: Network receive buffer check interval (humantime). channel_tcp_congestion: TCP congestion control: ``\"cubic\"``, ``\"reno\"``, ``\"bbr\"``; empty keeps the host default. Best-effort -- a host that will not let this process select the algorithm keeps its own default and the channel layer logs a warning, rather than failing the connection. This value therefore records what was requested, not necessarily what took. message_latency_sampling_rate: Sampling rate for message latency tracking (0.0 to 1.0). enable_dest_actor_reordering_buffer: Enable reordering buffer in dest actor. Mesh bootstrap configuration: mesh_bootstrap_enable_pdeathsig: Enable parent-death signal for spawned processes. mesh_terminate_concurrency: Maximum concurrent terminations during shutdown. mesh_terminate_timeout: Timeout per child during graceful termination (humantime). Runtime and buffering: small_write_threshold: Threshold below which writes are copied (bytes). Mesh configuration: max_cast_dimension_size: Maximum dimension size for cast operations. Remote allocation: remote_alloc_bind_to_inaddr_any: Bind remote allocators to INADDR_ANY. remote_alloc_bootstrap_addr: Bootstrap address for remote allocators. remote_alloc_allowed_port_range: Allowed port range as slice(start, stop). Logging configuration: read_log_buffer: Buffer size for reading logs (bytes). force_file_log: Force file-based logging regardless of environment. prefix_with_rank: Prefix log lines with rank information. Proc mesh timeouts: actor_spawn_max_idle: Maximum idle time while spawning actors (humantime). get_actor_state_max_idle: Maximum idle time for actor state queries (humantime). supervision_watchdog_timeout: Watchdog timeout for the actor-mesh supervision stream; prolonged silence is interpreted as the controller being unreachable (humantime). Host mesh timeouts: proc_stop_max_idle: Maximum idle time while stopping procs (humantime). get_proc_state_max_idle: Maximum idle time for proc state queries (humantime). Mesh admin: mesh_admin_addr: Default socket address for the mesh admin HTTP server (e.g. ``\"[::]:1729\"``, ``\"0.0.0.0:8080\"``). Mesh attach: mesh_attach_config_timeout: Timeout for the config-push barrier during ``attach_to_workers()`` (humantime, default ``\"10s\"``). Best-effort: if exceeded, a warning is logged and attach continues. Diagnostics: pyspy_bin: Path to the py-spy binary used by the mesh admin py-spy endpoints. Tried ahead of ``py-spy`` on ``PATH``; empty uses ``PATH`` alone. Resolved in the proc being dumped, so it must be set before that proc is spawned. The environment variable is ``PYSPY_BIN``, not ``HYPERACTOR_*``. RDMA configuration: rdma_allow_tcp_fallback: Allow TCP fallback when ibverbs RDMA is unavailable. When True, RDMA operations use a TCP-based backend instead of failing. rdma_disable_ibverbs: Force-disable ibverbs even when available, causing all RDMA operations to use the TCP fallback backend. rdma_max_chunk_size_mb: Maximum chunk size in megabytes for RDMA transfers. rdma_ibverbs_target: Default ibverbs device target for managers without an explicit target. Accepts ``\"cpu:\u003cnuma\u003e\"``, ``\"gpu:\u003cordinal\u003e\"``, or ``\"nic:\u003cname\u003e\"``. Empty preserves automatic selection. Non-empty value syntax is validated when the RDMA manager starts. rdma_peer_device_affinity: Which peer NICs each local NIC may pair with for a transfer. Accepts ``\"any\"``, ``\"match_name\"``, or ``\"groups:\"`` followed by any number of ``|``-separated groups, each naming any number of comma-separated devices, e.g. ``\"groups:mlx5_0,mlx5_1|mlx5_2,mlx5_3|mlx5_4\"``. Groups must be disjoint. Empty, the default, means ``\"any\"``. Value syntax is validated when the RDMA manager starts. rdma_max_nics_per_buffer: How many NICs a buffer is registered on, at most; ``None``, the default, sets no limit. rdma_min_stripe_size_kb: Minimum RDMA stripe size in KiB (default: 512). Transfers use as many compatible NIC pairs as this minimum allows. rdma_qps_per_cq: How many queue pairs share one completion queue (default 64). rdma_cq_poller_per_device: Whether each RDMA device gets a separate completion-queue poller (default ``True``). rdma_runtime_worker_threads: Worker threads for the shared RDMA data-plane runtime (default 4), which runs RDMA actors and queue-pair worker tasks. Latched at the first RDMA use in a process; setting it later has no effect. **kwargs: Reserved for future configuration keys exposed by Rust bindings. \"\"\" _configure(**kwargs) [docs] def get_global_config() -\u003e Dict[str, Any]: \"\"\"Return a merged view of all configuration layers. The resulting dict includes defaults, environment overrides, file-based settings, and the current Runtime layer. Mutating the returned dict does *not* change the active configuration; use :func:`configure` instead. \"\"\" return _get_global_config() [docs] def get_runtime_config() -\u003e Dict[str, Any]: \"\"\"Return a snapshot of just the Runtime layer configuration. Useful for snapshot/restore flows (see :func:`configured`) or for inspecting which keys were last set via Python. \"\"\" return _get_runtime_config() [docs] def clear_runtime_config() -\u003e None: \"\"\"Remove every key from the Runtime configuration layer. Environment variables, config files, and defaults are untouched. This is typically paired with :func:`configure` to reset overrides in long-lived processes. \"\"\" _clear_runtime_config() [docs] @contextlib.contextmanager def configured(**overrides: \"ConfigureKwargsType\") -\u003e Iterator[Dict[str, Any]]: \"\"\"Temporarily apply Python-side config overrides for this process. This context manager: * snapshots the current **Runtime** configuration layer (`get_runtime_config()`), * applies the given `overrides` via `configure(**overrides)`, and * yields the **merged** view of config (`get_global_config()`), including defaults, env, file, and Runtime. On exit it restores the previous Runtime layer by: * clearing all Runtime entries, and * re-applying the saved snapshot. `configured` alters the global configuration; thus other threads will be subject to the overridden configuration while the context manager is active. Thus: this is intended for tests, which run as single threads; per-test overrides do not leak into other tests. Args: **overrides: Configuration key-value pairs to override for the duration of the context. Yields: Dict[str, Any]: The merged global configuration including all layers (defaults, environment, file, and runtime). Example: \u003e\u003e\u003e from monarch.config import configured \u003e\u003e\u003e with configured(enable_log_forwarding=True, tail_log_lines=100): ... # Configuration is temporarily overridden ... assert get_global_config()[\"enable_log_forwarding\"] is True \u003e\u003e\u003e # Configuration is automatically restored after the context \"\"\" # Retrieve runtime prev = get_runtime_config() try: # Merge overrides into runtime configure(**overrides) # Snapshot of merged config (all layers) yield get_global_config() finally: # Restore previous runtime clear_runtime_config() configure(**prev) def parametrize_config( **config_options: set[Any], ) -\u003e Callable[[Callable[..., Any]], Callable[..., Any]]: \"\"\"Create a pytest parametrize decorator for configuration cross-products. This decorator runs the test function under every combination of the specified configuration values. Each test invocation wraps the test body in a `configured(...)` context manager with the corresponding settings. Args: **config_options: Configuration keys mapped to sets of values to test. Each key should be a valid argument to `configure()`. Returns: A decorator that parametrizes and wraps the test function. Example: \u003e\u003e\u003e from monarch.config import parametrize_config \u003e\u003e\u003e \u003e\u003e\u003e @parametrize_config( ... force_file_log={True, False}, ... prefix_with_rank={True, False}, ... ) ... async def test_actor_feature(): ... # Test runs 4 times: all combinations of the two bool options ... pass \"\"\" import asyncio import functools import inspect import itertools import pytest if not config_options: raise ValueError(\"parametrize_config requires at least one config option\") keys = list(config_options.keys()) value_lists = [list(config_options[k]) for k in keys] combinations = list(itertools.product(*value_lists)) # Create parameter IDs for clearer test output param_ids = [ \"-\".join(f\"{k}={v}\" for k, v in zip(keys, combo)) for combo in combinations ] # Create the config dicts for each combination config_dicts = [dict(zip(keys, combo)) for combo in combinations] def decorator(fn: Callable[..., Any]) -\u003e Callable[..., Any]: # Get original function\u0027s signature and add _config_overrides as first param orig_sig = inspect.signature(fn) new_params = [ inspect.Parameter( \"_config_overrides\", inspect.Parameter.POSITIONAL_OR_KEYWORD ) ] + list(orig_sig.parameters.values()) new_sig = orig_sig.replace(parameters=new_params) if asyncio.iscoroutinefunction(fn): async def async_wrapper( _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any ) -\u003e Any: with configured(**_config_overrides): return await fn(*args, **kwargs) functools.update_wrapper(async_wrapper, fn) async_wrapper.__signature__ = new_sig # type: ignore[attr-defined] wrapped = async_wrapper else: def sync_wrapper( _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any ) -\u003e Any: with configured(**_config_overrides): return fn(*args, **kwargs) functools.update_wrapper(sync_wrapper, fn) sync_wrapper.__signature__ = new_sig # type: ignore[attr-defined] wrapped = sync_wrapper return pytest.mark.parametrize( \"_config_overrides\", config_dicts, ids=param_ids )(wrapped) return decorator def parametrize_config_pointwise( **config_options: Any, ) -\u003e Callable[[Callable[..., Any]], Callable[..., Any]]: \"\"\"Create a pytest parametrize decorator for pointwise configuration sweeps. Like :func:`parametrize_config`, but iterates the input sequences in lockstep (``zip``) rather than computing their cartesian product. Every sequence must have the same length; the test is invoked once per index with one value drawn from each sequence at that position. Args: **config_options: Configuration keys mapped to ordered sequences of values. Each key should be a valid argument to ``configure()``. Returns: A decorator that parametrizes and wraps the test function. Example: \u003e\u003e\u003e from monarch.config import parametrize_config_pointwise \u003e\u003e\u003e \u003e\u003e\u003e @parametrize_config_pointwise( ... force_file_log=[True, False], ... prefix_with_rank=[True, False], ... ) ... async def test_actor_feature(): ... # Runs 2 times: ... # (force_file_log=True, prefix_with_rank=True) ... # (force_file_log=False, prefix_with_rank=False) ... pass \"\"\" import asyncio import functools import inspect import pytest if not config_options: raise ValueError( \"parametrize_config_pointwise requires at least one config option\" ) keys = list(config_options.keys()) value_lists = [list(config_options[k]) for k in keys] lengths = {len(v) for v in value_lists} if len(lengths) != 1: raise ValueError( \"parametrize_config_pointwise requires every option to have the \" f\"same number of values; got lengths {dict(zip(keys, [len(v) for v in value_lists]))}\" ) combinations = list(zip(*value_lists)) param_ids = [ \"-\".join(f\"{k}={v}\" for k, v in zip(keys, combo)) for combo in combinations ] config_dicts = [dict(zip(keys, combo)) for combo in combinations] def decorator(fn: Callable[..., Any]) -\u003e Callable[..., Any]: orig_sig = inspect.signature(fn) new_params = [ inspect.Parameter( \"_config_overrides\", inspect.Parameter.POSITIONAL_OR_KEYWORD ) ] + list(orig_sig.parameters.values()) new_sig = orig_sig.replace(parameters=new_params) if asyncio.iscoroutinefunction(fn): async def async_wrapper( _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any ) -\u003e Any: with configured(**_config_overrides): return await fn(*args, **kwargs) functools.update_wrapper(async_wrapper, fn) async_wrapper.__signature__ = new_sig # type: ignore[attr-defined] wrapped = async_wrapper else: def sync_wrapper( _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any ) -\u003e Any: with configured(**_config_overrides): return fn(*args, **kwargs) functools.update_wrapper(sync_wrapper, fn) sync_wrapper.__signature__ = new_sig # type: ignore[attr-defined] wrapped = sync_wrapper return pytest.mark.parametrize( \"_config_overrides\", config_dicts, ids=param_ids )(wrapped) return decorator",
+       "articleBody": "Source code for monarch.config # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe \"\"\"Configuration utilities for Monarch. This module provides utilities for managing Monarch\u0027s runtime configuration, particularly useful for testing and temporary configuration overrides. \"\"\" import contextlib import sys from typing import Any, Callable, Dict, Iterator, TYPE_CHECKING, TypedDict from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport from monarch._rust_bindings.monarch_hyperactor.config import ( clear_runtime_config as _clear_runtime_config, configure as _configure, Encoding, get_global_config as _get_global_config, get_runtime_config as _get_runtime_config, ) __all__ = [ \"clear_runtime_config\", \"configure\", \"configured\", \"Encoding\", \"get_global_config\", \"get_runtime_config\", \"parametrize_config\", \"parametrize_config_pointwise\", ] if TYPE_CHECKING: if sys.version_info \u003e= (3, 12): from typing import NotRequired, Unpack class ConfigureArgs(TypedDict): default_transport: NotRequired[ChannelTransport | str] enable_log_forwarding: NotRequired[bool] enable_file_capture: NotRequired[bool] tail_log_lines: NotRequired[int] codec_max_frame_length: NotRequired[int] message_delivery_timeout: NotRequired[str] host_spawn_ready_timeout: NotRequired[str] mesh_proc_spawn_max_idle: NotRequired[str] process_exit_timeout: NotRequired[str] message_ack_time_interval: NotRequired[str] message_ack_every_n_messages: NotRequired[int] message_ttl_default: NotRequired[int] split_max_buffer_size: NotRequired[int] split_max_buffer_age: NotRequired[str] stop_actor_timeout: NotRequired[str] cleanup_timeout: NotRequired[str] default_encoding: NotRequired[Encoding] channel_net_rx_buffer_full_check_interval: NotRequired[str] channel_tcp_congestion: NotRequired[str] message_latency_sampling_rate: NotRequired[float] enable_dest_actor_reordering_buffer: NotRequired[bool] mesh_bootstrap_enable_pdeathsig: NotRequired[bool] mesh_terminate_concurrency: NotRequired[int] mesh_terminate_timeout: NotRequired[str] small_write_threshold: NotRequired[int] max_cast_dimension_size: NotRequired[int] remote_alloc_bind_to_inaddr_any: NotRequired[bool] remote_alloc_bootstrap_addr: NotRequired[str] remote_alloc_allowed_port_range: NotRequired[slice] read_log_buffer: NotRequired[int] force_file_log: NotRequired[bool] prefix_with_rank: NotRequired[bool] actor_spawn_max_idle: NotRequired[str] get_actor_state_max_idle: NotRequired[str] use_direct_spawn: NotRequired[bool] data_supervision_timeout: NotRequired[str] supervision_watchdog_timeout: NotRequired[str] proc_stop_max_idle: NotRequired[str] get_proc_state_max_idle: NotRequired[str] mesh_admin_addr: NotRequired[str] mesh_attach_config_timeout: NotRequired[str] mesh_orphan_timeout: NotRequired[str] pyspy_bin: NotRequired[str] rdma_allow_tcp_fallback: NotRequired[bool] rdma_disable_ibverbs: NotRequired[bool] rdma_max_chunk_size_mb: NotRequired[int] rdma_ibverbs_target: NotRequired[str] rdma_peer_device_affinity: NotRequired[str] rdma_max_nics_per_buffer: NotRequired[int | None] rdma_min_stripe_size_kb: NotRequired[int] rdma_qps_per_cq: NotRequired[int] rdma_cq_poller_per_device: NotRequired[bool] rdma_runtime_worker_threads: NotRequired[int] # pyrefly: ignore [invalid-annotation] ConfigureKwargsType = Unpack[ConfigureArgs] else: ConfigureKwargsType = object [docs] def configure(**kwargs: \"ConfigureKwargsType\") -\u003e None: \"\"\"Configure Hyperactor runtime defaults for this process. This updates the **Runtime** configuration layer from Python, setting transports, logging behavior, timeouts, and other runtime parameters. All duration parameters accept humantime strings like ``\"30s\"``, ``\"5m\"``, ``\"2h\"``, or ``\"1h 30m\"``. Args: Transport configuration: default_transport: Default channel transport for actor communication. Can be a ChannelTransport enum or explicit address string. Basic logging behavior: enable_log_forwarding: Forward child stdout/stderr through the mesh. enable_file_capture: Persist child stdout/stderr to per-host files. tail_log_lines: Number of log lines to retain in memory. Message encoding and delivery: codec_max_frame_length: Maximum serialized message size in bytes. message_delivery_timeout: Max delivery time (humantime). Core mesh timeouts: host_spawn_ready_timeout: Max host bootstrapping time (humantime). mesh_proc_spawn_max_idle: Max idle time while spawning procs (humantime). Hyperactor timeouts and message handling: process_exit_timeout: Timeout for process exit (humantime). message_ack_time_interval: Time interval for message acknowledgments (humantime). message_ack_every_n_messages: Acknowledge every N messages. message_ttl_default: Default message time-to-live. split_max_buffer_size: Maximum buffer size for message splitting (bytes). split_max_buffer_age: Maximum age for split message buffers (humantime). stop_actor_timeout: Timeout for stopping actors (humantime). cleanup_timeout: Timeout for cleanup operations (humantime). default_encoding: Default message encoding (Encoding.Bincode, Encoding.Json, or Encoding.Multipart). channel_net_rx_buffer_full_check_interval: Network receive buffer check interval (humantime). channel_tcp_congestion: TCP congestion control: ``\"cubic\"``, ``\"reno\"``, ``\"bbr\"``; empty keeps the host default. Best-effort -- a host that will not let this process select the algorithm keeps its own default and the channel layer logs a warning, rather than failing the connection. This value therefore records what was requested, not necessarily what took. message_latency_sampling_rate: Sampling rate for message latency tracking (0.0 to 1.0). enable_dest_actor_reordering_buffer: Enable reordering buffer in dest actor. Mesh bootstrap configuration: mesh_bootstrap_enable_pdeathsig: Enable parent-death signal for spawned processes. mesh_terminate_concurrency: Maximum concurrent terminations during shutdown. mesh_terminate_timeout: Timeout per child during graceful termination (humantime). Runtime and buffering: small_write_threshold: Threshold below which writes are copied (bytes). Mesh configuration: max_cast_dimension_size: Maximum dimension size for cast operations. Remote allocation: remote_alloc_bind_to_inaddr_any: Bind remote allocators to INADDR_ANY. remote_alloc_bootstrap_addr: Bootstrap address for remote allocators. remote_alloc_allowed_port_range: Allowed port range as slice(start, stop). Logging configuration: read_log_buffer: Buffer size for reading logs (bytes). force_file_log: Force file-based logging regardless of environment. prefix_with_rank: Prefix log lines with rank information. Proc mesh timeouts: actor_spawn_max_idle: Maximum idle time while spawning actors (humantime). get_actor_state_max_idle: Maximum idle time for actor state queries (humantime). use_direct_spawn: Use data-backed actor meshes for ordinary instance actor mesh spawns. data_supervision_timeout: Maximum gap between data worker keepalives before notifying the owner (humantime, default 30s); workers send keepalives every 5s. Independent of mesh_orphan_timeout, which should be at least as long. supervision_watchdog_timeout: Watchdog timeout for the actor-mesh supervision stream; prolonged silence is interpreted as the controller being unreachable (humantime). Host mesh timeouts: proc_stop_max_idle: Maximum idle time while stopping procs (humantime). get_proc_state_max_idle: Maximum idle time for proc state queries (humantime). Mesh admin: mesh_admin_addr: Default socket address for the mesh admin HTTP server (e.g. ``\"[::]:1729\"``, ``\"0.0.0.0:8080\"``). Mesh attach: mesh_attach_config_timeout: Timeout for the config-push barrier during ``attach_to_workers()`` (humantime, default ``\"10s\"``). Best-effort: if exceeded, a warning is logged and attach continues. Diagnostics: pyspy_bin: Path to the py-spy binary used by the mesh admin py-spy endpoints. Tried ahead of ``py-spy`` on ``PATH``; empty uses ``PATH`` alone. Resolved in the proc being dumped, so it must be set before that proc is spawned. The environment variable is ``PYSPY_BIN``, not ``HYPERACTOR_*``. RDMA configuration: rdma_allow_tcp_fallback: Allow TCP fallback when ibverbs RDMA is unavailable. When True, RDMA operations use a TCP-based backend instead of failing. rdma_disable_ibverbs: Force-disable ibverbs even when available, causing all RDMA operations to use the TCP fallback backend. rdma_max_chunk_size_mb: Maximum chunk size in megabytes for RDMA transfers. rdma_ibverbs_target: Default ibverbs device target for managers without an explicit target. Accepts ``\"cpu:\u003cnuma\u003e\"``, ``\"gpu:\u003cordinal\u003e\"``, or ``\"nic:\u003cname\u003e\"``. Empty preserves automatic selection. Non-empty value syntax is validated when the RDMA manager starts. rdma_peer_device_affinity: Which peer NICs each local NIC may pair with for a transfer. Accepts ``\"any\"``, ``\"match_name\"``, or ``\"groups:\"`` followed by any number of ``|``-separated groups, each naming any number of comma-separated devices, e.g. ``\"groups:mlx5_0,mlx5_1|mlx5_2,mlx5_3|mlx5_4\"``. Groups must be disjoint. Empty, the default, means ``\"any\"``. Value syntax is validated when the RDMA manager starts. rdma_max_nics_per_buffer: How many NICs a buffer is registered on, at most; ``None``, the default, sets no limit. rdma_min_stripe_size_kb: Minimum RDMA stripe size in KiB (default: 512). Transfers use as many compatible NIC pairs as this minimum allows. rdma_qps_per_cq: How many queue pairs share one completion queue (default 64). rdma_cq_poller_per_device: Whether each RDMA device gets a separate completion-queue poller (default ``True``). rdma_runtime_worker_threads: Worker threads for the shared RDMA data-plane runtime (default 4), which runs RDMA actors and queue-pair worker tasks. Latched at the first RDMA use in a process; setting it later has no effect. **kwargs: Reserved for future configuration keys exposed by Rust bindings. \"\"\" _configure(**kwargs) [docs] def get_global_config() -\u003e Dict[str, Any]: \"\"\"Return a merged view of all configuration layers. The resulting dict includes defaults, environment overrides, file-based settings, and the current Runtime layer. Mutating the returned dict does *not* change the active configuration; use :func:`configure` instead. \"\"\" return _get_global_config() [docs] def get_runtime_config() -\u003e Dict[str, Any]: \"\"\"Return a snapshot of just the Runtime layer configuration. Useful for snapshot/restore flows (see :func:`configured`) or for inspecting which keys were last set via Python. \"\"\" return _get_runtime_config() [docs] def clear_runtime_config() -\u003e None: \"\"\"Remove every key from the Runtime configuration layer. Environment variables, config files, and defaults are untouched. This is typically paired with :func:`configure` to reset overrides in long-lived processes. \"\"\" _clear_runtime_config() [docs] @contextlib.contextmanager def configured(**overrides: \"ConfigureKwargsType\") -\u003e Iterator[Dict[str, Any]]: \"\"\"Temporarily apply Python-side config overrides for this process. This context manager: * snapshots the current **Runtime** configuration layer (`get_runtime_config()`), * applies the given `overrides` via `configure(**overrides)`, and * yields the **merged** view of config (`get_global_config()`), including defaults, env, file, and Runtime. On exit it restores the previous Runtime layer by: * clearing all Runtime entries, and * re-applying the saved snapshot. `configured` alters the global configuration; thus other threads will be subject to the overridden configuration while the context manager is active. Thus: this is intended for tests, which run as single threads; per-test overrides do not leak into other tests. Args: **overrides: Configuration key-value pairs to override for the duration of the context. Yields: Dict[str, Any]: The merged global configuration including all layers (defaults, environment, file, and runtime). Example: \u003e\u003e\u003e from monarch.config import configured \u003e\u003e\u003e with configured(enable_log_forwarding=True, tail_log_lines=100): ... # Configuration is temporarily overridden ... assert get_global_config()[\"enable_log_forwarding\"] is True \u003e\u003e\u003e # Configuration is automatically restored after the context \"\"\" # Retrieve runtime prev = get_runtime_config() try: # Merge overrides into runtime configure(**overrides) # Snapshot of merged config (all layers) yield get_global_config() finally: # Restore previous runtime clear_runtime_config() configure(**prev) def parametrize_config( **config_options: set[Any], ) -\u003e Callable[[Callable[..., Any]], Callable[..., Any]]: \"\"\"Create a pytest parametrize decorator for configuration cross-products. This decorator runs the test function under every combination of the specified configuration values. Each test invocation wraps the test body in a `configured(...)` context manager with the corresponding settings. Args: **config_options: Configuration keys mapped to sets of values to test. Each key should be a valid argument to `configure()`. Returns: A decorator that parametrizes and wraps the test function. Example: \u003e\u003e\u003e from monarch.config import parametrize_config \u003e\u003e\u003e \u003e\u003e\u003e @parametrize_config( ... force_file_log={True, False}, ... prefix_with_rank={True, False}, ... ) ... async def test_actor_feature(): ... # Test runs 4 times: all combinations of the two bool options ... pass \"\"\" import asyncio import functools import inspect import itertools import pytest if not config_options: raise ValueError(\"parametrize_config requires at least one config option\") keys = list(config_options.keys()) value_lists = [list(config_options[k]) for k in keys] combinations = list(itertools.product(*value_lists)) # Create parameter IDs for clearer test output param_ids = [ \"-\".join(f\"{k}={v}\" for k, v in zip(keys, combo)) for combo in combinations ] # Create the config dicts for each combination config_dicts = [dict(zip(keys, combo)) for combo in combinations] def decorator(fn: Callable[..., Any]) -\u003e Callable[..., Any]: # Get original function\u0027s signature and add _config_overrides as first param orig_sig = inspect.signature(fn) new_params = [ inspect.Parameter( \"_config_overrides\", inspect.Parameter.POSITIONAL_OR_KEYWORD ) ] + list(orig_sig.parameters.values()) new_sig = orig_sig.replace(parameters=new_params) if asyncio.iscoroutinefunction(fn): async def async_wrapper( _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any ) -\u003e Any: with configured(**_config_overrides): return await fn(*args, **kwargs) functools.update_wrapper(async_wrapper, fn) async_wrapper.__signature__ = new_sig # type: ignore[attr-defined] wrapped = async_wrapper else: def sync_wrapper( _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any ) -\u003e Any: with configured(**_config_overrides): return fn(*args, **kwargs) functools.update_wrapper(sync_wrapper, fn) sync_wrapper.__signature__ = new_sig # type: ignore[attr-defined] wrapped = sync_wrapper return pytest.mark.parametrize( \"_config_overrides\", config_dicts, ids=param_ids )(wrapped) return decorator def parametrize_config_pointwise( **config_options: Any, ) -\u003e Callable[[Callable[..., Any]], Callable[..., Any]]: \"\"\"Create a pytest parametrize decorator for pointwise configuration sweeps. Like :func:`parametrize_config`, but iterates the input sequences in lockstep (``zip``) rather than computing their cartesian product. Every sequence must have the same length; the test is invoked once per index with one value drawn from each sequence at that position. Args: **config_options: Configuration keys mapped to ordered sequences of values. Each key should be a valid argument to ``configure()``. Returns: A decorator that parametrizes and wraps the test function. Example: \u003e\u003e\u003e from monarch.config import parametrize_config_pointwise \u003e\u003e\u003e \u003e\u003e\u003e @parametrize_config_pointwise( ... force_file_log=[True, False], ... prefix_with_rank=[True, False], ... ) ... async def test_actor_feature(): ... # Runs 2 times: ... # (force_file_log=True, prefix_with_rank=True) ... # (force_file_log=False, prefix_with_rank=False) ... pass \"\"\" import asyncio import functools import inspect import pytest if not config_options: raise ValueError( \"parametrize_config_pointwise requires at least one config option\" ) keys = list(config_options.keys()) value_lists = [list(config_options[k]) for k in keys] lengths = {len(v) for v in value_lists} if len(lengths) != 1: raise ValueError( \"parametrize_config_pointwise requires every option to have the \" f\"same number of values; got lengths {dict(zip(keys, [len(v) for v in value_lists]))}\" ) combinations = list(zip(*value_lists)) param_ids = [ \"-\".join(f\"{k}={v}\" for k, v in zip(keys, combo)) for combo in combinations ] config_dicts = [dict(zip(keys, combo)) for combo in combinations] def decorator(fn: Callable[..., Any]) -\u003e Callable[..., Any]: orig_sig = inspect.signature(fn) new_params = [ inspect.Parameter( \"_config_overrides\", inspect.Parameter.POSITIONAL_OR_KEYWORD ) ] + list(orig_sig.parameters.values()) new_sig = orig_sig.replace(parameters=new_params) if asyncio.iscoroutinefunction(fn): async def async_wrapper( _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any ) -\u003e Any: with configured(**_config_overrides): return await fn(*args, **kwargs) functools.update_wrapper(async_wrapper, fn) async_wrapper.__signature__ = new_sig # type: ignore[attr-defined] wrapped = async_wrapper else: def sync_wrapper( _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any ) -\u003e Any: with configured(**_config_overrides): return fn(*args, **kwargs) functools.update_wrapper(sync_wrapper, fn) sync_wrapper.__signature__ = new_sig # type: ignore[attr-defined] wrapped = sync_wrapper return pytest.mark.parametrize( \"_config_overrides\", config_dicts, ids=param_ids )(wrapped) return decorator",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

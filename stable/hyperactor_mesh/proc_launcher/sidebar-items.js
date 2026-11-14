@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ProcExitKind","ProcLauncherError","StdioHandling"],"fn":["format_process_name"],"struct":["LaunchOptions","LaunchResult","ProcBind","ProcExitResult"],"trait":["ProcLauncher"]};
+window.SIDEBAR_ITEMS = {"enum":["ProcExitKind","ProcLauncherError","ProcReachability","StdioHandling"],"fn":["format_process_name"],"struct":["LaunchOptions","LaunchResult","ProcBind","ProcExitResult"],"trait":["ProcLauncher"]};

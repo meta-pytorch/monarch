@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["register_python_bindings"],"struct":["QueryEngine"]};
+window.SIDEBAR_ITEMS = {"fn":["register_python_bindings"],"static":["TELEMETRY_AGGREGATE_PUSHDOWN"],"struct":["QueryEngine"]};

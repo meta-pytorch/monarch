@@ -11,7 +11,7 @@
         :class: sphx-glr-download-link-note
 
         :ref:`Go to the end <sphx_glr_download_generated_examples_grpo_forge_lib.py>`
-        to download the full example code
+        to download the full example code.
 
 .. rst-class:: sphx-glr-example-title
 
@@ -28,7 +28,7 @@ See grpo_forge_sim.py for usage examples.
 
 .. GENERATED FROM PYTHON SOURCE LINES 18-267
 
-.. code-block:: default
+.. code-block:: Python
 
 
     from __future__ import annotations
@@ -281,27 +281,23 @@ See grpo_forge_sim.py for usage examples.
         )
 
 
-.. rst-class:: sphx-glr-timing
-
-   **Total running time of the script:** (0 minutes 0.000 seconds)
-
-
 .. _sphx_glr_download_generated_examples_grpo_forge_lib.py:
 
 .. only:: html
 
   .. container:: sphx-glr-footer sphx-glr-footer-example
 
+    .. container:: sphx-glr-download sphx-glr-download-jupyter
 
-
+      :download:`Download Jupyter notebook: grpo_forge_lib.ipynb <grpo_forge_lib.ipynb>`
 
     .. container:: sphx-glr-download sphx-glr-download-python
 
       :download:`Download Python source code: grpo_forge_lib.py <grpo_forge_lib.py>`
 
-    .. container:: sphx-glr-download sphx-glr-download-jupyter
+    .. container:: sphx-glr-download sphx-glr-download-zip
 
-      :download:`Download Jupyter notebook: grpo_forge_lib.ipynb <grpo_forge_lib.ipynb>`
+      :download:`Download zipped: grpo_forge_lib.zip <grpo_forge_lib.zip>`
 
 
 .. only:: html

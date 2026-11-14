@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="This example demonstrates the basics of Monarch’s Actor/endpoint API, which provides a generic interface for distributed computing. We’ll cover: Creating and spawning actors in process meshes, Call..." />
 
-    <title>Monarch Actor API: Ping Pong &#8212; Monarch v0.7.0 documentation</title>
+    <title>Monarch Actor API: Ping Pong &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,15 +50,17 @@
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../_static/documentation_options.js?v=b3dab91b"></script>
     <script src="../../_static/doctools.js?v=888ff710"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="../../_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'generated/examples/ping_pong';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/generated/examples/ping_pong.html" />
@@ -84,7 +86,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="api">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +200,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -563,8 +565,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -649,6 +669,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -662,7 +688,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1248,6 +1298,7 @@ document.write(`
 <li class="toctree-l1"><a class="reference internal" href="grpo_yield.html">GRPO with Direct Port Messaging</a></li>
 <li class="toctree-l1"><a class="reference internal" href="grpo/kubernetes_grpo.html">GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="gpu_sharing.html">Sharing GPUs Between Actors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sglang_actors.html">SGLang Rollout Engines</a></li>
 <li class="toctree-l1"><a class="reference internal" href="distributed_tensors.html">Distributed Tensors in Monarch</a></li>
 
 
@@ -1259,7 +1310,7 @@ document.write(`
 
 
 <li class="toctree-l1"><a class="reference internal" href="debugging.html">Debugging Python Actors with pdb in Monarch</a></li>
-<li class="toctree-l1"><a class="reference internal" href="otel_collector.html">Exporting Metrics and Logs with OpenTelemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="otel_collector.html">Exporting Metrics, Logs, and Traces with OpenTelemetry</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://docs.pytorch.org/tutorials/intermediate/monarch_distributed_tutorial.html">Multinode Slurm Tutorial</a></li>
 </ul>
 </div>
@@ -1366,7 +1417,7 @@ document.write(`
   <div class="sphx-glr-download-link-note admonition note">
 <p class="admonition-title">Note</p>
 <p><a class="reference internal" href="#sphx-glr-download-generated-examples-ping-pong-py"><span class="std std-ref">Go to the end</span></a>
-to download the full example code</p>
+to download the full example code.</p>
 </div>
 <section class="sphx-glr-example-title" id="monarch-actor-api-ping-pong">
 <span id="sphx-glr-generated-examples-ping-pong-py"></span><h1>Monarch Actor API: Ping Pong<a class="headerlink" href="#monarch-actor-api-ping-pong" title="Link to this heading">#</a></h1>
@@ -1382,107 +1433,101 @@ a generic interface for distributed computing. We’ll cover:</p>
 <p>Actors are spawned in Process meshes via the <cite>monarch.actor</cite> API. For those familiar with
 distributed systems, it can be helpful to think of each Actor as a server with endpoints
 that can be called.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">Actor</span><span class="p">,</span> <span class="n">current_rank</span><span class="p">,</span> <span class="n">endpoint</span><span class="p">,</span> <span class="n">this_host</span>
-
-<span class="n">NUM_ACTORS</span> <span class="o">=</span> <span class="mi">4</span>
-
-
-<span class="k">class</span><span class="w"> </span><span class="nc">ToyActor</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">rank</span> <span class="o">=</span> <span class="n">current_rank</span><span class="p">()</span><span class="o">.</span><span class="n">rank</span>
-
-    <span class="nd">@endpoint</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">hello_world</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg</span><span class="p">):</span>
-        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Identity: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">msg</span><span class="si">=}</span><span class="s2">&quot;</span><span class="p">)</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="kn">from</span><span class="w"> </span><span class="nn">monarch</span><span class="nn">.</span><span class="nn">actor</span><span class="w"> </span><span class="kn">import</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.Actor" title="monarch.actor.Actor"><span class="n">Actor</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.current_rank" title="monarch.actor.current_rank"><span class="n">current_rank</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.endpoint" title="monarch.actor.endpoint"><span class="n">endpoint</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.this_host" title="monarch.actor.this_host"><span class="n">this_host</span></a><span class="w">
+</span><span class="w">
+</span><span class="n">NUM_ACTORS</span> <span class="o">=</span> <span class="mi">4</span><span class="w">
+</span><span class="w">
+</span><span class="w">
+</span><span class="k">class</span><span class="w"> </span><span class="nc">ToyActor</span><span class="p">(</span><a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.Actor" title="monarch.actor.Actor"><span class="n">Actor</span></a><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">rank</span> <span class="o">=</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.current_rank" title="monarch.actor.current_rank"><span class="n">current_rank</span></a><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">rank</span><span class="w">
+</span><span class="w">
+</span>    <span class="nd">&#64;endpoint</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="nf">hello_world</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="s2">Identity: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">msg</span><span class="si">=}</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 <p>Note: Meshes can be also be created on different nodes, but we’re ignoring that in this example</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">local_proc_mesh</span> <span class="o">=</span> <span class="n">this_host</span><span class="p">()</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;gpus&quot;</span><span class="p">:</span> <span class="n">NUM_ACTORS</span><span class="p">})</span>
-<span class="c1"># This spawns 4 instances of &#39;ToyActor&#39;</span>
-<span class="n">toy_actor</span> <span class="o">=</span> <span class="n">local_proc_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;toy_actor&quot;</span><span class="p">,</span> <span class="n">ToyActor</span><span class="p">)</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="n">local_proc_mesh</span> <span class="o">=</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.this_host" title="monarch.actor.this_host"><span class="n">this_host</span></a><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">gpus</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">NUM_ACTORS</span><span class="p">}</span><span class="p">)</span><span class="w">
+</span><span class="c1"># This spawns 4 instances of 'ToyActor'</span><span class="w">
+</span><span class="n">toy_actor</span> <span class="o">=</span> <span class="n">local_proc_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">toy_actor</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">ToyActor</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 <p>Once actors are spawned, we can call all of them simultaneously with <cite>Actor.endpoint.call</cite></p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">toy_actor</span><span class="o">.</span><span class="n">hello_world</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="s2">&quot;hey there, from script!!&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="n">toy_actor</span><span class="o">.</span><span class="n">hello_world</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">hey there, from script!!</span><span class="s2">&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 <p>We can also specify a single actor using the ‘slice’ API</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">futures</span> <span class="o">=</span> <span class="p">[]</span>
-<span class="k">for</span> <span class="n">idx</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">NUM_ACTORS</span><span class="p">):</span>
-    <span class="n">actor_instance</span> <span class="o">=</span> <span class="n">toy_actor</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">gpus</span><span class="o">=</span><span class="n">idx</span><span class="p">)</span>
-    <span class="n">futures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
-        <span class="n">actor_instance</span><span class="o">.</span><span class="n">hello_world</span><span class="o">.</span><span class="n">call_one</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Here&#39;s an arbitrary unique value: </span><span class="si">{</span><span class="n">idx</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-    <span class="p">)</span>
-
-<span class="c1"># Wait for all futures to complete</span>
-<span class="k">for</span> <span class="n">fut</span> <span class="ow">in</span> <span class="n">futures</span><span class="p">:</span>
-    <span class="n">fut</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="n">futures</span> <span class="o">=</span> <span class="p">[</span><span class="p">]</span><span class="w">
+</span><span class="k">for</span> <span class="n">idx</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">NUM_ACTORS</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="n">actor_instance</span> <span class="o">=</span> <span class="n">toy_actor</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">gpus</span><span class="o">=</span><span class="n">idx</span><span class="p">)</span><span class="w">
+</span>    <span class="n">futures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="w">
+</span>        <span class="n">actor_instance</span><span class="o">.</span><span class="n">hello_world</span><span class="o">.</span><span class="n">call_one</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="s2">Here</span><span class="s2">'</span><span class="s2">s an arbitrary unique value: </span><span class="si">{</span><span class="n">idx</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span>    <span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="c1"># Wait for all futures to complete</span><span class="w">
+</span><span class="k">for</span> <span class="n">fut</span> <span class="ow">in</span> <span class="n">futures</span><span class="p">:</span><span class="w">
+</span>    <span class="n">fut</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 </section>
 <section id="ping-pong">
 <h2>Ping Pong<a class="headerlink" href="#ping-pong" title="Link to this heading">#</a></h2>
 <p>Not only is it possible to call endpoints from a ‘main’ function, but actors have
 the useful property of being able to communicate with one another.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">ExampleActor</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">actor_name</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">actor_name</span> <span class="o">=</span> <span class="n">actor_name</span>
-
-    <span class="nd">@endpoint</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">init</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other_actor</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">other_actor</span> <span class="o">=</span> <span class="n">other_actor</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">other_actor_pair</span> <span class="o">=</span> <span class="n">other_actor</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="o">**</span><span class="n">current_rank</span><span class="p">())</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">identity</span> <span class="o">=</span> <span class="n">current_rank</span><span class="p">()</span><span class="o">.</span><span class="n">rank</span>
-
-    <span class="nd">@endpoint</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">send</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">other_actor_pair</span><span class="o">.</span><span class="n">recv</span><span class="o">.</span><span class="n">call</span><span class="p">(</span>
-            <span class="sa">f</span><span class="s2">&quot;Sender (</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">actor_name</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">identity</span><span class="si">}</span><span class="s2">) </span><span class="si">{</span><span class="n">msg</span><span class="si">=}</span><span class="s2">&quot;</span>
-        <span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-
-    <span class="nd">@endpoint</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">recv</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg</span><span class="p">):</span>
-        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Pong!, Receiver (</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">actor_name</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">identity</span><span class="si">}</span><span class="s2">) received msg </span><span class="si">{</span><span class="n">msg</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="k">class</span><span class="w"> </span><span class="nc">ExampleActor</span><span class="p">(</span><a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.Actor" title="monarch.actor.Actor"><span class="n">Actor</span></a><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">actor_name</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">actor_name</span> <span class="o">=</span> <span class="n">actor_name</span><span class="w">
+</span><span class="w">
+</span>    <span class="nd">&#64;endpoint</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="nf">init</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other_actor</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">other_actor</span> <span class="o">=</span> <span class="n">other_actor</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">other_actor_pair</span> <span class="o">=</span> <span class="n">other_actor</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="o">*</span><span class="o">*</span><a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.current_rank" title="monarch.actor.current_rank"><span class="n">current_rank</span></a><span class="p">(</span><span class="p">)</span><span class="p">)</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">identity</span> <span class="o">=</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.current_rank" title="monarch.actor.current_rank"><span class="n">current_rank</span></a><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">rank</span><span class="w">
+</span><span class="w">
+</span>    <span class="nd">&#64;endpoint</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="nf">send</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="bp">self</span><span class="o">.</span><span class="n">other_actor_pair</span><span class="o">.</span><span class="n">recv</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="w">
+</span>            <span class="sa">f</span><span class="s2">&quot;</span><span class="s2">Sender (</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">actor_name</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">identity</span><span class="si">}</span><span class="s2">) </span><span class="si">{</span><span class="n">msg</span><span class="si">=}</span><span class="s2">&quot;</span><span class="w">
+</span>        <span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="nd">&#64;endpoint</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="nf">recv</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="s2">Pong!, Receiver (</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">actor_name</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">identity</span><span class="si">}</span><span class="s2">) received msg </span><span class="si">{</span><span class="n">msg</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 <p>Spawn two different Actors in different meshes, with two instances each</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">local_mesh_0</span> <span class="o">=</span> <span class="n">this_host</span><span class="p">()</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;gpus&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">})</span>
-<span class="n">actor_0</span> <span class="o">=</span> <span class="n">local_mesh_0</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span>
-    <span class="s2">&quot;actor_0&quot;</span><span class="p">,</span>
-    <span class="n">ExampleActor</span><span class="p">,</span>
-    <span class="s2">&quot;actor_0&quot;</span><span class="p">,</span>  <span class="c1"># this arg is passed to ExampleActor.__init__</span>
-<span class="p">)</span>
-
-<span class="n">local_mesh_1</span> <span class="o">=</span> <span class="n">this_host</span><span class="p">()</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;gpus&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">})</span>
-<span class="n">actor_1</span> <span class="o">=</span> <span class="n">local_mesh_1</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span>
-    <span class="s2">&quot;actor_1&quot;</span><span class="p">,</span>
-    <span class="n">ExampleActor</span><span class="p">,</span>
-    <span class="s2">&quot;actor_1&quot;</span><span class="p">,</span>  <span class="c1"># this arg is passed to ExampleActor.__init__</span>
-<span class="p">)</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="n">local_mesh_0</span> <span class="o">=</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.this_host" title="monarch.actor.this_host"><span class="n">this_host</span></a><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">gpus</span><span class="s2">&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">}</span><span class="p">)</span><span class="w">
+</span><span class="n">actor_0</span> <span class="o">=</span> <span class="n">local_mesh_0</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="w">
+</span>    <span class="s2">&quot;</span><span class="s2">actor_0</span><span class="s2">&quot;</span><span class="p">,</span><span class="w">
+</span>    <span class="n">ExampleActor</span><span class="p">,</span><span class="w">
+</span>    <span class="s2">&quot;</span><span class="s2">actor_0</span><span class="s2">&quot;</span><span class="p">,</span>  <span class="c1"># this arg is passed to ExampleActor.__init__</span><span class="w">
+</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="n">local_mesh_1</span> <span class="o">=</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.this_host" title="monarch.actor.this_host"><span class="n">this_host</span></a><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">gpus</span><span class="s2">&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">}</span><span class="p">)</span><span class="w">
+</span><span class="n">actor_1</span> <span class="o">=</span> <span class="n">local_mesh_1</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="w">
+</span>    <span class="s2">&quot;</span><span class="s2">actor_1</span><span class="s2">&quot;</span><span class="p">,</span><span class="w">
+</span>    <span class="n">ExampleActor</span><span class="p">,</span><span class="w">
+</span>    <span class="s2">&quot;</span><span class="s2">actor_1</span><span class="s2">&quot;</span><span class="p">,</span>  <span class="c1"># this arg is passed to ExampleActor.__init__</span><span class="w">
+</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 <p>Initialize each actor with references to each other</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">actor_0</span><span class="o">.</span><span class="n">init</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">actor_1</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-<span class="n">actor_1</span><span class="o">.</span><span class="n">init</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">actor_0</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="n">actor_0</span><span class="o">.</span><span class="n">init</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">actor_1</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="n">actor_1</span><span class="o">.</span><span class="n">init</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">actor_0</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 <p>Send messages between actors</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Actor 0 sends to Actor 1</span>
-<span class="n">actor_0</span><span class="o">.</span><span class="n">send</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="s2">&quot;Ping&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-
-<span class="c1"># Actor 1 sends to Actor 0</span>
-<span class="n">actor_1</span><span class="o">.</span><span class="n">send</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="s2">&quot;Ping&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-
-<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Example completed successfully!&quot;</span><span class="p">)</span>
-</pre></div>
-</div>
-<p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 0.000 seconds)</p>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="c1"># Actor 0 sends to Actor 1</span><span class="w">
+</span><span class="n">actor_0</span><span class="o">.</span><span class="n">send</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">Ping</span><span class="s2">&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="c1"># Actor 1 sends to Actor 0</span><span class="w">
+</span><span class="n">actor_1</span><span class="o">.</span><span class="n">send</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">Ping</span><span class="s2">&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">Example completed successfully!</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 <div class="sphx-glr-footer sphx-glr-footer-example docutils container" id="sphx-glr-download-generated-examples-ping-pong-py">
+<div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
+<p><a class="reference download internal" download="" href="../../_downloads/5bf230a7778f5efda0f8dad25de36911/ping_pong.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">ping_pong.ipynb</span></code></a></p>
+</div>
 <div class="sphx-glr-download sphx-glr-download-python docutils container">
 <p><a class="reference download internal" download="" href="../../_downloads/5980e37e32d78d24df6c4931771825dd/ping_pong.py"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Python</span> <span class="pre">source</span> <span class="pre">code:</span> <span class="pre">ping_pong.py</span></code></a></p>
 </div>
-<div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
-<p><a class="reference download internal" download="" href="../../_downloads/5bf230a7778f5efda0f8dad25de36911/ping_pong.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">ping_pong.ipynb</span></code></a></p>
+<div class="sphx-glr-download sphx-glr-download-zip docutils container">
+<p><a class="reference download internal" download="" href="../../_downloads/271f3d63fcfaf46fdaf288b1995194fa/ping_pong.zip"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">zipped:</span> <span class="pre">ping_pong.zip</span></code></a></p>
 </div>
 </div>
 <p class="sphx-glr-signature"><a class="reference external" href="https://sphinx-gallery.github.io">Gallery generated by Sphinx-Gallery</a></p>
@@ -1779,7 +1824,7 @@ the useful property of being able to communicate with one another.</p>
        "headline": "Monarch Actor API: Ping Pong",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/generated/examples/ping_pong.html",
-       "articleBody": "Note Go to the end to download the full example code Monarch Actor API: Ping Pong# This example demonstrates the basics of Monarch\u2019s Actor/endpoint API, which provides a generic interface for distributed computing. We\u2019ll cover: Creating and spawning actors in process meshes Calling endpoints on actors Actor-to-actor communication with a ping-pong example Hello World# Actors are spawned in Process meshes via the monarch.actor API. For those familiar with distributed systems, it can be helpful to think of each Actor as a server with endpoints that can be called. from monarch.actor import Actor, current_rank, endpoint, this_host NUM_ACTORS = 4 class ToyActor(Actor): def __init__(self): self.rank = current_rank().rank @endpoint def hello_world(self, msg): print(f\"Identity: {self.rank}, {msg=}\") Note: Meshes can be also be created on different nodes, but we\u2019re ignoring that in this example local_proc_mesh = this_host().spawn_procs(per_host={\"gpus\": NUM_ACTORS}) # This spawns 4 instances of \u0027ToyActor\u0027 toy_actor = local_proc_mesh.spawn(\"toy_actor\", ToyActor) Once actors are spawned, we can call all of them simultaneously with Actor.endpoint.call toy_actor.hello_world.call(\"hey there, from script!!\").get() We can also specify a single actor using the \u2018slice\u2019 API futures = [] for idx in range(NUM_ACTORS): actor_instance = toy_actor.slice(gpus=idx) futures.append( actor_instance.hello_world.call_one(f\"Here\u0027s an arbitrary unique value: {idx}\") ) # Wait for all futures to complete for fut in futures: fut.get() Ping Pong# Not only is it possible to call endpoints from a \u2018main\u2019 function, but actors have the useful property of being able to communicate with one another. class ExampleActor(Actor): def __init__(self, actor_name): self.actor_name = actor_name @endpoint def init(self, other_actor): self.other_actor = other_actor self.other_actor_pair = other_actor.slice(**current_rank()) self.identity = current_rank().rank @endpoint def send(self, msg): self.other_actor_pair.recv.call( f\"Sender ({self.actor_name}:{self.identity}) {msg=}\" ).get() @endpoint def recv(self, msg): print(f\"Pong!, Receiver ({self.actor_name}:{self.identity}) received msg {msg}\") Spawn two different Actors in different meshes, with two instances each local_mesh_0 = this_host().spawn_procs(per_host={\"gpus\": 2}) actor_0 = local_mesh_0.spawn( \"actor_0\", ExampleActor, \"actor_0\", # this arg is passed to ExampleActor.__init__ ) local_mesh_1 = this_host().spawn_procs(per_host={\"gpus\": 2}) actor_1 = local_mesh_1.spawn( \"actor_1\", ExampleActor, \"actor_1\", # this arg is passed to ExampleActor.__init__ ) Initialize each actor with references to each other actor_0.init.call(actor_1).get() actor_1.init.call(actor_0).get() Send messages between actors # Actor 0 sends to Actor 1 actor_0.send.call(\"Ping\").get() # Actor 1 sends to Actor 0 actor_1.send.call(\"Ping\").get() print(\"Example completed successfully!\") Total running time of the script: (0 minutes 0.000 seconds) Download Python source code: ping_pong.py Download Jupyter notebook: ping_pong.ipynb Gallery generated by Sphinx-Gallery",
+       "articleBody": "Note Go to the end to download the full example code. Monarch Actor API: Ping Pong# This example demonstrates the basics of Monarch\u2019s Actor/endpoint API, which provides a generic interface for distributed computing. We\u2019ll cover: Creating and spawning actors in process meshes Calling endpoints on actors Actor-to-actor communication with a ping-pong example Hello World# Actors are spawned in Process meshes via the monarch.actor API. For those familiar with distributed systems, it can be helpful to think of each Actor as a server with endpoints that can be called. from monarch.actor import Actor, current_rank, endpoint, this_host NUM_ACTORS = 4 class ToyActor(Actor): def __init__(self): self.rank = current_rank().rank @endpoint def hello_world(self, msg): print(f\"Identity: {self.rank}, {msg=}\") Note: Meshes can be also be created on different nodes, but we\u2019re ignoring that in this example local_proc_mesh = this_host().spawn_procs(per_host={\"gpus\": NUM_ACTORS}) # This spawns 4 instances of \u0027ToyActor\u0027 toy_actor = local_proc_mesh.spawn(\"toy_actor\", ToyActor) Once actors are spawned, we can call all of them simultaneously with Actor.endpoint.call toy_actor.hello_world.call(\"hey there, from script!!\").get() We can also specify a single actor using the \u2018slice\u2019 API futures = [] for idx in range(NUM_ACTORS): actor_instance = toy_actor.slice(gpus=idx) futures.append( actor_instance.hello_world.call_one(f\"Here\u0027s an arbitrary unique value: {idx}\") ) # Wait for all futures to complete for fut in futures: fut.get() Ping Pong# Not only is it possible to call endpoints from a \u2018main\u2019 function, but actors have the useful property of being able to communicate with one another. class ExampleActor(Actor): def __init__(self, actor_name): self.actor_name = actor_name @endpoint def init(self, other_actor): self.other_actor = other_actor self.other_actor_pair = other_actor.slice(**current_rank()) self.identity = current_rank().rank @endpoint def send(self, msg): self.other_actor_pair.recv.call( f\"Sender ({self.actor_name}:{self.identity}) {msg=}\" ).get() @endpoint def recv(self, msg): print(f\"Pong!, Receiver ({self.actor_name}:{self.identity}) received msg {msg}\") Spawn two different Actors in different meshes, with two instances each local_mesh_0 = this_host().spawn_procs(per_host={\"gpus\": 2}) actor_0 = local_mesh_0.spawn( \"actor_0\", ExampleActor, \"actor_0\", # this arg is passed to ExampleActor.__init__ ) local_mesh_1 = this_host().spawn_procs(per_host={\"gpus\": 2}) actor_1 = local_mesh_1.spawn( \"actor_1\", ExampleActor, \"actor_1\", # this arg is passed to ExampleActor.__init__ ) Initialize each actor with references to each other actor_0.init.call(actor_1).get() actor_1.init.call(actor_0).get() Send messages between actors # Actor 0 sends to Actor 1 actor_0.send.call(\"Ping\").get() # Actor 1 sends to Actor 0 actor_1.send.call(\"Ping\").get() print(\"Example completed successfully!\") Download Jupyter notebook: ping_pong.ipynb Download Python source code: ping_pong.py Download zipped: ping_pong.zip Gallery generated by Sphinx-Gallery",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

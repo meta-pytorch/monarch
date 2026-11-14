@@ -1,0 +1,79 @@
+
+
+.. _sphx_glr_generated_examples_ddp:
+
+DDP Examples
+============
+
+Examples demonstrating Distributed Data Parallel (DDP) training with Monarch.
+
+
+
+.. raw:: html
+
+    <div class="sphx-glr-thumbnails">
+
+
+.. raw:: html
+
+    <div class="sphx-glr-thumbcontainer" tooltip="This example demonstrates how to run PyTorch&#x27;s Distributed Data Parallel (DDP) using Monarch&#x27;s ...">
+
+.. only:: html
+
+  .. image:: /generated/examples/ddp/images/thumb/sphx_glr_spmd_ddp_thumb.png
+    :alt:
+
+  :ref:`sphx_glr_generated_examples_ddp_spmd_ddp.py`
+
+.. raw:: html
+
+      <div class="sphx-glr-thumbnail-title">DDP using SPMDActor</div>
+    </div>
+
+
+.. raw:: html
+
+    <div class="sphx-glr-thumbcontainer" tooltip="This example demonstrates how to use monarch.job.spmd (``serve()`` and run_spmd()) to launch Py...">
+
+.. only:: html
+
+  .. image:: /generated/examples/ddp/images/thumb/sphx_glr_spmd_job_thumb.png
+    :alt:
+
+  :ref:`sphx_glr_generated_examples_ddp_spmd_job.py`
+
+.. raw:: html
+
+      <div class="sphx-glr-thumbnail-title">SPMD Job Example</div>
+    </div>
+
+
+.. raw:: html
+
+    <div class="sphx-glr-thumbcontainer" tooltip="This tutorial extends the spmd_ddp tutorial to run PyTorch&#x27;s Distributed Data Parallel (DDP) on...">
+
+.. only:: html
+
+  .. image:: /generated/examples/ddp/images/thumb/sphx_glr_kubernetes_ddp_thumb.png
+    :alt:
+
+  :ref:`sphx_glr_generated_examples_ddp_kubernetes_ddp.py`
+
+.. raw:: html
+
+      <div class="sphx-glr-thumbnail-title">DDP on Kubernetes</div>
+    </div>
+
+
+.. raw:: html
+
+    </div>
+
+
+.. toctree::
+   :hidden:
+
+   /generated/examples/ddp/spmd_ddp
+   /generated/examples/ddp/spmd_job
+   /generated/examples/ddp/kubernetes_ddp
+

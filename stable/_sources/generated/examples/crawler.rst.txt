@@ -11,7 +11,7 @@
         :class: sphx-glr-download-link-note
 
         :ref:`Go to the end <sphx_glr_download_generated_examples_crawler.py>`
-        to download the full example code
+        to download the full example code.
 
 .. rst-class:: sphx-glr-example-title
 
@@ -34,7 +34,7 @@ because in Monarch each actor handles its messages sequentially.
 
 .. GENERATED FROM PYTHON SOURCE LINES 24-43
 
-.. code-block:: default
+.. code-block:: Python
 
     """
     Import libraries and set tuneable configuration values.
@@ -58,7 +58,7 @@ because in Monarch each actor handles its messages sequentially.
 
 .. GENERATED FROM PYTHON SOURCE LINES 44-75
 
-.. code-block:: default
+.. code-block:: Python
 
     class QueueActor(Actor):
         """
@@ -94,7 +94,7 @@ because in Monarch each actor handles its messages sequentially.
 
 .. GENERATED FROM PYTHON SOURCE LINES 76-131
 
-.. code-block:: default
+.. code-block:: Python
 
     class CrawlActor(Actor):
         """
@@ -154,7 +154,7 @@ because in Monarch each actor handles its messages sequentially.
 
 .. GENERATED FROM PYTHON SOURCE LINES 132-162
 
-.. code-block:: default
+.. code-block:: Python
 
     def main():
         start_time = time.time()
@@ -189,7 +189,7 @@ because in Monarch each actor handles its messages sequentially.
 
 .. GENERATED FROM PYTHON SOURCE LINES 163-168
 
-.. code-block:: default
+.. code-block:: Python
 
     """
     Run main.
@@ -230,27 +230,23 @@ So, we see a near-linear improvement in crawling time from
 the concurrent crawlers using the central queue.
 
 
-.. rst-class:: sphx-glr-timing
-
-   **Total running time of the script:** (0 minutes 0.000 seconds)
-
-
 .. _sphx_glr_download_generated_examples_crawler.py:
 
 .. only:: html
 
   .. container:: sphx-glr-footer sphx-glr-footer-example
 
+    .. container:: sphx-glr-download sphx-glr-download-jupyter
 
-
+      :download:`Download Jupyter notebook: crawler.ipynb <crawler.ipynb>`
 
     .. container:: sphx-glr-download sphx-glr-download-python
 
       :download:`Download Python source code: crawler.py <crawler.py>`
 
-    .. container:: sphx-glr-download sphx-glr-download-jupyter
+    .. container:: sphx-glr-download sphx-glr-download-zip
 
-      :download:`Download Jupyter notebook: crawler.ipynb <crawler.ipynb>`
+      :download:`Download zipped: crawler.zip <crawler.zip>`
 
 
 .. only:: html

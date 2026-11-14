@@ -13,7 +13,6 @@
   - [Error Handling & Recovery](meshes/mesh-supervision.md)
   - [Mesh Introspection & Admin](meshes/mesh-introspection-and-admin.md)
   - [Appendix: `bootstrap_canonical_simple`](meshes/bootstrapping-appendix-canonical-test.md)
-  - [Appendix: pytokio (Python/Rust async bridge)](meshes/pytokio-appendix.md)
 - [Logging](logging/index.md)
   - [Logging Overview](logging/overview.md)
   - [Forwarders](logging/forwarder.md)

@@ -21,7 +21,7 @@ pub enum Addr {
     Port(PortAddr),
 }
 ```
-An `Addr` encodes a path through the logical structure of the system, spanning from procs to fine-grained targets like actors or ports. It has a concrete string syntax, such as `trainer.service@tcp://[::1]:1234` or `trainer.service:42@tcp://[::1]:1234`, and can be parsed from user input or configuration via `FromStr`.
+An `Addr` encodes a path through the logical structure of the system, spanning from procs to fine-grained targets like actors or ports. It has a concrete string syntax, such as `trainer.service<2>@tcp://[::1]:1234` or `trainer.service<2>:42@tcp://[::1]:1234`, and can be parsed from user input or configuration via `FromStr`.
 
 ## Total Ordering and Prefix Routing
 

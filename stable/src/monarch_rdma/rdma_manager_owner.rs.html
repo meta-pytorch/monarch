@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `monarch_rdma/src/rdma_manager_owner.rs`."><title>rdma_manager_owner.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_rdma" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (c397dae80 2026-07-02)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">monarch_rdma/</div>rdma_manager_owner.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-4"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `monarch_rdma/src/rdma_manager_owner.rs`."><title>rdma_manager_owner.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-0c87338a.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_rdma" data-themes="" data-resource-suffix="" data-rustdoc-version="1.99.0-nightly (d453bdd8f 2026-08-14)" data-channel="nightly" data-search-js="search-cf4fc35e.js" data-stringdex-js="stringdex-b5109af9.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-9f56287d.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">monarch_rdma/</div>rdma_manager_owner.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-4"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
 <a href=#2 id=2 data-nosnippet>2</a> * Copyright (c) Meta Platforms, Inc. and affiliates.
 <a href=#3 id=3 data-nosnippet>3</a> * All rights reserved.
 <a href=#4 id=4 data-nosnippet>4</a> *
@@ -2481,136 +2481,152 @@
 <a href=#2481 id=2481 data-nosnippet>2481</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#2482 id=2482 data-nosnippet>2482</a>        <span class="macro">assert_eq!</span>(ra2rx.recv().<span class="kw">await</span><span class="question-mark">?</span>, <span class="prelude-val">Ok</span>(()), <span class="string">"A source stays cached Ready"</span>);
 <a href=#2483 id=2483 data-nosnippet>2483</a>
-<a href=#2484 id=2484 data-nosnippet>2484</a>        <span class="comment">// Self-termination path, error-terminal branch: kill D's own controller
-<a href=#2485 id=2485 data-nosnippet>2485</a>        // so it completes as `Failed` (a crash, not a clean stop). The owner gates
-<a href=#2486 id=2486 data-nosnippet>2486</a>        // on `is_terminal()`, so `Failed` drives the same resolution A's clean
-<a href=#2487 id=2487 data-nosnippet>2487</a>        // `Stopped` did; D resolves directly (RMO-14).
-<a href=#2488 id=2488 data-nosnippet>2488</a>        </span><span class="kw">let </span>ctrl_d_handle = ctrl_d.downcast_handle(client).expect(<span class="string">"local D controller"</span>);
-<a href=#2489 id=2489 data-nosnippet>2489</a>        ctrl_d_handle.kill(<span class="string">"test: kill D controller"</span>)<span class="question-mark">?</span>;
-<a href=#2490 id=2490 data-nosnippet>2490</a>        <span class="kw">let </span>d_err = timeout(Duration::from_secs(<span class="number">30</span>), rxd.recv())
-<a href=#2491 id=2491 data-nosnippet>2491</a>            .<span class="kw">await
-<a href=#2492 id=2492 data-nosnippet>2492</a>            </span>.expect(<span class="string">"D resolved after its controller was killed"</span>)<span class="question-mark">?
-<a href=#2493 id=2493 data-nosnippet>2493</a>            </span>.expect_err(<span class="string">"D fails on its own controller termination"</span>);
-<a href=#2494 id=2494 data-nosnippet>2494</a>        <span class="macro">assert!</span>(
-<a href=#2495 id=2495 data-nosnippet>2495</a>            <span class="macro">matches!</span>(d_err, RdmaInitError::Supervision(<span class="kw">_</span>)),
-<a href=#2496 id=2496 data-nosnippet>2496</a>            <span class="string">"D: {d_err:?}"
-<a href=#2497 id=2497 data-nosnippet>2497</a>        </span>);
-<a href=#2498 id=2498 data-nosnippet>2498</a>        <span class="comment">// D's controller completed as `Failed` (the error-terminal branch).
-<a href=#2499 id=2499 data-nosnippet>2499</a>        </span><span class="kw">let </span>d_status = ctrl_d_handle.<span class="kw">await</span>;
-<a href=#2500 id=2500 data-nosnippet>2500</a>        <span class="macro">assert!</span>(
-<a href=#2501 id=2501 data-nosnippet>2501</a>            <span class="macro">matches!</span>(d_status, ActorStatus::Failed(<span class="kw">_</span>)),
-<a href=#2502 id=2502 data-nosnippet>2502</a>            <span class="string">"D controller failed after kill: {d_status:?}"</span>,
+<a href=#2484 id=2484 data-nosnippet>2484</a>        <span class="comment">// Self-termination path, error-terminal branch: unsubscribe D first so
+<a href=#2485 id=2485 data-nosnippet>2485</a>        // its controller's cleanup `Stopped` report cannot resolve it through
+<a href=#2486 id=2486 data-nosnippet>2486</a>        // the subscriber stream as `InitFailed`, then kill D's own controller
+<a href=#2487 id=2487 data-nosnippet>2487</a>        // so it completes as `Failed` (a crash, not a clean stop). The owner gates
+<a href=#2488 id=2488 data-nosnippet>2488</a>        // on `is_terminal()`, so `Failed` drives the same resolution A's clean
+<a href=#2489 id=2489 data-nosnippet>2489</a>        // `Stopped` did; D resolves directly (RMO-14).
+<a href=#2490 id=2490 data-nosnippet>2490</a>        </span><span class="kw">let </span>(d_ack_tx, d_ack_rx) = oneshot::channel();
+<a href=#2491 id=2491 data-nosnippet>2491</a>        owner_handle.post(
+<a href=#2492 id=2492 data-nosnippet>2492</a>            client,
+<a href=#2493 id=2493 data-nosnippet>2493</a>            UnsubscribeController {
+<a href=#2494 id=2494 data-nosnippet>2494</a>                controller: ctrl_d.clone(),
+<a href=#2495 id=2495 data-nosnippet>2495</a>                ack: d_ack_tx,
+<a href=#2496 id=2496 data-nosnippet>2496</a>            },
+<a href=#2497 id=2497 data-nosnippet>2497</a>        );
+<a href=#2498 id=2498 data-nosnippet>2498</a>        d_ack_rx.<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#2499 id=2499 data-nosnippet>2499</a>        <span class="macro">assert_eq!</span>(
+<a href=#2500 id=2500 data-nosnippet>2500</a>            owner_subscriber_count(<span class="kw-2">&amp;</span>owner_handle, client, ctrl_d.clone()).<span class="kw">await</span>,
+<a href=#2501 id=2501 data-nosnippet>2501</a>            <span class="number">0</span>,
+<a href=#2502 id=2502 data-nosnippet>2502</a>            <span class="string">"D unsubscribed before the self-termination proof"</span>,
 <a href=#2503 id=2503 data-nosnippet>2503</a>        );
-<a href=#2504 id=2504 data-nosnippet>2504</a>
-<a href=#2505 id=2505 data-nosnippet>2505</a>        owner_handle.stop(<span class="string">"test complete"</span>)<span class="question-mark">?</span>;
-<a href=#2506 id=2506 data-nosnippet>2506</a>        <span class="kw">let _ </span>= owner_handle.<span class="kw">await</span>;
-<a href=#2507 id=2507 data-nosnippet>2507</a>        host_mesh.shutdown(client).<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#2508 id=2508 data-nosnippet>2508</a>        <span class="prelude-val">Ok</span>(())
-<a href=#2509 id=2509 data-nosnippet>2509</a>    }
-<a href=#2510 id=2510 data-nosnippet>2510</a>
-<a href=#2511 id=2511 data-nosnippet>2511</a>    <span class="doccomment">/// An invalid-reference return (such as a readiness-cast bounce to a dead
-<a href=#2512 id=2512 data-nosnippet>2512</a>    /// rank) can reach the owner; the default policy would `bail!` and kill the
-<a href=#2513 id=2513 data-nosnippet>2513</a>    /// owner. The override swallows it (RMO-4) and does not mutate a held pending
-<a href=#2514 id=2514 data-nosnippet>2514</a>    /// entry, which still resolves normally afterwards. Delivered through the
-<a href=#2515 id=2515 data-nosnippet>2515</a>    /// owner's real delivery-failure dispatch, not a direct callback call.
-<a href=#2516 id=2516 data-nosnippet>2516</a>    </span><span class="attr">#[timed_test::async_timed_test(timeout_secs = <span class="number">60</span>)]
-<a href=#2517 id=2517 data-nosnippet>2517</a>    </span><span class="kw">async fn </span>invalid_reference_does_not_kill_owner() -&gt; anyhow::Result&lt;()&gt; {
-<a href=#2518 id=2518 data-nosnippet>2518</a>        <span class="kw">let </span>config = hyperactor_config::global::lock();
-<a href=#2519 id=2519 data-nosnippet>2519</a>        <span class="kw">let </span>_guard = config.override_key(<span class="kw">crate</span>::config::RDMA_ALLOW_TCP_FALLBACK, <span class="bool-val">true</span>);
+<a href=#2504 id=2504 data-nosnippet>2504</a>        <span class="kw">let </span>ctrl_d_handle = ctrl_d.downcast_handle(client).expect(<span class="string">"local D controller"</span>);
+<a href=#2505 id=2505 data-nosnippet>2505</a>        ctrl_d_handle.kill(<span class="string">"test: kill D controller"</span>)<span class="question-mark">?</span>;
+<a href=#2506 id=2506 data-nosnippet>2506</a>        <span class="kw">let </span>d_err = timeout(Duration::from_secs(<span class="number">30</span>), rxd.recv())
+<a href=#2507 id=2507 data-nosnippet>2507</a>            .<span class="kw">await
+<a href=#2508 id=2508 data-nosnippet>2508</a>            </span>.expect(<span class="string">"D resolved after its controller was killed"</span>)<span class="question-mark">?
+<a href=#2509 id=2509 data-nosnippet>2509</a>            </span>.expect_err(<span class="string">"D fails on its own controller termination"</span>);
+<a href=#2510 id=2510 data-nosnippet>2510</a>        <span class="macro">assert!</span>(
+<a href=#2511 id=2511 data-nosnippet>2511</a>            <span class="macro">matches!</span>(d_err, RdmaInitError::Supervision(<span class="kw">_</span>)),
+<a href=#2512 id=2512 data-nosnippet>2512</a>            <span class="string">"D: {d_err:?}"
+<a href=#2513 id=2513 data-nosnippet>2513</a>        </span>);
+<a href=#2514 id=2514 data-nosnippet>2514</a>        <span class="comment">// D's controller completed as `Failed` (the error-terminal branch).
+<a href=#2515 id=2515 data-nosnippet>2515</a>        </span><span class="kw">let </span>d_status = ctrl_d_handle.<span class="kw">await</span>;
+<a href=#2516 id=2516 data-nosnippet>2516</a>        <span class="macro">assert!</span>(
+<a href=#2517 id=2517 data-nosnippet>2517</a>            <span class="macro">matches!</span>(d_status, ActorStatus::Failed(<span class="kw">_</span>)),
+<a href=#2518 id=2518 data-nosnippet>2518</a>            <span class="string">"D controller failed after kill: {d_status:?}"</span>,
+<a href=#2519 id=2519 data-nosnippet>2519</a>        );
 <a href=#2520 id=2520 data-nosnippet>2520</a>
-<a href=#2521 id=2521 data-nosnippet>2521</a>        <span class="kw">let </span>cx = context().<span class="kw">await</span>;
-<a href=#2522 id=2522 data-nosnippet>2522</a>        <span class="kw">let </span>client = cx.actor_instance;
-<a href=#2523 id=2523 data-nosnippet>2523</a>
-<a href=#2524 id=2524 data-nosnippet>2524</a>        <span class="kw">let </span><span class="kw-2">mut </span>host_mesh = HostMesh::local_in_process().<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#2525 id=2525 data-nosnippet>2525</a>        <span class="kw">let </span>proc_mesh = host_mesh
-<a href=#2526 id=2526 data-nosnippet>2526</a>            .spawn(
-<a href=#2527 id=2527 data-nosnippet>2527</a>                client,
-<a href=#2528 id=2528 data-nosnippet>2528</a>                <span class="string">"rdma_procs"</span>,
-<a href=#2529 id=2529 data-nosnippet>2529</a>                <span class="macro">hyperactor_mesh::extent!</span>(procs = <span class="number">1</span>),
-<a href=#2530 id=2530 data-nosnippet>2530</a>                <span class="prelude-val">None</span>,
-<a href=#2531 id=2531 data-nosnippet>2531</a>                <span class="prelude-val">None</span>,
-<a href=#2532 id=2532 data-nosnippet>2532</a>            )
-<a href=#2533 id=2533 data-nosnippet>2533</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#2534 id=2534 data-nosnippet>2534</a>        <span class="kw">let </span>key: ProcMeshRef = (<span class="kw-2">*</span>proc_mesh).clone();
-<a href=#2535 id=2535 data-nosnippet>2535</a>
-<a href=#2536 id=2536 data-nosnippet>2536</a>        <span class="kw">let </span>owner = RdmaManagerOwnerActor::new((), <span class="kw-2">&amp;</span>ActorEnvironment::default()).<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#2537 id=2537 data-nosnippet>2537</a>        <span class="kw">let </span>owner_handle = client.spawn(owner);
-<a href=#2538 id=2538 data-nosnippet>2538</a>        <span class="kw">let </span>owner_addr = owner_handle.actor_addr().clone();
+<a href=#2521 id=2521 data-nosnippet>2521</a>        owner_handle.stop(<span class="string">"test complete"</span>)<span class="question-mark">?</span>;
+<a href=#2522 id=2522 data-nosnippet>2522</a>        <span class="kw">let _ </span>= owner_handle.<span class="kw">await</span>;
+<a href=#2523 id=2523 data-nosnippet>2523</a>        host_mesh.shutdown(client).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#2524 id=2524 data-nosnippet>2524</a>        <span class="prelude-val">Ok</span>(())
+<a href=#2525 id=2525 data-nosnippet>2525</a>    }
+<a href=#2526 id=2526 data-nosnippet>2526</a>
+<a href=#2527 id=2527 data-nosnippet>2527</a>    <span class="doccomment">/// An invalid-reference return (such as a readiness-cast bounce to a dead
+<a href=#2528 id=2528 data-nosnippet>2528</a>    /// rank) can reach the owner; the default policy would `bail!` and kill the
+<a href=#2529 id=2529 data-nosnippet>2529</a>    /// owner. The override swallows it (RMO-4) and does not mutate a held pending
+<a href=#2530 id=2530 data-nosnippet>2530</a>    /// entry, which still resolves normally afterwards. Delivered through the
+<a href=#2531 id=2531 data-nosnippet>2531</a>    /// owner's real delivery-failure dispatch, not a direct callback call.
+<a href=#2532 id=2532 data-nosnippet>2532</a>    </span><span class="attr">#[timed_test::async_timed_test(timeout_secs = <span class="number">60</span>)]
+<a href=#2533 id=2533 data-nosnippet>2533</a>    </span><span class="kw">async fn </span>invalid_reference_does_not_kill_owner() -&gt; anyhow::Result&lt;()&gt; {
+<a href=#2534 id=2534 data-nosnippet>2534</a>        <span class="kw">let </span>config = hyperactor_config::global::lock();
+<a href=#2535 id=2535 data-nosnippet>2535</a>        <span class="kw">let </span>_guard = config.override_key(<span class="kw">crate</span>::config::RDMA_ALLOW_TCP_FALLBACK, <span class="bool-val">true</span>);
+<a href=#2536 id=2536 data-nosnippet>2536</a>
+<a href=#2537 id=2537 data-nosnippet>2537</a>        <span class="kw">let </span>cx = context().<span class="kw">await</span>;
+<a href=#2538 id=2538 data-nosnippet>2538</a>        <span class="kw">let </span>client = cx.actor_instance;
 <a href=#2539 id=2539 data-nosnippet>2539</a>
-<a href=#2540 id=2540 data-nosnippet>2540</a>        <span class="comment">// Hold a real entry pending so the swallow is proved non-mutating.
-<a href=#2541 id=2541 data-nosnippet>2541</a>        // Prequeue ensure + hold behind a pause so the entry is held before any
-<a href=#2542 id=2542 data-nosnippet>2542</a>        // real `ReadyAck` lands.
-<a href=#2543 id=2543 data-nosnippet>2543</a>        </span><span class="kw">let </span>(entered_tx, entered_rx) = oneshot::channel();
-<a href=#2544 id=2544 data-nosnippet>2544</a>        <span class="kw">let </span>(release_tx, release_rx) = oneshot::channel();
-<a href=#2545 id=2545 data-nosnippet>2545</a>        owner_handle.post(
-<a href=#2546 id=2546 data-nosnippet>2546</a>            client,
-<a href=#2547 id=2547 data-nosnippet>2547</a>            Pause {
-<a href=#2548 id=2548 data-nosnippet>2548</a>                entered: entered_tx,
-<a href=#2549 id=2549 data-nosnippet>2549</a>                release: release_rx,
-<a href=#2550 id=2550 data-nosnippet>2550</a>            },
-<a href=#2551 id=2551 data-nosnippet>2551</a>        );
-<a href=#2552 id=2552 data-nosnippet>2552</a>        entered_rx.<span class="kw">await</span>.expect(<span class="string">"owner entered Pause"</span>);
-<a href=#2553 id=2553 data-nosnippet>2553</a>        <span class="kw">let </span>(r, rx) = client.open_once_port::&lt;<span class="prelude-ty">Result</span>&lt;(), RdmaInitError&gt;&gt;();
-<a href=#2554 id=2554 data-nosnippet>2554</a>        owner_handle
-<a href=#2555 id=2555 data-nosnippet>2555</a>            .ensure_rdma_manager(client, key.clone(), r.bind())
-<a href=#2556 id=2556 data-nosnippet>2556</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#2557 id=2557 data-nosnippet>2557</a>        <span class="kw">let </span>(ht, hrx) = oneshot::channel();
-<a href=#2558 id=2558 data-nosnippet>2558</a>        owner_handle.post(
-<a href=#2559 id=2559 data-nosnippet>2559</a>            client,
-<a href=#2560 id=2560 data-nosnippet>2560</a>            HoldPending {
-<a href=#2561 id=2561 data-nosnippet>2561</a>                key: key.clone(),
-<a href=#2562 id=2562 data-nosnippet>2562</a>                reply: ht,
-<a href=#2563 id=2563 data-nosnippet>2563</a>            },
-<a href=#2564 id=2564 data-nosnippet>2564</a>        );
-<a href=#2565 id=2565 data-nosnippet>2565</a>        <span class="kw">let _ </span>= release_tx.send(());
-<a href=#2566 id=2566 data-nosnippet>2566</a>        <span class="kw">let </span>(entry, _controller_id, _controller) = hrx.<span class="kw">await</span><span class="question-mark">?</span>.expect(<span class="string">"held pending"</span>);
-<a href=#2567 id=2567 data-nosnippet>2567</a>
-<a href=#2568 id=2568 data-nosnippet>2568</a>        <span class="comment">// Build an invalid-reference return and deliver it through the owner's
-<a href=#2569 id=2569 data-nosnippet>2569</a>        // real delivery-failure dispatch (blanket `Handler&lt;Undeliverable&gt;`).
-<a href=#2570 id=2570 data-nosnippet>2570</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>env = MessageEnvelope::new(
-<a href=#2571 id=2571 data-nosnippet>2571</a>            owner_addr.clone(),
-<a href=#2572 id=2572 data-nosnippet>2572</a>            owner_addr.port_addr(<span class="number">0</span>.into()),
-<a href=#2573 id=2573 data-nosnippet>2573</a>            wirevalue::Any::serialize(<span class="kw-2">&amp;</span><span class="number">0u64</span>).unwrap(),
-<a href=#2574 id=2574 data-nosnippet>2574</a>            Flattrs::new(),
-<a href=#2575 id=2575 data-nosnippet>2575</a>        );
-<a href=#2576 id=2576 data-nosnippet>2576</a>        env.push_delivery_failure(DeliveryFailure::new(InvalidReference::new(
-<a href=#2577 id=2577 data-nosnippet>2577</a>            owner_addr.clone(),
-<a href=#2578 id=2578 data-nosnippet>2578</a>            InvalidReferenceReason::ActorNotExist,
-<a href=#2579 id=2579 data-nosnippet>2579</a>        )));
-<a href=#2580 id=2580 data-nosnippet>2580</a>        <span class="kw">let </span>undeliverable_port =
-<a href=#2581 id=2581 data-nosnippet>2581</a>            PortRef::&lt;Undeliverable&lt;MessageEnvelope&gt;&gt;::attest_handler_port(<span class="kw-2">&amp;</span>owner_addr);
-<a href=#2582 id=2582 data-nosnippet>2582</a>        undeliverable_port.post(client, Undeliverable::Returned(env));
+<a href=#2540 id=2540 data-nosnippet>2540</a>        <span class="kw">let </span><span class="kw-2">mut </span>host_mesh = HostMesh::local_in_process().<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#2541 id=2541 data-nosnippet>2541</a>        <span class="kw">let </span>proc_mesh = host_mesh
+<a href=#2542 id=2542 data-nosnippet>2542</a>            .spawn(
+<a href=#2543 id=2543 data-nosnippet>2543</a>                client,
+<a href=#2544 id=2544 data-nosnippet>2544</a>                <span class="string">"rdma_procs"</span>,
+<a href=#2545 id=2545 data-nosnippet>2545</a>                <span class="macro">hyperactor_mesh::extent!</span>(procs = <span class="number">1</span>),
+<a href=#2546 id=2546 data-nosnippet>2546</a>                <span class="prelude-val">None</span>,
+<a href=#2547 id=2547 data-nosnippet>2547</a>                <span class="prelude-val">None</span>,
+<a href=#2548 id=2548 data-nosnippet>2548</a>            )
+<a href=#2549 id=2549 data-nosnippet>2549</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#2550 id=2550 data-nosnippet>2550</a>        <span class="kw">let </span>key: ProcMeshRef = (<span class="kw-2">*</span>proc_mesh).clone();
+<a href=#2551 id=2551 data-nosnippet>2551</a>
+<a href=#2552 id=2552 data-nosnippet>2552</a>        <span class="kw">let </span>owner = RdmaManagerOwnerActor::new((), <span class="kw-2">&amp;</span>ActorEnvironment::default()).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#2553 id=2553 data-nosnippet>2553</a>        <span class="kw">let </span>owner_handle = client.spawn(owner);
+<a href=#2554 id=2554 data-nosnippet>2554</a>        <span class="kw">let </span>owner_addr = owner_handle.actor_addr().clone();
+<a href=#2555 id=2555 data-nosnippet>2555</a>
+<a href=#2556 id=2556 data-nosnippet>2556</a>        <span class="comment">// Hold a real entry pending so the swallow is proved non-mutating.
+<a href=#2557 id=2557 data-nosnippet>2557</a>        // Prequeue ensure + hold behind a pause so the entry is held before any
+<a href=#2558 id=2558 data-nosnippet>2558</a>        // real `ReadyAck` lands.
+<a href=#2559 id=2559 data-nosnippet>2559</a>        </span><span class="kw">let </span>(entered_tx, entered_rx) = oneshot::channel();
+<a href=#2560 id=2560 data-nosnippet>2560</a>        <span class="kw">let </span>(release_tx, release_rx) = oneshot::channel();
+<a href=#2561 id=2561 data-nosnippet>2561</a>        owner_handle.post(
+<a href=#2562 id=2562 data-nosnippet>2562</a>            client,
+<a href=#2563 id=2563 data-nosnippet>2563</a>            Pause {
+<a href=#2564 id=2564 data-nosnippet>2564</a>                entered: entered_tx,
+<a href=#2565 id=2565 data-nosnippet>2565</a>                release: release_rx,
+<a href=#2566 id=2566 data-nosnippet>2566</a>            },
+<a href=#2567 id=2567 data-nosnippet>2567</a>        );
+<a href=#2568 id=2568 data-nosnippet>2568</a>        entered_rx.<span class="kw">await</span>.expect(<span class="string">"owner entered Pause"</span>);
+<a href=#2569 id=2569 data-nosnippet>2569</a>        <span class="kw">let </span>(r, rx) = client.open_once_port::&lt;<span class="prelude-ty">Result</span>&lt;(), RdmaInitError&gt;&gt;();
+<a href=#2570 id=2570 data-nosnippet>2570</a>        owner_handle
+<a href=#2571 id=2571 data-nosnippet>2571</a>            .ensure_rdma_manager(client, key.clone(), r.bind())
+<a href=#2572 id=2572 data-nosnippet>2572</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#2573 id=2573 data-nosnippet>2573</a>        <span class="kw">let </span>(ht, hrx) = oneshot::channel();
+<a href=#2574 id=2574 data-nosnippet>2574</a>        owner_handle.post(
+<a href=#2575 id=2575 data-nosnippet>2575</a>            client,
+<a href=#2576 id=2576 data-nosnippet>2576</a>            HoldPending {
+<a href=#2577 id=2577 data-nosnippet>2577</a>                key: key.clone(),
+<a href=#2578 id=2578 data-nosnippet>2578</a>                reply: ht,
+<a href=#2579 id=2579 data-nosnippet>2579</a>            },
+<a href=#2580 id=2580 data-nosnippet>2580</a>        );
+<a href=#2581 id=2581 data-nosnippet>2581</a>        <span class="kw">let _ </span>= release_tx.send(());
+<a href=#2582 id=2582 data-nosnippet>2582</a>        <span class="kw">let </span>(entry, _controller_id, _controller) = hrx.<span class="kw">await</span><span class="question-mark">?</span>.expect(<span class="string">"held pending"</span>);
 <a href=#2583 id=2583 data-nosnippet>2583</a>
-<a href=#2584 id=2584 data-nosnippet>2584</a>        <span class="comment">// The swallow did not mutate the held entry: it stays pending.
-<a href=#2585 id=2585 data-nosnippet>2585</a>        </span>wait_for_remaining(<span class="kw-2">&amp;</span>owner_handle, client, key.clone(), <span class="number">1</span>).<span class="kw">await</span>;
-<a href=#2586 id=2586 data-nosnippet>2586</a>        <span class="macro">assert_eq!</span>(
-<a href=#2587 id=2587 data-nosnippet>2587</a>            probe(<span class="kw-2">&amp;</span>owner_handle, client, key.clone()).<span class="kw">await</span>.state,
-<a href=#2588 id=2588 data-nosnippet>2588</a>            EntryStateTag::Pending,
-<a href=#2589 id=2589 data-nosnippet>2589</a>            <span class="string">"an invalid-reference return must not resolve a pending entry"</span>,
-<a href=#2590 id=2590 data-nosnippet>2590</a>        );
-<a href=#2591 id=2591 data-nosnippet>2591</a>
-<a href=#2592 id=2592 data-nosnippet>2592</a>        <span class="comment">// Release the sentinel; the entry resolves normally and the owner still
-<a href=#2593 id=2593 data-nosnippet>2593</a>        // serves a cached repeat ensure.
-<a href=#2594 id=2594 data-nosnippet>2594</a>        </span>owner_handle.post(client, ReadyAck { entry });
-<a href=#2595 id=2595 data-nosnippet>2595</a>        <span class="macro">assert_eq!</span>(
-<a href=#2596 id=2596 data-nosnippet>2596</a>            rx.recv().<span class="kw">await</span><span class="question-mark">?</span>,
-<a href=#2597 id=2597 data-nosnippet>2597</a>            <span class="prelude-val">Ok</span>(()),
-<a href=#2598 id=2598 data-nosnippet>2598</a>            <span class="string">"held entry resolves normally after the swallow"</span>,
-<a href=#2599 id=2599 data-nosnippet>2599</a>        );
-<a href=#2600 id=2600 data-nosnippet>2600</a>        <span class="kw">let </span>(r2, rx2) = client.open_once_port::&lt;<span class="prelude-ty">Result</span>&lt;(), RdmaInitError&gt;&gt;();
-<a href=#2601 id=2601 data-nosnippet>2601</a>        owner_handle
-<a href=#2602 id=2602 data-nosnippet>2602</a>            .ensure_rdma_manager(client, key.clone(), r2.bind())
-<a href=#2603 id=2603 data-nosnippet>2603</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#2604 id=2604 data-nosnippet>2604</a>        <span class="macro">assert_eq!</span>(
-<a href=#2605 id=2605 data-nosnippet>2605</a>            rx2.recv().<span class="kw">await</span><span class="question-mark">?</span>,
-<a href=#2606 id=2606 data-nosnippet>2606</a>            <span class="prelude-val">Ok</span>(()),
-<a href=#2607 id=2607 data-nosnippet>2607</a>            <span class="string">"owner alive and caching after an invalid-reference return"</span>,
-<a href=#2608 id=2608 data-nosnippet>2608</a>        );
-<a href=#2609 id=2609 data-nosnippet>2609</a>
-<a href=#2610 id=2610 data-nosnippet>2610</a>        owner_handle.stop(<span class="string">"test complete"</span>)<span class="question-mark">?</span>;
-<a href=#2611 id=2611 data-nosnippet>2611</a>        <span class="kw">let _ </span>= owner_handle.<span class="kw">await</span>;
-<a href=#2612 id=2612 data-nosnippet>2612</a>        host_mesh.shutdown(client).<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#2613 id=2613 data-nosnippet>2613</a>        <span class="prelude-val">Ok</span>(())
-<a href=#2614 id=2614 data-nosnippet>2614</a>    }
-<a href=#2615 id=2615 data-nosnippet>2615</a>}
+<a href=#2584 id=2584 data-nosnippet>2584</a>        <span class="comment">// Build an invalid-reference return and deliver it through the owner's
+<a href=#2585 id=2585 data-nosnippet>2585</a>        // real delivery-failure dispatch (blanket `Handler&lt;Undeliverable&gt;`).
+<a href=#2586 id=2586 data-nosnippet>2586</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>env = MessageEnvelope::new(
+<a href=#2587 id=2587 data-nosnippet>2587</a>            owner_addr.clone(),
+<a href=#2588 id=2588 data-nosnippet>2588</a>            owner_addr.port_addr(<span class="number">0</span>.into()),
+<a href=#2589 id=2589 data-nosnippet>2589</a>            wirevalue::Any::serialize(<span class="kw-2">&amp;</span><span class="number">0u64</span>).unwrap(),
+<a href=#2590 id=2590 data-nosnippet>2590</a>            Flattrs::new(),
+<a href=#2591 id=2591 data-nosnippet>2591</a>        );
+<a href=#2592 id=2592 data-nosnippet>2592</a>        env.push_delivery_failure(DeliveryFailure::new(InvalidReference::new(
+<a href=#2593 id=2593 data-nosnippet>2593</a>            owner_addr.clone(),
+<a href=#2594 id=2594 data-nosnippet>2594</a>            InvalidReferenceReason::ActorNotExist,
+<a href=#2595 id=2595 data-nosnippet>2595</a>        )));
+<a href=#2596 id=2596 data-nosnippet>2596</a>        <span class="kw">let </span>undeliverable_port =
+<a href=#2597 id=2597 data-nosnippet>2597</a>            PortRef::&lt;Undeliverable&lt;MessageEnvelope&gt;&gt;::attest_handler_port(<span class="kw-2">&amp;</span>owner_addr);
+<a href=#2598 id=2598 data-nosnippet>2598</a>        undeliverable_port.post(client, Undeliverable::Returned(env));
+<a href=#2599 id=2599 data-nosnippet>2599</a>
+<a href=#2600 id=2600 data-nosnippet>2600</a>        <span class="comment">// The swallow did not mutate the held entry: it stays pending.
+<a href=#2601 id=2601 data-nosnippet>2601</a>        </span>wait_for_remaining(<span class="kw-2">&amp;</span>owner_handle, client, key.clone(), <span class="number">1</span>).<span class="kw">await</span>;
+<a href=#2602 id=2602 data-nosnippet>2602</a>        <span class="macro">assert_eq!</span>(
+<a href=#2603 id=2603 data-nosnippet>2603</a>            probe(<span class="kw-2">&amp;</span>owner_handle, client, key.clone()).<span class="kw">await</span>.state,
+<a href=#2604 id=2604 data-nosnippet>2604</a>            EntryStateTag::Pending,
+<a href=#2605 id=2605 data-nosnippet>2605</a>            <span class="string">"an invalid-reference return must not resolve a pending entry"</span>,
+<a href=#2606 id=2606 data-nosnippet>2606</a>        );
+<a href=#2607 id=2607 data-nosnippet>2607</a>
+<a href=#2608 id=2608 data-nosnippet>2608</a>        <span class="comment">// Release the sentinel; the entry resolves normally and the owner still
+<a href=#2609 id=2609 data-nosnippet>2609</a>        // serves a cached repeat ensure.
+<a href=#2610 id=2610 data-nosnippet>2610</a>        </span>owner_handle.post(client, ReadyAck { entry });
+<a href=#2611 id=2611 data-nosnippet>2611</a>        <span class="macro">assert_eq!</span>(
+<a href=#2612 id=2612 data-nosnippet>2612</a>            rx.recv().<span class="kw">await</span><span class="question-mark">?</span>,
+<a href=#2613 id=2613 data-nosnippet>2613</a>            <span class="prelude-val">Ok</span>(()),
+<a href=#2614 id=2614 data-nosnippet>2614</a>            <span class="string">"held entry resolves normally after the swallow"</span>,
+<a href=#2615 id=2615 data-nosnippet>2615</a>        );
+<a href=#2616 id=2616 data-nosnippet>2616</a>        <span class="kw">let </span>(r2, rx2) = client.open_once_port::&lt;<span class="prelude-ty">Result</span>&lt;(), RdmaInitError&gt;&gt;();
+<a href=#2617 id=2617 data-nosnippet>2617</a>        owner_handle
+<a href=#2618 id=2618 data-nosnippet>2618</a>            .ensure_rdma_manager(client, key.clone(), r2.bind())
+<a href=#2619 id=2619 data-nosnippet>2619</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#2620 id=2620 data-nosnippet>2620</a>        <span class="macro">assert_eq!</span>(
+<a href=#2621 id=2621 data-nosnippet>2621</a>            rx2.recv().<span class="kw">await</span><span class="question-mark">?</span>,
+<a href=#2622 id=2622 data-nosnippet>2622</a>            <span class="prelude-val">Ok</span>(()),
+<a href=#2623 id=2623 data-nosnippet>2623</a>            <span class="string">"owner alive and caching after an invalid-reference return"</span>,
+<a href=#2624 id=2624 data-nosnippet>2624</a>        );
+<a href=#2625 id=2625 data-nosnippet>2625</a>
+<a href=#2626 id=2626 data-nosnippet>2626</a>        owner_handle.stop(<span class="string">"test complete"</span>)<span class="question-mark">?</span>;
+<a href=#2627 id=2627 data-nosnippet>2627</a>        <span class="kw">let _ </span>= owner_handle.<span class="kw">await</span>;
+<a href=#2628 id=2628 data-nosnippet>2628</a>        host_mesh.shutdown(client).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#2629 id=2629 data-nosnippet>2629</a>        <span class="prelude-val">Ok</span>(())
+<a href=#2630 id=2630 data-nosnippet>2630</a>    }
+<a href=#2631 id=2631 data-nosnippet>2631</a>}
 </code></pre></div></section></main></body></html>

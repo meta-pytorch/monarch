@@ -7,7 +7,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Index &#8212; Monarch v0.7.0 documentation</title>
+    <title>Index &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -29,11 +29,11 @@
 
     <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -41,17 +41,375 @@
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="_static/documentation_options.js?v=05c9169f"></script>
+    <script src="_static/documentation_options.js?v=b3dab91b"></script>
     <script src="_static/doctools.js?v=888ff710"></script>
     <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="_static/design-tabs.js?v=f930bc37"></script>
-    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
-    <script>mermaid.initialize({startOnLoad:true});</script>
+    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@12.1.0/dist/mermaid.esm.min.mjs";
+
+
+
+
+
+const initStyles = () => {
+    const defaultStyle = document.createElement('style');
+    defaultStyle.textContent = "pre.mermaid {\n    /* Same as .mermaid-container > pre */\n    display: block;\n    width: 100%;\n}\n\npre.mermaid > svg {\n    /* Same as .mermaid-container > pre > svg */\n    height: 500px;\n    width: 100%;\n    max-width: 100% !important;\n}";
+    document.head.appendChild(defaultStyle);
+
+    const fullscreenStyle = document.createElement('style');
+    fullscreenStyle.textContent = ".mermaid-container {\n    position: relative;\n    display: flex;\n    flex-direction: row;\n    width: 100%;\n}\n\n.mermaid-container > pre {\n    display: block;\n    width: 100%;\n}\n\n.mermaid-container > pre > svg {\n    height: 500px;\n    width: 100%;\n    max-width: 100% !important;\n}\n\n.mermaid-fullscreen-btn {\n    position: absolute;\n    width: 28px;\n    height: 28px;\n    background: rgba(255, 255, 255, 0.95);\n    border: 1px solid rgba(0, 0, 0, 0.3);\n    border-radius: 4px;\n    cursor: pointer;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    transition: all 0.2s;\n    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);\n    font-size: 14px;\n    line-height: 1;\n    padding: 0;\n    color: #333;\n}\n\n.mermaid-fullscreen-btn:hover {\n    opacity: 100% !important;\n    background: rgba(255, 255, 255, 1);\n    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);\n    transform: scale(1.1);\n}\n\n.mermaid-fullscreen-btn.dark-theme {\n    background: rgba(50, 50, 50, 0.95);\n    border: 1px solid rgba(255, 255, 255, 0.3);\n    color: #e0e0e0;\n}\n\n.mermaid-fullscreen-btn.dark-theme:hover {\n    background: rgba(60, 60, 60, 1);\n    box-shadow: 0 3px 10px rgba(255, 255, 255, 0.2);\n}\n\n.mermaid-fullscreen-modal {\n    display: none;\n    position: fixed !important;\n    top: 0 !important;\n    left: 0 !important;\n    width: 95vw;\n    height: 100vh;\n    background: rgba(255, 255, 255, 0.98);\n    z-index: 9999;\n    padding: 20px;\n    overflow: auto;\n}\n\n.mermaid-fullscreen-modal.dark-theme {\n    background: rgba(0, 0, 0, 0.98);\n}\n\n.mermaid-fullscreen-modal.active {\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen {\n    position: relative;\n    width: 95vw;\n    height: 90vh;\n    max-width: 95vw;\n    max-height: 90vh;\n    background: white;\n    border-radius: 8px;\n    padding: 20px;\n    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);\n    overflow: auto;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen.dark-theme {\n    background: #1a1a1a;\n    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);\n}\n\n.mermaid-container-fullscreen pre.mermaid {\n    width: 100%;\n    height: 100%;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen .mermaid svg {\n    height: 100% !important;\n    width: 100% !important;\n    cursor: grab;\n}\n\n.mermaid-fullscreen-close {\n    position: fixed !important;\n    top: 20px !important;\n    right: 20px !important;\n    width: 40px;\n    height: 40px;\n    background: rgba(255, 255, 255, 0.95);\n    border: 1px solid rgba(0, 0, 0, 0.2);\n    border-radius: 50%;\n    cursor: pointer;\n    z-index: 10000;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);\n    transition: all 0.2s;\n    font-size: 24px;\n    line-height: 1;\n    color: #333;\n}\n\n.mermaid-fullscreen-close:hover {\n    background: white;\n    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);\n    transform: scale(1.1);\n}\n\n.mermaid-fullscreen-close.dark-theme {\n    background: rgba(50, 50, 50, 0.95);\n    border: 1px solid rgba(255, 255, 255, 0.2);\n    color: #e0e0e0;\n}\n\n.mermaid-fullscreen-close.dark-theme:hover {\n    background: rgba(60, 60, 60, 1);\n    box-shadow: 0 6px 16px rgba(255, 255, 255, 0.2);\n}\n\n.mermaid-fullscreen-modal .mermaid-fullscreen-btn {\n    display: none !important;\n}";
+    document.head.appendChild(fullscreenStyle);
+}
+
+// Detect if page has dark background
+const isDarkTheme = () => {
+    // We use a set of heuristics:
+    // 1. Check for common dark mode classes or attributes
+    // 2. Check computed background color brightness
+    if (document.documentElement.classList.contains('dark') ||
+        document.documentElement.getAttribute('data-theme') === 'dark' ||
+        document.body.classList.contains('dark') ||
+        document.body.getAttribute('data-theme') === 'dark') {
+        // console.log("Dark theme detected via class/attribute");
+        return true;
+    }
+    if (document.documentElement.classList.contains('light') ||
+        document.documentElement.getAttribute('data-theme') === 'light' ||
+        document.body.classList.contains('light') ||
+        document.body.getAttribute('data-theme') === 'light') {
+        // console.log("Light theme detected via class/attribute");
+        return false;
+    }
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        // console.log("Dark theme detected via prefers-color-scheme");
+        return true;
+    }
+    const bgColor = window.getComputedStyle(document.body).backgroundColor;
+    const match = bgColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)/);
+    if (match) {
+        const r = parseInt(match[1]);
+        const g = parseInt(match[2]);
+        const b = parseInt(match[3]);
+        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+        // console.log("Background color brightness:", brightness);
+        return brightness < 128;
+    }
+    // console.log("No dark or light theme detected, defaulting to light theme");
+    return false;
+};
+
+let darkTheme = isDarkTheme();
+let modal = null;
+let modalContent = null;
+let previousScrollOffset = [window.scrollX, window.scrollY];
+let _lazyObserver = null;
+let _renderQueue = Promise.resolve();
+let closeModal = () => {};
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && modal?.classList.contains('active')) {
+        closeModal();
+    }
+});
+
+// Apply d3 zoom to each SVG. Idempotent: an SVG already wrapped is skipped,
+// so this is safe to call both for the initial batch and for diagrams that
+// render lazily once they become visible.
+const addZoomToSvgs = (svgs) => {
+    svgs.each(function() {
+        if (this.getAttribute('data-zoom-applied') === 'true') return;
+        var svg = d3.select(this);
+        svg.html("<g class='wrapper'>" + svg.html() + "</g>");
+        var inner = svg.select("g");
+        var zoom = d3.zoom().on("zoom", function(event) {
+            inner.attr("transform", event.transform);
+        });
+        svg.call(zoom);
+        this.setAttribute('data-zoom-applied', 'true');
+    });
+};
+
+const runMermaid = async (rerun) => {
+    console.log("Running mermaid diagrams, rerun =", rerun);
+    // clear all existing mermaid charts
+    let all_mermaids = document.querySelectorAll(".mermaid");
+
+    if (rerun) {
+        // Disconnect any previous lazy rendering observer
+        if (_lazyObserver) {
+            _lazyObserver.disconnect();
+            _lazyObserver = null;
+        }
+
+        all_mermaids.forEach((el) => {
+            el.removeAttribute('data-mermaid-deferred');
+            el.removeAttribute('data-mermaid-render-failed');
+            if(!el.hasAttribute("data-original-code")) {
+                // store original code
+                // console.log(`Storing original code for first run: `, el.innerHTML);
+                el.setAttribute('data-original-code', el.innerHTML);
+            }
+            if(el.getAttribute("data-processed") === "true") {
+                // remove and restore original
+                el.removeAttribute("data-processed");
+                // console.log(`Restoring original code for re-run: `, el.getAttribute('data-original-code'));
+                el.innerHTML = el.getAttribute('data-original-code');
+            } else {
+                // store original code
+                // console.log(`Storing original code for re-run: `, el.innerHTML);
+                el.setAttribute('data-original-code', el.innerHTML);
+            }
+        });
+
+        // Separate visible and hidden elements. Mermaid's layout engine measures
+        // text dimensions via the DOM, which fails for elements hidden by a parent
+        // (e.g., Reveal.js non-active slides, sphinx-design unopened tabs),
+        // producing broken SVGs. Render visible elements now, defer hidden ones.
+        const visible = [];
+        const hidden = [];
+        all_mermaids.forEach((el) => {
+            // offsetParent is null for display:none ancestors.
+            // getClientRects().length > 0 catches position:fixed elements
+            // (which also have null offsetParent but are still visible).
+            if (el.offsetParent !== null || el.getClientRects().length > 0) {
+                visible.push(el);
+            } else {
+                hidden.push(el);
+                el.setAttribute('data-mermaid-deferred', 'true');
+            }
+        });
+
+        if (visible.length > 0) {
+            try {
+                await mermaid.run({ nodes: visible });
+            } catch (e) {
+                console.error("Mermaid rendering failed:", e);
+            }
+        }
+
+        // Lazily render hidden elements when they become visible.
+        // Uses a promise chain (_renderQueue) to serialize rendering,
+        // since IntersectionObserver may report multiple entries at once
+        // and mermaid.run() is not safe to call concurrently.
+        if (hidden.length > 0) {
+            if (typeof IntersectionObserver === 'undefined') {
+                console.warn("IntersectionObserver not available; hidden mermaid diagrams will not render.");
+            } else {
+                _renderQueue = Promise.resolve();
+                _lazyObserver = new IntersectionObserver((entries) => {
+                    for (const entry of entries) {
+                        if (entry.isIntersecting && entry.target.getAttribute("data-processed") !== "true") {
+                            _lazyObserver.unobserve(entry.target);
+                            const el = entry.target;
+                            _renderQueue = _renderQueue.then(async () => {
+                                try {
+                                    await mermaid.run({ nodes: [el] });
+                                    el.removeAttribute('data-mermaid-deferred');
+                                    // Apply zoom to the now-rendered diagram, matching
+                                    // the decoration visible diagrams receive.
+                                    if (false) {
+                                        addZoomToSvgs(d3.selectAll("").select(function() {
+                                            return this.querySelector("svg");
+                                        }));
+                                    }
+                                } catch (e) {
+                                    console.error("Mermaid deferred rendering failed:", e);
+                                    el.removeAttribute('data-mermaid-deferred');
+                                    el.setAttribute('data-mermaid-render-failed', 'true');
+                                }
+                            });
+                        }
+                    }
+                });
+                hidden.forEach((el) => _lazyObserver.observe(el));
+            }
+        }
+    }
+
+    all_mermaids = document.querySelectorAll(".mermaid");
+    // Exclude deferred (hidden) and render-failed elements from completion checks
+    const mermaids_active = document.querySelectorAll(".mermaid:not([data-mermaid-deferred]):not([data-mermaid-render-failed])");
+    const mermaids_processed = document.querySelectorAll(".mermaid:not([data-mermaid-deferred]):not([data-mermaid-render-failed])[data-processed='true']");
+
+    if (false) {
+        const mermaids_to_add_zoom = 0 === -1 ? mermaids_active.length : 0;
+        if(mermaids_to_add_zoom > 0) {
+            var svgs = d3.selectAll("").select(function() {
+                return this.querySelector("svg");
+            });
+            // Wait until every active (visible) diagram has rendered. Deferred
+            // diagrams are excluded, so a fixed d3_node_count that counts a
+            // hidden diagram no longer loops forever waiting for its SVG.
+            if(mermaids_active.length !== mermaids_processed.length) {
+                setTimeout(() => runMermaid(false), 200);
+                return;
+            }
+            addZoomToSvgs(svgs);
+        }
+    } else if(mermaids_active.length !== mermaids_processed.length) {
+        // Wait for mermaid to process all diagrams
+        setTimeout(() => runMermaid(false), 200);
+        return;
+    }
+
+    // Stop here if not adding fullscreen capability
+    if (!true) return;
+
+    if (modal !== null ) {
+        // Destroy existing modal
+        modal.remove();
+        modal = null;
+        modalContent = null;
+    }
+
+    modal = document.createElement('div');
+    modal.className = 'mermaid-fullscreen-modal' + (darkTheme ? ' dark-theme' : '');
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-label', 'Fullscreen diagram viewer');
+    modal.innerHTML = `
+        <button class="mermaid-fullscreen-close${darkTheme ? ' dark-theme' : ''}" aria-label="Close fullscreen">✕</button>
+        <div class="mermaid-container-fullscreen${darkTheme ? ' dark-theme' : ''}"></div>
+    `;
+    document.body.appendChild(modal);
+
+    modalContent = modal.querySelector('.mermaid-container-fullscreen');
+    const closeBtn = modal.querySelector('.mermaid-fullscreen-close');
+
+    closeModal = () => {
+        modal.classList.remove('active');
+        modalContent.innerHTML = '';
+        document.body.style.overflow = ''
+        window.scrollTo({left: previousScrollOffset[0], top: previousScrollOffset[1], behavior: 'instant'});
+    };
+
+    closeBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+    });
+    document.querySelectorAll('.mermaid').forEach((mermaidDiv) => {
+        if (mermaidDiv.parentNode.classList.contains('mermaid-container') ||
+            mermaidDiv.closest('.mermaid-fullscreen-modal')) {
+            // Already processed, adjust button class if needed
+            const existingBtn = mermaidDiv.parentNode.querySelector('.mermaid-fullscreen-btn');
+            if (existingBtn) {
+                existingBtn.className = 'mermaid-fullscreen-btn' + (darkTheme ? ' dark-theme' : '');
+            }
+            return;
+        }
+
+        const container = document.createElement('div');
+        container.className = 'mermaid-container';
+        mermaidDiv.parentNode.insertBefore(container, mermaidDiv);
+        container.appendChild(mermaidDiv);
+
+        const fullscreenBtn = document.createElement('button');
+        fullscreenBtn.className = 'mermaid-fullscreen-btn' + (darkTheme ? ' dark-theme' : '');
+        fullscreenBtn.setAttribute('aria-label', 'View diagram in fullscreen');
+        fullscreenBtn.textContent = "\u26f6";
+        fullscreenBtn.style.opacity = "50%";
+
+        // Calculate dynamic position based on diagram's margin and padding
+        const diagramStyle = window.getComputedStyle(mermaidDiv);
+        const marginTop = parseFloat(diagramStyle.marginTop) || 0;
+        const marginRight = parseFloat(diagramStyle.marginRight) || 0;
+        const paddingTop = parseFloat(diagramStyle.paddingTop) || 0;
+        const paddingRight = parseFloat(diagramStyle.paddingRight) || 0;
+        fullscreenBtn.style.top = `${marginTop + paddingTop + 4}px`;
+        fullscreenBtn.style.right = `${marginRight + paddingRight + 4}px`;
+
+        fullscreenBtn.addEventListener('click', () => {
+            previousScrollOffset = [window.scrollX, window.scrollY];
+            const clone = mermaidDiv.cloneNode(true);
+            modalContent.innerHTML = '';
+            modalContent.appendChild(clone);
+
+            const svg = clone.querySelector('svg');
+            if (svg) {
+                svg.removeAttribute('width');
+                svg.removeAttribute('height');
+                svg.style.width = '100%';
+                svg.style.height = 'auto';
+                svg.style.maxWidth = '100%';
+                svg.style.display = 'block';
+
+                if (false) {
+                    setTimeout(() => {
+                        const g = svg.querySelector('g');
+                        if (g) {
+                            var svgD3 = d3.select(svg);
+                            svgD3.html("<g class='wrapper'>" + svgD3.html() + "</g>");
+                            var inner = svgD3.select("g");
+                            var zoom = d3.zoom().on("zoom", function(event) {
+                                inner.attr("transform", event.transform);
+                            });
+                            svgD3.call(zoom);
+                        }
+                    }, 100);
+                }
+            }
+
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        });
+        container.appendChild(fullscreenBtn);
+    });
+};
+
+
+
+const load = async () => {
+    initStyles();
+
+
+    await runMermaid(true);
+
+    const reRunIfThemeChanges = async () => {
+        const newDarkTheme = isDarkTheme();
+        if (newDarkTheme !== darkTheme) {
+            darkTheme = newDarkTheme;
+            console.log("Theme change detected, re-running mermaid with", darkTheme ? "dark" : "default", "theme");
+            await mermaid.initialize(
+                {...{"startOnLoad": false},
+                ...{ darkMode: darkTheme, theme: darkTheme ? "dark" : "default" },
+                }
+            );
+            await runMermaid(true);
+        }
+    };
+
+    // Update theme classes when theme changes
+    const themeObserver = new MutationObserver(reRunIfThemeChanges);
+    themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme']
+    });
+    themeObserver.observe(document.body, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme']
+    });
+};
+
+
+
+
+
+console.log("Initializing mermaid with", darkTheme ? "dark" : "default", "theme");
+mermaid.initialize(
+    {...{"startOnLoad": false},
+    ...{ darkMode: darkTheme, theme: darkTheme ? "dark" : "default" },
+    }
+);
+
+window.addEventListener("load", load);
+window.runMermaid = runMermaid;</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'genindex';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/genindex.html" />
@@ -75,7 +433,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -189,7 +547,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -554,8 +912,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -640,6 +1016,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -653,7 +1035,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -925,8 +1307,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1011,6 +1411,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1024,7 +1430,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1320,6 +1726,16 @@ document.write(`
 </li>
       </ul></li>
   </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api/monarch.actor.html#monarch.actor.Actor._handle_delivery_failure_event">_handle_delivery_failure_event() (monarch.actor.Actor method)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.Actor._handle_expired_delivery">_handle_expired_delivery() (monarch.actor.Actor method)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.Actor._handle_invalid_reference">_handle_invalid_reference() (monarch.actor.Actor method)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.Actor._handle_undeliverable_message">_handle_undeliverable_message() (monarch.actor.Actor method)</a>
+</li>
+  </ul></td>
 </tr></table>
 
 <h2 id="A">A</h2>
@@ -1328,6 +1744,8 @@ document.write(`
       <li><a href="api/monarch.actor.html#monarch.actor.Accumulator.accumulate">accumulate() (monarch.actor.Accumulator method)</a>
 </li>
       <li><a href="api/monarch.actor.html#monarch.actor.Accumulator">Accumulator (class in monarch.actor)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.TransportFailureReason.AckTimedOut">AckTimedOut (monarch.actor.TransportFailureReason attribute)</a>
 </li>
       <li><a href="api/monarch.actor.html#monarch.actor.ProcMesh.activate">activate() (monarch.actor.ProcMesh method)</a>
 
@@ -1343,16 +1761,24 @@ document.write(`
 </li>
       <li><a href="api/monarch.actor.html#monarch.actor.ActorError">ActorError (class in monarch.actor)</a>
 </li>
+      <li><a href="api/monarch.actor.html#monarch.actor.InvalidReferenceReason.ActorFailed">ActorFailed (monarch.actor.InvalidReferenceReason attribute)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.InvalidReferenceReason.ActorNotExist">ActorNotExist (monarch.actor.InvalidReferenceReason attribute)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.InvalidReferenceReason.ActorStopped">ActorStopped (monarch.actor.InvalidReferenceReason attribute)</a>
+</li>
       <li><a href="api/monarch.html#monarch.Future.add_callback">add_callback() (monarch.Future method)</a>
 </li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.job.html#monarch.job.kubernetes.KubernetesJob.add_mesh">add_mesh() (monarch.job.kubernetes.KubernetesJob method)</a>
 
       <ul>
+        <li><a href="api/monarch.job.html#monarch.job.PBSJob.add_mesh">(monarch.job.PBSJob method)</a>
+</li>
         <li><a href="api/monarch.job.html#monarch.job.SlurmJob.add_mesh">(monarch.job.SlurmJob method)</a>
 </li>
       </ul></li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.actor.html#monarch.actor.ActorError.add_note">add_note() (monarch.actor.ActorError method)</a>
 </li>
       <li><a href="api/monarch.job.html#monarch.job.MeshAdminConfig.admin_addr">admin_addr (monarch.job.MeshAdminConfig attribute)</a>
@@ -1406,12 +1832,16 @@ document.write(`
 </li>
         <li><a href="api/monarch.job.html#monarch.job.LocalJob.can_run">(monarch.job.LocalJob method)</a>
 </li>
+        <li><a href="api/monarch.job.html#monarch.job.PBSJob.can_run">(monarch.job.PBSJob method)</a>
+</li>
         <li><a href="api/monarch.job.html#monarch.job.ProcessJob.can_run">(monarch.job.ProcessJob method)</a>
 </li>
         <li><a href="api/monarch.job.html#monarch.job.SlurmJob.can_run">(monarch.job.SlurmJob method)</a>
 </li>
       </ul></li>
       <li><a href="api/monarch.actor.html#monarch.actor.Channel">Channel (class in monarch.actor)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.TransportFailureReason.ChannelClosed">ChannelClosed (monarch.actor.TransportFailureReason attribute)</a>
 </li>
       <li><a href="api/monarch.html#monarch.OpaqueRef.check_worker">check_worker() (monarch.OpaqueRef method)</a>
 </li>
@@ -1420,6 +1850,8 @@ document.write(`
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.config.html#monarch.config.clear_runtime_config">clear_runtime_config() (in module monarch.config)</a>
+</li>
+      <li><a href="api/monarch.job.html#monarch.job.TelemetryConfig.client_persist_dir">client_persist_dir (monarch.job.TelemetryConfig attribute)</a>
 </li>
       <li><a href="api/monarch.html#monarch.coalescing">coalescing() (in module monarch)</a>
 </li>
@@ -1459,6 +1891,16 @@ document.write(`
         <li><a href="api/monarch.html#monarch.Tensor.delete_ref">(monarch.Tensor method)</a>
 </li>
       </ul></li>
+      <li><a href="api/monarch.actor.html#monarch.actor.DeliveryFailure">DeliveryFailure (class in monarch.actor)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.DeliveryFailureKind">DeliveryFailureKind (class in monarch.actor)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.UndeliverableMessageEnvelope.dest">dest() (monarch.actor.UndeliverableMessageEnvelope method)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.TransportFailureReason.DialFailed">DialFailed (monarch.actor.TransportFailureReason attribute)</a>
+</li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.html#monarch.Future.done">done() (monarch.Future method)</a>
 </li>
       <li><a href="api/monarch.rdma.html#monarch.rdma.RDMABuffer.drop">drop() (monarch.rdma.RDMABuffer method)</a>
@@ -1469,8 +1911,6 @@ document.write(`
         <li><a href="api/monarch.html#monarch.Tensor.drop">(monarch.Tensor method)</a>
 </li>
       </ul></li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.html#monarch.RemoteProcessGroup.dropped">dropped (monarch.RemoteProcessGroup property)</a>
 
       <ul>
@@ -1501,6 +1941,8 @@ document.write(`
 </li>
       <li><a href="api/monarch.html#monarch.RemoteProcessGroup.ensure_split_comm_remotely">ensure_split_comm_remotely() (monarch.RemoteProcessGroup method)</a>
 </li>
+      <li><a href="api/monarch.actor.html#monarch.actor.UndeliverableMessageEnvelope.error_msg">error_msg() (monarch.actor.UndeliverableMessageEnvelope method)</a>
+</li>
       <li><a href="api/monarch.actor.html#monarch.actor.Future.exception">exception() (monarch.actor.Future method)</a>
 
       <ul>
@@ -1511,6 +1953,8 @@ document.write(`
       </ul></li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api/monarch.actor.html#monarch.actor.DeliveryFailureKind.Expired">Expired (monarch.actor.DeliveryFailureKind attribute)</a>
+</li>
       <li><a href="api/monarch.html#monarch.Extent">Extent (class in monarch)</a>
 
       <ul>
@@ -1552,6 +1996,8 @@ document.write(`
 </li>
       </ul></li>
       <li><a href="api/monarch.job.html#monarch.job.PortForwarder.forward">forward (monarch.job.PortForwarder attribute)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.TransportFailureReason.ForwarderUnavailable">ForwarderUnavailable (monarch.actor.TransportFailureReason attribute)</a>
 </li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
@@ -1595,10 +2041,10 @@ document.write(`
 </li>
       <li><a href="api/monarch.html#monarch.get_active_stream">get_active_stream() (in module monarch)</a>
 </li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.config.html#monarch.config.get_global_config">get_global_config() (in module monarch.config)</a>
 </li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.spmd.html#monarch.spmd.SPMDActor.get_host_port">get_host_port (monarch.spmd.SPMDActor attribute)</a>
 </li>
       <li><a href="api/monarch.actor.html#monarch.actor.get_or_spawn_controller">get_or_spawn_controller() (in module monarch.actor)</a>
@@ -1606,6 +2052,8 @@ document.write(`
       <li><a href="api/monarch.rdma.html#monarch.rdma.get_rdma_backend">get_rdma_backend() (in module monarch.rdma)</a>
 </li>
       <li><a href="api/monarch.config.html#monarch.config.get_runtime_config">get_runtime_config() (in module monarch.config)</a>
+</li>
+      <li><a href="api/monarch.job.html#monarch.job.TelemetryConfig.gpu_metrics_interval_secs">gpu_metrics_interval_secs (monarch.job.TelemetryConfig attribute)</a>
 </li>
       <li><a href="api/monarch.html#monarch.grad_function">grad_function() (in module monarch)</a>
 </li>
@@ -1617,10 +2065,16 @@ document.write(`
 <h2 id="H">H</h2>
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
-      <li><a href="api/monarch.actor.html#monarch.actor.ProcMesh.host_mesh">host_mesh (monarch.actor.ProcMesh property)</a>
+      <li><a href="api/monarch.actor.html#monarch.actor.InvalidReferenceReason.HandlerNotBound">HandlerNotBound (monarch.actor.InvalidReferenceReason attribute)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.UndeliverableMessageEnvelope.has_payload">has_payload (monarch.actor.UndeliverableMessageEnvelope attribute)</a>
 </li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api/monarch.actor.html#monarch.actor.ProcMesh.host_mesh">host_mesh (monarch.actor.ProcMesh property)</a>
+</li>
+      <li><a href="api/monarch.job.html#monarch.job.TelemetryConfig.host_metrics_interval_secs">host_metrics_interval_secs (monarch.job.TelemetryConfig attribute)</a>
+</li>
       <li><a href="api/monarch.actor.html#monarch.actor.HostMesh">HostMesh (class in monarch.actor)</a>
 </li>
   </ul></td>
@@ -1645,9 +2099,15 @@ document.write(`
         <li><a href="api/monarch.actor.html#monarch.actor.ProcMesh.initialized">(monarch.actor.ProcMesh property)</a>
 </li>
       </ul></li>
+      <li><a href="api/monarch.html#monarch.inspect">inspect() (in module monarch)</a>
+</li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
-      <li><a href="api/monarch.html#monarch.inspect">inspect() (in module monarch)</a>
+      <li><a href="api/monarch.actor.html#monarch.actor.DeliveryFailure.invalid_reference_reason">invalid_reference_reason (monarch.actor.DeliveryFailure attribute)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.DeliveryFailureKind.InvalidReference">InvalidReference (monarch.actor.DeliveryFailureKind attribute)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.InvalidReferenceReason">InvalidReferenceReason (class in monarch.actor)</a>
 </li>
       <li><a href="api/monarch.actor.html#monarch.actor.HostMesh.is_fake_in_process">is_fake_in_process (monarch.actor.HostMesh property)</a>
 </li>
@@ -1669,12 +2129,18 @@ document.write(`
 <h2 id="J">J</h2>
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
-      <li><a href="api/monarch.job.html#monarch.job.job_load">job_load() (in module monarch.job)</a>
+      <li><a href="api/monarch.job.html#monarch.job.PBSJob.job_id">job_id (monarch.job.PBSJob property)</a>
+
+      <ul>
+        <li><a href="api/monarch.job.html#monarch.job.SlurmJob.job_id">(monarch.job.SlurmJob property)</a>
 </li>
-      <li><a href="api/monarch.job.html#monarch.job.job_loads">job_loads() (in module monarch.job)</a>
+      </ul></li>
+      <li><a href="api/monarch.job.html#monarch.job.job_load">job_load() (in module monarch.job)</a>
 </li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api/monarch.job.html#monarch.job.job_loads">job_loads() (in module monarch.job)</a>
+</li>
       <li><a href="api/monarch.job.html#monarch.job.JobState">JobState (class in monarch.job)</a>
 </li>
       <li><a href="api/monarch.job.html#monarch.job.JobTrait">JobTrait (class in monarch.job)</a>
@@ -1697,6 +2163,8 @@ document.write(`
   <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.job.html#monarch.job.JobTrait.kill">kill() (monarch.job.JobTrait method)</a>
 </li>
+      <li><a href="api/monarch.actor.html#monarch.actor.DeliveryFailure.kind">kind (monarch.actor.DeliveryFailure attribute)</a>
+</li>
       <li><a href="api/monarch.job.html#monarch.job.kubernetes.KubernetesJob">KubernetesJob (class in monarch.job.kubernetes)</a>
 </li>
   </ul></td>
@@ -1713,6 +2181,8 @@ document.write(`
       </ul></li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api/monarch.actor.html#monarch.actor.TransportFailureReason.LinkUnavailable">LinkUnavailable (monarch.actor.TransportFailureReason attribute)</a>
+</li>
       <li><a href="api/monarch.job.html#monarch.job.LocalJob">LocalJob (class in monarch.job)</a>
 </li>
       <li><a href="api/monarch.actor.html#monarch.actor.Actor.logger">logger (monarch.actor.Actor property)</a>
@@ -1765,15 +2235,17 @@ document.write(`
 </li>
       <li><a href="api/monarch.html#monarch.Shape.ndslice">ndslice (monarch.Shape attribute)</a>
 </li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.actor.html#monarch.actor.Extent.nelements">nelements (monarch.actor.Extent attribute)</a>
 
       <ul>
         <li><a href="api/monarch.html#monarch.Extent.nelements">(monarch.Extent attribute)</a>
 </li>
       </ul></li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.html#monarch.no_mesh">no_mesh() (in module monarch)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.TransportFailureReason.NoRoute">NoRoute (monarch.actor.TransportFailureReason attribute)</a>
 </li>
   </ul></td>
 </tr></table>
@@ -1789,6 +2261,8 @@ document.write(`
   <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.actor.html#monarch.actor.Channel.open_ranked">open_ranked() (monarch.actor.Channel static method)</a>
 </li>
+      <li><a href="api/monarch.actor.html#monarch.actor.TransportFailureReason.OversizedFrame">OversizedFrame (monarch.actor.TransportFailureReason attribute)</a>
+</li>
       <li><a href="api/monarch.rdma.html#monarch.rdma.RDMABuffer.owner">owner (monarch.rdma.RDMABuffer property)</a>
 </li>
   </ul></td>
@@ -1797,23 +2271,35 @@ document.write(`
 <h2 id="P">P</h2>
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api/monarch.job.html#monarch.job.PBSJob">PBSJob (class in monarch.job)</a>
+</li>
+      <li><a href="api/monarch.job.html#monarch.job.TelemetryConfig.persist_dir">persist_dir (monarch.job.TelemetryConfig attribute)</a>
+</li>
       <li><a href="api/monarch.actor.html#monarch.actor.Point">Point (class in monarch.actor)</a>
 </li>
       <li><a href="api/monarch.actor.html#monarch.actor.Port">Port (class in monarch.actor)</a>
 </li>
       <li><a href="api/monarch.job.html#monarch.job.PortForwarder">PortForwarder (class in monarch.job)</a>
 </li>
-      <li><a href="api/monarch.actor.html#monarch.actor.PortReceiver">PortReceiver (class in monarch.actor)</a>
+      <li><a href="api/monarch.actor.html#monarch.actor.UndeliverableReason.PortGone">PortGone (monarch.actor.UndeliverableReason attribute)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.InvalidReferenceReason.PortNeverAllocated">PortNeverAllocated (monarch.actor.InvalidReferenceReason attribute)</a>
 </li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api/monarch.actor.html#monarch.actor.PortReceiver">PortReceiver (class in monarch.actor)</a>
+</li>
       <li><a href="api/monarch.job.html#monarch.job.LocalJob.process">process (monarch.job.LocalJob property)</a>
 </li>
       <li><a href="api/monarch.job.html#monarch.job.ProcessJob">ProcessJob (class in monarch.job)</a>
 </li>
       <li><a href="api/monarch.actor.html#monarch.actor.ProcMesh">ProcMesh (class in monarch.actor)</a>
 </li>
+      <li><a href="api/monarch.actor.html#monarch.actor.InvalidReferenceReason.ProcNotExist">ProcNotExist (monarch.actor.InvalidReferenceReason attribute)</a>
+</li>
       <li><a href="api/monarch.job.html#monarch.job.JobTrait.profile">profile() (monarch.job.JobTrait method)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.InvalidReferenceReason.ProtocolMismatch">ProtocolMismatch (monarch.actor.InvalidReferenceReason attribute)</a>
 </li>
   </ul></td>
 </tr></table>
@@ -1897,6 +2383,10 @@ document.write(`
 </li>
       <li><a href="api/monarch.actor.html#monarch.actor.Port.return_undeliverable">return_undeliverable (monarch.actor.Port attribute)</a>
 </li>
+      <li><a href="api/monarch.actor.html#monarch.actor.UndeliverableMessageEnvelope.root_delivery_failure">root_delivery_failure() (monarch.actor.UndeliverableMessageEnvelope method)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.InvalidReferenceReason.RouteNotExist">RouteNotExist (monarch.actor.InvalidReferenceReason attribute)</a>
+</li>
       <li><a href="api/monarch.actor.html#monarch.actor.Endpoint.rref">rref() (monarch.actor.Endpoint method)</a>
 </li>
   </ul></td>
@@ -1915,7 +2405,11 @@ document.write(`
         <li><a href="api/monarch.actor.html#monarch.actor.Port.send">(monarch.actor.Port method)</a>
 </li>
       </ul></li>
+      <li><a href="api/monarch.actor.html#monarch.actor.UndeliverableMessageEnvelope.sender">sender() (monarch.actor.UndeliverableMessageEnvelope method)</a>
+</li>
       <li><a href="api/monarch.html#monarch.set_meta">set_meta() (in module monarch)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.HostMesh.set_proc_launcher">set_proc_launcher() (monarch.actor.HostMesh method)</a>
 </li>
       <li><a href="api/monarch.spmd.html#monarch.spmd.SPMDActor.setup_env">setup_env (monarch.spmd.SPMDActor attribute)</a>
 </li>
@@ -2033,6 +2527,8 @@ document.write(`
 <h2 id="T">T</h2>
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api/monarch.actor.html#monarch.actor.DeliveryFailure.target">target (monarch.actor.DeliveryFailure attribute)</a>
+</li>
       <li><a href="api/monarch.job.html#monarch.job.JobTrait.telemetry_query_client">telemetry_query_client() (monarch.job.JobTrait method)</a>
 </li>
       <li><a href="api/monarch.job.html#monarch.job.TelemetryConfig">TelemetryConfig (class in monarch.job)</a>
@@ -2043,10 +2539,10 @@ document.write(`
 </li>
       <li><a href="api/monarch.actor.html#monarch.actor.this_proc">this_proc() (in module monarch.actor)</a>
 </li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.html#monarch.timer">timer() (in module monarch)</a>
 </li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.html#monarch.to_mesh">to_mesh() (in module monarch)</a>
 
       <ul>
@@ -2057,16 +2553,30 @@ document.write(`
 </li>
       <li><a href="api/monarch.actor.html#monarch.actor.traced">traced() (in module monarch.actor)</a>
 </li>
+      <li><a href="api/monarch.actor.html#monarch.actor.UndeliverableReason.Transport">Transport (monarch.actor.UndeliverableReason attribute)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.DeliveryFailure.transport_failure_reason">transport_failure_reason (monarch.actor.DeliveryFailure attribute)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.TransportFailureReason">TransportFailureReason (class in monarch.actor)</a>
+</li>
   </ul></td>
 </tr></table>
 
 <h2 id="U">U</h2>
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
-      <li><a href="api/monarch.actor.html#monarch.actor.unhandled_fault_hook">unhandled_fault_hook() (in module monarch.actor)</a>
+      <li><a href="api/monarch.actor.html#monarch.actor.DeliveryFailureKind.Undeliverable">Undeliverable (monarch.actor.DeliveryFailureKind attribute)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.DeliveryFailure.undeliverable_reason">undeliverable_reason (monarch.actor.DeliveryFailure attribute)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.UndeliverableMessageEnvelope">UndeliverableMessageEnvelope (class in monarch.actor)</a>
 </li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api/monarch.actor.html#monarch.actor.UndeliverableReason">UndeliverableReason (class in monarch.actor)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.unhandled_fault_hook">unhandled_fault_hook() (in module monarch.actor)</a>
+</li>
       <li><a href="api/monarch.html#monarch.Shape.unity">unity() (monarch.Shape static method)</a>
 </li>
   </ul></td>
@@ -2097,13 +2607,15 @@ document.write(`
 </li>
       <li><a href="api/monarch.actor.html#monarch.actor.ActorError.with_traceback">with_traceback() (monarch.actor.ActorError method)</a>
 </li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.html#monarch.world_mesh">world_mesh() (in module monarch)</a>
 </li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api/monarch.rdma.html#monarch.rdma.RDMABuffer.write_from">write_from() (monarch.rdma.RDMABuffer method)</a>
 </li>
       <li><a href="api/monarch.rdma.html#monarch.rdma.RDMAAction.write_remote">write_remote() (monarch.rdma.RDMAAction method)</a>
+</li>
+      <li><a href="api/monarch.actor.html#monarch.actor.InvalidReferenceReason.WrongMailboxOwner">WrongMailboxOwner (monarch.actor.InvalidReferenceReason attribute)</a>
 </li>
   </ul></td>
 </tr></table>

@@ -271,7 +271,7 @@ It is also used by the batch run infrastructure to indicate that the batch job c
 See the [Observability](../observability.html) guide for the relationship between distributed
 telemetry, the Monarch Dashboard, and the Mesh Admin TUI.
 
-*class*monarch.job.TelemetryConfig(*retention_secs=3600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=30.0*)[[source]](../_modules/monarch/_src/job/telemetry_config.html#TelemetryConfig)
+*class*monarch.job.TelemetryConfig(*retention_secs=3600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=30.0*, *host_metrics_interval_secs=1.0*, *gpu_metrics_interval_secs=1.0*, *persist_dir=None*, *client_persist_dir=None*)[[source]](../_modules/monarch/_src/job/telemetry_config.html#TelemetryConfig)
 
 Configuration for automatic telemetry and snapshot startup.
 
@@ -281,15 +281,37 @@ called.
 
 Parameters:
 
-- **retention_secs** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Retention window in seconds for message and trace
-history. Trace tables are filtered independently by row timestamp.
-0 disables retention.
+- **retention_secs** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Retention window in seconds for message and trace data
+and command heartbeats. Final command outcomes, metadata, and rank
+results follow actor history for the sidecar lifetime. 0 disables
+time expiry.
 - **include_dashboard** ([*bool*](https://docs.python.org/3/builtins/functions.html#bool)) - Whether to start the monarch dashboard web server.
 - **dashboard_port** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Preferred port for the dashboard.
 - **snapshot_interval_secs** ([*float*](https://docs.python.org/3/builtins/functions.html#float)) - Interval in seconds between periodic mesh
 introspection snapshots. Snapshots capture the mesh topology
 into the telemetry query surface. The default is 30 seconds;
 0 disables periodic capture.
+- **host_metrics_interval_secs** ([*float*](https://docs.python.org/3/builtins/functions.html#float)) - Interval in seconds between host resource
+samples (CPU, load, memory, swap, network, and disk) written to the
+`host_metrics` table on every telemetry host. The default is
+1 second; 0 disables host sampling.
+- **gpu_metrics_interval_secs** ([*float*](https://docs.python.org/3/builtins/functions.html#float)) - Interval in seconds between per-device GPU
+samples (utilization, memory, temperature, and power) written to
+the `gpu_metrics` table through NVML. The default is 1 second;
+0 disables GPU sampling, and hosts without NVIDIA GPUs or NVML
+skip it.
+- **persist_dir** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - Directory for crash-tolerant telemetry files; each
+collector writes `{persist_dir}/{apply_id}/{hostname}-{pid}/`.
+Use a path that outlives the host, such as a shared mount. `None`
+disables persistence.
+Use graceful job shutdown to drain queued batches and finalize the
+log, then check readback's `clean` flag. After unexpected
+termination, readback recovers complete frames and reports an
+unclean log and any torn tail. Recent queued or unsynced data may
+be missing.
+- **client_persist_dir** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - Overrides `persist_dir` for the client collector
+in the job sidecar, which runs where the job was applied. Defaults
+to `persist_dir`.
 
 retention_secs*: [int](https://docs.python.org/3/builtins/functions.html#int)**= 3600*
 
@@ -299,21 +321,30 @@ dashboard_port*: [int](https://docs.python.org/3/builtins/functions.html#int)**=
 
 snapshot_interval_secs*: [float](https://docs.python.org/3/builtins/functions.html#float)**= 30.0*
 
-__init__(*retention_secs=3600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=30.0*)
+host_metrics_interval_secs*: [float](https://docs.python.org/3/builtins/functions.html#float)**= 1.0*
+
+gpu_metrics_interval_secs*: [float](https://docs.python.org/3/builtins/functions.html#float)**= 1.0*
+
+persist_dir*: [str](https://docs.python.org/3/builtins/stdtypes.html#str) | [None](https://docs.python.org/3/builtins/constants.html#None)**= None*
+
+client_persist_dir*: [str](https://docs.python.org/3/builtins/stdtypes.html#str) | [None](https://docs.python.org/3/builtins/constants.html#None)**= None*
+
+__init__(*retention_secs=3600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=30.0*, *host_metrics_interval_secs=1.0*, *gpu_metrics_interval_secs=1.0*, *persist_dir=None*, *client_persist_dir=None*)
 
 *class*monarch.job.MeshAdminConfig(*admin_addr=None*)[[source]](../_modules/monarch/_src/job/job_components.html#MeshAdminConfig)
 
 Configuration for automatic mesh admin agent startup.
 
-When passed to `JobTrait.enable_telemetry`, a MeshAdminAgent HTTP server
-is spawned when `state()` is called. The server aggregates topology
-across all host meshes and exposes it via a REST API that the admin TUI
-can attach to.
+The job sidecar starts a MeshAdminAgent HTTP server on the first
+`state()` call; later calls, from any process using the job, reuse it.
+The server aggregates topology across all host meshes and exposes it via a
+REST API that the admin TUI can attach to. If the address is taken,
+`state()` raises.
 
 Parameters:
 
 **admin_addr** ([*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*|**None*) - Bind address for the admin HTTP server. When `None`, the
-server uses the configured `MESH_ADMIN_ADDR`.
+server uses this process's `mesh_admin_addr` config.
 
 admin_addr*: [str](https://docs.python.org/3/builtins/stdtypes.html#str) | [None](https://docs.python.org/3/builtins/constants.html#None)**= None*
 
@@ -391,6 +422,12 @@ and the client; the allocation is released when the client exits.
 
 add_mesh(*name*, *num_nodes*)[[source]](../_modules/monarch/_src/job/slurm.html#SlurmJob.add_mesh)
 
+*property*job_id*: [str](https://docs.python.org/3/builtins/stdtypes.html#str) | [None](https://docs.python.org/3/builtins/constants.html#None)*
+
+The SLURM job ID, or `None` if no job was submitted or it was killed.
+
+Inside the job's own batch allocation, falls back to `$SLURM_JOB_ID`.
+
 can_run(*spec*)[[source]](../_modules/monarch/_src/job/slurm.html#SlurmJob.can_run)
 
 Check if this job can run the given spec.
@@ -398,6 +435,42 @@ Check if this job can run the given spec.
 share_node(*tasks_per_node*, *gpus_per_task*, *partition*)[[source]](../_modules/monarch/_src/job/slurm.html#SlurmJob.share_node)
 
 Share a node with other jobs.
+
+## PBSJob
+
+*class*monarch.job.PBSJob(*meshes*, *python_exe='python'*, *pbs_args=()*, *monarch_port=26600*, *job_name='monarch_job'*, *time_limit=None*, *queue=None*, *account=None*, *log_dir=None*, *job_start_timeout=None*, *mpiexec='mpiexec'*, *mpiexec_args=()*, *bind_to=None*)[[source]](../_modules/monarch/_src/job/pbs.html#PBSJob)
+
+Bases: `JobTrait`
+
+A job scheduler that uses PBS command line tools to schedule jobs.
+
+This implementation:
+1. Uses qsub to submit a PBS job that starts monarch workers with mpiexec
+2. Queries job status with qstat to get allocated hostnames
+3. Uses the hostnames to connect to the started workers
+
+Two launch modes are supported:
+- External controller (default): `apply()` submits the workers; a separate
+
+> controller process gets their host meshes with `state()`.
+
+- Batch (`apply(client_script=...)`): one allocation runs both the workers
+and the client (a `BatchJob` wrapper); the allocation is released when the client exits. A
+hand-written PBS script can run the same in-allocation runner
+(`python -m monarch._src.job._pbs_batch`); its client then gets the job
+with `state()` on a `PBSJob` with the same meshes.
+
+add_mesh(*name*, *num_nodes*)[[source]](../_modules/monarch/_src/job/pbs.html#PBSJob.add_mesh)
+
+*property*job_id*: [str](https://docs.python.org/3/builtins/stdtypes.html#str) | [None](https://docs.python.org/3/builtins/constants.html#None)*
+
+The PBS job ID, or `None` if no job was submitted or it was killed.
+
+Inside the job's own batch allocation, falls back to `$PBS_JOBID`.
+
+can_run(*spec*)[[source]](../_modules/monarch/_src/job/pbs.html#PBSJob.can_run)
+
+Check if this job can run the given spec.
 
 ## KubernetesJob
 
@@ -445,6 +518,8 @@ Mutually exclusive with `pod_template`.
 - **port** ([*int*](https://docs.python.org/3/builtins/functions.html#int)) - Monarch worker port (default: 26600).
 - **pod_template** (*V1PodTemplateSpec**|**None*) - `V1PodTemplateSpec` for advanced provisioning (e.g. custom volumes, sidecars,
 pod-level labels/annotations). Mutually exclusive with `image_spec`.
+The worker should start from a bare channel URL so that each container
+start gets a fresh service identity, discovered when the client attaches.
 - **labels** ([*dict*](https://docs.python.org/3/builtins/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*]**|**None*) - Optional labels to apply to the MonarchMesh CRD metadata.
 Propagated by the operator to the StatefulSet metadata. To set
 labels on the worker pods, use `pod_template.metadata.labels`.

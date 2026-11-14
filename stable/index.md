@@ -42,7 +42,7 @@ Here are some suggested steps to get started with Monarch:
 
 1. **Installation**: Check out the [Install guide](installation.html) for getting monarch installed.
 2. **Getting Started**: The [getting started](generated/examples/getting_started.html) provides an introduction to Monarch's core API
-3. **Observe and Diagnose**: Start with the [Observability guide](observability.html), then query [Distributed Telemetry](distributed-telemetry.html), open the [Monarch Dashboard](monarch-dashboard.html), or diagnose a live mesh with the [Admin TUI](admin-tui.html).
+3. **Observe and Diagnose**: Start with the [Observability guide](observability.html), then query [Distributed Telemetry](distributed-telemetry.html), [profile actor activity](profiling.html), open the [Monarch Dashboard](monarch-dashboard.html), or diagnose a live mesh with the [Admin TUI](admin-tui.html).
 4. **Explore Examples**: Review the [Examples](generated/examples/index.html) to see Monarch in action
 5. **Cookbook**: Browse the [Cookbook](cookbook.html) for short, task-oriented recipes.
 6. **Dive Deeper**: Explore the API Documentation for more detailed information:

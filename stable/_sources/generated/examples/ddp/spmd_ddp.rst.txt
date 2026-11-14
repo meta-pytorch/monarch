@@ -11,7 +11,7 @@
         :class: sphx-glr-download-link-note
 
         :ref:`Go to the end <sphx_glr_download_generated_examples_ddp_spmd_ddp.py>`
-        to download the full example code
+        to download the full example code.
 
 .. rst-class:: sphx-glr-example-title
 
@@ -86,7 +86,7 @@ We import Monarch's actor API and SPMDActor.
 
 .. GENERATED FROM PYTHON SOURCE LINES 73-87
 
-.. code-block:: default
+.. code-block:: Python
 
 
     import os
@@ -111,7 +111,7 @@ Spawn a process mesh on the local host with 4 GPU processes.
 
 .. GENERATED FROM PYTHON SOURCE LINES 91-95
 
-.. code-block:: default
+.. code-block:: Python
 
 
     local_proc_mesh = this_host().spawn_procs(per_host={"gpus": GPUS_PER_HOST})
@@ -128,7 +128,7 @@ and executes the training script.
 
 .. GENERATED FROM PYTHON SOURCE LINES 101-114
 
-.. code-block:: default
+.. code-block:: Python
 
 
     spmd_actors = local_proc_mesh.spawn("_SPMDActor", SPMDActor)
@@ -145,27 +145,23 @@ and executes the training script.
     print("DDP example completed successfully!")
 
 
-.. rst-class:: sphx-glr-timing
-
-   **Total running time of the script:** (0 minutes 0.000 seconds)
-
-
 .. _sphx_glr_download_generated_examples_ddp_spmd_ddp.py:
 
 .. only:: html
 
   .. container:: sphx-glr-footer sphx-glr-footer-example
 
+    .. container:: sphx-glr-download sphx-glr-download-jupyter
 
-
+      :download:`Download Jupyter notebook: spmd_ddp.ipynb <spmd_ddp.ipynb>`
 
     .. container:: sphx-glr-download sphx-glr-download-python
 
       :download:`Download Python source code: spmd_ddp.py <spmd_ddp.py>`
 
-    .. container:: sphx-glr-download sphx-glr-download-jupyter
+    .. container:: sphx-glr-download sphx-glr-download-zip
 
-      :download:`Download Jupyter notebook: spmd_ddp.ipynb <spmd_ddp.ipynb>`
+      :download:`Download zipped: spmd_ddp.zip <spmd_ddp.zip>`
 
 
 .. only:: html

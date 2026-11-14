@@ -79,7 +79,14 @@ envelope.undeliverable(failure, return_handle);
 
 This records the `DeliveryFailure` on the envelope and, when `return_undeliverable` is true, sends an `Undeliverable<MessageEnvelope>` to the supplied return handle; when it is false, the envelope is dropped. The failure is recorded before the return is attempted, so the original cause survives even if the return path itself fails: a failed return is logged and the message abandoned, not retried.
 
-Actors normally receive returned failures on their `Undeliverable<MessageEnvelope>` handler port. The default actor behavior treats invalid references and ordinary undeliverables as actor errors unless the actor overrides the corresponding handler.
+Actors normally receive failures on their `Undeliverable<MessageEnvelope>` handler
+port. `Actor::handle_delivery_failure_event` dispatches by the original failure
+kind to `handle_invalid_reference`, `handle_expired_delivery`, or
+`handle_undeliverable_message`. Invalid references and TTL expiration fail the
+sending actor by default. `PortGone` and ordinary transport failures are absorbed;
+an `OversizedFrame` transport failure fails the actor. See
+[Delivery failure hooks](../actors/actor.md#delivery-failure-hooks) for how to
+customize each policy.
 
 ## Mailbox delivery
 

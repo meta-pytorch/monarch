@@ -11,7 +11,7 @@
         :class: sphx-glr-download-link-note
 
         :ref:`Go to the end <sphx_glr_download_generated_examples_grpo_actor.py>`
-        to download the full example code
+        to download the full example code.
 
 .. rst-class:: sphx-glr-example-title
 
@@ -34,7 +34,7 @@ The example shows how to:
 
 .. GENERATED FROM PYTHON SOURCE LINES 24-29
 
-.. code-block:: default
+.. code-block:: Python
 
 
     import os
@@ -44,7 +44,7 @@ The example shows how to:
 
 .. GENERATED FROM PYTHON SOURCE LINES 30-43
 
-.. code-block:: default
+.. code-block:: Python
 
     import asyncio
     import copy
@@ -62,7 +62,7 @@ The example shows how to:
 
 .. GENERATED FROM PYTHON SOURCE LINES 44-62
 
-.. code-block:: default
+.. code-block:: Python
 
     """
     Online reinforcement learning (RL) training loop using the Monarch actor framework.
@@ -85,7 +85,7 @@ The example shows how to:
 
 .. GENERATED FROM PYTHON SOURCE LINES 63-82
 
-.. code-block:: default
+.. code-block:: Python
 
     @dataclass
     class TrajectorySlice:
@@ -109,7 +109,7 @@ The example shows how to:
 
 .. GENERATED FROM PYTHON SOURCE LINES 83-102
 
-.. code-block:: default
+.. code-block:: Python
 
     @dataclass
     class TrainingBatch:
@@ -133,7 +133,7 @@ The example shows how to:
 
 .. GENERATED FROM PYTHON SOURCE LINES 103-128
 
-.. code-block:: default
+.. code-block:: Python
 
     class TrajectoryQueue(Actor):
         """Queue for trajectory slices between Generator and Scorer."""
@@ -163,7 +163,7 @@ The example shows how to:
 
 .. GENERATED FROM PYTHON SOURCE LINES 129-185
 
-.. code-block:: default
+.. code-block:: Python
 
     class ReplayBuffer(Actor):
         """Storage for scored trajectory slices with weighted sampling."""
@@ -224,7 +224,7 @@ The example shows how to:
 
 .. GENERATED FROM PYTHON SOURCE LINES 186-256
 
-.. code-block:: default
+.. code-block:: Python
 
     class Scorer(Actor):
         """Evaluates actions and assigns rewards to trajectory slices."""
@@ -299,7 +299,7 @@ The example shows how to:
 
 .. GENERATED FROM PYTHON SOURCE LINES 257-411
 
-.. code-block:: default
+.. code-block:: Python
 
     class Learner(Actor):
         """Updates policy based on collected experiences using PPO algorithm."""
@@ -458,7 +458,7 @@ The example shows how to:
 
 .. GENERATED FROM PYTHON SOURCE LINES 412-419
 
-.. code-block:: default
+.. code-block:: Python
 
     class GeneratorState:
         """States for the Generator's state machine."""
@@ -470,7 +470,7 @@ The example shows how to:
 
 .. GENERATED FROM PYTHON SOURCE LINES 420-498
 
-.. code-block:: default
+.. code-block:: Python
 
     class Generator(Actor):
         """Generates actions using the current policy.
@@ -553,7 +553,7 @@ The example shows how to:
 
 .. GENERATED FROM PYTHON SOURCE LINES 499-542
 
-.. code-block:: default
+.. code-block:: Python
 
     async def main():
         """Run the distributed reinforcement learning training loop."""
@@ -601,15 +601,10 @@ The example shows how to:
 
 .. GENERATED FROM PYTHON SOURCE LINES 543-545
 
-.. code-block:: default
+.. code-block:: Python
 
     if __name__ == "__main__":
         asyncio.run(main())
-
-
-.. rst-class:: sphx-glr-timing
-
-   **Total running time of the script:** (0 minutes 0.000 seconds)
 
 
 .. _sphx_glr_download_generated_examples_grpo_actor.py:
@@ -618,16 +613,17 @@ The example shows how to:
 
   .. container:: sphx-glr-footer sphx-glr-footer-example
 
+    .. container:: sphx-glr-download sphx-glr-download-jupyter
 
-
+      :download:`Download Jupyter notebook: grpo_actor.ipynb <grpo_actor.ipynb>`
 
     .. container:: sphx-glr-download sphx-glr-download-python
 
       :download:`Download Python source code: grpo_actor.py <grpo_actor.py>`
 
-    .. container:: sphx-glr-download sphx-glr-download-jupyter
+    .. container:: sphx-glr-download sphx-glr-download-zip
 
-      :download:`Download Jupyter notebook: grpo_actor.ipynb <grpo_actor.ipynb>`
+      :download:`Download zipped: grpo_actor.zip <grpo_actor.zip>`
 
 
 .. only:: html

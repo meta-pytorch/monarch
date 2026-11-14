@@ -28,7 +28,7 @@ python python/examples/dining_philosophers.py
 The example prints the admin server address on startup:
 
 ```
-Mesh admin server listening on http://127.0.0.1:1729
+Mesh admin: http://127.0.0.1:1729
 ```
 
 **Terminal 2** -- attach the TUI:

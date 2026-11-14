@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["channel","register_python_bindings"],"struct":["PyReceiver","SendError","Sender"],"trait":["IntoPyObjectBox"]};

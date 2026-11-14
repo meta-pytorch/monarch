@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["get_rocm_lib_dir","get_rocm_version","hipify_sources","run_hipify_torch","validate_rocm_installation"]};

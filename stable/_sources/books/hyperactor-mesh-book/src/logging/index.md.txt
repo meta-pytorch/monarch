@@ -4,7 +4,7 @@ Monarch v1's logging subsystem streams `stdout`/`stderr` from remote procs back 
 
 ## What's in this section
 
-- **[Overview](overview.md)** — Python kickoff → Rust actors: how `ProcMesh` boots logging, what `LoggingManager` does, and what `LoggingMeshClient.spawn(...)` creates.
+- **[Overview](overview.md)** — Python kickoff → Rust actors: how `ProcMesh` boots logging, what `LoggingManager` does, what `LoggingMeshClient.spawn(...)` creates, and how the Python log level is set from the Python side.
 - **[Forwarder internals](forwarder.md)** — `LogForwardActor`, `BOOTSTRAP_LOG_CHANNEL`, streaming vs. silent mode, and the versioned sync-flush path.
 - **[Stream forwarders](stream-forwarders.md)** — `StreamFwder`, `tee`, `FileAppender`, `RotatingLineBuffer`; how raw bytes become lines sent to forwarders/files.
 - **[Client actor](client.md)** — `LogClientActor` aggregation windows, similarity bucketing, flush barriers, and teardown.
@@ -16,8 +16,8 @@ Monarch v1's logging subsystem streams `stdout`/`stderr` from remote procs back 
 
 ## Quick mental model
 
-- **Three moving parts**: a client-side coordinator (`LogClientActor`) and two per-proc meshes (`LogForwardActor` (optional), `LoggerRuntimeActor`).
-- **Two planes**: raw FD streams (stdout/stderr) → forwarders (if enabled); and Python logging (levels/handlers) → logger runtime.
+- **Moving parts**: a client-side coordinator (`LogClientActor`) and one per-proc mesh (`LogForwardActor`, optional). The per-proc Python log level is set on the Python side by a `_LogLevelSetter` actor, keeping the Rust forwarding stack Python-free.
+- **Two planes**: raw FD streams (stdout/stderr) → forwarders (if enabled); and Python logging (levels) → the Python-side log-level actor.
 - **Barriers**: versioned sync flush guarantees all logs up to a point have been delivered.
 - **Conditional forwarding**: The `LogForwardActor` mesh is only spawned if `MESH_ENABLE_LOG_FORWARDING` is true; otherwise logs stay local.
 

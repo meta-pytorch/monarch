@@ -16,7 +16,7 @@ embed the region here with `literalinclude`.
 You often need the rank-0 actor of a mesh, for example to use it as the coordinator
 of the SPMD job running on the mesh. Do:
 
-[View source](https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L48-L49)
+[View source](https://github.com/meta-pytorch/monarch/blob/51656e5f33f4b832329734bfa6289a0cf321b5e5/python/tests/test_cookbook.py#L48-L49)
 
 ```
 rank_0 = counters.flatten("rank").slice(rank=0)
@@ -32,6 +32,49 @@ if those names change.
 
 See [Slicing Operations](actors.html#slicing-operations) in the Actors guide for the full slicing API.
 
+### Scatter different data to groups of ranks
+
+Sometimes you need to send different data to different groups of ranks. In RL,
+for example, the controller owns the training data and must send each
+data-parallel (DP) group of the trainer its own batch.
+
+To do this, first find the DP groups by splitting the mesh into your trainer's
+parallel dimensions:
+
+[View source](https://github.com/meta-pytorch/monarch/blob/51656e5f33f4b832329734bfa6289a0cf321b5e5/python/tests/test_cookbook.py#L79-L82)
+
+```
+parallel_dims = {"pp": 2, "dp": 2, "tp": 2}
+trainer = procs.spawn("trainer", Trainer, parallel_dims)
+mesh = trainer.flatten("rank").split(rank=tuple(parallel_dims), **parallel_dims)
+by_dp_rank = [mesh.slice(dp=i) for i in range(mesh.size("dp"))]
+```
+
+Optionally, check the layout once at startup:
+
+[View source](https://github.com/meta-pytorch/monarch/blob/51656e5f33f4b832329734bfa6289a0cf321b5e5/python/tests/test_cookbook.py#L86-L89)
+
+```
+for dp_rank, trainer_at_dp_rank in enumerate(by_dp_rank):
+ reported = set((await trainer_at_dp_rank.get_dp_rank.call()).values())
+ if reported != {dp_rank}:
+ raise RuntimeError(f"DP slice {dp_rank} holds DP ranks {reported}")
+```
+
+Then send each DP group its batch. `asyncio.gather` issues the calls
+concurrently and returns one `ValueMesh` per group:
+
+[View source](https://github.com/meta-pytorch/monarch/blob/51656e5f33f4b832329734bfa6289a0cf321b5e5/python/tests/test_cookbook.py#L93-L98)
+
+```
+await asyncio.gather(
+ *[
+ trainer_at_dp_rank.train_step.call(batches[dp_rank])
+ for dp_rank, trainer_at_dp_rank in enumerate(by_dp_rank)
+ ]
+)
+```
+
 ## Intra-mesh Communication
 
 ### Call a specific rank of your own mesh
@@ -40,7 +83,7 @@ An actor often needs to reach another rank of its own mesh -- for example, a
 coordinator at rank 0. Give each actor a handle to its mesh after spawning, then
 slice that handle to the target rank inside an endpoint:
 
-[View source](https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L77-L78)
+[View source](https://github.com/meta-pytorch/monarch/blob/51656e5f33f4b832329734bfa6289a0cf321b5e5/python/tests/test_cookbook.py#L138-L139)
 
 ```
 coordinator = self.mesh.flatten("rank").slice(rank=0)
@@ -59,7 +102,7 @@ back the endpoint's return value inline. A port is the asynchronous counterpart.
 The coordinator opens a `Channel` and `broadcast`s the sending half (a `Port`) to
 the other ranks, which send or stream results back to it whenever they are ready:
 
-[View source](https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L109-L113)
+[View source](https://github.com/meta-pytorch/monarch/blob/51656e5f33f4b832329734bfa6289a0cf321b5e5/python/tests/test_cookbook.py#L170-L174)
 
 ```
 port, receiver = Channel[int].open()
@@ -72,7 +115,7 @@ return sorted([await receiver.recv() for _ in range(expected)])
 Each rank's `produce` endpoint launches a background task and returns
 immediately; the task sends its values to the port over time:
 
-[View source](https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L119-L125)
+[View source](https://github.com/meta-pytorch/monarch/blob/51656e5f33f4b832329734bfa6289a0cf321b5e5/python/tests/test_cookbook.py#L180-L186)
 
 ```
 rank = context().actor_instance.rank["gpus"]

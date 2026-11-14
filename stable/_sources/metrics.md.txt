@@ -133,10 +133,11 @@ OTel instruments
                       └─> external metrics backend
 ```
 
-In a build with OTLP support, setting `OTEL_EXPORTER_OTLP_ENDPOINT` enables an
-independent metric reader. It sends collections to the configured OpenTelemetry
-Collector over OTLP/HTTP. The collector controls routing, processing, and
-delivery to external metrics systems.
+Setting `OTEL_EXPORTER_OTLP_ENDPOINT` enables an independent metric reader. It
+sends collections to the configured OpenTelemetry Collector over OTLP/HTTP with
+cumulative temporality. The collector controls routing, processing, and
+delivery to external metrics systems. See [OpenTelemetry](opentelemetry) for
+export settings, resource attributes, and limitations.
 
 See [OpenTelemetry and Grafana](./generated/examples/otel_collector) for a
 Kubernetes collector, Prometheus, and Grafana example.
@@ -148,11 +149,11 @@ Kubernetes collector, Prometheus, and Grafana example.
 | `ENABLE_OTEL_METRICS` | `true` | Enables Monarch OTel metric collection |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `1s` | Sets the periodic reader interval |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Unset | Enables OTLP metric export when configured |
-| `OTEL_SERVICE_NAME` | `unknown_service` | Sets the service name resource attribute |
 | `TelemetryConfig.retention_secs` | `3600` | Retains distributed metric rows for this many seconds; `0` disables retention |
 
 ## Related documentation
 
 - [Observability overview](observability)
 - [Distributed Telemetry](distributed-telemetry)
+- [OpenTelemetry](opentelemetry)
 - [OpenTelemetry and Grafana](./generated/examples/otel_collector)

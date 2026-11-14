@@ -11,7 +11,7 @@
         :class: sphx-glr-download-link-note
 
         :ref:`Go to the end <sphx_glr_download_generated_examples_grpo_kubernetes_grpo.py>`
-        to download the full example code
+        to download the full example code.
 
 .. rst-class:: sphx-glr-example-title
 
@@ -158,7 +158,7 @@ Imports
 
 .. GENERATED FROM PYTHON SOURCE LINES 153-195
 
-.. code-block:: default
+.. code-block:: Python
 
 
     import argparse
@@ -212,7 +212,7 @@ seconds) don't get killed by the default 60s liveness watchdog.
 
 .. GENERATED FROM PYTHON SOURCE LINES 200-208
 
-.. code-block:: default
+.. code-block:: Python
 
     monarch.configure(
         rdma_allow_tcp_fallback=True,
@@ -230,7 +230,7 @@ Constants
 
 .. GENERATED FROM PYTHON SOURCE LINES 211-219
 
-.. code-block:: default
+.. code-block:: Python
 
 
     MODEL_NAME = "Qwen/Qwen3.5-0.8B-Base"
@@ -254,7 +254,7 @@ loss, or RDMA weight sync below knows about GSM8K.
 
 .. GENERATED FROM PYTHON SOURCE LINES 228-340
 
-.. code-block:: default
+.. code-block:: Python
 
 
     SYSTEM_PROMPT = (
@@ -376,7 +376,7 @@ Generic helpers
 
 .. GENERATED FROM PYTHON SOURCE LINES 343-372
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -415,7 +415,7 @@ Data structures
 
 .. GENERATED FROM PYTHON SOURCE LINES 375-414
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -464,7 +464,7 @@ Actors
 
 .. GENERATED FROM PYTHON SOURCE LINES 417-889
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -946,7 +946,7 @@ Pod spec
 
 .. GENERATED FROM PYTHON SOURCE LINES 892-1012
 
-.. code-block:: default
+.. code-block:: Python
 
 
     # Installing Python dependencies at container startup is for DEMONSTRATION
@@ -1076,7 +1076,7 @@ Orchestration
 
 .. GENERATED FROM PYTHON SOURCE LINES 1015-1202
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -1273,7 +1273,7 @@ CLI
 
 .. GENERATED FROM PYTHON SOURCE LINES 1205-1305
 
-.. code-block:: default
+.. code-block:: Python
 
 
     if __name__ == "__main__":
@@ -1377,27 +1377,23 @@ CLI
         )
 
 
-.. rst-class:: sphx-glr-timing
-
-   **Total running time of the script:** (0 minutes 0.000 seconds)
-
-
 .. _sphx_glr_download_generated_examples_grpo_kubernetes_grpo.py:
 
 .. only:: html
 
   .. container:: sphx-glr-footer sphx-glr-footer-example
 
+    .. container:: sphx-glr-download sphx-glr-download-jupyter
 
-
+      :download:`Download Jupyter notebook: kubernetes_grpo.ipynb <kubernetes_grpo.ipynb>`
 
     .. container:: sphx-glr-download sphx-glr-download-python
 
       :download:`Download Python source code: kubernetes_grpo.py <kubernetes_grpo.py>`
 
-    .. container:: sphx-glr-download sphx-glr-download-jupyter
+    .. container:: sphx-glr-download sphx-glr-download-zip
 
-      :download:`Download Jupyter notebook: kubernetes_grpo.ipynb <kubernetes_grpo.ipynb>`
+      :download:`Download zipped: kubernetes_grpo.zip <kubernetes_grpo.zip>`
 
 
 .. only:: html

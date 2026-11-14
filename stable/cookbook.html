@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Task-oriented recipes for common Monarch patterns. Each recipe is small, self-contained, and answers a single “how do I …?” question. Every snippet below is embedded directly from a test in python/..." />
 
-    <title>Monarch Cookbook &#8212; Monarch v0.7.0 documentation</title>
+    <title>Monarch Cookbook &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,15 +50,17 @@
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="_static/documentation_options.js?v=05c9169f"></script>
+    <script src="_static/documentation_options.js?v=b3dab91b"></script>
     <script src="_static/doctools.js?v=888ff710"></script>
     <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cookbook';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/cookbook.html" />
@@ -66,7 +68,7 @@
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
     <link rel="next" title="Python API" href="api/index.html" />
-    <link rel="prev" title="Exporting Metrics and Logs with OpenTelemetry" href="generated/examples/otel_collector.html" />
+    <link rel="prev" title="Exporting Metrics, Logs, and Traces with OpenTelemetry" href="generated/examples/otel_collector.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -84,7 +86,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +200,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -563,8 +565,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -649,6 +669,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -662,7 +688,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1346,7 +1396,7 @@ embed the region here with <code class="docutils literal notranslate"><span clas
 <p>You often need the rank-0 actor of a mesh, for example to use it as the coordinator
 of the SPMD job running on the mesh. Do:</p>
 <div class="literal-block-wrapper docutils container" id="id1">
-<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L48-L49">View source</a></span><a class="headerlink" href="#id1" title="Link to this code">#</a></div>
+<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/51656e5f33f4b832329734bfa6289a0cf321b5e5/python/tests/test_cookbook.py#L48-L49">View source</a></span><a class="headerlink" href="#id1" title="Link to this code">#</a></div>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">rank_0</span> <span class="o">=</span> <span class="n">counters</span><span class="o">.</span><span class="n">flatten</span><span class="p">(</span><span class="s2">&quot;rank&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
 <span class="k">await</span> <span class="n">rank_0</span><span class="o">.</span><span class="n">increment</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span>
 </pre></div>
@@ -1362,6 +1412,46 @@ if those names change.</p></li>
 </ul>
 <p>See <a class="reference internal" href="actors.html#slicing-operations"><span class="std std-ref">Slicing Operations</span></a> in the Actors guide for the full slicing API.</p>
 </section>
+<section id="scatter-different-data-to-groups-of-ranks">
+<h3>Scatter different data to groups of ranks<a class="headerlink" href="#scatter-different-data-to-groups-of-ranks" title="Link to this heading">#</a></h3>
+<p>Sometimes you need to send different data to different groups of ranks. In RL,
+for example, the controller owns the training data and must send each
+data-parallel (DP) group of the trainer its own batch.</p>
+<p>To do this, first find the DP groups by splitting the mesh into your trainer’s
+parallel dimensions:</p>
+<div class="literal-block-wrapper docutils container" id="id2">
+<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/51656e5f33f4b832329734bfa6289a0cf321b5e5/python/tests/test_cookbook.py#L79-L82">View source</a></span><a class="headerlink" href="#id2" title="Link to this code">#</a></div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">parallel_dims</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;pp&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;dp&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;tp&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">}</span>
+<span class="n">trainer</span> <span class="o">=</span> <span class="n">procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;trainer&quot;</span><span class="p">,</span> <span class="n">Trainer</span><span class="p">,</span> <span class="n">parallel_dims</span><span class="p">)</span>
+<span class="n">mesh</span> <span class="o">=</span> <span class="n">trainer</span><span class="o">.</span><span class="n">flatten</span><span class="p">(</span><span class="s2">&quot;rank&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="nb">tuple</span><span class="p">(</span><span class="n">parallel_dims</span><span class="p">),</span> <span class="o">**</span><span class="n">parallel_dims</span><span class="p">)</span>
+<span class="n">by_dp_rank</span> <span class="o">=</span> <span class="p">[</span><span class="n">mesh</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">dp</span><span class="o">=</span><span class="n">i</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">mesh</span><span class="o">.</span><span class="n">size</span><span class="p">(</span><span class="s2">&quot;dp&quot;</span><span class="p">))]</span>
+</pre></div>
+</div>
+</div>
+<p>Optionally, check the layout once at startup:</p>
+<div class="literal-block-wrapper docutils container" id="id3">
+<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/51656e5f33f4b832329734bfa6289a0cf321b5e5/python/tests/test_cookbook.py#L86-L89">View source</a></span><a class="headerlink" href="#id3" title="Link to this code">#</a></div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">dp_rank</span><span class="p">,</span> <span class="n">trainer_at_dp_rank</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">by_dp_rank</span><span class="p">):</span>
+    <span class="n">reported</span> <span class="o">=</span> <span class="nb">set</span><span class="p">((</span><span class="k">await</span> <span class="n">trainer_at_dp_rank</span><span class="o">.</span><span class="n">get_dp_rank</span><span class="o">.</span><span class="n">call</span><span class="p">())</span><span class="o">.</span><span class="n">values</span><span class="p">())</span>
+    <span class="k">if</span> <span class="n">reported</span> <span class="o">!=</span> <span class="p">{</span><span class="n">dp_rank</span><span class="p">}:</span>
+        <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;DP slice </span><span class="si">{</span><span class="n">dp_rank</span><span class="si">}</span><span class="s2"> holds DP ranks </span><span class="si">{</span><span class="n">reported</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<p>Then send each DP group its batch. <code class="docutils literal notranslate"><span class="pre">asyncio.gather</span></code> issues the calls
+concurrently and returns one <code class="docutils literal notranslate"><span class="pre">ValueMesh</span></code> per group:</p>
+<div class="literal-block-wrapper docutils container" id="id4">
+<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/51656e5f33f4b832329734bfa6289a0cf321b5e5/python/tests/test_cookbook.py#L93-L98">View source</a></span><a class="headerlink" href="#id4" title="Link to this code">#</a></div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">gather</span><span class="p">(</span>
+    <span class="o">*</span><span class="p">[</span>
+        <span class="n">trainer_at_dp_rank</span><span class="o">.</span><span class="n">train_step</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">batches</span><span class="p">[</span><span class="n">dp_rank</span><span class="p">])</span>
+        <span class="k">for</span> <span class="n">dp_rank</span><span class="p">,</span> <span class="n">trainer_at_dp_rank</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">by_dp_rank</span><span class="p">)</span>
+    <span class="p">]</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</section>
 </section>
 <section id="intra-mesh-communication">
 <h2>Intra-mesh Communication<a class="headerlink" href="#intra-mesh-communication" title="Link to this heading">#</a></h2>
@@ -1370,8 +1460,8 @@ if those names change.</p></li>
 <p>An actor often needs to reach another rank of its own mesh — for example, a
 coordinator at rank 0. Give each actor a handle to its mesh after spawning, then
 slice that handle to the target rank inside an endpoint:</p>
-<div class="literal-block-wrapper docutils container" id="id2">
-<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L77-L78">View source</a></span><a class="headerlink" href="#id2" title="Link to this code">#</a></div>
+<div class="literal-block-wrapper docutils container" id="id5">
+<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/51656e5f33f4b832329734bfa6289a0cf321b5e5/python/tests/test_cookbook.py#L138-L139">View source</a></span><a class="headerlink" href="#id5" title="Link to this code">#</a></div>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">coordinator</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">mesh</span><span class="o">.</span><span class="n">flatten</span><span class="p">(</span><span class="s2">&quot;rank&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
 <span class="k">return</span> <span class="k">await</span> <span class="n">coordinator</span><span class="o">.</span><span class="n">ping</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span>
 </pre></div>
@@ -1388,8 +1478,8 @@ reference to the chosen rank, so the call is a direct point-to-point message.</p
 back the endpoint’s return value inline. A port is the asynchronous counterpart.
 The coordinator opens a <code class="docutils literal notranslate"><span class="pre">Channel</span></code> and <code class="docutils literal notranslate"><span class="pre">broadcast</span></code>s the sending half (a <code class="docutils literal notranslate"><span class="pre">Port</span></code>) to
 the other ranks, which send or stream results back to it whenever they are ready:</p>
-<div class="literal-block-wrapper docutils container" id="id3">
-<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L109-L113">View source</a></span><a class="headerlink" href="#id3" title="Link to this code">#</a></div>
+<div class="literal-block-wrapper docutils container" id="id6">
+<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/51656e5f33f4b832329734bfa6289a0cf321b5e5/python/tests/test_cookbook.py#L170-L174">View source</a></span><a class="headerlink" href="#id6" title="Link to this code">#</a></div>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">port</span><span class="p">,</span> <span class="n">receiver</span> <span class="o">=</span> <span class="n">Channel</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span><span class="o">.</span><span class="n">open</span><span class="p">()</span>
 <span class="n">others</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">mesh</span><span class="o">.</span><span class="n">flatten</span><span class="p">(</span><span class="s2">&quot;rank&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="nb">slice</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="kc">None</span><span class="p">))</span>
 <span class="n">others</span><span class="o">.</span><span class="n">produce</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span><span class="n">port</span><span class="p">)</span>
@@ -1400,8 +1490,8 @@ the other ranks, which send or stream results back to it whenever they are ready
 </div>
 <p>Each rank’s <code class="docutils literal notranslate"><span class="pre">produce</span></code> endpoint launches a background task and returns
 immediately; the task sends its values to the port over time:</p>
-<div class="literal-block-wrapper docutils container" id="id4">
-<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/2c8d4b2722e0b3e0255bd2b3ec79dcc9f028087b/python/tests/test_cookbook.py#L119-L125">View source</a></span><a class="headerlink" href="#id4" title="Link to this code">#</a></div>
+<div class="literal-block-wrapper docutils container" id="id7">
+<div class="code-block-caption"><span class="caption-text"><a class="reference external" href="https://github.com/meta-pytorch/monarch/blob/51656e5f33f4b832329734bfa6289a0cf321b5e5/python/tests/test_cookbook.py#L180-L186">View source</a></span><a class="headerlink" href="#id7" title="Link to this code">#</a></div>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">rank</span> <span class="o">=</span> <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">actor_instance</span><span class="o">.</span><span class="n">rank</span><span class="p">[</span><span class="s2">&quot;gpus&quot;</span><span class="p">]</span>
 
 <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">stream</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
@@ -1464,7 +1554,7 @@ immediately; the task sends its values to the port over time:</p>
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Exporting Metrics and Logs with OpenTelemetry</p>
+        <p class="prev-next-title">Exporting Metrics, Logs, and Traces with OpenTelemetry</p>
       </div>
     </a>
     <a class="right-next"
@@ -1503,7 +1593,7 @@ immediately; the task sends its values to the port over time:</p>
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Exporting Metrics and Logs with OpenTelemetry</p>
+        <p class="prev-next-title">Exporting Metrics, Logs, and Traces with OpenTelemetry</p>
       </div>
     </a>
     <a class="right-next"
@@ -1535,6 +1625,7 @@ immediately; the task sends its values to the port over time:</p>
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#meshes-and-slicing">Meshes and Slicing</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#get-the-rank-0-actor-of-a-mesh">Get the rank-0 actor of a mesh</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#scatter-different-data-to-groups-of-ranks">Scatter different data to groups of ranks</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#intra-mesh-communication">Intra-mesh Communication</a><ul class="nav section-nav flex-column">
@@ -1713,7 +1804,7 @@ immediately; the task sends its values to the port over time:</p>
        "headline": "Monarch Cookbook",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/cookbook.html",
-       "articleBody": "Monarch Cookbook# Task-oriented recipes for common Monarch patterns. Each recipe is small, self-contained, and answers a single \u201chow do I \u2026?\u201d question. Every snippet below is embedded directly from a test in python/tests/test_cookbook.py and runs in CI, so the code here stays in sync with the API. To add a recipe, write a test with a # cookbook: \u003cslug\u003e / # cookbook: end marker pair and embed the region here with literalinclude. Meshes and Slicing# Get the rank-0 actor of a mesh# You often need the rank-0 actor of a mesh, for example to use it as the coordinator of the SPMD job running on the mesh. Do: View source# rank_0 = counters.flatten(\"rank\").slice(rank=0) await rank_0.increment.call_one() flatten collapses every dimension into one named dimension, so this works regardless of the mesh\u2019s original shape. This is more robust than slicing by the original dimension names (e.g. generator.slice(hosts=0, gpus=0)), which breaks if those names change. slice then selects a single rank. The result is a singleton mesh, so call_one applies. See Slicing Operations in the Actors guide for the full slicing API. Intra-mesh Communication# Call a specific rank of your own mesh# An actor often needs to reach another rank of its own mesh \u2014 for example, a coordinator at rank 0. Give each actor a handle to its mesh after spawning, then slice that handle to the target rank inside an endpoint: View source# coordinator = self.mesh.flatten(\"rank\").slice(rank=0) return await coordinator.ping.call_one() self.mesh is the actor\u2019s own ActorMesh. An actor cannot reference its own mesh at construction time, so we pass the handle to every member through a set_mesh endpoint once the mesh is spawned. Slicing that handle yields a reference to the chosen rank, so the call is a direct point-to-point message. Return results asynchronously with a port# The previous recipe returns synchronously because call (and call_one) hand back the endpoint\u2019s return value inline. A port is the asynchronous counterpart. The coordinator opens a Channel and broadcasts the sending half (a Port) to the other ranks, which send or stream results back to it whenever they are ready: View source# port, receiver = Channel[int].open() others = self.mesh.flatten(\"rank\").slice(rank=slice(1, None)) others.produce.broadcast(port) expected = others.size() * STREAM_LEN return sorted([await receiver.recv() for _ in range(expected)]) Each rank\u2019s produce endpoint launches a background task and returns immediately; the task sends its values to the port over time: View source# rank = context().actor_instance.rank[\"gpus\"] async def stream() -\u003e None: for step in range(STREAM_LEN): port.send(rank * 10 + step) self.task = asyncio.create_task(stream())",
+       "articleBody": "Monarch Cookbook# Task-oriented recipes for common Monarch patterns. Each recipe is small, self-contained, and answers a single \u201chow do I \u2026?\u201d question. Every snippet below is embedded directly from a test in python/tests/test_cookbook.py and runs in CI, so the code here stays in sync with the API. To add a recipe, write a test with a # cookbook: \u003cslug\u003e / # cookbook: end marker pair and embed the region here with literalinclude. Meshes and Slicing# Get the rank-0 actor of a mesh# You often need the rank-0 actor of a mesh, for example to use it as the coordinator of the SPMD job running on the mesh. Do: View source# rank_0 = counters.flatten(\"rank\").slice(rank=0) await rank_0.increment.call_one() flatten collapses every dimension into one named dimension, so this works regardless of the mesh\u2019s original shape. This is more robust than slicing by the original dimension names (e.g. generator.slice(hosts=0, gpus=0)), which breaks if those names change. slice then selects a single rank. The result is a singleton mesh, so call_one applies. See Slicing Operations in the Actors guide for the full slicing API. Scatter different data to groups of ranks# Sometimes you need to send different data to different groups of ranks. In RL, for example, the controller owns the training data and must send each data-parallel (DP) group of the trainer its own batch. To do this, first find the DP groups by splitting the mesh into your trainer\u2019s parallel dimensions: View source# parallel_dims = {\"pp\": 2, \"dp\": 2, \"tp\": 2} trainer = procs.spawn(\"trainer\", Trainer, parallel_dims) mesh = trainer.flatten(\"rank\").split(rank=tuple(parallel_dims), **parallel_dims) by_dp_rank = [mesh.slice(dp=i) for i in range(mesh.size(\"dp\"))] Optionally, check the layout once at startup: View source# for dp_rank, trainer_at_dp_rank in enumerate(by_dp_rank): reported = set((await trainer_at_dp_rank.get_dp_rank.call()).values()) if reported != {dp_rank}: raise RuntimeError(f\"DP slice {dp_rank} holds DP ranks {reported}\") Then send each DP group its batch. asyncio.gather issues the calls concurrently and returns one ValueMesh per group: View source# await asyncio.gather( *[ trainer_at_dp_rank.train_step.call(batches[dp_rank]) for dp_rank, trainer_at_dp_rank in enumerate(by_dp_rank) ] ) Intra-mesh Communication# Call a specific rank of your own mesh# An actor often needs to reach another rank of its own mesh \u2014 for example, a coordinator at rank 0. Give each actor a handle to its mesh after spawning, then slice that handle to the target rank inside an endpoint: View source# coordinator = self.mesh.flatten(\"rank\").slice(rank=0) return await coordinator.ping.call_one() self.mesh is the actor\u2019s own ActorMesh. An actor cannot reference its own mesh at construction time, so we pass the handle to every member through a set_mesh endpoint once the mesh is spawned. Slicing that handle yields a reference to the chosen rank, so the call is a direct point-to-point message. Return results asynchronously with a port# The previous recipe returns synchronously because call (and call_one) hand back the endpoint\u2019s return value inline. A port is the asynchronous counterpart. The coordinator opens a Channel and broadcasts the sending half (a Port) to the other ranks, which send or stream results back to it whenever they are ready: View source# port, receiver = Channel[int].open() others = self.mesh.flatten(\"rank\").slice(rank=slice(1, None)) others.produce.broadcast(port) expected = others.size() * STREAM_LEN return sorted([await receiver.recv() for _ in range(expected)]) Each rank\u2019s produce endpoint launches a background task and returns immediately; the task sends its values to the port over time: View source# rank = context().actor_instance.rank[\"gpus\"] async def stream() -\u003e None: for step in range(STREAM_LEN): port.send(rank * 10 + step) self.task = asyncio.create_task(stream())",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

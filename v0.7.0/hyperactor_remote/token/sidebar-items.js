@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["JoinResult","Policy"],"fn":["create"],"struct":["Join","Joined","Options","RendezvousLike","Token"],"trait":["JoinClient","JoinHandler","TokenPeer"]};

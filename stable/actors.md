@@ -37,7 +37,8 @@ An **Actor** in Monarch is:
 
 ### Core Characteristics
 
- graph LR
+```
+graph LR
  A[Actor] --> B[Private State]
  A --> C[Message Mailbox]
  A --> D[Endpoints]
@@ -48,7 +49,7 @@ An **Actor** in Monarch is:
  style C fill:#007c88
  style D fill:#007c88
  style E fill:#007c88
- 
+```
 
 **1. Isolation**
 
@@ -80,7 +81,8 @@ An **Actor** in Monarch is:
 
 ### Lifecycle Stages
 
- stateDiagram-v2
+```
+stateDiagram-v2
  [*] --> Creating: spawn()
  Creating --> Constructing: allocate resources
  Constructing --> Running: __init__()
@@ -91,7 +93,7 @@ An **Actor** in Monarch is:
  Constructing --> Failed: __init__ error
  Running --> Failed: unhandled error
  Failed --> [*]: propagate to parent
- 
+```
 
 ### 1. Creation Phase
 
@@ -141,7 +143,8 @@ class DataProcessor(Actor):
 
 Once initialized, the actor enters its main lifecycle where it processes messages.
 
- sequenceDiagram
+```
+sequenceDiagram
  participant Mailbox
  participant ActorInstance
  participant Handler
@@ -153,7 +156,7 @@ Once initialized, the actor enters its main lifecycle where it processes message
  Handler-->>ActorInstance: Return result
  ActorInstance->>ActorInstance: Process result
  end
- 
+```
 
 **Message Processing:**
 
@@ -166,8 +169,9 @@ Once initialized, the actor enters its main lifecycle where it processes message
 
 **Normal Termination:**
 
-- Triggered by `ActorMesh.stop()`
+- Triggered by `ActorMesh.stop()`; awaiting the returned Future waits until every actor has finished `__cleanup__` and stopped, or until the wait for an unresponsive actor times out
 - Mailbox drained, `__cleanup__` runs, parent notified
+- When an actor stops, or `shutdown_context()` runs, meshes it owns are sent a stop but not waited on; see the `shutdown_context()` docstring for the shutdown guarantees
 
 **Error Termination:**
 
@@ -202,9 +206,9 @@ class FileWriter(Actor):
 
 **What Has Already Happened:**
 
-- Every mesh this actor owns has already been stopped recursively
-- Each owned actor's `__cleanup__` has already run
+- Every mesh this actor owns has been told to stop
 - Owned actor meshes and proc meshes are no longer usable from this method
+- Owned actors may still be running their own `__cleanup__`; stopping does not wait for them
 - For shutdown work that needs an owned mesh, expose a dedicated endpoint and call it before `stop()`
 
 **What to Clean Up Here:**
@@ -261,6 +265,14 @@ class Calculator(Actor):
 
 Endpoints support different invocation patterns called **adverbs**:
 
+`call()`, `call_one()` and `choose()` send the request and start collecting replies before they return. Their Future lets you wait for the result; dropping it does not cancel the request or stop reply collection. You can observe the same Future more than once. For `call()`, cells are decoded on access only when the entire batch has no mesh references.
+
+For `call_one()` and `choose()`, Tokio receives a successful reply as pickled bytes. The first observer unpickles those bytes into a Python value; later observers share the same value or unpickling error. For `call()`, Tokio accumulates the complete batch, retaining its bytes and mesh references. The first observer builds the Python `ValueMesh`; later observers share it. If no reply in the batch carries mesh references, all cells start pickled and are unpickled when accessed. If any reply carries mesh references, building the `ValueMesh` unpickles every run, including those without references. An ignored successful reply or batch is never reconstructed. Remote exceptions are still unpickled when collected, including errors from calls whose `Future` is dropped.
+
+A synchronous `get()` unpickles on its calling thread, using the calling actor's instance to rebuild any Ports in the reply. `poll()` can also unpickle an available reply: it does not wait for a message or another reconstructor, but the unpickle code itself may take time. An asyncio observation unpickles on the loop thread if the bytes are already available; otherwise a Tokio waiter unpickles before notifying the loop. Unpickle hooks therefore run on observation, not necessarily when the reply arrives.
+
+A `get()` timeout limits waiting for arrival or another observer's reconstruction; it does not preempt Python unpickle code that the caller runs itself. A caller-side interrupt leaves the original bytes available for another observation. If a `ValueMesh` build was interrupted after unpickling some runs, a retry starts from the beginning and those hooks may run again. The `call`, `call_one` and `choose` latency histograms and spans measure sending and collection, not observer-side construction or unpickling. Native Rust `call_future` and `call_one_future` callers still reconstruct on their future's driver, with the existing end-of-construction measurement boundary. A no-ref `ValueMesh` can fail later while an element is accessed; that does not change the already-successful `Future`'s result or readiness.
+
 #### 1. `call_one()` - Single Actor Call
 
 Call a single actor and get response.
@@ -287,7 +299,8 @@ result = await calc.add.call_one(5, 3).as_asyncio()
 
 **Flow Diagram:**
 
- sequenceDiagram
+```
+sequenceDiagram
  participant Client
  participant ActorInstance
 
@@ -296,7 +309,7 @@ result = await calc.add.call_one(5, 3).as_asyncio()
  ActorInstance-->>Client: Future[Result]
  Client->>Client: .get() waits
  Note over Client: Result available
- 
+```
 
 #### 2. `call()` - Broadcast and Collect
 
@@ -318,7 +331,8 @@ print(results) # [15, 15, 15, 15, 15, 15, 15, 15]
 
 **Flow Diagram:**
 
- sequenceDiagram
+```
+sequenceDiagram
  participant Client
  participant Mesh
  participant A1 as Actor 1
@@ -339,7 +353,7 @@ print(results) # [15, 15, 15, 15, 15, 15, 15, 15]
  end
 
  Mesh-->>Client: Future[List[Result]]
- 
+```
 
 #### 3. `choose()` - Random Single Actor
 
@@ -368,7 +382,8 @@ consecutive calls may hit the same actor.
 
 **Flow Diagram:**
 
- sequenceDiagram
+```
+sequenceDiagram
  participant Client
  participant Mesh
  participant A1 as Actor 1
@@ -380,7 +395,7 @@ consecutive calls may hit the same actor.
  Mesh->>A2: message
  A2-->>Mesh: result
  Mesh-->>Client: Future[Result]
- 
+```
 
 #### 4. `broadcast()` - Fire and Forget
 
@@ -404,7 +419,8 @@ next_operation()
 
 **Flow Diagram:**
 
- sequenceDiagram
+```
+sequenceDiagram
  participant Client
  participant Mesh
  participant Actors
@@ -413,7 +429,7 @@ next_operation()
  Note over Client: Returns immediately
  Mesh->>Actors: messages
  Note over Actors: Process async
- 
+```
 
 #### 5. `rref()` - Distributed Tensor Reference
 
@@ -445,7 +461,9 @@ with procs.activate():
 
 #### 6. `stream()` - Streaming Responses
 
-Stream responses as they arrive.
+`stream()` sends to all actors immediately and returns an iterator of Futures. Replies arrive and queue eagerly, but each item takes and unpickles one queued reply only when first observed. An item nobody observes takes and unpickles nothing.
+
+Each `next()` uses one iteration slot. Dropping an item unobserved leaves one reply unread after the slots are exhausted. Observe every item taken if you need every reply.
 
 ```
 # Process responses as they arrive (stream returns Iterator[Future])
@@ -475,7 +493,8 @@ actor.method3.call_one(arg3) # Message M3
 
 **Ordering Diagram:**
 
- sequenceDiagram
+```
+sequenceDiagram
  participant Sender
  participant ActorMailbox
  participant ActorInstance
@@ -492,7 +511,7 @@ actor.method3.call_one(arg3) # Message M3
  Note over ActorInstance: Process M2
  ActorMailbox->>ActorInstance: Deliver M3
  Note over ActorInstance: Process M3
- 
+```
 
 ---
 
@@ -589,7 +608,8 @@ def spawn_sibling(self):
 
 ### Context Usage Diagram
 
- graph TD
+```
+graph TD
  A[context] --> B[message_rank]
  A --> C[actor_instance]
 
@@ -601,7 +621,7 @@ def spawn_sibling(self):
  D --> D1[spawn]
 
  style A fill:#007c88,stroke:#333,stroke-width:2px
- 
+```
 
 ---
 
@@ -631,7 +651,8 @@ print(actors.extent) # {"gpus": 8}
 
 ### Mesh Structure
 
- graph TD
+```
+graph TD
  subgraph ActorMesh
  subgraph Row1[GPU 0]
  A0[Actor Instance]
@@ -667,7 +688,7 @@ print(actors.extent) # {"gpus": 8}
  style A5 fill:#007c88
  style A6 fill:#007c88
  style A7 fill:#007c88
- 
+```
 
 ### Slicing Operations
 
@@ -702,7 +723,8 @@ actors.slice(hosts=1, gpus=3).method.call_one()
 
 **Slicing Visualization:**
 
- graph TB
+```
+graph TB
  subgraph Full Mesh [8x4]
  direction LR
  subgraph R0[Host 0]
@@ -731,7 +753,7 @@ actors.slice(hosts=1, gpus=3).method.call_one()
  style H0G1 fill:#007c88
  style S0 fill:#855b9d
  style S1 fill:#855b9d
- 
+```
 
 ### Passing Actor References
 
@@ -871,6 +893,106 @@ If `__supervise__` raises an Exception of any kind, it will be considered a new 
 
 We make no guarantees about how many times `__supervise__` will be called.
 If you own a mesh of N actors, each of which generates a supervision error, it may be called anywhere between 1 and N times inclusive.
+
+### Delivery failure hooks
+
+Delivery failure hooks run on the actor that sent a message when the runtime
+reports that the message could not be delivered. `__supervise__` handles failures
+in resources the actor owns. A delivery failure describes a particular send;
+it can occur while the destination actor is still running.
+
+All four hooks receive an `UndeliverableMessageEnvelope` and return a boolean.
+Returning `True` absorbs the failure. Returning `False` preserves the existing
+default behavior. Exposing these hooks does not install a custom policy; actors
+without overrides keep their prior failure behavior.
+
+For notifications that return the original message, the defaults are:
+
+| Hook | Failures it receives | Default when it returns `False` | When to customize it |
+| --- | --- | --- | --- |
+| `_handle_invalid_reference(message)` | Invalid recipients: stopped or failed actors, absent actors or procs, unbound handlers, unallocated ports, or protocol mismatches | Fails the sending actor | Treat selected terminal recipients as expected, such as a reply to a caller that has stopped, while preserving errors for invalid addresses and protocol mistakes |
+| `_handle_expired_delivery(message)` | A message exhausted its delivery hop TTL | Fails the sending actor | Deliberately discard expired work if the application can tolerate losing that message; otherwise retain the default so routing problems surface |
+| `_handle_undeliverable_message(message)` | Transport failures, or `PortGone` when a port's recipient is gone | Absorbs `PortGone` and ordinary transport failures; an `OversizedFrame` fails the sending actor | Update request bookkeeping when a reply port is dropped, record transport diagnostics, or raise an exception to make transport failure fatal |
+| `_handle_delivery_failure_event(message)` | Every delivery failure, including notifications without a classified reason | Applies the default for the original failure kind; an unclassified failure fails the sending actor | Implement a policy or logging that spans several failure kinds |
+
+Metadata-only failure reports remain fatal unless a hook handles them. In
+particular, an unhandled `PortGone` report fails the sending actor, while an
+unhandled returned `PortGone` message is absorbed. This preserves the existing
+Python behavior for both forms.
+
+**Choose a specific hook when your policy applies to one failure kind.** For
+example, customizing `_handle_invalid_reference` leaves TTL expiration and
+transport handling at their defaults. Customize `_handle_undeliverable_message`
+when you need to track dropped reply ports or change transport policy;
+`PortGone` is already absorbed by default.
+
+**A generic override takes precedence over all three specific hooks.** If you
+override `_handle_delivery_failure_event`, the specific Python hooks are not
+called. Returning `False` from the generic hook applies the existing default directly;
+there is no fallthrough to another Python hook. Logging in the generic hook and
+returning `False` preserves the existing defaults but bypasses any specific Python
+overrides.
+
+#### Inspecting the failure reason
+
+Import the failure types from `monarch.actor`. The enum mirrors are implemented
+in the Rust Python bindings. `message.root_delivery_failure()` returns a
+`DeliveryFailure`, or `None` if there is no classified reason. It selects the
+original failure; later failures encountered on the return path do not replace it.
+
+| `DeliveryFailure` property | Value |
+| --- | --- |
+| `kind` | `DeliveryFailureKind.InvalidReference`, `.Undeliverable`, or `.Expired` |
+| `invalid_reference_reason` | An `InvalidReferenceReason`, such as `.ActorStopped`, `.ActorFailed`, or `.HandlerNotBound`; `None` for other kinds |
+| `undeliverable_reason` | `UndeliverableReason.Transport` or `.PortGone`; `None` for other kinds |
+| `transport_failure_reason` | A `TransportFailureReason`, such as `.ChannelClosed`, `.DialFailed`, `.NoRoute`, or `.OversizedFrame`; `None` for non-transport failures |
+| `target` | The string address of the target named by the failure |
+
+The following opt-in example shows an actor that deliberately tolerates replies
+to callers that have stopped. This policy applies only to actors that define
+this override:
+
+```
+from monarch.actor import Actor, InvalidReferenceReason, UndeliverableMessageEnvelope
+
+class ReplySender(Actor):
+ def _handle_invalid_reference(self, message: UndeliverableMessageEnvelope) -> bool:
+ failure = message.root_delivery_failure()
+ assert failure is not None
+ return failure.invalid_reference_reason in (
+ InvalidReferenceReason.ActorStopped,
+ InvalidReferenceReason.ActorFailed,
+ )
+```
+
+This preserves the default errors for other invalid references. `HandlerNotBound`
+also occurs when a handler was never registered. A dropped reply port is reported
+as `PortGone`; neither reason establishes that the actor itself stopped.
+
+A transport failure does not establish whether the destination actor stopped or
+failed. During draining, a handler may reject new work with `PortGone`, so the
+absence of `ActorStopped` or `ActorFailed` also does not establish that the actor
+is alive. Current channel delivery timeouts can surface as `ChannelClosed`; the
+presence of `TransportFailureReason.AckTimedOut` in the enum does not guarantee
+that every timeout is reported separately.
+
+Notifications can contain only failure metadata: check `message.has_payload` to
+see whether the original message was returned. `root_delivery_failure()`,
+`sender()`, and `error_msg()` work for both forms. `dest()` requires a port
+destination; use `failure.target` for a report whose target is an actor or another
+endpoint.
+
+#### Callback scheduling and errors
+
+An actor with async endpoints may implement each hook with `def` or `async def`.
+An actor whose endpoints are all synchronous requires synchronous hooks. An async
+hook is awaited on the actor's event loop, alongside endpoint execution; a sync
+actor runs its hook on its driver thread between messages. Hooks share the
+callback queue with `__supervise__`, and run one at a time. If a hook raises, the
+sending actor fails with that exception.
+
+When the sending actor stops, a pending async callback is cancelled. A sync actor
+finishes a callback that has started and drops callbacks it has not started.
 
 ---
 
@@ -1483,7 +1605,8 @@ async def test_calculator():
 
 ### Actor Lifecycle Recap
 
- graph LR
+```
+graph LR
  A[Spawn] --> B[__init__]
  B --> C[Running]
  C --> D[Handle Messages]
@@ -1495,6 +1618,8 @@ async def test_calculator():
  style C fill:#007c88
  style D fill:#13a3a4
  style E fill:#0072c7
+```
+
  ### Next Steps
 
 - Read [Mesh Concepts](./MESHES.md) for mesh details

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["glog","perfetto","sqlite"]};
+window.SIDEBAR_ITEMS = {"mod":["glog","perfetto"]};

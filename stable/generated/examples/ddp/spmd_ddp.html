@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="This example demonstrates how to run PyTorch’s Distributed Data Parallel (DDP) using Monarch’s SPMDActor. The actor configures torch elastic environment variables and executes the training script, ..." />
 
-    <title>DDP using SPMDActor &#8212; Monarch v0.7.0 documentation</title>
+    <title>DDP using SPMDActor &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="../../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,15 +50,17 @@
 <link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../../_static/documentation_options.js?v=b3dab91b"></script>
     <script src="../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="../../../_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="../../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'generated/examples/ddp/spmd_ddp';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/generated/examples/ddp/spmd_ddp.html" />
@@ -84,7 +86,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="api">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +200,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -563,8 +565,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -649,6 +669,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -662,7 +688,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1248,6 +1298,7 @@ document.write(`
 <li class="toctree-l1"><a class="reference internal" href="../grpo_yield.html">GRPO with Direct Port Messaging</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../grpo/kubernetes_grpo.html">GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../gpu_sharing.html">Sharing GPUs Between Actors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../sglang_actors.html">SGLang Rollout Engines</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../distributed_tensors.html">Distributed Tensors in Monarch</a></li>
 
 
@@ -1259,7 +1310,7 @@ document.write(`
 
 
 <li class="toctree-l1"><a class="reference internal" href="../debugging.html">Debugging Python Actors with pdb in Monarch</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../otel_collector.html">Exporting Metrics and Logs with OpenTelemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../otel_collector.html">Exporting Metrics, Logs, and Traces with OpenTelemetry</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://docs.pytorch.org/tutorials/intermediate/monarch_distributed_tutorial.html">Multinode Slurm Tutorial</a></li>
 </ul>
 </div>
@@ -1366,7 +1417,7 @@ document.write(`
   <div class="sphx-glr-download-link-note admonition note">
 <p class="admonition-title">Note</p>
 <p><a class="reference internal" href="#sphx-glr-download-generated-examples-ddp-spmd-ddp-py"><span class="std std-ref">Go to the end</span></a>
-to download the full example code</p>
+to download the full example code.</p>
 </div>
 <section class="sphx-glr-example-title" id="ddp-using-spmdactor">
 <span id="sphx-glr-generated-examples-ddp-spmd-ddp-py"></span><h1>DDP using SPMDActor<a class="headerlink" href="#ddp-using-spmdactor" title="Link to this heading">#</a></h1>
@@ -1382,42 +1433,41 @@ variables and executes the training script, replicating torchrun behavior.</p>
 <section id="training-script">
 <h2>Training Script<a class="headerlink" href="#training-script" title="Link to this heading">#</a></h2>
 <p>The training script (<code class="docutils literal notranslate"><span class="pre">train.py</span></code>) is a standard PyTorch DDP script:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
-
-<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">torch.distributed</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">dist</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nn</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">torch.optim</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">optim</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">torch.nn.parallel</span><span class="w"> </span><span class="kn">import</span> <span class="n">DistributedDataParallel</span> <span class="k">as</span> <span class="n">DDP</span>
-
-
-<span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
-    <span class="n">dist</span><span class="o">.</span><span class="n">init_process_group</span><span class="p">(</span><span class="s2">&quot;nccl&quot;</span><span class="p">)</span>
-    <span class="n">rank</span> <span class="o">=</span> <span class="n">dist</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span>
-    <span class="n">local_rank</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;LOCAL_RANK&quot;</span><span class="p">])</span>
-    <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">set_device</span><span class="p">(</span><span class="n">local_rank</span><span class="p">)</span>
-
-    <span class="n">model</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="mi">10</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">cuda</span><span class="p">()</span>
-    <span class="n">ddp_model</span> <span class="o">=</span> <span class="n">DDP</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
-
-    <span class="n">optimizer</span> <span class="o">=</span> <span class="n">optim</span><span class="o">.</span><span class="n">SGD</span><span class="p">(</span><span class="n">ddp_model</span><span class="o">.</span><span class="n">parameters</span><span class="p">(),</span> <span class="n">lr</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)</span>
-
-    <span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">5</span><span class="p">):</span>
-        <span class="n">inputs</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">10</span><span class="p">)</span><span class="o">.</span><span class="n">cuda</span><span class="p">()</span>
-        <span class="n">outputs</span> <span class="o">=</span> <span class="n">ddp_model</span><span class="p">(</span><span class="n">inputs</span><span class="p">)</span>
-        <span class="n">loss</span> <span class="o">=</span> <span class="n">outputs</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span>
-        <span class="n">optimizer</span><span class="o">.</span><span class="n">zero_grad</span><span class="p">()</span>
-        <span class="n">loss</span><span class="o">.</span><span class="n">backward</span><span class="p">()</span>
-        <span class="n">optimizer</span><span class="o">.</span><span class="n">step</span><span class="p">()</span>
-        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;[Rank </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">] Step </span><span class="si">{</span><span class="n">step</span><span class="si">}</span><span class="s2"> loss=</span><span class="si">{</span><span class="n">loss</span><span class="o">.</span><span class="n">item</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-
-    <span class="n">dist</span><span class="o">.</span><span class="n">destroy_process_group</span><span class="p">()</span>
-
-
-<span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
-    <span class="n">main</span><span class="p">()</span>
-</pre></div>
-</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span class="kn">import</span><span class="w"> </span><span class="nn">os</span><span class="w">
+</span><span class="w">
+</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span><span class="w">
+</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span><span class="nn">.</span><span class="nn">distributed</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">dist</span><span class="w">
+</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span><span class="nn">.</span><span class="nn">nn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nn</span><span class="w">
+</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span><span class="nn">.</span><span class="nn">optim</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">optim</span><span class="w">
+</span><span class="kn">from</span><span class="w"> </span><span class="nn">torch</span><span class="nn">.</span><span class="nn">nn</span><span class="nn">.</span><span class="nn">parallel</span><span class="w"> </span><span class="kn">import</span> <span class="n">DistributedDataParallel</span> <span class="k">as</span> <span class="n">DDP</span><span class="w">
+</span><span class="w">
+</span><span class="w">
+</span><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">(</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="n">dist</span><span class="o">.</span><span class="n">init_process_group</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">nccl</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span>    <span class="n">rank</span> <span class="o">=</span> <span class="n">dist</span><span class="o">.</span><span class="n">get_rank</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>    <span class="n">local_rank</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;</span><span class="s2">LOCAL_RANK</span><span class="s2">&quot;</span><span class="p">]</span><span class="p">)</span><span class="w">
+</span>    <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">set_device</span><span class="p">(</span><span class="n">local_rank</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="n">model</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="mi">10</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">cuda</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>    <span class="n">ddp_model</span> <span class="o">=</span> <span class="n">DDP</span><span class="p">(</span><span class="n">model</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="n">optimizer</span> <span class="o">=</span> <span class="n">optim</span><span class="o">.</span><span class="n">SGD</span><span class="p">(</span><span class="n">ddp_model</span><span class="o">.</span><span class="n">parameters</span><span class="p">(</span><span class="p">)</span><span class="p">,</span> <span class="n">lr</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">5</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="n">inputs</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">10</span><span class="p">)</span><span class="o">.</span><span class="n">cuda</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>        <span class="n">outputs</span> <span class="o">=</span> <span class="n">ddp_model</span><span class="p">(</span><span class="n">inputs</span><span class="p">)</span><span class="w">
+</span>        <span class="n">loss</span> <span class="o">=</span> <span class="n">outputs</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>        <span class="n">optimizer</span><span class="o">.</span><span class="n">zero_grad</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>        <span class="n">loss</span><span class="o">.</span><span class="n">backward</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>        <span class="n">optimizer</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="s2">[Rank </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">] Step </span><span class="si">{</span><span class="n">step</span><span class="si">}</span><span class="s2"> loss=</span><span class="si">{</span><span class="n">loss</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="n">dist</span><span class="o">.</span><span class="n">destroy_process_group</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="w">
+</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;</span><span class="s2">__main__</span><span class="s2">&quot;</span><span class="p">:</span><span class="w">
+</span>    <span class="n">main</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 <p>This script:</p>
 <ul class="simple">
 <li><p>Initializes NCCL process group (environment variables set by <code class="docutils literal notranslate"><span class="pre">SPMDActor</span></code>)</p></li>
@@ -1429,53 +1479,52 @@ variables and executes the training script, replicating torchrun behavior.</p>
 <section id="imports">
 <h2>Imports<a class="headerlink" href="#imports" title="Link to this heading">#</a></h2>
 <p>We import Monarch’s actor API and SPMDActor.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
-
-<span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">this_host</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">monarch.spmd</span><span class="w"> </span><span class="kn">import</span> <span class="n">SPMDActor</span>
-
-
-<span class="n">GPUS_PER_HOST</span> <span class="o">=</span> <span class="mi">4</span>
-
-<span class="c1"># Get absolute path to train.py (in the same directory as this script)</span>
-<span class="n">SCRIPT_DIR</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/os.path.html#os.path.dirname" title="os.path.dirname" class="sphx-glr-backref-module-os-path sphx-glr-backref-type-py-function"><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">dirname</span></a><span class="p">(</span><a href="https://docs.python.org/3/library/os.path.html#os.path.abspath" title="os.path.abspath" class="sphx-glr-backref-module-os-path sphx-glr-backref-type-py-function"><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">abspath</span></a><span class="p">(</span><span class="vm">__file__</span><span class="p">))</span>
-<span class="n">TRAIN_SCRIPT</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/os.path.html#os.path.join" title="os.path.join" class="sphx-glr-backref-module-os-path sphx-glr-backref-type-py-function"><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span></a><span class="p">(</span><span class="n">SCRIPT_DIR</span><span class="p">,</span> <span class="s2">&quot;train.py&quot;</span><span class="p">)</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="kn">import</span><span class="w"> </span><span class="nn">os</span><span class="w">
+</span><span class="w">
+</span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch</span><span class="nn">.</span><span class="nn">actor</span><span class="w"> </span><span class="kn">import</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../../api/monarch.actor.html#monarch.actor.this_host" title="monarch.actor.this_host"><span class="n">this_host</span></a><span class="w">
+</span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch</span><span class="nn">.</span><span class="nn">spmd</span><span class="w"> </span><span class="kn">import</span> <a class="sphx-glr-backref-module-monarch-spmd sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../../api/monarch.spmd.html#monarch.spmd.SPMDActor" title="monarch.spmd.SPMDActor"><span class="n">SPMDActor</span></a><span class="w">
+</span><span class="w">
+</span><span class="w">
+</span><span class="n">GPUS_PER_HOST</span> <span class="o">=</span> <span class="mi">4</span><span class="w">
+</span><span class="w">
+</span><span class="c1"># Get absolute path to train.py (in the same directory as this script)</span><span class="w">
+</span><span class="n">SCRIPT_DIR</span> <span class="o">=</span> <a class="sphx-glr-backref-module-os-path sphx-glr-backref-type-py-function reference external" href="https://docs.python.org/3/library/os.path.html#os.path.dirname" title="os.path.dirname"><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">dirname</span></a><span class="p">(</span><a class="sphx-glr-backref-module-os-path sphx-glr-backref-type-py-function reference external" href="https://docs.python.org/3/library/os.path.html#os.path.abspath" title="os.path.abspath"><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">abspath</span></a><span class="p">(</span><span class="vm">__file__</span><span class="p">)</span><span class="p">)</span><span class="w">
+</span><span class="n">TRAIN_SCRIPT</span> <span class="o">=</span> <a class="sphx-glr-backref-module-os-path sphx-glr-backref-type-py-function reference external" href="https://docs.python.org/3/library/os.path.html#os.path.join" title="os.path.join"><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span></a><span class="p">(</span><span class="n">SCRIPT_DIR</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">train.py</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 </section>
 <section id="create-process-mesh">
 <h2>Create Process Mesh<a class="headerlink" href="#create-process-mesh" title="Link to this heading">#</a></h2>
 <p>Spawn a process mesh on the local host with 4 GPU processes.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">local_proc_mesh</span> <span class="o">=</span> <span class="n">this_host</span><span class="p">()</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;gpus&quot;</span><span class="p">:</span> <span class="n">GPUS_PER_HOST</span><span class="p">})</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="n">local_proc_mesh</span> <span class="o">=</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../../api/monarch.actor.html#monarch.actor.this_host" title="monarch.actor.this_host"><span class="n">this_host</span></a><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">gpus</span><span class="s2">&quot;</span><span class="p">:</span> <span class="n">GPUS_PER_HOST</span><span class="p">}</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 </section>
 <section id="run-ddp-training-with-spmdactor">
 <h2>Run DDP Training with SPMDActor<a class="headerlink" href="#run-ddp-training-with-spmdactor" title="Link to this heading">#</a></h2>
 <p>Spawn <code class="docutils literal notranslate"><span class="pre">SPMDActor</span></code> on the process mesh. The actor configures torch elastic
 environment variables (RANK, LOCAL_RANK, WORLD_SIZE, MASTER_ADDR, MASTER_PORT)
 and executes the training script.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spmd_actors</span> <span class="o">=</span> <span class="n">local_proc_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;_SPMDActor&quot;</span><span class="p">,</span> <span class="n">SPMDActor</span><span class="p">)</span>
-
-<span class="c1"># Get master address/port from first actor (all coordinates = 0)</span>
-<span class="n">first_values</span> <span class="o">=</span> <span class="nb">dict</span><span class="o">.</span><span class="n">fromkeys</span><span class="p">(</span><span class="n">local_proc_mesh</span><span class="o">.</span><span class="n">_labels</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
-<span class="n">master_addr</span><span class="p">,</span> <span class="n">master_port</span> <span class="o">=</span> <span class="p">(</span>
-    <span class="n">spmd_actors</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="o">**</span><span class="n">first_values</span><span class="p">)</span><span class="o">.</span><span class="n">get_host_port</span><span class="o">.</span><span class="n">call_one</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-<span class="p">)</span>
-
-<span class="c1"># Execute training script across the mesh</span>
-<span class="n">spmd_actors</span><span class="o">.</span><span class="n">main</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">master_addr</span><span class="p">,</span> <span class="n">master_port</span><span class="p">,</span> <span class="p">[</span><span class="n">TRAIN_SCRIPT</span><span class="p">])</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-
-<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;DDP example completed successfully!&quot;</span><span class="p">)</span>
-</pre></div>
-</div>
-<p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 0.000 seconds)</p>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="n">spmd_actors</span> <span class="o">=</span> <span class="n">local_proc_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">_SPMDActor</span><span class="s2">&quot;</span><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-spmd sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../../api/monarch.spmd.html#monarch.spmd.SPMDActor" title="monarch.spmd.SPMDActor"><span class="n">SPMDActor</span></a><span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="c1"># Get master address/port from first actor (all coordinates = 0)</span><span class="w">
+</span><span class="n">first_values</span> <span class="o">=</span> <span class="nb">dict</span><span class="o">.</span><span class="n">fromkeys</span><span class="p">(</span><span class="n">local_proc_mesh</span><span class="o">.</span><span class="n">_labels</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span><span class="w">
+</span><span class="n">master_addr</span><span class="p">,</span> <span class="n">master_port</span> <span class="o">=</span> <span class="p">(</span><span class="w">
+</span>    <span class="n">spmd_actors</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="o">*</span><span class="o">*</span><span class="n">first_values</span><span class="p">)</span><span class="o">.</span><span class="n">get_host_port</span><span class="o">.</span><span class="n">call_one</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="c1"># Execute training script across the mesh</span><span class="w">
+</span><span class="n">spmd_actors</span><span class="o">.</span><span class="n">main</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">master_addr</span><span class="p">,</span> <span class="n">master_port</span><span class="p">,</span> <span class="p">[</span><span class="n">TRAIN_SCRIPT</span><span class="p">]</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">DDP example completed successfully!</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 <div class="sphx-glr-footer sphx-glr-footer-example docutils container" id="sphx-glr-download-generated-examples-ddp-spmd-ddp-py">
+<div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
+<p><a class="reference download internal" download="" href="../../../_downloads/8cca68590724f8dca7b74cc6674cf416/spmd_ddp.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">spmd_ddp.ipynb</span></code></a></p>
+</div>
 <div class="sphx-glr-download sphx-glr-download-python docutils container">
 <p><a class="reference download internal" download="" href="../../../_downloads/aa852737020c7eb4d85c63e435309a78/spmd_ddp.py"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Python</span> <span class="pre">source</span> <span class="pre">code:</span> <span class="pre">spmd_ddp.py</span></code></a></p>
 </div>
-<div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
-<p><a class="reference download internal" download="" href="../../../_downloads/8cca68590724f8dca7b74cc6674cf416/spmd_ddp.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">spmd_ddp.ipynb</span></code></a></p>
+<div class="sphx-glr-download sphx-glr-download-zip docutils container">
+<p><a class="reference download internal" download="" href="../../../_downloads/56482b60dadaf9ad50897bbdacbd6a1e/spmd_ddp.zip"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">zipped:</span> <span class="pre">spmd_ddp.zip</span></code></a></p>
 </div>
 </div>
 <p class="sphx-glr-signature"><a class="reference external" href="https://sphinx-gallery.github.io">Gallery generated by Sphinx-Gallery</a></p>
@@ -1774,7 +1823,7 @@ and executes the training script.</p>
        "headline": "DDP using SPMDActor",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/generated/examples/ddp/spmd_ddp.html",
-       "articleBody": "Note Go to the end to download the full example code DDP using SPMDActor# This example demonstrates how to run PyTorch\u2019s Distributed Data Parallel (DDP) using Monarch\u2019s SPMDActor. The actor configures torch elastic environment variables and executes the training script, replicating torchrun behavior. This example shows: How to spawn a process mesh on the local host How to use SPMDActor to run a DDP training script How SPMDActor configures RANK, LOCAL_RANK, WORLD_SIZE, etc. Training Script# The training script (train.py) is a standard PyTorch DDP script: import os import torch import torch.distributed as dist import torch.nn as nn import torch.optim as optim from torch.nn.parallel import DistributedDataParallel as DDP def main(): dist.init_process_group(\"nccl\") rank = dist.get_rank() local_rank = int(os.environ[\"LOCAL_RANK\"]) torch.cuda.set_device(local_rank) model = nn.Linear(10, 1).cuda() ddp_model = DDP(model) optimizer = optim.SGD(ddp_model.parameters(), lr=0.01) for step in range(5): inputs = torch.randn(4, 10).cuda() outputs = ddp_model(inputs) loss = outputs.sum() optimizer.zero_grad() loss.backward() optimizer.step() print(f\"[Rank {rank}] Step {step} loss={loss.item()}\") dist.destroy_process_group() if __name__ == \"__main__\": main() This script: Initializes NCCL process group (environment variables set by SPMDActor) Creates a simple linear model wrapped in DDP Runs 5 training steps Cleans up the process group Imports# We import Monarch\u2019s actor API and SPMDActor. import os from monarch.actor import this_host from monarch.spmd import SPMDActor GPUS_PER_HOST = 4 # Get absolute path to train.py (in the same directory as this script) SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) TRAIN_SCRIPT = os.path.join(SCRIPT_DIR, \"train.py\") Create Process Mesh# Spawn a process mesh on the local host with 4 GPU processes. local_proc_mesh = this_host().spawn_procs(per_host={\"gpus\": GPUS_PER_HOST}) Run DDP Training with SPMDActor# Spawn SPMDActor on the process mesh. The actor configures torch elastic environment variables (RANK, LOCAL_RANK, WORLD_SIZE, MASTER_ADDR, MASTER_PORT) and executes the training script. spmd_actors = local_proc_mesh.spawn(\"_SPMDActor\", SPMDActor) # Get master address/port from first actor (all coordinates = 0) first_values = dict.fromkeys(local_proc_mesh._labels, 0) master_addr, master_port = ( spmd_actors.slice(**first_values).get_host_port.call_one(None).get() ) # Execute training script across the mesh spmd_actors.main.call(master_addr, master_port, [TRAIN_SCRIPT]).get() print(\"DDP example completed successfully!\") Total running time of the script: (0 minutes 0.000 seconds) Download Python source code: spmd_ddp.py Download Jupyter notebook: spmd_ddp.ipynb Gallery generated by Sphinx-Gallery",
+       "articleBody": "Note Go to the end to download the full example code. DDP using SPMDActor# This example demonstrates how to run PyTorch\u2019s Distributed Data Parallel (DDP) using Monarch\u2019s SPMDActor. The actor configures torch elastic environment variables and executes the training script, replicating torchrun behavior. This example shows: How to spawn a process mesh on the local host How to use SPMDActor to run a DDP training script How SPMDActor configures RANK, LOCAL_RANK, WORLD_SIZE, etc. Training Script# The training script (train.py) is a standard PyTorch DDP script: import os import torch import torch.distributed as dist import torch.nn as nn import torch.optim as optim from torch.nn.parallel import DistributedDataParallel as DDP def main(): dist.init_process_group(\"nccl\") rank = dist.get_rank() local_rank = int(os.environ[\"LOCAL_RANK\"]) torch.cuda.set_device(local_rank) model = nn.Linear(10, 1).cuda() ddp_model = DDP(model) optimizer = optim.SGD(ddp_model.parameters(), lr=0.01) for step in range(5): inputs = torch.randn(4, 10).cuda() outputs = ddp_model(inputs) loss = outputs.sum() optimizer.zero_grad() loss.backward() optimizer.step() print(f\"[Rank {rank}] Step {step} loss={loss.item()}\") dist.destroy_process_group() if __name__ == \"__main__\": main() This script: Initializes NCCL process group (environment variables set by SPMDActor) Creates a simple linear model wrapped in DDP Runs 5 training steps Cleans up the process group Imports# We import Monarch\u2019s actor API and SPMDActor. import os from monarch.actor import this_host from monarch.spmd import SPMDActor GPUS_PER_HOST = 4 # Get absolute path to train.py (in the same directory as this script) SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) TRAIN_SCRIPT = os.path.join(SCRIPT_DIR, \"train.py\") Create Process Mesh# Spawn a process mesh on the local host with 4 GPU processes. local_proc_mesh = this_host().spawn_procs(per_host={\"gpus\": GPUS_PER_HOST}) Run DDP Training with SPMDActor# Spawn SPMDActor on the process mesh. The actor configures torch elastic environment variables (RANK, LOCAL_RANK, WORLD_SIZE, MASTER_ADDR, MASTER_PORT) and executes the training script. spmd_actors = local_proc_mesh.spawn(\"_SPMDActor\", SPMDActor) # Get master address/port from first actor (all coordinates = 0) first_values = dict.fromkeys(local_proc_mesh._labels, 0) master_addr, master_port = ( spmd_actors.slice(**first_values).get_host_port.call_one(None).get() ) # Execute training script across the mesh spmd_actors.main.call(master_addr, master_port, [TRAIN_SCRIPT]).get() print(\"DDP example completed successfully!\") Download Jupyter notebook: spmd_ddp.ipynb Download Python source code: spmd_ddp.py Download zipped: spmd_ddp.zip Gallery generated by Sphinx-Gallery",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

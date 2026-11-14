@@ -36,10 +36,10 @@ A host owns:
   └─────────────────────────────────────────────┘
 ```
 
-Spawned children use ids derived from their names and locations of the form
-`Via(child_uid, frontend_addr)`, so all children are reached through the one
-frontend address. The gateway peels the child uid and forwards to the child's
-registered peer sender.
+Spawned children use ids derived from their names. Their locations extend
+`gateway.default_location()` with a child attachment key, preserving any
+upstream path. The gateway advances the envelope's path cursor and forwards
+over the registered child sender. See [Stable Locations](stable_locations.md).
 
 ## The two built-in procs
 
@@ -47,11 +47,10 @@ registered peer sender.
 gateway, so they reach each other—and the host reaches them—through the
 gateway's local `procs` table, with zero dialing.
 
-`local_proc` always has a fresh instance id labeled `"local"`. Launchers can
-also give `service_proc` a fresh instance id labeled `"service"` through
-`Host::new_with_gateway`. The default remains the legacy `"service"`
-pseudo-singleton for compatibility. A gateway can contain multiple hosts only
-when each host has a distinct service proc id.
+`local_proc` and `service_proc` have fresh instance ids labeled `"local"` and
+`"service"`. Launchers pass the service proc's identity through bootstrap and
+retain its `ProcAddr` for attaching to the host. Multiple hosts can share a
+gateway because their service proc ids are distinct.
 
 ## Spawned children
 
@@ -59,43 +58,24 @@ Each spawned child has its own gateway endpoint. In production that usually
 means a separate OS process; `LocalProcManager` uses the same protocol
 in-process for tests.
 
-`Host::spawn` advertises the child at `Via(child_uid, host_location)`, waits
-for the child to report its serving address, dials that address, and registers
-the sender with `Gateway::attach_peer(child_uid, sender)`. A message for that
-child arrives at the host gateway, matches the child uid in `peers`, has that
-via hop peeled, and is forwarded to the child gateway. The returned
-`PeerAttachGuard` keeps the route alive; dropping it frees the slot.
+`Host::spawn` advertises the child at `host_location.append_via(child_uid)`,
+waits for its serving address, and registers the dialed sender with
+`Gateway::attach_peer(child_uid, sender)`. Messages descend the top-down path
+and advance the cursor at each attachment. The returned `PeerAttachGuard`
+keeps the route alive; dropping it frees that registration without removing
+a newer replacement.
 
 ## Binding and serving
 
-Connectivity lives in the gateway. `Host::new_with_gateway` starts both host
-servers during construction:
+Connectivity lives in the gateway. `Host::new_with_gateway` starts the backend
+and frontend listeners, then constructs the built-in procs against the gateway's
+active advertised location.
 
-```rust
-let mut backend_handle = gateway.serve(ChannelAddr::any(manager.transport()))?;
-let backend_addr = gateway.default_location().addr().clone();
-
-let frontend_handle = gateway.serve_with_listener(addr, listener)?;
-let frontend_addr = gateway.default_location().addr().clone();
-
-let service_proc = Proc::builder()
-    .proc_id(service_proc_id)
-    .shared_gateway(gateway.clone())
-    .build()?;
-let local_proc = Proc::builder()
-    .proc_id(ProcId::instance(Label::strip("local")))
-    .shared_gateway(gateway.clone())
-    .build()?;
-```
-
-The backend address is passed to each child as its fallback route back to the
-host. The frontend address is the host location used in public proc refs.
-
-Because the gateway owns the advertised location, later gateway serves affect
-new refs. Host construction serves the backend and frontend, so built-in procs
-snapshot the frontend location. A `serve_via` session that already exists
-remains active as an outbound route and as a valid local-delivery location, but
-the frontend serve becomes the default location until a newer serve replaces it.
+The bound backend address is passed to children as their fallback route back to
+the host. Bound listening addresses and advertised locations are distinct:
+without an upstream, the newest listener is advertised; with an upstream, its
+core address and attachment path remain the default. Built-in and child refs
+snapshot that location, including when private listeners are started later.
 
 ## Local proc invariant (LP-1)
 

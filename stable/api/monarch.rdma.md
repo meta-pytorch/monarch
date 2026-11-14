@@ -15,7 +15,7 @@ Both CPU and GPU memory are supported.
 
 Parameters:
 
-**data** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/builtins/stdtypes.html#memoryview)) - torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous.
+**data** ([*Tensor*](monarch.html#monarch.Tensor)*|*[*memoryview*](https://docs.python.org/3/builtins/stdtypes.html#memoryview)) - torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous.
 If provided, addr and size must not be specified.
 
 Raises:
@@ -40,7 +40,7 @@ whose byte-size is at least `self.size()`.
 
 Parameters:
 
-**dst** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/builtins/stdtypes.html#memoryview)) - Destination tensor or memoryview to read into.
+**dst** ([*Tensor*](monarch.html#monarch.Tensor)*|*[*memoryview*](https://docs.python.org/3/builtins/stdtypes.html#memoryview)) - Destination tensor or memoryview to read into.
 
 Keyword Arguments:
 
@@ -69,7 +69,7 @@ whose byte-size is at most `self.size()`.
 
 Parameters:
 
-**src** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/builtins/stdtypes.html#memoryview)) - Source tensor or memoryview containing the bytes to
+**src** ([*Tensor*](monarch.html#monarch.Tensor)*|*[*memoryview*](https://docs.python.org/3/builtins/stdtypes.html#memoryview)) - Source tensor or memoryview containing the bytes to
 write to the RDMA buffer.
 
 Keyword Arguments:

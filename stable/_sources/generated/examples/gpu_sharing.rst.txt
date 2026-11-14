@@ -11,7 +11,7 @@
         :class: sphx-glr-download-link-note
 
         :ref:`Go to the end <sphx_glr_download_generated_examples_gpu_sharing.py>`
-        to download the full example code
+        to download the full example code.
 
 .. rst-class:: sphx-glr-example-title
 
@@ -49,7 +49,7 @@ run on disjoint GPUs. Two meshes with the same list run on the same GPUs.
 
 .. GENERATED FROM PYTHON SOURCE LINES 36-60
 
-.. code-block:: default
+.. code-block:: Python
 
 
     import os
@@ -85,7 +85,7 @@ device and memory use; PyTorch's memory counters are per process.
 
 .. GENERATED FROM PYTHON SOURCE LINES 65-101
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -140,7 +140,7 @@ other.
 
 .. GENERATED FROM PYTHON SOURCE LINES 113-132
 
-.. code-block:: default
+.. code-block:: Python
 
 
     policy_procs = this_host().spawn_procs(
@@ -174,7 +174,7 @@ blocks between turns.
 
 .. GENERATED FROM PYTHON SOURCE LINES 140-147
 
-.. code-block:: default
+.. code-block:: Python
 
 
     for step in range(3):
@@ -198,7 +198,7 @@ appear in the trainer's report rather than in one of their own.
 
 .. GENERATED FROM PYTHON SOURCE LINES 157-174
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -219,27 +219,23 @@ appear in the trainer's report rather than in one of their own.
     print("Example completed successfully!")
 
 
-.. rst-class:: sphx-glr-timing
-
-   **Total running time of the script:** (0 minutes 0.000 seconds)
-
-
 .. _sphx_glr_download_generated_examples_gpu_sharing.py:
 
 .. only:: html
 
   .. container:: sphx-glr-footer sphx-glr-footer-example
 
+    .. container:: sphx-glr-download sphx-glr-download-jupyter
 
-
+      :download:`Download Jupyter notebook: gpu_sharing.ipynb <gpu_sharing.ipynb>`
 
     .. container:: sphx-glr-download sphx-glr-download-python
 
       :download:`Download Python source code: gpu_sharing.py <gpu_sharing.py>`
 
-    .. container:: sphx-glr-download sphx-glr-download-jupyter
+    .. container:: sphx-glr-download sphx-glr-download-zip
 
-      :download:`Download Jupyter notebook: gpu_sharing.ipynb <gpu_sharing.ipynb>`
+      :download:`Download zipped: gpu_sharing.zip <gpu_sharing.zip>`
 
 
 .. only:: html

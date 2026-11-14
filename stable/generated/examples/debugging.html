@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Monarch supports pdb debugging for python actor meshes. This guide demonstrates how to debug distributed actors using Python’s built-in debugger with breakpoints, step-through debugging, and intera..." />
 
-    <title>Debugging Python Actors with pdb in Monarch &#8212; Monarch v0.7.0 documentation</title>
+    <title>Debugging Python Actors with pdb in Monarch &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,22 +50,24 @@
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../_static/documentation_options.js?v=05c9169f"></script>
+    <script src="../../_static/documentation_options.js?v=b3dab91b"></script>
     <script src="../../_static/doctools.js?v=888ff710"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="../../_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'generated/examples/debugging';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/generated/examples/debugging.html" />
     <link rel="icon" href="../../_static/torch-monarch-icons.svg"/>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Exporting Metrics and Logs with OpenTelemetry" href="otel_collector.html" />
+    <link rel="next" title="Exporting Metrics, Logs, and Traces with OpenTelemetry" href="otel_collector.html" />
     <link rel="prev" title="Distributed Tensors in Monarch" href="distributed_tensors.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -84,7 +86,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="api">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +200,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -563,8 +565,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -649,6 +669,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -662,7 +688,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1248,6 +1298,7 @@ document.write(`
 <li class="toctree-l1"><a class="reference internal" href="grpo_yield.html">GRPO with Direct Port Messaging</a></li>
 <li class="toctree-l1"><a class="reference internal" href="grpo/kubernetes_grpo.html">GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="gpu_sharing.html">Sharing GPUs Between Actors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sglang_actors.html">SGLang Rollout Engines</a></li>
 <li class="toctree-l1"><a class="reference internal" href="distributed_tensors.html">Distributed Tensors in Monarch</a></li>
 
 
@@ -1259,7 +1310,7 @@ document.write(`
 
 
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Debugging Python Actors with pdb in Monarch</a></li>
-<li class="toctree-l1"><a class="reference internal" href="otel_collector.html">Exporting Metrics and Logs with OpenTelemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="otel_collector.html">Exporting Metrics, Logs, and Traces with OpenTelemetry</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://docs.pytorch.org/tutorials/intermediate/monarch_distributed_tutorial.html">Multinode Slurm Tutorial</a></li>
 </ul>
 </div>
@@ -1366,7 +1417,7 @@ document.write(`
   <div class="sphx-glr-download-link-note admonition note">
 <p class="admonition-title">Note</p>
 <p><a class="reference internal" href="#sphx-glr-download-generated-examples-debugging-py"><span class="std std-ref">Go to the end</span></a>
-to download the full example code</p>
+to download the full example code.</p>
 </div>
 <section class="sphx-glr-example-title" id="debugging-python-actors-with-pdb-in-monarch">
 <span id="sphx-glr-generated-examples-debugging-py"></span><h1>Debugging Python Actors with pdb in Monarch<a class="headerlink" href="#debugging-python-actors-with-pdb-in-monarch" title="Link to this heading">#</a></h1>
@@ -1387,36 +1438,35 @@ in the relevant endpoint that you want to debug using Python’s built-in <code 
 <p><strong>Note: Currently, debug sessions are indexed by actor name + rank. This means that
 concurrently debugging two actor endpoints in the same actor instance is not supported
 at the moment.</strong></p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">Actor</span><span class="p">,</span> <span class="n">current_rank</span><span class="p">,</span> <span class="n">endpoint</span><span class="p">,</span> <span class="n">this_host</span>
-
-
-<span class="k">def</span><span class="w"> </span><span class="nf">_bad_rank</span><span class="p">():</span>
-    <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;bad rank&quot;</span><span class="p">)</span>
-
-
-<span class="k">def</span><span class="w"> </span><span class="nf">_debugee_actor_internal</span><span class="p">(</span><span class="n">rank</span><span class="p">):</span>
-    <span class="k">if</span> <span class="n">rank</span> <span class="o">%</span> <span class="mi">4</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="n">rank</span> <span class="o">+=</span> <span class="mi">1</span>
-        <span class="k">return</span> <span class="n">rank</span>
-    <span class="k">elif</span> <span class="n">rank</span> <span class="o">%</span> <span class="mi">4</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
-        <span class="n">rank</span> <span class="o">+=</span> <span class="mi">2</span>
-        <span class="k">return</span> <span class="n">rank</span>
-    <span class="k">elif</span> <span class="n">rank</span> <span class="o">%</span> <span class="mi">4</span> <span class="o">==</span> <span class="mi">2</span><span class="p">:</span>
-        <span class="n">rank</span> <span class="o">+=</span> <span class="mi">3</span>
-        <span class="n">_bad_rank</span><span class="p">()</span>
-    <span class="k">elif</span> <span class="n">rank</span> <span class="o">%</span> <span class="mi">4</span> <span class="o">==</span> <span class="mi">3</span><span class="p">:</span>
-        <span class="n">rank</span> <span class="o">+=</span> <span class="mi">4</span>
-        <span class="k">return</span> <span class="n">rank</span>
-
-
-<span class="k">class</span><span class="w"> </span><span class="nc">DebugeeActor</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
-    <span class="nd">@endpoint</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">to_debug</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="n">rank</span> <span class="o">=</span> <span class="n">current_rank</span><span class="p">()</span><span class="o">.</span><span class="n">rank</span>
-        <span class="nb">breakpoint</span><span class="p">()</span>  <span class="c1"># noqa</span>
-        <span class="k">return</span> <span class="n">_debugee_actor_internal</span><span class="p">(</span><span class="n">rank</span><span class="p">)</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="kn">from</span><span class="w"> </span><span class="nn">monarch</span><span class="nn">.</span><span class="nn">actor</span><span class="w"> </span><span class="kn">import</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.Actor" title="monarch.actor.Actor"><span class="n">Actor</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.current_rank" title="monarch.actor.current_rank"><span class="n">current_rank</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.endpoint" title="monarch.actor.endpoint"><span class="n">endpoint</span></a><span class="p">,</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.this_host" title="monarch.actor.this_host"><span class="n">this_host</span></a><span class="w">
+</span><span class="w">
+</span><span class="w">
+</span><span class="k">def</span><span class="w"> </span><span class="nf">_bad_rank</span><span class="p">(</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">bad rank</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span><span class="w">
+</span><span class="k">def</span><span class="w"> </span><span class="nf">_debugee_actor_internal</span><span class="p">(</span><span class="n">rank</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="k">if</span> <span class="n">rank</span> <span class="o">%</span> <span class="mi">4</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span><span class="w">
+</span>        <span class="n">rank</span> <span class="o">+</span><span class="o">=</span> <span class="mi">1</span><span class="w">
+</span>        <span class="k">return</span> <span class="n">rank</span><span class="w">
+</span>    <span class="k">elif</span> <span class="n">rank</span> <span class="o">%</span> <span class="mi">4</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span><span class="w">
+</span>        <span class="n">rank</span> <span class="o">+</span><span class="o">=</span> <span class="mi">2</span><span class="w">
+</span>        <span class="k">return</span> <span class="n">rank</span><span class="w">
+</span>    <span class="k">elif</span> <span class="n">rank</span> <span class="o">%</span> <span class="mi">4</span> <span class="o">==</span> <span class="mi">2</span><span class="p">:</span><span class="w">
+</span>        <span class="n">rank</span> <span class="o">+</span><span class="o">=</span> <span class="mi">3</span><span class="w">
+</span>        <span class="n">_bad_rank</span><span class="p">(</span><span class="p">)</span><span class="w">
+</span>    <span class="k">elif</span> <span class="n">rank</span> <span class="o">%</span> <span class="mi">4</span> <span class="o">==</span> <span class="mi">3</span><span class="p">:</span><span class="w">
+</span>        <span class="n">rank</span> <span class="o">+</span><span class="o">=</span> <span class="mi">4</span><span class="w">
+</span>        <span class="k">return</span> <span class="n">rank</span><span class="w">
+</span><span class="w">
+</span><span class="w">
+</span><span class="k">class</span><span class="w"> </span><span class="nc">DebugeeActor</span><span class="p">(</span><a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-class sphx-glr-backref-instance reference internal" href="../../api/monarch.actor.html#monarch.actor.Actor" title="monarch.actor.Actor"><span class="n">Actor</span></a><span class="p">)</span><span class="p">:</span><span class="w">
+</span>    <span class="nd">&#64;endpoint</span><span class="w">
+</span>    <span class="k">def</span><span class="w"> </span><span class="nf">to_debug</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="p">:</span><span class="w">
+</span>        <span class="n">rank</span> <span class="o">=</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.current_rank" title="monarch.actor.current_rank"><span class="n">current_rank</span></a><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">rank</span><span class="w">
+</span>        <span class="nb">breakpoint</span><span class="p">(</span><span class="p">)</span>  <span class="c1"># noqa</span><span class="w">
+</span>        <span class="k">return</span> <span class="n">_debugee_actor_internal</span><span class="p">(</span><span class="n">rank</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 </section>
 <section id="setting-up-the-debug-session">
 <h2>Setting Up the Debug Session<a class="headerlink" href="#setting-up-the-debug-session" title="Link to this heading">#</a></h2>
@@ -1427,17 +1477,16 @@ determined by these environment variables:</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">MONARCH_DEBUG_SERVER_PORT</span></code> (default <code class="docutils literal notranslate"><span class="pre">27000</span></code>)</p></li>
 </ul>
 <p>Simply run your monarch program as usual with the desired values for host and port.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
-    <span class="c1"># Create a mesh with 4 &quot;hosts&quot; and 4 gpus per &quot;host&quot;</span>
-    <span class="n">process_mesh</span> <span class="o">=</span> <span class="n">this_host</span><span class="p">()</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;host&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span> <span class="s2">&quot;gpu&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">})</span>
-
-    <span class="c1"># Spawn the actor you want to debug on the mesh</span>
-    <span class="n">debugee_mesh</span> <span class="o">=</span> <span class="n">process_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;debugee&quot;</span><span class="p">,</span> <span class="n">DebugeeActor</span><span class="p">)</span>
-
-    <span class="c1"># Call the endpoint you want to debug</span>
-    <span class="nb">print</span><span class="p">(</span><span class="n">debugee_mesh</span><span class="o">.</span><span class="n">to_debug</span><span class="o">.</span><span class="n">call</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>
-</pre></div>
-</div>
+<div class="highlight-Python notranslate"><div class="highlight"><pre><span class="k">if</span> <a class="sphx-glr-backref-module-builtins sphx-glr-backref-type-py-class sphx-glr-backref-instance reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="str"><span class="vm">__name__</span></a> <span class="o">==</span> <span class="s2">&quot;</span><span class="s2">__main__</span><span class="s2">&quot;</span><span class="p">:</span><span class="w">
+</span>    <span class="c1"># Create a mesh with 4 &quot;hosts&quot; and 4 gpus per &quot;host&quot;</span><span class="w">
+</span>    <span class="n">process_mesh</span> <span class="o">=</span> <a class="sphx-glr-backref-module-monarch-actor sphx-glr-backref-type-py-function reference internal" href="../../api/monarch.actor.html#monarch.actor.this_host" title="monarch.actor.this_host"><span class="n">this_host</span></a><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;</span><span class="s2">host</span><span class="s2">&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span> <span class="s2">&quot;</span><span class="s2">gpu</span><span class="s2">&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">}</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="c1"># Spawn the actor you want to debug on the mesh</span><span class="w">
+</span>    <span class="n">debugee_mesh</span> <span class="o">=</span> <span class="n">process_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;</span><span class="s2">debugee</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">DebugeeActor</span><span class="p">)</span><span class="w">
+</span><span class="w">
+</span>    <span class="c1"># Call the endpoint you want to debug</span><span class="w">
+</span>    <span class="nb">print</span><span class="p">(</span><span class="n">debugee_mesh</span><span class="o">.</span><span class="n">to_debug</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="p">)</span><span class="p">)</span><span class="w">
+</span></pre></div></div>
 </section>
 <section id="using-the-monarch-debugger">
 <h2>Using the Monarch Debugger<a class="headerlink" href="#using-the-monarch-debugger" title="Link to this heading">#</a></h2>
@@ -1526,13 +1575,15 @@ of failure.</p>
 simply enter <code class="docutils literal notranslate"><span class="pre">c</span></code> or <code class="docutils literal notranslate"><span class="pre">continue</span></code>. This will clear any non-hardcoded
 breakpoints and cast the “<code class="docutils literal notranslate"><span class="pre">continue</span></code>” <code class="docutils literal notranslate"><span class="pre">pdb</span></code> command to all ranks
 currently stopped at a breakpoint.</p>
-<p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 0.000 seconds)</p>
 <div class="sphx-glr-footer sphx-glr-footer-example docutils container" id="sphx-glr-download-generated-examples-debugging-py">
+<div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
+<p><a class="reference download internal" download="" href="../../_downloads/f1b5a557937fbbf1e64b8b35bd344eac/debugging.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">debugging.ipynb</span></code></a></p>
+</div>
 <div class="sphx-glr-download sphx-glr-download-python docutils container">
 <p><a class="reference download internal" download="" href="../../_downloads/18e4a6a676051eabc11d39a1322c8d09/debugging.py"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Python</span> <span class="pre">source</span> <span class="pre">code:</span> <span class="pre">debugging.py</span></code></a></p>
 </div>
-<div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
-<p><a class="reference download internal" download="" href="../../_downloads/f1b5a557937fbbf1e64b8b35bd344eac/debugging.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">debugging.ipynb</span></code></a></p>
+<div class="sphx-glr-download sphx-glr-download-zip docutils container">
+<p><a class="reference download internal" download="" href="../../_downloads/70b7274064e81b10b4078044a93aa6cc/debugging.zip"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">zipped:</span> <span class="pre">debugging.zip</span></code></a></p>
 </div>
 </div>
 <p class="sphx-glr-signature"><a class="reference external" href="https://sphinx-gallery.github.io">Gallery generated by Sphinx-Gallery</a></p>
@@ -1595,7 +1646,7 @@ currently stopped at a breakpoint.</p>
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Exporting Metrics and Logs with OpenTelemetry</p>
+        <p class="prev-next-title">Exporting Metrics, Logs, and Traces with OpenTelemetry</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1634,7 +1685,7 @@ currently stopped at a breakpoint.</p>
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Exporting Metrics and Logs with OpenTelemetry</p>
+        <p class="prev-next-title">Exporting Metrics, Logs, and Traces with OpenTelemetry</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1834,7 +1885,7 @@ currently stopped at a breakpoint.</p>
        "headline": "Debugging Python Actors with pdb in Monarch",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/generated/examples/debugging.html",
-       "articleBody": "Note Go to the end to download the full example code Debugging Python Actors with pdb in Monarch# Monarch supports pdb debugging for python actor meshes. This guide demonstrates how to debug distributed actors using Python\u2019s built-in debugger with breakpoints, step-through debugging, and interactive debugging sessions. It includes: Setting up actors with breakpoints for debugging Accessing the Monarch debugger and listing active breakpoints Attaching to specific actors and using pdb commands Broadcasting commands to multiple actors Post-mortem debugging capabilities Defining an Actor with Breakpoints# To debug an actor, simply define your python actor and insert typical breakpoints in the relevant endpoint that you want to debug using Python\u2019s built-in breakpoint(). Note: Currently, debug sessions are indexed by actor name + rank. This means that concurrently debugging two actor endpoints in the same actor instance is not supported at the moment. from monarch.actor import Actor, current_rank, endpoint, this_host def _bad_rank(): raise ValueError(\"bad rank\") def _debugee_actor_internal(rank): if rank % 4 == 0: rank += 1 return rank elif rank % 4 == 1: rank += 2 return rank elif rank % 4 == 2: rank += 3 _bad_rank() elif rank % 4 == 3: rank += 4 return rank class DebugeeActor(Actor): @endpoint def to_debug(self): rank = current_rank().rank breakpoint() # noqa return _debugee_actor_internal(rank) Setting Up the Debug Session# The monarch debug server listens for breakpoints at a TCP address determined by these environment variables: MONARCH_DEBUG_SERVER_HOST (default localhost, must be on the root client host where you run your monarch program) MONARCH_DEBUG_SERVER_PORT (default 27000) Simply run your monarch program as usual with the desired values for host and port. if __name__ == \"__main__\": # Create a mesh with 4 \"hosts\" and 4 gpus per \"host\" process_mesh = this_host().spawn_procs(per_host={\"host\": 4, \"gpu\": 4}) # Spawn the actor you want to debug on the mesh debugee_mesh = process_mesh.spawn(\"debugee\", DebugeeActor) # Call the endpoint you want to debug print(debugee_mesh.to_debug.call().get()) Using the Monarch Debugger# To access the debugger, from a separate terminal with conda activated and monarch installed, run: monarch debug There are two optional flags: --host: the value of MONARCH_DEBUG_SERVER_HOST in your program (same default as before) --port: the value of MONARCH_DEBUG_SERVER_PORT in your program (same default as before) You should then see this: ************************ MONARCH DEBUGGER ************************ Enter \u0027help\u0027 for a list of commands. Enter \u0027list\u0027 to show all active breakpoints. monarch_dbg\u003e Enter list, and you should see a table showing all actors in your system that are currently stopped at a breakpoint, along with basic information about each breakpoint including actor name, rank, coordinates, hostname, function, and line number. Attaching to a Specific Actor# From the monarch_dbg\u003e prompt, you can dive into a specific actor/breakpoint using the attach command, specifying the name and rank of the actor: monarch_dbg\u003e attach debugee 13 Attached to debug session for rank 13 (your.host.com) \u003e /path/to/debugging.py(16)to_debug() -\u003e rank = _debugee_actor_internal(rank) (Pdb) From here, you can send arbitrary pdb commands to the attached actor: (Pdb) s --Call-- \u003e /path/to/debugging.py(20)_debugee_actor_internal() -\u003e def _debugee_actor_internal(rank): (Pdb) n \u003e /path/to/debugging.py(21)_debugee_actor_internal() -\u003e if rank % 4 == 0: (Pdb) rank 13 The debugger will automatically detach when the endpoint completes, but you can detach early using the detach command. Casting Commands to Multiple Actors# You can send pdb commands to multiple actors on the same actor mesh at once using the cast command. The usage is: monarch_dbg\u003e cast \u003cactor_name\u003e ranks(\u003cranks\u003e) \u003cpdb_command\u003e There are several ways to specify ranks: ranks(\u003crank\u003e): sends a command to a single rank without attaching ranks(\u003cr1\u003e,\u003cr2\u003e,\u003cr3\u003e): sends to comma-separated list of ranks ranks(\u003cr_start\u003e:\u003cr_stop\u003e:\u003cr_step\u003e): like python list indexing syntax ranks(\u003cdim1\u003e=\u003c...\u003e, \u003cdim2\u003e=\u003c...\u003e): sends to specified coordinates Example commands: monarch_dbg\u003e cast debugee ranks(0,1) n # casts `n` to ranks 0 and 1 monarch_dbg\u003e cast debugee ranks(2:7:2) s # casts `s` to ranks 2, 4 and 6 monarch_dbg\u003e cast debugee ranks(host=2:4, gpus=1:3) c # casts `c` to ranks where host dimension is 2 or 3 and gpu dimension is 1 or 2 Post-Mortem Debugging# If an actor endpoint raises an error after a breakpoint has been hit, execution will stop where the error was raised to allow for post-mortem debugging. This is currently enabled by default and requires that the endpoint already hit a breakpoint to access post-mortem debugging. In the example above, rank 2 will hit the _bad_rank() function which raises a ValueError, allowing you to inspect the state at the point of failure. Continuing Execution# To allow execution to continue, from the monarch_dbg\u003e prompt, simply enter c or continue. This will clear any non-hardcoded breakpoints and cast the \u201ccontinue\u201d pdb command to all ranks currently stopped at a breakpoint. Total running time of the script: (0 minutes 0.000 seconds) Download Python source code: debugging.py Download Jupyter notebook: debugging.ipynb Gallery generated by Sphinx-Gallery",
+       "articleBody": "Note Go to the end to download the full example code. Debugging Python Actors with pdb in Monarch# Monarch supports pdb debugging for python actor meshes. This guide demonstrates how to debug distributed actors using Python\u2019s built-in debugger with breakpoints, step-through debugging, and interactive debugging sessions. It includes: Setting up actors with breakpoints for debugging Accessing the Monarch debugger and listing active breakpoints Attaching to specific actors and using pdb commands Broadcasting commands to multiple actors Post-mortem debugging capabilities Defining an Actor with Breakpoints# To debug an actor, simply define your python actor and insert typical breakpoints in the relevant endpoint that you want to debug using Python\u2019s built-in breakpoint(). Note: Currently, debug sessions are indexed by actor name + rank. This means that concurrently debugging two actor endpoints in the same actor instance is not supported at the moment. from monarch.actor import Actor, current_rank, endpoint, this_host def _bad_rank(): raise ValueError(\"bad rank\") def _debugee_actor_internal(rank): if rank % 4 == 0: rank += 1 return rank elif rank % 4 == 1: rank += 2 return rank elif rank % 4 == 2: rank += 3 _bad_rank() elif rank % 4 == 3: rank += 4 return rank class DebugeeActor(Actor): @endpoint def to_debug(self): rank = current_rank().rank breakpoint() # noqa return _debugee_actor_internal(rank) Setting Up the Debug Session# The monarch debug server listens for breakpoints at a TCP address determined by these environment variables: MONARCH_DEBUG_SERVER_HOST (default localhost, must be on the root client host where you run your monarch program) MONARCH_DEBUG_SERVER_PORT (default 27000) Simply run your monarch program as usual with the desired values for host and port. if __name__ == \"__main__\": # Create a mesh with 4 \"hosts\" and 4 gpus per \"host\" process_mesh = this_host().spawn_procs(per_host={\"host\": 4, \"gpu\": 4}) # Spawn the actor you want to debug on the mesh debugee_mesh = process_mesh.spawn(\"debugee\", DebugeeActor) # Call the endpoint you want to debug print(debugee_mesh.to_debug.call().get()) Using the Monarch Debugger# To access the debugger, from a separate terminal with conda activated and monarch installed, run: monarch debug There are two optional flags: --host: the value of MONARCH_DEBUG_SERVER_HOST in your program (same default as before) --port: the value of MONARCH_DEBUG_SERVER_PORT in your program (same default as before) You should then see this: ************************ MONARCH DEBUGGER ************************ Enter \u0027help\u0027 for a list of commands. Enter \u0027list\u0027 to show all active breakpoints. monarch_dbg\u003e Enter list, and you should see a table showing all actors in your system that are currently stopped at a breakpoint, along with basic information about each breakpoint including actor name, rank, coordinates, hostname, function, and line number. Attaching to a Specific Actor# From the monarch_dbg\u003e prompt, you can dive into a specific actor/breakpoint using the attach command, specifying the name and rank of the actor: monarch_dbg\u003e attach debugee 13 Attached to debug session for rank 13 (your.host.com) \u003e /path/to/debugging.py(16)to_debug() -\u003e rank = _debugee_actor_internal(rank) (Pdb) From here, you can send arbitrary pdb commands to the attached actor: (Pdb) s --Call-- \u003e /path/to/debugging.py(20)_debugee_actor_internal() -\u003e def _debugee_actor_internal(rank): (Pdb) n \u003e /path/to/debugging.py(21)_debugee_actor_internal() -\u003e if rank % 4 == 0: (Pdb) rank 13 The debugger will automatically detach when the endpoint completes, but you can detach early using the detach command. Casting Commands to Multiple Actors# You can send pdb commands to multiple actors on the same actor mesh at once using the cast command. The usage is: monarch_dbg\u003e cast \u003cactor_name\u003e ranks(\u003cranks\u003e) \u003cpdb_command\u003e There are several ways to specify ranks: ranks(\u003crank\u003e): sends a command to a single rank without attaching ranks(\u003cr1\u003e,\u003cr2\u003e,\u003cr3\u003e): sends to comma-separated list of ranks ranks(\u003cr_start\u003e:\u003cr_stop\u003e:\u003cr_step\u003e): like python list indexing syntax ranks(\u003cdim1\u003e=\u003c...\u003e, \u003cdim2\u003e=\u003c...\u003e): sends to specified coordinates Example commands: monarch_dbg\u003e cast debugee ranks(0,1) n # casts `n` to ranks 0 and 1 monarch_dbg\u003e cast debugee ranks(2:7:2) s # casts `s` to ranks 2, 4 and 6 monarch_dbg\u003e cast debugee ranks(host=2:4, gpus=1:3) c # casts `c` to ranks where host dimension is 2 or 3 and gpu dimension is 1 or 2 Post-Mortem Debugging# If an actor endpoint raises an error after a breakpoint has been hit, execution will stop where the error was raised to allow for post-mortem debugging. This is currently enabled by default and requires that the endpoint already hit a breakpoint to access post-mortem debugging. In the example above, rank 2 will hit the _bad_rank() function which raises a ValueError, allowing you to inspect the state at the point of failure. Continuing Execution# To allow execution to continue, from the monarch_dbg\u003e prompt, simply enter c or continue. This will clear any non-hardcoded breakpoints and cast the \u201ccontinue\u201d pdb command to all ranks currently stopped at a breakpoint. Download Jupyter notebook: debugging.ipynb Download Python source code: debugging.py Download zipped: debugging.zip Gallery generated by Sphinx-Gallery",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

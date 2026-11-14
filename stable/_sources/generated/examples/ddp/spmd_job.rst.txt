@@ -11,7 +11,7 @@
         :class: sphx-glr-download-link-note
 
         :ref:`Go to the end <sphx_glr_download_generated_examples_ddp_spmd_job.py>`
-        to download the full example code
+        to download the full example code.
 
 .. rst-class:: sphx-glr-example-title
 
@@ -104,7 +104,7 @@ Imports
 
 .. GENERATED FROM PYTHON SOURCE LINES 91-96
 
-.. code-block:: default
+.. code-block:: Python
 
 
     import os
@@ -120,7 +120,7 @@ Configure the number of GPUs and paths.
 
 .. GENERATED FROM PYTHON SOURCE LINES 100-108
 
-.. code-block:: default
+.. code-block:: Python
 
 
     GPUS_PER_HOST = 4
@@ -140,7 +140,7 @@ and ``run_spmd()`` to execute the training.
 
 .. GENERATED FROM PYTHON SOURCE LINES 113-142
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -182,7 +182,7 @@ construct such an AppDef (not executed in this demo).
 
 .. GENERATED FROM PYTHON SOURCE LINES 148-189
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -253,16 +253,11 @@ This will:
 
 .. GENERATED FROM PYTHON SOURCE LINES 212-215
 
-.. code-block:: default
+.. code-block:: Python
 
 
     if __name__ == "__main__":
         main()
-
-
-.. rst-class:: sphx-glr-timing
-
-   **Total running time of the script:** (0 minutes 0.000 seconds)
 
 
 .. _sphx_glr_download_generated_examples_ddp_spmd_job.py:
@@ -271,16 +266,17 @@ This will:
 
   .. container:: sphx-glr-footer sphx-glr-footer-example
 
+    .. container:: sphx-glr-download sphx-glr-download-jupyter
 
-
+      :download:`Download Jupyter notebook: spmd_job.ipynb <spmd_job.ipynb>`
 
     .. container:: sphx-glr-download sphx-glr-download-python
 
       :download:`Download Python source code: spmd_job.py <spmd_job.py>`
 
-    .. container:: sphx-glr-download sphx-glr-download-jupyter
+    .. container:: sphx-glr-download sphx-glr-download-zip
 
-      :download:`Download Jupyter notebook: spmd_job.ipynb <spmd_job.ipynb>`
+      :download:`Download zipped: spmd_job.zip <spmd_job.zip>`
 
 
 .. only:: html

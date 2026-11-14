@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `monarch_record_batch_macros/src/lib.rs`."><title>lib.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_record_batch_macros" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (c397dae80 2026-07-02)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">monarch_record_batch_macros/</div>lib.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `monarch_record_batch_macros/src/lib.rs`."><title>lib.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-0c87338a.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_record_batch_macros" data-themes="" data-resource-suffix="" data-rustdoc-version="1.99.0-nightly (d453bdd8f 2026-08-14)" data-channel="nightly" data-search-js="search-cf4fc35e.js" data-stringdex-js="stringdex-b5109af9.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-9f56287d.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">monarch_record_batch_macros/</div>lib.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
 <a href=#2 id=2 data-nosnippet>2</a> * Copyright (c) Meta Platforms, Inc. and affiliates.
 <a href=#3 id=3 data-nosnippet>3</a> * All rights reserved.
 <a href=#4 id=4 data-nosnippet>4</a> *
@@ -28,7 +28,7 @@
 <a href=#28 id=28 data-nosnippet>28</a>//!   `drain_to_record_batch()` methods
 <a href=#29 id=29 data-nosnippet>29</a>//!
 <a href=#30 id=30 data-nosnippet>30</a>//! The consumer crate must depend on `monarch_record_batch` (for the trait)
-<a href=#31 id=31 data-nosnippet>31</a>//! and `datafusion` (for Arrow types used in the generated code).
+<a href=#31 id=31 data-nosnippet>31</a>//! and `monarch_record_batch` (for Arrow types used in the generated code).
 <a href=#32 id=32 data-nosnippet>32</a>
 <a href=#33 id=33 data-nosnippet>33</a></span><span class="kw">use </span>proc_macro::TokenStream;
 <a href=#34 id=34 data-nosnippet>34</a><span class="kw">use </span>quote::format_ident;
@@ -72,7 +72,7 @@
 <a href=#72 id=72 data-nosnippet>72</a>        <span class="kw">let </span>nullable = f.nullable;
 <a href=#73 id=73 data-nosnippet>73</a>        <span class="kw">let </span>data_type = <span class="kw-2">&amp;</span>f.arrow_data_type;
 <a href=#74 id=74 data-nosnippet>74</a>        <span class="macro">quote!</span> {
-<a href=#75 id=75 data-nosnippet>75</a>            datafusion::arrow::datatypes::Field::new(#field_name_str, #data_type, #nullable)
+<a href=#75 id=75 data-nosnippet>75</a>            ::monarch_record_batch::arrow::datatypes::Field::new(#field_name_str, #data_type, #nullable)
 <a href=#76 id=76 data-nosnippet>76</a>        }
 <a href=#77 id=77 data-nosnippet>77</a>    });
 <a href=#78 id=78 data-nosnippet>78</a>
@@ -97,8 +97,8 @@
 <a href=#97 id=97 data-nosnippet>97</a>                #(#insert_pushes)*
 <a href=#98 id=98 data-nosnippet>98</a>            }
 <a href=#99 id=99 data-nosnippet>99</a>
-<a href=#100 id=100 data-nosnippet>100</a>            <span class="kw">pub fn </span>schema() -&gt; datafusion::arrow::datatypes::SchemaRef {
-<a href=#101 id=101 data-nosnippet>101</a>                std::sync::Arc::new(datafusion::arrow::datatypes::Schema::new(<span class="macro">vec!</span>[
+<a href=#100 id=100 data-nosnippet>100</a>            <span class="kw">pub fn </span>schema() -&gt; ::monarch_record_batch::arrow::datatypes::SchemaRef {
+<a href=#101 id=101 data-nosnippet>101</a>                std::sync::Arc::new(::monarch_record_batch::arrow::datatypes::Schema::new(<span class="macro">vec!</span>[
 <a href=#102 id=102 data-nosnippet>102</a>                    #(#schema_fields,)*
 <a href=#103 id=103 data-nosnippet>103</a>                ]))
 <a href=#104 id=104 data-nosnippet>104</a>            }
@@ -109,12 +109,12 @@
 <a href=#109 id=109 data-nosnippet>109</a>                <span class="self">self</span>.#first_field.len()
 <a href=#110 id=110 data-nosnippet>110</a>            }
 <a href=#111 id=111 data-nosnippet>111</a>
-<a href=#112 id=112 data-nosnippet>112</a>            <span class="kw">fn </span>drain_to_record_batch(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;datafusion::arrow::record_batch::RecordBatch, datafusion::arrow::error::ArrowError&gt; {
+<a href=#112 id=112 data-nosnippet>112</a>            <span class="kw">fn </span>drain_to_record_batch(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;::monarch_record_batch::arrow::record_batch::RecordBatch, ::monarch_record_batch::arrow::error::ArrowError&gt; {
 <a href=#113 id=113 data-nosnippet>113</a>                <span class="kw">let </span>schema = #buffer_name::schema();
-<a href=#114 id=114 data-nosnippet>114</a>                <span class="kw">let </span>columns: Vec&lt;datafusion::arrow::array::ArrayRef&gt; = <span class="macro">vec!</span>[
+<a href=#114 id=114 data-nosnippet>114</a>                <span class="kw">let </span>columns: Vec&lt;::monarch_record_batch::arrow::array::ArrayRef&gt; = <span class="macro">vec!</span>[
 <a href=#115 id=115 data-nosnippet>115</a>                    #(#column_conversions,)*
 <a href=#116 id=116 data-nosnippet>116</a>                ];
-<a href=#117 id=117 data-nosnippet>117</a>                datafusion::arrow::record_batch::RecordBatch::try_new(schema, columns)
+<a href=#117 id=117 data-nosnippet>117</a>                ::monarch_record_batch::arrow::record_batch::RecordBatch::try_new(schema, columns)
 <a href=#118 id=118 data-nosnippet>118</a>            }
 <a href=#119 id=119 data-nosnippet>119</a>        }
 <a href=#120 id=120 data-nosnippet>120</a>    };
@@ -174,40 +174,40 @@
 <a href=#174 id=174 data-nosnippet>174</a>
 <a href=#175 id=175 data-nosnippet>175</a>    <span class="kw">match </span>type_str.as_str() {
 <a href=#176 id=176 data-nosnippet>176</a>        <span class="string">"u64" </span>=&gt; (
-<a href=#177 id=177 data-nosnippet>177</a>            <span class="macro">quote!</span> { datafusion::arrow::datatypes::DataType::UInt64 },
-<a href=#178 id=178 data-nosnippet>178</a>            <span class="macro">quote!</span> { datafusion::arrow::array::UInt64Array::from },
+<a href=#177 id=177 data-nosnippet>177</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::datatypes::DataType::UInt64 },
+<a href=#178 id=178 data-nosnippet>178</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::array::UInt64Array::from },
 <a href=#179 id=179 data-nosnippet>179</a>        ),
 <a href=#180 id=180 data-nosnippet>180</a>        <span class="string">"u32" </span>=&gt; (
-<a href=#181 id=181 data-nosnippet>181</a>            <span class="macro">quote!</span> { datafusion::arrow::datatypes::DataType::UInt32 },
-<a href=#182 id=182 data-nosnippet>182</a>            <span class="macro">quote!</span> { datafusion::arrow::array::UInt32Array::from },
+<a href=#181 id=181 data-nosnippet>181</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::datatypes::DataType::UInt32 },
+<a href=#182 id=182 data-nosnippet>182</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::array::UInt32Array::from },
 <a href=#183 id=183 data-nosnippet>183</a>        ),
 <a href=#184 id=184 data-nosnippet>184</a>        <span class="string">"i64" </span>=&gt; (
-<a href=#185 id=185 data-nosnippet>185</a>            <span class="macro">quote!</span> { datafusion::arrow::datatypes::DataType::Int64 },
-<a href=#186 id=186 data-nosnippet>186</a>            <span class="macro">quote!</span> { datafusion::arrow::array::Int64Array::from },
+<a href=#185 id=185 data-nosnippet>185</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::datatypes::DataType::Int64 },
+<a href=#186 id=186 data-nosnippet>186</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::array::Int64Array::from },
 <a href=#187 id=187 data-nosnippet>187</a>        ),
 <a href=#188 id=188 data-nosnippet>188</a>        <span class="string">"i32" </span>=&gt; (
-<a href=#189 id=189 data-nosnippet>189</a>            <span class="macro">quote!</span> { datafusion::arrow::datatypes::DataType::Int32 },
-<a href=#190 id=190 data-nosnippet>190</a>            <span class="macro">quote!</span> { datafusion::arrow::array::Int32Array::from },
+<a href=#189 id=189 data-nosnippet>189</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::datatypes::DataType::Int32 },
+<a href=#190 id=190 data-nosnippet>190</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::array::Int32Array::from },
 <a href=#191 id=191 data-nosnippet>191</a>        ),
 <a href=#192 id=192 data-nosnippet>192</a>        <span class="string">"String" </span>=&gt; (
-<a href=#193 id=193 data-nosnippet>193</a>            <span class="macro">quote!</span> { datafusion::arrow::datatypes::DataType::Utf8 },
-<a href=#194 id=194 data-nosnippet>194</a>            <span class="macro">quote!</span> { datafusion::arrow::array::StringArray::from },
+<a href=#193 id=193 data-nosnippet>193</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::datatypes::DataType::Utf8 },
+<a href=#194 id=194 data-nosnippet>194</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::array::StringArray::from },
 <a href=#195 id=195 data-nosnippet>195</a>        ),
 <a href=#196 id=196 data-nosnippet>196</a>        <span class="string">"&amp;'staticstr" </span>=&gt; (
-<a href=#197 id=197 data-nosnippet>197</a>            <span class="macro">quote!</span> { datafusion::arrow::datatypes::DataType::Utf8 },
-<a href=#198 id=198 data-nosnippet>198</a>            <span class="macro">quote!</span> { datafusion::arrow::array::StringArray::from },
+<a href=#197 id=197 data-nosnippet>197</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::datatypes::DataType::Utf8 },
+<a href=#198 id=198 data-nosnippet>198</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::array::StringArray::from },
 <a href=#199 id=199 data-nosnippet>199</a>        ),
 <a href=#200 id=200 data-nosnippet>200</a>        <span class="string">"bool" </span>=&gt; (
-<a href=#201 id=201 data-nosnippet>201</a>            <span class="macro">quote!</span> { datafusion::arrow::datatypes::DataType::Boolean },
-<a href=#202 id=202 data-nosnippet>202</a>            <span class="macro">quote!</span> { datafusion::arrow::array::BooleanArray::from },
+<a href=#201 id=201 data-nosnippet>201</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::datatypes::DataType::Boolean },
+<a href=#202 id=202 data-nosnippet>202</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::array::BooleanArray::from },
 <a href=#203 id=203 data-nosnippet>203</a>        ),
 <a href=#204 id=204 data-nosnippet>204</a>        <span class="string">"f64" </span>=&gt; (
-<a href=#205 id=205 data-nosnippet>205</a>            <span class="macro">quote!</span> { datafusion::arrow::datatypes::DataType::Float64 },
-<a href=#206 id=206 data-nosnippet>206</a>            <span class="macro">quote!</span> { datafusion::arrow::array::Float64Array::from },
+<a href=#205 id=205 data-nosnippet>205</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::datatypes::DataType::Float64 },
+<a href=#206 id=206 data-nosnippet>206</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::array::Float64Array::from },
 <a href=#207 id=207 data-nosnippet>207</a>        ),
 <a href=#208 id=208 data-nosnippet>208</a>        <span class="string">"f32" </span>=&gt; (
-<a href=#209 id=209 data-nosnippet>209</a>            <span class="macro">quote!</span> { datafusion::arrow::datatypes::DataType::Float32 },
-<a href=#210 id=210 data-nosnippet>210</a>            <span class="macro">quote!</span> { datafusion::arrow::array::Float32Array::from },
+<a href=#209 id=209 data-nosnippet>209</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::datatypes::DataType::Float32 },
+<a href=#210 id=210 data-nosnippet>210</a>            <span class="macro">quote!</span> { ::monarch_record_batch::arrow::array::Float32Array::from },
 <a href=#211 id=211 data-nosnippet>211</a>        ),
 <a href=#212 id=212 data-nosnippet>212</a>        <span class="kw">_ </span>=&gt; <span class="macro">panic!</span>(<span class="string">"unsupported type: {}"</span>, type_str),
 <a href=#213 id=213 data-nosnippet>213</a>    }

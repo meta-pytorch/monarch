@@ -25,6 +25,13 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [`Actor`](monarch.actor.html#monarch.actor.Actor)
 - [`endpoint()`](monarch.actor.html#monarch.actor.endpoint)
 - [`concurrent_endpoint()`](monarch.actor.html#monarch.actor.concurrent_endpoint)
+- [Delivery Failure Hooks](monarch.actor.html#delivery-failure-hooks)
+
+- [`Actor._handle_delivery_failure_event()`](monarch.actor.html#monarch.actor.Actor._handle_delivery_failure_event)
+- [`Actor._handle_invalid_reference()`](monarch.actor.html#monarch.actor.Actor._handle_invalid_reference)
+- [`Actor._handle_expired_delivery()`](monarch.actor.html#monarch.actor.Actor._handle_expired_delivery)
+- [`Actor._handle_undeliverable_message()`](monarch.actor.html#monarch.actor.Actor._handle_undeliverable_message)
+- [Failure Details](monarch.actor.html#failure-details)
 - [Messaging Actor](monarch.actor.html#messaging-actor)
 
 - [`Endpoint`](monarch.actor.html#monarch.actor.Endpoint)
@@ -108,6 +115,7 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [LocalJob](monarch.job.html#localjob)
 - [ProcessJob](monarch.job.html#processjob)
 - [SlurmJob](monarch.job.html#slurmjob)
+- [PBSJob](monarch.job.html#pbsjob)
 - [KubernetesJob](monarch.job.html#kubernetesjob)
 - [Serialization](monarch.job.html#serialization)
 

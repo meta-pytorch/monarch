@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["moore_neighbors","von_neumann_neighbors"]};

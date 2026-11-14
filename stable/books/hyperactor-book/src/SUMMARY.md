@@ -36,7 +36,9 @@
 
 - [Proc](procs/proc.html)
 - [Gateway](procs/gateway.html)
+- [Stable Locations](procs/stable_locations.html)
 - [Host](procs/host.html)
+- [Endpoint-owned Proc Resolution](procs/host_identity.html)
 - [Actors](actors/index.html)
 
 - [Actor](actors/actor.html)

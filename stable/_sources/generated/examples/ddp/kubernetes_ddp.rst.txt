@@ -11,7 +11,7 @@
         :class: sphx-glr-download-link-note
 
         :ref:`Go to the end <sphx_glr_download_generated_examples_ddp_kubernetes_ddp.py>`
-        to download the full example code
+        to download the full example code.
 
 .. rst-class:: sphx-glr-example-title
 
@@ -183,7 +183,7 @@ We import Monarch's Kubernetes job support and SPMDActor.
 
 .. GENERATED FROM PYTHON SOURCE LINES 174-222
 
-.. code-block:: default
+.. code-block:: Python
 
 
     import argparse
@@ -243,7 +243,7 @@ using ``SPMDActor`` to execute the training script.
 
 .. GENERATED FROM PYTHON SOURCE LINES 227-326
 
-.. code-block:: default
+.. code-block:: Python
 
 
 
@@ -406,7 +406,7 @@ Command-line Arguments
 
 .. GENERATED FROM PYTHON SOURCE LINES 383-425
 
-.. code-block:: default
+.. code-block:: Python
 
 
     if __name__ == "__main__":
@@ -452,27 +452,23 @@ Command-line Arguments
         )
 
 
-.. rst-class:: sphx-glr-timing
-
-   **Total running time of the script:** (0 minutes 0.000 seconds)
-
-
 .. _sphx_glr_download_generated_examples_ddp_kubernetes_ddp.py:
 
 .. only:: html
 
   .. container:: sphx-glr-footer sphx-glr-footer-example
 
+    .. container:: sphx-glr-download sphx-glr-download-jupyter
 
-
+      :download:`Download Jupyter notebook: kubernetes_ddp.ipynb <kubernetes_ddp.ipynb>`
 
     .. container:: sphx-glr-download sphx-glr-download-python
 
       :download:`Download Python source code: kubernetes_ddp.py <kubernetes_ddp.py>`
 
-    .. container:: sphx-glr-download sphx-glr-download-jupyter
+    .. container:: sphx-glr-download sphx-glr-download-zip
 
-      :download:`Download Jupyter notebook: kubernetes_ddp.ipynb <kubernetes_ddp.ipynb>`
+      :download:`Download zipped: kubernetes_ddp.zip <kubernetes_ddp.zip>`
 
 
 .. only:: html

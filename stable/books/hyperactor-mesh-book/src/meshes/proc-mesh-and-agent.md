@@ -186,7 +186,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
 }
 ```
 
-This handler performs four steps:
+This handler performs three steps:
 
 ---
 
@@ -202,32 +202,6 @@ if self.actor_states.contains_key(&create_or_update.name) {
 The `CreateOrUpdate` resource verb supports "update" in principle, but actor meshes never update an existing actor by name. They only create a fresh actor mesh.
 
 So the agent simply ignores subsequent requests for the same name.
-
----
-
-1. Safety check: reject spawn if the proc has supervision errors
-
-```
-if !self.supervision_events.is_empty() {
- self.actor_states.insert(
- create_or_update.name.clone(),
- ActorInstanceState {
- spawn: Err(anyhow::anyhow!(
- "Cannot spawn new actors on mesh with supervision events"
- )),
- create_rank,
- stopped: false,
- },
- );
- return Ok(());
-}
-```
-
-If this proc previously recorded **any** supervision events for **any** actor, the proc is considered "poisoned": it may be in a bad state, and spawning new actors would be unsafe.
-
-The agent records the failure in `actor_states` and stops.
-
-Later, when the `ProcMesh::spawn_with_name_inner` calls `GetRankStatus::wait` to aggregate per-rank results, this proc will contribute a `Failed` status for that actor name instead of ever reporting it as `Running`.
 
 ---
 
@@ -285,6 +259,8 @@ ActorInstanceState {
 ```
 
 The `actor_states` map is later queried by `GetRankStatus` and `GetState`.
+
+Earlier actor failures on the proc do not prevent the spawn. Introspection reports them through `is_poisoned` and `failed_actor_count`, but the proc keeps accepting new actors.
 
 ---
 

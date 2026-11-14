@@ -45,7 +45,9 @@ Each dict maps binding keys (`cpunodebind`,
 returns a BootstrapCommand for each coordinate. The callable
 receives a `Point` (combined coordinate across host and
 per_host dimensions). This allows full customization of the
-bootstrap command per coordinate.
+bootstrap command per coordinate. The callable runs once per
+rank, in rank order, on the calling thread before spawning
+begins; its errors raise from this call.
 
 *property*region*: Region*
 
@@ -104,6 +106,38 @@ rather than owned.
 Returns:
 
 A future that completes when the host mesh has been stopped.
+
+Return type:
+
+Future[None]
+
+set_proc_launcher(*launcher*, *params=None*)[[source]](../_modules/monarch/_src/actor/host_mesh.html#HostMesh.set_proc_launcher)
+
+Install a Python proc launcher on every host of this mesh.
+
+Calling this method alone does not start installation. Await the
+returned Future or call `.get()` to start it and wait for completion.
+
+Each host constructs `launcher(params)` on its system proc. Procs
+spawned on the host afterwards are launched, stopped and reported on
+by that launcher instead of the built-in one. Wait for the returned
+Future before spawning procs on these hosts: a host that has already
+spawned a proc keeps the launcher it used, and installing there fails.
+The launcher stays installed for the lifetime of each host process,
+including across `stop()` and later clients.
+
+Parameters:
+
+- **launcher** ([*Type*](https://docs.python.org/3/library/typing.html#typing.Type)*[**ProcLauncher**]*) - A subclass of
+`monarch._src.actor.proc_launcher.ProcLauncher`.
+- **params** ([*dict*](https://docs.python.org/3/builtins/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/builtins/stdtypes.html#str)*,*[*Any*](https://docs.python.org/3/library/typing.html#typing.Any)*]**|**None*) - Picklable configuration passed to the launcher's
+constructor on every host.
+
+Returns:
+
+Completes once every host has installed the
+launcher. Raises an error naming each host that failed; hosts
+that succeeded keep the launcher.
 
 Return type:
 
@@ -236,7 +270,8 @@ rank_tensors()[[source]](../_modules/monarch/_src/actor/proc_mesh.html#ProcMesh.
 stop(*reason='stopped by client'*)[[source]](../_modules/monarch/_src/actor/proc_mesh.html#ProcMesh.stop)
 
 This will stop all processes (and actors) in the mesh and
-release any resources associated with the mesh.
+release any resources associated with the mesh. The returned Future
+completes once every proc has stopped, failed, or timed out.
 
 *property*extent*: Extent*
 
@@ -527,6 +562,165 @@ example, `port.exception(e)`); to recover, catch it inside the endpoint.
 More complex protocols can still use `@endpoint(explicit_response_port=True)`
 and manage response ports manually.
 
+# Delivery Failure Hooks
+
+These hooks run on the actor that sent an undeliverable message. Choose a
+kind-specific hook for a policy that applies only to invalid references,
+expired deliveries, or transport and port failures. A generic override takes
+precedence over all kind-specific Python hooks. Returning `True` absorbs
+the failure; returning `False` preserves the existing default, without
+calling another Python hook. See [Delivery failure hooks](../actors.html#delivery-failure-hooks) for the default
+behaviors, examples, and callback scheduling.
+
+Actors without overrides keep their existing failure behavior. For returned
+messages, invalid references and TTL expiration are fatal; `PortGone` and
+ordinary transport failures are absorbed, while `OversizedFrame` is fatal.
+Unhandled metadata-only reports remain fatal, including `PortGone` reports.
+
+Actor._handle_delivery_failure_event(*message*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Actor._handle_delivery_failure_event)
+
+Handle any delivery failure, overriding the kind-specific hooks.
+
+Inspect `message.root_delivery_failure()` for its kind and reason.
+Return True to absorb the failure or False to retain the existing
+default directly, without calling a kind-specific Python hook.
+Unhandled metadata-only reports remain fatal; returned messages use
+the Rust default for their failure kind.
+Prefer a kind-specific override when your policy applies to only one
+failure kind. An async actor may use a sync or async override; a sync
+actor requires a sync override. Callbacks share the lifecycle and
+scheduling described by `_handle_undeliverable_message`.
+
+Actor._handle_invalid_reference(*message*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Actor._handle_invalid_reference)
+
+Handle an invalid destination, including a stopped or failed actor.
+
+`message.root_delivery_failure().invalid_reference_reason` gives
+the reason. Return True to absorb the failure; False fails this actor.
+This hook runs when `_handle_delivery_failure_event` is not overridden.
+Customize it for expected terminal recipients while preserving errors
+for other invalid references. `HandlerNotBound` also occurs when a
+handler was never registered; a dropped reply port is `PortGone`.
+
+Actor._handle_expired_delivery(*message*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Actor._handle_expired_delivery)
+
+Handle a message that exceeded its delivery hop TTL.
+
+Return True to absorb the failure; False fails this actor. This hook
+runs when `_handle_delivery_failure_event` is not overridden.
+Customize it only when the application deliberately tolerates losing
+a message that exhausted its hop TTL.
+
+Actor._handle_undeliverable_message(*message*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Actor._handle_undeliverable_message)
+
+Handle a transport failure or a destination port whose recipient is gone.
+
+This hook runs when `_handle_delivery_failure_event` is not overridden.
+Return True to absorb the failure or False to retain the existing default
+handling. Inspect `message.root_delivery_failure()` for its reason.
+For returned messages, the default absorbs `PortGone` and ordinary
+transport failures; `OversizedFrame` fails this actor. Unhandled
+metadata-only reports remain fatal. Customize this hook for request
+bookkeeping or diagnostics, or raise to make transport failure fatal.
+
+This may be sync or async for an async actor; a sync actor requires a
+sync override. It runs one callback at a time alongside
+`__supervise__`. A pending async-actor call is cancelled if the actor
+stops; a sync actor finishes a callback it has started and drops one it
+has not.
+
+## Failure Details
+
+`UndeliverableMessageEnvelope.root_delivery_failure()` returns the original
+structured failure. `kind` identifies its category. The applicable reason
+property is `invalid_reference_reason`, `undeliverable_reason`, or
+`transport_failure_reason`; the other properties return `None`. The enums
+below are exported from `monarch.actor` and implemented in the Rust bindings.
+
+*class*monarch.actor.UndeliverableMessageEnvelope
+
+dest()
+
+error_msg()
+
+has_payload
+
+root_delivery_failure()
+
+sender()
+
+*class*monarch.actor.DeliveryFailure
+
+A structured Rust delivery failure exposed to Python.
+
+invalid_reference_reason
+
+kind
+
+target
+
+transport_failure_reason
+
+undeliverable_reason
+
+*class*monarch.actor.DeliveryFailureKind
+
+The category of a delivery failure.
+
+Expired*= DeliveryFailureKind.Expired*
+
+InvalidReference*= DeliveryFailureKind.InvalidReference*
+
+Undeliverable*= DeliveryFailureKind.Undeliverable*
+
+*class*monarch.actor.InvalidReferenceReason
+
+Why a destination reference is invalid.
+
+ActorFailed*= InvalidReferenceReason.ActorFailed*
+
+ActorNotExist*= InvalidReferenceReason.ActorNotExist*
+
+ActorStopped*= InvalidReferenceReason.ActorStopped*
+
+HandlerNotBound*= InvalidReferenceReason.HandlerNotBound*
+
+PortNeverAllocated*= InvalidReferenceReason.PortNeverAllocated*
+
+ProcNotExist*= InvalidReferenceReason.ProcNotExist*
+
+ProtocolMismatch*= InvalidReferenceReason.ProtocolMismatch*
+
+RouteNotExist*= InvalidReferenceReason.RouteNotExist*
+
+WrongMailboxOwner*= InvalidReferenceReason.WrongMailboxOwner*
+
+*class*monarch.actor.UndeliverableReason
+
+A transport failure or a destination port whose recipient is gone.
+
+PortGone*= UndeliverableReason.PortGone*
+
+Transport*= UndeliverableReason.Transport*
+
+*class*monarch.actor.TransportFailureReason
+
+Why transport could not deliver a message.
+
+AckTimedOut*= TransportFailureReason.AckTimedOut*
+
+ChannelClosed*= TransportFailureReason.ChannelClosed*
+
+DialFailed*= TransportFailureReason.DialFailed*
+
+ForwarderUnavailable*= TransportFailureReason.ForwarderUnavailable*
+
+LinkUnavailable*= TransportFailureReason.LinkUnavailable*
+
+NoRoute*= TransportFailureReason.NoRoute*
+
+OversizedFrame*= TransportFailureReason.OversizedFrame*
+
 # Messaging Actor
 
 Messaging is done through the "adverbs" defined for each endpoint
@@ -545,7 +739,10 @@ and `rref`.
 
 choose(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.choose)
 
-Sends a message to a randomly selected actor and waits for its result.
+Send to a randomly selected actor and return a Future for its result.
+The reply is received eagerly, but success is unpickled only on first
+observation. Later observers share its Python value. Dropping the
+Future stops neither the call nor collection.
 
 Each call independently selects an actor uniformly at random. Selection
 does not account for actor load, so calls are balanced only across many
@@ -554,14 +751,27 @@ deterministic.
 
 call_one(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.call_one)
 
+Send to exactly one actor and return a Future for its result.
+
+Receive the reply eagerly; unpickle success on first observation and
+share that value with later observers. Ignored successes are not unpickled.
+
 call(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.call)
+
+Send to all actors and return a Future for their ValueMesh.
+
+Receive the replies eagerly; build the ValueMesh on first observation
+and share it with later observers. If no reply carries mesh references,
+elements stay pickled until accessed. Ignored successes are not built.
 
 stream(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.stream)
 
-Broadcasts to all actors and yields their responses as a stream.
+Send to all actors now and return an iterator of Futures.
 
-This enables processing results from multiple actors incrementally as
-they become available. Returns an iterator of Future values.
+Replies arrive and queue eagerly. Each item takes and unpickles one
+queued reply only when first observed. Each next() uses one iteration
+slot; dropping an item unobserved leaves one reply unread after the
+slots are exhausted. Observe every item taken to read every reply.
 
 broadcast(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.broadcast)
 
@@ -580,7 +790,8 @@ Bases: [`Generic`](https://docs.python.org/3/library/typing.html#typing.Generic)
 A result returned by Monarch asynchronous operations.
 
 Use `get()` from synchronous code. On an asyncio loop, use `await` or
-`as_asyncio()`. Future objects cannot be constructed directly.
+`as_asyncio()`. Future objects cannot be constructed directly, and like
+`asyncio.Future` they cannot be pickled.
 
 get(*timeout=None*)[[source]](../_modules/monarch/_src/actor/future.html#Future.get)
 
@@ -635,8 +846,8 @@ Return a standard `asyncio.Future` that resolves when this Future
 does.
 
 Requires a running event loop; off a loop it raises `RuntimeError`
-**without** consuming the underlying task (the Future stays unawaited, so
-a later `get()` still drives it). Observation is non-consuming:
+**without** starting the underlying operation, so a later `get()`
+still observes it. Observation is non-consuming:
 repeated `as_asyncio()`/`await` each return a fresh loop-local future
 observing the same result.
 
@@ -861,6 +1072,19 @@ Handles receiving R-typed objects sent from a corresponding Port.
 
 recv()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#PortReceiver.recv)
 
+Return a Future for one message from this receiver, decoded to its value.
+
+The receive starts when the Future is first observed; a Future that is
+never observed takes nothing. Every observer of the Future shares its one
+result, and a timed-out or interrupted `get()` leaves the receive
+running; observe the same Future again to obtain its result.
+
+Once an observation has started the receive, dropping the Future requests
+a stop once no observer remains. This is cooperative: a message arriving
+before the stop is processed can still be taken. Cancelling `await` or
+`as_asyncio()` leaves an internal native waiter alive, so that receive
+continues until a message arrives or receiving fails.
+
 ranked()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#PortReceiver.ranked)
 
 monarch.actor.as_endpoint(*not_an_endpoint: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*, ***, *propagate: [None](https://docs.python.org/3/builtins/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*) → Endpoint[P, R][[source]](../_modules/monarch/_src/actor/actor_mesh.html#as_endpoint)
@@ -1004,6 +1228,20 @@ That host may also have user procs created through
 the root client, attempts its final flush and closes the transports.
 It does not send a shutdown request to each host in an arbitrary HostMesh.
 
+Shutdown makes these guarantees about actors:
+
+- The root client's proc, `this_proc()`, is destroyed: every actor on it
+is told to stop so it can run `__cleanup__`.
+- Shutdown waits on all actors at once, for a bounded time derived from
+`host_timeout` and capped at 0.5 seconds for each of its waits. If an
+actor is still cleaning up after that, shutdown stops waiting for it and
+continues.
+- Some of those actors own meshes of other actors, local or remote. Their
+cleanup sends those actors a stop without waiting for it to be
+acknowledged. Once the stop is delivered, which the final flush attempts,
+each owned actor is stopping or already terminal, and handles no further
+messages other than status queries.
+
 This uses the process's initialized client, not the current actor returned
 by `context()`. There is no controller-only caller check. A worker with
 no initialized client gets an already-completed future without creating
@@ -1021,10 +1259,14 @@ Parameters:
 
 **host_timeout** ([*float*](https://docs.python.org/3/builtins/functions.html#float)*|**None*) - Timeout in seconds passed to the local host's user-proc
 shutdown. The host and root client's final gateway flushes are
-also capped by this value. Defaults to 10 seconds. This is not an
-overall time limit on waiting for shutdown to finish. A supplied
-timeout must be finite, non-negative and less than 2**64 seconds;
-an invalid timeout does not claim shutdown.
+also capped by this value, as are the root client's waits for
+actors to clean up (each also capped at 0.5 seconds to keep
+process exit prompt). Defaults to a fixed 10 seconds, the same
+as the default `HYPERACTOR_MESH_TERMINATE_TIMEOUT`, but not
+read from that or any other setting. This is not an overall
+time limit on waiting for shutdown to finish. A supplied
+timeout must be finite, non-negative and less than 2**64
+seconds; an invalid timeout does not claim shutdown.
 
 Returns:
 

@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Monarch distributed telemetry collects actor-system events and OpenTelemetry metrics on each host and makes them queryable as one logical database. It uses Apache DataFusion, an extensible SQL quer..." />
 
-    <title>Distributed Telemetry &#8212; Monarch v0.7.0 documentation</title>
+    <title>Distributed Telemetry &#8212; Monarch v0.8.0 documentation</title>
   
   
   
@@ -38,11 +38,11 @@
 
     <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=87e54e7c" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
     <link rel="stylesheet" type="text/css" href="_static/custom.css?v=6dd86c6c" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
@@ -50,22 +50,24 @@
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="_static/documentation_options.js?v=05c9169f"></script>
+    <script src="_static/documentation_options.js?v=b3dab91b"></script>
     <script src="_static/doctools.js?v=888ff710"></script>
     <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/js/search-tuning.js?v=87be1517"></script>
+    <script src="_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'distributed-telemetry';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.7.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.8.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/distributed-telemetry.html" />
     <link rel="icon" href="_static/torch-monarch-icons.svg"/>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Metrics" href="metrics.html" />
+    <link rel="next" title="Telemetry persistence" href="telemetry-persistence.html" />
     <link rel="prev" title="Observability" href="observability.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -84,7 +86,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.7.0">
+<meta name="llm:version" content="v0.8.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +200,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.7.0');
+  document.documentElement.setAttribute('data-version', 'v0.8.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -563,8 +565,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -649,6 +669,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -662,7 +688,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -936,8 +962,26 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="telemetry-persistence.html">
+                  Telemetry persistence
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="profiling.html">
+                  Profiling Actor Activity
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="metrics.html">
                   Metrics
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="opentelemetry.html">
+                  OpenTelemetry
                 </a>
               </li>
             
@@ -1022,6 +1066,12 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/sglang_actors.html">
+                  SGLang Rollout Engines
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1035,7 +1085,7 @@ document.write(`
             
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="generated/examples/otel_collector.html">
-                  Exporting Metrics and Logs with OpenTelemetry
+                  Exporting Metrics, Logs, and Traces with OpenTelemetry
                 </a>
               </li>
             
@@ -1240,7 +1290,10 @@ document.write(`
   <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
   <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Distributed Telemetry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="telemetry-persistence.html">Telemetry persistence</a></li>
+<li class="toctree-l1"><a class="reference internal" href="profiling.html">Profiling Actor Activity</a></li>
 <li class="toctree-l1"><a class="reference internal" href="metrics.html">Metrics</a></li>
+<li class="toctree-l1"><a class="reference internal" href="opentelemetry.html">OpenTelemetry</a></li>
 <li class="toctree-l1"><a class="reference internal" href="admin-tui.html">Mesh Admin TUI</a></li>
 <li class="toctree-l1"><a class="reference internal" href="monarch-dashboard.html">Monarch Dashboard</a></li>
 </ul>
@@ -1352,7 +1405,8 @@ metrics on each host and makes them queryable as one logical database. It uses
 <a class="reference external" href="https://github.com/apache/datafusion">Apache DataFusion</a>, an extensible SQL
 query engine built on <a class="reference external" href="https://arrow.apache.org/">Apache Arrow</a>. Distributed
 telemetry is the query layer behind the <a class="reference internal" href="monarch-dashboard.html"><span class="doc std std-doc">Monarch Dashboard</span></a>
-and complements the live <a class="reference internal" href="admin-tui.html"><span class="doc std std-doc">Mesh Admin TUI</span></a>.</p>
+and <a class="reference internal" href="profiling.html"><span class="doc std std-doc">actor profiling</span></a>, and complements the live
+<a class="reference internal" href="admin-tui.html"><span class="doc std std-doc">Mesh Admin TUI</span></a>.</p>
 <p>Start with the <a class="reference internal" href="observability.html"><span class="doc std std-doc">observability overview</span></a> if you are choosing a
 diagnostic surface or configuring a job for the first time.</p>
 <section id="quick-start">
@@ -1404,6 +1458,12 @@ meaning from their numeric values.</p>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">events</span></code></p></td>
 <td><p>Structured tracing events and log fields</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gpu_metrics</span></code></p></td>
+<td><p>Per-device GPU utilization, memory, temperature, and power samples</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">host_metrics</span></code></p></td>
+<td><p>Per-host CPU, load, memory, swap, network, and disk samples</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">meshes</span></code></p></td>
 <td><p>Mesh creation, shape, class, name, and parent view</p></td>
@@ -1510,12 +1570,17 @@ that state.</p>
 <p>Distributed scans are best-effort. If a worker collector fails or times out,
 the query can return reduced coverage while the job and healthy collectors
 continue operating.</p>
+<p>To keep telemetry after the job stops, configure <code class="docutils literal notranslate"><span class="pre">TelemetryConfig.persist_dir</span></code>.
+The <a class="reference internal" href="telemetry-persistence.html"><span class="doc std std-doc">telemetry persistence guide</span></a> covers storage paths,
+offline SQL and dashboards, and recovery after expected or unexpected shutdown.</p>
 </section>
 <section id="retention-and-snapshots">
 <h2>Retention and snapshots<a class="headerlink" href="#retention-and-snapshots" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">TelemetryConfig.retention_secs</span></code> applies to <code class="docutils literal notranslate"><span class="pre">sent_messages</span></code>, <code class="docutils literal notranslate"><span class="pre">messages</span></code>,
-<code class="docutils literal notranslate"><span class="pre">message_status_events</span></code>, <code class="docutils literal notranslate"><span class="pre">metric_gauges</span></code>, <code class="docutils literal notranslate"><span class="pre">metric_sums</span></code>, and
-<code class="docutils literal notranslate"><span class="pre">metric_histograms</span></code>, <code class="docutils literal notranslate"><span class="pre">spans</span></code>, <code class="docutils literal notranslate"><span class="pre">span_events</span></code>, and <code class="docutils literal notranslate"><span class="pre">events</span></code>. Trace tables are
+<code class="docutils literal notranslate"><span class="pre">message_status_events</span></code>, <code class="docutils literal notranslate"><span class="pre">metric_gauges</span></code>, <code class="docutils literal notranslate"><span class="pre">metric_sums</span></code>,
+<code class="docutils literal notranslate"><span class="pre">metric_histograms</span></code>, <code class="docutils literal notranslate"><span class="pre">spans</span></code>, <code class="docutils literal notranslate"><span class="pre">span_events</span></code>, <code class="docutils literal notranslate"><span class="pre">events</span></code>, <code class="docutils literal notranslate"><span class="pre">host_metrics</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">gpu_metrics</span></code>.
+Trace tables are
 filtered independently by row timestamp, with spans filtered before dependent
 trace rows. A recent trace row is not displayed by span-joined views if its span
 has already expired. The default is 3600 seconds. Set it to <code class="docutils literal notranslate"><span class="pre">0</span></code> to disable
@@ -1534,6 +1599,154 @@ message delivery.</p></li>
 a point in time.</p></li>
 </ul>
 </section>
+<section id="host-metrics">
+<h2>Host metrics<a class="headerlink" href="#host-metrics" title="Link to this heading">#</a></h2>
+<p>Every telemetry host samples its own CPU, load average, memory, swap, network,
+and disk usage into <code class="docutils literal notranslate"><span class="pre">host_metrics</span></code>, one row per host per interval.
+<code class="docutils literal notranslate"><span class="pre">TelemetryConfig.host_metrics_interval_secs</span></code> sets the interval; the default is
+1 second, and <code class="docutils literal notranslate"><span class="pre">0</span></code> disables sampling. Each wait varies randomly by about 10%
+around the interval, so hosts do not sample in lockstep. Samplers run next to
+each host’s telemetry collector, including the client host. Values are
+host-wide, not limited to the job’s container or cgroup.</p>
+<p>A host has one row per sample, so <code class="docutils literal notranslate"><span class="pre">hostname</span></code> alone is not unique; <code class="docutils literal notranslate"><span class="pre">hostname</span></code>
+and <code class="docutils literal notranslate"><span class="pre">timestamp_us</span></code> together identify a row.</p>
+<p>To find the metrics for a Monarch host, start from its <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> in
+<code class="docutils literal notranslate"><span class="pre">actors</span></code>, find its snapshot row in <code class="docutils literal notranslate"><span class="pre">host_nodes</span></code>, whose <code class="docutils literal notranslate"><span class="pre">node_id</span></code> is <code class="docutils literal notranslate"><span class="pre">host:</span></code>
+followed by the agent’s <code class="docutils literal notranslate"><span class="pre">full_name</span></code>, and join <code class="docutils literal notranslate"><span class="pre">host_nodes.hostname</span></code> to
+<code class="docutils literal notranslate"><span class="pre">host_metrics.hostname</span></code>. Several Monarch hosts on one machine all match that
+machine’s rows. Snapshots repeat every <code class="docutils literal notranslate"><span class="pre">snapshot_interval_secs</span></code>, so pick one
+snapshot to avoid duplicate rows:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">WITH</span><span class="w"> </span><span class="n">latest</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="n">snapshot_id</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">snapshots</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">snapshot_ts</span><span class="w"> </span><span class="k">DESC</span><span class="w"> </span><span class="k">LIMIT</span><span class="w"> </span><span class="mi">1</span>
+<span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="n">full_name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">host_agent</span><span class="p">,</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="n">rank</span><span class="p">,</span><span class="w"> </span><span class="n">hm</span><span class="p">.</span><span class="n">timestamp_us</span><span class="p">,</span><span class="w"> </span><span class="n">hm</span><span class="p">.</span><span class="n">cpu_percent</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">actors</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">a</span>
+<span class="k">JOIN</span><span class="w"> </span><span class="n">meshes</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">m</span><span class="p">.</span><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="n">mesh_id</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">m</span><span class="p">.</span><span class="k">class</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;Host&#39;</span>
+<span class="k">JOIN</span><span class="w"> </span><span class="n">host_nodes</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">hn</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">hn</span><span class="p">.</span><span class="n">node_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;host:&#39;</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="n">full_name</span>
+<span class="k">JOIN</span><span class="w"> </span><span class="n">latest</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">latest</span><span class="p">.</span><span class="n">snapshot_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">hn</span><span class="p">.</span><span class="n">snapshot_id</span>
+<span class="k">JOIN</span><span class="w"> </span><span class="n">host_metrics</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">hm</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">hm</span><span class="p">.</span><span class="n">hostname</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">hn</span><span class="p">.</span><span class="n">hostname</span>
+<span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="n">rank</span><span class="p">,</span><span class="w"> </span><span class="n">hm</span><span class="p">.</span><span class="n">timestamp_us</span>
+</pre></div>
+</div>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timestamp_us</span></code></p></td>
+<td><p>int64</p></td>
+<td><p>Sample time, microseconds since the Unix epoch</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hostname</span></code></p></td>
+<td><p>string</p></td>
+<td><p>Host name of the sampling host</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cpu_percent</span></code></p></td>
+<td><p>float64</p></td>
+<td><p>System-wide CPU utilization, 0 to 100, since the previous sample</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cpu_count</span></code></p></td>
+<td><p>uint64, nullable</p></td>
+<td><p>Number of logical CPUs; null when it cannot be determined</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">load_avg_1m</span></code>, <code class="docutils literal notranslate"><span class="pre">load_avg_5m</span></code>, <code class="docutils literal notranslate"><span class="pre">load_avg_15m</span></code></p></td>
+<td><p>float64</p></td>
+<td><p>System load averages over 1, 5, and 15 minutes</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">memory_total_bytes</span></code></p></td>
+<td><p>uint64</p></td>
+<td><p>Total physical memory</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">memory_available_bytes</span></code></p></td>
+<td><p>uint64</p></td>
+<td><p>Memory available to new processes without swapping</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">memory_used_bytes</span></code></p></td>
+<td><p>uint64</p></td>
+<td><p>Memory in use</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">swap_used_bytes</span></code></p></td>
+<td><p>uint64</p></td>
+<td><p>Swap in use</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">net_rx_bytes</span></code>, <code class="docutils literal notranslate"><span class="pre">net_tx_bytes</span></code></p></td>
+<td><p>uint64</p></td>
+<td><p>Bytes received and sent on all network interfaces, cumulative since boot</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">disk_read_bytes</span></code>, <code class="docutils literal notranslate"><span class="pre">disk_write_bytes</span></code></p></td>
+<td><p>uint64, nullable</p></td>
+<td><p>Bytes read from and written to all disks, cumulative since boot; null where disk counters are unavailable, as in some containers</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">disk_root_free_bytes</span></code>, <code class="docutils literal notranslate"><span class="pre">disk_tmp_free_bytes</span></code></p></td>
+<td><p>uint64, nullable</p></td>
+<td><p>Free space available to unprivileged users on <code class="docutils literal notranslate"><span class="pre">/</span></code> and <code class="docutils literal notranslate"><span class="pre">/tmp</span></code>; null when the path cannot be read</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<section id="gpu-metrics">
+<h3>GPU metrics<a class="headerlink" href="#gpu-metrics" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">gpu_metrics</span></code> holds one row per GPU per interval: utilization, memory used and
+total, temperature, and power, read through NVML.
+<code class="docutils literal notranslate"><span class="pre">TelemetryConfig.gpu_metrics_interval_secs</span></code> sets the interval; the default is
+1 second, and <code class="docutils literal notranslate"><span class="pre">0</span></code> disables GPU sampling. Hosts without NVIDIA GPUs or NVML
+leave the table empty. All rows from one sampling pass share a timestamp.</p>
+<p><code class="docutils literal notranslate"><span class="pre">hostname</span></code>, <code class="docutils literal notranslate"><span class="pre">gpu_uuid</span></code>, and <code class="docutils literal notranslate"><span class="pre">timestamp_us</span></code> together identify a row.
+<code class="docutils literal notranslate"><span class="pre">gpu_metrics.hostname</span></code> matches <code class="docutils literal notranslate"><span class="pre">host_metrics.hostname</span></code> for the same host, but
+the two samplers run on separate timers, so their timestamps do not line up.
+Join the tables on <code class="docutils literal notranslate"><span class="pre">hostname</span></code> and a time window rather than on <code class="docutils literal notranslate"><span class="pre">timestamp_us</span></code>.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timestamp_us</span></code></p></td>
+<td><p>int64</p></td>
+<td><p>Sample time, microseconds since the Unix epoch</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hostname</span></code></p></td>
+<td><p>string</p></td>
+<td><p>Host name of the sampling host; matches <code class="docutils literal notranslate"><span class="pre">host_metrics.hostname</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gpu_index</span></code></p></td>
+<td><p>uint32</p></td>
+<td><p>NVML device index as seen by the sampling process; it can differ from the CUDA device ordinal and is renumbered inside containers</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gpu_uuid</span></code></p></td>
+<td><p>string</p></td>
+<td><p>NVML device UUID; the stable identifier for joins and de-duplication</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gpu_name</span></code></p></td>
+<td><p>string</p></td>
+<td><p>NVML product name, such as <code class="docutils literal notranslate"><span class="pre">NVIDIA</span> <span class="pre">A10G</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">utilization_percent</span></code></p></td>
+<td><p>float64, nullable</p></td>
+<td><p>Percent of NVML’s recent sample window in which at least one kernel was running; null when NVML does not support it</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">memory_used_bytes</span></code>, <code class="docutils literal notranslate"><span class="pre">memory_total_bytes</span></code></p></td>
+<td><p>uint64</p></td>
+<td><p>Device memory in use and total; a GPU whose memory NVML cannot read is skipped for that pass</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">temperature_c</span></code></p></td>
+<td><p>uint32, nullable</p></td>
+<td><p>GPU core temperature in degrees Celsius; null when unsupported</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">power_watts</span></code></p></td>
+<td><p>float64, nullable</p></td>
+<td><p>Board power draw in watts; null when unsupported</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
 <section id="troubleshooting">
 <h2>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -1551,6 +1764,7 @@ planning detail returned by the query service.</p></li>
 <ul class="simple">
 <li><p><a class="reference internal" href="metrics.html"><span class="doc std std-doc">Metrics</span></a></p></li>
 <li><p><a class="reference internal" href="observability.html"><span class="doc std std-doc">Observability overview</span></a></p></li>
+<li><p><a class="reference internal" href="profiling.html"><span class="doc std std-doc">Actor profiling</span></a></p></li>
 <li><p><a class="reference internal" href="monarch-dashboard.html"><span class="doc std std-doc">Monarch Dashboard</span></a></p></li>
 <li><p><a class="reference internal" href="admin-tui.html"><span class="doc std std-doc">Mesh Admin TUI</span></a></p></li>
 <li><p><a class="reference internal" href="generated/examples/otel_collector.html"><span class="doc std std-doc">OpenTelemetry and Grafana</span></a></p></li>
@@ -1611,11 +1825,11 @@ planning detail returned by the query service.</p></li>
       </div>
     </a>
     <a class="right-next"
-       href="metrics.html"
+       href="telemetry-persistence.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Metrics</p>
+        <p class="prev-next-title">Telemetry persistence</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1650,11 +1864,11 @@ planning detail returned by the query service.</p></li>
       </div>
     </a>
     <a class="right-next"
-       href="metrics.html"
+       href="telemetry-persistence.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Metrics</p>
+        <p class="prev-next-title">Telemetry persistence</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1684,6 +1898,10 @@ planning detail returned by the query service.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#query-examples">Query examples</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#architecture">Architecture</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#retention-and-snapshots">Retention and snapshots</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#host-metrics">Host metrics</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#gpu-metrics">GPU metrics</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#troubleshooting">Troubleshooting</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#related-documentation">Related documentation</a></li>
 </ul>
@@ -1857,7 +2075,7 @@ planning detail returned by the query service.</p></li>
        "headline": "Distributed Telemetry",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/distributed-telemetry.html",
-       "articleBody": "Distributed Telemetry# Monarch distributed telemetry collects actor-system events and OpenTelemetry metrics on each host and makes them queryable as one logical database. It uses Apache DataFusion, an extensible SQL query engine built on Apache Arrow. Distributed telemetry is the query layer behind the Monarch Dashboard and complements the live Mesh Admin TUI. Start with the observability overview if you are choosing a diagnostic surface or configuring a job for the first time. Quick start# Enable telemetry before obtaining job state: from monarch.job import ProcessJob, TelemetryConfig job = ProcessJob({\"workers\": 2}).enable_telemetry( TelemetryConfig(retention_secs=3600) ) state = job.state(cached_path=None) client = state.query_engine_client if client is None: raise RuntimeError(\"telemetry did not start\") result = client.query( \"\"\" SELECT a.full_name, s.new_status, s.reason, s.timestamp_us FROM actor_status_events AS s JOIN actors AS a ON a.id = s.actor_id ORDER BY s.timestamp_us DESC LIMIT 50 \"\"\" ) for row in result[\"rows\"]: print(row) QueryEngineClient.query() accepts DataFusion SQL and returns a dictionary whose rows value is a list of dictionaries. Timestamps ending in _us are microseconds since the Unix epoch. IDs are opaque join keys; do not infer meaning from their numeric values. Core tables# Table Contents actor_status_events Actor status transitions and reasons actors Actor identity, rank, mesh, and creation time events Structured tracing events and log fields meshes Mesh creation, shape, class, name, and parent view metric_gauges Gauge points with typed value_f64, value_i64, or value_u64 values metric_histograms Explicit histogram counts, typed summaries, bounds, and bucket counts metric_sums Counter and up-down-counter points with typed sums and sum semantics message_status_events Message delivery status transitions messages Individual sender-to-receiver message deliveries sent_messages One-to-many send operations and destination views span_events Span enter, exit, and close events spans Trace span metadata and parent relationships Mesh-introspection snapshots add actor_failures, actor_inbound_orderings, actor_nodes, children, host_nodes, nodes, ordering_sessions, proc_nodes, resolution_errors, root_nodes, and snapshots. Persisted py-spy captures add pyspy_dumps, pyspy_frames, pyspy_local_variables, and pyspy_stack_traces. Discover the current table catalog with: SELECT table_name FROM information_schema.tables ORDER BY table_name Metric tables# Metrics are split by OTel aggregation rather than numeric type. Query metric_gauges, metric_sums, or metric_histograms based on the instrument aggregation. Each table preserves f64, i64, and u64 in separate nullable columns so large integers do not lose precision. All metric rows include the instrument name, scope, unit, timestamps, point attributes, and resource attributes. Sum rows also include temporality and monotonicity. Histogram rows retain the count, typed sum, optional typed minimum and maximum, explicit bounds, and bucket counts. Bounds and bucket counts are JSON arrays in bounds_json and bucket_counts_json. Query examples# Count actor status transitions: SELECT new_status, COUNT(*) AS count FROM actor_status_events GROUP BY new_status ORDER BY count DESC Find recent actor failure events: SELECT a.full_name, s.reason, s.timestamp_us FROM actor_status_events AS s JOIN actors AS a ON a.id = s.actor_id WHERE s.new_status = \u0027Failed\u0027 ORDER BY s.timestamp_us DESC LIMIT 100 Summarize message delivery transitions: SELECT status, COUNT(*) AS count FROM message_status_events GROUP BY status ORDER BY count DESC Sum delta counter points within the retention window: SELECT scope_name, SUM(sum_u64) AS mailbox_posts FROM metric_sums WHERE name = \u0027mailbox.posts\u0027 AND temporality = \u0027delta\u0027 AND sum_u64 IS NOT NULL GROUP BY scope_name ORDER BY mailbox_posts DESC Architecture# Each producer writes framed Arrow IPC batches to a host-local Unix socket. Trace and entity dispatchers write their corresponding tables, while an OTel UDS metric exporter writes one frame for each non-empty aggregation buffer. A host-local TelemetryActor owns the socket, a Rust DatabaseScanner, and the in-memory tables. The root query engine plans SQL with DataFusion, pushes table scans to active collectors, and merges their Arrow results. The telemetry job sidecar owns the root collector and query service. Its in-memory state survives repeated state() calls and parent-process refreshes for the same job allocation. Calling job.kill() stops the sidecar and removes that state. Distributed scans are best-effort. If a worker collector fails or times out, the query can return reduced coverage while the job and healthy collectors continue operating. Retention and snapshots# TelemetryConfig.retention_secs applies to sent_messages, messages, message_status_events, metric_gauges, metric_sums, and metric_histograms, spans, span_events, and events. Trace tables are filtered independently by row timestamp, with spans filtered before dependent trace rows. A recent trace row is not displayed by span-joined views if its span has already expired. The default is 3600 seconds. Set it to 0 to disable automatic retention. Periodic maintenance runs approximately once per tenth of the retention window, bounded between 30 seconds and 5 minutes and never longer than the retention window. Queries do not run retention, so expired rows can remain visible until the next periodic sweep. Other core tables have no automatic retention window. TelemetryConfig.snapshot_interval_secs controls periodic Mesh Admin topology snapshots. The default is 30 seconds; set it to 0 to disable them. Snapshots and event telemetry describe different views of the same job: Event tables record changes such as actor creation, status transitions, and message delivery. Snapshot tables capture the administrative topology and actor diagnostics at a point in time. Troubleshooting# If state.query_engine_client is None, telemetry bootstrap failed. Check the parent-process logs for job sidecar telemetry bootstrap failed. If a query is empty immediately after work runs, retry briefly; ingestion and collector flushes are asynchronous. If rows from one host are missing, inspect collector warnings and use the Mesh Admin TUI to inspect that host. If a SQL request fails, the raised HTTP error includes the DataFusion parse or planning detail returned by the query service. Related documentation# Metrics Observability overview Monarch Dashboard Mesh Admin TUI OpenTelemetry and Grafana Jobs API",
+       "articleBody": "Distributed Telemetry# Monarch distributed telemetry collects actor-system events and OpenTelemetry metrics on each host and makes them queryable as one logical database. It uses Apache DataFusion, an extensible SQL query engine built on Apache Arrow. Distributed telemetry is the query layer behind the Monarch Dashboard and actor profiling, and complements the live Mesh Admin TUI. Start with the observability overview if you are choosing a diagnostic surface or configuring a job for the first time. Quick start# Enable telemetry before obtaining job state: from monarch.job import ProcessJob, TelemetryConfig job = ProcessJob({\"workers\": 2}).enable_telemetry( TelemetryConfig(retention_secs=3600) ) state = job.state(cached_path=None) client = state.query_engine_client if client is None: raise RuntimeError(\"telemetry did not start\") result = client.query( \"\"\" SELECT a.full_name, s.new_status, s.reason, s.timestamp_us FROM actor_status_events AS s JOIN actors AS a ON a.id = s.actor_id ORDER BY s.timestamp_us DESC LIMIT 50 \"\"\" ) for row in result[\"rows\"]: print(row) QueryEngineClient.query() accepts DataFusion SQL and returns a dictionary whose rows value is a list of dictionaries. Timestamps ending in _us are microseconds since the Unix epoch. IDs are opaque join keys; do not infer meaning from their numeric values. Core tables# Table Contents actor_status_events Actor status transitions and reasons actors Actor identity, rank, mesh, and creation time events Structured tracing events and log fields gpu_metrics Per-device GPU utilization, memory, temperature, and power samples host_metrics Per-host CPU, load, memory, swap, network, and disk samples meshes Mesh creation, shape, class, name, and parent view metric_gauges Gauge points with typed value_f64, value_i64, or value_u64 values metric_histograms Explicit histogram counts, typed summaries, bounds, and bucket counts metric_sums Counter and up-down-counter points with typed sums and sum semantics message_status_events Message delivery status transitions messages Individual sender-to-receiver message deliveries sent_messages One-to-many send operations and destination views span_events Span enter, exit, and close events spans Trace span metadata and parent relationships Mesh-introspection snapshots add actor_failures, actor_inbound_orderings, actor_nodes, children, host_nodes, nodes, ordering_sessions, proc_nodes, resolution_errors, root_nodes, and snapshots. Persisted py-spy captures add pyspy_dumps, pyspy_frames, pyspy_local_variables, and pyspy_stack_traces. Discover the current table catalog with: SELECT table_name FROM information_schema.tables ORDER BY table_name Metric tables# Metrics are split by OTel aggregation rather than numeric type. Query metric_gauges, metric_sums, or metric_histograms based on the instrument aggregation. Each table preserves f64, i64, and u64 in separate nullable columns so large integers do not lose precision. All metric rows include the instrument name, scope, unit, timestamps, point attributes, and resource attributes. Sum rows also include temporality and monotonicity. Histogram rows retain the count, typed sum, optional typed minimum and maximum, explicit bounds, and bucket counts. Bounds and bucket counts are JSON arrays in bounds_json and bucket_counts_json. Query examples# Count actor status transitions: SELECT new_status, COUNT(*) AS count FROM actor_status_events GROUP BY new_status ORDER BY count DESC Find recent actor failure events: SELECT a.full_name, s.reason, s.timestamp_us FROM actor_status_events AS s JOIN actors AS a ON a.id = s.actor_id WHERE s.new_status = \u0027Failed\u0027 ORDER BY s.timestamp_us DESC LIMIT 100 Summarize message delivery transitions: SELECT status, COUNT(*) AS count FROM message_status_events GROUP BY status ORDER BY count DESC Sum delta counter points within the retention window: SELECT scope_name, SUM(sum_u64) AS mailbox_posts FROM metric_sums WHERE name = \u0027mailbox.posts\u0027 AND temporality = \u0027delta\u0027 AND sum_u64 IS NOT NULL GROUP BY scope_name ORDER BY mailbox_posts DESC Architecture# Each producer writes framed Arrow IPC batches to a host-local Unix socket. Trace and entity dispatchers write their corresponding tables, while an OTel UDS metric exporter writes one frame for each non-empty aggregation buffer. A host-local TelemetryActor owns the socket, a Rust DatabaseScanner, and the in-memory tables. The root query engine plans SQL with DataFusion, pushes table scans to active collectors, and merges their Arrow results. The telemetry job sidecar owns the root collector and query service. Its in-memory state survives repeated state() calls and parent-process refreshes for the same job allocation. Calling job.kill() stops the sidecar and removes that state. Distributed scans are best-effort. If a worker collector fails or times out, the query can return reduced coverage while the job and healthy collectors continue operating. To keep telemetry after the job stops, configure TelemetryConfig.persist_dir. The telemetry persistence guide covers storage paths, offline SQL and dashboards, and recovery after expected or unexpected shutdown. Retention and snapshots# TelemetryConfig.retention_secs applies to sent_messages, messages, message_status_events, metric_gauges, metric_sums, metric_histograms, spans, span_events, events, host_metrics, and gpu_metrics. Trace tables are filtered independently by row timestamp, with spans filtered before dependent trace rows. A recent trace row is not displayed by span-joined views if its span has already expired. The default is 3600 seconds. Set it to 0 to disable automatic retention. Periodic maintenance runs approximately once per tenth of the retention window, bounded between 30 seconds and 5 minutes and never longer than the retention window. Queries do not run retention, so expired rows can remain visible until the next periodic sweep. Other core tables have no automatic retention window. TelemetryConfig.snapshot_interval_secs controls periodic Mesh Admin topology snapshots. The default is 30 seconds; set it to 0 to disable them. Snapshots and event telemetry describe different views of the same job: Event tables record changes such as actor creation, status transitions, and message delivery. Snapshot tables capture the administrative topology and actor diagnostics at a point in time. Host metrics# Every telemetry host samples its own CPU, load average, memory, swap, network, and disk usage into host_metrics, one row per host per interval. TelemetryConfig.host_metrics_interval_secs sets the interval; the default is 1 second, and 0 disables sampling. Each wait varies randomly by about 10% around the interval, so hosts do not sample in lockstep. Samplers run next to each host\u2019s telemetry collector, including the client host. Values are host-wide, not limited to the job\u2019s container or cgroup. A host has one row per sample, so hostname alone is not unique; hostname and timestamp_us together identify a row. To find the metrics for a Monarch host, start from its HostAgent in actors, find its snapshot row in host_nodes, whose node_id is host: followed by the agent\u2019s full_name, and join host_nodes.hostname to host_metrics.hostname. Several Monarch hosts on one machine all match that machine\u2019s rows. Snapshots repeat every snapshot_interval_secs, so pick one snapshot to avoid duplicate rows: WITH latest AS ( SELECT snapshot_id FROM snapshots ORDER BY snapshot_ts DESC LIMIT 1 ) SELECT a.full_name AS host_agent, a.rank, hm.timestamp_us, hm.cpu_percent FROM actors AS a JOIN meshes AS m ON m.id = a.mesh_id AND m.class = \u0027Host\u0027 JOIN host_nodes AS hn ON hn.node_id = \u0027host:\u0027 || a.full_name JOIN latest ON latest.snapshot_id = hn.snapshot_id JOIN host_metrics AS hm ON hm.hostname = hn.hostname ORDER BY a.rank, hm.timestamp_us Column Type Description timestamp_us int64 Sample time, microseconds since the Unix epoch hostname string Host name of the sampling host cpu_percent float64 System-wide CPU utilization, 0 to 100, since the previous sample cpu_count uint64, nullable Number of logical CPUs; null when it cannot be determined load_avg_1m, load_avg_5m, load_avg_15m float64 System load averages over 1, 5, and 15 minutes memory_total_bytes uint64 Total physical memory memory_available_bytes uint64 Memory available to new processes without swapping memory_used_bytes uint64 Memory in use swap_used_bytes uint64 Swap in use net_rx_bytes, net_tx_bytes uint64 Bytes received and sent on all network interfaces, cumulative since boot disk_read_bytes, disk_write_bytes uint64, nullable Bytes read from and written to all disks, cumulative since boot; null where disk counters are unavailable, as in some containers disk_root_free_bytes, disk_tmp_free_bytes uint64, nullable Free space available to unprivileged users on / and /tmp; null when the path cannot be read GPU metrics# gpu_metrics holds one row per GPU per interval: utilization, memory used and total, temperature, and power, read through NVML. TelemetryConfig.gpu_metrics_interval_secs sets the interval; the default is 1 second, and 0 disables GPU sampling. Hosts without NVIDIA GPUs or NVML leave the table empty. All rows from one sampling pass share a timestamp. hostname, gpu_uuid, and timestamp_us together identify a row. gpu_metrics.hostname matches host_metrics.hostname for the same host, but the two samplers run on separate timers, so their timestamps do not line up. Join the tables on hostname and a time window rather than on timestamp_us. Column Type Description timestamp_us int64 Sample time, microseconds since the Unix epoch hostname string Host name of the sampling host; matches host_metrics.hostname gpu_index uint32 NVML device index as seen by the sampling process; it can differ from the CUDA device ordinal and is renumbered inside containers gpu_uuid string NVML device UUID; the stable identifier for joins and de-duplication gpu_name string NVML product name, such as NVIDIA A10G utilization_percent float64, nullable Percent of NVML\u2019s recent sample window in which at least one kernel was running; null when NVML does not support it memory_used_bytes, memory_total_bytes uint64 Device memory in use and total; a GPU whose memory NVML cannot read is skipped for that pass temperature_c uint32, nullable GPU core temperature in degrees Celsius; null when unsupported power_watts float64, nullable Board power draw in watts; null when unsupported Troubleshooting# If state.query_engine_client is None, telemetry bootstrap failed. Check the parent-process logs for job sidecar telemetry bootstrap failed. If a query is empty immediately after work runs, retry briefly; ingestion and collector flushes are asynchronous. If rows from one host are missing, inspect collector warnings and use the Mesh Admin TUI to inspect that host. If a SQL request fails, the raised HTTP error includes the DataFusion parse or planning detail returned by the query service. Related documentation# Metrics Observability overview Actor profiling Monarch Dashboard Mesh Admin TUI OpenTelemetry and Grafana Jobs API",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",
