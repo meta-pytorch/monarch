@@ -20,6 +20,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sysconfig
 import tempfile
 import time
 import uuid
@@ -148,7 +149,7 @@ def _platform_closure(program: str) -> list[Path]:
     PAR's library path."""
     par = Path(program)
     link_tree = par.with_name(par.stem + "#link-tree")
-    python_lib = _PLATFORM / "lib/python3.12"
+    python_lib = Path(sysconfig.get_path("stdlib"))
     elves = [
         path
         for root in (link_tree, python_lib / "lib-dynload")
