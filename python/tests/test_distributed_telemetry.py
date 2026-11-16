@@ -43,7 +43,6 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch._src.actor.actor_mesh import Actor, ActorMesh, current_rank
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.telemetry import TracingForwarder
 from monarch._src.job.job_sidecar import find_job_sidecar
 from monarch._src.job.persisted_telemetry import open_persisted_engine
 from monarch._src.job.telemetry_ingest import encode_frame, FrameWriter
@@ -80,16 +79,8 @@ class SenderActor(Actor):
 _LINKED_LOGGER = logging.getLogger("telemetry_links")
 
 
-def _forward_linked_logs() -> None:
-    if not any(isinstance(h, TracingForwarder) for h in _LINKED_LOGGER.handlers):
-        _LINKED_LOGGER.addHandler(TracingForwarder())
-
-
 class LinkedCallee(Actor):
     """Handles a call and logs while handling it."""
-
-    def __init__(self) -> None:
-        _forward_linked_logs()
 
     @endpoint
     def work(self, tag: str) -> None:
@@ -98,9 +89,6 @@ class LinkedCallee(Actor):
 
 class LinkedCaller(Actor):
     """Logs, then calls a `LinkedCallee` on another host."""
-
-    def __init__(self) -> None:
-        _forward_linked_logs()
 
     @endpoint
     def call_peer(self, peer: LinkedCallee, tag: str) -> None:
