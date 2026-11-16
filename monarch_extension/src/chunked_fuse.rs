@@ -372,9 +372,6 @@ struct ChunkedFuseFs {
 }
 
 impl PathFilesystem for ChunkedFuseFs {
-    type DirEntryStream<'a> = stream::Iter<std::vec::IntoIter<FuseResult<DirectoryEntry>>>;
-    type DirEntryPlusStream<'a> = stream::Iter<std::vec::IntoIter<FuseResult<DirectoryEntryPlus>>>;
-
     async fn init(&self, _req: Request) -> FuseResult<ReplyInit> {
         Ok(ReplyInit {
             max_write: NonZeroU32::new(16 * 1024).expect("16KB is non-zero"),
@@ -521,7 +518,9 @@ impl PathFilesystem for ChunkedFuseFs {
         parent: &'a OsStr,
         _fh: u64,
         offset: i64,
-    ) -> FuseResult<ReplyDirectory<Self::DirEntryStream<'a>>> {
+    ) -> FuseResult<
+        ReplyDirectory<impl futures::Stream<Item = FuseResult<DirectoryEntry>> + Send + 'a>,
+    > {
         let state = self.state.read().unwrap();
         let entry = state
             .lookup_entry(parent)
@@ -579,7 +578,9 @@ impl PathFilesystem for ChunkedFuseFs {
         _fh: u64,
         offset: u64,
         _lock_owner: u64,
-    ) -> FuseResult<ReplyDirectoryPlus<Self::DirEntryPlusStream<'a>>> {
+    ) -> FuseResult<
+        ReplyDirectoryPlus<impl futures::Stream<Item = FuseResult<DirectoryEntryPlus>> + Send + 'a>,
+    > {
         let state = self.state.read().unwrap();
         let entry = state
             .lookup_entry(parent)

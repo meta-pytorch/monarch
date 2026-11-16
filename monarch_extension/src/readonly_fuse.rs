@@ -257,9 +257,6 @@ struct ReadOnlyFs {
 }
 
 impl PathFilesystem for ReadOnlyFs {
-    type DirEntryStream<'a> = stream::Iter<std::vec::IntoIter<FuseResult<DirectoryEntry>>>;
-    type DirEntryPlusStream<'a> = stream::Iter<std::vec::IntoIter<FuseResult<DirectoryEntryPlus>>>;
-
     async fn init(&self, _req: Request) -> FuseResult<ReplyInit> {
         Ok(ReplyInit {
             max_write: NonZeroU32::new(16 * 1024).expect("non-zero"),
@@ -324,7 +321,9 @@ impl PathFilesystem for ReadOnlyFs {
         parent: &'a OsStr,
         _fh: u64,
         offset: i64,
-    ) -> FuseResult<ReplyDirectory<Self::DirEntryStream<'a>>> {
+    ) -> FuseResult<
+        ReplyDirectory<impl futures::Stream<Item = FuseResult<DirectoryEntry>> + Send + 'a>,
+    > {
         let path_str = parent.to_string_lossy().into_owned();
         let names = do_readdir(&self.actor, path_str).await?;
 
@@ -372,7 +371,9 @@ impl PathFilesystem for ReadOnlyFs {
         _fh: u64,
         offset: u64,
         _lock_owner: u64,
-    ) -> FuseResult<ReplyDirectoryPlus<Self::DirEntryPlusStream<'a>>> {
+    ) -> FuseResult<
+        ReplyDirectoryPlus<impl futures::Stream<Item = FuseResult<DirectoryEntryPlus>> + Send + 'a>,
+    > {
         let path_str = parent.to_string_lossy().into_owned();
 
         // Fetch parent attr and child names concurrently, then attrs for children.
