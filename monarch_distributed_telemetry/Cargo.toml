@@ -19,7 +19,7 @@ arrow-pyarrow = "=57.3.0"
 arrow-schema = "=57.3.0"
 arrow-select = "=57.3.0"
 async-trait = "0.1.92"
-datafusion = "52.5.0"
+datafusion = { version = "52.5.0", features = ["datetime_expressions", "nested_expressions", "recursive_protection", "sql", "string_expressions", "unicode_expressions"], default-features = false }
 erased-serde = "0.4.11"
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
@@ -29,7 +29,6 @@ monarch_gil = { version = "0.0.0", path = "../monarch_gil" }
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 monarch_record_batch = { version = "0.0.0", path = "../monarch_record_batch" }
 monarch_telemetry_schema = { version = "0.0.0", path = "../monarch_telemetry_schema" }
-parquet = "=57.3.0"
 pyo3 = { version = "0.27", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
