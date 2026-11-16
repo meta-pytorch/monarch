@@ -46,6 +46,7 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
+use hyperactor::mailbox::headers::TELEMETRY_CORRELATION_ID;
 use hyperactor::monitor::MonitorFailure;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_cast::TilingPolicy;
@@ -684,9 +685,8 @@ impl<A: Referable> DataActorMesh<A> {
         if self.region().num_ranks() == 0 {
             return Ok(());
         }
-        self.emit_sent_message_telemetry(cx, self.region());
-
         let mut headers = caller_headers.clone();
+        self.emit_sent_message_telemetry(cx, self.region(), &mut headers);
         headers.set(
             casting::CAST_ORIGINATING_SENDER,
             cx.instance().self_addr().clone(),
@@ -706,7 +706,7 @@ impl<A: Referable> DataActorMesh<A> {
     pub fn cast_choose_with_headers<M>(
         &self,
         cx: &impl context::Actor,
-        caller_headers: Flattrs,
+        mut caller_headers: Flattrs,
         message: M,
     ) where
         A: RemoteHandles<M>,
@@ -723,6 +723,7 @@ impl<A: Referable> DataActorMesh<A> {
                 ndslice::Slice::new(0, Vec::new(), Vec::new())
                     .expect("zero-dimensional slice is valid"),
             ),
+            &mut caller_headers,
         );
         let actor = self
             .get(rand::random::<u64>() as usize % num_ranks)
@@ -731,8 +732,18 @@ impl<A: Referable> DataActorMesh<A> {
     }
 
     /// Record a sent message in telemetry.
-    fn emit_sent_message_telemetry(&self, cx: &impl context::Actor, region: &Region) {
-        notify_sent_message(cx, telemetry_data_actor_mesh_id(self.id.uid()), region);
+    fn emit_sent_message_telemetry(
+        &self,
+        cx: &impl context::Actor,
+        region: &Region,
+        headers: &mut Flattrs,
+    ) {
+        notify_sent_message(
+            cx,
+            telemetry_data_actor_mesh_id(self.id.uid()),
+            region,
+            headers,
+        );
     }
 }
 
@@ -756,11 +767,27 @@ pub(crate) fn notify_mesh_created(
     }
 }
 
-/// Record a message sent to `region` of the telemetry mesh `actor_mesh_id`.
-fn notify_sent_message(cx: &impl context::Actor, actor_mesh_id: u64, region: &Region) {
+/// Record a message sent to `region` of the telemetry mesh `actor_mesh_id`
+/// under the correlation id in `headers`, assigning one if the caller did not.
+fn notify_sent_message(
+    cx: &impl context::Actor,
+    actor_mesh_id: u64,
+    region: &Region,
+    headers: &mut Flattrs,
+) {
+    let sender_actor_id = hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_addr().id());
+    let id = match headers.get(TELEMETRY_CORRELATION_ID) {
+        Some(id) => id,
+        None => {
+            let id = hyperactor_telemetry::generate_correlation_id(sender_actor_id);
+            headers.set(TELEMETRY_CORRELATION_ID, id);
+            id
+        }
+    };
     hyperactor_telemetry::notify_sent_message(hyperactor_telemetry::SentMessageEvent {
+        id,
         timestamp: std::time::SystemTime::now(),
-        sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_addr().id()),
+        sender_actor_id,
         actor_mesh_id,
         view_json: serde_json::to_string(region).unwrap_or_default(),
         shape_json: {
@@ -1590,9 +1617,8 @@ impl<A: Referable> ManagedActorMeshRef<A> {
         if self.len() == 0 {
             return Ok(());
         }
-        self.emit_sent_message_telemetry(cx, self.region());
-
         let mut headers = caller_headers.clone();
+        self.emit_sent_message_telemetry(cx, self.region(), &mut headers);
         headers.set(
             casting::CAST_ORIGINATING_SENDER,
             cx.instance().self_addr().clone(),
@@ -1623,6 +1649,7 @@ impl<A: Referable> ManagedActorMeshRef<A> {
         if num_ranks == 0 {
             return Ok(());
         }
+        let mut headers = caller_headers.clone();
         self.emit_sent_message_telemetry(
             cx,
             &Region::new(
@@ -1630,6 +1657,7 @@ impl<A: Referable> ManagedActorMeshRef<A> {
                 ndslice::Slice::new(0, Vec::new(), Vec::new())
                     .expect("zero-dimensional slice is valid"),
             ),
+            &mut headers,
         );
 
         let rank_index = rand::random::<u64>() as usize % num_ranks;
@@ -1648,17 +1676,22 @@ impl<A: Referable> ManagedActorMeshRef<A> {
             )
         })?;
 
-        self.post_cast_direct(cx, point, actor, message, caller_headers)
+        self.post_cast_direct(cx, point, actor, message, &headers)
     }
 
-    fn emit_sent_message_telemetry(&self, cx: &impl context::Actor, region: &Region) {
+    fn emit_sent_message_telemetry(
+        &self,
+        cx: &impl context::Actor,
+        region: &Region,
+        headers: &mut Flattrs,
+    ) {
         let actor_mesh_id = match &self.proc_mesh_id {
             Some(proc_mesh_id) => telemetry_actor_mesh_id(proc_mesh_id, &self.id),
             // No backing proc mesh (e.g. the host-agent mesh): key telemetry
             // on the actor mesh id alone.
             None => hyperactor_telemetry::hash_to_u64(&self.id),
         };
-        notify_sent_message(cx, actor_mesh_id, region);
+        notify_sent_message(cx, actor_mesh_id, region, headers);
     }
 
     #[allow(clippy::result_large_err)]

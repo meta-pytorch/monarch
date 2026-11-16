@@ -1308,6 +1308,7 @@ mod tests {
             to_actor_id: 30,
             endpoint: Some("old".to_string()),
             port_index: None,
+            correlation_id: None,
         });
         messages.insert(Message {
             id: 4,
@@ -1316,6 +1317,7 @@ mod tests {
             to_actor_id: 31,
             endpoint: Some("fresh".to_string()),
             port_index: Some(4),
+            correlation_id: Some(1),
         });
         ingest_batch(scanner, MESSAGES, messages.drain_to_record_batch().unwrap()).await;
 
@@ -1377,6 +1379,7 @@ mod tests {
                 line: None,
                 actor: None,
                 message_id: None,
+                correlation_id: None,
             });
         }
         ingest_batch(scanner, SPANS, spans.drain_to_record_batch().unwrap()).await;
