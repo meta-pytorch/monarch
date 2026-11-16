@@ -44,6 +44,26 @@ export interface Actor {
   execution_id?: string | null;
 }
 
+/** A log line recorded while the actor ran (`events.actor`). */
+export interface ActorLog {
+  timestamp_us: number;
+  level: string;
+  target: string;
+  message: string | null;
+  message_id: EntityId | null;
+}
+
+/** An actor's metric totalled over the run (`metric_*.actor`). */
+export interface ActorMetric {
+  name: string;
+  unit: string;
+  /** `current` is an up-down counter whose total is its current value. */
+  kind: "histogram" | "counter" | "current";
+  /** Histogram sample count; null for counters. */
+  count: number | null;
+  total: number | null;
+}
+
 export interface Execution {
   seq: number;
   id: string;

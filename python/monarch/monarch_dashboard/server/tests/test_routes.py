@@ -10,10 +10,12 @@ Uses Flask's test client to exercise every endpoint, verifying status codes,
 JSON structure, filtering, and 404 behaviour.
 """
 
+import json
 import unittest
 from typing import Any
 from unittest.mock import patch
 
+import pyarrow as pa
 from monarch.monarch_dashboard.fake_data.generate import generate
 from monarch.monarch_dashboard.server import admin_dag, routes
 from monarch.monarch_dashboard.server.app import create_app
@@ -508,6 +510,127 @@ class SnapshotIngestRouteTest(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(self.adapter.calls, [])
+
+
+class ActorTelemetryRoutesTest(unittest.TestCase):
+    """Actor drill-ins that join telemetry tables by the actor's full name."""
+
+    def setUp(self):
+        self.adapter = generate()
+        self.app = create_app(self.adapter)
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+        self.name = self.adapter.query("SELECT full_name FROM actors WHERE id = 1")[0][
+            "full_name"
+        ]
+
+    def _add_telemetry(self):
+        log = {"level": "WARN", "target": "log_events", "message_id": 5}
+        self.adapter.set_table(
+            "events",
+            pa.Table.from_pylist(
+                [
+                    log
+                    | {
+                        "timestamp_us": 2,
+                        "actor": self.name,
+                        "fields_json": json.dumps({"message": "second"}),
+                    },
+                    log
+                    | {
+                        "timestamp_us": 1,
+                        "actor": self.name,
+                        "fields_json": json.dumps({"message": "first"}),
+                    },
+                    log
+                    | {
+                        "timestamp_us": 3,
+                        "actor": "other",
+                        "fields_json": json.dumps({"message": "other"}),
+                    },
+                ]
+            ),
+        )
+        values = pa.schema(
+            [
+                pa.field("actor", pa.string()),
+                pa.field("name", pa.string()),
+                pa.field("unit", pa.string()),
+                pa.field("count", pa.uint64()),
+                pa.field("is_monotonic", pa.bool_()),
+                pa.field("sum_f64", pa.float64()),
+                pa.field("sum_i64", pa.int64()),
+                pa.field("sum_u64", pa.uint64()),
+            ]
+        )
+        histogram = {"name": "actor.handler.ns", "unit": "", "count": 2, "sum_u64": 30}
+        self.adapter.set_table(
+            "metric_histograms",
+            pa.Table.from_pylist(
+                [
+                    histogram | {"actor": self.name},
+                    histogram | {"actor": self.name},
+                    histogram | {"actor": "other"},
+                ],
+                schema=values.remove(values.get_field_index("is_monotonic")),
+            ),
+        )
+        self.adapter.set_table(
+            "metric_sums",
+            pa.Table.from_pylist(
+                [
+                    {
+                        "actor": self.name,
+                        "name": "actor.received",
+                        "unit": "",
+                        "is_monotonic": True,
+                        "sum_i64": 4,
+                    },
+                    {
+                        "actor": self.name,
+                        "name": "actor.queue",
+                        "unit": "",
+                        "is_monotonic": False,
+                        "sum_i64": 1,
+                    },
+                    {
+                        "actor": self.name,
+                        "name": "actor.queue",
+                        "unit": "",
+                        "is_monotonic": False,
+                        "sum_i64": -1,
+                    },
+                ],
+                schema=values.remove(values.get_field_index("count")),
+            ),
+        )
+
+    def test_actor_logs_are_its_own_oldest_first(self):
+        self._add_telemetry()
+        logs = self.client.get("/api/actors/1/logs").get_json()
+        self.assertEqual([log["message"] for log in logs], ["first", "second"])
+        self.assertEqual(logs[0]["message_id"], "5")
+
+    def test_actor_metrics_are_totalled(self):
+        self._add_telemetry()
+        metrics = self.client.get("/api/actors/1/metrics").get_json()
+        self.assertEqual(
+            [(m["name"], m["kind"], m["count"], m["total"]) for m in metrics],
+            [
+                ("actor.handler.ns", "histogram", 4, 60.0),
+                ("actor.queue", "current", None, 0.0),
+                ("actor.received", "counter", None, 4.0),
+            ],
+        )
+
+    def test_missing_telemetry_tables_give_empty_results(self):
+        self.assertEqual(self.client.get("/api/actors/1/logs").get_json(), [])
+        self.assertEqual(self.client.get("/api/actors/1/metrics").get_json(), [])
+
+    def test_unknown_actor_is_not_found(self):
+        for path in ("logs", "metrics"):
+            resp = self.client.get(f"/api/actors/9999/{path}")
+            self.assertEqual(resp.status_code, 404)
 
 
 # ---------------------------------------------------------------------------
