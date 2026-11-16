@@ -1423,6 +1423,7 @@ mod tests {
 
         let mut gauges = MetricGaugeBuffer::default();
         gauges.insert(MetricGauge {
+            actor: None,
             name: "old_gauge".to_string(),
             timestamp_us: old_us,
             start_timestamp_us: None,
@@ -1435,6 +1436,7 @@ mod tests {
             value_u64: None,
         });
         gauges.insert(MetricGauge {
+            actor: None,
             name: "fresh_gauge".to_string(),
             timestamp_us: fresh_us,
             start_timestamp_us: None,
@@ -1455,6 +1457,7 @@ mod tests {
 
         let mut sums = MetricSumBuffer::default();
         sums.insert(MetricSum {
+            actor: None,
             name: "old_sum".to_string(),
             timestamp_us: old_us,
             start_timestamp_us: old_us - 1,
@@ -1469,6 +1472,7 @@ mod tests {
             sum_u64: Some(1),
         });
         sums.insert(MetricSum {
+            actor: None,
             name: "fresh_sum".to_string(),
             timestamp_us: fresh_us,
             start_timestamp_us: fresh_us - 1,
@@ -1486,6 +1490,7 @@ mod tests {
 
         let mut histograms = MetricHistogramBuffer::default();
         histograms.insert(MetricHistogram {
+            actor: None,
             name: "old_histogram".to_string(),
             timestamp_us: old_us,
             start_timestamp_us: old_us - 1,
@@ -1508,6 +1513,7 @@ mod tests {
             bucket_counts_json: "[1]".to_string(),
         });
         histograms.insert(MetricHistogram {
+            actor: None,
             name: "fresh_histogram".to_string(),
             timestamp_us: fresh_us,
             start_timestamp_us: fresh_us - 1,
