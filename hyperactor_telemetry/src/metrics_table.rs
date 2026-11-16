@@ -159,6 +159,7 @@ fn buffer_gauge<T: TableMetricNumber>(
     for point in gauge.data_points() {
         let (value_f64, value_i64, value_u64) = point.value().into_columns();
         buffer.insert(MetricGauge {
+            actor: actor_attribute(point.attributes()),
             name: metadata.name.to_string(),
             timestamp_us: timestamp_to_micros(gauge.time()),
             start_timestamp_us: gauge.start_time().map(timestamp_to_micros),
@@ -182,6 +183,7 @@ fn buffer_sum<T: TableMetricNumber>(
     for point in sum.data_points() {
         let (sum_f64, sum_i64, sum_u64) = point.value().into_columns();
         buffer.insert(MetricSum {
+            actor: actor_attribute(point.attributes()),
             name: metadata.name.to_string(),
             timestamp_us: timestamp_to_micros(sum.time()),
             start_timestamp_us: timestamp_to_micros(sum.start_time()),
@@ -215,6 +217,7 @@ fn buffer_histogram<T: TableMetricNumber>(
             .map(TableMetricNumber::into_columns)
             .unwrap_or_default();
         buffer.insert(MetricHistogram {
+            actor: actor_attribute(point.attributes()),
             name: metadata.name.to_string(),
             timestamp_us: timestamp_to_micros(histogram.time()),
             start_timestamp_us: timestamp_to_micros(histogram.start_time()),
@@ -247,6 +250,18 @@ fn temporality_name(temporality: Temporality) -> &'static str {
         Temporality::Delta => "delta",
         _ => "unknown",
     }
+}
+
+fn actor_attribute<'a>(
+    attributes: impl IntoIterator<Item = &'a opentelemetry::KeyValue>,
+) -> Option<String> {
+    attributes
+        .into_iter()
+        .find(|kv| kv.key.as_str() == "actor_id")
+        .and_then(|kv| match &kv.value {
+            Value::String(actor) => Some(actor.to_string()),
+            _ => None,
+        })
 }
 
 fn key_values_to_json<'a>(
@@ -349,6 +364,35 @@ mod tests {
             .as_any()
             .downcast_ref::<T>()
             .unwrap_or_else(|| panic!("unexpected {name} column type"))
+    }
+
+    #[test]
+    fn promotes_the_actor_id_attribute_to_the_actor_column() {
+        let reader = Arc::new(
+            ManualReader::builder()
+                .with_temporality(Temporality::Delta)
+                .build(),
+        );
+        let provider = SdkMeterProvider::builder()
+            .with_reader(InMemoryReader::new(Arc::clone(&reader)))
+            .build();
+        let counter = provider.meter("test.scope").u64_counter("handled").build();
+        counter.add(1, &[KeyValue::new("actor_id", "a.b@c")]);
+        counter.add(1, &[KeyValue::new("route", "a")]);
+
+        let mut metrics = ResourceMetrics::default();
+        reader.collect(&mut metrics).unwrap();
+        let batch = encode_metrics(&metrics)
+            .sums
+            .drain_to_record_batch()
+            .unwrap();
+
+        let actors = column::<StringArray>(&batch, "actor");
+        let mut actors: Vec<_> = (0..batch.num_rows())
+            .map(|row| (!actors.is_null(row)).then(|| actors.value(row)))
+            .collect();
+        actors.sort();
+        assert_eq!(actors, vec![None, Some("a.b@c")]);
     }
 
     #[test]
