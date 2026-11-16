@@ -59,11 +59,11 @@ For the pinned nightly examples, replace `YYYYMMDD` with the build date.
 - **Using PIP**:
   - stable: `pip install torchmonarch`
   - nightly: `pip install --pre torchmonarch`
-  - specific: `pip install torchmonarch==0.8.0.devYYYYMMDD`
+  - specific: `pip install torchmonarch==0.9.0.devYYYYMMDD`
 - **Using UV** - note, you can also just use `uv pip install ...` and match the above pip commands; but the ones below add monarch to your UV project properly.
   - stable: `uv add torchmonarch`
   - nightly: `uv add --prerelease=allow torchmonarch`
-  - specific: `uv add torchmonarch==0.8.0.devYYYYMMDD`
+  - specific: `uv add torchmonarch==0.9.0.devYYYYMMDD`
 
 ### Build and Install from Source
 
