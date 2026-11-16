@@ -10,7 +10,8 @@
 import functools
 import inspect
 import logging
-from typing import Callable, Dict, Optional, overload, Sequence, TypeVar
+import threading
+from typing import Any, Callable, Dict, Optional, overload, Sequence, TypeVar
 
 import opentelemetry.metrics as metrics  # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api
 import opentelemetry.trace as trace  # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api
@@ -150,11 +151,51 @@ def log_with_tracing(
         sinfo=sinfo,
     )
     logger.handle(record)
-    forward_to_tracing(record)
+    if not getattr(record, "_forwarded_to_tracing", False):
+        forward_to_tracing(record)
+
+
+_forwarding = threading.local()
+_forwarding_installed = False
+
+
+def forward_logs_to_tracing() -> None:
+    """Forward every log record this process creates to Rust tracing.
+
+    Records are forwarded when they are created, so this leaves the logging
+    handler chain untouched: `logging.basicConfig` and Python's last-resort
+    stderr handler behave as if it were not installed. Records created while
+    a record is being forwarded on the same thread are not forwarded, and
+    neither are the empty placeholders `logging.makeLogRecord` fills in later.
+    Installing more than once has no further effect.
+    """
+    global _forwarding_installed
+    if _forwarding_installed:
+        return
+    _forwarding_installed = True
+    make_record = logging.getLogRecordFactory()
+
+    def make_forwarded_record(*args: Any, **kwargs: Any) -> logging.LogRecord:
+        record = make_record(*args, **kwargs)
+        if record.name is None or getattr(_forwarding, "active", False):
+            return record
+        _forwarding.active = True
+        try:
+            forward_to_tracing(record)
+            record._forwarded_to_tracing = True  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        finally:
+            _forwarding.active = False
+        return record
+
+    logging.setLogRecordFactory(make_forwarded_record)
 
 
 class TracingForwarder(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
+        if getattr(record, "_forwarded_to_tracing", False):
+            return
         # Try to add actor_id from the current context to the logging record
         try:
             actor_id = _current_actor_id()

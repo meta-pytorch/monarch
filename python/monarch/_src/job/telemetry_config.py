@@ -175,6 +175,10 @@ def install_sidecar_socket_sink(socket_path: str) -> None:
 
     _ensure_setup_actor_telemetry_provider()
     _set_unix_socket_sink_path(socket_path)
+    if os.environ.get("MONARCH_PYTHON_LOG_TRACING", "1") == "1":
+        from monarch._src.actor.telemetry import forward_logs_to_tracing
+
+        forward_logs_to_tracing()
 
 
 def _unix_socket_sink_startup() -> Callable[[], None] | None:

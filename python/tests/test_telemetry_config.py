@@ -894,6 +894,28 @@ def test_bootstrap_passes_persist_dirs_to_client_actor() -> None:
     assert spawn.call_args.args[-2:] == ("/tmp/x", "/tmp/c")
 
 
+@pytest.mark.parametrize("setting, forwards", [(None, True), ("0", False)])
+def test_installing_the_socket_sink_forwards_python_logs(
+    monkeypatch, setting, forwards
+) -> None:
+    import monarch._src.actor.telemetry as actor_telemetry
+
+    if setting is None:
+        monkeypatch.delenv("MONARCH_PYTHON_LOG_TRACING", raising=False)
+    else:
+        monkeypatch.setenv("MONARCH_PYTHON_LOG_TRACING", setting)
+    monkeypatch.setattr(tc, "_sidecar_socket_path", None)
+    forward = MagicMock()
+    monkeypatch.setattr(actor_telemetry, "forward_logs_to_tracing", forward)
+    with (
+        patch.object(tc, "_ensure_setup_actor_telemetry_provider"),
+        patch.object(tc, "_set_unix_socket_sink_path"),
+    ):
+        tc.install_sidecar_socket_sink("/tmp/telemetry.sock")
+
+    assert forward.called == forwards
+
+
 def test_worker_collector_receives_persist_dir() -> None:
     actor_mesh = MagicMock()
     proc_mesh = MagicMock()
