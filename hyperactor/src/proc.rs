@@ -2200,6 +2200,15 @@ impl<'a, A: Actor> Context<'a, A> {
     pub fn headers(&self) -> &Flattrs {
         &self.headers
     }
+
+    /// Like [`Instance::recording_span`], also naming the message being
+    /// handled, so that telemetry recorded in the span carries its id.
+    pub fn recording_span(&self) -> tracing::Span {
+        self.instance.recording_span_for(
+            self.headers
+                .get(crate::mailbox::headers::TELEMETRY_MESSAGE_ID),
+        )
+    }
 }
 
 impl<A: Actor> Deref for Context<'_, A> {
@@ -2913,11 +2922,14 @@ impl<A: Actor> Instance<A> {
     /// recorder, with this actor as the subject. See FR-1, FR-2, FR-3
     /// in module doc.
     pub fn recording_span(&self) -> tracing::Span {
-        use crate::subject::AsSubject;
+        self.recording_span_for(None)
+    }
+
+    fn recording_span_for(&self, message_id: Option<u64>) -> tracing::Span {
         self.inner
             .cell
             .recording()
-            .span(&self.self_addr().subject().to_string())
+            .message_span(&self.self_addr().subject().to_string(), message_id)
     }
 
     /// Publish domain-specific properties for introspection.
@@ -3863,7 +3875,13 @@ impl<A: Actor> Instance<A> {
             .inner
             .proc
             .with_current(actor.handle(&context, message))
-            .instrument(self.inner.cell.inner.recording.span(&subject_str))
+            .instrument(
+                self.inner
+                    .cell
+                    .inner
+                    .recording
+                    .message_span(&subject_str, message_id),
+            )
             .await;
         let elapsed_us = start.elapsed().as_micros() as u64;
         self.inner
