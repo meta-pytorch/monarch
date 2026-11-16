@@ -134,6 +134,69 @@ GROUP BY scope_name
 ORDER BY mailbox_posts DESC
 ```
 
+## Follow an actor or message across tables
+
+Logs, spans, metrics, and messages share join keys, so you can follow an actor
+or a message to everything recorded about it with column equality alone. This
+works across Rust and Python and across hosts.
+
+| Key | Columns that carry it |
+|-----|----------------------|
+| Actor | `actors.full_name`, `events.actor`, `spans.actor`, `metric_gauges.actor`, `metric_sums.actor`, `metric_histograms.actor` |
+| Received message | `messages.id`, `message_status_events.message_id`, `events.message_id`, `spans.message_id` |
+| Send | `sent_messages.id`, `messages.correlation_id`, `spans.correlation_id` on the caller's span |
+
+`events.actor` and `events.message_id` are set on log lines emitted while an
+actor handles a message. With telemetry enabled, that includes Python
+`logging` calls, which are forwarded unless `MONARCH_PYTHON_LOG_TRACING=0`.
+
+An actor's log lines:
+
+```sql
+SELECT e.timestamp_us, e.level, e.fields_json, e.message_id
+FROM events AS e
+JOIN actors AS a ON a.full_name = e.actor
+WHERE a.id = <actor id>
+ORDER BY e.timestamp_us
+```
+
+An actor's metrics, totalled over delta points:
+
+```sql
+SELECT name, SUM(count) AS samples
+FROM metric_histograms
+WHERE actor = '<actors.full_name>'
+GROUP BY name
+```
+
+A message's trace: the spans recorded while it was handled, the caller's span,
+and the log lines emitted while it was handled:
+
+```sql
+SELECT 'span' AS kind, s.timestamp_us, s.actor, s.name AS text
+FROM spans AS s, messages AS m
+WHERE m.id = <message id>
+  AND (s.message_id = m.id OR s.correlation_id = m.correlation_id)
+UNION ALL
+SELECT 'log', e.timestamp_us, e.actor, e.fields_json
+FROM events AS e
+WHERE e.message_id = <message id>
+ORDER BY timestamp_us
+```
+
+The send that produced a message, and its sender:
+
+```sql
+SELECT a.full_name AS sender, sm.timestamp_us
+FROM messages AS m
+JOIN sent_messages AS sm ON sm.id = m.correlation_id
+JOIN actors AS a ON a.id = sm.sender_actor_id
+WHERE m.id = <message id>
+```
+
+The dashboard's actor drawer follows the same keys. It shows an actor's
+metrics and logs, and each message's trace.
+
 ## Architecture
 
 Each producer writes framed Arrow IPC batches to a host-local Unix socket.
