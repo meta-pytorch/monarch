@@ -287,6 +287,24 @@ def get_actor_messages(actor_id):
     return jsonify(_sanitize_for_js(db.get_actor_messages(actor_id)))
 
 
+@api.route("/actors/<int:actor_id>/logs")
+def get_actor_logs(actor_id):
+    """Get the actor's most recent log lines."""
+    actor = db.get_actor(actor_id)
+    if actor is None:
+        return jsonify({"error": "actor not found"}), 404
+    return jsonify(_sanitize_for_js(db.list_actor_logs(actor["full_name"])))
+
+
+@api.route("/actors/<int:actor_id>/metrics")
+def get_actor_metrics(actor_id):
+    """Get the actor's metric totals."""
+    actor = db.get_actor(actor_id)
+    if actor is None:
+        return jsonify({"error": "actor not found"}), 404
+    return jsonify(_sanitize_for_js(db.list_actor_metrics(actor["full_name"])))
+
+
 # ---------------------------------------------------------------------------
 # Messages
 # ---------------------------------------------------------------------------

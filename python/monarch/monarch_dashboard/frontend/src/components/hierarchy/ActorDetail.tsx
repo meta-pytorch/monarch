@@ -10,6 +10,8 @@ import React, { useMemo, useState } from "react";
 import { useApi } from "../../lib/useApi";
 import {
   Actor,
+  ActorLog,
+  ActorMetric,
   ActorStatusEvent,
   EntityId,
   Message,
@@ -19,7 +21,9 @@ import {
   actorInstance,
   actorRole,
   formatDateTime,
+  formatMetricValue,
   formatTime,
+  metricLabel,
   prettyRole,
   splitMessages,
 } from "../../lib/format";
@@ -69,6 +73,8 @@ export function ActorDetail({ actorId, compact = false }: { actorId: EntityId; c
   const { data: actor, loading } = useApi<Actor>(`/actors/${actorId}`);
   const { data: events } = useApi<ActorStatusEvent[]>(`/actors/${actorId}/status_events`);
   const { data: messages } = useApi<Message[]>(`/actors/${actorId}/messages`);
+  const { data: logs } = useApi<ActorLog[]>(`/actors/${actorId}/logs`);
+  const { data: metrics } = useApi<ActorMetric[]>(`/actors/${actorId}/metrics`);
   const peerLabel = usePeerLabel();
 
   if (loading && !actor) return <Loading label="Loading actor…" />;
@@ -118,6 +124,68 @@ export function ActorDetail({ actorId, compact = false }: { actorId: EntityId; c
                 ))}
                 {outgoing.slice(0, 40).map((m) => (
                   <MsgRow key={`out-${m.id}`} m={m} dir="out" peer={m.to_actor_id} peerLabel={peerLabel} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="drawer-section">
+        <div className="eyebrow">
+          Metrics <span className="count-tag">{metrics?.length ?? 0}</span>
+        </div>
+        {!metrics || metrics.length === 0 ? (
+          <div className="state">No metrics</div>
+        ) : (
+          <div className="table-wrap">
+            <table className="tbl">
+              <thead>
+                <tr><th>Metric</th><th>Value</th></tr>
+              </thead>
+              <tbody>
+                {metrics.map((m) => {
+                  const label = metricLabel(m.name, m.kind);
+                  return (
+                    <tr key={m.name}>
+                      <td>
+                        {label && <div>{label}</div>}
+                        <div className="cell-mono" style={label ? { fontSize: 11, color: "var(--text-3)" } : undefined}>
+                          {m.name}
+                        </div>
+                      </td>
+                      <td className="cell-mono">{formatMetricValue(m)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="drawer-section">
+        <div className="eyebrow">
+          Logs <span className="count-tag">{logs?.length ?? 0}</span>
+          <RecentNote n={logs?.length ?? 0} />
+        </div>
+        {!logs || logs.length === 0 ? (
+          <div className="state">No logs</div>
+        ) : (
+          <div className="table-wrap" style={{ maxHeight: compact ? 260 : 420 }}>
+            <table className="tbl">
+              <thead>
+                <tr><th>Time</th><th>Level</th><th>Message</th></tr>
+              </thead>
+              <tbody>
+                {logs.map((l, i) => (
+                  <tr key={i}>
+                    <td className="cell-mono">{formatTime(l.timestamp_us)}</td>
+                    <td>{l.level}</td>
+                    <td className="cell-mono" title={l.message_id ? `message ${l.message_id}` : undefined}>
+                      {l.message ?? "—"}
+                    </td>
+                  </tr>
                 ))}
               </tbody>
             </table>

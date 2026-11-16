@@ -64,6 +64,58 @@ export function compact(n: number): string {
   return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
+const METRIC_LABELS: Record<string, string> = {
+  "actor.message_handler_duration.ns": "Handler time",
+  "actor.message_queue_size": "Queue depth",
+  "actor.messages_received": "Messages received",
+  "mailbox.posts": "Messages sent",
+  "message.e2e_latency.us": "Delivery latency (sampled)",
+};
+
+/**
+ * Readable label for a metric: "Current …" for up-down counters, "Total …" for
+ * counters, and the plain label for histograms. Null for unknown histograms.
+ */
+export function metricLabel(
+  name: string,
+  kind: "histogram" | "counter" | "current",
+): string | null {
+  const label = METRIC_LABELS[name];
+  const prefix = kind === "current" ? "Current" : kind === "counter" ? "Total" : null;
+  if (!prefix) return label ?? null;
+  return label ? `${prefix} ${label[0].toLowerCase()}${label.slice(1)}` : `${prefix} value`;
+}
+
+const NANOS_PER_UNIT: Record<string, number> = { ns: 1, us: 1e3, ms: 1e6, s: 1e9 };
+
+/** A duration in `unit` as "45.3 µs" or "13.9 ms"; null for non-time units. */
+export function formatDuration(value: number, unit: string): string | null {
+  const scale = NANOS_PER_UNIT[unit];
+  if (scale === undefined) return null;
+  const ns = value * scale;
+  const [divisor, suffix] =
+    ns >= 1e9 ? [1e9, "s"] : ns >= 1e6 ? [1e6, "ms"] : ns >= 1e3 ? [1e3, "µs"] : [1, "ns"];
+  return `${Number((ns / divisor).toPrecision(3))} ${suffix}`;
+}
+
+/** An actor metric's value: samples, average and total for histograms, else the total. */
+export function formatMetricValue(m: {
+  name: string;
+  unit: string;
+  kind: "histogram" | "counter" | "current";
+  count: number | null;
+  total: number | null;
+}): string {
+  const total = m.total ?? 0;
+  const unit = m.unit || (m.name.split(".").pop() ?? "");
+  const value = (v: number) =>
+    formatDuration(v, unit) ?? v.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  if (m.kind !== "histogram") return value(total);
+  const n = m.count ?? 0;
+  if (n === 0) return "0 samples";
+  return `${n.toLocaleString("en-US")} samples · avg ${value(total / n)} · total ${value(total)}`;
+}
+
 /** Parse shape_json → "[2, 4]" for both ndslice and legacy formats. */
 export function formatShape(shapeJson: string | null | undefined): string {
   if (!shapeJson) return "—";
