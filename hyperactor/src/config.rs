@@ -116,6 +116,18 @@ declare_attrs! {
     ))
     pub attr MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
+    /// Maximum wait for an actor monitor's status or delivery-progress reply.
+    /// Read when the monitor is spawned. A timeout fails the observer; it does
+    /// not stop the monitored actor unless the monitor is used as a supervisor.
+    /// For data meshes, keep this below `DATA_SUPERVISION_TIMEOUT`, allowing
+    /// for the monitor's initial delay (2s), worker keepalive interval (5s),
+    /// and message delivery before the owner permanently fails the worker.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_ACTOR_MONITOR_REQUEST_TIMEOUT".to_string()),
+        Some("actor_monitor_request_timeout".to_string()),
+    ))
+    pub attr ACTOR_MONITOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+
     /// How long a proc buffers messages for an actor that has not yet
     /// bound its mailbox before returning them as undeliverable. Zero
     /// returns them immediately.

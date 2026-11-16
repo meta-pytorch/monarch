@@ -1288,7 +1288,7 @@ async def test_pending_call_survives_transient_process_stall() -> None:
     # SIGSTOP/SIGCONT simulate a frozen Proc by pausing and resuming all its threads.
     os.kill(pid, signal.SIGSTOP)
     try:
-        await asyncio.sleep(8)
+        await asyncio.sleep(15)
         assert not call.done(), "a frozen worker must not end a pending call"
     finally:
         os.kill(pid, signal.SIGCONT)

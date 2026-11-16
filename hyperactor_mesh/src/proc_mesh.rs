@@ -92,8 +92,13 @@ declare_attrs! {
 
     /// Maximum gap between worker keepalives before its data mesh owner is
     /// notified. Workers send keepalives every 5s, so the owner does not
-    /// report a worker whose process freezes for this timeout less 5s. Remote
-    /// orphan cleanup still uses `MESH_ORPHAN_TIMEOUT`, which should be at
+    /// report a worker whose process freezes for this timeout less 5s.
+    /// Keep this greater than `ACTOR_MONITOR_REQUEST_TIMEOUT` plus the monitor's
+    /// initial delay (2s) and keepalive interval (5s), with delivery margin, so
+    /// observers can report unresponsiveness before the owner permanently
+    /// fails the worker. These timers have independent start times; scheduling
+    /// delays can change the order in which their failures are observed.
+    /// Remote orphan cleanup still uses `MESH_ORPHAN_TIMEOUT`, which should be at
     /// least this long, so that a worker tolerates a frozen owner as long as
     /// the owner tolerates a frozen worker.
     @meta(CONFIG = ConfigAttr::new(
@@ -1634,6 +1639,14 @@ mod tests {
 
     #[test]
     fn data_mesh_supervision_keeps_the_keepalive_interval() {
+        let monitor_timeout = *hyperactor::config::ACTOR_MONITOR_REQUEST_TIMEOUT
+            .default()
+            .unwrap();
+        assert!(
+            monitor_timeout + Duration::from_secs(2) + super::DATA_KEEPALIVE_INTERVAL
+                < *DATA_SUPERVISION_TIMEOUT.default().unwrap(),
+            "the default monitor timeout must leave polling, keepalive, and delivery margin before owner failure"
+        );
         assert_eq!(
             DATA_SUPERVISION_TIMEOUT.default(),
             Some(&Duration::from_secs(30))

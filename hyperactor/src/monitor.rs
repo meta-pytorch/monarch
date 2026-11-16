@@ -41,6 +41,7 @@ use crate::RemoteMessage;
 use crate::StatusMessage;
 use crate::actor::ActorStatus;
 use crate::actor::Referable;
+use crate::config::ACTOR_MONITOR_REQUEST_TIMEOUT;
 use crate::context;
 use crate::mailbox::MailboxError;
 use crate::mailbox::OncePortHandle;
@@ -52,7 +53,6 @@ use crate::supervision::local_fence;
 
 const DEFAULT_INITIAL_DELAY: Duration = Duration::from_secs(2);
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The current state of an actor monitor.
@@ -386,7 +386,7 @@ impl ActorMonitor {
             target,
             DEFAULT_INITIAL_DELAY,
             DEFAULT_POLL_INTERVAL,
-            DEFAULT_REQUEST_TIMEOUT,
+            hyperactor_config::global::get(ACTOR_MONITOR_REQUEST_TIMEOUT),
             None,
             true,
         )
@@ -408,7 +408,7 @@ impl ActorMonitor {
             target,
             DEFAULT_INITIAL_DELAY,
             DEFAULT_POLL_INTERVAL,
-            DEFAULT_REQUEST_TIMEOUT,
+            hyperactor_config::global::get(ACTOR_MONITOR_REQUEST_TIMEOUT),
             None,
             false,
         )
@@ -423,7 +423,7 @@ impl ActorMonitor {
             target,
             DEFAULT_INITIAL_DELAY,
             DEFAULT_POLL_INTERVAL,
-            DEFAULT_REQUEST_TIMEOUT,
+            hyperactor_config::global::get(ACTOR_MONITOR_REQUEST_TIMEOUT),
             Some(delivery),
             true,
         )
@@ -2030,6 +2030,37 @@ mod tests {
                 timeout_millis: 50,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_monitor_uses_configured_request_timeout() {
+        let config = hyperactor_config::global::lock();
+        let _config_guard =
+            config.override_key(ACTOR_MONITOR_REQUEST_TIMEOUT, Duration::from_millis(50));
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let unreachable =
+            crate::ProcAddr::instance(crate::channel::ChannelAddr::Local(1234), "gone")
+                .actor_addr("actor");
+        let actor_ref = ActorRef::<TestActor>::attest(unreachable.clone());
+        let monitors = [
+            ActorMonitor::spawn_persistent(&client, unreachable.clone()),
+            ActorMonitor::spawn_dormant(&client, unreachable.clone()),
+            actor_ref.monitor(&client),
+        ];
+        let _activation = monitors[1].activate(&client);
+
+        for monitor in &monitors {
+            assert_eq!(
+                time::timeout(Duration::from_secs(5), monitor.wait_for_failure())
+                    .await
+                    .expect("monitor should use the configured timeout"),
+                MonitorFailure::StatusRequestTimedOut {
+                    actor_id: unreachable.clone(),
+                    timeout_millis: 50,
+                }
+            );
+        }
     }
 
     #[tokio::test]

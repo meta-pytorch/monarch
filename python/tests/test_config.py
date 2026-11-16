@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
-
 import monarch
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
@@ -295,6 +293,7 @@ def test_duration_config_multiple() -> None:
     "param_name,test_value,expected_value,default_value",
     [
         # Hyperactor timeouts and message handling
+        ("actor_monitor_request_timeout", "15s", "15s", "20s"),
         ("process_exit_timeout", "20s", "20s", "10s"),
         ("message_ack_time_interval", "2s", "2s", "500ms"),
         ("split_max_buffer_age", "100ms", "100ms", "50ms"),
@@ -304,6 +303,7 @@ def test_duration_config_multiple() -> None:
         # Mesh bootstrap config
         ("mesh_terminate_timeout", "20s", "20s", "10s"),
         # Proc mesh timeouts
+        ("data_supervision_timeout", "45s", "45s", "30s"),
         ("actor_spawn_max_idle", "45s", "45s", "30s"),
         ("get_actor_state_max_idle", "90s", "1m 30s", "30s"),
         ("supervision_watchdog_timeout", "90s", "1m 30s", "2m"),
