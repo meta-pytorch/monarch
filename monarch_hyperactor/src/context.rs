@@ -272,6 +272,8 @@ pub struct PyContext {
     /// the per-actor flight recorder. `None` for bootstrap/client
     /// contexts that are not actor handler execution paths.
     recording_span: Option<tracing::Span>,
+    /// Telemetry id of the message being handled, if any.
+    message_id: Option<u64>,
 }
 
 #[pymethods]
@@ -286,6 +288,11 @@ impl PyContext {
         self.rank.clone().into()
     }
 
+    #[getter]
+    fn _message_id(&self) -> Option<u64> {
+        self.message_id
+    }
+
     #[staticmethod]
     fn _root_client_context(py: Python<'_>) -> PyResult<PyContext> {
         let _guard = runtime::get_tokio_runtime().enter();
@@ -294,6 +301,7 @@ impl PyContext {
             instance: instance.into_pyobject(py)?.into(),
             rank: Extent::unity().point_of_rank(0).unwrap(),
             recording_span: None,
+            message_id: None,
         })
     }
 
@@ -306,6 +314,7 @@ impl PyContext {
             instance: instance.into_pyobject(py)?.into(),
             rank: Extent::unity().point_of_rank(0).unwrap(),
             recording_span: None,
+            message_id: None,
         })
     }
 }
@@ -315,18 +324,26 @@ impl PyContext {
         cx: &hyperactor::Context<T>,
         instance: Py<PyInstance>,
     ) -> PyContext {
-        Self::from_parts(instance, cx.cast_point(), Some(cx.recording_span()))
+        Self::from_parts(
+            instance,
+            cx.cast_point(),
+            Some(cx.recording_span()),
+            cx.headers()
+                .get(hyperactor::mailbox::headers::TELEMETRY_MESSAGE_ID),
+        )
     }
 
     pub(crate) fn from_parts(
         instance: Py<PyInstance>,
         rank: Point,
         recording_span: Option<tracing::Span>,
+        message_id: Option<u64>,
     ) -> PyContext {
         PyContext {
             instance,
             rank,
             recording_span,
+            message_id,
         }
     }
 

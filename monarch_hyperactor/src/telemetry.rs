@@ -281,14 +281,22 @@ struct PySpan {
 #[pymethods]
 impl PySpan {
     #[new]
-    #[pyo3(signature = (name, actor_id = None, correlation_id = None))]
-    fn new(name: &str, actor_id: Option<&PyActorAddr>, correlation_id: Option<u64>) -> Self {
+    #[pyo3(signature = (name, actor_id = None, correlation_id = None, message_id = None))]
+    fn new(
+        name: &str,
+        actor_id: Option<&PyActorAddr>,
+        correlation_id: Option<u64>,
+        message_id: Option<u64>,
+    ) -> Self {
         let mut fields = vec![("name", FieldValue::Str(name.to_string()))];
         if let Some(actor_id) = actor_id {
             fields.push(("actor_id", FieldValue::Str(actor_id.inner.to_string())));
         }
         if let Some(cid) = correlation_id {
             fields.push(("correlation_id", FieldValue::U64(cid)));
+        }
+        if let Some(message_id) = message_id {
+            fields.push(("message_id", FieldValue::U64(message_id)));
         }
         let id = start_user_span("python_user_span", USER_TELEMETRY_PREFIX, fields);
 
