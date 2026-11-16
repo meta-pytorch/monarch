@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
-
 """Configuration utilities for Monarch.
 
 This module provides utilities for managing Monarch's runtime
@@ -49,6 +47,7 @@ if TYPE_CHECKING:
             tail_log_lines: NotRequired[int]
             codec_max_frame_length: NotRequired[int]
             message_delivery_timeout: NotRequired[str]
+            actor_monitor_request_timeout: NotRequired[str]
             host_spawn_ready_timeout: NotRequired[str]
             mesh_proc_spawn_max_idle: NotRequired[str]
             process_exit_timeout: NotRequired[str]
@@ -131,6 +130,12 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
             mesh_proc_spawn_max_idle: Max idle time while spawning procs (humantime).
 
         Hyperactor timeouts and message handling:
+            actor_monitor_request_timeout: Maximum wait for an actor monitor's status or
+                delivery-progress reply (humantime, default 20s), read when the monitor is
+                spawned. A timeout fails the observer without stopping the remote actor;
+                that observer retains the failure. For data meshes, keep this plus the
+                initial polling delay (2s) and worker keepalive interval (5s) below
+                data_supervision_timeout, with room for message delivery and scheduling.
             process_exit_timeout: Timeout for process exit (humantime).
             message_ack_time_interval: Time interval for message acknowledgments (humantime).
             message_ack_every_n_messages: Acknowledge every N messages.
@@ -175,7 +180,9 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
             get_actor_state_max_idle: Maximum idle time for actor state queries (humantime).
             use_direct_spawn: Use data-backed actor meshes for ordinary instance actor mesh spawns.
             data_supervision_timeout: Maximum gap between data worker keepalives before notifying
-                the owner (humantime, default 30s); workers send keepalives every 5s. Independent of
+                the owner of a permanent supervision failure (humantime, default 30s);
+                workers send keepalives every 5s. See actor_monitor_request_timeout for the
+                recommended ordering; scheduling delays can change the observed order. Independent of
                 mesh_orphan_timeout, which should be at least as long.
             supervision_watchdog_timeout: Watchdog timeout for the actor-mesh supervision stream; prolonged
                 silence is interpreted as the controller being unreachable (humantime).
