@@ -1375,6 +1375,8 @@ mod tests {
                 thread_name: "test",
                 file: None,
                 line: None,
+                actor: None,
+                message_id: None,
             });
         }
         ingest_batch(scanner, SPANS, spans.drain_to_record_batch().unwrap()).await;
@@ -1398,6 +1400,7 @@ mod tests {
         let mut events = EventBuffer::default();
         for (name, timestamp_us) in [("old", old_us), ("fresh", fresh_us)] {
             events.insert(Event {
+                process_id: "test",
                 name,
                 target: "test",
                 level: "INFO",
@@ -1409,6 +1412,8 @@ mod tests {
                 module_path: None,
                 file: None,
                 line: None,
+                actor: None,
+                message_id: None,
             });
         }
         ingest_batch(scanner, EVENTS, events.drain_to_record_batch().unwrap()).await;

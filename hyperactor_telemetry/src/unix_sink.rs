@@ -79,6 +79,9 @@ use crate::TraceEvent;
 use crate::TraceEventSink;
 use crate::config::get_tracing_targets;
 use crate::generate_sent_message_id;
+use crate::trace_dispatcher::ActorScope;
+use crate::trace_dispatcher::TraceFields;
+use crate::trace_dispatcher::get_field;
 
 /// Maximum queued table batches before the tracing path starts dropping frames.
 const WORKER_QUEUE_CAPACITY: usize = 10_000;
@@ -298,6 +301,7 @@ impl UnixSocketSink {
                 thread_name,
                 file,
                 line,
+                scope,
             } => {
                 inner.spans_buffer.insert(Span {
                     process_id: PROCESS_ID.as_str(),
@@ -311,6 +315,8 @@ impl UnixSocketSink {
                     thread_name,
                     file: *file,
                     line: *line,
+                    actor: actor_column(scope, fields),
+                    message_id: scope.message_id.or(u64_field(fields, "message_id")),
                 });
             }
             TraceEvent::SpanEnter { id, timestamp, .. } => {
@@ -349,8 +355,10 @@ impl UnixSocketSink {
                 module_path,
                 file,
                 line,
+                scope,
             } => {
                 inner.events_buffer.insert(Event {
+                    process_id: PROCESS_ID.as_str(),
                     name,
                     target,
                     level: level.as_str(),
@@ -362,6 +370,8 @@ impl UnixSocketSink {
                     module_path: *module_path,
                     file: *file,
                     line: *line,
+                    actor: actor_column(scope, fields),
+                    message_id: scope.message_id,
                 });
             }
             TraceEvent::Entity(event) => buffer_entity_event(&mut inner, event),
@@ -714,6 +724,23 @@ fn write_frame(
     }
 }
 
+/// The scope's actor, else an explicit `actor_id` field such as the one on
+/// Python log records and Python spans.
+fn actor_column(scope: &ActorScope, fields: &TraceFields) -> Option<String> {
+    match (&scope.actor, get_field(fields, "actor_id")) {
+        (Some(actor), _) => Some(actor.to_string()),
+        (None, Some(FieldValue::Str(actor))) => Some(actor.clone()),
+        _ => None,
+    }
+}
+
+fn u64_field(fields: &TraceFields, name: &str) -> Option<u64> {
+    match get_field(fields, name) {
+        Some(FieldValue::U64(value)) => Some(*value),
+        _ => None,
+    }
+}
+
 fn fields_to_json(fields: &[(&str, FieldValue)]) -> String {
     monarch_telemetry_schema::fields_to_json(fields.iter().map(|(key, value)| {
         let json_value = match value {
@@ -811,6 +838,7 @@ mod tests {
             thread_name: "test_thread",
             file: Some("test.rs"),
             line: Some(42),
+            scope: Default::default(),
         }
     }
 
@@ -835,6 +863,7 @@ mod tests {
             module_path: Some("test_module"),
             file: Some("test.rs"),
             line: Some(43),
+            scope: Default::default(),
         }
     }
 

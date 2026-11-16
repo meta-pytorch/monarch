@@ -376,6 +376,11 @@ class Context:
         """
         ...
 
+    @property
+    def _message_id(self) -> Optional[int]:
+        """Telemetry id of the message being handled, if any."""
+        ...
+
     @staticmethod
     def _root_client_context() -> "Context": ...
 
