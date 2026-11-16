@@ -924,6 +924,7 @@ mod tests {
     fn metric_gauge_buffer() -> MetricGaugeBuffer {
         let mut buffer = MetricGaugeBuffer::default();
         buffer.insert(MetricGauge {
+            actor: None,
             name: "load".to_string(),
             timestamp_us: 123,
             start_timestamp_us: None,
@@ -941,6 +942,7 @@ mod tests {
     fn metric_sum_buffer() -> MetricSumBuffer {
         let mut buffer = MetricSumBuffer::default();
         buffer.insert(MetricSum {
+            actor: None,
             name: "mailbox.posts".to_string(),
             timestamp_us: 123,
             start_timestamp_us: 100,
@@ -960,6 +962,7 @@ mod tests {
     fn metric_histogram_buffer() -> MetricHistogramBuffer {
         let mut buffer = MetricHistogramBuffer::default();
         buffer.insert(MetricHistogram {
+            actor: None,
             name: "latency".to_string(),
             timestamp_us: 123,
             start_timestamp_us: 100,
