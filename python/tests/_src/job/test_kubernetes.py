@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import cast
@@ -49,6 +50,7 @@ from monarch._src.job._kubernetes_port_forward import (
 )
 from monarch._src.job.job import LocalJob
 from monarch._src.job.kubernetes import (
+    _ALLOCATION_LABEL,
     _DEFAULT_MONARCH_PORT,
     _MONARCHMESH_GROUP,
     _MONARCHMESH_PLURAL,
@@ -573,10 +575,35 @@ class TestCreate(unittest.TestCase):
 
         body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
         template_metadata = body["spec"]["podTemplate"]["metadata"]
-        self.assertEqual(template_metadata["labels"], {"pod-label": "pod-value"})
+        self.assertEqual(
+            template_metadata["labels"],
+            {"pod-label": "pod-value", _ALLOCATION_LABEL: job._allocation_id},
+        )
+        self.assertEqual(pod_template.metadata.labels, {"pod-label": "pod-value"})
         self.assertEqual(
             template_metadata["annotations"], {"pod-annotation": "ann-value"}
         )
+
+    @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_create_labels_pods_with_new_allocation(
+        self,
+        mock_load_config: MagicMock,
+        mock_custom_api_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"))
+        mock_api = MagicMock()
+        mock_custom_api_cls.return_value = mock_api
+
+        allocation_ids = []
+        for _ in range(2):
+            job._create(None)
+            body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
+            labels = body["spec"]["podTemplate"]["metadata"]["labels"]
+            self.assertEqual(labels, {_ALLOCATION_LABEL: job._allocation_id})
+            allocation_ids.append(job._allocation_id)
+        self.assertNotEqual(allocation_ids[0], allocation_ids[1])
 
     def test_create_noop_when_all_attach_only(self) -> None:
         """No K8s API calls when no meshes are provisioned."""
@@ -584,6 +611,7 @@ class TestCreate(unittest.TestCase):
         job.add_mesh("workers", num_replicas=1)
         # Should not raise or call any K8s API.
         job._create(None)
+        self.assertIsNone(job._allocation_id)
 
     @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
     @patch("monarch._src.job.kubernetes.config.load_incluster_config")
@@ -1059,8 +1087,11 @@ class TestSerialization(unittest.TestCase):
             ]
         }
         job._gateway_address = "tcp://127.0.0.1:45678"
+        job._allocation_id = "abc123"
 
         restored = pickle.loads(pickle.dumps(job))
+
+        self.assertEqual(restored._allocation_id, "abc123")
 
         self.assertEqual(job._gateway_address, "tcp://127.0.0.1:45678")
         self.assertIsNone(restored._prepared_mesh_pods)
@@ -1192,6 +1223,12 @@ class TestIsPodWorkerReady(unittest.TestCase):
     def test_not_ready_pod(self) -> None:
         job = self._make_job()
         pod = _make_pod("w-0", rank=0, ready=False)
+        self.assertFalse(job._is_pod_worker_ready(pod))
+
+    def test_terminating_pod(self) -> None:
+        job = self._make_job()
+        pod = _make_pod("w-0", rank=0, ready=True)
+        pod.metadata.deletion_timestamp = datetime(2026, 11, 16, tzinfo=timezone.utc)
         self.assertFalse(job._is_pod_worker_ready(pod))
 
     def test_no_conditions(self) -> None:
@@ -1681,6 +1718,44 @@ class TestCanRun(unittest.TestCase):
         spec = self._make_job()
         spec.add_mesh("workers", num_replicas=1)
         self.assertTrue(job.can_run(spec))
+
+    @patch("monarch._src.job.kubernetes.watch.Watch")
+    @patch("monarch._src.job.kubernetes.client.CoreV1Api")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_selects_current_allocation_pods(
+        self,
+        mock_load_config: MagicMock,
+        mock_core_api: MagicMock,
+        mock_watch_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        job.add_mesh("attached", num_replicas=1)
+        job.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"))
+        job._allocation_id = "abc123"
+        job._status = "running"
+
+        mock_watch = MagicMock()
+        mock_watch_cls.return_value = mock_watch
+        mock_watch.stream.side_effect = lambda *args, **kwargs: iter(
+            [{"type": "ADDED", "object": _make_pod("w-0", 0, True)}]
+        )
+
+        spec = self._make_job()
+        spec.add_mesh("attached", num_replicas=1)
+        spec.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"))
+        self.assertTrue(job.can_run(spec))
+        selectors = [
+            c.kwargs["label_selector"] for c in mock_watch.stream.call_args_list
+        ]
+        self.assertEqual(
+            selectors,
+            [
+                "app.kubernetes.io/name=monarch-worker,"
+                "monarch.pytorch.org/mesh-name=attached",
+                "app.kubernetes.io/name=monarch-worker,"
+                f"monarch.pytorch.org/mesh-name=workers,{_ALLOCATION_LABEL}=abc123",
+            ],
+        )
 
     @patch(
         "monarch._src.job.kubernetes.config.load_incluster_config",

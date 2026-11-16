@@ -11,6 +11,7 @@ import dataclasses
 import logging
 import sys
 import textwrap
+import uuid
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -57,6 +58,9 @@ _WORKER_LOG_CAPTURE_ENV: dict[str, str] = {
     "HYPERACTOR_FORCE_FILE_LOG": "true",
     "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
 }
+
+# Pod label that identifies the allocation a provisioned worker pod belongs to.
+_ALLOCATION_LABEL = "monarch.pytorch.org/allocation-id"
 
 # Bootstrap script for provisioned worker pods.
 # Each worker discovers its own FQDN and starts listening for connections.
@@ -331,6 +335,7 @@ class KubernetesJob(JobTrait):
         self._kubeconfig: KubeConfig = kubeconfig or KubeConfig()
         self._attach_to = attach_to
         self._meshes: dict[str, _MeshConfig] = {}
+        self._allocation_id: str | None = None
         self._prepared_mesh_pods: dict[str, list[_MonarchMeshPod]] | None = None
         self._gateway_address: str | None = None
         super().__init__()
@@ -396,7 +401,7 @@ class KubernetesJob(JobTrait):
         all_mesh_pods: dict[str, list[_MonarchMeshPod]] = {}
         for mesh_name, mesh_config in self._meshes.items():
             all_mesh_pods[mesh_name] = self._wait_for_ready_pods(
-                mesh_config["label_selector"],
+                self._pod_selector(mesh_config),
                 mesh_config["num_replicas"],
                 mesh_config["pod_rank_label"],
                 timeout=self._timeout,
@@ -487,6 +492,8 @@ class KubernetesJob(JobTrait):
                           pod-level labels/annotations). Mutually exclusive with ``image_spec``.
                           The worker should start from a bare channel URL so that each container
                           start gets a fresh service identity, discovered when the client attaches.
+                          Each apply adds a ``monarch.pytorch.org/allocation-id`` pod label, which
+                          the client uses to select only the current allocation's pods.
             labels: Optional labels to apply to the MonarchMesh CRD metadata.
                     Propagated by the operator to the StatefulSet metadata. To set
                     labels on the worker pods, use ``pod_template.metadata.labels``.
@@ -578,6 +585,9 @@ class KubernetesJob(JobTrait):
 
         self._kubeconfig.load()
 
+        allocation_id = uuid.uuid4().hex
+        self._allocation_id = allocation_id
+
         api_client = client.ApiClient()
         api = client.CustomObjectsApi(api_client)
 
@@ -592,6 +602,9 @@ class KubernetesJob(JobTrait):
             if self._capture_worker_logs:
                 pod_template = _with_log_capture_env(pod_template)
             pod_template_dict = api_client.sanitize_for_serialization(pod_template)
+            pod_template_dict.setdefault("metadata", {}).setdefault("labels", {})[
+                _ALLOCATION_LABEL
+            ] = allocation_id
             metadata: dict[str, Any] = {
                 "name": mesh_name,
                 "namespace": self._namespace,
@@ -706,17 +719,33 @@ class KubernetesJob(JobTrait):
             spec=client.V1PodSpec(containers=[container], volumes=volumes or None),
         )
 
+    def _pod_selector(self, mesh_config: _MeshConfig) -> str:
+        """
+        Return the label selector for a mesh's current worker pods.
+
+        Provisioned meshes also select on the allocation label, so pods left
+        over from a deleted or replaced MonarchMesh are never matched.
+        """
+        selector = mesh_config["label_selector"]
+        if mesh_config["provisioned"] and self._allocation_id is not None:
+            selector = f"{selector},{_ALLOCATION_LABEL}={self._allocation_id}"
+        return selector
+
     def _is_pod_worker_ready(self, pod: client.V1Pod) -> bool:
         """
-        Check if a pod is ready using pod status conditions.
+        Check if a pod is ready and not terminating.
 
         Args:
             pod: Kubernetes pod object
 
         Returns:
-            True if pod has Ready condition with status True
+            True if pod is not being deleted and has Ready condition with status True
 
         """
+        # A terminating pod stays Ready until its containers stop.
+        if pod.metadata.deletion_timestamp is not None:
+            return False
+
         if not pod.status.conditions:
             return False
 
@@ -939,7 +968,7 @@ class KubernetesJob(JobTrait):
         try:
             for mesh_config in self._meshes.values():
                 self._wait_for_ready_pods(
-                    mesh_config["label_selector"],
+                    self._pod_selector(mesh_config),
                     mesh_config["num_replicas"],
                     mesh_config["pod_rank_label"],
                     timeout=5,
