@@ -1864,6 +1864,7 @@ def test_messages_table() -> None:
             "to_actor_id",
             "endpoint",
             "port_index",
+            "correlation_id",
         ], f"Unexpected columns: {column_names}"
 
         # Verify rows exist
