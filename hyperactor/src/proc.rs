@@ -3852,6 +3852,7 @@ impl<A: Actor> Instance<A> {
                 to_actor_id,
                 endpoint,
                 port_index,
+                correlation_id: headers.get(crate::mailbox::headers::TELEMETRY_CORRELATION_ID),
             });
 
             notify_message_status(hyperactor_telemetry::MessageStatusEvent {
