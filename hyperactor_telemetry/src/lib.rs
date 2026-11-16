@@ -393,6 +393,9 @@ pub fn notify_actor_status_changed(event: ActorStatusEvent) {
 /// path for all Python send methods: `call`, `call_one`, `broadcast`, and `choose`.
 #[derive(Debug, Clone)]
 pub struct SentMessageEvent {
+    /// The send's correlation id, carried to each receiver in the
+    /// `TELEMETRY_CORRELATION_ID` header.
+    pub id: u64,
     pub timestamp: SystemTime,
     /// Hash of the sending actor's ActorId.
     pub sender_actor_id: u64,
@@ -427,6 +430,8 @@ pub struct MessageEvent {
     pub endpoint: Option<String>,
     /// Destination port index, scoped by `to_actor_id`.
     pub port_index: Option<u64>,
+    /// Correlation id of the send that produced this message.
+    pub correlation_id: Option<u64>,
 }
 
 /// Notify telemetry that a message was received.
@@ -464,8 +469,8 @@ pub fn generate_actor_status_event_id(actor_id: u64) -> u64 {
 
 static SEND_SEQ: AtomicU64 = AtomicU64::new(1);
 
-/// Generate a globally unique SentMessage ID.
-pub fn generate_sent_message_id(sender_actor_id: u64) -> u64 {
+/// Generate a globally unique correlation id for a send by `sender_actor_id`.
+pub fn generate_correlation_id(sender_actor_id: u64) -> u64 {
     let seq = SEND_SEQ.fetch_add(1, Ordering::Relaxed);
     hash_to_u64(&(sender_actor_id, seq))
 }
@@ -475,7 +480,7 @@ static RECV_MSG_SEQ: AtomicU64 = AtomicU64::new(1);
 /// Generate a unique received-message ID (cross-process unique).
 ///
 /// Hashes (to_actor_id, seq) following the same pattern as
-/// `generate_sent_message_id`.
+/// `generate_correlation_id`.
 pub fn generate_message_id(to_actor_id: u64) -> u64 {
     let seq = RECV_MSG_SEQ.fetch_add(1, Ordering::Relaxed);
     hash_to_u64(&(to_actor_id, seq))
@@ -486,7 +491,7 @@ static STATUS_EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
 /// Generate a unique message-status-event ID (cross-process unique).
 ///
 /// Hashes (message_id, seq) following the same pattern as
-/// `generate_sent_message_id`.
+/// `generate_correlation_id`.
 pub fn generate_status_event_id(message_id: u64) -> u64 {
     let seq = STATUS_EVENT_SEQ.fetch_add(1, Ordering::Relaxed);
     hash_to_u64(&(message_id, seq))

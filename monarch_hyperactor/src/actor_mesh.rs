@@ -821,8 +821,14 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         message: PythonMessage,
         selection: AllOrChoose,
         instance: &Instance<PythonActor>,
-        caller_headers: hyperactor_config::Flattrs,
+        mut caller_headers: hyperactor_config::Flattrs,
     ) -> PyResult<()> {
+        if let Some(correlation_id) = message.kind.correlation_id() {
+            caller_headers.set(
+                hyperactor::mailbox::headers::TELEMETRY_CORRELATION_ID,
+                correlation_id,
+            );
+        }
         match selection {
             AllOrChoose::All => ActorMeshRef::<PythonActor>::cast_with_headers(
                 self,
