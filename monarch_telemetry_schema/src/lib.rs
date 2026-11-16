@@ -105,6 +105,10 @@ pub mod trace_tables {
         pub thread_name: &'static str,
         pub file: Option<&'static str>,
         pub line: Option<u32>,
+        /// Full name of the actor the span was recorded under (`actors.full_name`).
+        pub actor: Option<String>,
+        /// Received message the actor was handling (`messages.id`).
+        pub message_id: Option<u64>,
     }
 
     /// Row data for the span events table.
@@ -119,6 +123,7 @@ pub mod trace_tables {
     /// Row data for the events table.
     #[derive(RecordBatchRow)]
     pub struct Event {
+        pub process_id: &'static str,
         pub name: &'static str,
         pub target: &'static str,
         pub level: &'static str,
@@ -130,6 +135,10 @@ pub mod trace_tables {
         pub module_path: Option<&'static str>,
         pub file: Option<&'static str>,
         pub line: Option<u32>,
+        /// Full name of the actor the event was recorded under (`actors.full_name`).
+        pub actor: Option<String>,
+        /// Received message the actor was handling (`messages.id`).
+        pub message_id: Option<u64>,
     }
 }
 
@@ -471,6 +480,8 @@ mod tests {
             thread_name: "main",
             file: Some("lib.rs"),
             line: Some(42),
+            actor: None,
+            message_id: None,
         });
 
         let data = serialize_batch(&buffer.drain_to_record_batch().unwrap()).unwrap();

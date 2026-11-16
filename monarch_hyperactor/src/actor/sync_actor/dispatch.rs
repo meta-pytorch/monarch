@@ -178,6 +178,7 @@ impl<'py> IntoPyObject<'py> for PendingSyncCleanup {
             self.instance.clone_ref(py),
             self.rank,
             Some(self.recording_span),
+            None,
         );
         Bound::new(
             py,
