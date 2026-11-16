@@ -633,6 +633,115 @@ class ActorTelemetryRoutesTest(unittest.TestCase):
             self.assertEqual(resp.status_code, 404)
 
 
+class MessageTraceRouteTest(unittest.TestCase):
+    """A message's trace joins spans and logs by message and correlation id."""
+
+    def setUp(self):
+        self.adapter = generate()
+        self.app = create_app(self.adapter)
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+
+    def _add_telemetry(self):
+        message = {"timestamp_us": 0, "from_actor_id": 1, "to_actor_id": 2}
+        self.adapter.set_table(
+            "messages",
+            pa.Table.from_pylist(
+                [
+                    message | {"id": 10, "correlation_id": 77},
+                    message | {"id": 11, "correlation_id": None},
+                ],
+                schema=pa.schema(
+                    [
+                        pa.field("id", pa.uint64()),
+                        pa.field("timestamp_us", pa.int64()),
+                        pa.field("from_actor_id", pa.uint64()),
+                        pa.field("to_actor_id", pa.uint64()),
+                        pa.field("correlation_id", pa.uint64()),
+                    ]
+                ),
+            ),
+        )
+        span = {"process_id": "p", "message_id": None, "correlation_id": None}
+        self.adapter.set_table(
+            "spans",
+            pa.Table.from_pylist(
+                [
+                    span
+                    | {
+                        "timestamp_us": 2,
+                        "name": "handle",
+                        "actor": "callee",
+                        "message_id": 10,
+                    },
+                    span
+                    | {
+                        "timestamp_us": 1,
+                        "name": "call",
+                        "actor": "caller",
+                        "correlation_id": 77,
+                    },
+                    span
+                    | {
+                        "timestamp_us": 3,
+                        "name": "unrelated",
+                        "actor": "callee",
+                        "message_id": 11,
+                    },
+                ],
+                schema=pa.schema(
+                    [
+                        pa.field("timestamp_us", pa.int64()),
+                        pa.field("name", pa.string()),
+                        pa.field("actor", pa.string()),
+                        pa.field("process_id", pa.string()),
+                        pa.field("message_id", pa.uint64()),
+                        pa.field("correlation_id", pa.uint64()),
+                    ]
+                ),
+            ),
+        )
+        self.adapter.set_table(
+            "events",
+            pa.Table.from_pylist(
+                [
+                    {
+                        "timestamp_us": 2,
+                        "level": "WARN",
+                        "actor": "callee",
+                        "process_id": "p",
+                        "message_id": message_id,
+                        "fields_json": json.dumps({"message": f"log {message_id}"}),
+                    }
+                    for message_id in (10, 11)
+                ]
+            ),
+        )
+
+    def test_trace_follows_the_message_and_correlation_ids(self):
+        self._add_telemetry()
+        trace = self.client.get("/api/messages/10/trace").get_json()
+        self.assertEqual(
+            [(span["name"], span["actor"]) for span in trace["spans"]],
+            [("call", "caller"), ("handle", "callee")],
+        )
+        self.assertEqual([log["message"] for log in trace["logs"]], ["log 10"])
+
+    def test_trace_without_correlation_id_uses_the_message_id(self):
+        self._add_telemetry()
+        trace = self.client.get("/api/messages/11/trace").get_json()
+        self.assertEqual([span["name"] for span in trace["spans"]], ["unrelated"])
+
+    def test_trace_without_telemetry_tables_is_empty(self):
+        message_id = self.adapter.query("SELECT id FROM messages LIMIT 1")[0]["id"]
+        trace = self.client.get(f"/api/messages/{message_id}/trace").get_json()
+        self.assertEqual((trace["spans"], trace["logs"]), ([], []))
+
+    def test_unknown_message_is_not_found(self):
+        resp = self.client.get("/api/messages/999999999/trace")
+        self.assertEqual(resp.status_code, 404)
+
+
 # ---------------------------------------------------------------------------
 # Py-spy dump storage
 # ---------------------------------------------------------------------------

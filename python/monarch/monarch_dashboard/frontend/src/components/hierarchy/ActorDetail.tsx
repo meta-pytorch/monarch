@@ -16,6 +16,7 @@ import {
   EntityId,
   Message,
   MessageStatusEvent,
+  MessageTrace,
 } from "../../types";
 import {
   actorInstance,
@@ -229,6 +230,7 @@ function MsgRow({
         <tr>
           <td colSpan={4} style={{ background: "var(--surface-0)" }}>
             <MsgStatusTimeline messageId={m.id} />
+            <MsgTrace messageId={m.id} />
           </td>
         </tr>
       )}
@@ -255,5 +257,35 @@ function MsgStatusTimeline({ messageId }: { messageId: EntityId }) {
         </span>
       ))}
     </div>
+  );
+}
+
+/** The message's spans and log lines, on one timeline. */
+function MsgTrace({ messageId }: { messageId: EntityId }) {
+  const { data: trace } = useApi<MessageTrace>(`/messages/${messageId}/trace`, 0);
+  if (!trace) return null;
+  const rows = [
+    ...trace.spans.map((s) => ({
+      t: s.timestamp_us,
+      kind: s.message_id === messageId ? "span" : "caller span",
+      actor: s.actor,
+      text: s.name,
+    })),
+    ...trace.logs.map((l) => ({ t: l.timestamp_us, kind: l.level, actor: l.actor, text: l.message })),
+  ].sort((a, b) => a.t - b.t);
+  if (rows.length === 0) return <div style={{ padding: 6, color: "var(--text-3)" }}>No trace</div>;
+  return (
+    <table className="tbl">
+      <tbody>
+        {rows.map((r, i) => (
+          <tr key={i}>
+            <td className="cell-mono">{formatTime(r.t)}</td>
+            <td>{r.kind}</td>
+            <td title={r.actor ?? undefined}>{r.actor ? prettyRole(actorRole(r.actor)) : "—"}</td>
+            <td className="cell-mono">{r.text ?? "—"}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

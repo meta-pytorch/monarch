@@ -318,6 +318,15 @@ def list_messages():
     return jsonify(_sanitize_for_js(db.list_messages(from_id, to_id)))
 
 
+@api.route("/messages/<int:message_id>/trace")
+def get_message_trace(message_id):
+    """Get the spans and log lines linked to a message."""
+    trace = db.get_message_trace(message_id)
+    if trace is None:
+        return jsonify({"error": "message not found"}), 404
+    return jsonify(_sanitize_for_js(trace))
+
+
 # ---------------------------------------------------------------------------
 # Message status events
 # ---------------------------------------------------------------------------
