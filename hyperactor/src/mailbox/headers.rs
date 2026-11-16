@@ -54,6 +54,11 @@ declare_attrs! {
     /// Telemetry message ID for correlating lifecycle events, injected in post_unchecked().
     pub attr TELEMETRY_MESSAGE_ID: u64;
 
+    /// Id of the send that produced this message, shared by every message a
+    /// cast delivers. Stamped by the sender; a Python endpoint uses its call's
+    /// `correlation_id`.
+    pub attr TELEMETRY_CORRELATION_ID: u64;
+
     /// Port index the message was delivered to, injected in post_unchecked().
     pub attr TELEMETRY_PORT_INDEX: u64;
 
