@@ -53,6 +53,18 @@ export interface ActorLog {
   message_id: EntityId | null;
 }
 
+/** Spans and log lines linked to a received message. */
+export interface MessageTrace {
+  spans: {
+    timestamp_us: number;
+    name: string;
+    actor: string | null;
+    message_id: EntityId | null;
+    correlation_id: EntityId | null;
+  }[];
+  logs: { timestamp_us: number; level: string; actor: string | null; message: string | null }[];
+}
+
 /** An actor's metric totalled over the run (`metric_*.actor`). */
 export interface ActorMetric {
   name: string;

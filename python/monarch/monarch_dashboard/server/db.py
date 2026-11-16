@@ -545,6 +545,39 @@ def list_actor_metrics(full_name: str) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda r: r["name"])
 
 
+def get_message_trace(message_id: int) -> dict[str, Any] | None:
+    """Return the spans and log lines linked to a received message.
+
+    Spans recorded while the message was handled carry its ``message_id``;
+    the caller's span carries the message's ``correlation_id``.
+    """
+    message = _query_one("SELECT * FROM messages WHERE id = ?", (message_id,))
+    if message is None:
+        return None
+    spans: list[dict[str, Any]] = []
+    if _has_tables("spans"):
+        match = "message_id = ?"
+        params: tuple = (message_id,)
+        if message.get("correlation_id") is not None:
+            match += " OR correlation_id = ?"
+            params += (message["correlation_id"],)
+        spans = _query(
+            "SELECT timestamp_us, name, actor, process_id, message_id, correlation_id"
+            f" FROM spans WHERE {match} ORDER BY timestamp_us LIMIT ?",
+            params + (_DRILL_LIMIT,),
+        )
+    logs: list[dict[str, Any]] = []
+    if _has_tables("events"):
+        logs = _query(
+            "SELECT timestamp_us, level, actor, process_id, fields_json FROM events"
+            " WHERE message_id = ? ORDER BY timestamp_us LIMIT ?",
+            (message_id, _DRILL_LIMIT),
+        )
+        for r in logs:
+            r["message"] = json.loads(r.pop("fields_json") or "{}").get("message")
+    return {"message": message, "spans": spans, "logs": logs}
+
+
 # ---------------------------------------------------------------------------
 # Summary / aggregate queries
 # ---------------------------------------------------------------------------
