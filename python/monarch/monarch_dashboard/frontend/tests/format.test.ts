@@ -14,9 +14,12 @@ import {
   agentDisplayName,
   cleanNodeLabel,
   formatDateTime,
+  formatDuration,
+  formatMetricValue,
   formatShape,
   formatTime,
   leafName,
+  metricLabel,
   prettyRole,
   splitMessages,
 } from "../src/lib/format";
@@ -113,4 +116,42 @@ test("message directions preserve distinct large string IDs, order, and self-mes
   const numeric = { from_actor_id: 7, to_actor_id: "8" };
   assert.deepEqual(splitMessages([numeric], "7"), { incoming: [], outgoing: [numeric] });
   assert.deepEqual(splitMessages([numeric], 8), { incoming: [numeric], outgoing: [] });
+});
+
+test("formatDuration scales time units and rejects other units", () => {
+  assert.equal(formatDuration(45312, "ns"), "45.3 µs");
+  assert.equal(formatDuration(13910876, "ns"), "13.9 ms");
+  assert.equal(formatDuration(2500, "us"), "2.5 ms");
+  assert.equal(formatDuration(12, "ns"), "12 ns");
+  assert.equal(formatDuration(3, "By"), null);
+});
+
+test("formatMetricValue shows samples for histograms and the total otherwise", () => {
+  const base = { name: "actor.message_handler_duration.ns", unit: "ns" };
+  assert.equal(
+    formatMetricValue({ ...base, kind: "histogram", count: 307, total: 13910876 }),
+    "307 samples · avg 45.3 µs · total 13.9 ms",
+  );
+  assert.equal(formatMetricValue({ ...base, kind: "histogram", count: 0, total: 0 }), "0 samples");
+  assert.equal(
+    formatMetricValue({ name: "message.e2e_latency.us", unit: "", kind: "histogram", count: 2, total: 3000 }),
+    "2 samples · avg 1.5 ms · total 3 ms",
+  );
+  assert.equal(
+    formatMetricValue({ name: "actor.message_queue_size", unit: "", kind: "current", count: null, total: 0 }),
+    "0",
+  );
+  assert.equal(
+    formatMetricValue({ name: "mailbox.posts", unit: "", kind: "counter", count: null, total: 1616 }),
+    "1,616",
+  );
+});
+
+test("metricLabel prefixes up-down counters with Current and counters with Total", () => {
+  assert.equal(metricLabel("actor.message_queue_size", "current"), "Current queue depth");
+  assert.equal(metricLabel("mailbox.posts", "counter"), "Total messages sent");
+  assert.equal(metricLabel("actor.message_handler_duration.ns", "histogram"), "Handler time");
+  assert.equal(metricLabel("custom.depth", "current"), "Current value");
+  assert.equal(metricLabel("custom.count", "counter"), "Total value");
+  assert.equal(metricLabel("custom.latency", "histogram"), null);
 });

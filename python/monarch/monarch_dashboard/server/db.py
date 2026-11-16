@@ -488,6 +488,64 @@ def list_sent_messages(
 
 
 # ---------------------------------------------------------------------------
+# Actor telemetry: logs and metrics
+# ---------------------------------------------------------------------------
+
+
+def _has_tables(*names: str) -> bool:
+    return set(names).issubset(_get_adapter().table_names())
+
+
+def list_actor_logs(full_name: str, limit: int = _DRILL_LIMIT) -> list[dict[str, Any]]:
+    """Return the actor's most recent ``limit`` log lines, oldest first."""
+    if not _has_tables("events"):
+        return []
+    rows = _query(
+        "SELECT * FROM ("
+        " SELECT timestamp_us, level, target, fields_json, message_id FROM events"
+        " WHERE actor = ? ORDER BY timestamp_us DESC LIMIT ?"
+        " ) t ORDER BY timestamp_us",
+        (full_name, limit),
+    )
+    for r in rows:
+        r["message"] = json.loads(r.pop("fields_json") or "{}").get("message")
+    return rows
+
+
+_METRIC_TOTAL_SQL = (
+    "SUM(COALESCE(CAST(sum_u64 AS DOUBLE), CAST(sum_i64 AS DOUBLE), sum_f64))"
+)
+
+
+def list_actor_metrics(full_name: str) -> list[dict[str, Any]]:
+    """Return the actor's histograms and sums, totalled over the retained points.
+
+    ``kind`` is ``histogram``, ``counter`` for monotonic sums, or ``current``
+    for up-down counters, whose total of delta points is their current value.
+    """
+    rows: list[dict[str, Any]] = []
+    if _has_tables("metric_histograms"):
+        rows += [
+            r | {"kind": "histogram"}
+            for r in _query(
+                f"SELECT name, unit, SUM(count) AS count, {_METRIC_TOTAL_SQL} AS total"
+                " FROM metric_histograms WHERE actor = ? GROUP BY name, unit",
+                (full_name,),
+            )
+        ]
+    if _has_tables("metric_sums"):
+        for r in _query(
+            f"SELECT name, unit, is_monotonic, NULL AS count, {_METRIC_TOTAL_SQL}"
+            " AS total FROM metric_sums WHERE actor = ?"
+            " GROUP BY name, unit, is_monotonic",
+            (full_name,),
+        ):
+            r["kind"] = "counter" if r.pop("is_monotonic") else "current"
+            rows.append(r)
+    return sorted(rows, key=lambda r: r["name"])
+
+
+# ---------------------------------------------------------------------------
 # Summary / aggregate queries
 # ---------------------------------------------------------------------------
 
