@@ -28,12 +28,21 @@ pub fn get_current_span_id() -> PyResult<u64> {
 /// Log a message with the given metaata
 #[pyfunction]
 pub fn forward_to_tracing(py: Python, record: Py<PyAny>) -> PyResult<()> {
+    let level: i32 = record.getattr(py, "levelno")?.extract(py)?;
+    let tracing_level = match level {
+        40 | 50 => tracing::Level::ERROR,
+        30 => tracing::Level::WARN,
+        10 => tracing::Level::DEBUG,
+        _ => tracing::Level::INFO,
+    };
+    if !tracing::level_enabled!(tracing_level) {
+        return Ok(());
+    }
     let message = record.call_method0(py, "getMessage")?;
     let message: &str = message.extract(py)?;
     let lineno: i64 = record.getattr(py, "lineno")?.extract(py)?;
     let file = record.getattr(py, "filename")?;
     let file: &str = file.extract(py)?;
-    let level: i32 = record.getattr(py, "levelno")?.extract(py)?;
 
     // Extract actor_id from the Python record object if available
     let actor_id = record
@@ -76,6 +85,7 @@ pub fn forward_to_tracing(py: Python, record: Py<PyAny>) -> PyResult<()> {
                 }
                 None => {
                     tracing::error!(
+                        target: "log_events",
                         file = file,
                         lineno = lineno,
                         actor_id = actor_id.as_deref(),

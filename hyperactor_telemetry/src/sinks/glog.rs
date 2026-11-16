@@ -138,7 +138,8 @@ impl GlogSink {
                         tracing::Level::from_str(file_log_level).expect("Invalid default log level")
                     })
                 }))
-                .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
+                .with_target("opentelemetry", LevelFilter::OFF) // otel has some log span under debug that we don't care about
+                .with_target("log_events", LevelFilter::OFF),
             line_buffer: LimitedBuffer::new(MAX_LINE_SIZE - TRUNCATION_SUFFIX_RESERVE),
         }
     }
@@ -315,6 +316,14 @@ impl TraceEventSink for GlogSink {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn forwarded_python_logs_stay_out_of_the_monarch_log() {
+        let sink = GlogSink::new(Box::new(std::io::sink()), None, "info");
+        let targets = sink.target_filter().unwrap();
+        assert!(!targets.would_enable("log_events", &tracing::Level::ERROR));
+        assert!(targets.would_enable("hyperactor::proc", &tracing::Level::INFO));
+    }
 
     #[test]
     fn test_limited_buffer_truncation() {
