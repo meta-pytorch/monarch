@@ -109,6 +109,8 @@ pub mod trace_tables {
         pub actor: Option<String>,
         /// Received message the actor was handling (`messages.id`).
         pub message_id: Option<u64>,
+        /// Send that the span made or handled (`messages.correlation_id`).
+        pub correlation_id: Option<u64>,
     }
 
     /// Row data for the span events table.
@@ -239,6 +241,7 @@ pub mod entity_tables {
     /// Row data for the sent messages table.
     #[derive(RecordBatchRow)]
     pub struct SentMessage {
+        /// The send's correlation id (`messages.correlation_id`).
         pub id: u64,
         pub timestamp_us: i64,
         pub sender_actor_id: u64,
@@ -256,6 +259,8 @@ pub mod entity_tables {
         pub to_actor_id: u64,
         pub endpoint: Option<String>,
         pub port_index: Option<u64>,
+        /// Send that produced the message (`sent_messages.id`, `spans.correlation_id`).
+        pub correlation_id: Option<u64>,
     }
 
     /// Row data for the message status events table.
@@ -482,6 +487,7 @@ mod tests {
             line: Some(42),
             actor: None,
             message_id: None,
+            correlation_id: None,
         });
 
         let data = serialize_batch(&buffer.drain_to_record_batch().unwrap()).unwrap();
