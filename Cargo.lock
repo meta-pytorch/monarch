@@ -4740,7 +4740,6 @@ dependencies = [
  "monarch_hyperactor",
  "monarch_record_batch",
  "monarch_telemetry_schema",
- "parquet",
  "pyo3",
  "serde",
  "serde_json",
