@@ -242,6 +242,17 @@ pub enum PythonMessageKind {
 }
 wirevalue::register_type!(PythonMessageKind);
 
+impl PythonMessageKind {
+    /// The correlation id of the endpoint call that sent this message.
+    pub fn correlation_id(&self) -> Option<u64> {
+        match self {
+            PythonMessageKind::CallMethod { correlation_id, .. }
+            | PythonMessageKind::CallMethodIndirect { correlation_id, .. } => *correlation_id,
+            _ => None,
+        }
+    }
+}
+
 impl Default for PythonMessageKind {
     fn default() -> Self {
         PythonMessageKind::Uninit {}

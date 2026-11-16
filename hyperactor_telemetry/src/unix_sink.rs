@@ -78,7 +78,6 @@ use crate::FieldValue;
 use crate::TraceEvent;
 use crate::TraceEventSink;
 use crate::config::get_tracing_targets;
-use crate::generate_sent_message_id;
 use crate::trace_dispatcher::ActorScope;
 use crate::trace_dispatcher::TraceFields;
 use crate::trace_dispatcher::get_field;
@@ -317,6 +316,7 @@ impl UnixSocketSink {
                     line: *line,
                     actor: actor_column(scope, fields),
                     message_id: scope.message_id.or(u64_field(fields, "message_id")),
+                    correlation_id: u64_field(fields, "correlation_id"),
                 });
             }
             TraceEvent::SpanEnter { id, timestamp, .. } => {
@@ -593,7 +593,7 @@ fn buffer_entity_event(inner: &mut UnixSocketSinkInner, event: &EntityEvent) {
         }
         EntityEvent::SentMessage(event) => {
             inner.sent_messages_buffer.insert(SentMessage {
-                id: generate_sent_message_id(event.sender_actor_id),
+                id: event.id,
                 timestamp_us: timestamp_to_micros(&event.timestamp),
                 sender_actor_id: event.sender_actor_id,
                 actor_mesh_id: event.actor_mesh_id,
@@ -609,6 +609,7 @@ fn buffer_entity_event(inner: &mut UnixSocketSinkInner, event: &EntityEvent) {
                 to_actor_id: event.to_actor_id,
                 endpoint: event.endpoint.clone(),
                 port_index: event.port_index,
+                correlation_id: event.correlation_id,
             });
         }
         EntityEvent::MessageStatus(event) => {
@@ -895,6 +896,7 @@ mod tests {
                 reason: Some("test".to_string()),
             })),
             TraceEvent::Entity(EntityEvent::SentMessage(SentMessageEvent {
+                id: 8,
                 timestamp: timestamp(),
                 sender_actor_id: 1,
                 actor_mesh_id: 2,
@@ -908,6 +910,7 @@ mod tests {
                 to_actor_id: 5,
                 endpoint: Some("endpoint".to_string()),
                 port_index: Some(6),
+                correlation_id: Some(8),
             })),
             TraceEvent::Entity(EntityEvent::MessageStatus(MessageStatusEvent {
                 timestamp: timestamp(),
