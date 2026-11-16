@@ -373,9 +373,9 @@ struct ChunkedFuseFs {
 
 impl PathFilesystem for ChunkedFuseFs {
     async fn init(&self, _req: Request) -> FuseResult<ReplyInit> {
-        Ok(ReplyInit {
-            max_write: NonZeroU32::new(16 * 1024).expect("16KB is non-zero"),
-        })
+        Ok(ReplyInit::new(
+            NonZeroU32::new(16 * 1024).expect("16KB is non-zero"),
+        ))
     }
 
     async fn destroy(&self, _req: Request) {}

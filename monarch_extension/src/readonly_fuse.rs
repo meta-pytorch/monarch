@@ -258,9 +258,9 @@ struct ReadOnlyFs {
 
 impl PathFilesystem for ReadOnlyFs {
     async fn init(&self, _req: Request) -> FuseResult<ReplyInit> {
-        Ok(ReplyInit {
-            max_write: NonZeroU32::new(16 * 1024).expect("non-zero"),
-        })
+        Ok(ReplyInit::new(
+            NonZeroU32::new(16 * 1024).expect("non-zero"),
+        ))
     }
 
     async fn destroy(&self, _req: Request) {}
