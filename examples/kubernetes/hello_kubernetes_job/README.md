@@ -67,6 +67,25 @@ including any namespace Pod Security labels or admission webhooks, must allow
 [privileged containers](https://kubernetes.io/docs/concepts/security/linux-kernel-security-constraints/#privileged-containers).
 The cluster's worker nodes must also provide `/dev/fuse`.
 
+### Worker logs
+
+By default, the stdout and stderr of the processes on each worker pod go only
+to the pod's own output (`kubectl logs`). To also write them to files inside
+each pod, where a gather mount can show them on the client, pass
+`capture_worker_logs=True`:
+
+```python
+job = KubernetesJob(namespace="monarch-tests", capture_worker_logs=True)
+job.add_mesh("mesh1", 2, image_spec=ImageSpec("ghcr.io/meta-pytorch/monarch:latest"))
+job.gather_mount("/tmp/root", "./worker_logs")
+```
+
+Output still reaches `kubectl logs`. Each pod gets one stdout and one stderr
+file, `monarch_log_<pod>_*.stdout` and `.stderr`, in `/tmp/<user>` (`/tmp/root`
+in the stock images), with each line prefixed by its rank. On the client, they
+appear as `./worker_logs/hosts_<N>/`. The files are not rotated, so very
+verbose jobs should watch the pods' ephemeral storage.
+
 ### Expected Output
 
 ```

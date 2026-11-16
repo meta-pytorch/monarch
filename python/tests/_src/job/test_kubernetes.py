@@ -585,6 +585,63 @@ class TestCreate(unittest.TestCase):
         # Should not raise or call any K8s API.
         job._create(None)
 
+    @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    @patch("monarch._src.job.kubernetes.configure")
+    def test_create_adds_log_capture_env(
+        self,
+        mock_configure: MagicMock,
+        mock_load_config: MagicMock,
+        mock_custom_api_cls: MagicMock,
+    ) -> None:
+        """``capture_worker_logs`` sets the capture variables on every
+        provisioned mesh's containers, keeping a template's own values."""
+        job = KubernetesJob(namespace="default", capture_worker_logs=True)
+        job.add_mesh("fromimage", num_replicas=1, image_spec=ImageSpec("img"))
+        pod_template = V1PodTemplateSpec(
+            spec=V1PodSpec(
+                containers=[
+                    V1Container(
+                        name="worker",
+                        image="img",
+                        env=[V1EnvVar(name="HYPERACTOR_FORCE_FILE_LOG", value="0")],
+                    )
+                ]
+            ),
+        )
+        job.add_mesh("fromtemplate", num_replicas=1, pod_template=pod_template)
+        job.add_mesh("attached", num_replicas=1)
+        mock_api = MagicMock()
+        mock_custom_api_cls.return_value = mock_api
+
+        job._create(None)
+
+        envs = {
+            create.kwargs["body"]["metadata"]["name"]: {
+                var["name"]: var["value"]
+                for var in create.kwargs["body"]["spec"]["podTemplate"]["spec"][
+                    "containers"
+                ][0]["env"]
+            }
+            for create in mock_api.create_namespaced_custom_object.call_args_list
+        }
+        self.assertEqual(
+            envs,
+            {
+                "fromimage": {
+                    "MONARCH_PORT": "26600",
+                    "HYPERACTOR_FORCE_FILE_LOG": "true",
+                    "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
+                },
+                "fromtemplate": {
+                    "HYPERACTOR_FORCE_FILE_LOG": "0",
+                    "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
+                },
+            },
+        )
+        # The caller's template is left unchanged.
+        self.assertEqual(len(pod_template.spec.containers[0].env), 1)
+
     @patch(
         "monarch._src.job.kubernetes.config.load_incluster_config",
         side_effect=k8s_config.ConfigException("not in cluster"),
@@ -1009,6 +1066,24 @@ class TestSerialization(unittest.TestCase):
         self.assertIsNone(restored._prepared_mesh_pods)
         self.assertIsNone(restored._gateway_address)
         mock_configure.assert_called()
+
+    @patch("monarch._src.job.kubernetes.configure")
+    def test_capture_worker_logs_configures_client(
+        self, mock_configure: MagicMock
+    ) -> None:
+        """The client enables file capture when the job is built and when a
+        cached job is loaded, and only when asked."""
+        capture = call(enable_file_capture=True)
+
+        KubernetesJob(namespace="test-ns")
+        self.assertNotIn(capture, mock_configure.call_args_list)
+
+        job = KubernetesJob(namespace="test-ns", capture_worker_logs=True)
+        self.assertIn(capture, mock_configure.call_args_list)
+
+        mock_configure.reset_mock()
+        pickle.loads(pickle.dumps(job))
+        self.assertIn(capture, mock_configure.call_args_list)
 
     @patch("monarch._src.job.kubernetes.configure")
     def test_in_memory_config_cache_requires_current_spec(

@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+import copy
 import dataclasses
 import logging
 import sys
@@ -48,6 +49,14 @@ _RFC_1123_MAX_LEN = 63
 _MONARCHMESH_GROUP = "monarch.pytorch.org"
 _MONARCHMESH_VERSION = "v1alpha1"
 _MONARCHMESH_PLURAL = "monarchmeshes"
+
+# Worker settings that write each pod's process stdout/stderr to files inside
+# the pod, in addition to the pod's own stdout. A pod counts as a local run, so
+# file logging must be forced.
+_WORKER_LOG_CAPTURE_ENV: dict[str, str] = {
+    "HYPERACTOR_FORCE_FILE_LOG": "true",
+    "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
+}
 
 # Bootstrap script for provisioned worker pods.
 # Each worker discovers its own FQDN and starts listening for connections.
@@ -236,6 +245,27 @@ class _MeshConfig(_MeshConfigRequired, total=False):
     pod_template: client.V1PodTemplateSpec
 
 
+def _with_log_capture_env(
+    pod_template: client.V1PodTemplateSpec,
+) -> client.V1PodTemplateSpec:
+    """Return a copy of *pod_template* whose containers capture worker logs.
+
+    Adds each variable in ``_WORKER_LOG_CAPTURE_ENV`` that a container does
+    not already set.
+    """
+    pod_template = copy.deepcopy(pod_template)
+    for container in pod_template.spec.containers:
+        env = list(container.env or [])
+        present = {var.name for var in env}
+        env.extend(
+            client.V1EnvVar(name=name, value=value)
+            for name, value in _WORKER_LOG_CAPTURE_ENV.items()
+            if name not in present
+        )
+        container.env = env
+    return pod_template
+
+
 class KubernetesJob(JobTrait):
     """
     Job implementation for Kubernetes that discovers and connects to pods.
@@ -261,6 +291,7 @@ class KubernetesJob(JobTrait):
         timeout: int | None = None,
         kubeconfig: KubeConfig | None = None,
         attach_to: str | None = None,
+        capture_worker_logs: bool = False,
     ) -> None:
         """
         Initialize a KubernetesJob.
@@ -277,8 +308,24 @@ class KubernetesJob(JobTrait):
                 When ``kubeconfig`` is provided (out-of-cluster mode) and this is
                 not set, Monarch starts one port-forward per allocation and every
                 client process reuses it until ``kill()``.
+            capture_worker_logs: Also write the stdout and stderr of the
+                processes on each worker pod to files inside the pod, so a
+                gather mount can show them. The output still reaches
+                ``kubectl logs``. Each pod gets one stdout and one stderr
+                file, ``/tmp/<user>/monarch_log_<pod>_*.stdout`` and
+                ``.stderr`` (``/tmp/root`` in the stock images), with each
+                line prefixed by its rank. Applies to provisioned meshes;
+                pods of attach-only meshes need the same environment
+                variables (``HYPERACTOR_FORCE_FILE_LOG=true`` and
+                ``HYPERACTOR_MESH_ENABLE_FILE_CAPTURE=true``) from whoever
+                creates them. Example::
+
+                    job = KubernetesJob("ns", capture_worker_logs=True)
+                    job.add_mesh("workers", 2, image_spec=ImageSpec("img"))
+                    job.gather_mount("/tmp/root", "./worker_logs")
         """
-        configure(default_transport=ChannelTransport.TcpWithHostname)
+        self._capture_worker_logs = capture_worker_logs
+        self._configure_client()
         self._namespace = namespace
         self._timeout = timeout
         self._kubeconfig: KubeConfig = kubeconfig or KubeConfig()
@@ -306,7 +353,15 @@ class KubernetesJob(JobTrait):
         self.__dict__.update(state)
         self._prepared_mesh_pods = None
         self._gateway_address = None
+        self._configure_client()
+
+    def _configure_client(self) -> None:
+        """Apply this job's settings to the client process's config."""
         configure(default_transport=ChannelTransport.TcpWithHostname)
+        if self._capture_worker_logs:
+            # The client's setting decides whether each spawned process's
+            # output is copied to the pod's capture files.
+            configure(enable_file_capture=True)
 
     def _rebind_connection_inputs(self, spec: JobTrait) -> None:
         if not isinstance(spec, KubernetesJob):
@@ -534,6 +589,8 @@ class KubernetesJob(JobTrait):
                     image_spec, mesh_config["port"]
                 )
             assert pod_template is not None
+            if self._capture_worker_logs:
+                pod_template = _with_log_capture_env(pod_template)
             pod_template_dict = api_client.sanitize_for_serialization(pod_template)
             metadata: dict[str, Any] = {
                 "name": mesh_name,
