@@ -540,6 +540,7 @@ impl PendingMessage {
             self.instance.clone_ref(py),
             self.rank,
             Some(self.recording_span),
+            self.telemetry_message_id,
         );
         let resolved = self.resolved;
         Bound::new(
@@ -1884,6 +1885,7 @@ impl<'py> IntoPyObject<'py> for PendingSupervision {
             self.instance.clone_ref(py),
             self.rank,
             Some(self.recording_span),
+            None,
         );
         let failure = PyMeshFailure::from(reply.failure.clone());
         Bound::new(
@@ -2017,6 +2019,7 @@ impl<'py> IntoPyObject<'py> for PendingUndeliverable {
             self.instance.clone_ref(py),
             self.rank,
             Some(self.recording_span),
+            None,
         );
         let envelope = PythonUndeliverableMessageEnvelope {
             inner: Some(self.envelope),

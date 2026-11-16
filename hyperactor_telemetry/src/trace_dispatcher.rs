@@ -41,6 +41,35 @@ pub(crate) fn get_field<'a>(fields: &'a TraceFields, key: &str) -> Option<&'a Fi
     fields.iter().find(|(k, _)| *k == key).map(|(_, v)| v)
 }
 
+/// The actor, and the message it was handling, that a span or event was
+/// recorded under. A span gets it from its own `subject` and `message_id`
+/// fields when its subject is an actor, and otherwise inherits it from its
+/// parent span.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ActorScope {
+    /// The actor's full `ActorAddr` string.
+    pub actor: Option<Arc<str>>,
+    pub message_id: Option<u64>,
+}
+
+impl ActorScope {
+    fn from_fields(fields: &TraceFields) -> Option<Self> {
+        let subject = match get_field(fields, "subject")? {
+            FieldValue::Str(subject) | FieldValue::Debug(subject) => subject,
+            _ => return None,
+        };
+        let actor = subject.strip_prefix("<actor ")?.strip_suffix('>')?;
+        let message_id = match get_field(fields, "message_id") {
+            Some(FieldValue::U64(message_id)) => Some(*message_id),
+            _ => None,
+        };
+        Some(Self {
+            actor: Some(actor.into()),
+            message_id,
+        })
+    }
+}
+
 /// Unified representation of a trace event captured from the tracing layer.
 /// This is captured once on the application thread, then sent to the background
 /// worker for fan-out to multiple exporters.
@@ -58,6 +87,7 @@ pub enum TraceEvent {
         thread_name: &'static str,
         file: Option<&'static str>,
         line: Option<u32>,
+        scope: ActorScope,
     },
     /// A span was entered (on_enter)
     SpanEnter {
@@ -86,6 +116,7 @@ pub enum TraceEvent {
         module_path: Option<&'static str>,
         file: Option<&'static str>,
         line: Option<u32>,
+        scope: ActorScope,
     },
     /// An entity lifecycle event emitted outside the tracing subscriber.
     Entity(EntityEvent),
@@ -356,6 +387,7 @@ impl TraceEventDispatcher {
                 module_path: Some(module_path!()),
                 file: Some(file!()),
                 line: Some(line!()),
+                scope: ActorScope::default(),
             };
 
             if dropped_sender.send(drop_event).is_err() {
@@ -397,6 +429,20 @@ where
             ctx.current_span().id().map(|id| id.into_u64())
         };
 
+        let scope = ActorScope::from_fields(&fields).or_else(|| {
+            let parent = if attrs.is_root() {
+                None
+            } else if let Some(parent) = attrs.parent() {
+                ctx.span(parent)
+            } else {
+                ctx.lookup_current()
+            };
+            parent.and_then(|parent| parent.extensions().get::<ActorScope>().cloned())
+        });
+        if let (Some(scope), Some(span)) = (&scope, ctx.span(id)) {
+            span.extensions_mut().insert(scope.clone());
+        }
+
         let (thread_name, _) = get_thread_info();
 
         let event = TraceEvent::NewSpan {
@@ -410,6 +456,7 @@ where
             thread_name,
             file: metadata.file(),
             line: metadata.line(),
+            scope: scope.unwrap_or_default(),
         };
 
         self.send_event(event);
@@ -443,7 +490,11 @@ where
         let mut visitor = FieldVisitor(&mut fields);
         event.record(&mut visitor);
 
-        let parent_span = ctx.event_span(event).map(|span| span.id().into_u64());
+        let event_span = ctx.event_span(event);
+        let parent_span = event_span.as_ref().map(|span| span.id().into_u64());
+        let scope = event_span
+            .and_then(|span| span.extensions().get::<ActorScope>().cloned())
+            .unwrap_or_default();
 
         let (thread_name, thread_id) = get_thread_info();
 
@@ -459,6 +510,7 @@ where
             module_path: metadata.module_path(),
             file: metadata.file(),
             line: metadata.line(),
+            scope,
         };
 
         self.send_event(trace_event);
@@ -709,6 +761,7 @@ mod tests {
             module_path: Some("test"),
             file: Some("test.rs"),
             line: Some(1),
+            scope: Default::default(),
         }
     }
 
@@ -829,6 +882,56 @@ mod tests {
         worker.join().unwrap();
 
         assert_eq!(recorded.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn spans_and_events_record_the_actor_scope_they_run_under() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let dispatcher = TraceEventDispatcher::new(vec![Box::new(RecordingSink {
+            events: Arc::clone(&events),
+        })]);
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(dispatcher), || {
+            let handler = tracing::info_span!(
+                parent: None,
+                "recording",
+                subject = "<actor a.b@c>",
+                message_id = Some(7u64),
+            );
+            let handler = handler.enter();
+            let child = tracing::info_span!("child");
+            let child = child.enter();
+            tracing::info!("inside");
+            drop(child);
+            drop(handler);
+            tracing::info!("outside");
+        });
+
+        let handling = ActorScope {
+            actor: Some("a.b@c".into()),
+            message_id: Some(7),
+        };
+        let scopes: Vec<_> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                TraceEvent::NewSpan { scope, .. } | TraceEvent::Event { scope, .. } => {
+                    Some(scope.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            scopes,
+            vec![
+                handling.clone(),
+                handling.clone(),
+                handling,
+                ActorScope::default()
+            ]
+        );
     }
 
     #[test]

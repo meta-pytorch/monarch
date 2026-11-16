@@ -372,6 +372,12 @@ impl Recording {
     /// `.instrument(Span::current())`), causing events to leak into the parent
     /// actor's flight recorder.
     pub fn span(&self, subject: &str) -> Span {
+        self.message_span(subject, None)
+    }
+
+    /// Like [`Recording::span`], for handling the received message
+    /// `message_id`.
+    pub fn message_span(&self, subject: &str, message_id: Option<u64>) -> Span {
         span!(
             parent: None,
             Level::INFO,
@@ -379,6 +385,7 @@ impl Recording {
             recording = self.recording_key(),
             recorder = self.recorder_key(),
             subject = subject,
+            message_id = message_id,
         )
     }
 
