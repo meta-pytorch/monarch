@@ -207,19 +207,26 @@ class TestPoint(TestCase):
         point_11 = Point(11, shape)
         self.assertEqual(str(point_11), "{'label0': 2/3, 'label1': 3/4}")
 
-    def test_point_missing_label(self) -> None:
-        # `monarch.actor.Point` (what `ValueMesh.items()` yields) is a
-        # `collections.abc.Mapping`, so a missing label is a KeyError.
+    def test_point_mapping(self) -> None:
+        # `current_rank()` returns the binding's `Point`; `ValueMesh.items()`
+        # yields its `monarch.actor.Point` subclass.
         from monarch.actor import Point as MeshPoint
 
-        point = MeshPoint(5, Extent(["gpus"], [8]))
-        self.assertEqual(point["gpus"], 5)
-        with self.assertRaises(KeyError):
-            point["hosts"]
-        self.assertNotIn("hosts", point)
-        self.assertIn("gpus", point)
-        self.assertEqual(point.get("hosts", 0), 0)
-        self.assertEqual(point.get("gpus"), 5)
+        for cls in (Point, MeshPoint):
+            with self.subTest(cls=cls):
+                point = cls(13, Extent(["hosts", "gpus"], [2, 8]))
+                self.assertEqual(point["gpus"], 5)
+                with self.assertRaises(KeyError):
+                    point["procs"]
+                self.assertIn("hosts", point)
+                self.assertNotIn("procs", point)
+                self.assertNotIn(0, point)
+                self.assertEqual(point.get("gpus"), 5)
+                self.assertIsNone(point.get("procs"))
+                self.assertEqual(point.get("procs", 0), 0)
+                self.assertEqual(list(point.items()), [("hosts", 1), ("gpus", 5)])
+                self.assertEqual(list(point.values()), [1, 5])
+                self.assertEqual(dict(point), {"hosts": 1, "gpus": 5})
 
 
 class TestSelection(TestCase):

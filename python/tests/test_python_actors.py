@@ -364,6 +364,23 @@ async def test_rank_string():
     await proc.stop()
 
 
+@pytest.mark.timeout(60)
+async def test_current_rank_mapping():
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
+    r = proc.spawn("runit", RunIt)
+
+    def lookups():
+        rank = current_rank()
+        return "hosts" in rank, "gpus" in rank, rank.get("hosts", 0), rank.get("gpus")
+
+    vm = await r.run.call(lookups)
+    assert sorted(v for _, v in vm.items()) == [
+        (False, True, 0, 0),
+        (False, True, 0, 1),
+    ]
+    await proc.stop()
+
+
 class SyncActor(Actor):
     @endpoint
     def sync_endpoint(self, a_counter: Counter):

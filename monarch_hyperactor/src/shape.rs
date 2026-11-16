@@ -394,13 +394,35 @@ impl PyPoint {
         }
     }
     fn __getitem__(&self, label: &str) -> PyResult<usize> {
-        // `monarch.actor.Point` is a `collections.abc.Mapping`, whose `in`
-        // and `get()` rely on a missing label raising KeyError.
-        let index = self.extent.position(label).ok_or_else(|| {
-            PyErr::new::<PyKeyError, _>(format!("Dimension '{}' not found", label))
-        })?;
-        let point = self.extent.point_of_rank(self.rank).map_pyerr()?;
-        Ok(point.coords()[index])
+        self.coord(label)?
+            .ok_or_else(|| PyErr::new::<PyKeyError, _>(format!("Dimension '{}' not found", label)))
+    }
+
+    fn __contains__(&self, label: &Bound<'_, PyAny>) -> bool {
+        label
+            .extract::<&str>()
+            .is_ok_and(|label| self.extent.position(label).is_some())
+    }
+
+    #[pyo3(signature = (label, default = None))]
+    fn get<'py>(
+        &self,
+        py: Python<'py>,
+        label: &str,
+        default: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        match self.coord(label)? {
+            Some(coord) => coord.into_bound_py_any(py),
+            None => Ok(default.unwrap_or_else(|| py.None().into_bound(py))),
+        }
+    }
+
+    fn items<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        Self::mapping_view(slf, "ItemsView")
+    }
+
+    fn values<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        Self::mapping_view(slf, "ValuesView")
     }
 
     fn size(&self, label: &str) -> PyResult<usize> {
@@ -474,6 +496,27 @@ impl PyPoint {
         Ok(self.extent.labels().into_bound_py_any(py)?.into())
     }
 }
+
+impl PyPoint {
+    /// The coordinate along `label`, or `None` if the extent has no such label.
+    fn coord(&self, label: &str) -> PyResult<Option<usize>> {
+        let Some(index) = self.extent.position(label) else {
+            return Ok(None);
+        };
+        let point = self.extent.point_of_rank(self.rank).map_pyerr()?;
+        Ok(Some(point.coords()[index]))
+    }
+
+    /// A `collections.abc` view (`ItemsView` or `ValuesView`) over this point,
+    /// as `collections.abc.Mapping` returns.
+    fn mapping_view<'py>(slf: &Bound<'py, Self>, view: &str) -> PyResult<Bound<'py, PyAny>> {
+        slf.py()
+            .import("collections.abc")?
+            .getattr(view)?
+            .call1((slf,))
+    }
+}
+
 impl From<Point> for PyPoint {
     fn from(inner: Point) -> Self {
         PyPoint {
