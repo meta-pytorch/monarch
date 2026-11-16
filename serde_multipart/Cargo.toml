@@ -18,4 +18,4 @@ typeuri = { version = "0.0.0", path = "../typeuri" }
 
 [dev-dependencies]
 proptest = "1.12.0"
-proptest-derive = "0.6.0"
+proptest-derive = "0.7.0"
