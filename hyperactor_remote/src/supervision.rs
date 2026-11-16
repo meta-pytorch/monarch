@@ -313,13 +313,31 @@ impl Actor for Supervisor {
             .as_ref()
             .is_some_and(|handle| handle.actor_addr() == &event.actor_id)
         {
+            if let ActorStatus::Stopped(reason) = &event.actor_status {
+                if event.cause().is_none() {
+                    return Ok(true);
+                }
+                if self.finish_requested_stop(this)? {
+                    return Ok(true);
+                }
+                let reason = reason.clone();
+                self.stop_cause = Some(Box::new(event.clone()));
+                this.exit(&reason)?;
+                return Ok(true);
+            }
             if !event.is_error() {
                 return Ok(true);
             }
             if self.finish_requested_stop(this)? {
                 return Ok(true);
             }
-            self.observation = Some(SupervisionObservation::LinkLost(self.supervision_target()));
+            self.observation = if let Some(observation) = &event.observation {
+                Some(observation.clone())
+            } else if event.cause().is_some() {
+                None
+            } else {
+                Some(SupervisionObservation::LinkLost(self.supervision_target()))
+            };
             return Ok(false);
         }
         Ok(!event.is_error())
@@ -457,8 +475,6 @@ impl Supervisor {
                 .post(
                     this,
                     KeepaliveSupervision {
-                        session_id: self.session_id.clone(),
-                        supervisor: this.port::<SupervisorEvent>().bind(),
                         target: self.supervision_target(),
                     },
                 );
@@ -2472,14 +2488,19 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(event.observation.is_none(), "{event:?}");
-        let ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(cause)) =
+        let ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(link)) =
             &event.actor_status
         else {
             panic!("expected the supervised actor's failure: {event:?}");
         };
-        assert_eq!(cause.actor_id, child);
-        assert_eq!(cause.display_name.as_deref(), Some("child{'gpus': 1/2}"));
-        assert_eq!(cause.actor_status, exit);
+        assert!(
+            link.transparent,
+            "expected a transparent link frame: {link:?}"
+        );
+        let root = event.caused_by();
+        assert_eq!(root.actor_id, child);
+        assert_eq!(root.display_name.as_deref(), Some("child{'gpus': 1/2}"));
+        assert_eq!(root.actor_status, exit);
 
         parent.stop("test").unwrap();
         tokio::time::timeout(Duration::from_secs(5), parent)

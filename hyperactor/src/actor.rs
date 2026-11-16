@@ -710,6 +710,12 @@ impl ActorErrorKind {
                     *cause,
                 )
             }
+            Self::Aborted(reason) => ActorSupervisionEvent::new(
+                actor_id.clone(),
+                display_name(),
+                ActorStatus::Failed(Self::Aborted(reason)),
+                None,
+            ),
             Self::SyntheticSupervision(synthetic) => {
                 let local_fence = synthetic.local_fence.clone();
                 ActorSupervisionEvent::new(
