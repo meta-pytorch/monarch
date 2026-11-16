@@ -36,8 +36,17 @@ def _current_actor_id() -> ActorAddr | None:
     return None if ctx is None else ctx.actor_instance.actor_id
 
 
+def _span(name: str, correlation_id: int | None = None) -> PySpan:
+    from monarch._src.actor.actor_mesh import _context
+
+    ctx = _context.get(None)
+    if ctx is None:
+        return PySpan(name, None, correlation_id)
+    return PySpan(name, ctx.actor_instance.actor_id, correlation_id, ctx._message_id)
+
+
 def span(name: str) -> PySpan:
-    return PySpan(name, _current_actor_id())
+    return _span(name)
 
 
 _P = ParamSpec("_P")
@@ -100,7 +109,7 @@ def traced(
 
 
 def span_with_correlation_id(name: str, correlation_id: int | None = None) -> PySpan:
-    return PySpan(name, _current_actor_id(), correlation_id)
+    return _span(name, correlation_id)
 
 
 def log_with_tracing(

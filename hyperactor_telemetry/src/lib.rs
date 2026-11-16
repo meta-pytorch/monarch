@@ -90,6 +90,7 @@ pub use opentelemetry::Key;
 pub use opentelemetry::KeyValue;
 pub use opentelemetry::Value;
 pub use opentelemetry::global::meter;
+pub use trace_dispatcher::ActorScope;
 pub use trace_dispatcher::DispatcherControl;
 pub use trace_dispatcher::FieldValue;
 pub use trace_dispatcher::TraceEvent;
@@ -288,6 +289,7 @@ pub fn start_user_span(
         thread_name: SYNTHETIC_USER_SPAN_TRACK_NAME,
         file: None,
         line: None,
+        scope: ActorScope::default(),
     });
 
     let _ = emit_trace_event(TraceEvent::SpanEnter {
