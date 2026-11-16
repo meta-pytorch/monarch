@@ -9,6 +9,7 @@
 """Tests for distributed telemetry with automatic callback registration."""
 
 import json
+import logging
 import os
 import shutil
 import signal
@@ -42,6 +43,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch._src.actor.actor_mesh import Actor, ActorMesh, current_rank
 from monarch._src.actor.endpoint import endpoint
+from monarch._src.actor.telemetry import TracingForwarder
 from monarch._src.job.job_sidecar import find_job_sidecar
 from monarch._src.job.persisted_telemetry import open_persisted_engine
 from monarch._src.job.telemetry_ingest import encode_frame, FrameWriter
@@ -73,6 +75,37 @@ class SenderActor(Actor):
     def send_ping(self, target: WorkerActor) -> None:
         """Cast to the target actor mesh from within this actor."""
         target.ping.call().get()
+
+
+_LINKED_LOGGER = logging.getLogger("telemetry_links")
+
+
+def _forward_linked_logs() -> None:
+    if not any(isinstance(h, TracingForwarder) for h in _LINKED_LOGGER.handlers):
+        _LINKED_LOGGER.addHandler(TracingForwarder())
+
+
+class LinkedCallee(Actor):
+    """Handles a call and logs while handling it."""
+
+    def __init__(self) -> None:
+        _forward_linked_logs()
+
+    @endpoint
+    def work(self, tag: str) -> None:
+        _LINKED_LOGGER.warning("callee %s", tag)
+
+
+class LinkedCaller(Actor):
+    """Logs, then calls a `LinkedCallee` on another host."""
+
+    def __init__(self) -> None:
+        _forward_linked_logs()
+
+    @endpoint
+    def call_peer(self, peer: LinkedCallee, tag: str) -> None:
+        _LINKED_LOGGER.warning("caller %s", tag)
+        peer.work.call_one(tag).get()
 
 
 class _TelemetryActorFailure(BaseException):
@@ -2255,6 +2288,90 @@ def test_host_agents_join_host_metrics_by_hostname() -> None:
         )
         assert len(set(rows["host_agent"])) >= 2, rows
         assert set(rows["hostname"]) == {socket.gethostname()}, rows
+
+
+@pytest.mark.timeout(240)
+@isolate_in_subprocess
+def test_actor_and_message_link_logs_traces_and_metrics_across_hosts() -> None:
+    """A message from an actor on one host to an actor on another links, by
+    column equality alone, to both actors, the send, the spans and logs on
+    each side, and the receiver's metrics."""
+    with scoped_state(
+        ProcessJob({"hosts": 2}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+        procs = state.hosts.spawn_procs(per_host={"workers": 1})
+        callers = procs.spawn("linked_caller", LinkedCaller)
+        callees = procs.spawn("linked_callee", LinkedCallee)
+        tag = uuid.uuid4().hex
+        callers.slice(hosts=0).call_peer.call_one(callees.slice(hosts=1), tag).get()
+
+        message = _query(
+            state,
+            "SELECT msg.id, msg.correlation_id, msg.from_actor_id, msg.to_actor_id,"
+            " callee.full_name AS callee, caller.full_name AS caller"
+            " FROM messages msg"
+            " JOIN actors callee ON callee.id = msg.to_actor_id"
+            " JOIN meshes m ON m.id = callee.mesh_id"
+            " JOIN actors caller ON caller.id = msg.from_actor_id"
+            " WHERE m.given_name = 'linked_callee' AND msg.endpoint = 'work'",
+        )
+        assert len(message.get("id", [])) == 1, message
+        message_id = message["id"][0]
+        correlation_id = message["correlation_id"][0]
+        callee, caller = message["callee"][0], message["caller"][0]
+        assert correlation_id is not None, message
+
+        sent = _query(
+            state,
+            f"SELECT sender_actor_id FROM sent_messages WHERE id = {correlation_id}",
+        )
+        assert sent.get("sender_actor_id") == [message["from_actor_id"][0]], sent
+
+        spans = _pydict_to_rows(
+            _query(
+                state,
+                "SELECT name, actor, process_id FROM spans"
+                f" WHERE correlation_id = {correlation_id}",
+                min_rows=2,
+            )
+        )
+        span_actors = {row["actor"] for row in spans}
+        assert {caller, callee} <= span_actors, spans
+
+        handling = _pydict_to_rows(
+            _query(
+                state,
+                f"SELECT name, actor FROM spans WHERE message_id = {message_id}",
+            )
+        )
+        assert handling and {row["actor"] for row in handling} == {callee}, handling
+
+        logs = _pydict_to_rows(
+            _query(
+                state,
+                "SELECT actor, message_id, process_id, fields_json FROM events"
+                f" WHERE fields_json LIKE '%{tag}%'",
+                min_rows=2,
+            )
+        )
+        callee_log = next(row for row in logs if "callee" in row["fields_json"])
+        caller_log = next(row for row in logs if "caller" in row["fields_json"])
+        assert callee_log["actor"] == callee, logs
+        assert callee_log["message_id"] == message_id, logs
+        assert caller_log["actor"] == caller, logs
+
+        metrics = _query(
+            state,
+            "SELECT SUM(count) AS handled FROM metric_histograms"
+            f" WHERE actor = '{callee}' AND name = 'actor.message_handler_duration.ns'"
+            " HAVING SUM(count) > 0",
+            timeout_secs=30.0,
+        )
+        assert metrics.get("handled"), metrics
+
+        assert callee_log["process_id"] != caller_log["process_id"], logs
 
 
 @pytest.mark.timeout(120)
