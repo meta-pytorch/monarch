@@ -14,7 +14,7 @@ path = "src/main.rs"
 [dependencies]
 aho-corasick = "1.1.5"
 anyhow = "1.0.104"
-async-tempfile = "0.7.0"
+async-tempfile = "0.8.0"
 bincode = { version = "2", features = ["serde"] }
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 dashmap = { version = "6.2.1", features = ["rayon", "serde"] }

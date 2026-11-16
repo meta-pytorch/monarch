@@ -593,9 +593,9 @@ checksum = "8b75356056920673b02621b35afd0f7dda9306d03c79a30f5c56c44cf256e3de"
 
 [[package]]
 name = "async-tempfile"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8a57b75c36e16f4d015e60e6a177552976a99b6947724403c551bcfa7cb1207"
+checksum = "64782aa61953a4fa6f6ddc6b510942adffa37315f1cbf8ca7a96fdc990f913d5"
 dependencies = [
  "tokio",
 ]
