@@ -255,6 +255,7 @@ impl TraceEventSink for OtlpLogSink {
             module_path,
             file,
             line,
+            ..
         } = event
         else {
             return Ok(());
@@ -396,6 +397,7 @@ impl TraceEventSink for OtlpSpanSink {
                 thread_name,
                 file,
                 line,
+                ..
             } => {
                 // The parent's context has `is_remote == false`, so the SDK
                 // records a local parent despite the method name.
@@ -572,6 +574,7 @@ mod tests {
             thread_name: "test-thread",
             file: None,
             line: None,
+            scope: Default::default(),
         }
     }
 
@@ -707,6 +710,7 @@ mod tests {
             module_path: Some(module_path),
             file: Some("src/io.rs"),
             line: Some(42),
+            scope: Default::default(),
         };
         let message = |m: &str| ("message", FieldValue::Str(m.to_string()));
 
@@ -817,6 +821,7 @@ mod tests {
             module_path: None,
             file: None,
             line: None,
+            scope: Default::default(),
         }
     }
 
@@ -868,6 +873,7 @@ mod tests {
             thread_name: "python",
             file: None,
             line: None,
+            scope: Default::default(),
         };
 
         sink.consume(&span(1, USER_TELEMETRY_PREFIX)).unwrap();

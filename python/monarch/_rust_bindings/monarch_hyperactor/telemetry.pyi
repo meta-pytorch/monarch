@@ -70,6 +70,7 @@ class PySpan:
         name: str,
         actor_id: ActorAddr | None = None,
         correlation_id: int | None = None,
+        message_id: int | None = None,
     ) -> None:
         """
         Create a new PySpan.
@@ -78,6 +79,7 @@ class PySpan:
         - name (str): The name of the span.
         - actor_id (ActorAddr | None, optional): The actor whose Perfetto track should own the span.
         - correlation_id (int | None, optional): The correlation ID for RPC flow tracing.
+        - message_id (int | None, optional): The received message the actor is handling.
         """
         ...
 
