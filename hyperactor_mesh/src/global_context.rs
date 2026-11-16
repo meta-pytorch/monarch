@@ -478,6 +478,7 @@ async fn bootstrap_host() -> GlobalState {
             0,
             local_proc_agent.bind(),
         ),
+        &host_mesh,
     )
     .expect("failed to create proc mesh ref");
     // Bind the client-root API on this program's one root ProcAgent and seed the
