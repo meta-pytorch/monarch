@@ -287,6 +287,8 @@ pub mod metric_tables {
     /// Row data for the metric gauges table.
     #[derive(RecordBatchRow)]
     pub struct MetricGauge {
+        /// The `actor_id` attribute, when the metric is per actor (`actors.full_name`).
+        pub actor: Option<String>,
         pub name: String,
         pub timestamp_us: i64,
         pub start_timestamp_us: Option<i64>,
@@ -302,6 +304,8 @@ pub mod metric_tables {
     /// Row data for the metric sums table.
     #[derive(RecordBatchRow)]
     pub struct MetricSum {
+        /// The `actor_id` attribute, when the metric is per actor (`actors.full_name`).
+        pub actor: Option<String>,
         pub name: String,
         pub timestamp_us: i64,
         pub start_timestamp_us: i64,
@@ -319,6 +323,8 @@ pub mod metric_tables {
     /// Row data for the metric histograms table.
     #[derive(RecordBatchRow)]
     pub struct MetricHistogram {
+        /// The `actor_id` attribute, when the metric is per actor (`actors.full_name`).
+        pub actor: Option<String>,
         pub name: String,
         pub timestamp_us: i64,
         pub start_timestamp_us: i64,
@@ -514,6 +520,7 @@ mod tests {
     fn metric_table_schemas_round_trip() {
         let mut gauges = MetricGaugeBuffer::default();
         gauges.insert(MetricGauge {
+            actor: None,
             name: "load".to_string(),
             timestamp_us: 123,
             start_timestamp_us: None,
@@ -544,6 +551,7 @@ mod tests {
 
         let mut sums = MetricSumBuffer::default();
         sums.insert(MetricSum {
+            actor: None,
             name: "mailbox.posts".to_string(),
             timestamp_us: 123,
             start_timestamp_us: 100,
@@ -587,6 +595,7 @@ mod tests {
 
         let mut histograms = MetricHistogramBuffer::default();
         histograms.insert(MetricHistogram {
+            actor: None,
             name: "latency".to_string(),
             timestamp_us: 123,
             start_timestamp_us: 100,
