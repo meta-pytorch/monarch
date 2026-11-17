@@ -26,7 +26,9 @@ from monarch.actor import (
     concurrent_endpoint,
     context,
     endpoint,
+    Future,
     Port,
+    ProcMesh,
     this_host,
 )
 from monarch.benches.noop_rpc_benchmark import (
@@ -34,6 +36,8 @@ from monarch.benches.noop_rpc_benchmark import (
     NoopActor,
     SyncNoopActor,
 )
+
+PENDING_PATH_MIN = 0.95
 
 
 class BusyLoopActor(Actor):
@@ -279,6 +283,25 @@ async def benchmark_call_asyncio(peer: SyncNoopActor, iterations: int) -> None:
     print(f"p99 call RPC latency: {percentiles[98]:.3f} ms")
 
 
+async def benchmark_call_batch_asyncio(peer: BatchReplyActor, iterations: int) -> None:
+    """Measure ``await call(True)`` on four ranks, whose replies carry a mesh,
+    timed per await."""
+    if iterations < 2:
+        raise ValueError("iterations must be at least 2")
+    latencies_ms = []
+    for index in range(20 + iterations):
+        start = time.perf_counter()
+        value = await peer.value.call(True)
+        if index >= 20:
+            latencies_ms.append((time.perf_counter() - start) * 1000)
+        assert len(value) == 4
+    percentiles = statistics.quantiles(latencies_ms, n=100, method="inclusive")
+    print("warmup iterations: 20")
+    print(f"measured iterations: {iterations}")
+    print(f"p50 batch call latency: {percentiles[49]:.3f} ms")
+    print(f"p99 batch call latency: {percentiles[98]:.3f} ms")
+
+
 def benchmark_call_batch(
     peer: BatchReplyActor, iterations: int, with_refs: bool
 ) -> None:
@@ -335,13 +358,70 @@ async def benchmark_burst(busy: BusyLoopActor, count: int) -> None:
     print(f"burst largest block: {max(per_block.values())} bodies")
 
 
+async def count_pending(call: Callable[[], Future[Any]], iterations: int) -> int:
+    """Await ``call()`` ``iterations`` times; return how many of its
+    ``as_asyncio()`` futures were not yet done when returned.
+
+    ``as_asyncio()`` completes the future before returning when the reply has
+    already arrived. On the pending branch only the loop completes it, which
+    cannot happen before this coroutine yields.
+    """
+    pending = 0
+    for _ in range(iterations):
+        future = call().as_asyncio()
+        pending += not future.done()
+        await future
+    return pending
+
+
+def check_pending(procs: ProcMesh, iterations: int) -> None:
+    """Require each endpoint-await shape to use the pending path often enough."""
+    if iterations < 1:
+        raise ValueError("iterations must be at least 1")
+    sync_noop = procs.spawn("sync_noop", SyncNoopActor)
+    batch_procs = this_host().spawn_procs(per_host={"batch_rank": 4})
+    try:
+        batch_peer = batch_procs.spawn("batch_reply", BatchReplyActor)
+        shapes: dict[str, Callable[[], Future[Any]]] = {
+            "asyncio call_one await": lambda: sync_noop.noop.call_one(),
+            "asyncio call await": lambda: sync_noop.noop.call(),
+            "asyncio four-rank ref-bearing call await": lambda: batch_peer.value.call(
+                True
+            ),
+        }
+        failures = []
+        for label, call in shapes.items():
+            pending = asyncio.run(count_pending(call, iterations))
+            fraction = pending / iterations
+            print(f"{label}: {pending} of {iterations} pending ({fraction:.1%})")
+            if fraction < PENDING_PATH_MIN:
+                failures.append((label, fraction))
+        if failures:
+            label, fraction = failures[0]
+            raise RuntimeError(
+                f"{label}: {fraction:.1%} pending is below the required "
+                f"{PENDING_PATH_MIN:.1%}"
+            )
+    finally:
+        batch_procs.stop().get()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iterations", type=int, default=2000)
     parser.add_argument("--burst", type=int, default=256)
+    parser.add_argument(
+        "--check-pending",
+        action="store_true",
+        help="instead of timing, require every endpoint-await shape to take the "
+        "pending path often enough",
+    )
     args = parser.parse_args()
     procs = this_host().spawn_procs(per_host={"procs": 1})
     try:
+        if args.check_pending:
+            check_pending(procs, args.iterations)
+            return
         print("async endpoint:")
         benchmark_noop_rpc(procs.spawn("noop", NoopActor), args.iterations)
         print("sync endpoint:")
@@ -385,6 +465,8 @@ def main() -> None:
             benchmark_call_batch(batch_peer, args.iterations, with_refs=False)
             print("main-thread four-rank ref-bearing call get:")
             benchmark_call_batch(batch_peer, args.iterations, with_refs=True)
+            print("asyncio four-rank ref-bearing call await:")
+            asyncio.run(benchmark_call_batch_asyncio(batch_peer, args.iterations))
         finally:
             batch_procs.stop().get()
         asyncio.run(benchmark_burst(procs.spawn("busy", BusyLoopActor), args.burst))
