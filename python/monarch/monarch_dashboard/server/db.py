@@ -433,22 +433,44 @@ def get_actor_messages(
 ) -> list[dict[str, Any]]:
     """Return the actor's *most recent* ``limit`` messages (re-sorted ascending
     for display), with latest status. Capped for the same reason as
-    ``list_actor_status_events`` — see ``_DRILL_LIMIT``."""
+    ``list_actor_status_events`` — see ``_DRILL_LIMIT``.
+
+    Statuses are resolved for the selected ids only. Joining the job-wide
+    latest-status subquery instead would rank every status event in the job
+    to annotate ``limit`` rows.
+    """
     rows = _query(
         "SELECT * FROM ("
-        " SELECT m.*, latest.status AS latest_status"
-        " FROM messages m"
-        f" LEFT JOIN ({_LATEST_MSG_STATUS_SQL}) latest"
-        " ON m.id = latest.message_id"
-        " WHERE m.from_actor_id = ? OR m.to_actor_id = ?"
-        " ORDER BY m.timestamp_us DESC LIMIT ?"
+        " SELECT * FROM messages WHERE from_actor_id = ? OR to_actor_id = ?"
+        " ORDER BY timestamp_us DESC LIMIT ?"
         " ) t ORDER BY timestamp_us",
         (actor_id, actor_id, limit),
     )
+    statuses = _latest_message_statuses([r["id"] for r in rows])
     for r in rows:
-        if r.get("latest_status"):
-            r["latest_status"] = r["latest_status"].lower()
+        status = statuses.get(r["id"])
+        r["latest_status"] = status.lower() if status else None
     return rows
+
+
+def _latest_message_statuses(message_ids: list[int]) -> dict[int, str]:
+    """Return the latest status of each message in *message_ids*.
+
+    The ids are literals so the filter reaches each collector's scan.
+    """
+    if not message_ids:
+        return {}
+    ids = ", ".join(_sql_literal(i) for i in message_ids)
+    rows = _query(
+        "SELECT message_id, status FROM ("
+        " SELECT message_id, status,"
+        " ROW_NUMBER() OVER ("
+        " PARTITION BY message_id ORDER BY timestamp_us DESC"
+        " ) AS rn"
+        f" FROM message_status_events WHERE message_id IN ({ids})"
+        " ) t WHERE rn = 1"
+    )
+    return {r["message_id"]: r["status"] for r in rows}
 
 
 # ---------------------------------------------------------------------------

@@ -265,6 +265,31 @@ class GetActorMessagesTest(_DbTestBase):
         ts = [m["timestamp_us"] for m in capped]
         self.assertEqual(ts, sorted(ts))
 
+    def test_matches_job_wide_status_join(self):
+        """Per-id status lookup returns what the job-wide join returned."""
+        actor_ids = {m["from_actor_id"] for m in db.list_messages()} | {
+            m["to_actor_id"] for m in db.list_messages()
+        }
+        for actor_id in sorted(actor_ids):
+            for limit in (2, 200):
+                expected = db._query(
+                    "SELECT * FROM ("
+                    " SELECT m.*, latest.status AS latest_status FROM messages m"
+                    f" LEFT JOIN ({db._LATEST_MSG_STATUS_SQL}) latest"
+                    " ON m.id = latest.message_id"
+                    " WHERE m.from_actor_id = ? OR m.to_actor_id = ?"
+                    " ORDER BY m.timestamp_us DESC LIMIT ?"
+                    " ) t ORDER BY timestamp_us",
+                    (actor_id, actor_id, limit),
+                )
+                for r in expected:
+                    if r["latest_status"]:
+                        r["latest_status"] = r["latest_status"].lower()
+                self.assertEqual(db.get_actor_messages(actor_id, limit=limit), expected)
+
+    def test_unknown_actor_has_no_messages(self):
+        self.assertEqual(db.get_actor_messages(-1), [])
+
 
 # ---------------------------------------------------------------------------
 # Message status event queries
