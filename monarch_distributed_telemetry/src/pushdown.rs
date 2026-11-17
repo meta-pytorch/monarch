@@ -198,6 +198,18 @@ fn has_subquery(expr: &Expr) -> bool {
     .unwrap_or(true)
 }
 
+/// Whether `plan` filters rows anywhere, in a filter or a table scan.
+fn has_filter(plan: &LogicalPlan) -> bool {
+    plan.exists(|node| {
+        Ok(match node {
+            LogicalPlan::Filter(_) => true,
+            LogicalPlan::TableScan(scan) => !scan.filters.is_empty(),
+            _ => false,
+        })
+    })
+    .unwrap_or(true)
+}
+
 /// Whether `expr` can run on a collector with the same result.
 fn is_portable(expr: &Expr) -> bool {
     !expr.is_volatile() && !has_subquery(expr)
@@ -206,6 +218,24 @@ fn is_portable(expr: &Expr) -> bool {
 /// For each output column of a collector-local subplan, the collector table
 /// column it passes through unchanged, if any.
 type Origins = Vec<Option<(String, String)>>;
+
+/// The collector table column that `expr`, evaluated over `plan`, passes
+/// through unchanged, if any.
+fn origin(plan: &LogicalPlan, origins: &Origins, expr: &Expr) -> Option<(String, String)> {
+    match unalias(expr) {
+        Expr::Column(column) => plan
+            .schema()
+            .index_of_column(column)
+            .ok()
+            .and_then(|index| origins[index].clone()),
+        _ => None,
+    }
+}
+
+/// Whether `origin` is a column whose equal values are recorded on one host.
+fn is_message_key(origin: Option<(String, String)>) -> bool {
+    origin.is_some_and(|(table, column)| MESSAGE_KEYS.contains(&(table.as_str(), column.as_str())))
+}
 
 /// A collector-local subplan, found by its child indices from the
 /// aggregate's input.
@@ -257,31 +287,70 @@ impl PushDownCollectorAggregates {
                         .collect(),
                 )
             }
+            // A row of either side meets its matches, or finds none, on the
+            // host that records them, so outer joins stay local too. The SQL
+            // unparser moves a side's scan filters into the join condition,
+            // which changes an outer join's result, so only unfiltered sides
+            // are pushed.
             LogicalPlan::Join(join)
-                if join.join_type == JoinType::Inner
+                if (join.join_type == JoinType::Inner
+                    || matches!(
+                        join.join_type,
+                        JoinType::Left | JoinType::Right | JoinType::Full
+                    ) && !has_filter(&join.left)
+                        && !has_filter(&join.right))
                     && join.null_equality == NullEquality::NullEqualsNothing
                     && join.filter.as_ref().is_none_or(is_portable) =>
             {
                 let left = self.local_origins(&join.left)?;
                 let right = self.local_origins(&join.right)?;
-                let origin = |plan: &LogicalPlan, origins: &Origins, expr: &Expr| match expr {
-                    Expr::Column(column) => plan
-                        .schema()
-                        .index_of_column(column)
-                        .ok()
-                        .and_then(|index| origins[index].clone()),
-                    _ => None,
-                };
-                let is_message_key = |origin: Option<(String, String)>| {
-                    origin.is_some_and(|(table, column)| {
-                        MESSAGE_KEYS.contains(&(table.as_str(), column.as_str()))
-                    })
-                };
                 let colocated = join.on.iter().any(|(l, r)| {
                     is_message_key(origin(&join.left, &left, l))
                         && is_message_key(origin(&join.right, &right, r))
                 });
                 colocated.then(|| left.into_iter().chain(right).collect())
+            }
+            // Every row of a message-key partition is on one host.
+            LogicalPlan::Window(window) if window.window_expr.iter().all(is_portable) => {
+                let input = self.local_origins(&window.input)?;
+                let partitioned = window.window_expr.iter().all(|expr| match unalias(expr) {
+                    Expr::WindowFunction(function) => {
+                        function.params.partition_by.iter().any(|partition| {
+                            is_message_key(origin(&window.input, &input, partition))
+                        })
+                    }
+                    _ => false,
+                });
+                partitioned.then(|| {
+                    input
+                        .into_iter()
+                        .chain(window.window_expr.iter().map(|_| None))
+                        .collect()
+                })
+            }
+            // Every row of a message-key group is on one host, so the host
+            // computes the whole group.
+            LogicalPlan::Aggregate(aggregate)
+                if !aggregate
+                    .group_expr
+                    .iter()
+                    .any(|e| matches!(e, Expr::GroupingSet(_)))
+                    && aggregate.group_expr.iter().all(is_portable)
+                    && aggregate.aggr_expr.iter().all(is_portable) =>
+            {
+                let input = self.local_origins(&aggregate.input)?;
+                let groups: Origins = aggregate
+                    .group_expr
+                    .iter()
+                    .map(|expr| origin(&aggregate.input, &input, expr))
+                    .collect();
+                let keyed = groups.iter().cloned().any(is_message_key);
+                keyed.then(|| {
+                    groups
+                        .into_iter()
+                        .chain(aggregate.aggr_expr.iter().map(|_| None))
+                        .collect()
+                })
             }
             _ => None,
         }
@@ -713,6 +782,10 @@ mod tests {
                             Some("tick")
                         });
                         ports.push(if j % 3 == 0 { None } else { Some(j) });
+                        // Some messages have no status events yet.
+                        if j % 7 == 6 {
+                            continue;
+                        }
                         for (k, status) in ["queued", "active", "complete"].iter().enumerate() {
                             if (j + k as u64) % 3 != 2 {
                                 status_ids.push(id * 10 + k as u64);
@@ -722,6 +795,11 @@ mod tests {
                         }
                     }
                 }
+                // A status event whose message has no row, as the query
+                // transport records.
+                status_ids.push(host * 100_000 + 99_999);
+                status_messages.push(host * 1000 + 999);
+                statuses.push(Some("queued"));
                 let ports: Vec<Option<u64>> = ports;
                 let mut rows = vec![
                     (
@@ -904,5 +982,123 @@ mod tests {
             let pushed = assert_same(sql).await;
             assert!(pushed.is_empty(), "{sql}: {pushed:?}");
         }
+    }
+
+    const LATEST_STATUS_SQL: &str = "SELECT message_id, status FROM ( \
+        SELECT message_id, status, \
+        ROW_NUMBER() OVER (PARTITION BY message_id ORDER BY id DESC) AS rn \
+        FROM message_status_events) t WHERE rn = 1";
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_latest_status_summary_runs_on_collectors() {
+        let sql = format!(
+            "SELECT status, COUNT(*) AS n FROM ( \
+             SELECT message_id, MIN(status) AS status FROM ({LATEST_STATUS_SQL}) \
+             GROUP BY message_id) t GROUP BY status ORDER BY status"
+        );
+        let pushed = assert_same(&sql).await;
+        assert_eq!(pushed.len(), 1, "{pushed:?}");
+        assert!(pushed[0].contains("row_number()"), "{}", pushed[0]);
+        assert!(pushed[0].contains("min("), "{}", pushed[0]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_message_lifecycle_runs_on_collectors() {
+        let sql = "SELECT state, COUNT(*) AS n FROM ( \
+            SELECT m.id, CASE \
+            WHEN MAX(CASE WHEN e.status = 'complete' THEN 1 ELSE 0 END) = 1 THEN 'complete' \
+            WHEN MAX(CASE WHEN e.status = 'active' THEN 1 ELSE 0 END) = 1 THEN 'active' \
+            ELSE 'queued' END AS state \
+            FROM messages m LEFT JOIN message_status_events e ON e.message_id = m.id \
+            GROUP BY m.id) t GROUP BY state ORDER BY state";
+        let pushed = assert_same(sql).await;
+        assert_eq!(pushed.len(), 1, "{pushed:?}");
+        assert!(pushed[0].contains("LEFT OUTER JOIN"), "{}", pushed[0]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_outer_joins_on_message_keys_match_unpushed_results() {
+        for join in ["LEFT", "RIGHT", "FULL"] {
+            assert_same(&format!(
+                "SELECT m.endpoint, e.status, COUNT(*) AS n, COUNT(m.id) AS messages, \
+                 COUNT(e.id) AS events FROM messages m {join} JOIN message_status_events e \
+                 ON e.message_id = m.id GROUP BY m.endpoint, e.status \
+                 ORDER BY m.endpoint, e.status"
+            ))
+            .await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_filtered_outer_joins_match_unpushed_results() {
+        for (left, right) in [
+            (
+                "(SELECT * FROM messages WHERE port_index IS NOT NULL)",
+                "message_status_events",
+            ),
+            (
+                "messages",
+                "(SELECT * FROM message_status_events WHERE status <> 'queued')",
+            ),
+        ] {
+            for join in ["LEFT", "RIGHT", "FULL"] {
+                let pushed = assert_same(&format!(
+                    "SELECT e.status, COUNT(*) AS n, COUNT(m.id) AS messages \
+                     FROM {left} m {join} JOIN {right} e ON e.message_id = m.id \
+                     GROUP BY e.status ORDER BY e.status"
+                ))
+                .await;
+                assert!(pushed.iter().all(|sql| !sql.contains("JOIN")), "{pushed:?}");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_filtered_windows_and_groups_match_unpushed_results() {
+        let pushed = assert_same(
+            "SELECT status, COUNT(*) AS n FROM ( \
+             SELECT message_id, MIN(status) AS status FROM ( \
+             SELECT message_id, status, \
+             ROW_NUMBER() OVER (PARTITION BY message_id ORDER BY id DESC) AS rn \
+             FROM message_status_events WHERE status <> 'queued') t \
+             WHERE rn = 1 GROUP BY message_id) t GROUP BY status ORDER BY status",
+        )
+        .await;
+        assert_eq!(pushed.len(), 1, "{pushed:?}");
+        assert!(pushed[0].contains("row_number()"), "{}", pushed[0]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_partitions_and_groups_off_message_keys_stay_at_root() {
+        // Equal statuses and endpoints occur on every host, so neither the
+        // window nor the inner aggregate can run per host.
+        let window = assert_same(
+            "SELECT status, COUNT(*) FROM ( \
+             SELECT status, ROW_NUMBER() OVER (PARTITION BY status ORDER BY id) AS rn \
+             FROM message_status_events) t WHERE rn = 1 GROUP BY status ORDER BY status",
+        )
+        .await;
+        assert!(
+            window.iter().all(|sql| !sql.contains("row_number()")),
+            "{window:?}"
+        );
+        let grouped = assert_same(
+            "SELECT n, COUNT(*) FROM ( \
+             SELECT endpoint, COUNT(*) AS n FROM messages GROUP BY endpoint) t \
+             GROUP BY n ORDER BY n",
+        )
+        .await;
+        assert!(
+            grouped
+                .iter()
+                .all(|sql| sql.matches("GROUP BY").count() == 1),
+            "{grouped:?}"
+        );
+        let joined = assert_same(
+            "SELECT COUNT(*) FROM messages m LEFT JOIN message_status_events e \
+             ON m.to_actor_id = e.message_id",
+        )
+        .await;
+        assert!(joined.iter().all(|sql| !sql.contains("JOIN")), "{joined:?}");
     }
 }
