@@ -14,11 +14,12 @@ jobs:
   test-gpu-python:
     name: Test GPU Python (${{ matrix.name }}-py${{ matrix.python-version }})
     needs: set-matrix
-    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    if: needs.set-matrix.outputs.cuda-python-test-matrix != ''
+    uses: pytorch/test-infra/.github/workflows/linux_job_v3.yml@main
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.set-matrix.outputs.python-test-matrix) }}
-    with:
+      matrix: ${{ fromJSON(needs.set-matrix.outputs.cuda-python-test-matrix) }}
+    with: &test-gpu-python-inputs
       timeout: 120
       runner: ${{ matrix.runner }}
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
@@ -66,3 +67,14 @@ jobs:
 
         stage_test_artifacts
         exit $rc
+
+  # ROCm has no OSDC runners, so it stays on linux_job_v2 with the same inputs.
+  test-gpu-python-rocm:
+    name: Test GPU Python (${{ matrix.name }}-py${{ matrix.python-version }})
+    needs: set-matrix
+    if: needs.set-matrix.outputs.rocm-test-matrix != ''
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.set-matrix.outputs.rocm-test-matrix) }}
+    with: *test-gpu-python-inputs
