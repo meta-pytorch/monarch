@@ -74,17 +74,59 @@ declare_attrs! {
 ///
 /// Reads the log level from `MONARCH_FILE_LOG_LEVEL` (defaulting to "info")
 /// and disables noisy internal targets (`hyperactor_telemetry`, `message`,
-/// `execution`, `opentelemetry`).
+/// `execution`, `opentelemetry`) and the HTTP client stack used by OTLP export
+/// (`hyper`, `hyper_util`, `reqwest`, `h2`), whose logs would otherwise be
+/// exported over the same client.
 pub(crate) fn get_tracing_targets() -> Targets {
     let level = LevelFilter::from_level({
         let log_level_str = hyperactor_config::global::try_get_cloned(MONARCH_FILE_LOG_LEVEL)
             .unwrap_or_else(|| "info".to_string());
         tracing::Level::from_str(&log_level_str).unwrap_or(tracing::Level::INFO)
     });
+    // Targets match by string prefix, so `hyper` alone would also match
+    // `hyperactor`.
     Targets::new()
         .with_target("hyperactor_telemetry", LevelFilter::OFF)
         .with_target("message", LevelFilter::OFF)
         .with_target("execution", LevelFilter::OFF)
         .with_target("opentelemetry", LevelFilter::OFF)
+        .with_target("hyper::", LevelFilter::OFF)
+        .with_target("hyper_util", LevelFilter::OFF)
+        .with_target("reqwest", LevelFilter::OFF)
+        .with_target("h2::", LevelFilter::OFF)
         .with_default(level)
+}
+
+#[cfg(test)]
+mod tests {
+    use tracing::Level;
+
+    use super::*;
+
+    #[test]
+    fn http_client_targets_are_off() {
+        let targets = get_tracing_targets();
+        for target in [
+            "hyper::proto::h1::conn",
+            "hyper_util::client::legacy::pool",
+            "reqwest::connect",
+            "h2::codec::framed_write",
+        ] {
+            assert!(
+                !targets.would_enable(target, &Level::ERROR),
+                "{target} should be off at every level"
+            );
+        }
+    }
+
+    #[test]
+    fn hyperactor_targets_are_not_caught_by_hyper_filter() {
+        let targets = get_tracing_targets();
+        for target in ["hyperactor::proc", "hyperactor_mesh::proc_mesh"] {
+            assert!(
+                targets.would_enable(target, &Level::INFO),
+                "{target} should keep the default INFO level"
+            );
+        }
+    }
 }
