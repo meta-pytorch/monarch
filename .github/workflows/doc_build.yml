@@ -24,7 +24,7 @@ concurrency:
 jobs:
   build:
     name: Build Documentation
-    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    uses: pytorch/test-infra/.github/workflows/linux_job_v3.yml@main
     with:
       timeout: 120
       # Building docs needs the CUDA toolkit but not host-GPU access; matching
@@ -33,7 +33,7 @@ jobs:
       # check (no g4dn-fleet AMI yet carries an NVIDIA driver that satisfies
       # cuda>=13.2). Docs build at cu132 to match the wheels we ship; PR GPU
       # CI runs at cu130 — see set-matrix.yaml.
-      runner: linux.c7i.2xlarge
+      runner: mt-l-x86iavx512-8-64
       docker-image: "pytorch/manylinux2_28-builder:cuda13.2"
       gpu-arch-type: cpu
       gpu-arch-version: ""
