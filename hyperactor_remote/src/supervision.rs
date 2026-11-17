@@ -74,6 +74,176 @@ struct SupervisorSession {
     display_name: Option<String>,
 }
 
+#[derive(Debug)]
+enum Intent {
+    Run,
+    Stop(PendingStop),
+}
+
+#[derive(Debug)]
+enum BootstrapReturn {
+    StoppedRecipient,
+    ChannelClosed,
+    Other,
+}
+
+#[derive(Debug)]
+enum Lost {
+    LinkLost,
+    Rejected {
+        reason: String,
+        target: Option<SupervisionTarget>,
+    },
+    BootstrapReturned(BootstrapReturn),
+    Unlinked {
+        reason: String,
+    },
+}
+
+#[derive(Debug)]
+enum Control {
+    Bootstrapping { has_endpoint: bool },
+    Linked(Box<SupervisorSession>),
+    Lost(Lost),
+}
+
+#[derive(Debug)]
+enum Child {
+    Unknown,
+    Alive,
+    Terminal(Box<ActorSupervisionEvent>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    Active,
+    Exited,
+}
+
+#[derive(Debug)]
+struct Relationship {
+    intent: Intent,
+    control: Control,
+    child: Child,
+    phase: Phase,
+}
+
+#[derive(Debug)]
+enum Decision {
+    Wait,
+    ForwardStop {
+        mode: StopMode,
+        reason: String,
+    },
+    Exit {
+        reason: String,
+        cause: Option<Box<ActorSupervisionEvent>>,
+        observation: Option<SupervisionObservation>,
+    },
+    Fail {
+        event: Option<Box<ActorSupervisionEvent>>,
+        observation: Option<SupervisionObservation>,
+    },
+    Reject {
+        reason: String,
+        observation: Option<SupervisionObservation>,
+    },
+    FailDefault,
+}
+
+fn reconcile(rel: &Relationship, target: &SupervisionTarget) -> Decision {
+    if rel.phase == Phase::Exited {
+        return Decision::Wait;
+    }
+    if let Control::Lost(Lost::Unlinked { reason }) = &rel.control {
+        return Decision::Exit {
+            reason: reason.clone(),
+            cause: None,
+            observation: None,
+        };
+    }
+    match &rel.intent {
+        Intent::Stop(stop) => {
+            let reason = stop.reason.clone();
+            match &rel.control {
+                Control::Linked(_) | Control::Bootstrapping { has_endpoint: true } => {
+                    Decision::ForwardStop {
+                        mode: stop.mode,
+                        reason,
+                    }
+                }
+                Control::Bootstrapping {
+                    has_endpoint: false,
+                } => match &rel.child {
+                    Child::Terminal(_) => Decision::Exit {
+                        reason,
+                        cause: None,
+                        observation: None,
+                    },
+                    Child::Unknown | Child::Alive => Decision::Wait,
+                },
+                Control::Lost(_) => Decision::Exit {
+                    reason,
+                    cause: None,
+                    observation: None,
+                },
+            }
+        }
+        Intent::Run => {
+            if let Child::Terminal(event) = &rel.child {
+                return match &event.actor_status {
+                    ActorStatus::Stopped(reason) => Decision::Exit {
+                        reason: reason.clone(),
+                        cause: Some(event.clone()),
+                        observation: event.observation.clone(),
+                    },
+                    _ => Decision::Fail {
+                        event: Some(event.clone()),
+                        observation: event.observation.clone(),
+                    },
+                };
+            }
+            match &rel.control {
+                Control::Bootstrapping { .. } | Control::Linked(_) => Decision::Wait,
+                Control::Lost(Lost::LinkLost) => Decision::Fail {
+                    event: None,
+                    observation: Some(SupervisionObservation::LinkLost(target.clone())),
+                },
+                Control::Lost(Lost::Rejected {
+                    reason,
+                    target: rejected_target,
+                }) => Decision::Reject {
+                    reason: format!("remote supervision request rejected: {reason}"),
+                    observation: rejected_target
+                        .clone()
+                        .map(SupervisionObservation::RequestFailed),
+                },
+                Control::Lost(Lost::BootstrapReturned(
+                    BootstrapReturn::StoppedRecipient | BootstrapReturn::ChannelClosed,
+                )) => Decision::Exit {
+                    reason: "supervision bootstrap returned before linking".to_string(),
+                    cause: None,
+                    observation: None,
+                },
+                Control::Lost(Lost::BootstrapReturned(BootstrapReturn::Other)) => {
+                    Decision::FailDefault
+                }
+                Control::Lost(Lost::Unlinked { .. }) => {
+                    unreachable!("unlinked control handled above")
+                }
+            }
+        }
+    }
+}
+
+enum Applied {
+    Handled,
+    UnhandledIncoming,
+    FailEvent(Box<ActorSupervisionEvent>),
+    Reject { reason: String },
+    FailDefault,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SessionId(hyperactor::Uid);
 
@@ -151,8 +321,7 @@ pub struct Supervisor {
     options: SupervisionOptions,
     session_id: Uid,
     liveness_handle: Option<ActorHandle<KeepaliveSupervisor>>,
-    session: Option<SupervisorSession>,
-    pending_stop: Option<PendingStop>,
+    rel: Relationship,
     /// Optional one-shot notification posted after the worker links the child.
     ready: Option<OncePortHandle<()>>,
     labels: Flattrs,
@@ -234,14 +403,19 @@ impl Supervisor {
         session_id: Uid,
         ready: Option<OncePortHandle<()>>,
     ) -> Self {
+        let has_endpoint = bootstrap.worker_endpoint().is_some();
         Self {
             bootstrap,
             liveness: Some(liveness),
             options,
             session_id,
             liveness_handle: None,
-            session: None,
-            pending_stop: None,
+            rel: Relationship {
+                intent: Intent::Run,
+                control: Control::Bootstrapping { has_endpoint },
+                child: Child::Unknown,
+                phase: Phase::Active,
+            },
             ready,
             labels: Flattrs::new(),
             display_name: None,
@@ -296,11 +470,23 @@ impl Actor for Supervisor {
         mode: StopMode,
         reason: &str,
     ) -> anyhow::Result<()> {
-        self.pending_stop = Some(PendingStop {
+        if self.rel.phase == Phase::Exited {
+            return Ok(());
+        }
+        self.rel.intent = Intent::Stop(PendingStop {
             mode,
             reason: reason.to_string(),
         });
-        self.send_pending_worker_stop(this)
+        let target = self.supervision_target();
+        match self.apply(this, reconcile(&self.rel, &target))? {
+            Applied::Handled => Ok(()),
+            Applied::UnhandledIncoming
+            | Applied::FailEvent(_)
+            | Applied::Reject { .. }
+            | Applied::FailDefault => {
+                unreachable!("a stop request only waits, forwards, or exits")
+            }
+        }
     }
 
     async fn handle_supervision_event(
@@ -308,39 +494,43 @@ impl Actor for Supervisor {
         this: &Instance<Self>,
         event: &ActorSupervisionEvent,
     ) -> anyhow::Result<bool> {
-        if self
+        let is_liveness = self
             .liveness_handle
             .as_ref()
-            .is_some_and(|handle| handle.actor_addr() == &event.actor_id)
-        {
-            if let ActorStatus::Stopped(reason) = &event.actor_status {
+            .is_some_and(|handle| handle.actor_addr() == &event.actor_id);
+        if !is_liveness {
+            return Ok(!event.is_error());
+        }
+        if self.rel.phase == Phase::Exited {
+            return Ok(true);
+        }
+        let target = self.supervision_target();
+        match &event.actor_status {
+            ActorStatus::Stopped(_) => {
                 if event.cause().is_none() {
                     return Ok(true);
                 }
-                if self.finish_requested_stop(this)? {
-                    return Ok(true);
+                self.rel.child = Child::Terminal(Box::new(event.clone()));
+            }
+            _ if event.is_error() => {
+                if event.cause().is_some() {
+                    self.rel.child = Child::Terminal(Box::new(event.clone()));
+                } else {
+                    self.rel.control = Control::Lost(Lost::LinkLost);
+                    if let Some(observation) = &event.observation {
+                        self.observation = Some(observation.clone());
+                    }
                 }
-                let reason = reason.clone();
-                self.stop_cause = Some(Box::new(event.clone()));
-                this.exit(&reason)?;
-                return Ok(true);
             }
-            if !event.is_error() {
-                return Ok(true);
-            }
-            if self.finish_requested_stop(this)? {
-                return Ok(true);
-            }
-            self.observation = if let Some(observation) = &event.observation {
-                Some(observation.clone())
-            } else if event.cause().is_some() {
-                None
-            } else {
-                Some(SupervisionObservation::LinkLost(self.supervision_target()))
-            };
-            return Ok(false);
+            _ => return Ok(true),
         }
-        Ok(!event.is_error())
+        match self.apply(this, reconcile(&self.rel, &target))? {
+            Applied::Handled => Ok(true),
+            Applied::UnhandledIncoming
+            | Applied::FailEvent(_)
+            | Applied::Reject { .. }
+            | Applied::FailDefault => Ok(false),
+        }
     }
 
     fn supervision_labels(&self) -> Flattrs {
@@ -367,35 +557,38 @@ impl Actor for Supervisor {
         // A linked worker received the bootstrap request, but a channel that
         // closes before acknowledging it still returns it. Once linked, the
         // liveness link alone decides reachability.
-        if self.session.is_some() {
+        if matches!(self.rel.control, Control::Linked(_)) || self.rel.phase == Phase::Exited {
             return Ok(());
         }
         // ChannelClosed also covers unexpected transport failures. Ending an
         // unlinked proxy cleanly does not establish that its remote child
         // stopped; subsequent use is checked through actor-status monitoring.
-        if let Some(failure) = undeliverable.root_delivery_failure()
-            && matches!(
-                &failure.kind,
-                DeliveryFailureKind::InvalidReference(InvalidReference {
-                    reason: InvalidReferenceReason::ActorStopped,
+        let returned = match undeliverable.root_delivery_failure().map(|f| &f.kind) {
+            Some(DeliveryFailureKind::InvalidReference(InvalidReference {
+                reason: InvalidReferenceReason::ActorStopped,
+                ..
+            })) => BootstrapReturn::StoppedRecipient,
+            Some(DeliveryFailureKind::Undeliverable(UndeliverableReason::Transport(
+                TransportFailure {
+                    reason: TransportFailureReason::ChannelClosed { .. },
                     ..
-                }) | DeliveryFailureKind::Undeliverable(UndeliverableReason::Transport(
-                    TransportFailure {
-                        reason: TransportFailureReason::ChannelClosed { .. },
-                        ..
-                    }
-                ))
-            )
-        {
-            if !self.finish_requested_stop(this)? {
-                this.exit("supervision bootstrap returned before linking")?;
+                },
+            ))) => BootstrapReturn::ChannelClosed,
+            _ => BootstrapReturn::Other,
+        };
+        self.rel.control = Control::Lost(Lost::BootstrapReturned(returned));
+        let target = self.supervision_target();
+        match self.apply(this, reconcile(&self.rel, &target))? {
+            Applied::Handled => Ok(()),
+            Applied::FailDefault => {
+                hyperactor::actor::handle_delivery_failure_event(self, this, undeliverable).await
             }
-            return Ok(());
+            Applied::FailEvent(event) => {
+                Err(ActorErrorKind::UnhandledSupervisionEvent(event).into())
+            }
+            Applied::Reject { reason } => anyhow::bail!(reason),
+            Applied::UnhandledIncoming => Ok(()),
         }
-        if self.finish_requested_stop(this)? {
-            return Ok(());
-        }
-        hyperactor::actor::handle_delivery_failure_event(self, this, undeliverable).await
     }
 }
 
@@ -410,32 +603,55 @@ impl Handler<SupervisorEvent> for Supervisor {
                 display_name,
             } => {
                 self.ensure_session(&session_id)?;
+                if self.rel.phase == Phase::Exited {
+                    return Ok(());
+                }
                 if let Some(ready) = self.ready.take() {
                     ready.post(cx, ());
                 }
-                self.session = Some(SupervisorSession {
+                self.rel.control = Control::Linked(Box::new(SupervisorSession {
                     worker,
                     child,
                     display_name,
-                });
+                }));
+                if matches!(self.rel.child, Child::Unknown) {
+                    self.rel.child = Child::Alive;
+                }
                 self.configure_liveness(cx.instance());
-                self.send_pending_worker_stop(cx)?;
-                Ok(())
+                let target = self.supervision_target();
+                match self.apply(cx.instance(), reconcile(&self.rel, &target))? {
+                    Applied::Handled => Ok(()),
+                    Applied::FailEvent(event) => {
+                        Err(ActorErrorKind::UnhandledSupervisionEvent(event).into())
+                    }
+                    Applied::Reject { reason } => anyhow::bail!(reason),
+                    Applied::UnhandledIncoming | Applied::FailDefault => Ok(()),
+                }
             }
             SupervisorEvent::SuperviseRejected { session_id, reason } => {
                 self.ensure_session(&session_id)?;
-                if self.finish_requested_stop(cx.instance())? {
+                if self.rel.phase == Phase::Exited {
                     return Ok(());
                 }
-                let reason = format!("remote supervision request rejected: {}", reason);
-                if let SupervisorBootstrap::Callback { fallback_actor, .. } = &self.bootstrap {
-                    self.observation =
-                        Some(SupervisionObservation::RequestFailed(SupervisionTarget {
+                let target = match &self.bootstrap {
+                    SupervisorBootstrap::Callback { fallback_actor, .. } => {
+                        Some(SupervisionTarget {
                             actor_id: fallback_actor.clone(),
                             display_name: self.display_name.clone(),
-                        }));
+                        })
+                    }
+                    SupervisorBootstrap::ExistingWorker { .. } => None,
+                };
+                self.rel.control = Control::Lost(Lost::Rejected { reason, target });
+                let target = self.supervision_target();
+                match self.apply(cx.instance(), reconcile(&self.rel, &target))? {
+                    Applied::Handled => Ok(()),
+                    Applied::Reject { reason } => anyhow::bail!(reason),
+                    Applied::FailEvent(event) => {
+                        Err(ActorErrorKind::UnhandledSupervisionEvent(event).into())
+                    }
+                    Applied::UnhandledIncoming | Applied::FailDefault => Ok(()),
                 }
-                anyhow::bail!(reason)
             }
             SupervisorEvent::SupervisionEvent {
                 session_id,
@@ -443,31 +659,103 @@ impl Handler<SupervisorEvent> for Supervisor {
                 disposition: _,
             } => {
                 self.ensure_session(&session_id)?;
-                if self.finish_requested_stop(cx.instance())? {
+                if self.rel.phase == Phase::Exited {
                     return Ok(());
                 }
-                self.observation = event.observation.clone();
-                match &event.actor_status {
-                    ActorStatus::Stopped(reason) => {
-                        cx.exit(reason)?;
-                        self.stop_cause = Some(Box::new(event));
-                        Ok(())
+                self.rel.child = Child::Terminal(Box::new(event));
+                let target = self.supervision_target();
+                match self.apply(cx.instance(), reconcile(&self.rel, &target))? {
+                    Applied::Handled => Ok(()),
+                    Applied::FailEvent(event) => {
+                        Err(ActorErrorKind::UnhandledSupervisionEvent(event).into())
                     }
-                    _ => Err(ActorErrorKind::UnhandledSupervisionEvent(Box::new(event)).into()),
+                    Applied::Reject { reason } => anyhow::bail!(reason),
+                    Applied::UnhandledIncoming => {
+                        anyhow::bail!("supervision link lost")
+                    }
+                    Applied::FailDefault => Ok(()),
                 }
             }
             SupervisorEvent::Unlinked { session_id, reason } => {
                 self.ensure_session(&session_id)?;
-                cx.exit(&reason)?;
-                Ok(())
+                if self.rel.phase == Phase::Exited {
+                    return Ok(());
+                }
+                self.rel.control = Control::Lost(Lost::Unlinked { reason });
+                let target = self.supervision_target();
+                match self.apply(cx.instance(), reconcile(&self.rel, &target))? {
+                    Applied::Handled => Ok(()),
+                    Applied::FailEvent(event) => {
+                        Err(ActorErrorKind::UnhandledSupervisionEvent(event).into())
+                    }
+                    Applied::Reject { reason } => anyhow::bail!(reason),
+                    Applied::UnhandledIncoming | Applied::FailDefault => Ok(()),
+                }
             }
         }
     }
 }
 
 impl Supervisor {
+    fn apply(&mut self, this: &Instance<Self>, decision: Decision) -> anyhow::Result<Applied> {
+        match decision {
+            Decision::Wait => Ok(Applied::Handled),
+            Decision::ForwardStop { mode, reason } => {
+                let command = WorkerCommand::Stop {
+                    session_id: self.session_id.clone(),
+                    mode,
+                    reason: reason.clone(),
+                };
+                match &self.rel.control {
+                    Control::Linked(session) => (&session.worker).post(this, command),
+                    Control::Bootstrapping { .. } => {
+                        if let Some(worker) = self.bootstrap.worker_endpoint() {
+                            worker.post(this, command);
+                        }
+                    }
+                    Control::Lost(_) => {}
+                }
+                self.rel.phase = Phase::Exited;
+                this.exit(&reason)?;
+                Ok(Applied::Handled)
+            }
+            Decision::Exit {
+                reason,
+                cause,
+                observation,
+            } => {
+                self.observation = observation;
+                self.stop_cause = cause;
+                self.rel.phase = Phase::Exited;
+                this.exit(&reason)?;
+                Ok(Applied::Handled)
+            }
+            Decision::Fail { event, observation } => {
+                self.observation = observation.or_else(|| self.observation.take());
+                self.rel.phase = Phase::Exited;
+                match event {
+                    Some(event) => Ok(Applied::FailEvent(event)),
+                    None => Ok(Applied::UnhandledIncoming),
+                }
+            }
+            Decision::Reject {
+                reason,
+                observation,
+            } => {
+                self.observation = observation;
+                self.rel.phase = Phase::Exited;
+                Ok(Applied::Reject { reason })
+            }
+            Decision::FailDefault => {
+                self.rel.phase = Phase::Exited;
+                Ok(Applied::FailDefault)
+            }
+        }
+    }
+
     fn configure_liveness(&self, this: &Instance<Self>) {
-        if self.session.is_some() || matches!(self.bootstrap, SupervisorBootstrap::Callback { .. })
+        if matches!(self.rel.control, Control::Linked(_))
+            || matches!(self.bootstrap, SupervisorBootstrap::Callback { .. })
         {
             self.liveness_handle
                 .as_ref()
@@ -488,50 +776,16 @@ impl Supervisor {
         Ok(())
     }
 
-    fn finish_requested_stop(&self, this: &Instance<Self>) -> anyhow::Result<bool> {
-        let Some(stop) = &self.pending_stop else {
-            return Ok(false);
-        };
-        this.exit(&stop.reason)?;
-        Ok(true)
-    }
-
-    /// Forward a pending stop to the worker, then exit without waiting for
-    /// the child to stop. The stop stays pending until a worker endpoint is
-    /// known, at the latest when the worker reports `Linked`.
-    fn send_pending_worker_stop(&mut self, cx: &Instance<Self>) -> anyhow::Result<()> {
-        let Some(stop) = self.pending_stop.take() else {
-            return Ok(());
-        };
-        let command = WorkerCommand::Stop {
-            session_id: self.session_id.clone(),
-            mode: stop.mode,
-            reason: stop.reason.clone(),
-        };
-        match &self.session {
-            Some(session) => (&session.worker).post(cx, command),
-            None => {
-                let Some(worker) = self.bootstrap.worker_endpoint() else {
-                    self.pending_stop = Some(stop);
-                    return Ok(());
-                };
-                worker.post(cx, command);
-            }
-        }
-        cx.exit(&stop.reason)?;
-        Ok(())
-    }
-
     fn supervision_target(&self) -> SupervisionTarget {
-        match &self.session {
-            Some(session) => SupervisionTarget {
+        match &self.rel.control {
+            Control::Linked(session) => SupervisionTarget {
                 actor_id: session.child.clone(),
                 display_name: session
                     .display_name
                     .clone()
                     .or_else(|| self.display_name.clone()),
             },
-            None => SupervisionTarget {
+            Control::Bootstrapping { .. } | Control::Lost(_) => SupervisionTarget {
                 actor_id: self.bootstrap.fallback_actor(),
                 display_name: self.display_name.clone(),
             },
@@ -1349,6 +1603,177 @@ mod tests {
         supervisor
             .port::<Undeliverable<MessageEnvelope>>()
             .post(client, Undeliverable::Returned(envelope));
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_decision_table() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let child_addr = proc.proc_addr().actor_addr("child");
+        let target = SupervisionTarget {
+            actor_id: child_addr.clone(),
+            display_name: Some("child".to_string()),
+        };
+        let (worker_port, _worker_rx) = client.open_port::<WorkerCommand>();
+        let worker = worker_port.bind();
+        let stopped = |reason: &str| {
+            Box::new(ActorSupervisionEvent::new(
+                child_addr.clone(),
+                Some("child".to_string()),
+                ActorStatus::Stopped(reason.to_string()),
+                None,
+            ))
+        };
+        let failed = || {
+            Box::new(ActorSupervisionEvent::new(
+                child_addr.clone(),
+                Some("child".to_string()),
+                ActorStatus::generic_failure("child failed"),
+                None,
+            ))
+        };
+        let linked = || {
+            Control::Linked(Box::new(SupervisorSession {
+                worker: worker.clone(),
+                child: child_addr.clone(),
+                display_name: Some("child".to_string()),
+            }))
+        };
+        let rel = |intent: Intent, control: Control, child: Child| Relationship {
+            intent,
+            control,
+            child,
+            phase: Phase::Active,
+        };
+        let stop = || {
+            Intent::Stop(PendingStop {
+                mode: StopMode::Stop,
+                reason: "cancelled spawn".to_string(),
+            })
+        };
+
+        assert!(matches!(
+            reconcile(&rel(Intent::Run, linked(), Child::Alive), &target),
+            Decision::Wait
+        ));
+        let Decision::Exit { reason, cause, .. } = reconcile(
+            &rel(
+                Intent::Run,
+                linked(),
+                Child::Terminal(stopped("child stopped")),
+            ),
+            &target,
+        ) else {
+            panic!("a stopped child should exit the proxy");
+        };
+        assert_eq!(reason, "child stopped");
+        assert_eq!(cause.unwrap().actor_id, child_addr);
+        assert!(matches!(
+            reconcile(
+                &rel(Intent::Run, linked(), Child::Terminal(failed())),
+                &target
+            ),
+            Decision::Fail { event: Some(_), .. }
+        ));
+        let Decision::Fail {
+            event, observation, ..
+        } = reconcile(
+            &rel(Intent::Run, Control::Lost(Lost::LinkLost), Child::Alive),
+            &target,
+        )
+        else {
+            panic!("a lost link should fail the proxy");
+        };
+        assert!(event.is_none());
+        let Some(SupervisionObservation::LinkLost(lost)) = observation else {
+            panic!("a lost link should name its target");
+        };
+        assert_eq!(lost.actor_id, child_addr);
+        assert!(matches!(
+            reconcile(
+                &rel(
+                    Intent::Run,
+                    Control::Lost(Lost::Rejected {
+                        reason: "declined".to_string(),
+                        target: Some(target.clone()),
+                    }),
+                    Child::Unknown,
+                ),
+                &target,
+            ),
+            Decision::Reject { .. }
+        ));
+        assert!(matches!(
+            reconcile(
+                &rel(
+                    Intent::Run,
+                    Control::Lost(Lost::BootstrapReturned(BootstrapReturn::ChannelClosed)),
+                    Child::Unknown,
+                ),
+                &target,
+            ),
+            Decision::Exit { .. }
+        ));
+        assert!(matches!(
+            reconcile(
+                &rel(
+                    Intent::Run,
+                    Control::Lost(Lost::BootstrapReturned(BootstrapReturn::Other)),
+                    Child::Unknown,
+                ),
+                &target,
+            ),
+            Decision::FailDefault
+        ));
+        assert!(matches!(
+            reconcile(
+                &rel(
+                    stop(),
+                    Control::Bootstrapping {
+                        has_endpoint: false
+                    },
+                    Child::Unknown
+                ),
+                &target,
+            ),
+            Decision::Wait
+        ));
+        assert!(matches!(
+            reconcile(&rel(stop(), linked(), Child::Alive), &target),
+            Decision::ForwardStop { .. }
+        ));
+        let Decision::Exit { reason, cause, .. } = reconcile(
+            &rel(stop(), Control::Lost(Lost::LinkLost), Child::Alive),
+            &target,
+        ) else {
+            panic!("a requested stop should win over a lost link");
+        };
+        assert_eq!(reason, "cancelled spawn");
+        assert!(cause.is_none());
+        let Decision::Exit { reason, cause, .. } = reconcile(
+            &rel(
+                stop(),
+                Control::Bootstrapping {
+                    has_endpoint: false,
+                },
+                Child::Terminal(failed()),
+            ),
+            &target,
+        ) else {
+            panic!("a requested stop should win over a child failure");
+        };
+        assert_eq!(reason, "cancelled spawn");
+        assert!(
+            cause.is_none(),
+            "the child failure is dropped once a stop is requested"
+        );
+        let exited = Relationship {
+            intent: stop(),
+            control: Control::Lost(Lost::LinkLost),
+            child: Child::Alive,
+            phase: Phase::Exited,
+        };
+        assert!(matches!(reconcile(&exited, &target), Decision::Wait));
     }
 
     #[tokio::test]
@@ -2542,6 +2967,13 @@ mod tests {
             target.display_name.as_deref(),
             Some("child{'gpus': 1/2}"),
             "the lost link should keep the requested display name"
+        );
+        assert!(
+            matches!(
+                event.caused_by().actor_status,
+                ActorStatus::Failed(ActorErrorKind::Aborted(_))
+            ),
+            "the lost link should surface as aborted: {event:?}"
         );
 
         parent.stop("test").unwrap();
