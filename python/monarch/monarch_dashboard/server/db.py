@@ -831,20 +831,29 @@ def get_message_stats() -> dict[str, Any]:
         key = _state_key.get(str(row.get("state") or ""), "queued")
         lifecycle[key] = int(row.get("n") or 0)
 
-    # Per-endpoint volume + completed count, deduped by message id.
+    # Per-endpoint volume + completed count. Message ids are unique, and a
+    # handler reports at most one terminal status, so plain counts equal
+    # distinct-id counts; unlike COUNT(DISTINCT) over a LEFT JOIN, collectors
+    # compute them as partial aggregates.
+    completed_by_endpoint = {
+        row["endpoint"]: int(row["completed"] or 0)
+        for row in _query(
+            "SELECT m.endpoint AS endpoint, COUNT(*) AS completed"
+            " FROM messages m"
+            " JOIN message_status_events e ON e.message_id = m.id"
+            " WHERE LOWER(e.status) = 'complete'"
+            " GROUP BY m.endpoint"
+        )
+    }
     endpoint_rows = _query(
-        "SELECT m.endpoint AS endpoint,"
-        " COUNT(DISTINCT m.id) AS total,"
-        " COUNT(DISTINCT CASE WHEN LOWER(e.status) = 'complete' THEN m.id END) AS completed"
-        " FROM messages m"
-        " LEFT JOIN message_status_events e ON e.message_id = m.id"
-        " GROUP BY m.endpoint ORDER BY total DESC"
+        "SELECT endpoint, COUNT(*) AS total FROM messages"
+        " GROUP BY endpoint ORDER BY total DESC"
     )
     endpoints = [
         {
             "endpoint": row.get("endpoint") or "(none)",
             "total": int(row.get("total") or 0),
-            "completed": int(row.get("completed") or 0),
+            "completed": completed_by_endpoint.get(row.get("endpoint"), 0),
         }
         for row in endpoint_rows
     ]
