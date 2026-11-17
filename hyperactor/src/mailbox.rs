@@ -2229,6 +2229,11 @@ impl Mailbox {
         self.inner.closed_notify.notify_waiters();
     }
 
+    /// The status the mailbox was closed with, if it was closed.
+    pub(crate) fn closed_status(&self) -> Option<ActorStatus> {
+        self.inner.closed.read().unwrap().clone()
+    }
+
     /// Wake pending receivers when their owner terminates, even when retained
     /// handles keep the mailbox and its channel senders alive.
     async fn wait_closed(&self) -> ActorStatus {
@@ -2344,44 +2349,13 @@ impl MailboxSender for Mailbox {
             Some(ref_) => {
                 let closed = self.inner.closed.read().unwrap();
                 if let Some(status) = &*closed {
-                    match status {
-                        ActorStatus::Stopped(reason) => {
-                            tracing::debug!(
-                                owner=%self.inner.actor_id,
-                                %reason,
-                                "mailbox owner is stopped",
-                            );
-                            let failure = DeliveryFailure::new(InvalidReference::new(
-                                envelope.dest().actor_addr(),
-                                InvalidReferenceReason::ActorStopped,
-                            ));
-                            return envelope.undeliverable(failure, return_handle);
-                        }
-                        ActorStatus::Failed(actor_error) => {
-                            tracing::debug!(
-                                owner=%self.inner.actor_id,
-                                %actor_error,
-                                "mailbox owner failed",
-                            );
-                            let failure = DeliveryFailure::new(InvalidReference::new(
-                                envelope.dest().actor_addr(),
-                                InvalidReferenceReason::ActorFailed,
-                            ));
-                            return envelope.undeliverable(failure, return_handle);
-                        }
-                        _ => {
-                            let failure = DeliveryFailure::new(UndeliverableReason::Transport(
-                                TransportFailure::new(
-                                    envelope.dest().actor_addr(),
-                                    TransportFailureReason::LinkUnavailable(format!(
-                                        "mailbox owner {} closed unexpectedly: {:?}",
-                                        self.inner.actor_id, status
-                                    )),
-                                ),
-                            ));
-                            return envelope.undeliverable(failure, return_handle);
-                        }
-                    }
+                    tracing::debug!(
+                        owner=%self.inner.actor_id,
+                        ?status,
+                        "mailbox owner is terminal",
+                    );
+                    let failure = closed_delivery_failure(&envelope, &self.inner.actor_id, status);
+                    return envelope.undeliverable(failure, return_handle);
                 }
                 // Clone the Arc so we can release the shard read lock before
                 // calling send_serialized, which may re-enter post_unchecked.
@@ -3622,6 +3596,10 @@ enum ActorMailbox {
     /// The actor has not bound yet. Its messages expire after
     /// [`crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT`].
     Buffering(Vec<PendingMessage>),
+    /// The actor terminated with this status and its instance was dropped.
+    /// Messages fail as they would at the actor's closed mailbox, without
+    /// retaining the mailbox's ports.
+    Closed(ActorStatus),
 }
 
 impl Default for MailboxMuxer {
@@ -3641,9 +3619,8 @@ impl MailboxMuxer {
 
     /// Route messages destined for the provided actor id to the provided
     /// sender, first delivering any messages buffered for the actor.
-    /// Returns false if the actor is already bound. In this case, the
-    /// sender is not replaced, and the caller must
-    /// [`MailboxMuxer::unbind`] it first.
+    /// Returns false if the actor is already bound or has terminated. In
+    /// this case, the sender is not replaced.
     pub fn bind(&self, actor_id: ActorId, sender: impl MailboxSender + 'static) -> bool {
         let sender: Arc<dyn MailboxSender + Send + Sync> = Arc::new(sender);
         match self.mailboxes.entry(actor_id) {
@@ -3677,6 +3654,24 @@ impl MailboxMuxer {
         self.status_sender.set(Box::new(sender)).is_ok()
     }
 
+    /// Replace the bound mailbox of `actor_id`, whose owner terminated with
+    /// `status`, with a tombstone that releases the mailbox.
+    pub(crate) fn close_mailbox(&self, actor_id: &ActorId, status: ActorStatus) {
+        let released = self.mailboxes.get_mut(actor_id).and_then(|mut entry| {
+            matches!(entry.value(), ActorMailbox::Bound(_))
+                .then(|| std::mem::replace(entry.value_mut(), ActorMailbox::Closed(status)))
+        });
+        // Drop the mailbox after releasing the shard lock.
+        drop(released);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_closed(&self, actor_id: &ActorId) -> bool {
+        self.mailboxes
+            .get(actor_id)
+            .is_some_and(|entry| matches!(entry.value(), ActorMailbox::Closed(_)))
+    }
+
     /// Unbind the sender associated with the provided actor ID. After
     /// unbinding, the muxer will no longer be able to send messages to
     /// that actor.
@@ -3699,6 +3694,11 @@ impl MailboxMuxer {
             Entry::Occupied(mut entry) => match entry.get_mut() {
                 ActorMailbox::Bound(sender) => sender.post(envelope, return_handle),
                 ActorMailbox::Buffering(pending) => pending.push((envelope, return_handle)),
+                ActorMailbox::Closed(status) => {
+                    let failure =
+                        closed_delivery_failure(&envelope, &envelope.dest().actor_addr(), status);
+                    envelope.undeliverable(failure, return_handle);
+                }
             },
             Entry::Vacant(_) if timeout.is_zero() => {
                 let failure = actor_not_exist(&envelope);
@@ -3733,6 +3733,32 @@ impl MailboxMuxer {
                 });
             }
         }
+    }
+}
+
+/// The delivery failure for a message to a mailbox whose owner terminated with
+/// `status`.
+fn closed_delivery_failure(
+    envelope: &MessageEnvelope,
+    owner: &ActorAddr,
+    status: &ActorStatus,
+) -> DeliveryFailure {
+    match status {
+        ActorStatus::Stopped(_) => DeliveryFailure::new(InvalidReference::new(
+            envelope.dest().actor_addr(),
+            InvalidReferenceReason::ActorStopped,
+        )),
+        ActorStatus::Failed(_) => DeliveryFailure::new(InvalidReference::new(
+            envelope.dest().actor_addr(),
+            InvalidReferenceReason::ActorFailed,
+        )),
+        _ => DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+            envelope.dest().actor_addr(),
+            TransportFailureReason::LinkUnavailable(format!(
+                "mailbox owner {} closed unexpectedly: {:?}",
+                owner, status
+            )),
+        ))),
     }
 }
 
@@ -3771,7 +3797,7 @@ impl MailboxSender for MailboxMuxer {
             .iter()
             .filter_map(|mailbox| match mailbox.value() {
                 ActorMailbox::Bound(sender) => Some(Arc::clone(sender)),
-                ActorMailbox::Buffering(_) => None,
+                ActorMailbox::Buffering(_) | ActorMailbox::Closed(_) => None,
             })
             .collect();
         for sender in senders {

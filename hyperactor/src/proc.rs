@@ -2613,6 +2613,14 @@ impl<A: Actor> InstanceState<A> {
 
 impl<A: Actor> Drop for InstanceState<A> {
     fn drop(&mut self) {
+        // The proc's muxer holds a clone of every bound mailbox. Release a
+        // closed one; its owner can no longer receive messages.
+        if let Some(status) = self.mailbox.closed_status() {
+            self.proc
+                .state()
+                .proc_muxer
+                .close_mailbox(self.mailbox.actor_addr().id(), status);
+        }
         let terminal_status = ActorStatus::Stopped("instance is dropped".into());
         if let Some(shutdown_tx) = self.detached_introspect_shutdown_tx.lock().unwrap().take() {
             let _ = shutdown_tx.send(terminal_status.clone());
@@ -8313,12 +8321,14 @@ mod tests {
         });
         ready_rx.recv().await.unwrap();
         let cell = handle.cell().downgrade();
+        let handle_addr = handle.actor_addr().clone();
+        let actor_id = handle_addr.id().clone();
 
         handle.drain_and_stop("test").unwrap();
         assert_matches!(handle.await, ActorStatus::Stopped(reason) if reason == "test");
 
         // The pending self-post held a clone of the instance; terminating
-        // must drop it so the instance is released.
+        // must drop it so the instance, and then its mailbox, are released.
         tokio::time::timeout(Duration::from_secs(10), async {
             while cell.upgrade().is_some() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -8326,6 +8336,17 @@ mod tests {
         })
         .await
         .expect("stopped actor's instance should be released");
+        assert!(
+            proc.state().proc_muxer.is_closed(&actor_id),
+            "muxer should replace a dropped actor's mailbox with a tombstone"
+        );
+        assert!(
+            !proc
+                .state()
+                .proc_muxer
+                .bind_mailbox(Mailbox::new(handle_addr)),
+            "muxer should not rebind a terminated actor's id"
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
