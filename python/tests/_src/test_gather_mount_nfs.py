@@ -6,6 +6,7 @@
 
 """NFS keeps the FUSE gather-cache algorithm, substituting bytes for RDMA."""
 
+import asyncio
 import stat
 import unittest
 from unittest.mock import Mock, mock_open, patch
@@ -293,3 +294,108 @@ class GatherNfsReadTest(unittest.IsolatedAsyncioTestCase):
                 (2 * _TEST_BYTE_CHUNK_SIZE, 12),
             ],
         )
+
+
+class _PatternFiles(_RemoteFiles):
+    """Remote file whose byte at position ``i`` is ``i % 251``."""
+
+    async def call_one(self, *args: object) -> tuple[int, int, int] | bytes:
+        if len(args) == 1:
+            return (1_000_000_000, self.file_size, stat.S_IFREG | 0o644)
+        _path, offset, size = args
+        assert isinstance(offset, int) and isinstance(size, int)
+        self.requests.append((offset, size))
+        end = min(offset + size, self.file_size)
+        return _pattern(offset, end)
+
+
+def _pattern(start: int, end: int) -> bytes:
+    return bytes(i % 251 for i in range(start, end))
+
+
+_TEST_WINDOW = 64
+_TEST_BLOCK = 16
+_TEST_MAX_BLOCKS = 2
+
+
+@patch("monarch._src.gather_mount.gather_mount._MAX_TAIL_WINDOW", _TEST_WINDOW)
+@patch("monarch._src.gather_mount.gather_mount._READ_BLOCK_SIZE", _TEST_BLOCK)
+@patch("monarch._src.gather_mount.gather_mount._MAX_CACHED_BLOCKS", _TEST_MAX_BLOCKS)
+class GatherLargeFileReadTest(unittest.IsolatedAsyncioTestCase):
+    """Files larger than the tail window are read through bounded blocks."""
+
+    def client(self, remote: _RemoteFiles) -> GatherClientActor:
+        client = object.__new__(GatherClientActor)
+        client._actors = remote
+        client._use_rdma = False
+        client._key_to_point = {"": {}}
+        client._cache = {}
+        return client
+
+    async def read(
+        self, client: GatherClientActor, size: int, offset: int
+    ) -> bytes | int:
+        # pyrefly: ignore [missing-attribute]
+        data = await GatherClientActor.read_path._method(client, "/big", size, offset)
+        await asyncio.sleep(0)  # let the prefetch run
+        return data
+
+    async def test_read_from_start_fetches_one_block_and_prefetches_the_next(
+        self,
+    ) -> None:
+        remote = _PatternFiles(file_size=200)
+        client = self.client(remote)
+
+        self.assertEqual(await self.read(client, 10, 0), _pattern(0, 10))
+
+        self.assertEqual(
+            remote.requests, [(0, _TEST_BLOCK), (_TEST_BLOCK, _TEST_BLOCK)]
+        )
+
+    async def test_sequential_read_is_correct_and_bounded(self) -> None:
+        remote = _PatternFiles(file_size=200)
+        client = self.client(remote)
+
+        data = b""
+        while len(data) < remote.file_size:
+            chunk = await self.read(client, 7, len(data))
+            assert isinstance(chunk, bytes)
+            data += chunk
+            entry = client._cache[("", "big")]
+            self.assertLessEqual(len(entry.blocks), _TEST_MAX_BLOCKS)
+            self.assertLessEqual(len(entry.data), _TEST_WINDOW)
+
+        self.assertEqual(data, _pattern(0, remote.file_size))
+        self.assertLessEqual(max(size for _, size in remote.requests), _TEST_WINDOW)
+        # Each byte is fetched once, except where the last block or its
+        # prefetched successor overlaps the tail window.
+        self.assertLessEqual(
+            sum(size for _, size in remote.requests),
+            remote.file_size + 2 * _TEST_BLOCK,
+        )
+
+    async def test_tail_reads_extend_the_window_up_to_its_cap(self) -> None:
+        remote = _PatternFiles(file_size=200)
+        client = self.client(remote)
+
+        self.assertEqual(await self.read(client, 5, 195), _pattern(195, 200))
+        self.assertEqual(
+            await self.read(client, 10, 200 - _TEST_WINDOW),
+            _pattern(200 - _TEST_WINDOW, 200 - _TEST_WINDOW + 10),
+        )
+        self.assertEqual(remote.requests, [(195, 5), (136, 59)])
+
+        # A read just before the window spans a block and the window.
+        self.assertEqual(await self.read(client, 10, 130), _pattern(130, 140))
+        self.assertEqual(remote.requests[2:], [(128, _TEST_BLOCK)])
+        entry = client._cache[("", "big")]
+        self.assertEqual(len(entry.data), _TEST_WINDOW)
+
+    async def test_small_file_is_still_fetched_whole(self) -> None:
+        remote = _PatternFiles(file_size=_TEST_WINDOW)
+        client = self.client(remote)
+
+        self.assertEqual(await self.read(client, 10, 0), _pattern(0, 10))
+        self.assertEqual(await self.read(client, 10, 40), _pattern(40, 50))
+
+        self.assertEqual(remote.requests, [(0, _TEST_WINDOW)])

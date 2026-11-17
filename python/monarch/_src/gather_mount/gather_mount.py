@@ -32,6 +32,12 @@ mounts files directly in ``local_mount_point`` without any sub-directory.
 Large transfers (≥ ``_RDMA_THRESHOLD``) use ``RDMABuffer`` when available;
 otherwise they fetch the same range via byte RPCs.
 
+**Memory** – a file no larger than ``_MAX_TAIL_WINDOW`` is cached whole on
+its first read, in one transfer.  A larger file caches at most that much of
+its end (the tail window, which keeps ``tail -f`` cheap) plus a few
+``_READ_BLOCK_SIZE`` blocks for reads elsewhere, so reading a multi-gigabyte
+file holds a bounded amount of memory on both sides.
+
 The Linux FUSE and macOS loopback NFS adapters have no gather-specific state;
 all caching and coordination lives in ``GatherClientActor``.
 """
@@ -50,8 +56,9 @@ import struct
 import subprocess
 import sys
 import time
+from collections import OrderedDict
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import product
 from typing import cast, Protocol
 
@@ -69,6 +76,21 @@ _RDMA_THRESHOLD: int = 1 * 1024 * 1024  # 1 MiB
 # Maximum payload per byte RPC when RDMA is unavailable (independent of the
 # threshold at which the RDMA path is selected).
 _BYTE_READ_CHUNK_SIZE: int = 32 * 1024 * 1024  # 32 MiB
+
+# Largest tail window cached per file. A file no larger than this is fetched
+# whole on its first read; a larger file keeps at most this much of its end,
+# so tail-following still fetches only new bytes.
+_MAX_TAIL_WINDOW: int = 64 * 1024 * 1024  # 64 MiB
+
+# Reads before the tail window of a larger file are served from fixed-size
+# blocks, so the client and the remote host each hold a few blocks of the file
+# rather than all of it, and no single fetch blocks the mount for long.
+_READ_BLOCK_SIZE: int = 32 * 1024 * 1024  # 32 MiB
+
+# Blocks kept per file outside the tail window, least recently used first out.
+# The block after the one being read is prefetched to keep sequential reads
+# streaming.
+_MAX_CACHED_BLOCKS: int = 4
 
 # Unmount can transiently report a busy macOS NFS mount while the kernel drains
 # the final filesystem operation. Keep the server alive and retry before giving
@@ -263,16 +285,20 @@ class GatherSourceActor(Actor):
         from monarch.rdma import RDMABuffer
 
         with open(self._full(rel_path), "rb") as f:
+            actual = max(0, min(length, os.fstat(f.fileno()).st_size - offset))
+            if actual == 0:
+                return (-1, None, 0)
+            # Read straight into the pinned buffer, so the range is held once.
+            mm = _mmap.mmap(-1, actual, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS)
+            # pyrefly: ignore [bad-assignment]
+            mv: memoryview[bytes] = memoryview(mm)[:actual]
             f.seek(offset)
-            data = f.read(length)
-        actual = len(data)
+            actual = f.readinto(mv) or 0
         if actual == 0:
+            mv.release()
+            mm.close()
             return (-1, None, 0)
-
-        mm = _mmap.mmap(-1, actual, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS)
-        # pyrefly: ignore [bad-assignment]
-        mv: memoryview[bytes] = memoryview(mm)[:actual]
-        mv[:] = data
+        mv = mv[:actual]
         # pyrefly: ignore [bad-argument-type]
         rdma_buf = RDMABuffer(mv)
 
@@ -299,6 +325,10 @@ class _CacheEntry:
     mode: int
     data: bytearray
     offset: int  # file position where data starts; covers [offset, offset + len(data)]
+    # Fixed-size blocks before the tail window, by block index, most recently
+    # used last, and fetches of blocks still in flight.
+    blocks: OrderedDict[int, bytes] = field(default_factory=OrderedDict)
+    fetching: dict[int, asyncio.Task[bytes]] = field(default_factory=dict)
 
     @property
     def size(self) -> int:
@@ -403,7 +433,10 @@ class GatherClientActor(Actor):
         if _stat.S_ISDIR(entry.mode):
             return errno.EISDIR
 
-        # Fetch prefix if the read starts before the cached window.
+        # Fetch prefix if the read starts before the cached window, as long as
+        # the window stays bounded; a read further back uses blocks instead.
+        if offset < entry.offset and entry.size - offset > _MAX_TAIL_WINDOW:
+            return await self._read_blocks(point, rel_path, entry, offset, size)
         if offset < entry.offset:
             fetch_len = entry.offset - offset
             logger.debug(
@@ -431,6 +464,77 @@ class GatherClientActor(Actor):
         return bytes(entry.data[data_start : data_start + size])
 
     # ── Internal helpers (not endpoints) ──────────────────────────────────
+
+    async def _read_blocks(
+        self,
+        point: dict[str, int],
+        rel_path: str,
+        entry: _CacheEntry,
+        offset: int,
+        size: int,
+    ) -> bytes:
+        """Serve ``[offset, offset + size)`` from fixed-size blocks.
+
+        Used for reads before the tail window of a file larger than
+        ``_MAX_TAIL_WINDOW``. Keeps at most ``_MAX_CACHED_BLOCKS`` blocks and
+        prefetches the block after the last one read.
+        """
+        end = min(offset + size, entry.size)
+        parts: list[bytes] = []
+        index = offset // _READ_BLOCK_SIZE
+        while offset < end:
+            if offset >= entry.offset:
+                # The rest of the read is inside the tail window.
+                start = offset - entry.offset
+                parts.append(bytes(entry.data[start : start + (end - offset)]))
+                break
+            block = await self._block(point, rel_path, entry, index)
+            start = offset - index * _READ_BLOCK_SIZE
+            part = block[start : start + (end - offset)]
+            if not part:
+                break  # the file shrank since it was statted
+            parts.append(part)
+            offset += len(part)
+            index += 1
+        self._prefetch_block(point, rel_path, entry, index)
+        return b"".join(parts)
+
+    async def _block(
+        self, point: dict[str, int], rel_path: str, entry: _CacheEntry, index: int
+    ) -> bytes:
+        block = entry.blocks.get(index)
+        if block is not None:
+            entry.blocks.move_to_end(index)
+            return block
+        self._prefetch_block(point, rel_path, entry, index)
+        return await entry.fetching[index]
+
+    def _prefetch_block(
+        self, point: dict[str, int], rel_path: str, entry: _CacheEntry, index: int
+    ) -> None:
+        """Start fetching block *index* unless it is cached, in flight, or not
+        before the tail window."""
+        start = index * _READ_BLOCK_SIZE
+        if start >= entry.offset or index in entry.blocks or index in entry.fetching:
+            return
+
+        async def fetch() -> bytes:
+            try:
+                block = await self._fetch_range(
+                    point, rel_path, start, min(_READ_BLOCK_SIZE, entry.size - start)
+                )
+            finally:
+                entry.fetching.pop(index, None)
+            entry.blocks[index] = block
+            while len(entry.blocks) > _MAX_CACHED_BLOCKS:
+                entry.blocks.popitem(last=False)
+            return block
+
+        task = asyncio.get_running_loop().create_task(fetch())
+        # A failed prefetch surfaces when a read awaits the block; mark its
+        # exception retrieved so an unawaited one is not logged as lost.
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        entry.fetching[index] = task
 
     def _actor_for(self, point: dict[str, int]) -> object:
         # pyre-ignore[16]
