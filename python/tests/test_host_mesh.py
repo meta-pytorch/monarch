@@ -33,6 +33,7 @@ from typing import Any, Callable, cast, Dict, Generator, IO, List, Optional, Set
 from unittest.mock import patch
 
 import cloudpickle
+import psutil
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
@@ -250,12 +251,22 @@ def test_host_loss_reaches_owner(mode: str) -> None:
 
 
 def is_process_running(pid: int) -> bool:
-    """Check if a process with the given PID is still running."""
+    """Check if a process with the given PID is still running.
+
+    An unreaped (zombie) process has exited even though its PID still exists.
+    A killed worker's orphaned children are reparented to PID 1, and a
+    container's PID 1 may never reap them, as on OSDC runners.
+    """
     try:
         os.kill(pid, 0)  # Signal 0 doesn't kill, just checks if process exists
-        return True
     except OSError:
         return False
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except (psutil.ZombieProcess, psutil.NoSuchProcess):
+        return False
+    except psutil.AccessDenied:
+        return True
 
 
 def _wait_for_marker(path: pathlib.Path) -> None:
