@@ -235,6 +235,7 @@ def test_host_loss_reaches_owner(mode: str) -> None:
                 if any(name.startswith("worker-") for name in failures):
                     break
                 time.sleep(0.1)
+            # pyrefly: ignore [unbound-name]
             assert any(name.startswith("worker-") for name in failures) == (
                 mode != "shutdown"
             ), failures
