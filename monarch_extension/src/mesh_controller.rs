@@ -32,10 +32,12 @@ use hyperactor::OncePortHandle;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::context;
+use hyperactor::id::Label;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::ProcMeshRef;
+use hyperactor_mesh::mesh_id::ActorMeshId;
 use hyperactor_mesh::supervision::MeshFailure;
 use hyperactor_mesh::value_mesh::ValueOverlay;
 use monarch_hyperactor::actor::PythonMessage;
@@ -926,16 +928,30 @@ impl Actor for MeshControllerActor {
             controller_actor: controller_actor_ref,
         };
 
+        // Workers and brokers are owned by this controller, which stops them
+        // in `StopWorkers`, and their names are unique per controller
+        // instance, so neither is a shared singleton service.
         let workers = self
             .proc_mesh_ref
-            .spawn_service(this, &format!("tensor_engine_workers_{}", self.id), &param)
+            .spawn(this, &format!("tensor_engine_workers_{}", self.id), &param)
             .await?;
         workers.cast(this, AssignRankMessage::AssignRank())?;
 
         self.workers = Some(workers);
+        // Actors find their proc's broker by name (`BrokerId::resolve`), so
+        // brokers keep a singleton id, which names each actor verbatim. A
+        // singleton id fixes only the name: unlike `spawn_service`, whose
+        // services are owned by their proc and cannot be stopped by the
+        // caller, `spawn_with_name` returns a mesh owned by this controller.
         let brokers = self
             .proc_mesh_ref
-            .spawn_service(this, &format!("tensor_engine_brokers_{}", self.id), &())
+            .spawn_with_name(
+                this,
+                ActorMeshId::singleton(Label::strip(&format!("tensor_engine_brokers_{}", self.id))),
+                &(),
+                None,
+                false,
+            )
             .await?;
         self.brokers = Some(brokers);
         Ok(())
