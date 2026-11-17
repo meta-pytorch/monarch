@@ -73,8 +73,10 @@ from monarch.common.invocation import DeviceException
 logger: Logger = logging.getLogger(__name__)
 
 
-def _set_trace(*, header=None):
+def _set_trace(*, header=None, commands=None):
     ds = PdbWrapper(header)
+    if commands is not None:
+        ds.rcLines.extend(commands)
     ds.set_trace()
 
 
