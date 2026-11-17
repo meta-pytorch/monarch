@@ -68,10 +68,10 @@
 //! - **PD-5d:** Queue depth is intended to be non-negative; tests
 //!   must cover ordered/buffered delivery paths to validate the
 //!   accounting.
-//! - **PD-5e:** `queue_depth` and the OTel `ACTOR_MESSAGE_QUEUE_SIZE`
-//!   counter are two consumers of one accounting path. The
-//!   `account_enqueue` / `account_dequeue` helpers update both
-//!   together so they cannot drift.
+//! - **PD-5e:** `queue_depth` is the single source of per-actor
+//!   queue depth. Introspection reads it directly, and the OTel
+//!   `ACTOR_MESSAGE_QUEUE_SIZE` gauge reads it at collection time,
+//!   so the two cannot drift.
 //!
 //! ## Retained queue-pressure invariants (PD-6 through PD-9)
 //!
@@ -116,6 +116,7 @@ use std::pin::Pin;
 use std::ptr;
 use std::sync::Arc;
 use std::sync::Condvar;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::RwLock;
@@ -318,11 +319,11 @@ impl ProcQueueStats {
 // `monarch/python/benches/`.
 /// Single accounting path for actor work-queue enqueue.
 ///
-/// Updates three consumers together: per-actor `queue_depth`,
-/// proc-level retained queue-pressure state (`ProcQueueStats`),
-/// and OTel `ACTOR_MESSAGE_QUEUE_SIZE`. Unifying the update
-/// here ensures they cannot drift.
-fn account_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, actor_id: &str) {
+/// Updates per-actor `queue_depth` and proc-level retained
+/// queue-pressure state (`ProcQueueStats`) together. The OTel
+/// `ACTOR_MESSAGE_QUEUE_SIZE` gauge reads `queue_depth` at collection
+/// time, so it cannot drift.
+fn account_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats) {
     queue_depth.fetch_add(1, Ordering::Relaxed);
     let new_total = proc_stats.running_total.fetch_add(1, Ordering::Relaxed) + 1;
     // PD-6: update high-water mark.
@@ -333,10 +334,6 @@ fn account_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, actor_i
     proc_stats
         .last_nonzero_epoch_ms
         .store(proc_stats.now_ms(), Ordering::Relaxed);
-    ACTOR_MESSAGE_QUEUE_SIZE.add(
-        1,
-        hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
-    );
 }
 
 // HOT PATH: Be mindful of performance when making changes here.
@@ -344,11 +341,10 @@ fn account_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, actor_i
 // `monarch/python/benches/`.
 /// Single accounting path for actor work-queue dequeue.
 ///
-/// Updates per-actor `queue_depth`, proc-level running total,
-/// OTel `ACTOR_MESSAGE_QUEUE_SIZE`, and the last-nonzero
-/// timestamp when the proc-wide queue remains non-zero after
-/// this dequeue.
-fn account_dequeue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, actor_id: &str) {
+/// Updates per-actor `queue_depth`, proc-level running total, and
+/// the last-nonzero timestamp when the proc-wide queue remains
+/// non-zero after this dequeue.
+fn account_dequeue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats) {
     queue_depth.fetch_sub(1, Ordering::Relaxed);
     let prev_total = proc_stats.running_total.fetch_sub(1, Ordering::Relaxed);
     // PD-7: if the queue is still non-zero after this dequeue,
@@ -359,28 +355,72 @@ fn account_dequeue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, actor_i
             .last_nonzero_epoch_ms
             .store(proc_stats.now_ms(), Ordering::Relaxed);
     }
-    ACTOR_MESSAGE_QUEUE_SIZE.add(
-        -1,
-        hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
-    );
 }
 
 /// Roll back an accounted enqueue when the underlying send fails.
 ///
 /// Must be paired with a prior `account_enqueue` that has not yet
 /// been balanced by `account_dequeue`. Decrements per-actor
-/// `queue_depth`, proc-level `running_total`, and OTel
-/// `ACTOR_MESSAGE_QUEUE_SIZE` symmetrically. Leaves
-/// `high_water_mark` alone (monotonic by design) and does not
+/// `queue_depth` and proc-level `running_total` symmetrically.
+/// Leaves `high_water_mark` alone (monotonic by design) and does not
 /// touch `last_nonzero_epoch_ms` (best-effort observational
 /// timestamp; brief overcount on failed sends is acceptable).
-fn account_cancel_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, actor_id: &str) {
+fn account_cancel_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats) {
     queue_depth.fetch_sub(1, Ordering::Relaxed);
     proc_stats.running_total.fetch_sub(1, Ordering::Relaxed);
-    ACTOR_MESSAGE_QUEUE_SIZE.add(
-        -1,
-        hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
-    );
+}
+
+/// Every live proc in this process, walked by the
+/// `ACTOR_MESSAGE_QUEUE_SIZE` callback. Dropped procs are pruned on
+/// each registration and each walk.
+static LIVE_PROCS: LazyLock<Mutex<Vec<WeakProc>>> = LazyLock::new(Mutex::default);
+
+/// Add `proc` to `procs`, first pruning procs that have been dropped,
+/// so the list stays bounded even if no walk ever runs.
+fn register_live_proc(procs: &mut Vec<WeakProc>, proc: WeakProc) {
+    procs.retain(|weak| weak.0.strong_count() > 0);
+    procs.push(proc);
+}
+
+/// Report the queue depth of every running actor with queued messages
+/// in `procs` as `(depth, actor_id)`, pruning procs that have been
+/// dropped.
+///
+/// Runs on the metrics SDK's collection thread: it must not await,
+/// and it collects cells before reading them, as `Proc::all_actor_ids`
+/// does, so that no cell is dropped while a shard lock is held.
+fn report_queue_depths(procs: &mut Vec<WeakProc>, report: &mut dyn FnMut(u64, String)) {
+    procs.retain(|weak| {
+        let Some(proc) = weak.upgrade() else {
+            return false;
+        };
+        let cells: Vec<_> = proc
+            .state()
+            .actors
+            .iter()
+            .filter_map(|entry| {
+                let (cell, status) = entry.as_running()?;
+                if status.borrow().is_terminal() {
+                    return None;
+                }
+                cell.upgrade()
+            })
+            .collect();
+        for cell in &cells {
+            let depth = cell.queue_depth();
+            if depth > 0 {
+                report(depth, cell.actor_addr().to_string());
+            }
+        }
+        true
+    });
+}
+
+/// Report queued actors across all live procs in this process. See
+/// [`report_queue_depths`].
+pub(crate) fn report_live_queue_depths(report: &mut dyn FnMut(u64, String)) {
+    let mut procs = LIVE_PROCS.lock().expect("should not be poisoned");
+    report_queue_depths(&mut procs, report);
 }
 
 use crate::monitor::EndpointId;
@@ -899,6 +939,11 @@ impl Proc {
             ._attached_proc_guard
             .set(guard)
             .expect("fresh ProcState's attached-proc guard slot is empty");
+        register_live_proc(
+            &mut LIVE_PROCS.lock().expect("should not be poisoned"),
+            proc.downgrade(),
+        );
+        LazyLock::force(&ACTOR_MESSAGE_QUEUE_SIZE);
         proc
     }
 
@@ -3259,11 +3304,9 @@ impl<A: Actor> Instance<A> {
     }
 
     fn enqueue_runtime_work(&self, work: WorkCell<A>) -> Result<(), ActorError> {
-        let actor_id_str = self.self_addr().to_string();
         account_enqueue(
             &self.inner.cell.inner.queue_depth,
             &self.inner.proc.state().queue_stats,
-            &actor_id_str,
         );
         let result = self
             .inner
@@ -3275,7 +3318,6 @@ impl<A: Actor> Instance<A> {
             account_cancel_enqueue(
                 &self.inner.cell.inner.queue_depth,
                 &self.inner.proc.state().queue_stats,
-                &actor_id_str,
             );
         }
         result.map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))
@@ -3701,7 +3743,7 @@ impl<A: Actor> Instance<A> {
                 }
                 work = work_rx.recv() => {
                     ACTOR_MESSAGES_RECEIVED.add(1, metric_pairs);
-                    account_dequeue(&self.inner.cell.inner.queue_depth, &self.inner.proc.state().queue_stats, &actor_id_str);
+                    account_dequeue(&self.inner.cell.inner.queue_depth, &self.inner.proc.state().queue_stats);
                     let _timer = ACTOR_MESSAGE_HANDLER_DURATION.start(metric_pairs);
                     let work = work.expect("inconsistent work queue state");
                     if let Err(err) = work.handle(actor, self).await {
@@ -4338,10 +4380,9 @@ struct InstanceCellState {
 
     /// Current actor work-queue depth.
     ///
-    /// Two consumers of one accounting path (PD-5e): this field is
-    /// the introspection-readable state; the OTel
-    /// `ACTOR_MESSAGE_QUEUE_SIZE` counter is the telemetry export.
-    /// Both are updated together by `account_enqueue` /
+    /// The single source of per-actor queue depth (PD-5e): read by
+    /// introspection and, at collection time, by the OTel
+    /// `ACTOR_MESSAGE_QUEUE_SIZE` gauge. Updated by `account_enqueue` /
     /// `account_dequeue`.
     ///
     /// Shared with `HandlerPorts<A>`: incremented at enqueue in the send
@@ -5365,14 +5406,14 @@ impl<A: Actor> HandlerPorts<A> {
                     // the enqueue, underflowing `running_total`. On send
                     // failure, `account_cancel_enqueue` rolls back the
                     // counters so `queue_depth` does not drift.
-                    account_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
+                    account_enqueue(&enqueue_depth, &enqueue_proc_stats);
                     // TODO: return the message contained in the error instead of dropping them when converting
                     // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
                     let result = workq
                         .send(SequencedEnvelope::new(seq_info, sender, work))
                         .map_err(anyhow::Error::from);
                     if result.is_err() {
-                        account_cancel_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
+                        account_cancel_enqueue(&enqueue_depth, &enqueue_proc_stats);
                     }
                     result
                 };
@@ -9570,6 +9611,101 @@ mod tests {
         );
     }
 
+    fn walk_queue_depths(procs: &mut Vec<WeakProc>) -> Vec<(u64, String)> {
+        let mut reported = Vec::new();
+        report_queue_depths(procs, &mut |depth, actor_id| {
+            reported.push((depth, actor_id))
+        });
+        reported
+    }
+
+    #[async_timed_test(timeout_secs = 10)]
+    async fn test_queue_depth_walk_reports_only_actors_with_queued_messages() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let busy = proc.spawn_with_label("qd_busy", TestActor);
+        let _idle = proc.spawn_with_label("qd_idle", TestActor);
+        let busy_ref: crate::ActorRef<TestActor> = busy.bind();
+        let busy_id = busy_ref.actor_addr().clone();
+        let busy_cell = proc.get_instance(&busy_id).expect("actor must exist");
+        let mut procs = vec![proc.downgrade()];
+
+        // Block the busy actor in a handler, then queue a second message
+        // behind it.
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let (gate_tx, gate_rx) = oneshot::channel::<()>();
+        busy.wait(&client, reply_tx, gate_rx).await.unwrap();
+        reply_rx.await.unwrap();
+        let (reply2_tx, reply2_rx) = oneshot::channel();
+        busy.reply(&client, reply2_tx).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let depth = busy_cell.queue_depth();
+        assert!(depth >= 1, "expected a queued message, got depth {depth}");
+        let expected = vec![(depth, busy_id.to_string())];
+        assert_eq!(
+            walk_queue_depths(&mut procs),
+            expected,
+            "only the busy actor is reported, at its queue depth"
+        );
+        assert_eq!(
+            walk_queue_depths(&mut procs),
+            expected,
+            "a stalled actor is reported again with no message activity"
+        );
+
+        let _ = gate_tx.send(());
+        reply2_rx.await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            walk_queue_depths(&mut procs),
+            vec![],
+            "a drained actor is not reported"
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 10)]
+    async fn test_queue_depth_walk_prunes_dropped_procs() {
+        let live = Proc::isolated();
+        let dropped = Proc::isolated();
+        let mut procs = vec![live.downgrade(), dropped.downgrade()];
+        drop(dropped);
+
+        walk_queue_depths(&mut procs);
+
+        assert_eq!(procs.len(), 1, "the dropped proc is pruned");
+        assert!(procs[0].ptr_eq(&live.downgrade()), "the live proc is kept");
+    }
+
+    #[async_timed_test(timeout_secs = 10)]
+    async fn test_register_live_proc_prunes_dropped_procs_without_a_walk() {
+        let live = Proc::isolated();
+        let mut procs = vec![live.downgrade()];
+        for _ in 0..3 {
+            let proc = Proc::isolated();
+            register_live_proc(&mut procs, proc.downgrade());
+            drop(proc);
+        }
+        assert_eq!(
+            procs.len(),
+            2,
+            "only the live proc and the proc dropped since the last registration remain"
+        );
+
+        let newest = Proc::isolated();
+        register_live_proc(&mut procs, newest.downgrade());
+
+        assert_eq!(procs.len(), 2, "the dropped proc is pruned");
+        assert!(
+            procs[0].ptr_eq(&live.downgrade()),
+            "the first live proc is kept"
+        );
+        assert!(
+            procs[1].ptr_eq(&newest.downgrade()),
+            "the new proc is added"
+        );
+    }
+
     // Test-only Named message + dedicated actor with explicit handler
     // export, so the integration test can bind the BufferTestMsg
     // handler port (`handle.bind()`) and drive ordered traffic through
@@ -9946,8 +10082,8 @@ mod tests {
 
         // t=1000: enqueue two items.
         FAKE_NOW.store(1000, Ordering::Relaxed);
-        account_enqueue(&depth, &stats, "a");
-        account_enqueue(&depth, &stats, "a");
+        account_enqueue(&depth, &stats);
+        account_enqueue(&depth, &stats);
         assert_eq!(stats.running_total(), 2);
         assert_eq!(stats.high_water_mark(), 2);
 
@@ -9958,7 +10094,7 @@ mod tests {
         // t=3000: dequeue one item. Queue still non-zero (1 left).
         // This should refresh the timestamp to 3000.
         FAKE_NOW.store(3000, Ordering::Relaxed);
-        account_dequeue(&depth, &stats, "a");
+        account_dequeue(&depth, &stats);
         assert_eq!(stats.running_total(), 1);
 
         // t=4000: read age — should be 1000ms (4000 - 3000), not
@@ -9971,7 +10107,7 @@ mod tests {
         // prev_total was 1, so prev_total > 1 is false — timestamp
         // is NOT refreshed. It stays at 3000.
         FAKE_NOW.store(5000, Ordering::Relaxed);
-        account_dequeue(&depth, &stats, "a");
+        account_dequeue(&depth, &stats);
         assert_eq!(stats.running_total(), 0);
 
         // t=6000: age should be 3000ms (6000 - 3000).
@@ -9992,11 +10128,11 @@ mod tests {
         let stats = ProcQueueStats::new();
         let depth = Arc::new(AtomicU64::new(0));
 
-        account_enqueue(&depth, &stats, "a");
+        account_enqueue(&depth, &stats);
         assert_eq!(stats.running_total(), 1);
         assert_eq!(depth.load(Ordering::Relaxed), 1);
 
-        account_cancel_enqueue(&depth, &stats, "a");
+        account_cancel_enqueue(&depth, &stats);
         assert_eq!(
             stats.running_total(),
             0,
@@ -10013,7 +10149,7 @@ mod tests {
 
         // A subsequent enqueue must not observe underflow: fetch_add(1) + 1
         // would panic in debug builds if running_total had wrapped to u64::MAX.
-        account_enqueue(&depth, &stats, "a");
+        account_enqueue(&depth, &stats);
         assert_eq!(stats.running_total(), 1);
     }
 
