@@ -515,6 +515,27 @@ class GetMessageStatsTest(_DbTestBase):
         total = db.raw_query("SELECT COUNT(*) AS n FROM messages")[0]["n"]
         self.assertEqual(sum(e["total"] for e in endpoints), total)
 
+    def test_endpoints_match_distinct_id_counts(self):
+        """Plain counts equal the distinct-id counts over the LEFT JOIN."""
+        expected = {
+            (row["endpoint"] or "(none)"): (row["total"], row["completed"])
+            for row in db.raw_query(
+                "SELECT m.endpoint AS endpoint, COUNT(DISTINCT m.id) AS total,"
+                " COUNT(DISTINCT CASE WHEN LOWER(e.status) = 'complete'"
+                " THEN m.id END) AS completed"
+                " FROM messages m"
+                " LEFT JOIN message_status_events e ON e.message_id = m.id"
+                " GROUP BY m.endpoint"
+            )
+        }
+        endpoints = db.get_message_stats()["endpoints"]
+        self.assertEqual(
+            {e["endpoint"]: (e["total"], e["completed"]) for e in endpoints},
+            expected,
+        )
+        totals = [e["total"] for e in endpoints]
+        self.assertEqual(totals, sorted(totals, reverse=True))
+
     def test_pairs_are_string_tuples(self):
         pairs = db.get_message_stats()["pairs"]
         self.assertGreater(len(pairs), 0)
