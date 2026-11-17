@@ -14,7 +14,6 @@
 //! with a demuxing reader and a shared, mutex-protected writer.
 
 use std::any::type_name;
-use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::fmt;
 use std::io;
@@ -324,36 +323,11 @@ impl<R: AsyncRead + Unpin + Send, W> Mux<R, W> {
     }
 }
 
-/// A message queued for dispatch to a writer but not yet serialized.
-/// Used in the multi-stream sender to shift serialization cost off the
-/// single dispatcher task and onto the per-stream writer tasks, which
-/// can serialize in parallel.
-pub(super) struct PendingMessage<M: RemoteMessage> {
-    pub(super) seq: u64,
-    pub(super) message: M,
-    pub(super) received_at: Instant,
-    pub(super) completion: CompletionSink<M>,
-}
-
-/// Which connections of a session a queued frame has been written to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Written {
-    /// The frame has not been written to any connection.
-    Never,
-    /// The frame has been written, possibly in part, to the current
-    /// connection only.
-    Current,
-    /// The frame has been written to an earlier connection, whose peer may
-    /// have delivered it.
-    Earlier,
-}
-
 pub(super) struct QueuedMessage<M: RemoteMessage> {
     pub(super) seq: u64,
     pub(super) message: serde_multipart::Message,
     pub(super) received_at: Instant,
     pub(super) sent_at: Option<tokio::time::Instant>,
-    pub(super) written: Written,
     pub(super) completion: CompletionSink<M>,
 }
 
@@ -504,6 +478,10 @@ impl<M: RemoteMessage> Outbox<M> {
         self.deque.is_empty()
     }
 
+    pub(super) fn front_message(&self) -> Option<serde_multipart::Message> {
+        self.deque.front().map(|msg| msg.message.clone())
+    }
+
     pub(super) fn front_size(&self) -> Option<usize> {
         self.deque.front().map(|msg| msg.message.frame_len())
     }
@@ -561,7 +539,6 @@ impl<M: RemoteMessage> Outbox<M> {
             message,
             received_at,
             sent_at: None,
-            written: Written::Never,
             completion,
         });
         self.next_seq += 1;
@@ -718,18 +695,11 @@ pub(super) struct Deliveries<M: RemoteMessage> {
 }
 
 impl<M: RemoteMessage> Deliveries<M> {
-    /// Move all unacked messages back to the outbox for retransmission,
-    /// and mark every frame written so far as written to an earlier
-    /// connection. Called before each connection of the session.
+    /// Move all unacked messages back to the outbox for retransmission.
     /// Preserves `largest_acked`.
     pub(super) fn requeue_unacked(&mut self) {
         let old_deque = std::mem::replace(&mut self.unacked.deque, MessageDeque(VecDeque::new()));
         self.outbox.requeue_unacked(old_deque);
-        for message in self.outbox.deque.iter_mut() {
-            if message.written == Written::Current {
-                message.written = Written::Earlier;
-            }
-        }
     }
 
     /// Return the instant at which the earliest queued message (outbox or
@@ -770,12 +740,8 @@ pub(super) enum RecvLoopError {
     Io(anyhow::Error),
     /// Cancellation was requested.
     Cancelled,
-    /// Out-of-sequence message received after earlier messages of the
-    /// session were delivered.
+    /// Out-of-sequence message received.
     SequenceError(String),
-    /// Out-of-sequence message received before any message of the session
-    /// was delivered: the receiver has no record of the session.
-    UnknownSession(String),
 }
 
 impl fmt::Display for RecvLoopError {
@@ -784,14 +750,25 @@ impl fmt::Display for RecvLoopError {
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::Cancelled => write!(f, "cancelled"),
             Self::SequenceError(e) => write!(f, "sequence error: {e}"),
-            Self::UnknownSession(e) => write!(f, "unknown session: {e}"),
         }
     }
 }
 
-/// Inner receive protocol loop: read message frames, validate
-/// sequence numbers, deliver to the application, and periodically
-/// send acks. Runs on a single physical connection.
+/// How a receive loop treats sequence numbers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Sequencing {
+    /// An ordered session: a message numbered past the next expected one
+    /// is an error.
+    Ordered,
+    /// One stream of an unordered session: a message numbered past the
+    /// next expected one is delivered, and each connection begins by
+    /// re-acknowledging what the stream has delivered.
+    Unordered,
+}
+
+/// Inner receive protocol loop of an ordered session: read message
+/// frames, validate sequence numbers, deliver to the application, and
+/// periodically send acks. Runs on a single physical connection.
 pub(super) async fn recv_connected<
     M: RemoteMessage,
     R: AsyncRead + Unpin + Send,
@@ -801,12 +778,37 @@ pub(super) async fn recv_connected<
     deliver_tx: &mpsc::Sender<M>,
     next: &mut Next,
 ) -> Result<(), RecvLoopError> {
+    recv_sequenced(stream, deliver_tx, next, Sequencing::Ordered).await
+}
+
+/// Receive protocol loop for one connection of a session or stream,
+/// under `sequencing`. A message numbered below `next.seq` is a
+/// duplicate and is dropped. Acks are cumulative: `Ack(n)` covers every
+/// message numbered `n` or below.
+pub(super) async fn recv_sequenced<
+    M: RemoteMessage,
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+>(
+    stream: &TaggedStream<R, W>,
+    deliver_tx: &mpsc::Sender<M>,
+    next: &mut Next,
+    sequencing: Sequencing,
+) -> Result<(), RecvLoopError> {
     let ack_time_interval = hyperactor_config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
     let ack_msg_interval: u64 =
         hyperactor_config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
 
     let mut last_ack_time = tokio::time::Instant::now();
     let mut pending_ack: Option<(Completion<W, Bytes>, u64)> = None;
+
+    // The ack for what an earlier connection delivered may have been
+    // lost with that connection.
+    if sequencing == Sequencing::Unordered && next.seq > 0 {
+        let ack = serialize_response(NetRxResponse::Ack(next.seq - 1))
+            .map_err(|e| RecvLoopError::Io(e.into()))?;
+        pending_ack = Some((stream.write(ack), next.seq));
+    }
 
     loop {
         let ack_behind = next.ack + ack_msg_interval <= next.seq
@@ -854,15 +856,12 @@ pub(super) async fn recv_connected<
                         tracing::debug!(seq, next_seq = next.seq, "ignoring retransmit");
                     }
                     Ok(Frame::Message(seq, msg)) => {
-                        if seq > next.seq {
+                        if seq > next.seq && sequencing == Sequencing::Ordered {
                             let error_msg = format!(
                                 "out-of-sequence message, expected seq {}, got {}",
                                 next.seq, seq
                             );
                             tracing::error!(seq, next_seq = next.seq, "{}", error_msg);
-                            if next.seq == 0 {
-                                return Err(RecvLoopError::UnknownSession(error_msg));
-                            }
                             return Err(RecvLoopError::SequenceError(error_msg));
                         }
                         deliver_tx
@@ -883,96 +882,6 @@ pub(super) async fn recv_connected<
     }
 }
 
-/// Multi-stream receive protocol loop: read frames, deliver them
-/// out-of-order to `deliver_tx`, record seqs into the shared
-/// [`AckWatermark`], and emit acks when the watermark's policy says
-/// so. Runs on a single physical connection; one instance per stream
-/// of a multi-stream session, all sharing the same `ack_watermark`.
-///
-/// Cancel-safe — caller wraps in a `select!` with the cancel branch.
-pub(super) async fn multi_stream_recv_connected<
-    M: RemoteMessage,
-    R: AsyncRead + Unpin + Send,
-    W: AsyncWrite + Unpin + Send,
->(
-    stream: &TaggedStream<R, W>,
-    ack_watermark: &tokio::sync::Mutex<AckWatermark>,
-    deliver_tx: &mpsc::Sender<M>,
-) -> Result<(), RecvLoopError> {
-    let mut pending_ack: Option<Completion<W, Bytes>> = None;
-    // Tracked alongside `pending_ack` so we can `commit` on
-    // successful write.
-    let mut pending_ack_val: Option<u64> = None;
-
-    loop {
-        // Consolidated watermark access: decide whether to emit an ack
-        // and how long to sleep until the next timer tick.
-        let (maybe_ack, sleep_interval) = {
-            let mut w = ack_watermark.lock().await;
-            let ack = if pending_ack.is_none() {
-                w.poll()
-            } else {
-                None
-            };
-            (ack, w.interval())
-        };
-
-        if let Some(ack_val) = maybe_ack {
-            let ack = serialize_response(NetRxResponse::Ack(ack_val))
-                .map_err(|e| RecvLoopError::Io(e.into()))?;
-            pending_ack = Some(stream.write(ack));
-            pending_ack_val = Some(ack_val);
-        }
-
-        tokio::select! {
-            biased;
-
-            // Drive ack write to completion.
-            result = async { pending_ack.as_mut().unwrap().drive().await },
-                if pending_ack.is_some() => {
-                match result {
-                    Ok(()) => {
-                        if let Some(val) = pending_ack_val.take() {
-                            ack_watermark.lock().await.commit(val);
-                        }
-                        pending_ack = None;
-                    }
-                    Err(e) => return Err(RecvLoopError::Io(e.into())),
-                }
-            }
-
-            // Ack timer tick: loop back so we can re-poll the watermark.
-            // Guarded on `pending_ack.is_none()` to avoid spinning while
-            // a write is mid-drive.
-            _ = tokio::time::sleep(sleep_interval), if pending_ack.is_none() => {}
-
-            bytes_result = stream.next() => {
-                let bytes = match bytes_result {
-                    Ok(Some(bytes)) => bytes,
-                    Ok(None) => return Ok(()),
-                    Err(e) => return Err(RecvLoopError::Io(e.into())),
-                };
-
-                let message = serde_multipart::Message::from_framed(bytes)
-                    .map_err(|e| RecvLoopError::Io(e.into()))?;
-                match serde_multipart::deserialize_bincode::<Frame<M>>(message) {
-                    Ok(Frame::Message(seq, msg)) => {
-                        ack_watermark.lock().await.record(seq);
-                        deliver_tx.send(msg).await.map_err(|_| {
-                            RecvLoopError::Io(anyhow::anyhow!("deliver channel closed"))
-                        })?;
-                    }
-                    Err(e) => {
-                        return Err(RecvLoopError::Io(
-                            anyhow::Error::from(e).context("deserialize multi-stream message"),
-                        ));
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Error from the send protocol loop. An `Ok(())` from
 /// [`send_connected`] indicates normal connection close (EOF).
 pub(super) enum SendLoopError {
@@ -982,9 +891,6 @@ pub(super) enum SendLoopError {
     AppClosed,
     /// Server rejected the connection.
     Rejected(String),
-    /// Server had no record of the session and delivered none of the
-    /// frames written on the connection.
-    UnknownSession(String),
     /// Server closed the channel.
     ServerClosed,
     /// Delivery timeout on oldest unacked message.
@@ -999,7 +905,6 @@ impl fmt::Display for SendLoopError {
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::AppClosed => write!(f, "application closed"),
             Self::Rejected(r) => write!(f, "rejected: {r}"),
-            Self::UnknownSession(r) => write!(f, "unknown session: {r}"),
             Self::ServerClosed => write!(f, "server closed"),
             Self::DeliveryTimeout => write!(f, "delivery timeout"),
             Self::OversizedFrame { size, max } => write!(
@@ -1023,333 +928,6 @@ pub(super) struct Next {
 impl fmt::Display for Next {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "(seq: {}, ack: {})", self.seq, self.ack)
-    }
-}
-
-/// Tracks the ack "watermark" across multiple streams — the highest
-/// sequence number N such that all of 0..=N have been received — and
-/// encapsulates the ack-emission policy (send every N messages, or
-/// after a time interval, whichever comes first).
-///
-/// Multiple streams of the same session all call [`record`](Self::record)
-/// as they receive frames and periodically call [`poll`](Self::poll)
-/// to find out whether an ack should be sent now. `poll` advances
-/// internal state so that two streams racing won't both emit the same
-/// ack value.
-#[derive(Debug)]
-pub(super) struct AckWatermark {
-    /// Sequence numbers received ahead of the contiguous frontier.
-    received: BTreeSet<u64>,
-    /// Highest N such that all 0..=N have been received, or `None`
-    /// if no messages have been received yet.
-    highest_contiguous: Option<u64>,
-
-    // --- Ack emission policy. ---
-    /// Send an ack after this many received messages since the last
-    /// emission.
-    ack_msg_interval: u64,
-    /// Send an ack after this much wall time since the last emission,
-    /// even if `ack_msg_interval` has not been hit.
-    ack_time_interval: Duration,
-    /// Last ack value [`poll`](Self::poll) handed out, or `None` if no
-    /// ack has been emitted yet.
-    last_reported: Option<u64>,
-    /// Highest ack value the caller confirmed via
-    /// [`commit`](Self::commit) was written to the wire. Gates
-    /// [`highest_uncommitted`](Self::highest_uncommitted) so a poll
-    /// whose write failed gets retried on cleanup.
-    last_committed: Option<u64>,
-    /// Messages recorded since the last emission.
-    msgs_since_report: u64,
-    /// When the last emission was claimed.
-    last_report_time: Instant,
-}
-
-impl AckWatermark {
-    pub fn new(ack_msg_interval: u64, ack_time_interval: Duration) -> Self {
-        Self {
-            received: BTreeSet::new(),
-            highest_contiguous: None,
-            ack_msg_interval,
-            ack_time_interval,
-            last_reported: None,
-            last_committed: None,
-            msgs_since_report: 0,
-            last_report_time: Instant::now(),
-        }
-    }
-
-    /// Record that `seq` has been received. Returns the current
-    /// highest contiguous sequence number (the current watermark),
-    /// or `None` if nothing contiguous has been received yet.
-    pub fn record(&mut self, seq: u64) -> Option<u64> {
-        let next_expected = self.highest_contiguous.map_or(0, |h| h + 1);
-        if seq == next_expected {
-            // Extends the contiguous run.
-            let mut cur = seq;
-            // Drain any buffered sequences that extend it further.
-            while self.received.first().copied() == Some(cur + 1) {
-                self.received.pop_first();
-                cur += 1;
-            }
-            self.highest_contiguous = Some(cur);
-            self.msgs_since_report += 1;
-        } else if seq > next_expected {
-            // Out of order — buffer it.
-            if self.received.insert(seq) {
-                self.msgs_since_report += 1;
-            }
-        }
-        // seq < next_expected is a duplicate — ignore.
-        self.highest_contiguous
-    }
-
-    /// If an ack is due (either `ack_msg_interval` messages have been
-    /// recorded or `ack_time_interval` has elapsed) and the watermark
-    /// has advanced beyond the last emitted ack, return the new ack
-    /// value and commit internal bookkeeping so subsequent pollers
-    /// won't re-emit the same value. Otherwise return `None`.
-    ///
-    /// The caller is responsible for actually writing the returned
-    /// ack onto a stream.
-    pub fn poll(&mut self) -> Option<u64> {
-        if self.msgs_since_report == 0 {
-            return None;
-        }
-        let msg_due = self.msgs_since_report >= self.ack_msg_interval;
-        let time_due = self.last_report_time.elapsed() >= self.ack_time_interval;
-        if !msg_due && !time_due {
-            return None;
-        }
-        let watermark = self.highest_contiguous?;
-        if self.last_reported.is_some_and(|r| watermark <= r) {
-            return None;
-        }
-        self.last_reported = Some(watermark);
-        self.msgs_since_report = 0;
-        self.last_report_time = Instant::now();
-        Some(watermark)
-    }
-
-    /// Record that an ack covering up to `seq` has been written to
-    /// the wire. Monotonic; idempotent on same-value calls.
-    /// Advances [`highest_uncommitted`](Self::highest_uncommitted)'s
-    /// gate so cleanup paths skip work already on the wire.
-    pub fn commit(&mut self, seq: u64) {
-        if self.last_committed.is_none_or(|c| seq > c) {
-            self.last_committed = Some(seq);
-        }
-    }
-
-    /// The highest seq observed but not yet committed, or `None` if
-    /// nothing observed since the last commit. Pure read: every
-    /// concurrent caller sees the same value, so each multi-stream
-    /// stream emits a covering ack on its own wire. Gates on
-    /// `last_committed` (not `last_reported`) so a value handed out
-    /// by a `poll` whose write failed is still surfaced. The value
-    /// is `max(max(received), highest_contiguous)`, which can exceed
-    /// the contiguous frontier when there are gaps — at terminal
-    /// cleanup the session is tearing down anyway, so acking past
-    /// gaps is acceptable.
-    pub fn highest_uncommitted(&self) -> Option<u64> {
-        let max_seen = self
-            .received
-            .iter()
-            .next_back()
-            .copied()
-            .into_iter()
-            .chain(self.highest_contiguous)
-            .max()?;
-        if self.last_committed.is_some_and(|c| max_seen <= c) {
-            return None;
-        }
-        Some(max_seen)
-    }
-
-    /// Duration until [`poll`](Self::poll) should next be invoked to
-    /// check the time-based emission condition. Callers should sleep
-    /// for at most this long before calling `poll` again. When no
-    /// messages have been recorded since the last emission, returns a
-    /// long duration since there's no reason to wake on the timer.
-    pub fn interval(&self) -> Duration {
-        if self.msgs_since_report == 0 {
-            // Nothing pending — only wake on incoming messages.
-            return Duration::from_secs(3600);
-        }
-        self.ack_time_interval
-            .saturating_sub(self.last_report_time.elapsed())
-    }
-
-    /// The current watermark (highest contiguous seq received), or
-    /// `None` before any message has been recorded. Primarily used by
-    /// tests; production emission goes through [`poll`](Self::poll).
-    #[cfg(test)]
-    pub fn ack_value(&self) -> Option<u64> {
-        self.highest_contiguous
-    }
-}
-
-#[cfg(test)]
-mod ack_watermark_tests {
-    use std::time::Duration;
-
-    use super::AckWatermark;
-
-    fn watermark() -> AckWatermark {
-        AckWatermark::new(u64::MAX, Duration::from_secs(3600))
-    }
-
-    #[test]
-    fn in_order() {
-        let mut t = watermark();
-        assert_eq!(t.ack_value(), None);
-        assert_eq!(t.record(0), Some(0));
-        assert_eq!(t.record(1), Some(1));
-        assert_eq!(t.record(2), Some(2));
-        assert_eq!(t.ack_value(), Some(2));
-    }
-
-    #[test]
-    fn out_of_order() {
-        let mut t = watermark();
-        assert_eq!(t.record(0), Some(0));
-        assert_eq!(t.record(2), Some(0)); // gap at 1
-        assert_eq!(t.record(3), Some(0)); // still gap at 1
-        assert_eq!(t.record(1), Some(3)); // fills gap, contiguous through 3
-    }
-
-    #[test]
-    fn duplicate() {
-        let mut t = watermark();
-        assert_eq!(t.record(0), Some(0));
-        assert_eq!(t.record(0), Some(0)); // duplicate, no change
-        assert_eq!(t.record(1), Some(1));
-    }
-
-    #[test]
-    fn starts_empty() {
-        let t = watermark();
-        assert_eq!(t.ack_value(), None);
-    }
-
-    #[test]
-    fn first_record_out_of_order() {
-        let mut t = watermark();
-        // First message isn't seq 0 — watermark stays None until we
-        // see seq 0.
-        assert_eq!(t.record(5), None);
-        assert_eq!(t.record(7), None);
-        assert_eq!(t.record(0), Some(0));
-    }
-
-    #[test]
-    fn poll_msg_threshold() {
-        let mut t = AckWatermark::new(3, Duration::from_secs(3600));
-        assert_eq!(t.poll(), None); // nothing recorded
-        t.record(0);
-        t.record(1);
-        assert_eq!(t.poll(), None); // 2 < 3
-        t.record(2);
-        assert_eq!(t.poll(), Some(2)); // threshold hit
-        assert_eq!(t.poll(), None); // already emitted, nothing new
-        t.record(3);
-        t.record(4);
-        assert_eq!(t.poll(), None); // 2 < 3 since last emission
-    }
-
-    #[test]
-    fn poll_does_not_duplicate() {
-        let mut t = AckWatermark::new(1, Duration::from_secs(3600));
-        t.record(0);
-        assert_eq!(t.poll(), Some(0));
-        // No new messages — watermark unchanged. Even though time/msg
-        // could be due, poll returns None.
-        assert_eq!(t.poll(), None);
-        t.record(1);
-        assert_eq!(t.poll(), Some(1));
-    }
-
-    #[test]
-    fn highest_uncommitted_emits_below_policy_threshold() {
-        // High threshold so `poll` returns None; cleanup surfaces
-        // the watermark anyway since nothing was committed.
-        let mut t = AckWatermark::new(1000, Duration::from_secs(3600));
-        t.record(0);
-        t.record(1);
-        assert_eq!(t.poll(), None);
-        assert_eq!(t.highest_uncommitted(), Some(1));
-    }
-
-    #[test]
-    fn highest_uncommitted_returns_none_when_nothing_recorded() {
-        let t = watermark();
-        assert_eq!(t.highest_uncommitted(), None);
-    }
-
-    #[test]
-    fn highest_uncommitted_surfaces_out_of_order_frames() {
-        // No contiguous run yet, but seq 5 was received. At cleanup
-        // we still surface it so the wire emits a covering ack.
-        let mut t = watermark();
-        t.record(5);
-        assert_eq!(t.highest_uncommitted(), Some(5));
-    }
-
-    #[test]
-    fn highest_uncommitted_returns_none_when_already_committed() {
-        let mut t = watermark();
-        t.record(0);
-        t.record(1);
-        t.commit(1);
-        assert_eq!(t.highest_uncommitted(), None);
-    }
-
-    #[test]
-    fn highest_uncommitted_surfaces_uncommitted_after_failed_poll() {
-        // `poll` advances `last_reported` but not `last_committed`.
-        // If the caller's write failed (no `commit`), cleanup must
-        // still surface the watermark.
-        let mut t = AckWatermark::new(1, Duration::from_secs(3600));
-        t.record(0);
-        assert_eq!(t.poll(), Some(0));
-        // No commit happened.
-        assert_eq!(t.highest_uncommitted(), Some(0));
-    }
-
-    #[test]
-    fn highest_uncommitted_returns_value_to_every_caller() {
-        // Pure read: concurrent cleanups all see the same value, so
-        // every stream emits a covering ack on its own wire.
-        let mut t = watermark();
-        t.record(0);
-        t.record(1);
-        assert_eq!(t.highest_uncommitted(), Some(1));
-        assert_eq!(t.highest_uncommitted(), Some(1));
-    }
-
-    #[test]
-    fn highest_uncommitted_surfaces_when_received_has_uncommitted_seqs() {
-        // `last_committed` covers the contiguous frontier, but a new
-        // out-of-order seq has arrived since the commit. Surface its
-        // value so the wire emits a covering ack on cleanup.
-        let mut t = watermark();
-        t.record(0);
-        t.commit(0);
-        t.record(5);
-        assert_eq!(t.highest_uncommitted(), Some(5));
-    }
-
-    #[test]
-    fn commit_is_idempotent_and_monotonic() {
-        let mut t = watermark();
-        t.record(0);
-        t.record(1);
-        t.commit(1);
-        // Older values do not regress `last_committed`.
-        t.commit(0);
-        // Same-value commits are no-ops.
-        t.commit(1);
-        assert_eq!(t.highest_uncommitted(), None);
     }
 }
 
@@ -1384,11 +962,8 @@ where
                     .try_return(Some(reason));
                 return Err(SendLoopError::OversizedFrame { size: len, max });
             }
-            let front = deliveries.outbox.deque.front_mut().expect("not empty");
-            if front.written == Written::Never {
-                front.written = Written::Current;
-            }
-            pending = Some(stream.write(front.message.clone().framed()));
+            let message = deliveries.outbox.front_message().expect("not empty");
+            pending = Some(stream.write(message.framed()));
         }
 
         tokio::select! {
@@ -1413,9 +988,6 @@ where
                             }
                             NetRxResponse::Reject(reason) => {
                                 return Err(SendLoopError::Rejected(reason));
-                            }
-                            NetRxResponse::UnknownSession(reason) => {
-                                return Err(SendLoopError::UnknownSession(reason));
                             }
                             NetRxResponse::Closed => {
                                 return Err(SendLoopError::ServerClosed);
@@ -1576,7 +1148,11 @@ impl<L: Link> Session<L, Disconnected> {
                             delay_ms = delay.as_millis() as u64,
                             "connect_by: link.next() failed, retrying after backoff"
                         );
-                        tokio::time::sleep(delay).await;
+                        tokio::select! {
+                            biased;
+                            _ = &mut sleep => {}
+                            _ = tokio::time::sleep(delay) => {}
+                        }
                         continue;
                     }
                     None => {

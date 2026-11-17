@@ -28,6 +28,7 @@
     - [MetaTLS](channels/transports/metatls.md)
   - [Frames](channels/frames.md)
   - [Network Internals](channels/net_internals.md)
+  - [Unordered Channels](channels/unordered.md)
 - [Procs](procs/index.md)
   - [Proc](procs/proc.md)
   - [Gateway](procs/gateway.md)

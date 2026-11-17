@@ -585,6 +585,146 @@ fn bench_cast_seq_mixed_contention(c: &mut Criterion) {
     group.finish();
 }
 
+// ORDERED VS UNORDERED
+
+#[derive(Clone, Copy)]
+enum Delivery {
+    Ordered,
+    Unordered,
+}
+
+impl Delivery {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Ordered => "ordered",
+            Self::Unordered => "unordered",
+        }
+    }
+
+    fn dial<M: hyperactor::RemoteMessage>(self, addr: ChannelAddr) -> channel::ChannelTx<M> {
+        match self {
+            Self::Ordered => dial::<M>(addr).unwrap(),
+            Self::Unordered => channel::unordered::dial::<M>(addr, 1).unwrap(),
+        }
+    }
+}
+
+const ORDERINGS: [Delivery; 2] = [Delivery::Ordered, Delivery::Unordered];
+
+fn cmp_transports() -> Vec<(&'static str, ChannelTransport)> {
+    vec![
+        ("local", ChannelTransport::Local),
+        ("tcp", ChannelTransport::Tcp(TcpMode::Hostname)),
+        ("unix", ChannelTransport::Unix),
+    ]
+}
+
+/// Post one message and receive it before posting the next.
+fn bench_cmp_send_receive(c: &mut Criterion) {
+    for (transport_name, transport) in cmp_transports() {
+        for size in [10_000usize, 1_000_000] {
+            let mut group = c.benchmark_group(format!("cmp_send_receive/{transport_name}/{size}"));
+            group.throughput(Throughput::Bytes(size as u64));
+            for ordering in ORDERINGS {
+                let transport = transport.clone();
+                group.bench_function(ordering.name(), move |b| {
+                    let mut b = b.to_async(new_runtime());
+                    let transport = &transport;
+                    b.iter_custom(|iters| async move {
+                        let (addr, mut rx) =
+                            serve::<Message>(ChannelAddr::any(transport.clone())).unwrap();
+                        let tx = ordering.dial::<Message>(addr);
+                        let msg = Message::new(0, size);
+                        let start = Instant::now();
+                        for _ in 0..iters {
+                            tx.post(msg.clone());
+                            rx.recv().await.unwrap();
+                        }
+                        start.elapsed()
+                    });
+                });
+            }
+            group.finish();
+        }
+    }
+}
+
+/// Post a burst of messages and wait until the receiver has them all and
+/// the last one is acknowledged.
+fn bench_cmp_throughput(c: &mut Criterion) {
+    const BURST: u64 = 10_000;
+    for (transport_name, transport) in cmp_transports() {
+        let mut group = c.benchmark_group(format!("cmp_throughput/{transport_name}"));
+        group.throughput(Throughput::Elements(BURST));
+        group.sample_size(20);
+        for ordering in ORDERINGS {
+            let transport = transport.clone();
+            group.bench_function(ordering.name(), move |b| {
+                let mut b = b.to_async(new_runtime());
+                let transport = &transport;
+                b.iter_custom(|iters| async move {
+                    let (addr, mut rx) =
+                        serve::<Message>(ChannelAddr::any(transport.clone())).unwrap();
+                    let tx = ordering.dial::<Message>(addr);
+                    let msg = Message::new(0, 1024);
+                    let start = Instant::now();
+                    for _ in 0..iters {
+                        let mut last = None;
+                        for _ in 0..BURST {
+                            last = Some(tx.try_post(msg.clone()));
+                        }
+                        for _ in 0..BURST {
+                            rx.recv().await.unwrap();
+                        }
+                        last.unwrap().await.unwrap();
+                    }
+                    start.elapsed()
+                });
+            });
+        }
+        group.finish();
+    }
+}
+
+/// Round trips between two processes' worth of channels over Unix sockets.
+fn bench_cmp_ping_pong(c: &mut Criterion) {
+    #[derive(Clone, Debug, Named, Serialize, Deserialize)]
+    struct Ball(Part);
+
+    for size in [1usize, 1_000_000] {
+        let mut group = c.benchmark_group(format!("cmp_ping_pong/{size}"));
+        group.throughput(Throughput::Bytes((size * 2) as u64));
+        for ordering in ORDERINGS {
+            group.bench_function(ordering.name(), move |b| {
+                let mut b = b.to_async(new_runtime());
+                b.iter_custom(|iters| async move {
+                    let (client_addr, mut client_rx) =
+                        serve::<Ball>(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+                    let (server_addr, mut server_rx) =
+                        serve::<Ball>(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+                    let server = tokio::spawn(async move {
+                        let client_tx = ordering.dial::<Ball>(client_addr);
+                        while let Ok(ball) = server_rx.recv().await {
+                            client_tx.post(ball);
+                        }
+                    });
+                    let server_tx = ordering.dial::<Ball>(server_addr);
+                    let ball = Ball(Part::from(vec![0u8; size]));
+                    let start = Instant::now();
+                    for _ in 0..iters {
+                        server_tx.post(ball.clone());
+                        client_rx.recv().await.unwrap();
+                    }
+                    let elapsed = start.elapsed();
+                    server.abort();
+                    elapsed
+                });
+            });
+        }
+        group.finish();
+    }
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().without_plots();
@@ -596,6 +736,9 @@ criterion_group! {
     bench_cast_seq_assignment,
     bench_cast_seq_concurrent_contention,
     bench_cast_seq_mixed_contention,
+    bench_cmp_send_receive,
+    bench_cmp_throughput,
+    bench_cmp_ping_pong,
 }
 
 criterion_main!(benches);

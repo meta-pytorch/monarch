@@ -3516,7 +3516,6 @@ version = "0.0.0"
 dependencies = [
  "algebra",
  "anyhow",
- "async-channel",
  "async-trait",
  "backoff",
  "bincode 2.0.1",

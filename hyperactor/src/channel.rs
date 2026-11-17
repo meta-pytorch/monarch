@@ -124,12 +124,10 @@ pub enum SendErrorReason {
         max: usize,
     },
 
-    /// The peer had no record of the session (see
-    /// [`CloseReason::UnknownSession`]), and the message was never written
-    /// on an earlier connection of the session, so no peer received it. A
-    /// new session can deliver it without risking a duplicate.
-    #[error("stale session: {0}")]
-    StaleSession(String),
+    /// The message was not acknowledged within the delivery timeout. A
+    /// server may have delivered it.
+    #[error("not acknowledged within delivery timeout {0:?}")]
+    DeliveryTimeout(std::time::Duration),
 
     /// Other human-readable context.
     #[error("{0}")]
@@ -385,23 +383,15 @@ impl<M: RemoteMessage> From<SendError<M>> for ChannelError {
 }
 
 /// Reason a [`TxStatus`] transitioned to `Closed`. Callers should branch on
-/// the typed variants for cases they care about (e.g. cache-eviction logic in
-/// `DialMailboxRouter` keys on `SequenceMismatch`); everything else falls
-/// into `Other` and is for display/logging only.
+/// the typed variants for cases they care about; everything else falls into
+/// `Other` and is for display/logging only.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CloseReason {
-    /// The peer had no record of our session: the first frame it received
-    /// was out of sequence, and it had delivered nothing for the session —
-    /// the K8s "out-of-sequence message, expected seq 0, got N" case where
-    /// the peer restarted, or dropped the `SessionId`, while we still hold
-    /// an `Outbox.next_seq` past 0. The peer delivered none of the frames
-    /// written on the rejected connection. Re-dialing produces a fresh
-    /// session that the peer accepts.
-    UnknownSession(String),
-    /// The peer rejected our session because a frame skipped ahead of the
-    /// sequence number the peer expected next, after it had delivered
-    /// earlier frames of the session. Re-dialing produces a fresh session,
-    /// but the peer may have delivered any of the unacknowledged messages.
+    /// The peer rejected our session because our sequence number did not
+    /// match what the peer's dispatcher expected — the K8s "out-of-sequence
+    /// message, expected seq 0, got N" case where the peer GC'd the
+    /// `SessionId` while we still hold an `Outbox.next_seq` past 0.
+    /// Re-dialing produces a fresh session that the peer accepts.
     SequenceMismatch(String),
     /// The peer rejected a frame whose length exceeded
     /// `config::CODEC_MAX_FRAME_LENGTH`. Re-dialing will not help — the
@@ -412,15 +402,6 @@ pub enum CloseReason {
         /// `CODEC_MAX_FRAME_LENGTH` at the time of rejection.
         max: usize,
     },
-    /// No ack arrived for the oldest unacknowledged message within
-    /// `config::MESSAGE_DELIVERY_TIMEOUT`, either because the peer stopped
-    /// acknowledging or because the link could not reconnect in time. A new
-    /// session can reach a peer that has since come back.
-    DeliveryTimeout(String),
-    /// The peer closed the channel, for example because its server shut
-    /// down. A new server may later listen at the same address, and
-    /// re-dialing reaches it with a fresh session.
-    ServerClosed(String),
     /// Any close reason the transport hasn't classified further. The string
     /// is for display/logging only — do not parse it. If a caller needs to
     /// branch on a sub-case, lift it into its own variant on this enum.
@@ -430,31 +411,11 @@ pub enum CloseReason {
 impl fmt::Display for CloseReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownSession(s) => write!(f, "stale session: {}", s),
-            Self::SequenceMismatch(s) => write!(f, "sequence mismatch: {}", s),
-            Self::DeliveryTimeout(s) => write!(f, "delivery timeout: {}", s),
+            Self::SequenceMismatch(s) => write!(f, "stale session: {}", s),
             Self::OversizedFrame { size, max } => {
                 write!(f, "oversized frame: len={size} > max={max}")
             }
-            Self::ServerClosed(s) | Self::Other(s) => f.write_str(s),
-        }
-    }
-}
-
-impl CloseReason {
-    /// The [`SendErrorReason`] reported for messages that a channel closed
-    /// for this reason never wrote to any connection.
-    pub(crate) fn send_error_reason(&self) -> SendErrorReason {
-        match self {
-            Self::UnknownSession(s) => SendErrorReason::StaleSession(s.clone()),
-            Self::OversizedFrame { size, max } => SendErrorReason::OversizedFrame {
-                len: *size,
-                max: *max,
-            },
-            Self::SequenceMismatch(_)
-            | Self::DeliveryTimeout(_)
-            | Self::ServerClosed(_)
-            | Self::Other(_) => SendErrorReason::Other(self.to_string()),
+            Self::Other(s) => f.write_str(s),
         }
     }
 }
@@ -1482,9 +1443,18 @@ impl ChannelAddr {
 /// Universal channel transmitter. Manages the link state, reconnections,
 /// etc. on top of a [`net::Link`].
 pub struct ChannelTx<M: RemoteMessage> {
-    sender: mpsc::UnboundedSender<(M, CompletionSink<M>, Instant)>,
+    sink: TxSink<M>,
     dest: ChannelAddr,
     status: watch::Receiver<TxStatus>,
+}
+
+/// Where a [`ChannelTx`] hands posted messages.
+enum TxSink<M: RemoteMessage> {
+    /// The task that drives a session.
+    Session(mpsc::UnboundedSender<(M, CompletionSink<M>, Instant)>),
+    /// The shared state of an unordered session, which its writers take
+    /// messages from directly.
+    Unordered(net::unordered::Sink<M>),
 }
 
 impl<M: RemoteMessage> fmt::Debug for ChannelTx<M> {
@@ -1507,14 +1477,18 @@ impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
             "sending message"
         );
 
+        let sender = match &self.sink {
+            TxSink::Session(sender) => sender,
+            TxSink::Unordered(sink) => return sink.post(message, completion),
+        };
         if let Err(mpsc::error::SendError((message, completion, _))) =
-            self.sender.send((message, completion, Instant::now()))
+            sender.send((message, completion, Instant::now()))
         {
             let reason = self
                 .status
                 .borrow()
                 .as_closed()
-                .map(CloseReason::send_error_reason);
+                .map(|r| SendErrorReason::Other(r.to_string()));
             completion.reject(SendError {
                 error: ChannelError::Closed,
                 message,
@@ -1607,57 +1581,37 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
 pub mod unordered {
     use super::*;
 
-    /// Dial with out-of-order delivery and N parallel streams.
+    /// Dial `addr` with `num_streams` parallel streams.
     ///
-    /// Opens N links sharing a single `SessionId` (distinct
-    /// `stream_id` in `1..=num_streams` so the server routes them
-    /// through the multi-stream receive path). Frames are
-    /// load-balanced across streams via a shared MPMC work queue —
-    /// idle writers pull next.
+    /// Opens `num_streams` links that share one `SessionId`, with
+    /// distinct stream ids in `1..=num_streams`, so the server routes
+    /// them to its unordered receive path. Each stream takes the oldest
+    /// message from a shared queue.
     ///
-    /// # Semantics (how this differs from [`super::dial`])
+    /// The returned `Tx` makes these guarantees, specified in full in
+    /// the "Unordered Channels" chapter of the hyperactor book:
     ///
-    /// Multi-stream trades several of [`super::dial`]'s delivery
-    /// guarantees for aggregate bandwidth. Use [`super::dial`] when
-    /// any of these matter:
-    ///
-    /// - **Ordering.** Messages are delivered to the receiver in
-    ///   *arrival order across streams*, not send order. Two messages
-    ///   posted back to back on the sender may reach the receiver out
-    ///   of order when they're carried on different streams.
-    ///   [`super::dial`] is strictly in-order.
-    ///
-    /// - **Retransmission on reconnect.** If a writer's connection
-    ///   drops after the bytes of a message have been written but
-    ///   before the peer acks, that message is **not retransmitted**
-    ///   on the new connection. It may be silently lost.
-    ///   [`super::dial`] re-sends all unacked messages on reconnect.
-    ///
-    /// - **Delivery timeouts.** No delivery timeout is enforced. On
-    ///   sustained peer outage, writers reconnect indefinitely
-    ///   (backoff capped at 5s); senders block in `send().await` with
-    ///   no bound. [`super::dial`] fails unacked sends after
-    ///   `MESSAGE_DELIVERY_TIMEOUT`.
-    ///
-    /// - **`Tx::send` return semantics.** On session shutdown,
-    ///   messages still in the unacked buffer have their
-    ///   `return_channel` dropped. Per the [`Tx::send`] contract,
-    ///   this makes `send().await` return `Ok(())` for messages that
-    ///   may never have been delivered — i.e. a "success" return does
-    ///   not actually confirm delivery here. [`super::dial`] delivers
-    ///   a structured `SendError` instead.
-    ///
-    /// # Ack semantics
-    ///
-    /// Receivers ack a cumulative watermark: the highest `N` such
-    /// that all of `0..=N` have been observed across all streams.
-    /// Acks may stall behind a single missing seq on a slow stream.
+    /// - Every posted message settles exactly once, within
+    ///   `MESSAGE_DELIVERY_TIMEOUT`: it is accepted after a server acks
+    ///   it, or rejected with a [`SendError`]. A message rejected with
+    ///   [`SendErrorReason::DeliveryTimeout`] may have been delivered.
+    /// - Messages may be delivered in any order.
+    /// - A server delivers each message at most once. A message whose
+    ///   ack was lost may also be delivered by a later server at the
+    ///   same address.
+    /// - No peer behavior closes the `Tx`: it reconnects, to whatever
+    ///   process serves the address, for as long as it has unsettled
+    ///   messages. Its status changes to [`TxStatus::Closed`] only after
+    ///   it is dropped and its messages have settled.
     #[track_caller]
     pub fn dial<M: RemoteMessage>(
         addr: ChannelAddr,
         num_streams: usize,
     ) -> Result<ChannelTx<M>, ChannelError> {
-        assert!(num_streams > 0);
+        assert!(
+            (1..=u8::MAX as usize).contains(&num_streams),
+            "num_streams must be in 1..=255, got {num_streams}"
+        );
         let addr = addr.into_dial_addr();
         let session_id = net::SessionId::random();
         let links: Vec<net::NetLink> = (1..=num_streams)
@@ -1670,7 +1624,7 @@ pub mod unordered {
                 )
             })
             .collect::<Result<_, _>>()?;
-        Ok(net::spawn_unordered::<M>(links))
+        Ok(net::unordered::spawn::<M>(links))
     }
 
     /// Serve a receiver that accepts unordered senders.

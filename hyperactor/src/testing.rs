@@ -16,3 +16,5 @@ pub mod pingpong;
 pub mod proc_supervison;
 /// Used to verify behaviors related to process.
 pub mod process_assertion;
+/// TCP relay for simulating peer restarts and connection loss.
+pub mod tcp_relay;

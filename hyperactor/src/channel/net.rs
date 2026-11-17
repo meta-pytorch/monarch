@@ -75,6 +75,7 @@ pub(super) mod mux;
 pub(crate) mod quic;
 pub(super) mod server;
 pub(super) mod session;
+pub(super) mod unordered;
 pub(super) mod vsock;
 pub use server::ServerHandle;
 
@@ -459,10 +460,6 @@ fn log_send_error(
             tracing::error!(dest = %dest, session_id, mode, "server rejected connection: {reason}; {link_status}");
             true
         }
-        session::SendLoopError::UnknownSession(reason) => {
-            tracing::warn!(dest = %dest, session_id, mode, "server has no record of session: {reason}; {link_status}");
-            true
-        }
         session::SendLoopError::ServerClosed => {
             tracing::info!(dest = %dest, session_id, mode, "server closed the channel; {link_status}");
             true
@@ -488,16 +485,11 @@ fn log_send_error(
 }
 
 /// Map a terminal [`session::SendLoopError`] to a typed [`CloseReason`] for
-/// the `TxStatus` watcher. Variants that callers want to branch on (e.g.
-/// `DialMailboxRouter` keys cache eviction on `UnknownSession` and
-/// `DeliveryTimeout`) get their
-/// own typed reason; the rest flatten to `Other` carrying the same
+/// the `TxStatus` watcher. Variants that callers may want to branch on get
+/// their own typed reason; the rest flatten to `Other` carrying the same
 /// `{log_id}: {e}` text used previously for logging.
 fn classify_send_loop_error(error: &session::SendLoopError, log_id: &str) -> CloseReason {
     match error {
-        session::SendLoopError::UnknownSession(reason) => {
-            CloseReason::UnknownSession(reason.clone())
-        }
         session::SendLoopError::Rejected(reason) if reason.contains("out-of-sequence message") => {
             CloseReason::SequenceMismatch(reason.clone())
         }
@@ -505,12 +497,6 @@ fn classify_send_loop_error(error: &session::SendLoopError, log_id: &str) -> Clo
             size: *size,
             max: *max,
         },
-        session::SendLoopError::DeliveryTimeout => {
-            CloseReason::DeliveryTimeout(format!("{log_id}: {error}"))
-        }
-        session::SendLoopError::ServerClosed => {
-            CloseReason::ServerClosed(format!("{log_id}: {error}"))
-        }
         _ => CloseReason::Other(format!("{log_id}: {error}")),
     }
 }
@@ -520,259 +506,13 @@ pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> super::ChannelTx<M> {
     spawn_inner::<M>(link)
 }
 
-/// Establish a multi-stream (unordered) simplex session over N
-/// links sharing the same `SessionId`. Returns a single send handle
-/// that distributes frames across streams.
-pub(crate) fn spawn_unordered<M: RemoteMessage>(
-    links: Vec<impl Link + 'static>,
-) -> super::ChannelTx<M> {
-    assert!(!links.is_empty());
-    if links.len() == 1 {
-        return spawn(links.into_iter().next().unwrap());
-    }
-
-    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-    let dest = links[0].dest();
-    let session_id = links[0].link_id();
-    let (notify, status) = watch::channel(TxStatus::Active);
-    let tx = super::ChannelTx {
-        sender,
-        dest: dest.clone(),
-        status,
-    };
-
-    let num_streams = links.len();
-
-    crate::init::get_runtime().spawn(async move {
-        // Shared MPMC work queue. The dispatcher enqueues *unserialized*
-        // messages; each writer serializes its own pulls before writing.
-        // This spreads serialization cost across all N writer tasks
-        // instead of bottlenecking on the dispatcher.
-        let (queue_tx, queue_rx) =
-            async_channel::bounded::<session::PendingMessage<M>>(num_streams * 8);
-
-        // Shared unacked buffer: any writer's ack reader can prune it.
-        // BTreeMap keyed by seq — writers insert out of order
-        // (multiple streams, interleaved), so not a VecDeque.
-        let unacked: Arc<
-            tokio::sync::Mutex<std::collections::BTreeMap<u64, session::QueuedMessage<M>>>,
-        > = Arc::new(tokio::sync::Mutex::new(std::collections::BTreeMap::new()));
-
-        let mut writer_handles: Vec<tokio::task::JoinHandle<()>> = Vec::with_capacity(num_streams);
-        let log_id = format!("session {}.{:016x}", dest, session_id.0);
-
-        for (i, link) in links.into_iter().enumerate() {
-            let dest = dest.clone();
-            let unacked = unacked.clone();
-            let queue_rx = queue_rx.clone();
-            let log_id = log_id.clone();
-
-            writer_handles.push(tokio::spawn(async move {
-                let mut session = Session::new(link);
-                let mut reconnect_backoff = ExponentialBackoffBuilder::new()
-                    .with_initial_interval(Duration::from_millis(10))
-                    .with_multiplier(2.0)
-                    .with_randomization_factor(0.1)
-                    .with_max_interval(Duration::from_secs(5))
-                    .with_max_elapsed_time(None)
-                    .build();
-
-                loop {
-                    let connected = match session.connect().await {
-                        Ok(s) => s,
-                        Err(_) => {
-                            tracing::info!(
-                                dest = %dest, stream = i,
-                                "multi-stream writer {} connect failed", i
-                            );
-                            break;
-                        }
-                    };
-                    tracing::info!(
-                        dest = %dest, stream = i, "multi-stream writer {} connected", i
-                    );
-
-                    let stream = connected.stream(INITIATOR_TO_ACCEPTOR);
-                    let connected_at = tokio::time::Instant::now();
-
-                    // Pull from the shared queue; serialize locally; write; interleave ack reads.
-                    let result: Result<(), session::SendLoopError> = async {
-                        loop {
-                            tokio::select! {
-                                biased;
-
-                                ack_result = stream.next() => {
-                                    match ack_result {
-                                        Ok(Some(buffer)) => {
-                                            let response = deserialize_response(buffer)
-                                                .map_err(|e| session::SendLoopError::Io(e.into()))?;
-                                            match response {
-                                                NetRxResponse::Ack(ack) => {
-                                                    let mut guard = unacked.lock().await;
-                                                    // Remove all entries with seq <= ack.
-                                                    let retain: std::collections::BTreeMap<u64, session::QueuedMessage<M>> = guard.split_off(&(ack + 1));
-                                                    let accepted = std::mem::replace(&mut *guard, retain);
-                                                    drop(guard);
-                                                    accepted.into_values().for_each(|queued| {
-                                                        queued.completion.accept();
-                                                    });
-                                                }
-                                                NetRxResponse::Reject(reason) => {
-                                                    return Err(session::SendLoopError::Rejected(reason));
-                                                }
-                                                NetRxResponse::UnknownSession(reason) => {
-                                                    return Err(session::SendLoopError::UnknownSession(reason));
-                                                }
-                                                NetRxResponse::Closed => {
-                                                    return Err(session::SendLoopError::ServerClosed);
-                                                }
-                                            }
-                                        }
-                                        Ok(None) => return Ok(()),
-                                        Err(e) => return Err(session::SendLoopError::Io(e.into())),
-                                    }
-                                }
-
-                                msg = queue_rx.recv() => {
-                                    let pending = match msg {
-                                        Ok(m) => m,
-                                        // Dispatcher closed the queue: clean shutdown.
-                                        Err(_) => return Ok(()),
-                                    };
-                                    let session::PendingMessage {
-                                        seq,
-                                        message,
-                                        received_at,
-                                        completion,
-                                    } = pending;
-                                    let frame = Frame::Message(seq, message);
-                                    let serialized = match serde_multipart::serialize_bincode(&frame) {
-                                        Ok(m) => m,
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "{log_id}: serialization error: {e}"
-                                            );
-                                            completion.accept();
-                                            continue;
-                                        }
-                                    };
-                                    let mut queued = session::QueuedMessage {
-                                        seq,
-                                        message: serialized,
-                                        received_at,
-                                        sent_at: None,
-                                        written: session::Written::Never,
-                                        completion,
-                                    };
-                                    let framed = queued.message.clone().framed();
-                                    stream.write(framed).drive().await.map_err(|e| {
-                                        session::SendLoopError::Io(e.into())
-                                    })?;
-                                    queued.sent_at = Some(tokio::time::Instant::now());
-                                    unacked.lock().await.insert(queued.seq, queued);
-                                }
-                            }
-                        }
-                    }
-                    .await;
-
-                    session = connected.release();
-
-                    if connected_at.elapsed() > Duration::from_secs(1) {
-                        reconnect_backoff.reset();
-                    }
-
-                    match result {
-                        Ok(()) => {
-                            if queue_rx.is_closed() {
-                                // Dispatcher is gone and queue is drained.
-                                break;
-                            }
-                            if let Some(delay) = reconnect_backoff.next_backoff() {
-                                tokio::time::sleep(delay).await;
-                            }
-                        }
-                        Err(ref e) => {
-                            if log_send_error(e, &dest, session_id.0, "multi-stream", &LinkStatus::NeverConnected) {
-                                break;
-                            }
-                            if let Some(delay) = reconnect_backoff.next_backoff() {
-                                tokio::time::sleep(delay).await;
-                            }
-                        }
-                    }
-                }
-
-                tracing::info!(
-                    dest = %dest,
-                    stream = i,
-                    "multi-stream writer {} shutting down",
-                    i,
-                );
-            }));
-        }
-
-        let cleanup_rx = queue_rx.clone();
-        // Drop our local receiver clone so the queue closes once the
-        // dispatcher's sender (queue_tx) is dropped at shutdown.
-        drop(queue_rx);
-
-        // Dispatcher: receive from app and enqueue for writers — no
-        // serialization here; the writer that pulls the item serializes
-        // it before writing.
-        let mut next_seq = 0u64;
-
-        tracing::info!(
-            %dest, session = %log_id, num_streams,
-            "multi-stream dispatcher started"
-        );
-
-        while let Some((message, completion, received_at)) = receiver.recv().await {
-            let pending = session::PendingMessage {
-                seq: next_seq,
-                message,
-                received_at,
-                completion,
-            };
-            next_seq += 1;
-
-            if let Err(async_channel::SendError(pending)) = queue_tx.send(pending).await {
-                pending.completion.accept();
-                // All writers are gone.
-                break;
-            }
-        }
-
-        // Shutdown: close the shared queue and wait for writers to drain.
-        drop(queue_tx);
-        for handle in writer_handles {
-            let _ = handle.await;
-        }
-        while let Ok(pending) = cleanup_rx.try_recv() {
-            pending.completion.accept();
-        }
-        for queued in Arc::into_inner(unacked)
-            .expect("writer handles should drop their unacked clones")
-            .into_inner()
-            .into_values()
-        {
-            queued.completion.accept();
-        }
-
-        let reason = format!("{log_id}: dispatcher closed");
-        let _ = notify.send(TxStatus::Closed(CloseReason::Other(reason)));
-    });
-
-    tx
-}
-
 fn spawn_inner<M: RemoteMessage>(link: impl Link) -> super::ChannelTx<M> {
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     let dest = link.dest();
     let session_id = link.link_id();
     let (notify, status) = watch::channel(TxStatus::Active);
     let tx = super::ChannelTx {
-        sender,
+        sink: super::TxSink::Session(sender),
         dest: dest.clone(),
         status,
     };
@@ -837,7 +577,7 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> super::ChannelTx<M> {
                         tracing::error!(
                             dest = %dest, session_id = session_id.0, "{}", error_msg
                         );
-                        break 'outer CloseReason::DeliveryTimeout(format!("{log_id}: {error_msg}"));
+                        break 'outer CloseReason::Other(format!("{log_id}: {error_msg}"));
                     }
                 },
                 None => match session.connect().await {
@@ -921,26 +661,20 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> super::ChannelTx<M> {
             dest = %dest, session_id = session_id.0, "ChannelTx closing: {reason}"
         );
 
-        // A peer that has no record of the session delivered nothing written
-        // on the rejected connection, but an earlier connection's peer may
-        // have delivered what was written to it.
-        let send_error_reason = Some(reason.send_error_reason());
-        let earlier_send_error_reason = Some(SendErrorReason::Other(reason.to_string()));
+        let send_error_reason = match &reason {
+            CloseReason::OversizedFrame { size, max } => Some(SendErrorReason::OversizedFrame {
+                len: *size,
+                max: *max,
+            }),
+            _ => Some(SendErrorReason::Other(reason.to_string())),
+        };
         receiver.close();
         deliveries
             .unacked
             .deque
             .drain(..)
             .chain(deliveries.outbox.deque.drain(..))
-            .for_each(|queued| {
-                let reason = match queued.written {
-                    session::Written::Earlier => earlier_send_error_reason.clone(),
-                    session::Written::Never | session::Written::Current => {
-                        send_error_reason.clone()
-                    }
-                };
-                queued.try_return(reason)
-            });
+            .for_each(|queued| queued.try_return(send_error_reason.clone()));
         while let Ok((msg, completion, _)) = receiver.try_recv() {
             completion.reject(SendError {
                 error: ChannelError::Closed,
@@ -1315,11 +1049,6 @@ pub(super) enum NetRxResponse {
     Reject(String),
     /// This channel is closed.
     Closed,
-    /// This session is rejected because the receiver has no record of it:
-    /// the first frame it received was out of sequence, and it delivered
-    /// none of the frames written on the connection. ChannelTx should stop
-    /// reconnecting.
-    UnknownSession(String),
 }
 
 pub(super) fn serialize_response(
@@ -4716,8 +4445,8 @@ mod tests {
     async fn rx_join_flushes_pending_ack_multi_stream() {
         // Three independent multi-stream sessions, each with three
         // framed messages, each on its own session_id with a single
-        // stream_id of 1. Exercises `dispatch_multi_stream`'s terminal
-        // cleanup once per session.
+        // stream_id of 1. Exercises the unordered receive path's
+        // terminal cleanup once per session.
         let plans = (1u64..=3)
             .map(|sid| SeparateSessionPlan {
                 session_id: SessionId(sid),
@@ -4728,13 +4457,11 @@ mod tests {
         run_separate_sessions_flush_test(plans, "multi-stream").await;
     }
 
-    /// One session, multiple stream_ids — exercises `AckWatermark`'s
-    /// shared-watermark path. Three streams in the same session each
-    /// send three messages with disjoint seqs filling the contiguous
-    /// range 0..=8. Each stream's cleanup reads `highest_uncommitted`
-    /// and emits `Ack(8)` on its own wire so the peer's per-wire
-    /// ChannelTx sees an ack for messages it sent there; the receiver
-    /// discards duplicates. Every stream also emits its own `Closed`.
+    /// One session, multiple stream_ids. Three streams in the same
+    /// session each send three messages numbered from 0, as a real client
+    /// numbers each stream. Streams of one session are acked
+    /// independently: each stream's cleanup acks its own highest seq on
+    /// its own wire, and then emits its own `Closed`.
     #[async_timed_test(timeout_secs = 30)]
     async fn rx_join_flushes_pending_ack_shared_multi_stream_session() {
         let config = hyperactor_config::global::lock();
@@ -4750,10 +4477,7 @@ mod tests {
             std::collections::HashSet::new();
         for stream_id in 1..=num_streams {
             let messages: Vec<(u64, u64)> = (0u64..msgs_per_stream)
-                .map(|i| {
-                    let seq = (stream_id as u64 - 1) * msgs_per_stream + i;
-                    (seq, 1000 + seq)
-                })
+                .map(|seq| (seq, 1000 * stream_id as u64 + seq))
                 .collect();
             for (_, v) in &messages {
                 expected_messages.insert(*v);
@@ -4768,7 +4492,6 @@ mod tests {
                 .await,
             );
         }
-        let highest_seq = num_streams as u64 * msgs_per_stream - 1;
 
         let addr = ChannelAddr::Local(u64::MAX);
         let listener = QueueListener {
@@ -4814,13 +4537,9 @@ mod tests {
 
         rx.join().await;
 
-        // Drain every frame on every reader. Terminal cleanup may emit
-        // `Ack(highest_seq)` on one or more wires before `Closed`, but
-        // once one cleanup commits the shared watermark, later streams
-        // may emit only `Closed`.
-        let mut ack_count = 0;
-        let mut closed_count = 0;
+        // Each stream acks its own highest seq, then closes.
         for (idx, reader) in readers.iter_mut().enumerate() {
+            let mut frames = Vec::new();
             loop {
                 match tokio::time::timeout(Duration::from_millis(50), reader.next()).await {
                     Err(_) => panic!(
@@ -4830,42 +4549,129 @@ mod tests {
                     Ok(Err(e)) => panic!("frame reader error: {e}"),
                     Ok(Ok(None)) => break,
                     Ok(Ok(Some((_, bytes)))) => {
-                        let resp = super::deserialize_response(bytes).unwrap();
-                        match resp {
-                            NetRxResponse::Ack(seq) => {
-                                assert_eq!(
-                                    seq, highest_seq,
-                                    "shared-session multi-stream: ack should cover the full \
-                                     contiguous range 0..={highest_seq}"
-                                );
-                                ack_count += 1;
-                            }
-                            NetRxResponse::Closed => {
-                                closed_count += 1;
-                                break;
-                            }
-                            other => panic!(
-                                "shared-session multi-stream: stream {idx} unexpected {other:?}"
-                            ),
+                        let response = super::deserialize_response(bytes).unwrap();
+                        let closed = response.is_closed();
+                        frames.push(response);
+                        if closed {
+                            break;
                         }
                     }
                 }
             }
+            match frames.as_slice() {
+                [NetRxResponse::Ack(seq), NetRxResponse::Closed] => assert_eq!(
+                    *seq,
+                    msgs_per_stream - 1,
+                    "shared-session multi-stream: stream {idx} should ack its own highest seq"
+                ),
+                other => panic!(
+                    "shared-session multi-stream: stream {idx} expected an ack and Closed, \
+                     got {other:?}"
+                ),
+            }
         }
-        assert!(
-            ack_count >= 1,
-            "shared-session multi-stream: expected at least one Ack({highest_seq}); \
-             got {ack_count}"
-        );
-        assert!(
-            ack_count <= num_streams as usize,
-            "shared-session multi-stream: expected at most {num_streams} Ack({highest_seq}) \
-             frames; got {ack_count}"
-        );
+    }
+
+    /// Yields the `DuplexStream`s that the test feeds it, when the test
+    /// feeds them.
+    struct FedListener {
+        streams: tokio::sync::mpsc::UnboundedReceiver<DuplexStream>,
+        addr: ChannelAddr,
+    }
+
+    #[async_trait]
+    impl super::Listener for FedListener {
+        type Stream = DuplexStream;
+
+        async fn accept(&mut self) -> Result<(DuplexStream, ChannelAddr), ServerError> {
+            match self.streams.recv().await {
+                Some(s) => Ok((s, self.addr.clone())),
+                None => std::future::pending().await,
+            }
+        }
+    }
+
+    /// A stream of an unordered session keeps its watermark across
+    /// connections: a later connection begins with an ack of what the
+    /// stream delivered and drops what it delivered before. A stream that
+    /// starts past 0, or skips numbers, is delivered.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn unordered_stream_reacks_and_drops_duplicates_across_connections() {
+        let config = hyperactor_config::global::lock();
+        let _g_msg = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1_000_000);
+        let _g_time =
+            config.override_key(config::MESSAGE_ACK_TIME_INTERVAL, Duration::from_secs(3600));
+        let max_len = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+
+        let session_id = SessionId(7);
+        let addr = ChannelAddr::Local(u64::MAX);
+        let (feed, streams) = tokio::sync::mpsc::unbounded_channel();
+        let listener = FedListener {
+            streams,
+            addr: addr.clone(),
+        };
+        let (_addr, mut rx) = super::server::serve_with_listener::<u64, _>(listener, addr).unwrap();
+
+        let first = prepare_connection(
+            session_id,
+            1,
+            super::ProtocolKind::Simplex,
+            &[(0, 100), (1, 101), (2, 102)],
+        )
+        .await;
+        let PreparedConnection {
+            server_side,
+            _client_w: first_w,
+            client_r: first_r,
+        } = first;
+        feed.send(server_side).unwrap();
+        for value in [100, 101, 102] {
+            assert_eq!(rx.recv().await.unwrap(), value);
+        }
+
+        // Queued behind the first connection until it ends.
+        let second = prepare_connection(
+            session_id,
+            1,
+            super::ProtocolKind::Simplex,
+            &[(1, 101), (2, 102), (3, 103)],
+        )
+        .await;
+        let mut second_r = FrameReader::new(second.client_r, max_len);
+        feed.send(second.server_side).unwrap();
+        // The client side of a split stream closes once both halves drop.
+        drop((first_r, first_w));
+
+        let (_, bytes) = tokio::time::timeout(Duration::from_secs(5), second_r.next())
+            .await
+            .expect("the second connection should be acked")
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            closed_count, num_streams as usize,
-            "shared-session multi-stream: every stream should emit its own Closed frame"
+            super::deserialize_response(bytes)
+                .unwrap()
+                .into_ack()
+                .unwrap(),
+            2,
+            "the second connection should begin by acking what the stream delivered"
         );
+        assert_eq!(rx.recv().await.unwrap(), 103);
+
+        // Another stream of the same session, starting past 0 and with a gap.
+        let other = prepare_connection(
+            session_id,
+            2,
+            super::ProtocolKind::Simplex,
+            &[(5, 205), (7, 207)],
+        )
+        .await;
+        feed.send(other.server_side).unwrap();
+        assert_eq!(rx.recv().await.unwrap(), 205);
+        assert_eq!(rx.recv().await.unwrap(), 207);
+
+        if let Ok(value) = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await {
+            panic!("unexpected delivery: {value:?}");
+        }
     }
 
     /// `duplex::serve_with_listener` (the test-only duplex server)
