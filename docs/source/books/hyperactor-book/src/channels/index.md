@@ -9,3 +9,4 @@ The following pages explore the key aspects of channels, from basic usage to tra
 - [Transports](transports/index.md)
 - [Frames](frames.md)
 - [Network Internals](net_internals.md)
+- [Unordered Channels](unordered.md)

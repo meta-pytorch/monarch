@@ -72,6 +72,8 @@ pub trait Rx<M: RemoteMessage> {
 
 ## Guarantees and Limits
 
+The guarantees below are those of `channel::dial`. Channels created with `channel::unordered::dial` have a different contract; see [Unordered Channels](unordered.md).
+
 ### Delivery & ordering
 - **Per-sender FIFO.** Messages posted from a single `Tx` are delivered in order.
   (Network transports tag each message with a monotonically increasing `seq`; the server enforces in-order delivery and ignores retransmits with lower `seq`.)

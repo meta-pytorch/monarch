@@ -11,7 +11,6 @@
 //! [`ProtocolKind`] byte in the `LinkInit` header; simplex sessions
 //! feed a [`ChannelRx<M>`], duplex sessions feed a [`DuplexServer<In, Out>`].
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -28,10 +27,8 @@ use super::SessionId;
 use super::Stream;
 use super::duplex::DuplexServer;
 use super::duplex::dispatch_duplex_stream;
-use super::server::StreamState;
 use super::server::accept_loop;
 use super::server::dispatch_stream;
-use super::server::resolve_stream;
 use crate::RemoteMessage;
 use crate::channel::ChannelRx;
 
@@ -95,12 +92,9 @@ where
     let (simplex_tx, simplex_rx) = mpsc::channel::<M>(1024);
     let (duplex_accept_tx, duplex_accept_rx) = mpsc::channel(16);
 
-    let simplex_sessions: Arc<DashMap<SessionId, mpsc::UnboundedSender<Box<dyn Stream>>>> =
+    let simplex_sessions: Arc<DashMap<(SessionId, u8), mpsc::UnboundedSender<Box<dyn Stream>>>> =
         Arc::new(DashMap::new());
-    let simplex_stream_state: Arc<
-        std::sync::Mutex<HashMap<SessionId, Arc<StreamState<Box<dyn Stream>>>>>,
-    > = Arc::new(std::sync::Mutex::new(HashMap::new()));
-    let duplex_sessions: Arc<DashMap<SessionId, mpsc::UnboundedSender<Box<dyn Stream>>>> =
+    let duplex_sessions: Arc<DashMap<(SessionId, u8), mpsc::UnboundedSender<Box<dyn Stream>>>> =
         Arc::new(DashMap::new());
 
     // Accept-loop cancel. Cloned into both halves' `ServerHandle`s
@@ -123,7 +117,6 @@ where
     let dispatch = {
         let simplex_tx = simplex_tx.clone();
         let simplex_sessions = Arc::clone(&simplex_sessions);
-        let simplex_stream_state = Arc::clone(&simplex_stream_state);
         let duplex_sessions = Arc::clone(&duplex_sessions);
         let duplex_accept_tx = duplex_accept_tx.clone();
         let simplex_cancel = simplex_child_cancel.clone();
@@ -132,7 +125,6 @@ where
         move |link_init: super::LinkInit, stream: Box<dyn Stream>| {
             let simplex_tx = simplex_tx.clone();
             let simplex_sessions = Arc::clone(&simplex_sessions);
-            let simplex_stream_state = Arc::clone(&simplex_stream_state);
             let duplex_sessions = Arc::clone(&duplex_sessions);
             let duplex_accept_tx = duplex_accept_tx.clone();
             let s_cancel = simplex_cancel.child_token();
@@ -141,10 +133,9 @@ where
             async move {
                 match link_init.kind {
                     ProtocolKind::Simplex => {
-                        let streams = resolve_stream(&simplex_stream_state, &link_init);
                         dispatch_stream(
                             link_init.session_id,
-                            streams,
+                            link_init.stream_id,
                             stream,
                             &simplex_sessions,
                             dest,

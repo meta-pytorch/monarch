@@ -28,6 +28,7 @@
 //! - `ACCEPTOR_TO_INITIATOR = 0x01`
 
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use backoff::ExponentialBackoffBuilder;
@@ -58,6 +59,7 @@ use crate::channel::CloseReason;
 use crate::channel::CompletionSink;
 use crate::channel::Rx;
 use crate::channel::SendError;
+use crate::channel::SendErrorReason;
 use crate::channel::Tx;
 use crate::channel::TxStatus;
 use crate::channel::net::Stream;
@@ -237,7 +239,7 @@ impl<M: RemoteMessage> Tx<M> for DuplexTx<M> {
                 .status
                 .borrow()
                 .as_closed()
-                .map(CloseReason::send_error_reason);
+                .map(|r| SendErrorReason::Other(r.to_string()));
             completion.reject(SendError {
                 error: ChannelError::Closed,
                 message,
@@ -290,9 +292,10 @@ pub fn serve<In: RemoteMessage, Out: RemoteMessage>(
     // simplex and duplex separately and a plain duplex endpoint should
     // reject stray simplex dials. The in-process `Local` transport has no
     // mux, yet gateways still route to Local duplex endpoints via simplex
-    // `channel::dial` (e.g. an in-process host's frontend). Accept either
-    // kind there, matching the pre-link-layer behavior; the dispatch reads
-    // sessions by `session_id`, not by kind.
+    // dials (e.g. an in-process host's frontend). Accept either kind
+    // there, matching the pre-link-layer behavior. Ordered simplex
+    // sessions are read by `session_id`, not by kind; unordered ones go
+    // to an `UnorderedIntake`, which only such a server has.
     let expected_kind = if channel_addr.transport().is_net() {
         Some(super::ProtocolKind::Duplex)
     } else {
@@ -300,8 +303,14 @@ pub fn serve<In: RemoteMessage, Out: RemoteMessage>(
     };
     let prepare = super::preparer_for(channel_addr.clone(), expected_kind);
 
-    let sessions: Arc<DashMap<SessionId, mpsc::UnboundedSender<Box<dyn Stream>>>> =
+    let sessions: Arc<DashMap<(SessionId, u8), mpsc::UnboundedSender<Box<dyn Stream>>>> =
         Arc::new(DashMap::new());
+    let unordered = expected_kind.is_none().then(|| {
+        Arc::new(UnorderedIntake::new(
+            channel_addr.clone(),
+            accept_tx.clone(),
+        ))
+    });
     let dispatch_dest = channel_addr.clone();
     let dispatch_cancel = child_token.clone();
     let dispatch = {
@@ -310,10 +319,19 @@ pub fn serve<In: RemoteMessage, Out: RemoteMessage>(
         let dest = dispatch_dest;
         move |link_init: super::LinkInit, stream: Box<dyn Stream>| {
             let sessions = Arc::clone(&sessions);
+            let unordered = unordered.clone();
             let accept_tx = accept_tx.clone();
             let cancel = dispatch_cancel.clone();
             let dest = dest.clone();
             async move {
+                if link_init.kind == super::ProtocolKind::Simplex && link_init.stream_id > 0 {
+                    let unordered = unordered
+                        .expect("only a server that accepts simplex dials receives their streams");
+                    unordered
+                        .dispatch(link_init, stream, &sessions, dest, cancel)
+                        .await;
+                    return;
+                }
                 dispatch_duplex_stream::<In, Out>(
                     link_init.session_id,
                     stream,
@@ -376,7 +394,7 @@ where
         Ok((link_init, boxed))
     };
 
-    let sessions: Arc<DashMap<SessionId, mpsc::UnboundedSender<Box<dyn Stream>>>> =
+    let sessions: Arc<DashMap<(SessionId, u8), mpsc::UnboundedSender<Box<dyn Stream>>>> =
         Arc::new(DashMap::new());
     let dispatch_cancel = child_token.clone();
     let dispatch = {
@@ -416,6 +434,74 @@ where
     })
 }
 
+/// Unordered simplex sessions dialed to a duplex endpoint (see
+/// [`crate::channel::unordered::dial`]). They are received through the
+/// simplex receive path, and the server sees them all as one inbound
+/// connection, yielded when the first of them connects. The connection's
+/// `DuplexTx` stays open but carries nothing: simplex peers read no
+/// replies. Their streams share the server's session map, in which duplex
+/// sessions are stream 0.
+struct UnorderedIntake<In: RemoteMessage, Out: RemoteMessage> {
+    deliver_tx: mpsc::Sender<In>,
+    connection: Mutex<Option<(DuplexRx<In>, DuplexTx<Out>)>>,
+    accept_tx: mpsc::Sender<(DuplexRx<In>, DuplexTx<Out>)>,
+    _outbound: (
+        mpsc::UnboundedReceiver<(Out, CompletionSink<Out>, Instant)>,
+        watch::Sender<TxStatus>,
+    ),
+}
+
+impl<In: RemoteMessage, Out: RemoteMessage> UnorderedIntake<In, Out> {
+    fn new(addr: ChannelAddr, accept_tx: mpsc::Sender<(DuplexRx<In>, DuplexTx<Out>)>) -> Self {
+        let (deliver_tx, inbound_rx) = mpsc::channel::<In>(1024);
+        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+        let (notify, status) = watch::channel(TxStatus::Active);
+        let rx = DuplexRx(inbound_rx, addr.clone());
+        let tx = DuplexTx {
+            tx: outbound_tx,
+            addr,
+            status,
+        };
+        Self {
+            deliver_tx,
+            connection: Mutex::new(Some((rx, tx))),
+            accept_tx,
+            _outbound: (outbound_rx, notify),
+        }
+    }
+
+    async fn dispatch(
+        &self,
+        link_init: super::LinkInit,
+        stream: Box<dyn Stream>,
+        sessions: &DashMap<(SessionId, u8), mpsc::UnboundedSender<Box<dyn Stream>>>,
+        dest: ChannelAddr,
+        cancel: CancellationToken,
+    ) {
+        let connection = self.connection.lock().unwrap().take();
+        if let Some(connection) = connection
+            && self.accept_tx.send(connection).await.is_err()
+        {
+            tracing::debug!(%dest, "unordered intake: endpoint is shutting down; dropping connection");
+            return;
+        }
+        if self.deliver_tx.is_closed() {
+            tracing::debug!(%dest, "unordered intake: inbound connection closed; dropping connection");
+            return;
+        }
+        super::server::dispatch_stream::<In, _>(
+            link_init.session_id,
+            link_init.stream_id,
+            stream,
+            sessions,
+            dest,
+            self.deliver_tx.clone(),
+            cancel,
+        )
+        .await;
+    }
+}
+
 /// Helper to distinguish send errors from recv errors in duplex select.
 enum Either {
     Send(session::SendLoopError),
@@ -437,19 +523,19 @@ enum Either {
 pub(super) async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
     session_id: SessionId,
     stream: Box<dyn Stream>,
-    sessions: Arc<DashMap<SessionId, mpsc::UnboundedSender<Box<dyn Stream>>>>,
+    sessions: Arc<DashMap<(SessionId, u8), mpsc::UnboundedSender<Box<dyn Stream>>>>,
     addr: ChannelAddr,
     accept_tx: &mpsc::Sender<(DuplexRx<In>, DuplexTx<Out>)>,
     cancel: CancellationToken,
 ) {
-    // Insert into the session map and drop the DashMap shard guard
-    // before any await. Vacant inserts the sender side; occupied
-    // returns the existing sender so this dispatch acts as a feeder.
-    // Unbounded so this task can publish the sender before draining
-    // the first conn without deadlocking a concurrent feeder for
-    // the same session_id.
+    // Insert into the session map, where a duplex session is stream 0,
+    // and drop the DashMap shard guard before any await. Vacant inserts
+    // the sender side; occupied returns the existing sender so this
+    // dispatch acts as a feeder. Unbounded so this task can publish the
+    // sender before draining the first conn without deadlocking a
+    // concurrent feeder for the same session_id.
     let entry_result = {
-        let entry = sessions.entry(session_id);
+        let entry = sessions.entry((session_id, 0));
         match entry {
             dashmap::mapref::entry::Entry::Occupied(e) => Err(e.get().clone()),
             dashmap::mapref::entry::Entry::Vacant(e) => {
@@ -603,9 +689,6 @@ pub(super) async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage
             Err(Either::Recv(session::RecvLoopError::SequenceError(reason))) => {
                 Some(super::NetRxResponse::Reject(reason.clone()))
             }
-            Err(Either::Recv(session::RecvLoopError::UnknownSession(reason))) => {
-                Some(super::NetRxResponse::UnknownSession(reason.clone()))
-            }
             Err(Either::Recv(session::RecvLoopError::Cancelled))
             | Err(Either::Send(session::SendLoopError::AppClosed)) => {
                 Some(super::NetRxResponse::Closed)
@@ -629,7 +712,7 @@ pub(super) async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage
     // reconnect for the same session_id starts a fresh dispatch task
     // instead of feeding a dead channel; any in-flight feeder's send
     // fails after the link's receiver above is dropped.
-    sessions.remove(&session_id);
+    sessions.remove(&(session_id, 0));
 
     let _ = notify.send(TxStatus::Closed(CloseReason::Other(
         "duplex session ended".into(),
@@ -828,9 +911,6 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
             let terminal_response = match &result {
                 Err(Either::Recv(session::RecvLoopError::SequenceError(reason))) => {
                     Some(super::NetRxResponse::Reject(reason.clone()))
-                }
-                Err(Either::Recv(session::RecvLoopError::UnknownSession(reason))) => {
-                    Some(super::NetRxResponse::UnknownSession(reason.clone()))
                 }
                 Err(Either::Recv(session::RecvLoopError::Cancelled))
                 | Err(Either::Send(session::SendLoopError::AppClosed)) => {
