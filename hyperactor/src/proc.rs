@@ -2496,8 +2496,13 @@ impl<A: Actor> DelayedPosts<A> {
         posts
     }
 
+    /// Close ingress and drop every queued post. A post addressed to the
+    /// actor itself holds a strong clone of its `Instance`, so a post left
+    /// queued past termination would keep the actor alive forever.
     fn drain(&self) {
         self.ingress.drain();
+        let queue = std::mem::take(&mut self.state.lock().unwrap().queue);
+        drop(queue);
     }
 
     fn is_draining(&self) -> bool {
@@ -3389,6 +3394,7 @@ impl<A: Actor> Instance<A> {
             .await;
 
         assert!(self.is_stopping());
+        self.inner.delayed_posts.drain();
         // Compute the terminal status and supervision event, but defer
         // change_status until AFTER the event is delivered. If we flip
         // the status to terminal first, a concurrent destroy_and_wait
@@ -8293,6 +8299,33 @@ mod tests {
 
         let result = tokio::time::timeout(Duration::from_millis(100), fired_rx.recv()).await;
         assert!(!matches!(result, Ok(Ok(()))));
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_stopped_actor_with_pending_post_is_released() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (ready, ready_rx) = client.open_once_port();
+        let handle = proc.spawn(DelayedSelfActor {
+            ready: Some(ready.bind()),
+            fired: None,
+            delay: Duration::from_secs(60),
+        });
+        ready_rx.recv().await.unwrap();
+        let cell = handle.cell().downgrade();
+
+        handle.drain_and_stop("test").unwrap();
+        assert_matches!(handle.await, ActorStatus::Stopped(reason) if reason == "test");
+
+        // The pending self-post held a clone of the instance; terminating
+        // must drop it so the instance is released.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while cell.upgrade().is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("stopped actor's instance should be released");
     }
 
     #[async_timed_test(timeout_secs = 30)]

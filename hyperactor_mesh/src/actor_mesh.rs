@@ -2505,6 +2505,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_data_slice_monitor_released_with_slice() {
+        let proc = Proc::isolated();
+        let sender = proc.actor_instance::<()>("sender").unwrap();
+        sender.instance.bind::<()>();
+        let target = sender
+            .instance
+            .spawn_with_label("rank0", testactor::TestActor);
+        let region: Region = extent!(replicas = 1).into();
+        let mesh = ActorMeshRef::try_new_data(
+            ActorMeshId::instance(Label::new("data").unwrap()),
+            region.clone(),
+            vec![target.bind::<testactor::TestActor>()],
+        )
+        .expect("data ref should be valid");
+        let baseline = proc.all_instance_keys().len();
+
+        // Each slice spawns its own monitor, which a call activates; the
+        // activation schedules a delayed poll that is still pending when the
+        // slice is dropped.
+        for _ in 0..20 {
+            let slice = mesh.sliced(region.clone());
+            let monitor = slice
+                .data_monitor(&sender.instance)
+                .expect("data mesh has a monitor");
+            let activation = monitor.activate(&sender.instance);
+            tokio::task::yield_now().await;
+            drop(activation);
+        }
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while proc.all_instance_keys().len() > baseline {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("dropped slices' monitor actors should be released");
+    }
+
+    #[tokio::test]
     async fn test_actor_mesh_ref_monitor_owns_status_and_guards_operations() {
         let proc = Proc::isolated();
         let sender = proc.actor_instance::<()>("sender").unwrap();
