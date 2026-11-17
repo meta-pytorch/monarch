@@ -35,18 +35,23 @@ from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 class PythonMessageKind:
     @classmethod
     @property
+    # pyrefly: ignore [not-a-type]
     def Result(cls) -> "Type[Result]": ...
     @classmethod
     @property
+    # pyrefly: ignore [not-a-type]
     def Exception(cls) -> "Type[Exception]": ...
     @classmethod
     @property
+    # pyrefly: ignore [not-a-type]
     def CallMethod(cls) -> "Type[CallMethod]": ...
     @classmethod
     @property
+    # pyrefly: ignore [not-a-type]
     def Uninit(cls) -> "Type[Uninit]": ...
     @classmethod
     @property
+    # pyrefly: ignore [not-a-type]
     def CallMethodIndirect(cls) -> "Type[CallMethodIndirect]": ...
 
 class Result(PythonMessageKind):
@@ -76,12 +81,15 @@ class CallMethod(PythonMessageKind):
 class MethodSpecifier:
     @classmethod
     @property
+    # pyrefly: ignore [not-a-type]
     def ReturnsResponse(cls) -> "Type[ReturnsResponse]": ...
     @classmethod
     @property
+    # pyrefly: ignore [not-a-type]
     def ExplicitPort(cls) -> "Type[ExplicitPort]": ...
     @classmethod
     @property
+    # pyrefly: ignore [not-a-type]
     def Init(cls) -> "Type[Init]": ...
     @property
     def name(self) -> str: ...
