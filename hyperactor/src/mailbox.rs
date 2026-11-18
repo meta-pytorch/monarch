@@ -4013,6 +4013,10 @@ impl MailboxSender for WeakMailboxRouter {
 ///   fails only after another full timeout, so re-dialing cannot spin.
 /// - `ServerClosed`: the peer's server shut down, and a new server may
 ///   later listen at the same address, as when a host restarts.
+/// - `ReconnectFailed`: an idle channel could not reconnect. A fresh client
+///   starts with a queued message and its delivery deadline. Reaching idle
+///   reconnect requires its messages to have been acknowledged, so eviction
+///   cannot spin without delivery progress.
 ///
 /// Other close reasons (oversized frame, codec errors, etc.) intentionally
 /// do not match: the message or peer is the problem and re-dialing would
@@ -4025,6 +4029,7 @@ fn is_redialable_close(status: &TxStatus) -> bool {
                 | CloseReason::SequenceMismatch(_)
                 | CloseReason::DeliveryTimeout(_)
                 | CloseReason::ServerClosed(_)
+                | CloseReason::ReconnectFailed(_)
         )
     )
 }
@@ -4186,6 +4191,7 @@ impl DialMailboxRouter {
         // ended, but our cached NetTx has an Outbox.next_seq past 0), when a
         // peer stayed unreachable past the delivery timeout, or when the
         // peer's server shut down and a new one may serve the address.
+        // An idle channel that gave up reconnecting also needs a fresh session.
         // Without eviction, the cached client is dead-on-arrival forever.
         //
         // Eviction is narrowly gated on these close reasons. Re-dialing
@@ -4367,12 +4373,18 @@ mod tests {
 
     use std::assert_matches;
     use std::mem::drop;
+    use std::net::SocketAddr;
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
     use async_trait::async_trait;
     use hyperactor_config::NonZeroUsize;
     use timed_test::async_timed_test;
+    use tokio::io::copy_bidirectional;
+    use tokio::net::TcpListener;
+    use tokio::net::TcpStream;
+    use tokio::task::JoinSet;
+    use tokio::time::timeout;
 
     use super::*;
     use crate as hyperactor;
@@ -4382,6 +4394,7 @@ mod tests {
     use crate::accum;
     use crate::accum::ReducerMode;
     use crate::channel::ChannelTransport;
+    use crate::channel::Rx as _;
     use crate::context::Actor as _;
     use crate::context::Mailbox as MailboxContext;
     use crate::context::MailboxExt as _;
@@ -5520,6 +5533,10 @@ mod tests {
         let server_closed = TxStatus::Closed(CloseReason::ServerClosed("server closed".into()));
         assert!(is_redialable_close(&server_closed));
 
+        let reconnect_failed =
+            TxStatus::Closed(CloseReason::ReconnectFailed("session test".into()));
+        assert!(is_redialable_close(&reconnect_failed));
+
         // A delivery timeout means the peer was unreachable; a fresh session
         // can reach it once it is back.
         let timed_out = TxStatus::Closed(CloseReason::DeliveryTimeout(
@@ -5537,6 +5554,10 @@ mod tests {
 
         let generic = TxStatus::Closed(CloseReason::Other("test teardown".into()));
         assert!(!is_redialable_close(&generic));
+
+        let unclassified_reconnect =
+            TxStatus::Closed(CloseReason::Other("session shut down".into()));
+        assert!(!is_redialable_close(&unclassified_reconnect));
 
         // Active is never stale.
         assert!(!is_redialable_close(&TxStatus::Active));
@@ -5656,6 +5677,137 @@ mod tests {
         async fn reconnected(&mut self) {
             self.accepted.changed().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn test_dial_router_recovers_after_idle_reconnect_failure() {
+        const WAIT: Duration = Duration::from_secs(10);
+
+        async fn forward_one(
+            listener: &TcpListener,
+            target: SocketAddr,
+            connections: &mut JoinSet<()>,
+        ) {
+            let (mut inbound, _) = timeout(WAIT, listener.accept())
+                .await
+                .expect("relay should accept the posted message's connection")
+                .unwrap();
+            let mut outbound = timeout(WAIT, TcpStream::connect(target))
+                .await
+                .expect("relay should connect to the backend")
+                .unwrap();
+            connections.spawn(async move {
+                copy_bidirectional(&mut inbound, &mut outbound)
+                    .await
+                    .expect("relay should forward the connection");
+            });
+        }
+
+        let config = hyperactor_config::global::lock();
+        let _reconnect_timeout = config.override_key(
+            crate::config::CHANNEL_RECONNECT_TIMEOUT,
+            Duration::from_secs(1),
+        );
+        let (backend_addr, mut backend_rx) =
+            channel::serve::<MessageEnvelope>(tcp_loopback()).unwrap();
+        let ChannelAddr::Tcp(backend_socket) = backend_addr else {
+            panic!("backend should have a TCP address")
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_socket = listener.local_addr().unwrap();
+        let relay_addr = ChannelAddr::Tcp(relay_socket);
+        let mut connections = JoinSet::new();
+        let mailbox = Mailbox::new(test_actor_id("idle_reconnect_peer", "actor0"));
+        let (port, _receiver) = mailbox.open_port::<u64>();
+        let port = port.bind();
+        let (return_handle, mut returned) = mailbox.open_port::<Undeliverable<MessageEnvelope>>();
+        let router = DialMailboxRouter::new();
+        router.bind(Addr::from(mailbox.actor_addr().clone()), relay_addr.clone());
+        let original = router.dial(&relay_addr, mailbox.actor_addr()).unwrap();
+        let mut status = original.tx_status().clone();
+
+        router
+            .serialize_and_send(&port, 1u64, return_handle.clone())
+            .unwrap();
+        forward_one(&listener, backend_socket, &mut connections).await;
+        let envelope = timeout(WAIT, backend_rx.recv())
+            .await
+            .expect("backend should receive the initial message")
+            .unwrap();
+        assert_eq!(envelope.deserialized::<u64>().unwrap(), 1);
+        timeout(WAIT, original.flush())
+            .await
+            .expect("initial message should complete")
+            .unwrap();
+        assert!(returned.try_recv().unwrap().is_none());
+        assert_eq!(*status.borrow(), TxStatus::Active);
+
+        // Refuse reconnects and drop the transport without a channel-level close.
+        drop(listener);
+        connections.abort_all();
+        let error = timeout(WAIT, connections.join_next())
+            .await
+            .expect("relay should stop")
+            .unwrap()
+            .unwrap_err();
+        assert!(error.is_cancelled());
+        timeout(WAIT, status.wait_for(TxStatus::is_closed))
+            .await
+            .expect("idle channel should give up reconnecting")
+            .unwrap();
+        let reason = status.borrow().as_closed().unwrap().clone();
+        assert!(
+            !matches!(&reason, CloseReason::DeliveryTimeout(_)),
+            "the acknowledged channel should close through the idle path: {reason:?}"
+        );
+
+        let listener = TcpListener::bind(relay_socket)
+            .await
+            .expect("relay should listen again at the same address");
+        let fresh = router.dial(&relay_addr, mailbox.actor_addr()).unwrap();
+        assert!(
+            !Arc::ptr_eq(&original, &fresh),
+            "next dial should replace the idle channel closed with {reason:?}"
+        );
+        router
+            .serialize_and_send(&port, 2u64, return_handle.clone())
+            .unwrap();
+        forward_one(&listener, backend_socket, &mut connections).await;
+        let envelope = timeout(WAIT, backend_rx.recv())
+            .await
+            .expect("first recovery message should arrive")
+            .unwrap();
+        assert_eq!(envelope.deserialized::<u64>().unwrap(), 2);
+        router
+            .serialize_and_send(&port, 3u64, return_handle.clone())
+            .unwrap();
+        let envelope = timeout(WAIT, backend_rx.recv())
+            .await
+            .expect("second recovery message should arrive")
+            .unwrap();
+        assert_eq!(envelope.deserialized::<u64>().unwrap(), 3);
+        timeout(WAIT, fresh.flush())
+            .await
+            .expect("recovery messages should complete")
+            .unwrap();
+        assert!(returned.try_recv().unwrap().is_none());
+
+        drop(listener);
+        connections.abort_all();
+        let error = timeout(WAIT, connections.join_next())
+            .await
+            .expect("recovery relay should stop")
+            .unwrap()
+            .unwrap_err();
+        assert!(error.is_cancelled());
+        let mut fresh_status = fresh.tx_status().clone();
+        timeout(WAIT, fresh_status.wait_for(TxStatus::is_closed))
+            .await
+            .expect("recovery channel should close during cleanup")
+            .unwrap();
+        timeout(WAIT, backend_rx.join())
+            .await
+            .expect("backend should stop");
     }
 
     #[tokio::test]
