@@ -636,44 +636,68 @@ def test_ignored_call_error_is_logged_after_its_observer_is_dropped(
 
 
 @pytest.mark.timeout(60)
+@pytest.mark.parametrize("adverb", ["call", "call_one", "choose"])
 @pytest.mark.parametrize("fallback", [False, True])
 @pytest.mark.parametrize("behavior", ["success", "error", "interrupt_once"])
-def test_call_pending_asyncio_reconstruction_is_terminal_before_delivery(
-    reply_actor: Any, fallback: bool, behavior: str
+def test_pending_reply_reconstructs_on_the_loop_or_fallback_worker(
+    reply_actor: Any,
+    adverb: Literal["call", "call_one", "choose"],
+    fallback: bool,
+    behavior: str,
 ) -> None:
     release = reply_actor.prepare_reply_gate.call_one().get(timeout=10)
     started, receiver = Channel[int].open()
-    result = reply_actor.delayed_mesh_reply.call(started, behavior)
+    result = getattr(reply_actor.delayed_mesh_reply, adverb)(started, behavior)
     assert receiver.recv().get(timeout=10) == 1, (
         "the peer must be waiting at its reply gate"
     )
+    loop = asyncio.new_event_loop()
+    if fallback:
 
-    async def observe() -> None:
-        loop = asyncio.get_running_loop()
-        if fallback:
+        def no_reader(fd: Any, callback: Any, *args: Any) -> None:
+            raise NotImplementedError
 
-            def no_reader(fd: Any, callback: Any, *args: Any) -> None:
-                raise NotImplementedError
+        loop.add_reader = no_reader
 
-            loop.add_reader = no_reader
+    async def register() -> asyncio.Future[Any]:
         pending = result.as_asyncio()
         assert not pending.done(), "register observation before the peer may reply"
         release.send(1)
-        if behavior == "success":
-            value = await asyncio.wait_for(pending, timeout=10)
-            assert value.get(0)[0] == [1, 2, 3]
-            assert await result is value
+        return pending
+
+    async def settle(pending: asyncio.Future[Any]) -> Any:
+        # Awaited in a task, so an interrupt the await raises escapes the run.
+        return await asyncio.wait_for(pending, timeout=10)
+
+    # The loop's reader lets an interrupt escape the run and keeps the reply;
+    # the fallback worker stores it as the shared outcome.
+    retried = behavior == "interrupt_once" and not fallback
+    try:
+        pending = loop.run_until_complete(register())
+        if retried:
+            with pytest.raises(KeyboardInterrupt, match="^reply unpickle interrupted$"):
+                loop.run_until_complete(settle(pending))
+            assert not pending.done(), "the await settles on the next run"
+        if behavior == "success" or retried:
+            value = loop.run_until_complete(settle(pending))
+            probe = value.get(0)[0] if adverb == "call" else value[0]
+            assert probe == [1, 2, 3]
+            assert result.get(timeout=10) is value
         else:
             error_type = ValueError if behavior == "error" else KeyboardInterrupt
-            # asyncio must receive a terminal failure, not a notification while Raw.
             with pytest.raises(error_type) as delivered:
-                await asyncio.wait_for(pending, timeout=10)
+                loop.run_until_complete(settle(pending))
             with pytest.raises(error_type) as stored:
-                result._as_handle().poll()
+                result.get(timeout=10)
             assert delivered.value is stored.value
-        assert _probe_state().calls == 1
-
-    asyncio.run(observe())
+    finally:
+        loop.close()
+    assert _probe_state().calls == (2 if retried else 1)
+    loop_thread = threading.get_ident()
+    if fallback:
+        assert loop_thread not in _probe_state().threads, "a Tokio worker rebuilds"
+    else:
+        assert set(_probe_state().threads) == {loop_thread}, "the loop thread rebuilds"
 
 
 @pytest.mark.timeout(60)
