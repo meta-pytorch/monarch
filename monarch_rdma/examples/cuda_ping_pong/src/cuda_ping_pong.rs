@@ -73,6 +73,7 @@ use hyperactor::context::Mailbox;
 use hyperactor::id::Label;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::ActorMesh;
+use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::Bootstrap;
 use hyperactor_mesh::HostBootstrapReady;
 use hyperactor_mesh::HostMeshRef;
@@ -921,12 +922,12 @@ pub async fn run() -> Result<(), anyhow::Error> {
         .await?;
 
     // Create RDMA manager for the first device
-    let device_1_rdma_manager: ActorMesh<RdmaManagerActor> = device_1_proc_mesh
+    let device_1_rdma_manager: ActorMeshRef<RdmaManagerActor> = device_1_proc_mesh
         .spawn_service(instance, "rdma_manager", &Some(device_1_ibv_config))
         .await?;
 
     // Create RDMA manager for the second device
-    let device_2_rdma_manager: ActorMesh<RdmaManagerActor> = device_2_proc_mesh
+    let device_2_rdma_manager: ActorMeshRef<RdmaManagerActor> = device_2_proc_mesh
         .spawn_service(instance, "rdma_manager", &Some(device_2_ibv_config))
         .await?;
 

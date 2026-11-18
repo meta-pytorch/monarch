@@ -48,7 +48,7 @@ class _RdmaManager:
     ) -> Handle[None]: ...
 
 class RdmaInitError(Exception):
-    """Raised when the RDMA manager owner reports a typed initialization failure."""
+    """Raised when an RDMA manager fails to construct or initialize."""
 
     ...
 

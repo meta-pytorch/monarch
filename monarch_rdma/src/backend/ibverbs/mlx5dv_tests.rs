@@ -9,6 +9,7 @@
 //! Tests for mlx5dv-specific functionality (indirect mkeys, segment scanning).
 
 use hyperactor_mesh::ActorMesh;
+use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::ViewExt;
@@ -70,10 +71,10 @@ async fn test_indirect_mkey_read_at_large_offset() -> Result<(), anyhow::Error> 
     let sender_proc = proc_mesh.range("procs", 0..1).unwrap();
     let receiver_proc = proc_mesh.range("procs", 1..2).unwrap();
 
-    let sender_rdma: ActorMesh<RdmaManagerActor> = sender_proc
+    let sender_rdma: ActorMeshRef<RdmaManagerActor> = sender_proc
         .spawn_service(instance, "rdma_manager", &Some(IbvConfig::default()))
         .await?;
-    let _receiver_rdma: ActorMesh<RdmaManagerActor> = receiver_proc
+    let _receiver_rdma: ActorMeshRef<RdmaManagerActor> = receiver_proc
         .spawn_service(instance, "rdma_manager", &Some(IbvConfig::default()))
         .await?;
 
@@ -194,10 +195,10 @@ async fn test_devx_mkey_grows_from_64_to_128_klms() -> Result<(), anyhow::Error>
         require_devx_mkeys: true,
         ..IbvConfig::default()
     };
-    let sender_rdma: ActorMesh<RdmaManagerActor> = sender_proc
+    let sender_rdma: ActorMeshRef<RdmaManagerActor> = sender_proc
         .spawn_service(instance, "rdma_manager", &Some(sender_config))
         .await?;
-    let _receiver_rdma: ActorMesh<RdmaManagerActor> = receiver_proc
+    let _receiver_rdma: ActorMeshRef<RdmaManagerActor> = receiver_proc
         .spawn_service(instance, "rdma_manager", &Some(IbvConfig::default()))
         .await?;
     let sender_rdma_ref = sender_rdma.values().next().unwrap().clone();
@@ -357,10 +358,10 @@ async fn test_indirect_mkey_rebind_falls_back_to_dmabuf_at_capacity() -> Result<
         mkey_max_entries_override: 1,
         ..IbvConfig::default()
     };
-    let sender_rdma: ActorMesh<RdmaManagerActor> = sender_proc
+    let sender_rdma: ActorMeshRef<RdmaManagerActor> = sender_proc
         .spawn_service(instance, "rdma_manager", &Some(sender_config))
         .await?;
-    let _receiver_rdma: ActorMesh<RdmaManagerActor> = receiver_proc
+    let _receiver_rdma: ActorMeshRef<RdmaManagerActor> = receiver_proc
         .spawn_service(instance, "rdma_manager", &Some(IbvConfig::default()))
         .await?;
     let sender_rdma_ref = sender_rdma.values().next().unwrap().clone();

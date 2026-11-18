@@ -4977,7 +4977,6 @@ name = "monarch_rdma_extension"
 version = "0.0.0"
 dependencies = [
  "build_utils",
- "hyperactor",
  "hyperactor_mesh",
  "monarch_hyperactor",
  "monarch_rdma",

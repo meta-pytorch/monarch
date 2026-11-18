@@ -11,6 +11,7 @@
 //! skips at runtime when these are unavailable.
 
 use hyperactor_mesh::ActorMesh;
+use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use monarch_rdma::IbvConfig;
@@ -93,21 +94,21 @@ async fn test_multi_pd_segment_registration() -> Result<(), anyhow::Error> {
 
     // Single RDMA manager for both senders. It uses different PDs internally
     // for each NIC, which is exactly what we're testing.
-    let rdma: ActorMesh<RdmaManagerActor> = sender_proc
+    let rdma: ActorMeshRef<RdmaManagerActor> = sender_proc
         .spawn_service(instance, "rdma_manager", &Some(IbvConfig::default()))
         .await?;
 
     // Each receiver gets an RDMA manager targeting the NIC that matches its
     // sender's device. This ensures the receiver's QP is on the same subnet
     // as the sender's NIC (required for RoCEv2).
-    let _rdma_recv_a: ActorMesh<RdmaManagerActor> = receiver_a_proc
+    let _rdma_recv_a: ActorMeshRef<RdmaManagerActor> = receiver_a_proc
         .spawn_service(
             instance,
             "rdma_manager",
             &Some(IbvConfig::targeting(IbvDeviceTarget::gpu(device_a as u32))),
         )
         .await?;
-    let _rdma_recv_b: ActorMesh<RdmaManagerActor> = receiver_b_proc
+    let _rdma_recv_b: ActorMeshRef<RdmaManagerActor> = receiver_b_proc
         .spawn_service(
             instance,
             "rdma_manager",

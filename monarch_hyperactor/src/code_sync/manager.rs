@@ -644,7 +644,7 @@ mod tests {
         actor_mesh.cast(
             &instance,
             SetActorMeshMessage {
-                actor_mesh: (*actor_mesh).clone(),
+                actor_mesh: actor_mesh.clone(),
             },
         )?;
 

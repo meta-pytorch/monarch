@@ -389,7 +389,7 @@ impl Actor for ActorEnvironmentProbe {
 
         if let Some((proc_mesh, name, label)) = self.nested.take() {
             proc_mesh
-                .spawn_controllerless_service::<Self, _>(
+                .spawn_service::<Self, _>(
                     this,
                     &name,
                     &ActorEnvironmentProbeParams {

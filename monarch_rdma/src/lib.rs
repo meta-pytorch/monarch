@@ -21,11 +21,9 @@ pub mod backend;
 pub mod config;
 pub mod device_selection;
 pub mod efa;
-mod errors;
 pub mod local_memory;
 mod rdma_components;
 mod rdma_manager_actor;
-mod rdma_manager_owner;
 mod rdma_runtime;
 
 pub use backend::ibverbs::primitives::*;
@@ -43,11 +41,9 @@ pub use action::RdmaAction;
 pub use backend::ibverbs::mlx_domain::CudaSegmentScanner;
 pub use backend::ibverbs::mlx_domain::ScannedSegment;
 pub use backend::ibverbs::mlx_domain::register_cuda_segment_scanner;
-pub use errors::RdmaInitError;
 pub use rdma_components::RdmaRemoteBuffer;
 pub use rdma_components::*;
 pub use rdma_manager_actor::*;
-pub use rdma_manager_owner::*;
 // Re-export rdmaxcel_sys for extension crate to access types
 pub use rdmaxcel_sys;
 pub use test_utils::is_cuda_available;

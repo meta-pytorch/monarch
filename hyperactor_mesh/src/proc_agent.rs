@@ -71,6 +71,8 @@ use crate::pyspy::PySpyProfile;
 use crate::pyspy::PySpyProfileWorker;
 use crate::pyspy::PySpyWorker;
 use crate::resource;
+use crate::service_registry::ServiceRegistry;
+use crate::service_registry::service_registry_uid;
 
 /// Actor name used when spawning the proc agent on user procs.
 pub const PROC_AGENT_ACTOR_NAME: &str = "proc_agent";
@@ -380,6 +382,9 @@ impl ProcAgent {
         // so legacy ProcAgent bootstrapping must install it. This compatibility
         // step goes away when proc bootstrapping moves off ProcAgent entirely.
         let actor_spawner = proc.spawn_bound_with_uid(actor_spawner_uid(), ActorSpawner)?;
+
+        // Every proc creates its own singleton services; see `service_registry`.
+        proc.spawn_bound_with_uid(service_registry_uid(), ServiceRegistry::default())?;
 
         let orphan_timeout = hyperactor_config::global::get(MESH_ORPHAN_TIMEOUT);
         let agent = ProcAgent {
