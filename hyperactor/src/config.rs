@@ -139,12 +139,31 @@ declare_attrs! {
 
     /// Maximum number of terminated actor snapshots retained per
     /// proc for post-mortem introspection. When the limit is
-    /// exceeded, the oldest entries are evicted.
+    /// exceeded, cleanly stopped actors are evicted first, then the
+    /// most recent failures, keeping the earliest failures.
+    ///
+    /// This is separate from, and much lower than,
+    /// [`ACTOR_TOMBSTONE_RETENTION`]. A snapshot holds a full
+    /// introspection payload, while a tombstone holds only a terminal
+    /// status. Evicting a snapshot only hides the actor from
+    /// introspection, whereas evicting a tombstone changes how messages
+    /// to the actor are delivered.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_TERMINATED_SNAPSHOT_RETENTION".to_string()),
         Some("terminated_snapshot_retention".to_string()),
     ))
     pub attr TERMINATED_SNAPSHOT_RETENTION: usize = 100;
+
+    /// Maximum number of dropped actors whose terminal status a proc
+    /// retains. When the limit is exceeded, the oldest are forgotten: a
+    /// status query or message for a forgotten actor is handled as for an
+    /// actor that does not exist, after
+    /// [`PENDING_ACTOR_DELIVERY_TIMEOUT`].
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_ACTOR_TOMBSTONE_RETENTION".to_string()),
+        Some("actor_tombstone_retention".to_string()),
+    ))
+    pub attr ACTOR_TOMBSTONE_RETENTION: usize = 10_000;
 
     /// Timeout to stop a proc.
     @meta(CONFIG = ConfigAttr::new(

@@ -466,10 +466,13 @@ struct ProcState {
     reserved_child_uids: DashSet<crate::id::Uid>,
 
     /// The lifecycle state of each actor this proc knows about. Each entry
-    /// moves through [`ActorEntry`]'s states under its entry lock.
-    /// Tombstones are retained for the lifetime of the process, so this map
-    /// grows with the number of actors that have ever existed in the proc.
+    /// moves through [`ActorEntry`]'s states under its entry lock. The most
+    /// recent [`config::ACTOR_TOMBSTONE_RETENTION`] tombstones are retained.
     actors: DashMap<ActorId, ActorEntry>,
+
+    /// Tombstoned actors, oldest first, for evicting tombstones beyond
+    /// [`config::ACTOR_TOMBSTONE_RETENTION`].
+    tombstones: Mutex<VecDeque<ActorId>>,
 
     /// Root actor instances in this proc.
     root_instances: DashMap<ActorId, WeakInstanceCell>,
@@ -873,6 +876,7 @@ impl Proc {
                 reserved_roots: DashSet::new(),
                 reserved_child_uids: DashSet::new(),
                 actors: DashMap::new(),
+                tombstones: Mutex::new(VecDeque::new()),
                 root_instances: DashMap::new(),
                 queue_stats: Arc::new(ProcQueueStats::new()),
                 terminated_snapshots: DashMap::new(),
@@ -1002,6 +1006,26 @@ impl Proc {
             StatusMessage::UnsubscribeTerminal { subscription_id } => {
                 self.unsubscribe_terminal_status(actor_id, subscription_id);
             }
+        }
+    }
+
+    /// Record a new tombstone for `actor_id`, then forget the oldest
+    /// tombstones beyond [`config::ACTOR_TOMBSTONE_RETENTION`], both in
+    /// [`ProcState::actors`] and in the mailbox muxer.
+    fn retain_tombstone(&self, actor_id: ActorId) {
+        let max = hyperactor_config::global::get(config::ACTOR_TOMBSTONE_RETENTION);
+        let evicted: Vec<_> = {
+            let mut tombstones = self.inner.tombstones.lock().unwrap();
+            tombstones.push_back(actor_id);
+            let excess = tombstones.len().saturating_sub(max);
+            tombstones.drain(..excess).collect()
+        };
+        for actor_id in evicted {
+            // An id reused by a newer instance is no longer tombstoned.
+            self.inner
+                .actors
+                .remove_if(&actor_id, |_, entry| entry.is_tombstoned());
+            self.inner.proc_muxer.remove_closed(&actor_id);
         }
     }
 
@@ -5224,15 +5248,24 @@ impl Drop for InstanceCellState {
             );
         }
         let status = self.status.borrow().clone();
-        match self.proc.inner.actors.entry(self.actor_id.id().clone()) {
+        let tombstoned = match self.proc.inner.actors.entry(self.actor_id.id().clone()) {
             Entry::Occupied(mut entry) if entry.get().is_running_instance(self) => {
-                if status.is_terminal() {
+                let terminal = status.is_terminal();
+                if terminal {
                     entry.insert(ActorEntry::Tombstoned(status));
                 } else {
                     entry.remove();
                 }
+                terminal
             }
-            _ => tracing::error!("instance {} was dropped but not in proc", self.actor_id),
+            _ => {
+                tracing::error!("instance {} was dropped but not in proc", self.actor_id);
+                false
+            }
+        };
+        // The entry lock is released; eviction may touch the same shard.
+        if tombstoned {
+            self.proc.retain_tombstone(self.actor_id.id().clone());
         }
         self.proc.inner.root_instances.remove(self.actor_id.id());
     }
@@ -6028,6 +6061,54 @@ mod tests {
             Some(terminal_status),
             "a dropped actor should report its terminal status"
         );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_oldest_tombstones_are_evicted() {
+        let config = hyperactor_config::global::lock();
+        let _config_guard = config.override_key(crate::config::ACTOR_TOMBSTONE_RETENTION, 2);
+        let proc = Proc::isolated();
+
+        let mut ids = Vec::new();
+        for _ in 0..4 {
+            let handle = proc.spawn(TestActor);
+            let cell = handle.cell().downgrade();
+            ids.push(handle.actor_addr().id().clone());
+            handle.drain_and_stop("test").unwrap();
+            handle.await;
+            while cell.upgrade().is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+
+        let state = proc.state();
+        for evicted in &ids[..2] {
+            assert!(
+                state.actors.get(evicted).is_none(),
+                "tombstones beyond the retention limit should be evicted"
+            );
+            assert!(!state.proc_muxer.is_closed(evicted));
+        }
+        for retained in &ids[2..] {
+            assert!(
+                state
+                    .actors
+                    .get(retained)
+                    .is_some_and(|entry| entry.is_tombstoned()),
+                "the most recent tombstones should be retained"
+            );
+            assert!(state.proc_muxer.is_closed(retained));
+        }
+        assert_eq!(state.tombstones.lock().unwrap().len(), 2);
+
+        // Snapshots are retained independently of tombstones, so even a
+        // forgotten actor remains visible to post-mortem introspection.
+        for id in &ids {
+            assert!(
+                state.terminated_snapshots.contains_key(id),
+                "terminated snapshots should outlive tombstone eviction"
+            );
+        }
     }
 
     #[async_timed_test(timeout_secs = 30)]
