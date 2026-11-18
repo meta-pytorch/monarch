@@ -56,9 +56,10 @@
 //!   blocking worker-loop wrappers (`monarch._src.actor.bootstrap`), and a
 //!   `returns_future` `.get()` that would block a running event loop
 //!   (`monarch._src.actor.returns_future`, RF-7).
-//! - **HDL-7 (`as_asyncio` publish).** The observer waits through
-//!   `wait_terminal`, which checks the state before it registers a wake
-//!   (HDL-25). The result is published on the loop thread through
+//! - **HDL-7 (`as_asyncio` publish).** The pipe observer waits through
+//!   `wait_arrival`, the fallback observer through `wait_terminal`; each
+//!   checks the state before it registers a wake (HDL-25). The result is
+//!   published on the loop thread through
 //!   `complete_asyncio_future`, by the wake reader (HDL-17) or by the
 //!   fallback's `call_soon_threadsafe` callback (HDL-21), or, for a Handle
 //!   already complete, by `as_asyncio` itself (HDL-22).
@@ -147,14 +148,15 @@
 //!   have the canonical module `monarch._rust_bindings.monarch_hyperactor.handle`.
 //! - **HDL-17 (GIL-free completion wake).** For a Handle still pending when
 //!   `as_asyncio` is called, on a loop that accepts `add_reader`, the observer
-//!   task holds a `Notifier` (a token,
-//!   an mpsc sender and an `Arc<Waker>`) and the `wait_terminal` future. It
-//!   reconstructs Raw on its worker before publishing a token. Already-decoded
-//!   outcomes need no GIL in the waiter. It pushes the token and writes the
-//!   loop's pipe; the loop thread reads the value from the
-//!   `Handle` and sets it (see [`crate::handle_wake`]). Enforced by
-//!   construction: `Notifier` has no `Py<_>`, and a token follows Done or Lost,
-//!   never raw arrival or claim release.
+//!   task holds a `Notifier` (a token, an mpsc sender and an `Arc<Waker>`) and
+//!   the `wait_arrival` future. Without the GIL or a claim, it waits until the
+//!   outcome is Done or Lost or a raw reply is unclaimed, then pushes the token
+//!   and writes the loop's pipe. The loop thread reads the value from the
+//!   `Handle`, claiming and rebuilding a raw reply there, and sets it (see
+//!   [`crate::handle_wake`]). A token that finds the reply claimed by another
+//!   observer re-arms its entry under the same token. Enforced by
+//!   construction: `Notifier` has no `Py<_>`, and a token follows a terminal
+//!   outcome, raw arrival or claim release.
 //! - **HDL-18 (notification ordering under supported pipe outcomes).** A
 //!   notifier pushes its token before writing the pipe, and the reader drains
 //!   the pipe before the queue, never returning between the two; both retry
@@ -247,10 +249,14 @@
 //!   raw reply under the state lock, then unpickles outside it. Success or an
 //!   ordinary Exception stores one shared outcome. An observer-side BaseException,
 //!   unwind or cancelled GIL wait releases the claim, preserves the original
-//!   payload and wakes waiters. Asyncio pipe/fallback workers instead settle every
-//!   reconstruction failure, including BaseException or caught unwind, before
-//!   delivering a terminal-only completion token. They retain the claim through
-//!   error settlement; no competitor can claim between unwind and publication.
+//!   payload and wakes waiters. The asyncio wake reader follows asyncio's
+//!   callback dispatch instead: only KeyboardInterrupt and SystemExit release
+//!   the claim, and the reader re-arms its entry and re-queues its batch's
+//!   undelivered tokens before it raises out of the loop. Every other failure,
+//!   including another BaseException or a caught unwind, is the shared outcome.
+//!   The fallback worker settles every reconstruction failure before it
+//!   schedules completion. Both retain the claim through error settlement; no
+//!   competitor can claim between unwind and publication.
 
 use std::error::Error;
 use std::future::Future;
@@ -268,8 +274,10 @@ use monarch_types::py_global;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyBaseException;
 use pyo3::exceptions::PyException;
+use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyStopIteration;
+use pyo3::exceptions::PySystemExit;
 use pyo3::exceptions::PyTimeoutError;
 use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyUserWarning;
@@ -283,6 +291,7 @@ use tokio::sync::Notify;
 use tokio::sync::futures::OwnedNotified;
 
 use crate::handle_wake::LoopWake;
+use crate::handle_wake::Notifier;
 use crate::runtime::GilSite;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::is_in_tokio_runtime;
@@ -364,12 +373,13 @@ fn log_unobserved(outcome: &PyResult<Py<PyAny>>, traceback: Option<Py<PyAny>>) {
     });
 }
 
-/// Return this observer's reference to the shared value or exception (HDL-3).
+/// Clone the Handle's shared outcome for one observer (HDL-3).
 ///
-/// Hold the GIL, but not the Handle's state lock: cloning a Python error can
-/// release and reacquire the GIL, risking deadlock with another observer
-/// that holds the GIL and is waiting for that lock (HDL-9).
-fn read(py: Python<'_>, outcome: &PyResult<Py<PyAny>>) -> PyResult<Py<PyAny>> {
+/// Call with the GIL held, but never with the Handle's state lock held.
+/// Cloning a Python exception may temporarily release the GIL. Another thread
+/// could then take the GIL and wait for the state lock, leaving each thread
+/// waiting for the other (HDL-9).
+fn clone_shared_outcome(py: Python<'_>, outcome: &PyResult<Py<PyAny>>) -> PyResult<Py<PyAny>> {
     match outcome {
         Ok(value) => Ok(value.clone_ref(py)),
         Err(error) => Err(error.clone_ref(py)),
@@ -586,15 +596,63 @@ enum ReceiveExecution {
 
 /// Decide whether an interrupted or panicking unpickle attempt is retryable.
 ///
-/// Ordinary Python exceptions become shared Handle errors in both cases.
+/// Ordinary Python exceptions become shared Handle errors under every policy.
 #[derive(Clone, Copy)]
 enum ReconstructionFailurePolicy {
     /// Deliver a signal-like BaseException or Rust unwind to this observer.
     /// Keep the pickled reply so another observer can retry unpickling it.
     KeepReplyAfterInterrupt,
-    /// Store every failure as the Handle's shared error before waking asyncio.
-    /// The loop's reader requires a final value or error, not a retryable reply.
+    /// On the asyncio loop, let KeyboardInterrupt and SystemExit stop this
+    /// read and leave the pickled reply available for another attempt.
+    /// Store every other failure, including other BaseException subclasses
+    /// and Rust panics, as the Handle's shared error.
+    KeepReplyAfterLoopInterrupt,
+    /// Store every failure as the Handle's shared error before the asyncio
+    /// fallback schedules completion. Its callback requires a final value or
+    /// error, not a retryable reply.
     StoreEveryFailureInHandle,
+}
+
+impl ReconstructionFailurePolicy {
+    /// Return whether this failure belongs only to the current read.
+    /// An interrupted read leaves the pickled reply available for another
+    /// attempt; otherwise the failure becomes the Handle's shared outcome.
+    fn interrupts(self, py: Python<'_>, error: &PyErr) -> bool {
+        match self {
+            // Outside the loop reader, control-flow exceptions such as
+            // KeyboardInterrupt interrupt this caller's read rather than the
+            // shared operation.
+            Self::KeepReplyAfterInterrupt => !error.is_instance_of::<PyException>(py),
+            // While the loop handles the wake pipe, KeyboardInterrupt and
+            // SystemExit escape the current run. Leave the pickled reply
+            // available so a later loop turn can retry it; store every other
+            // failure as the shared outcome.
+            Self::KeepReplyAfterLoopInterrupt => {
+                error.is_instance_of::<PyKeyboardInterrupt>(py)
+                    || error.is_instance_of::<PySystemExit>(py)
+            }
+            // The fallback reconstructs off-loop and has no read to interrupt,
+            // so every failure must be stored before completion is scheduled.
+            Self::StoreEveryFailureInHandle => false,
+        }
+    }
+}
+
+/// Run one reconstruction attempt without letting a Rust panic escape.
+/// Convert the panic payload to a Python RuntimeError so the caller can store
+/// it through the same path as any other Python failure.
+fn reconstruct_catching_panic(reply: &dyn Reconstruct, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    match catch_unwind(AssertUnwindSafe(|| reply.reconstruct(py))) {
+        Ok(result) => result,
+        Err(panic) => {
+            let message = panic
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("Rust unwind while reconstructing an endpoint reply");
+            Err(PyRuntimeError::new_err(message.to_owned()))
+        }
+    }
 }
 
 /// Give one observer the right to unpickle a successful endpoint reply.
@@ -631,9 +689,13 @@ impl ReconstructionClaim {
     /// - KeepReplyAfterInterrupt returns a BaseException outside Exception,
     ///   such as KeyboardInterrupt, to this observer only. A Rust panic also
     ///   escapes. Both release the claim and leave Raw available for a retry.
+    /// - KeepReplyAfterLoopInterrupt returns only KeyboardInterrupt or
+    ///   SystemExit, releasing the claim. It stores every other Python
+    ///   exception and converts a Rust panic to a shared RuntimeError, so
+    ///   nothing unwinds through the asyncio wake reader.
     /// - StoreEveryFailureInHandle stores every Python exception and converts
-    ///   a Rust panic to a shared RuntimeError. Asyncio workers use this because
-    ///   the loop's reader needs a final value or error, not a Raw reply.
+    ///   a Rust panic to a shared RuntimeError. The asyncio fallback worker
+    ///   uses this because its callback needs a final value or error.
     ///
     /// Ok contains the shared outcome, which may itself be an error. Err means
     /// this observation was interrupted; the retained reply remains retryable.
@@ -643,46 +705,32 @@ impl ReconstructionClaim {
         failure_policy: ReconstructionFailurePolicy,
     ) -> PyResult<Arc<PyResult<Py<PyAny>>>> {
         let result = match failure_policy {
-            // Let a Rust panic unwind on the observer's thread. Dropping this
-            // claim during unwinding releases Raw for another attempt.
-            ReconstructionFailurePolicy::KeepReplyAfterInterrupt => self.reply.reconstruct(py),
-            ReconstructionFailurePolicy::StoreEveryFailureInHandle => {
-                // Catch only the unpickling call, keeping this claim alive.
-                // Even if that call panics, no competitor can take Raw before
-                // this worker stores the failure as the shared outcome.
-                match catch_unwind(AssertUnwindSafe(|| self.reply.reconstruct(py))) {
-                    Ok(result) => result,
-                    Err(panic) => {
-                        // Preserve a textual panic message when available and
-                        // turn the panic into a Python RuntimeError.
-                        let message = panic
-                            .downcast_ref::<&str>()
-                            .copied()
-                            .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-                            .unwrap_or("Rust unwind while reconstructing an endpoint reply");
-                        Err(PyRuntimeError::new_err(message.to_owned()))
-                    }
-                }
+            ReconstructionFailurePolicy::KeepReplyAfterInterrupt => {
+                // Preserve ordinary caller behavior: let a Rust panic unwind.
+                // Dropping this claim leaves the pickled reply available for retry.
+                self.reply.reconstruct(py)
+            }
+            ReconstructionFailurePolicy::KeepReplyAfterLoopInterrupt
+            | ReconstructionFailurePolicy::StoreEveryFailureInHandle => {
+                // Both asyncio paths turn a Rust panic into a shared RuntimeError.
+                // `interrupts()` below decides which Python exceptions remain
+                // retryable.
+                reconstruct_catching_panic(self.reply.as_ref(), py)
             }
         };
-        // If unpickling failed, the policy is KeepReplyAfterInterrupt, and the
-        // error is outside Python's Exception class (e.g. KeyboardInterrupt or
-        // SystemExit), return it to this observer without storing a shared error.
-        // Another observer can then retry the retained reply. Errors derived
-        // from Exception, and every error under StoreEveryFailureInHandle,
-        // continue below to become the Handle's shared outcome.
+        // If the policy takes the failure as an interrupt of this observation,
+        // return it to this observer without storing a shared error. Another
+        // observer can then retry the retained reply. Every other failure
+        // continues below to become the Handle's shared outcome.
         if let Err(error) = &result
-            && matches!(
-                failure_policy,
-                ReconstructionFailurePolicy::KeepReplyAfterInterrupt
-            )
-            && !error.is_instance_of::<PyException>(py)
+            && failure_policy.interrupts(py, error)
         {
             // Returning drops this claim: its Drop clears Raw.claimed and
             // wakes waiting observers. Nothing is stored in Done.
             return Err(result.expect_err("the result was checked as an interrupt"));
         }
-        // Share one outcome rather than consuming it when an observer reads it.
+        // Retryable interruptions returned above. What remains is final: either
+        // the reconstructed value or an exception every observer will share.
         let outcome = Arc::new(result);
         // Tests can pause with the claim still held, proving a competing
         // observer cannot claim the reply before this outcome is stored.
@@ -694,8 +742,8 @@ impl ReconstructionClaim {
         // Replace Raw with Done under the core's mutex, then wake its waiters
         // after unlocking. Every later observer reads this same outcome.
         core.finish(State::Done(Arc::clone(&outcome)));
-        // The outer Ok reports that sharing succeeded; the stored PyResult
-        // still distinguishes a Python value from a shared exception.
+        // The outer Ok says this claim settled the Handle. `outcome` itself
+        // still contains either the value or the shared exception.
         Ok(outcome)
     }
 }
@@ -813,24 +861,11 @@ impl Core {
             .expect("should not be poisoned: nothing panics under the state lock (HDL-9)")
     }
 
-    /// Check whether the shared result is available without starting a receive.
-    ///
-    /// Return the stored outcome, producer loss, or Pending for both unstarted
-    /// and running work. Clone only the outcome's Arc under the lock, so the
-    /// caller can read its Python value or error after unlocking (HDL-9).
-    fn snapshot(&self) -> Observed {
-        match &*self.lock() {
-            State::Done(outcome) => Observed::Done(outcome.clone()),
-            State::Lost => Observed::Lost,
-            State::Unstarted(_) | State::Running { .. } | State::Raw { .. } => Observed::Pending,
-        }
-    }
-
     /// Check for a result, starting an unstarted port or stream-reply receive
     /// as a Tokio task (HDL-24).
     ///
-    /// Unlike snapshot(), this can start receive work or claim an available raw
-    /// reply for reconstruction. It never polls a receive or runs Python here.
+    /// This can start receive work or claim an available raw reply for
+    /// reconstruction. It never polls a receive or runs Python here.
     /// Return the shared outcome, loss, Pending or that exclusive claim.
     fn observe(self: &Arc<Self>) -> Observed {
         // observe_or_drive() returns either Observation::Observed (an outcome,
@@ -1166,8 +1201,66 @@ async fn wait_observed(core: Arc<Core>) -> Observed {
     }
 }
 
-/// Asyncio workers settle raw replies before issuing a terminal-only wake token.
-/// Already-decoded outcomes still take no GIL on this readiness path (HDL-17).
+/// Wait until the loop reader can make progress on this Handle.
+///
+/// Return when the Handle has a final outcome, its producer is lost, or a
+/// pickled reply is available to claim. While the operation is still running,
+/// or another observer holds the reconstruction claim, wait for the next
+/// state change.
+///
+/// This function neither claims nor reconstructs the reply and never takes
+/// the GIL. The asyncio pipe waiter uses it only to decide when to wake the
+/// loop. The caller must start any deferred receive before calling it.
+///
+/// Check the state and register the wake under the same lock, so arrival,
+/// claim release, and settlement cannot occur between those operations.
+async fn wait_arrival(core: Arc<Core>) {
+    loop {
+        let state_change = match &mut *core.lock() {
+            State::Done(_) | State::Lost | State::Raw { claimed: false, .. } => return,
+            // Nothing is ready for the loop reader: either the producer is
+            // still running or another observer is reconstructing the reply.
+            // Reuse the state's shared Notify, creating it lazily for the first
+            // waiter. Create this waiter's owned notification future while the
+            // state lock is held; after it fires, loop back and check the state
+            // again.
+            State::Running { wake, .. } | State::Raw { wake, .. } => Some(
+                wake.get_or_insert_with(|| Arc::new(Notify::new()))
+                    .clone()
+                    .notified_owned(),
+            ),
+            State::Unstarted(_) => None,
+        };
+        #[cfg(test)]
+        run_test_hook(&AFTER_REGISTER);
+        state_change
+            .expect("HDL-24: an observer starts the producer before it waits")
+            .await;
+    }
+}
+
+/// Start a Tokio task that wakes the asyncio loop when this Handle can be read.
+///
+/// The task waits until the Handle has a final outcome, loses its producer, or
+/// has a pickled reply available to claim. It then queues this await's token
+/// and writes the loop's wake pipe.
+///
+/// The task owns the core and native notifier, but no Python object, so waiting
+/// and waking require no GIL. The wake reader also uses this helper to re-arm
+/// an await when another observer is reconstructing the reply.
+fn spawn_arrival_wake(core: Arc<Core>, loop_notifier: Notifier) {
+    get_tokio_runtime().spawn(async move {
+        wait_arrival(core).await;
+        loop_notifier.notify();
+    });
+}
+
+/// Wait for the Handle's final outcome when the event loop cannot use `add_reader`.
+///
+/// If a pickled reply arrives, claim and reconstruct it on this Tokio worker,
+/// storing its value or error before returning. A result already stored, or
+/// producer loss, requires no GIL while waiting. The caller later schedules
+/// this outcome onto the loop with `call_soon_threadsafe`.
 async fn wait_terminal(core: Arc<Core>) -> PyResult<Arc<PyResult<Py<PyAny>>>> {
     match wait_observed(core).await {
         Observed::Done(outcome) => Ok(outcome),
@@ -1425,6 +1518,18 @@ pub struct PyHandle {
     core: Arc<Core>,
 }
 
+/// What the asyncio wake reader finds when an await's token arrives (HDL-17).
+pub(crate) enum LoopReadOutcome {
+    /// The shared value or error, to set on the await's future.
+    Ready(PyResult<Py<PyAny>>),
+    /// Another observer holds the raw reply's reconstruction claim. The await
+    /// waits for that observer's outcome or release.
+    Claimed,
+    /// KeyboardInterrupt or SystemExit interrupted the rebuild on the loop.
+    /// The reply stays Raw and unclaimed for a retry (HDL-27).
+    Interrupted(PyErr),
+}
+
 /// Create a Handle and its only completer for work owned and scheduled by Python.
 ///
 /// The Handle's core starts in State::Running, with no result. This factory
@@ -1569,33 +1674,51 @@ impl PyHandle {
                 return Err(handle_producer_ended_error());
             }
             // Reconstruct a claimed reply and read its shared outcome in one
-            // GIL acquisition. Already-decoded results need only read(), which
-            // clones the Python reference or exception without consuming it.
+            // GIL acquisition. Already-decoded results only clone the shared
+            // Python value or exception without consuming it.
             monarch_with_gil(GilSite::Convert, move |py| {
                 let outcome = reconstruct_observed(
                     py,
                     observed,
                     ReconstructionFailurePolicy::KeepReplyAfterInterrupt,
                 )?;
-                read(py, &outcome)
+                clone_shared_outcome(py, &outcome)
             })
             .await
         }
     }
 
-    /// Read the current result without waiting or starting a deferred receive.
-    /// The asyncio wake callback uses this on the loop thread to settle its
-    /// Python future after notification (HDL-17).
+    /// Read the result for the asyncio wake reader when an await's token
+    /// arrives, on the loop thread with its GIL (HDL-17).
     ///
-    /// Hold the GIL. The stored result remains available to other observers.
-    /// This is an internal Rust method, not exposed to Python.
-    pub(crate) fn poll_ready(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        // snapshot() releases the state lock before read_observed() touches Python.
-        // read_observed() returns Ok(Some(reference to the stored Python value)),
-        // Err(a cloned stored exception), or Ok(None) if no result is ready.
-        // Producer loss returns Err rather than remaining pending. No result is
-        // unpickled again or consumed.
-        read_observed(py, self.core.snapshot())
+    /// Claim and rebuild an unclaimed raw reply here, under the loop's failure
+    /// policy: only KeyboardInterrupt or SystemExit leaves it retryable
+    /// (HDL-27). The stored result remains available to other observers.
+    pub(crate) fn read_on_loop(&self, py: Python<'_>) -> LoopReadOutcome {
+        match self.core.observe() {
+            Observed::Done(outcome) => LoopReadOutcome::Ready(clone_shared_outcome(py, &outcome)),
+            Observed::Lost => LoopReadOutcome::Ready(Err(handle_producer_ended_error())),
+            // A token follows an outcome or an unclaimed reply, and Raw never
+            // returns to Running, so a pending core has another observer's claim.
+            Observed::Pending => LoopReadOutcome::Claimed,
+            Observed::Reconstruct(claim) => {
+                match claim
+                    .reconstruct(py, ReconstructionFailurePolicy::KeepReplyAfterLoopInterrupt)
+                {
+                    Ok(outcome) => LoopReadOutcome::Ready(clone_shared_outcome(py, &outcome)),
+                    Err(interrupt) => LoopReadOutcome::Interrupted(interrupt),
+                }
+            }
+        }
+    }
+
+    /// Re-arm a pending asyncio await while another observer reconstructs the reply.
+    ///
+    /// Start a native waiter for this Handle's next readable state. When the other
+    /// observer stores an outcome or releases its claim, `loop_notifier` queues the
+    /// same token and wakes the loop again.
+    pub(crate) fn notify_on_arrival(&self, loop_notifier: Notifier) {
+        spawn_arrival_wake(Arc::clone(&self.core), loop_notifier);
     }
 
     /// Inspect arrival without claiming or reconstructing, for endpoint witnesses.
@@ -1800,11 +1923,10 @@ fn drive_inline(
             // Arc in Core.state, changing Running to Done(outcome). It releases
             // that mutex, then wakes every registered waiter to read the result.
             drive.publisher.publish_shared(Arc::clone(&outcome));
-            // The blocking helper has reacquired the GIL on this thread. read()
-            // returns Ok with another reference to the same Python value, or Err
-            // with a clone of the stored exception. It does not unpickle again
-            // or consume the shared result, and runs outside Core.state's mutex.
-            read(py, &outcome)
+            // The blocking helper has reacquired the GIL on this thread. Clone
+            // the stored value or exception without unpickling again or
+            // consuming the shared result, outside Core.state's mutex.
+            clone_shared_outcome(py, &outcome)
         }
         Ok(Some(ReceiveOutcome::Interrupted { interrupt, finish })) => {
             // Handle.get() called drive_inline() to run this receive on its thread.
@@ -1849,10 +1971,9 @@ fn drive_inline(
 ///   such a mutex can deadlock another observer.
 fn read_observed(py: Python<'_>, observed: Observed) -> PyResult<Option<Py<PyAny>>> {
     match observed {
-        // read() returns Ok with another reference to the same Python value,
-        // or Err with a clone of the stored exception. map(Some) wraps only
-        // the successful value; an error remains Err.
-        Observed::Done(outcome) => read(py, &outcome).map(Some),
+        // Clone the stored value or exception. map(Some) wraps only the
+        // successful value; an error remains Err.
+        Observed::Done(outcome) => clone_shared_outcome(py, &outcome).map(Some),
         // No producer remains to supply a result. Construct RuntimeError
         // "Handle producer ended without publishing a result" rather than
         // report Pending and leave the observer waiting for work that ended.
@@ -1863,7 +1984,7 @@ fn read_observed(py: Python<'_>, observed: Observed) -> PyResult<Option<Py<PyAny
         Observed::Reconstruct(claim) => {
             let outcome =
                 claim.reconstruct(py, ReconstructionFailurePolicy::KeepReplyAfterInterrupt)?;
-            read(py, &outcome).map(Some)
+            clone_shared_outcome(py, &outcome).map(Some)
         }
     }
 }
@@ -2129,15 +2250,14 @@ impl PyHandle {
             ready => ready,
         };
         // Core.state's mutex is no longer held. This thread has the GIL; the
-        // blocking helper reacquired it if we waited. read() returns Ok with
-        // another reference to the stored Python value, or Err with a cloned
+        // blocking helper reacquired it if we waited. Clone the stored value or
         // exception, leaving the shared result available to other observers.
         let outcome = reconstruct_observed(
             py,
             observed,
             ReconstructionFailurePolicy::KeepReplyAfterInterrupt,
         )?;
-        read(py, &outcome)
+        clone_shared_outcome(py, &outcome)
     }
 
     /// Non-blocking, non-consuming check for completion.
@@ -2159,19 +2279,24 @@ impl PyHandle {
     ///
     /// Requires a running loop; off a loop this raises the native `RuntimeError`
     /// from `asyncio.get_running_loop()`, before it starts anything (HDL-24). A
-    /// Tokio observer of the core waits for completion; it never drives a
-    /// Python coroutine. It then wakes the loop through the loop's [`LoopWake`]
-    /// channel without the GIL, and the loop thread reads the value and sets
-    /// the result (HDL-17). It instead takes the GIL and publishes via
-    /// `loop.call_soon_threadsafe(...)` when the loop's `add_reader` raises
-    /// `NotImplementedError`, or when the loop cannot be weakly referenced
-    /// (HDL-21). Any other failure to install the channel or register the
-    /// future is raised.
+    /// Tokio observer of the core waits for completion, or for a raw reply's
+    /// arrival; it never drives a Python coroutine. It then wakes the loop
+    /// through the loop's [`LoopWake`] channel without the GIL, and the loop
+    /// thread reads the value and sets the result (HDL-17). It instead takes
+    /// the GIL and publishes via `loop.call_soon_threadsafe(...)` when the
+    /// loop's `add_reader` raises `NotImplementedError`, or when the loop
+    /// cannot be weakly referenced (HDL-21). Any other failure to install the
+    /// channel or register the future is raised.
     ///
-    /// An available raw endpoint reply is unpickled immediately on the loop
-    /// thread. If it arrives later, or another observer holds its claim, a
-    /// Tokio waiter reconstructs it before notification. Every reconstruction
-    /// failure on that worker becomes a shared terminal error (HDL-27).
+    /// A raw endpoint reply is unpickled on the loop thread: immediately if it
+    /// is available, otherwise by the wake reader after it arrives. If another
+    /// observer holds its claim, the await settles from that observer's
+    /// outcome, or the reader claims the reply after a release. A
+    /// KeyboardInterrupt or SystemExit raised while the reader unpickles
+    /// propagates out of the loop and leaves the reply for a later turn; every
+    /// other failure becomes the shared result (HDL-27). On the fallback, a
+    /// Tokio waiter unpickles before scheduling completion, and every failure
+    /// there becomes the shared result.
     ///
     /// A Handle that already holds its outcome returns a future already
     /// completed with it, and starts no observer (HDL-22). For a pending
@@ -2183,7 +2308,9 @@ impl PyHandle {
     ///
     /// Each call on a pending Handle spawns its own observer; cancelling the
     /// returned future does not stop the observer, which exits when the handle
-    /// resolves.
+    /// resolves or, on the pipe path, when its raw reply arrives. An await
+    /// cancelled, or whose loop closes, before the reply arrives does not
+    /// unpickle it; another observer can.
     fn as_asyncio<'py>(slf: PyRef<'_, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         // HDL-6: off a loop this yields the native RuntimeError, not
         // WouldBlockRuntime. HDL-24: this check runs before anything starts.
@@ -2203,10 +2330,9 @@ impl PyHandle {
                     observed,
                     ReconstructionFailurePolicy::KeepReplyAfterInterrupt,
                 )?;
-                // The Handle already has a value or error. Under the GIL, read()
-                // returns another reference to that value or a cloned exception,
+                // Clone the Handle's stored value or exception under the GIL,
                 // without consuming the core's result.
-                match read(py, &outcome) {
+                match clone_shared_outcome(py, &outcome) {
                     // false selects asyncio.Future.set_result(value).
                     Ok(value) => complete_asyncio_future(&fut, false, value)?,
                     // true selects set_exception. into_value() gives the helper
@@ -2230,35 +2356,30 @@ impl PyHandle {
             // observe(), not by this waiter.
             Observed::Pending => {}
         }
-        // Retain a native observer through completion (HDL-23). Already-decoded
-        // results need no GIL here; raw replies must be reconstructed and settled
-        // before a terminal-only pipe token or fallback callback can be sent.
-        let wait = wait_terminal(slf.core.clone());
-
         // Reuse or install this loop's shared pipe-based wake channel. None means
         // the loop lacks add_reader support or cannot be weakly referenced; other
         // installation failures propagate instead of silently falling back.
         if let Some(channel) = LoopWake::for_loop(py, &event_loop)? {
+            // The waiter task retains the core through arrival (HDL-23).
+            let core = slf.core.clone();
             // Associate this asyncio future with its Handle in the channel's table.
             // slf.into() gives the entry an owned Python reference to the Handle.
             // The notifier carries only a registration token and native wake state.
             let notifier = LoopWake::register(&channel, &fut, slf.into())?;
-            get_tokio_runtime().spawn(async move {
-                // Settle any raw reply, then discard this task's outcome copy.
-                // The loop callback reads only the stored value/error or Lost.
-                // For already-decoded results this task takes no GIL (HDL-17).
-                drop(wait.await);
-                // Queue the registration token, then make the pipe readable.
-                // The loop thread handles that token and completes fut; no Python
-                // value or exception is passed through the pipe.
-                notifier.notify();
-            });
+            // Without the GIL or a claim, wait for an outcome or raw bytes, then
+            // queue the token and make the pipe readable. The loop thread reads,
+            // or rebuilds, the result and completes fut (HDL-17).
+            spawn_arrival_wake(core, notifier);
             // Return now; the loop callback will complete the asyncio future.
             return Ok(fut);
         }
 
         // HDL-21: without a pipe channel, the Tokio waiter must acquire the GIL
         // and use call_soon_threadsafe to queue completion on the loop thread.
+        // Retain a native observer through completion (HDL-23). Already-decoded
+        // results need no GIL while waiting; a raw reply is reconstructed and
+        // settled on this worker before completion is scheduled.
+        let wait = wait_terminal(slf.core.clone());
         // Retain owned references to the same loop and future, not borrowed Bounds,
         // so the task can use them after this binding call returns.
         let loop_handle = event_loop.clone().unbind();
@@ -2271,9 +2392,9 @@ impl PyHandle {
             let outcome = wait.await;
             let scheduled = monarch_with_gil(GilSite::Convert, move |py| {
                 // wait_terminal() has released Core.state's mutex. Under the GIL,
-                // read() returns a reference to the stored value or a cloned error.
-                // and_then leaves a producer-loss error unchanged (HDL-9/HDL-10).
-                let result = outcome.and_then(|outcome| read(py, &outcome));
+                // clone the stored value or error. and_then leaves a producer-loss
+                // error unchanged (HDL-9/HDL-10).
+                let result = outcome.and_then(|outcome| clone_shared_outcome(py, &outcome));
                 // Queue complete_asyncio_future with this value or exception via
                 // loop.call_soon_threadsafe. This schedules the setter; it does
                 // not change the asyncio future from the Tokio worker thread.
@@ -2418,8 +2539,10 @@ mod tests {
     use pyo3::types::PyList;
     use pyo3::types::PyModule;
     use pyo3::types::PyTuple;
+    use pyo3::types::PyWeakrefReference;
 
     use super::*;
+    use crate::pywaker::Waker;
     use crate::runtime::ensure_python;
 
     // Build a still-pending `Handle` and return its publisher so the test
@@ -2565,7 +2688,10 @@ mod tests {
             } else {
                 assert!(attempt.expect("not an unwind").is_err());
             }
-            assert!(matches!(handle.core.snapshot(), Observed::Pending));
+            assert!(
+                matches!(&*handle.core.lock(), State::Raw { claimed: false, .. }),
+                "the claim is released and the reply retained"
+            );
             monarch_with_gil_blocking(GilSite::Test, |py| {
                 let value = handle
                     .poll(py)
@@ -2579,56 +2705,75 @@ mod tests {
 
     // HDL-25, HDL-27: register before the first notification poll, then perform
     // each transition. The hook acknowledges the required race, not a sleep.
+    // The fallback's terminal waiter rebuilds the reply; the pipe's arrival
+    // waiter returns without claiming it.
     #[test]
     fn raw_arrival_release_and_settlement_wake_registered_waiters() {
         ensure_python();
-        for transition in ["arrival", "release", "settle"] {
-            let (publisher, handle) = pending_handle();
-            let (reply, calls, _) = test_reply(|py, _| 9.into_py_any(py));
-            let change: Box<dyn FnOnce()> = if transition == "arrival" {
-                Box::new(move || publisher.publish_raw(reply))
-            } else {
-                publisher.publish_raw(reply);
-                let claim = raw_claim(&handle);
-                if transition == "release" {
-                    Box::new(move || drop(claim))
+        for arrival_only in [false, true] {
+            for transition in ["arrival", "release", "settle"] {
+                let (publisher, handle) = pending_handle();
+                let (reply, calls, _) = test_reply(|py, _| 9.into_py_any(py));
+                let change: Box<dyn FnOnce()> = if transition == "arrival" {
+                    Box::new(move || publisher.publish_raw(reply))
                 } else {
-                    Box::new(move || {
-                        monarch_with_gil_blocking(GilSite::Test, |py| {
-                            claim
-                                .reconstruct(
-                                    py,
-                                    ReconstructionFailurePolicy::KeepReplyAfterInterrupt,
-                                )
-                                .expect("settle succeeds");
-                        });
+                    publisher.publish_raw(reply);
+                    let claim = raw_claim(&handle);
+                    if transition == "release" {
+                        Box::new(move || drop(claim))
+                    } else {
+                        Box::new(move || {
+                            monarch_with_gil_blocking(GilSite::Test, |py| {
+                                claim
+                                    .reconstruct(
+                                        py,
+                                        ReconstructionFailurePolicy::KeepReplyAfterInterrupt,
+                                    )
+                                    .expect("settle succeeds");
+                            });
+                        })
+                    }
+                };
+                let acknowledged = Arc::new(AtomicBool::new(false));
+                let acknowledgement = Arc::clone(&acknowledged);
+                AFTER_REGISTER.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move || {
+                        acknowledgement.store(true, Ordering::SeqCst);
+                        change();
+                    }))
+                });
+                let core = Arc::clone(&handle.core);
+                let rebuilt = get_tokio_runtime()
+                    .block_on(async {
+                        tokio::time::timeout(Duration::from_secs(5), async move {
+                            if arrival_only {
+                                wait_arrival(core).await;
+                                None
+                            } else {
+                                Some(wait_terminal(core).await)
+                            }
+                        })
+                        .await
                     })
+                    .expect("registered raw waiter must wake");
+                assert!(
+                    acknowledged.load(Ordering::SeqCst),
+                    "the transition must follow registration"
+                );
+                if let Some(outcome) = rebuilt {
+                    assert!(outcome.expect("the reply reconstructs").is_ok());
                 }
-            };
-            let acknowledged = Arc::new(AtomicBool::new(false));
-            let acknowledgement = Arc::clone(&acknowledged);
-            AFTER_REGISTER.with(|hook| {
-                *hook.borrow_mut() = Some(Box::new(move || {
-                    acknowledgement.store(true, Ordering::SeqCst);
-                    change();
-                }))
-            });
-            let outcome = get_tokio_runtime()
-                .block_on(async {
-                    tokio::time::timeout(
-                        Duration::from_secs(5),
-                        wait_terminal(Arc::clone(&handle.core)),
-                    )
-                    .await
-                })
-                .expect("registered raw waiter must wake")
-                .expect("the reply reconstructs");
-            assert!(
-                acknowledged.load(Ordering::SeqCst),
-                "the transition must follow registration"
-            );
-            assert!(outcome.is_ok());
-            assert_eq!(calls.load(Ordering::SeqCst), 1);
+                let expected = if arrival_only && transition != "settle" {
+                    assert!(
+                        matches!(&*handle.core.lock(), State::Raw { claimed: false, .. }),
+                        "{transition}: the arrival waiter leaves the bytes unclaimed"
+                    );
+                    0
+                } else {
+                    1
+                };
+                assert_eq!(calls.load(Ordering::SeqCst), expected, "{transition}");
+            }
         }
     }
 
@@ -2671,7 +2816,7 @@ mod tests {
             });
             assert!(acknowledged.load(Ordering::SeqCst));
             assert!(outcome.is_err());
-            assert!(matches!(handle.core.snapshot(), Observed::Done(_)));
+            assert!(matches!(&*handle.core.lock(), State::Done(_)));
             assert_eq!(calls.load(Ordering::SeqCst), 1);
         }
     }
@@ -2759,47 +2904,44 @@ mod tests {
         }
     }
 
-    // HDL-17, HDL-27: both asyncio workers finish every failure before a normal
-    // pipe token/callback; their reader never faces Raw, and entries are removed.
+    // HDL-21, HDL-27: the fallback worker settles every failure before its
+    // callback, so the loop never faces Raw, and no wake-channel entry exists.
     #[test]
-    fn raw_worker_failures_settle_asyncio_and_release_entries() {
+    fn raw_fallback_worker_failures_settle_asyncio() {
         ensure_python();
-        for fallback in [false, true] {
-            for unwind in [false, true] {
-                let (publisher, handle) = pending_handle();
-                let (reply, calls, _) = test_reply(move |_, _| {
-                    if unwind {
-                        panic!("worker reconstruction unwind");
-                    }
-                    Err(PyKeyboardInterrupt::new_err(
-                        "worker reconstruction failure",
-                    ))
-                });
-                let gate = RawPublication {
-                    publication: Mutex::new(Some((publisher, reply))),
-                };
-                monarch_with_gil_blocking(GilSite::Test, |py| {
-                    let helper = PyModule::from_code(
-                        py,
-                        cr#"
+        for unwind in [false, true] {
+            let (publisher, handle) = pending_handle();
+            let (reply, calls, _) = test_reply(move |_, _| {
+                if unwind {
+                    panic!("worker reconstruction unwind");
+                }
+                Err(PyKeyboardInterrupt::new_err(
+                    "worker reconstruction failure",
+                ))
+            });
+            let gate = RawPublication {
+                publication: Mutex::new(Some((publisher, reply))),
+            };
+            monarch_with_gil_blocking(GilSite::Test, |py| {
+                let helper = PyModule::from_code(
+                    py,
+                    cr#"
 import asyncio
 
-def run(handle, gate, fallback):
+def run(handle, gate):
     loop = asyncio.new_event_loop()
-    if fallback:
-        def no_reader(*args):
-            raise NotImplementedError
-        loop.add_reader = no_reader
+    def no_reader(*args):
+        raise NotImplementedError
+    loop.add_reader = no_reader
     async def observe():
         pending = handle.as_asyncio()
         assert not pending.done(), 'the raw publication must follow registration'
-        assert gate.entries(loop) == (0 if fallback else 1)
+        assert gate.entries(loop) == 0
         gate.publish()
         try:
             await asyncio.wait_for(pending, 5)
         except BaseException as error:
             assert pending.done(), 'worker error must settle the asyncio Future'
-            assert gate.entries(loop) == 0, 'normal delivery must remove its entry'
             return error
         raise AssertionError('worker reconstruction must fail')
     try:
@@ -2807,28 +2949,552 @@ def run(handle, gate, fallback):
     finally:
         loop.close()
 "#,
-                        c"raw_worker_test.py",
-                        c"raw_worker_test",
-                    )
-                    .expect("worker test helper");
-                    let handle = Py::new(py, handle).expect("test Handle");
-                    let delivered = helper
-                        .call_method1("run", (&handle, gate, fallback))
-                        .expect("asyncio must return the reconstruction error");
-                    let error = handle.borrow(py).poll(py).expect_err("shared worker error");
-                    assert!(
-                        error.value(py).is(&delivered),
-                        "worker and later poll share one error"
-                    );
-                    assert_eq!(calls.load(Ordering::SeqCst), 1);
-                    if unwind {
-                        assert!(error.is_instance_of::<PyRuntimeError>(py));
-                    } else {
-                        assert!(error.is_instance_of::<PyKeyboardInterrupt>(py));
-                    }
-                });
-            }
+                    c"raw_worker_test.py",
+                    c"raw_worker_test",
+                )
+                .expect("worker test helper");
+                let handle = Py::new(py, handle).expect("test Handle");
+                let delivered = helper
+                    .call_method1("run", (&handle, gate))
+                    .expect("asyncio must return the reconstruction error");
+                let error = handle.borrow(py).poll(py).expect_err("shared worker error");
+                assert!(
+                    error.value(py).is(&delivered),
+                    "worker and later poll share one error"
+                );
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+                if unwind {
+                    assert!(error.is_instance_of::<PyRuntimeError>(py));
+                } else {
+                    assert!(error.is_instance_of::<PyKeyboardInterrupt>(py));
+                }
+            });
         }
+    }
+
+    /// Loop drivers for the wake reader's raw-reply witnesses.
+    fn reader_helper(py: Python<'_>) -> Bound<'_, PyModule> {
+        PyModule::from_code(
+            py,
+            cr#"
+import asyncio
+
+
+class ReaderBaseError(BaseException):
+    pass
+
+
+def observe(loop, handles):
+    async def start():
+        return [handle.as_asyncio() for handle in handles]
+
+    return loop.run_until_complete(start())
+
+
+def run_once(loop):
+    # One iteration: ready callbacks and, if the pipe is readable, the reader.
+    loop.call_soon(loop.stop)
+    try:
+        loop.run_forever()
+    except BaseException as error:
+        return error
+    return None
+
+
+def run_until_done(loop, futures):
+    loop.run_until_complete(asyncio.wait(futures, timeout=5))
+
+
+def capture_errors(loop):
+    errors = []
+    loop.set_exception_handler(lambda _loop, context: errors.append(context))
+    return errors
+"#,
+            c"loop_reader_test.py",
+            c"loop_reader_test",
+        )
+        .expect("loop reader test helper")
+    }
+
+    fn new_loop(py: Python<'_>) -> Bound<'_, PyAny> {
+        py.import("asyncio")
+            .expect("asyncio")
+            .call_method0("new_event_loop")
+            .expect("a new event loop")
+    }
+
+    fn channel<'py>(py: Python<'py>, event_loop: &Bound<'py, PyAny>) -> Bound<'py, LoopWake> {
+        LoopWake::for_loop(py, event_loop)
+            .expect("the loop's channel")
+            .expect("a selector loop uses the pipe")
+    }
+
+    fn run_once(helper: &Bound<'_, PyModule>, event_loop: &Bound<'_, PyAny>) -> Option<PyErr> {
+        let raised = helper
+            .call_method1("run_once", (event_loop,))
+            .expect("run_once returns what the run raised");
+        (!raised.is_none()).then(|| PyErr::from_value(raised))
+    }
+
+    fn is_done(fut: &Bound<'_, PyAny>) -> bool {
+        fut.call_method0("done")
+            .and_then(|done| done.is_truthy())
+            .expect("done() answers")
+    }
+
+    fn int_result(fut: &Bound<'_, PyAny>) -> i64 {
+        fut.call_method0("result")
+            .and_then(|value| value.extract())
+            .expect("an integer result")
+    }
+
+    fn raw_unclaimed(py: Python<'_>, handle: &Py<PyHandle>) -> bool {
+        matches!(
+            &*handle.borrow(py).core.lock(),
+            State::Raw { claimed: false, .. }
+        )
+    }
+
+    /// Wait until `holders` references to the pipe's write end remain: every
+    /// other notifier has sent its token, if its channel lives, and exited.
+    fn wait_for_waker_holders(waker: &Arc<Waker>, holders: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(waker) > holders {
+            assert!(
+                Instant::now() < deadline,
+                "the arrival waiters should notify without the GIL, which this thread holds"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Register one pending await per reply, then publish the replies in
+    /// order, each after the previous token is queued. One reader callback
+    /// then takes the tokens as one batch, in that order.
+    fn queue_raw_batch<'py>(
+        py: Python<'py>,
+        helper: &Bound<'py, PyModule>,
+        event_loop: &Bound<'py, PyAny>,
+        replies: Vec<Arc<dyn Reconstruct>>,
+    ) -> (Vec<Py<PyHandle>>, Vec<Bound<'py, PyAny>>) {
+        let (publishers, handles): (Vec<_>, Vec<_>) = replies
+            .iter()
+            .map(|_| {
+                let (publisher, handle) = pending_handle();
+                (publisher, Py::new(py, handle).expect("test Handle"))
+            })
+            .unzip();
+        let futures: Vec<Bound<'py, PyAny>> = helper
+            .call_method1("observe", (event_loop, PyList::new(py, &handles).unwrap()))
+            .and_then(|futures| futures.extract())
+            .expect("pending observers");
+        let waker = channel(py, event_loop).get().waker_for_test();
+        // The channel, this test and one notifier per await.
+        let holders = Arc::strong_count(&waker);
+        publishers.into_iter().zip(replies).enumerate().for_each(
+            |(published, (publisher, reply))| {
+                publisher.publish_raw(reply);
+                wait_for_waker_holders(&waker, holders - published - 1);
+            },
+        );
+        (handles, futures)
+    }
+
+    // HDL-17, HDL-27: the pipe waiter sends its token on raw arrival without
+    // the GIL or a claim, and the loop's reader rebuilds the reply on the loop
+    // thread, once, for every observer.
+    #[test]
+    fn raw_arrival_wakes_the_loop_which_rebuilds() {
+        ensure_python();
+        let threads = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&threads);
+        let (reply, calls, _) = test_reply(move |py, _| {
+            recorded
+                .lock()
+                .expect("thread record")
+                .push(thread::current().id());
+            vec![5].into_py_any(py)
+        });
+        let (publisher, handle) = pending_handle();
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let helper = reader_helper(py);
+            let event_loop = new_loop(py);
+            let handle = Py::new(py, handle).expect("test Handle");
+            let fut = helper
+                .call_method1(
+                    "observe",
+                    (&event_loop, PyList::new(py, [&handle]).unwrap()),
+                )
+                .and_then(|futures| futures.get_item(0))
+                .expect("a pending observer");
+            let channel = channel(py, &event_loop);
+
+            publisher.publish_raw(reply);
+            assert!(
+                channel.get().readable_within(Duration::from_secs(5)),
+                "the waiter should wake the loop without the GIL, which this thread holds"
+            );
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "the waiter does not rebuild"
+            );
+            assert!(
+                raw_unclaimed(py, &handle),
+                "the waiter leaves the bytes unclaimed"
+            );
+
+            assert!(run_once(&helper, &event_loop).is_none());
+            let value = fut
+                .call_method0("result")
+                .expect("the reader sets the value");
+            assert_eq!(
+                *threads.lock().expect("thread record"),
+                vec![thread::current().id()],
+                "the loop thread rebuilds"
+            );
+            let again = handle
+                .borrow(py)
+                .poll(py)
+                .expect("poll reads the value")
+                .expect("the value is stored");
+            assert!(value.is(&again), "the await and poll share one object");
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            event_loop.call_method0("close").unwrap();
+        });
+    }
+
+    // HDL-17, HDL-27: a token that finds Raw claimed re-arms its entry, and the
+    // loop runs on. The claim's settlement, or its release and the reader's
+    // own rebuild, then settles the await.
+    #[test]
+    fn claimed_raw_rearms_until_the_claim_settles_or_releases() {
+        ensure_python();
+        for ending in ["settle", "release"] {
+            let (reply, calls, _) = test_reply(|py, _| vec![6].into_py_any(py));
+            monarch_with_gil_blocking(GilSite::Test, |py| {
+                let helper = reader_helper(py);
+                let event_loop = new_loop(py);
+                let (handles, futures) = queue_raw_batch(py, &helper, &event_loop, vec![reply]);
+                let channel = channel(py, &event_loop);
+                let claim = raw_claim(&handles[0].borrow(py));
+
+                assert!(
+                    run_once(&helper, &event_loop).is_none(),
+                    "{ending}: the loop runs on"
+                );
+                assert!(!is_done(&futures[0]), "{ending}: the await waits");
+                assert_eq!(
+                    channel.get().entry_count(),
+                    1,
+                    "{ending}: the entry is re-armed"
+                );
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+                let claimed = if ending == "settle" {
+                    let outcome = claim
+                        .reconstruct(py, ReconstructionFailurePolicy::KeepReplyAfterInterrupt)
+                        .expect("the claim settles");
+                    Some(clone_shared_outcome(py, &outcome).expect("a value"))
+                } else {
+                    drop(claim);
+                    None
+                };
+                assert!(
+                    channel.get().readable_within(Duration::from_secs(5)),
+                    "{ending}: the re-armed waiter wakes the loop"
+                );
+                assert!(run_once(&helper, &event_loop).is_none());
+                let value = futures[0]
+                    .call_method0("result")
+                    .expect("the reader sets the value");
+                if let Some(claimed) = claimed {
+                    assert!(value.is(&claimed), "the await shares the claim's outcome");
+                }
+                assert_eq!(calls.load(Ordering::SeqCst), 1, "{ending}: one rebuild");
+                assert_eq!(channel.get().entry_count(), 0);
+                event_loop.call_method0("close").unwrap();
+            });
+        }
+    }
+
+    // HDL-17, HDL-27: KeyboardInterrupt or SystemExit from the loop's rebuild
+    // escapes the loop run and leaves the reply Raw and unclaimed. The
+    // interrupted await and the batch's undelivered token settle next run.
+    #[test]
+    fn loop_rebuild_interrupt_escapes_the_run_and_retries() {
+        ensure_python();
+        for interrupt in ["KeyboardInterrupt", "SystemExit"] {
+            let (first, first_calls, _) = test_reply(|py, _| 1.into_py_any(py));
+            let (interrupted, interrupted_calls, _) = test_reply(move |py, attempt| {
+                if attempt > 0 {
+                    return 2.into_py_any(py);
+                }
+                Err(match interrupt {
+                    "KeyboardInterrupt" => PyKeyboardInterrupt::new_err("loop rebuild interrupted"),
+                    _ => PySystemExit::new_err("loop rebuild exited"),
+                })
+            });
+            let (last, last_calls, _) = test_reply(|py, _| 3.into_py_any(py));
+            let calls = || {
+                [&first_calls, &interrupted_calls, &last_calls]
+                    .map(|calls| calls.load(Ordering::SeqCst))
+            };
+            monarch_with_gil_blocking(GilSite::Test, |py| {
+                let helper = reader_helper(py);
+                let event_loop = new_loop(py);
+                let (handles, futures) =
+                    queue_raw_batch(py, &helper, &event_loop, vec![first, interrupted, last]);
+                let channel = channel(py, &event_loop);
+
+                let raised = run_once(&helper, &event_loop)
+                    .unwrap_or_else(|| panic!("{interrupt} should escape the loop run"));
+                assert!(
+                    raised.is_instance_of::<PyKeyboardInterrupt>(py)
+                        || raised.is_instance_of::<PySystemExit>(py),
+                    "{interrupt}: unexpected {raised}"
+                );
+                assert_eq!(int_result(&futures[0]), 1, "the earlier token is delivered");
+                assert!(
+                    !is_done(&futures[1]) && !is_done(&futures[2]),
+                    "{interrupt}: the interrupted and later awaits wait"
+                );
+                assert!(
+                    raw_unclaimed(py, &handles[1]) && raw_unclaimed(py, &handles[2]),
+                    "{interrupt}: both replies stay Raw and unclaimed"
+                );
+                assert_eq!(calls(), [1, 1, 0], "the later token was not delivered");
+                assert_eq!(channel.get().entry_count(), 2);
+                assert!(
+                    channel.get().readable_within(Duration::ZERO),
+                    "{interrupt}: the re-queued tokens wake the next run"
+                );
+
+                assert!(run_once(&helper, &event_loop).is_none());
+                assert_eq!(int_result(&futures[1]), 2, "the rebuild is retried");
+                assert_eq!(int_result(&futures[2]), 3);
+                assert_eq!(calls(), [1, 2, 1]);
+                assert_eq!(channel.get().entry_count(), 0);
+                event_loop.call_method0("close").unwrap();
+            });
+        }
+    }
+
+    // HDL-27: any other BaseException from the loop's rebuild is the shared
+    // outcome. It is not retried and not reported, and the loop goes idle.
+    #[test]
+    fn loop_rebuild_base_exception_is_shared_not_retried() {
+        ensure_python();
+        for kind in ["CancelledError", "ReaderBaseError"] {
+            monarch_with_gil_blocking(GilSite::Test, |py| {
+                let helper = reader_helper(py);
+                let event_loop = new_loop(py);
+                let errors = helper
+                    .call_method1("capture_errors", (&event_loop,))
+                    .expect("an exception handler");
+                let exception = match kind {
+                    "CancelledError" => py
+                        .import("asyncio")
+                        .and_then(|asyncio| asyncio.getattr(kind)),
+                    _ => helper.getattr(kind),
+                }
+                .and_then(|class| class.call1(("loop rebuild failed",)))
+                .expect("the exception")
+                .unbind();
+                let raised = exception.clone_ref(py);
+                let (reply, calls, _) =
+                    test_reply(move |py, _| Err(PyErr::from_value(raised.bind(py).clone())));
+                let (handles, futures) = queue_raw_batch(py, &helper, &event_loop, vec![reply]);
+                let channel = channel(py, &event_loop);
+
+                assert!(
+                    run_once(&helper, &event_loop).is_none(),
+                    "{kind}: nothing escapes"
+                );
+                let delivered = futures[0]
+                    .call_method0("exception")
+                    .expect("the await settles with an exception");
+                assert!(
+                    delivered.is(&exception),
+                    "{kind}: the await has the exception"
+                );
+                let stored = handles[0]
+                    .borrow(py)
+                    .poll(py)
+                    .expect_err("poll raises the stored exception");
+                assert!(
+                    stored.value(py).is(&exception),
+                    "{kind}: one shared outcome"
+                );
+                assert_eq!(calls.load(Ordering::SeqCst), 1, "{kind}: no retry");
+                assert_eq!(channel.get().entry_count(), 0, "{kind}: no re-arm");
+                assert_eq!(errors.len().unwrap(), 0, "{kind}: nothing is reported");
+                assert!(
+                    !channel.get().readable_within(Duration::ZERO),
+                    "{kind}: the loop goes idle"
+                );
+                event_loop.call_method0("close").unwrap();
+            });
+        }
+    }
+
+    // HDL-27: a Rust panic in the loop's rebuild settles that await with a
+    // shared RuntimeError. It unwinds through neither the reader nor the
+    // batch, and leaves no claim or entry.
+    #[test]
+    fn loop_rebuild_panic_settles_its_await_and_spares_the_batch() {
+        ensure_python();
+        let (first, _, _) = test_reply(|py, _| 1.into_py_any(py));
+        let (panicking, panicking_calls, _) = test_reply(|_, _| panic!("loop rebuild panic"));
+        let (last, _, _) = test_reply(|py, _| 3.into_py_any(py));
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let helper = reader_helper(py);
+            let event_loop = new_loop(py);
+            let errors = helper
+                .call_method1("capture_errors", (&event_loop,))
+                .expect("an exception handler");
+            let (handles, futures) =
+                queue_raw_batch(py, &helper, &event_loop, vec![first, panicking, last]);
+            let channel = channel(py, &event_loop);
+
+            assert!(
+                run_once(&helper, &event_loop).is_none(),
+                "nothing escapes the loop run"
+            );
+            assert_eq!(int_result(&futures[0]), 1);
+            assert_eq!(int_result(&futures[2]), 3);
+            let delivered = futures[1]
+                .call_method0("exception")
+                .expect("the await settles with an exception");
+            assert!(delivered.is_instance_of::<PyRuntimeError>());
+            assert!(
+                delivered.to_string().contains("loop rebuild panic"),
+                "unexpected {delivered}"
+            );
+            let stored = handles[1]
+                .borrow(py)
+                .poll(py)
+                .expect_err("poll raises the stored error");
+            assert!(stored.value(py).is(&delivered), "one shared outcome");
+            assert!(
+                matches!(&*handles[1].borrow(py).core.lock(), State::Done(_)),
+                "no claim is left held"
+            );
+            assert_eq!(panicking_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(channel.get().entry_count(), 0);
+            assert_eq!(errors.len().unwrap(), 0, "nothing is reported");
+            event_loop.call_method0("close").unwrap();
+        });
+    }
+
+    // HDL-27, behavior change 5: an await cancelled before its reply arrives
+    // does not rebuild it. The channel stays usable, and a later get()
+    // rebuilds once.
+    #[test]
+    fn cancelled_await_does_not_rebuild_its_raw_reply() {
+        ensure_python();
+        let (reply, calls, _) = test_reply(|py, _| 8.into_py_any(py));
+        let (publisher, handle) = pending_handle();
+        let (other_publisher, other) = pending_handle();
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let helper = reader_helper(py);
+            let event_loop = new_loop(py);
+            let handle = Py::new(py, handle).expect("test Handle");
+            let fut = helper
+                .call_method1(
+                    "observe",
+                    (&event_loop, PyList::new(py, [&handle]).unwrap()),
+                )
+                .and_then(|futures| futures.get_item(0))
+                .expect("a pending observer");
+            let channel = channel(py, &event_loop);
+            fut.call_method0("cancel").expect("cancel the await");
+            assert!(run_once(&helper, &event_loop).is_none());
+            assert_eq!(
+                channel.get().entry_count(),
+                0,
+                "the reaper removes the entry"
+            );
+
+            publisher.publish_raw(reply);
+            assert!(
+                channel.get().readable_within(Duration::from_secs(5)),
+                "the waiter acknowledges arrival"
+            );
+            assert!(run_once(&helper, &event_loop).is_none());
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "nothing rebuilds the reply"
+            );
+
+            let other = Py::new(py, other).expect("second Handle");
+            let second = helper
+                .call_method1("observe", (&event_loop, PyList::new(py, [&other]).unwrap()))
+                .and_then(|futures| futures.get_item(0))
+                .expect("a second pending observer");
+            assert!(
+                channel.is(self::channel(py, &event_loop)),
+                "the second await uses the same channel"
+            );
+            other_publisher.publish(Ok(9.into_py_any(py).unwrap()));
+            helper
+                .call_method1("run_until_done", (&event_loop, [&second]))
+                .expect("the second await completes");
+            assert_eq!(int_result(&second), 9);
+
+            let value = PyHandle::get(handle.borrow(py), py, None).expect("get rebuilds");
+            assert_eq!(value.extract::<i64>(py).unwrap(), 8);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            event_loop.call_method0("close").unwrap();
+        });
+    }
+
+    // HDL-19, HDL-20, HDL-27, behavior change 5: an await whose loop is closed
+    // and released before its reply arrives does not rebuild it. The surviving
+    // waiter releases the write end when it exits, and a later get() rebuilds
+    // once.
+    #[test]
+    fn closed_loop_does_not_rebuild_its_raw_reply() {
+        ensure_python();
+        let (reply, calls, _) = test_reply(|py, _| 4.into_py_any(py));
+        let (publisher, handle) = pending_handle();
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            let helper = reader_helper(py);
+            let event_loop = new_loop(py);
+            let handle = Py::new(py, handle).expect("test Handle");
+            let fut = helper
+                .call_method1(
+                    "observe",
+                    (&event_loop, PyList::new(py, [&handle]).unwrap()),
+                )
+                .and_then(|futures| futures.get_item(0))
+                .expect("a pending observer");
+            let channel = channel(py, &event_loop);
+            assert_eq!(channel.get().entry_count(), 1);
+            let waker = channel.get().waker_for_test();
+            let channel_ref = PyWeakrefReference::new(channel.as_any()).expect("weakref");
+
+            event_loop.call_method0("close").unwrap();
+            drop((fut, channel, event_loop));
+            py.import("gc").unwrap().call_method0("collect").unwrap();
+            assert!(
+                channel_ref.upgrade().is_none(),
+                "closing the loop frees the channel and its entry"
+            );
+
+            publisher.publish_raw(reply);
+            wait_for_waker_holders(&waker, 1);
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "nothing rebuilds the reply"
+            );
+
+            let value = PyHandle::get(handle.borrow(py), py, None).expect("get rebuilds");
+            assert_eq!(value.extract::<i64>(py).unwrap(), 4);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        });
     }
 
     // HDL-25: the raw feature adds no lock probe to ready get/poll, a running
@@ -4527,7 +5193,7 @@ class MyStop(StopIteration):
         let seen_in_hook = seen.clone();
         BEFORE_NOTIFY.with(|hook| {
             *hook.borrow_mut() = Some(Box::new(move || {
-                let done = matches!(core.snapshot(), Observed::Done(_));
+                let done = matches!(core.observe(), Observed::Done(_));
                 seen_in_hook.store(done, Ordering::SeqCst);
             }));
         });

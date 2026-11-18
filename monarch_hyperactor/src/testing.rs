@@ -430,9 +430,7 @@ mod tests {
             let handle = delayed_handle(delay, none());
             std::thread::sleep(Duration::from_millis(30));
             assert!(
-                monarch_with_gil_blocking(GilSite::Test, |py| handle.poll_ready(py))
-                    .unwrap()
-                    .is_none(),
+                handle.received_raw_for_test().is_none(),
                 "an unobserved Handle with delay {delay:?} should still be pending"
             );
         }
