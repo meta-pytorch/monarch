@@ -184,7 +184,7 @@ pub enum Error {
         error: crate::service_registry::ServiceError,
     },
 
-    #[error("service `{name}` rank {rank}: no reply within {timeout:?}")]
+    #[error("service `{name}` rank {rank}: no update within {timeout:?}")]
     ServiceTimeout {
         name: hyperactor::id::Label,
         rank: usize,

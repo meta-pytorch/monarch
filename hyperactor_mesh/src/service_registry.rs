@@ -34,7 +34,10 @@
 //!   ensures return [`ServiceError::Terminal`]; the registry never
 //!   recreates it. A new proc has a new registry and fresh services.
 //! - **SVC-4 (ready after init):** An ensure succeeds only once the service
-//!   has finished `init()`.
+//!   has finished `init()`. While the service is in `init()`, the registry
+//!   sends each waiter [`EnsureServiceReply::Initializing`] every third of
+//!   [`ACTOR_SPAWN_MAX_IDLE`], so a requester's idle timeout bounds the
+//!   registry's silence, not the length of `init()`.
 //! - **SVC-5 (fail closed):** Services are the registry's children. If the
 //!   registry stops, its services stop with it, and no registry remains to
 //!   create a duplicate.
@@ -59,7 +62,7 @@ use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::OncePortRef;
+use hyperactor::PortRef;
 use hyperactor::ProcAddr;
 use hyperactor::RefClient;
 use hyperactor::Uid;
@@ -72,6 +75,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::watch;
 use typeuri::Named;
+
+use crate::proc_mesh::ACTOR_SPAWN_MAX_IDLE;
 
 /// Well-known singleton name of a proc's service registry.
 pub const SERVICE_REGISTRY_ACTOR_NAME: &str = "service_registry";
@@ -118,7 +123,8 @@ pub enum ServiceError {
 
 /// Ensure that the singleton service `name` exists on the registry's proc,
 /// creating it from `actor_type` and `params` on first request, and reply
-/// with its address once it has finished `init()`.
+/// with its address once it has finished `init()`. Until then, `reply`
+/// receives periodic [`EnsureServiceReply::Initializing`] updates (SVC-4).
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub struct EnsureService {
     /// The service name; the actor is created under `Uid::singleton(name)`.
@@ -130,14 +136,20 @@ pub struct EnsureService {
     /// The environment the service is created with, if this request
     /// creates it.
     pub environment: ActorEnvironment,
-    /// Typed reply channel.
-    pub reply: OncePortRef<EnsureServiceReply>,
+    /// Typed reply channel: zero or more `Initializing` updates, then one
+    /// `Done`.
+    pub reply: PortRef<EnsureServiceReply>,
 }
 wirevalue::register_type!(EnsureService);
 
 /// The typed reply to [`EnsureService`].
 #[derive(Debug, Serialize, Deserialize, Named)]
-pub struct EnsureServiceReply(pub Result<ActorAddr, ServiceError>);
+pub enum EnsureServiceReply {
+    /// The service is still in `init()` (SVC-4).
+    Initializing,
+    /// The final outcome of the ensure.
+    Done(Result<ActorAddr, ServiceError>),
+}
 
 /// A service finished `init()` (a non-terminal status) or became terminal.
 /// Posted to the registry by the service's status watch (SVC-4, SVC-6).
@@ -145,6 +157,13 @@ pub struct EnsureServiceReply(pub Result<ActorAddr, ServiceError>);
 struct ServiceStatus {
     name: Label,
     status: ActorStatus,
+}
+
+/// A service is still in `init()`. Posted to the registry periodically by
+/// the service's status watch, and forwarded to its waiters (SVC-4).
+#[derive(Debug, Serialize, Deserialize, Named)]
+struct ServiceHeartbeat {
+    name: Label,
 }
 
 /// The specification a service was created with (SVC-2).
@@ -159,7 +178,7 @@ enum ServiceState {
     Initializing {
         spec: ServiceSpec,
         addr: ActorAddr,
-        waiters: Vec<OncePortRef<EnsureServiceReply>>,
+        waiters: Vec<PortRef<EnsureServiceReply>>,
     },
     Running {
         spec: ServiceSpec,
@@ -214,7 +233,7 @@ impl ServiceRegistry {
                     (ServiceState::Running { spec, addr }, result)
                 };
                 for waiter in waiters {
-                    waiter.post(cx, EnsureServiceReply(result.clone()));
+                    waiter.post(cx, EnsureServiceReply::Done(result.clone()));
                 }
                 next
             }
@@ -264,19 +283,19 @@ impl Handler<EnsureService> for ServiceRegistry {
             if state.spec() != &spec {
                 reply.post(
                     cx,
-                    EnsureServiceReply(Err(ServiceError::ConflictingSpec { name })),
+                    EnsureServiceReply::Done(Err(ServiceError::ConflictingSpec { name })),
                 );
                 return Ok(());
             }
             match state {
                 ServiceState::Initializing { waiters, .. } => waiters.push(reply),
                 ServiceState::Running { addr, .. } => {
-                    reply.post(cx, EnsureServiceReply(Ok(addr.clone())));
+                    reply.post(cx, EnsureServiceReply::Done(Ok(addr.clone())));
                 }
                 ServiceState::Terminal { status, .. } => {
                     reply.post(
                         cx,
-                        EnsureServiceReply(Err(ServiceError::Terminal {
+                        EnsureServiceReply::Done(Err(ServiceError::Terminal {
                             name,
                             status: status.clone(),
                         })),
@@ -303,7 +322,7 @@ impl Handler<EnsureService> for ServiceRegistry {
                 let status = ActorStatus::generic_failure(format!("spawn failed: {error}"));
                 reply.post(
                     cx,
-                    EnsureServiceReply(Err(ServiceError::Terminal {
+                    EnsureServiceReply::Done(Err(ServiceError::Terminal {
                         name: name.clone(),
                         status: status.clone(),
                     })),
@@ -323,17 +342,31 @@ impl Handler<EnsureService> for ServiceRegistry {
             },
         );
 
-        // Watch the service outside this handler (SVC-6): report the end of
-        // `init()`, then its terminal status.
+        // Watch the service outside this handler (SVC-6): heartbeat while it
+        // is in `init()` (SVC-4), report the end of `init()`, then its
+        // terminal status.
         let mut status_rx = handle.status();
         let port = cx.instance().port::<ServiceStatus>();
+        let heartbeat_port = cx.instance().port::<ServiceHeartbeat>();
         let (watch_cx, _) = cx.instance().child();
+        let mut heartbeat =
+            tokio::time::interval(hyperactor_config::global::get(ACTOR_SPAWN_MAX_IDLE) / 3);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         tokio::spawn(async move {
-            let initialized = wait_status(&mut status_rx, |status| {
-                status.is_terminal()
-                    || matches!(status, ActorStatus::Idle | ActorStatus::Processing(..))
-            })
-            .await;
+            let initialized = loop {
+                tokio::select! {
+                    status = wait_status(&mut status_rx, |status| {
+                        status.is_terminal()
+                            || matches!(status, ActorStatus::Idle | ActorStatus::Processing(..))
+                    }) => break status,
+                    _ = heartbeat.tick() => {
+                        let _ = heartbeat_port.try_post(
+                            &watch_cx,
+                            ServiceHeartbeat { name: name.clone() },
+                        );
+                    }
+                }
+            };
             let terminal = initialized.is_terminal();
             let _ = port.try_post(
                 &watch_cx,
@@ -368,5 +401,183 @@ impl Handler<ServiceStatus> for ServiceRegistry {
     async fn handle(&mut self, cx: &Context<Self>, message: ServiceStatus) -> anyhow::Result<()> {
         self.resolve(cx, &message.name, message.status);
         Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<ServiceHeartbeat> for ServiceRegistry {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: ServiceHeartbeat,
+    ) -> anyhow::Result<()> {
+        if let Some(ServiceState::Initializing { waiters, .. }) = self.services.get(&message.name) {
+            for waiter in waiters {
+                waiter.post(cx, EnsureServiceReply::Initializing);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use hyperactor::Proc;
+    use hyperactor::actor::remote::Remote;
+    use hyperactor::context::Mailbox as _;
+    use ndslice::ViewExt as _;
+    use ndslice::extent;
+    use timed_test::async_timed_test;
+
+    use super::*;
+    use crate::host_mesh::HostMesh;
+    use crate::testactor::GatedInitActor;
+    use crate::testactor::TestActor;
+    use crate::testing;
+
+    /// Stopping the registry stops its services (SVC-5).
+    #[tokio::test]
+    async fn test_services_stop_with_registry() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let registry = proc
+            .spawn_bound_with_uid(service_registry_uid(), ServiceRegistry::default())
+            .unwrap();
+
+        let (reply, mut replies) = client.mailbox().open_port::<EnsureServiceReply>();
+        registry.post(
+            &client,
+            EnsureService {
+                name: Label::strip("svc_child"),
+                actor_type: Remote::collect()
+                    .name_of::<TestActor>()
+                    .unwrap()
+                    .to_string(),
+                params: bincode::serde::encode_to_vec((), bincode::config::legacy()).unwrap(),
+                environment: ActorEnvironment::default(),
+                reply: reply.bind(),
+            },
+        );
+        let addr = loop {
+            match replies.recv().await.unwrap() {
+                EnsureServiceReply::Initializing => continue,
+                EnsureServiceReply::Done(result) => break result.unwrap(),
+            }
+        };
+        let mut service_status = proc
+            .get_instance(&addr)
+            .expect("the service should be running")
+            .status()
+            .clone();
+        assert!(
+            !service_status.borrow().is_terminal(),
+            "the service should be running before the registry stops",
+        );
+
+        registry.drain_and_stop("test").unwrap();
+        registry.await;
+        // A closed status channel means the service's cell is gone, which
+        // also means it stopped.
+        let stopped = tokio::time::timeout(
+            Duration::from_secs(30),
+            service_status.wait_for(ActorStatus::is_terminal),
+        )
+        .await
+        .expect("the service should stop with its registry");
+        if let Ok(status) = stopped {
+            assert!(
+                !status.is_failed(),
+                "the service should stop cleanly with its registry: {}",
+                *status,
+            );
+        }
+        assert!(
+            proc.get_instance(&addr).is_none(),
+            "the service should no longer be live",
+        );
+    }
+
+    /// An ensure replies only after the service finishes `init()` (SVC-4):
+    /// while the service's `init()` is blocked, `spawn_service` stays
+    /// pending, and releasing `init()` completes it.
+    #[async_timed_test(timeout_secs = 120)]
+    async fn test_spawn_service_waits_for_init() {
+        let instance = testing::instance();
+        let mut hm = HostMesh::local_in_process().await.unwrap();
+        let proc_mesh = hm
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
+            .await
+            .unwrap();
+
+        let (started, mut started_rx) = instance.mailbox().open_port::<PortRef<()>>();
+        let started = started.bind();
+        let ensure =
+            proc_mesh.spawn_service::<GatedInitActor, _>(&instance, "svc_gated_init", &started);
+        tokio::pin!(ensure);
+        let release = tokio::select! {
+            result = &mut ensure => panic!(
+                "ensure completed before the service entered init(): {:?}",
+                result.map(|_| ()),
+            ),
+            release = started_rx.recv() => release.unwrap(),
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), &mut ensure)
+                .await
+                .is_err(),
+            "ensure must not complete while the service is in init()",
+        );
+
+        release.post(&instance, ());
+        let service = ensure.await.unwrap();
+        assert_eq!(service.values().count(), 1);
+
+        let _ = hm.shutdown(&instance).await;
+    }
+
+    /// A service whose `init()` outlasts `ACTOR_SPAWN_MAX_IDLE` still
+    /// ensures: the registry's heartbeats reset the requester's idle
+    /// timeout while `init()` runs (SVC-4).
+    #[async_timed_test(timeout_secs = 120)]
+    async fn test_spawn_service_init_outlasts_max_idle() {
+        let max_idle = Duration::from_secs(1);
+        let config = hyperactor_config::global::lock();
+        let _idle = config.override_key(ACTOR_SPAWN_MAX_IDLE, max_idle);
+        let instance = testing::instance();
+        let mut hm = HostMesh::local_in_process().await.unwrap();
+        let proc_mesh = hm
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
+            .await
+            .unwrap();
+
+        let (started, mut started_rx) = instance.mailbox().open_port::<PortRef<()>>();
+        let started = started.bind();
+        let ensure =
+            proc_mesh.spawn_service::<GatedInitActor, _>(&instance, "svc_slow_init", &started);
+        tokio::pin!(ensure);
+        let release = tokio::select! {
+            result = &mut ensure => panic!(
+                "ensure completed before the service entered init(): {:?}",
+                result.map(|_| ()),
+            ),
+            release = started_rx.recv() => release.unwrap(),
+        };
+        // Keep polling the ensure while `init()` runs well past the idle
+        // timeout, so a timeout would surface here.
+        tokio::select! {
+            result = &mut ensure => panic!(
+                "ensure must stay pending while init() runs: {:?}",
+                result.map(|_| ()),
+            ),
+            _ = tokio::time::sleep(max_idle * 4) => {}
+        }
+
+        release.post(&instance, ());
+        let service = ensure.await.unwrap();
+        assert_eq!(service.values().count(), 1);
+
+        let _ = hm.shutdown(&instance).await;
     }
 }
