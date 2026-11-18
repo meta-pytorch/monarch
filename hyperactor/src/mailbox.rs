@@ -3665,6 +3665,14 @@ impl MailboxMuxer {
         drop(released);
     }
 
+    /// Forget the tombstone of `actor_id`, if it has one. Later messages for
+    /// it are handled as for an actor that has not bound.
+    pub(crate) fn remove_closed(&self, actor_id: &ActorId) {
+        self.mailboxes.remove_if(actor_id, |_, mailbox| {
+            matches!(mailbox, ActorMailbox::Closed(_))
+        });
+    }
+
     #[cfg(test)]
     pub(crate) fn is_closed(&self, actor_id: &ActorId) -> bool {
         self.mailboxes
