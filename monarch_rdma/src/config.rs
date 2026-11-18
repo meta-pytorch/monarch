@@ -89,6 +89,31 @@ declare_attrs! {
     ))
     pub attr RDMA_IBVERBS_TARGET: String = String::new();
 
+    /// IP traffic class (the whole ToS byte: DSCP << 2 | ECN) written into the
+    /// GRH of every RoCE queue pair.
+    ///
+    /// The fabric picks a switch queue by DSCP, and only one of those queues is
+    /// lossless (PFC-protected) for RDMA. Which value reaches it is switch-side
+    /// policy that no host API reports, so by default we use the value NCCL
+    /// uses on this host: `NCCL_IB_TC`, resolved from the environment and
+    /// NCCL's conf files exactly as NCCL resolves it (RCCL's on ROCm builds),
+    /// or 0 if unset. Set this to override it. Empty, the default, means
+    /// "follow NCCL".
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_TRAFFIC_CLASS".to_string()),
+        Some("rdma_traffic_class".to_string()),
+    ))
+    pub attr RDMA_TRAFFIC_CLASS: Option<u8> = None;
+
+    /// Service level written into the address vector of every queue pair.
+    /// Empty, the default, follows `NCCL_IB_SL` the same way
+    /// [`RDMA_TRAFFIC_CLASS`] follows `NCCL_IB_TC`, and is 0 if that is unset.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_SERVICE_LEVEL".to_string()),
+        Some("rdma_service_level".to_string()),
+    ))
+    pub attr RDMA_SERVICE_LEVEL: Option<u8> = None;
+
     /// Which peer NICs each local NIC may pair with for a transfer.
     ///
     /// Accepted forms are `any`, `match_name`, and `groups:` followed by any

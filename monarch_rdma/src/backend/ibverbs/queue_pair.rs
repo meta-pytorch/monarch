@@ -331,19 +331,28 @@ pub(super) unsafe fn state(qp: *mut rdmaxcel_sys::ibv_qp) -> Result<u32, anyhow:
     Ok(qp_attr.qp_state)
 }
 
-/// The address vector with which a QP on `port_num`, whose port has address
-/// `local`, reaches `remote`.
+/// The address vector with which a QP on `config.port_num`, whose port has
+/// address `local`, reaches `remote`.
 ///
 /// Ethernet has no LIDs, so RoCE always carries a GRH. InfiniBand switches
 /// route by LID, so a GRH is added only when the peer's GID names another
 /// subnet, the same rule NCCL follows. A peer that advertises no GID is reached
 /// by LID alone.
-fn ah_attr(port_num: u8, local: PortAddress, remote: &IbvQpInfo) -> rdmaxcel_sys::ibv_ah_attr {
+///
+/// The GRH carries `config.traffic_class`, which becomes the DSCP/ECN byte of
+/// every packet's IP header on RoCE and decides which switch queue it lands
+/// in. Leaving it 0 falls back to the NIC's default ToS, which on our fabrics
+/// is a lossy queue (see [`super::qos`]).
+fn ah_attr(
+    config: &IbvConfig,
+    local: PortAddress,
+    remote: &IbvQpInfo,
+) -> rdmaxcel_sys::ibv_ah_attr {
     let mut attr = rdmaxcel_sys::ibv_ah_attr {
         dlid: remote.lid,
-        sl: 0,
+        sl: config.service_level,
         src_path_bits: 0,
-        port_num,
+        port_num: config.port_num,
         grh: Default::default(),
         ..Default::default()
     };
@@ -358,6 +367,7 @@ fn ah_attr(port_num: u8, local: PortAddress, remote: &IbvQpInfo) -> rdmaxcel_sys
         attr.grh.dgid = rdmaxcel_sys::ibv_gid::from(dgid);
         attr.grh.hop_limit = 0xff;
         attr.grh.sgid_index = local.gid.index();
+        attr.grh.traffic_class = config.traffic_class;
     } else {
         attr.is_global = 0;
     }
@@ -410,7 +420,7 @@ pub(super) unsafe fn connect(
         rq_psn: info.psn,
         max_dest_rd_atomic: config.max_dest_rd_atomic,
         min_rnr_timer: config.min_rnr_timer,
-        ah_attr: ah_attr(config.port_num, local, info),
+        ah_attr: ah_attr(config, local, info),
         ..Default::default()
     };
     let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE
@@ -1468,11 +1478,43 @@ mod tests {
         }
     }
 
+    /// A config on port 1 with traffic class 224 (DSCP 56) and service level 3,
+    /// independent of the host's NCCL settings.
+    fn cfg() -> IbvConfig {
+        IbvConfig {
+            port_num: 1,
+            traffic_class: 224,
+            service_level: 3,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ah_attr_carries_traffic_class_and_service_level() {
+        let local = local(LinkLayer::Ethernet, "::ffff:10.0.0.1", 3);
+        let remote = Gid::for_test("::ffff:10.0.0.2".parse().unwrap(), 5);
+        let attr = ah_attr(&cfg(), local, &peer(Some(remote)));
+        assert_eq!(
+            attr.grh.traffic_class, 224,
+            "RoCE GRH must carry the configured traffic class, not the NIC default"
+        );
+        assert_eq!(attr.sl, 3);
+
+        let unset = IbvConfig {
+            traffic_class: 0,
+            service_level: 0,
+            ..cfg()
+        };
+        let attr = ah_attr(&unset, local, &peer(Some(remote)));
+        assert_eq!(attr.grh.traffic_class, 0, "0 leaves the NIC default");
+        assert_eq!(attr.sl, 0);
+    }
+
     #[test]
     fn ah_attr_roce_always_carries_grh() {
         let local = local(LinkLayer::Ethernet, "::ffff:10.0.0.1", 3);
         let remote = Gid::for_test("::ffff:10.0.0.2".parse().unwrap(), 5);
-        let attr = ah_attr(1, local, &peer(Some(remote)));
+        let attr = ah_attr(&cfg(), local, &peer(Some(remote)));
         assert_eq!(attr.port_num, 1);
         assert_eq!(attr.is_global, 1);
         assert_eq!(attr.grh.hop_limit, 0xff);
@@ -1496,7 +1538,7 @@ mod tests {
     fn ah_attr_ib_same_subnet_routes_by_lid() {
         let local = local(LinkLayer::InfiniBand, "fe80::1", 0);
         let remote = Gid::for_test("fe80::2".parse().unwrap(), 0);
-        let attr = ah_attr(1, local, &peer(Some(remote)));
+        let attr = ah_attr(&cfg(), local, &peer(Some(remote)));
         assert_eq!(attr.is_global, 0);
         assert_eq!(attr.dlid, 0x42);
         assert_eq!(attr.port_num, 1);
@@ -1506,7 +1548,7 @@ mod tests {
     fn ah_attr_ib_other_subnet_carries_grh() {
         let local = local(LinkLayer::InfiniBand, "fec0:0:0:1::1", 0);
         let remote = Gid::for_test("fec0:0:0:2::2".parse().unwrap(), 0);
-        let attr = ah_attr(1, local, &peer(Some(remote)));
+        let attr = ah_attr(&cfg(), local, &peer(Some(remote)));
         assert_eq!(attr.is_global, 1);
         assert_eq!(attr.dlid, 0x42);
         assert_eq!(attr.grh.sgid_index, 0);
@@ -1516,13 +1558,13 @@ mod tests {
     fn ah_attr_unspecified_link_layer_follows_ib() {
         let local = local(LinkLayer::Unspecified, "fe80::1", 0);
         let remote = Gid::for_test("fe80::2".parse().unwrap(), 0);
-        assert_eq!(ah_attr(1, local, &peer(Some(remote))).is_global, 0);
+        assert_eq!(ah_attr(&cfg(), local, &peer(Some(remote))).is_global, 0);
     }
 
     #[test]
     fn ah_attr_peer_without_gid_routes_by_lid() {
         for link_layer in [LinkLayer::Ethernet, LinkLayer::InfiniBand] {
-            let attr = ah_attr(1, local(link_layer, "fe80::1", 0), &peer(None));
+            let attr = ah_attr(&cfg(), local(link_layer, "fe80::1", 0), &peer(None));
             assert_eq!(attr.is_global, 0, "{link_layer}");
             assert_eq!(attr.dlid, 0x42, "{link_layer}");
         }

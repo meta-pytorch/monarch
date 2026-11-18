@@ -26,6 +26,7 @@ pub mod mlx_device;
 pub mod mlx_domain;
 pub mod mlx_queue_pair;
 pub mod primitives;
+pub(crate) mod qos;
 pub mod queue_pair;
 
 use manager_actor::IbvManagerActor;

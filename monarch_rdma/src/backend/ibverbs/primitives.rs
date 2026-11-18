@@ -367,6 +367,14 @@ pub struct IbvConfig {
     /// falling back to per-buffer dmabuf MRs. Intended for hardware tests and
     /// diagnostics; normal operation should retain the fallback.
     pub require_devx_mkeys: bool,
+    /// `traffic_class` - The IP traffic class (ToS byte, `DSCP << 2 | ECN`)
+    /// in the GRH of RoCE queue pairs. It selects the switch queue, so it must
+    /// name the fabric's lossless RDMA class; 0 leaves the NIC's default.
+    /// Defaults to `MONARCH_RDMA_TRAFFIC_CLASS`, else NCCL's `NCCL_IB_TC`.
+    pub traffic_class: u8,
+    /// `service_level` - The service level in the queue pair's address
+    /// vector. Defaults to `MONARCH_RDMA_SERVICE_LEVEL`, else `NCCL_IB_SL`.
+    pub service_level: u8,
 }
 wirevalue::register_type!(IbvConfig);
 
@@ -376,6 +384,7 @@ wirevalue::register_type!(IbvConfig);
 /// the consumer.
 impl Default for IbvConfig {
     fn default() -> Self {
+        let qos = super::qos::configured();
         Self {
             target: None,
             port_num: 1,
@@ -398,6 +407,8 @@ impl Default for IbvConfig {
             mkey_max_entries_override: 0,
             max_mr_size_override: 0,
             require_devx_mkeys: false,
+            traffic_class: qos.traffic_class,
+            service_level: qos.service_level,
         }
     }
 }
@@ -417,7 +428,7 @@ impl std::fmt::Display for IbvConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "IbvConfig {{ target: {:?}, port_num: {}, max_send_wr: {}, max_recv_wr: {}, max_send_sge: {}, max_recv_sge: {}, path_mtu: {:?}, retry_cnt: {}, rnr_retry: {}, qp_timeout: {}, min_rnr_timer: {}, max_dest_rd_atomic: {}, max_rd_atomic: {}, pkey_index: {}, psn: 0x{:x} }}",
+            "IbvConfig {{ target: {:?}, port_num: {}, max_send_wr: {}, max_recv_wr: {}, max_send_sge: {}, max_recv_sge: {}, path_mtu: {:?}, retry_cnt: {}, rnr_retry: {}, qp_timeout: {}, min_rnr_timer: {}, max_dest_rd_atomic: {}, max_rd_atomic: {}, pkey_index: {}, psn: 0x{:x}, traffic_class: {}, service_level: {} }}",
             self.target,
             self.port_num,
             self.max_send_wr,
@@ -433,6 +444,8 @@ impl std::fmt::Display for IbvConfig {
             self.max_rd_atomic,
             self.pkey_index,
             self.psn,
+            self.traffic_class,
+            self.service_level,
         )
     }
 }
