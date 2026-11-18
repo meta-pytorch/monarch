@@ -22,6 +22,7 @@ pub mod endpoint;
 pub mod handle;
 pub mod handle_wake;
 pub mod host_mesh;
+pub mod http;
 pub mod local_state_broker;
 pub mod logging;
 pub mod mailbox;
