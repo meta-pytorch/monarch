@@ -16,11 +16,12 @@
 //! `call_soon_threadsafe` path (HDL-21).
 //!
 //! `waker` and `read_fd` are the two ends of the pipe; `tx` and `rx` are the
-//! two ends of the token queue. When a `Handle` completes, its Tokio observer
-//! pushes its token and writes one byte to the pipe ([`Notifier::notify`]),
-//! without the GIL. The byte only wakes the loop; the queue says which awaits
-//! completed. The loop's reader drains the pipe, then the queue, and settles
-//! the future of each completed await.
+//! two ends of the token queue. When a `Handle` completes, or its endpoint
+//! reply arrives still pickled, its Tokio observer pushes its token and writes
+//! one byte to the pipe ([`Notifier::notify`]), without the GIL. The byte only
+//! wakes the loop; the queue says which awaits can settle. The loop's reader
+//! drains the pipe, then the queue, and settles the future of each await,
+//! unpickling a raw reply on the loop thread (HDL-17, HDL-27).
 //!
 //! The loop's selector is the channel's only strong owner, through its
 //! `on_readable` callback. The registry holds the loop as a weak key and the
@@ -45,6 +46,8 @@
 
 use std::collections::HashMap;
 use std::iter;
+#[cfg(test)]
+use std::os::fd::AsFd;
 use std::os::fd::AsRawFd;
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
@@ -52,9 +55,17 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+#[cfg(test)]
+use std::time::Duration;
 
 use monarch_types::MapPyErr;
 use nix::errno::Errno;
+#[cfg(test)]
+use nix::poll::PollFd;
+#[cfg(test)]
+use nix::poll::PollFlags;
+#[cfg(test)]
+use nix::poll::poll;
 use nix::unistd::read;
 use pyo3::PyTraverseError;
 use pyo3::PyVisit;
@@ -67,6 +78,7 @@ use pyo3::types::PyDict;
 use pyo3::types::PyTuple;
 use pyo3::types::PyWeakrefReference;
 
+use crate::handle::LoopReadOutcome;
 use crate::handle::PyHandle;
 use crate::handle::complete_asyncio_future;
 use crate::pywaker;
@@ -128,6 +140,28 @@ struct Entry {
     /// The awaited `Handle`. Its value is read when the entry's token arrives,
     /// and set as the result of `fut`.
     handle: Py<PyHandle>,
+}
+
+impl Entry {
+    /// Return whether the wake reader should keep processing this entry.
+    ///
+    /// `deliver()` checks before reading the Handle and again before re-inserting
+    /// an entry whose reply is claimed or interrupted. The second check matters
+    /// because reconstruction can run Python code that completes or cancels the
+    /// future.
+    ///
+    /// A finished future needs no delivery. If `done()` itself raises, report that
+    /// error to the loop and drop the entry rather than retain a broken await.
+    fn waiting(&self, py: Python<'_>) -> bool {
+        let fut = self.fut.bind(py);
+        match fut.call_method0("done").and_then(|done| done.is_truthy()) {
+            Ok(done) => !done,
+            Err(err) => {
+                report(fut, "handle wake: done() failed; the await is dropped", err);
+                false
+            }
+        }
+    }
 }
 
 /// The completion-wake channel of one asyncio loop: a token queue, and a pipe
@@ -317,13 +351,17 @@ impl LoopWake {
             drop(this.take(token));
             return Err(err);
         }
-        // All that the Tokio side gets: clones of the queue's sender and the
-        // pipe's write end, and the token (HDL-17).
-        Ok(Notifier {
-            tx: this.tx.clone(),
-            waker: Arc::clone(&this.waker),
+        Ok(this.notifier(token))
+    }
+
+    /// All that the Tokio side gets for `token`: clones of the queue's sender
+    /// and the pipe's write end, and the token (HDL-17).
+    fn notifier(&self, token: u64) -> Notifier {
+        Notifier {
+            tx: self.tx.clone(),
+            waker: Arc::clone(&self.waker),
             token,
-        })
+        }
     }
 
     /// Add `entry` under `token`. Tokens are never reused, so the slot is
@@ -376,48 +414,100 @@ impl LoopWake {
     }
 
     /// Settle the pending await named by `token`: read its `Handle`'s value or
-    /// error and set it as the result of its `asyncio.Future` (HDL-7).
+    /// error, unpickling a raw reply on this loop thread, and set it as the
+    /// result of its `asyncio.Future` (HDL-7, HDL-17).
     ///
     /// Does nothing when there is no longer anyone to settle: the entry is
-    /// gone or the future is already done. Never raises:
-    /// a failure is reported through the future's loop, as asyncio reports an
-    /// exception from a callback, and the reader goes on to the next token.
-    fn deliver(&self, py: Python<'_>, token: u64) {
+    /// gone or the future is already done. If another observer holds the raw
+    /// reply's claim, re-insert the entry under the same token and wait for
+    /// that observer's outcome or release. Other failures are reported through
+    /// the future's loop, as asyncio reports an exception from a callback.
+    ///
+    /// Raises only a KeyboardInterrupt or SystemExit that interrupted the
+    /// rebuild, after re-inserting the entry if its future still waits. The
+    /// caller re-queues the token (HDL-27).
+    fn deliver(&self, py: Python<'_>, token: u64) -> PyResult<()> {
         // A stale token: the reaper removed the entry because the await was
         // cancelled or settled. The entry is dropped after `take` releases
         // the lock.
         let Some(entry) = self.take(token) else {
-            return;
+            return Ok(());
         };
-        let fut = entry.fut.bind(py);
-        match fut.call_method0("done").and_then(|done| done.is_truthy()) {
-            Ok(false) => {}
-            // Already settled, for example cancelled but not yet reaped.
-            Ok(true) => return,
-            Err(err) => {
-                report(fut, "handle wake: done() failed; the await is dropped", err);
-                return;
+        // Already settled, for example cancelled but not yet reaped.
+        if !entry.waiting(py) {
+            return Ok(());
+        }
+        // The entry holds the Future to finish and the Handle that supplies its
+        // result. Reading the Handle may run Python unpickle hooks, which can
+        // finish or cancel the Future. Ready consumes the entry; Claimed and
+        // Interrupted must check the Future again before restoring it.
+        let read = entry.handle.bind(py).borrow().read_on_loop(py);
+        match read {
+            LoopReadOutcome::Ready(result) => {
+                // A final shared value or error: finish the await and leave its
+                // entry removed.
+                let fut = entry.fut.bind(py);
+                let published = match result {
+                    Ok(value) => complete_asyncio_future(fut, false, value),
+                    // Includes HDL-10's "producer ended without publishing a result".
+                    Err(err) => complete_asyncio_future(fut, true, err.into_value(py).into_any()),
+                };
+                if let Err(err) = published {
+                    // Cancellation and an already-finished future are handled
+                    // by the completion helper. Report any other setter error.
+                    report(
+                        fut,
+                        "handle wake: publishing to an asyncio future failed",
+                        err,
+                    );
+                }
+                Ok(())
+            }
+            LoopReadOutcome::Claimed => {
+                // Another observer is reconstructing the reply. If this await
+                // still waits, start a new native wait for that claim to settle
+                // or release, then restore the entry under the same token.
+                if entry.waiting(py) {
+                    entry
+                        .handle
+                        .bind(py)
+                        .borrow()
+                        .notify_on_arrival(self.notifier(token));
+                    // The new waiter may queue its token immediately, but the
+                    // loop cannot consume it until this callback returns, after
+                    // the entry has been restored.
+                    self.insert(token, entry);
+                }
+                Ok(())
+            }
+            LoopReadOutcome::Interrupted(interrupt) => {
+                // Reconstruction released its claim and left the bytes for a
+                // retry. Preserve a waiting entry; on_readable re-queues its
+                // token and the rest of the batch before raising the interrupt.
+                if entry.waiting(py) {
+                    self.insert(token, entry);
+                }
+                Err(interrupt)
             }
         }
-        // A non-consuming read (HDL-3).
-        let published = match entry.handle.bind(py).borrow().poll_ready(py) {
-            Ok(Some(value)) => complete_asyncio_future(fut, false, value),
-            // Includes HDL-10's "producer ended without publishing a result".
-            Err(err) => complete_asyncio_future(fut, true, err.into_value(py).into_any()),
-            Ok(None) => {
-                debug_assert!(
-                    false,
-                    "HDL-1: a token is pushed only after its Handle is ready"
-                );
-                return;
-            }
-        };
-        if let Err(err) = published {
-            report(
-                fut,
-                "handle wake: publishing to an asyncio future failed",
-                err,
-            );
+    }
+
+    /// Preserve a drained batch when delivery is interrupted.
+    ///
+    /// `on_readable()` removes every queued token before it starts delivering
+    /// them. If one delivery raises KeyboardInterrupt or SystemExit, pass that
+    /// token and the undelivered remainder here. Put them back in order and wake
+    /// the pipe so a later loop turn retries them instead of losing their awaits.
+    ///
+    /// This channel owns the queue's receiver, so these sends cannot fail.
+    fn requeue(&self, tokens: impl Iterator<Item = u64>) {
+        tokens.for_each(|token| {
+            self.tx
+                .send(token)
+                .expect("the channel holds its own receiver")
+        });
+        if let Err(err) = self.waker.wake() {
+            tracing::error!(error = %err, "handle wake: pipe write failed");
         }
     }
 }
@@ -464,6 +554,18 @@ impl LoopWake {
             .expect("entries lock should not be poisoned")
             .len()
     }
+
+    /// Whether the pipe becomes readable within `timeout`, without draining it.
+    pub(crate) fn readable_within(&self, timeout: Duration) -> bool {
+        let mut fds = [PollFd::new(self.read_fd.as_fd(), PollFlags::POLLIN)];
+        let millis = u16::try_from(timeout.as_millis()).unwrap_or(u16::MAX);
+        poll(&mut fds, millis).unwrap() == 1
+    }
+
+    /// The pipe's write end. Its strong count falls as each notifier exits.
+    pub(crate) fn waker_for_test(&self) -> Arc<Waker> {
+        Arc::clone(&self.waker)
+    }
 }
 
 #[pymethods]
@@ -486,8 +588,13 @@ impl LoopWake {
     }
 
     /// The `add_reader` callback: drain the pipe, then the queue, then deliver
-    /// (HDL-18). Never raises.
-    fn on_readable(&self, py: Python<'_>) {
+    /// (HDL-18).
+    ///
+    /// Raises only a KeyboardInterrupt or SystemExit from a rebuild, which
+    /// asyncio re-raises out of the loop. First it re-queues the interrupted
+    /// token and the batch's undelivered ones, so a later turn of the loop
+    /// delivers them (HDL-27).
+    fn on_readable(&self, py: Python<'_>) -> PyResult<()> {
         self.drain_pipe();
         #[cfg(test)]
         self.run_hook(|hooks| hooks.after_pipe_drain.take());
@@ -498,7 +605,17 @@ impl LoopWake {
         };
         #[cfg(test)]
         self.run_hook(|hooks| hooks.after_queue_drain.take());
-        tokens.into_iter().for_each(|token| self.deliver(py, token));
+        let mut tokens = tokens.into_iter();
+        tokens
+            .by_ref()
+            .try_for_each(|token| {
+                self.deliver(py, token)
+                    .map_err(|interrupt| (token, interrupt))
+            })
+            .map_err(|(token, interrupt)| {
+                self.requeue(iter::once(token).chain(tokens));
+                interrupt
+            })
     }
 }
 
@@ -566,12 +683,7 @@ impl Notifier {
 #[cfg(test)]
 mod tests {
     use std::ffi::CStr;
-    use std::os::fd::AsFd;
-    use std::time::Duration;
 
-    use nix::poll::PollFd;
-    use nix::poll::PollFlags;
-    use nix::poll::poll;
     use pyo3::IntoPyObjectExt;
     use pyo3::exceptions::PyOSError;
     use pyo3::types::IntoPyDict;
@@ -797,12 +909,6 @@ def base_done(fut):
         fut.call_method0("done").unwrap().is_truthy().unwrap()
     }
 
-    fn readable_within(channel: &LoopWake, timeout: Duration) -> bool {
-        let mut fds = [PollFd::new(channel.read_fd.as_fd(), PollFlags::POLLIN)];
-        let millis = u16::try_from(timeout.as_millis()).unwrap_or(u16::MAX);
-        poll(&mut fds, millis).unwrap() == 1
-    }
-
     // HDL-17: Tokio writes the wake pipe while this thread holds the GIL.
     #[test]
     fn wake_is_written_while_test_holds_gil() {
@@ -820,7 +926,7 @@ def base_done(fut):
 
             tx.publish(Ok(42i64.into_py_any(py).unwrap()));
             assert!(
-                readable_within(channel.get(), Duration::from_secs(5)),
+                channel.get().readable_within(Duration::from_secs(5)),
                 "the observer should write the pipe without the GIL, which this thread holds"
             );
 
@@ -861,7 +967,7 @@ def base_done(fut):
             let value_ref = PyWeakrefReference::new(&value).unwrap().unbind();
             tx.publish(Ok(value.unbind()));
             assert!(
-                readable_within(channel.get(), Duration::from_secs(5)),
+                channel.get().readable_within(Duration::from_secs(5)),
                 "the observer should notify the channel"
             );
             event_loop.call_method0("close").unwrap();
@@ -1014,7 +1120,7 @@ def base_done(fut):
                 // The loop never runs again, so the value is never delivered.
                 tx.publish(Ok(value.clone().unbind()));
                 assert!(
-                    readable_within(channel.get(), Duration::from_secs(5)),
+                    channel.get().readable_within(Duration::from_secs(5)),
                     "{variant}: the observer should finish, releasing its receiver"
                 );
 
@@ -1065,7 +1171,7 @@ def base_done(fut):
                     .notify();
             }
 
-            channel.get().on_readable(py);
+            channel.get().on_readable(py).unwrap();
             assert!(is_done(&healthy), "the healthy token should be delivered");
             let base_done: bool = helper
                 .call_method1("base_done", (&broken,))
@@ -1151,7 +1257,7 @@ def base_done(fut):
             let (between, notifier) = register_ready(100);
             channel.get().drain_hooks.lock().unwrap().after_pipe_drain =
                 Some(Box::new(move |_| notifier.notify()));
-            channel.get().on_readable(py);
+            channel.get().on_readable(py).unwrap();
             assert!(
                 queued.iter().all(is_done),
                 "queued tokens should be delivered"
@@ -1164,16 +1270,16 @@ def base_done(fut):
             let (after, notifier) = register_ready(200);
             channel.get().drain_hooks.lock().unwrap().after_queue_drain =
                 Some(Box::new(move |_| notifier.notify()));
-            channel.get().on_readable(py);
+            channel.get().on_readable(py).unwrap();
             assert!(
                 !is_done(&after),
                 "a token pushed after the queue drain should wait for the next callback"
             );
             assert!(
-                readable_within(channel.get(), Duration::ZERO),
+                channel.get().readable_within(Duration::ZERO),
                 "its pipe byte should still be pending"
             );
-            channel.get().on_readable(py);
+            channel.get().on_readable(py).unwrap();
             assert!(is_done(&after), "the pending byte should deliver it");
             event_loop.call_method0("close").unwrap();
         });
