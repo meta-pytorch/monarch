@@ -7,7 +7,7 @@
  */
 
 mod actor_environment;
-mod client_root;
+mod bootstrap_host;
 mod code_sync;
 mod endpoint;
 mod handle;

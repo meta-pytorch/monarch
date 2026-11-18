@@ -590,12 +590,7 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
 /// actor on the Host's local_proc.
 ///
 /// The root client actor is the program's singleton root orchestration actor;
-/// it is distinct from the root ProcAgent on the same proc. Before creating the
-/// actor, bootstrap binds the restricted client-root service API on that
-/// ProcAgent and places the resulting `ClientRootRef` in the actor's persistent
-/// environment. Descendants inherit the capability, giving Python and non-Python
-/// actors the same route to services owned by the program root. Worker
-/// ProcAgents do not bind this API.
+/// it is distinct from the root ProcAgent on the same proc.
 ///
 /// Returns a tuple of (HostMesh, ProcMesh, PyInstance) where:
 /// - PyHostMesh: the bootstrapped (local) host mesh; and
@@ -710,32 +705,10 @@ fn bootstrap_host(
             .await
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
-        // Bind the client-root API on this program's one root ProcAgent and seed
-        // the Python root client's environment with the resulting capability, so
-        // descendants inherit it exactly as the Rust root's descendants do.
-        // Worker ProcAgents never bind the API.
-        let client_root = hyperactor_mesh::client_root::ClientRootRef::bind(&local_proc_agent);
-        let mut root_env = hyperactor::ActorEnvironment::default();
-        root_env
-            .set(hyperactor_mesh::client_root::CLIENT_ROOT, client_root)
-            .map_err(|e| PyException::new_err(e.to_string()))?;
-
         let (instance, _handle) = monarch_with_gil(GilSite::Bootstrap, |py| {
-            PythonActor::bootstrap_client_inner(
-                py,
-                local_proc,
-                root_env,
-                &ROOT_CLIENT_INSTANCE_FOR_HOST,
-            )
+            PythonActor::bootstrap_client_inner(py, local_proc, &ROOT_CLIENT_INSTANCE_FOR_HOST)
         })
         .await;
-
-        // Register the client proc mesh for external-runtime discovery
-        // (`python_client_root`). `bootstrap_client_inner` has just set
-        // `ROOT_CLIENT_INSTANCE_FOR_HOST`, so registering here keeps the pair
-        // complete: the root client instance and the client proc are set
-        // together, before `proc_mesh` is moved into `PyProcMesh` below.
-        hyperactor_mesh::global_context::register_client_proc(proc_mesh.clone());
 
         // Notify telemetry of the bootstrap host mesh, proc mesh, and client actor.
         {
@@ -827,81 +800,6 @@ fn bootstrap_host(
             PyInstance::from(instance),
         ))
     })?
-}
-
-/// The Python-bootstrapped client root: the root client instance plus the
-/// client proc mesh registered by `bootstrap_host`. Discovered by
-/// [`python_client_root`] for callers that need the stable Python root.
-pub struct PythonClientRoot {
-    cx: &'static Instance<PythonActor>,
-    proc_mesh: ProcMeshRef,
-}
-
-impl PythonClientRoot {
-    /// Ensure a proc-owned singleton owner actor on the client root's proc
-    /// mesh, using the root's own stable client instance as the caller
-    /// context, and return its typed [`ActorRef<A>`](hyperactor::ActorRef).
-    ///
-    /// The Python client-root proc mesh is a singleton (one proc), so the
-    /// service mesh has exactly one rank. This validates that invariant and
-    /// returns rank 0's actor reference, encoding the single-owner contract
-    /// in the return type and letting callers use the generated `RefClient`
-    /// methods. The returned mesh ref is non-owning and is dropped once the
-    /// actor ref is extracted; the singleton's lifetime belongs to its proc.
-    ///
-    /// Method-only by design: the owner is ensured with the root's own `cx`,
-    /// so a newly created owner inherits the root's environment.
-    pub async fn ensure_owner<A: hyperactor::RemoteSpawn>(
-        &self,
-        name: &str,
-        params: &A::Params,
-    ) -> hyperactor_mesh::Result<hyperactor::ActorRef<A>>
-    where
-        A::Params: hyperactor::RemoteMessage,
-    {
-        let mesh = self.proc_mesh.spawn_service(self.cx, name, params).await?;
-        // `Ranked` is not imported at module scope: it would make the existing
-        // `.region()` calls in this file ambiguous with `View::region`.
-        let actual = ndslice::view::Ranked::region(&mesh).num_ranks();
-        if actual != 1 {
-            return Err(hyperactor_mesh::Error::InvalidRankCardinality {
-                expected: 1,
-                actual,
-            });
-        }
-        Ok(ndslice::view::Ranked::get(&mesh, 0)
-            .expect("singleton owner mesh must contain rank 0")
-            .clone())
-    }
-}
-
-/// Discover the Python-bootstrapped client root, if present.
-///
-/// Python-root discovery only: reads `ROOT_CLIENT_INSTANCE_FOR_HOST` and
-/// [`try_registered_client_proc`](hyperactor_mesh::global_context::try_registered_client_proc)
-/// — never `context()` / `this_proc()` / `try_this_host()`, and it does not
-/// consult the Rust `GLOBAL_CONTEXT`.
-///
-/// Returns `Ok(None)` when neither slot is registered, `Ok(Some(_))` when both
-/// are, and `Err` when exactly one is (partial registration — the pair is set
-/// together by `bootstrap_host`).
-pub fn python_client_root() -> Result<Option<PythonClientRoot>, anyhow::Error> {
-    match (
-        ROOT_CLIENT_INSTANCE_FOR_HOST.get(),
-        hyperactor_mesh::global_context::try_registered_client_proc(),
-    ) {
-        (Some(cx), Some(proc_mesh)) => Ok(Some(PythonClientRoot {
-            cx,
-            proc_mesh: proc_mesh.clone(),
-        })),
-        (None, None) => Ok(None),
-        (Some(_), None) => Err(anyhow::anyhow!(
-            "partial Python client root registration: root client instance is registered but client proc mesh is missing"
-        )),
-        (None, Some(_)) => Err(anyhow::anyhow!(
-            "partial Python client root registration: client proc mesh is registered but root client instance is missing"
-        )),
-    }
 }
 
 #[pyfunction]

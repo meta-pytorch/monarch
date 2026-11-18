@@ -15,9 +15,9 @@
 //!   [`context()`], [`this_host()`], and [`this_proc()`]. A singleton
 //!   [`Host`] is created with the [`GlobalClientActor`] on its `local_proc`.
 //! - External runtimes such as Python do not use [`GLOBAL_CONTEXT`]. They
-//!   may register their already-bootstrapped client root meshes through
-//!   [`register_client_host`] and [`register_client_proc`]. Registration
-//!   getters are non-bootstrapping and must not initialize [`GLOBAL_CONTEXT`].
+//!   may register their already-bootstrapped client host mesh through
+//!   [`register_client_host`]. Registration getters are non-bootstrapping and
+//!   must not initialize [`GLOBAL_CONTEXT`].
 //!
 //! ```rust,ignore
 //! let cx = context().await;
@@ -63,10 +63,7 @@
 //! registration lookups must never initialize the lazy Rust [`GLOBAL_CONTEXT`].
 //! They read only already-initialized cells via `.get()` (`OnceCell::get` for
 //! `GLOBAL_CONTEXT`, `OnceLock::get` for the registration slots), never a
-//! `get_or_init`. In particular, [`try_registered_client_proc`] returns only
-//! the externally registered proc mesh and deliberately ignores any coexisting
-//! Rust global context; absence is reported as `None`, not filled by
-//! bootstrapping a Rust root.
+//! `get_or_init`.
 
 use std::sync::OnceLock;
 use std::sync::RwLock;
@@ -480,16 +477,8 @@ async fn bootstrap_host() -> GlobalState {
         ),
     )
     .expect("failed to create proc mesh ref");
-    // Bind the client-root API on this program's one root ProcAgent and seed the
-    // root client's environment with the resulting capability. Descendants
-    // inherit it through the actor-environment propagation paths (CROOT-1).
-    let client_root = crate::client_root::ClientRootRef::bind(&local_proc_agent);
-    let mut root_env = hyperactor::ActorEnvironment::default();
-    root_env
-        .set(crate::client_root::CLIENT_ROOT, client_root)
-        .expect("failed to seed client-root capability");
     let actor_instance = local_proc
-        .actor_instance_in_environment::<GlobalClientActor>("client", root_env)
+        .actor_instance::<GlobalClientActor>("client")
         .expect("failed to create root client instance");
 
     let hyperactor::proc::ActorInstance {
@@ -595,30 +584,6 @@ pub fn try_this_host() -> Option<&'static HostMeshRef> {
         .or_else(|| REGISTERED_CLIENT_HOST.get())
 }
 
-/// Separate storage for the client *proc* mesh registered by non-Rust
-/// runtimes (e.g. Python's `bootstrap_host()`), mirroring
-/// `REGISTERED_CLIENT_HOST`. Read by `try_registered_client_proc()`.
-static REGISTERED_CLIENT_PROC: std::sync::OnceLock<ProcMeshRef> = std::sync::OnceLock::new();
-
-/// Register the client proc mesh from an external runtime (Python).
-/// Mirrors `register_client_host`; called from Python's `bootstrap_host()`
-/// so `try_registered_client_proc` can discover the client proc. First
-/// registration wins: a later call is silently ignored (the `OnceLock` is
-/// already set).
-pub fn register_client_proc(proc_mesh: ProcMeshRef) {
-    let _ = REGISTERED_CLIENT_PROC.set(proc_mesh);
-}
-
-/// Returns the externally-registered client proc mesh, or `None` if none
-/// was registered. Non-bootstrapping: reads only the registration
-/// (`.get()`, never `get_or_init`), so it never spins up `GLOBAL_CONTEXT`.
-/// This getter has a single source of truth: it reads only the external
-/// registration; a coexisting Rust `GLOBAL_CONTEXT` root is ignored, with no
-/// fallback (unlike `try_this_host`, which does consult `GLOBAL_CONTEXT`).
-pub fn try_registered_client_proc() -> Option<&'static ProcMeshRef> {
-    REGISTERED_CLIENT_PROC.get()
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -633,33 +598,6 @@ mod tests {
     use super::*;
     #[cfg(fbcode_build)]
     use crate::testing;
-
-    /// GC-2: the lookup ignores an initialized Rust `GLOBAL_CONTEXT` root and
-    /// returns `None` when there is no external registration.
-    #[tokio::test]
-    async fn test_try_registered_client_proc_ignores_rust_global_context() {
-        let _ = context().await;
-        assert!(
-            GLOBAL_CONTEXT.get().is_some(),
-            "test must initialize the Rust global context",
-        );
-        assert!(
-            try_registered_client_proc().is_none(),
-            "registered-client-proc lookup must not fall back to Rust GLOBAL_CONTEXT",
-        );
-    }
-
-    /// CROOT-1 / CROOT-8: the Rust root bootstrap seeds the client-root
-    /// capability on the root client's environment, so `from_env` finds it.
-    #[tokio::test]
-    async fn test_bootstrap_seeds_client_root() {
-        let cx = context().await;
-        let environment = cx.actor_instance.actor_environment();
-        assert!(
-            crate::client_root::ClientRootRef::from_env(environment).is_ok(),
-            "bootstrap must seed the client-root capability on the root client",
-        );
-    }
 
     /// Helper: send an `Undeliverable<MessageEnvelope>` to the global
     /// root client's well-known undeliverable port via the runtime's
