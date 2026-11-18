@@ -421,6 +421,10 @@ pub enum CloseReason {
     /// down. A new server may later listen at the same address, and
     /// re-dialing reaches it with a fresh session.
     ServerClosed(String),
+    /// The channel entered reconnect with no queued deliveries, but the link
+    /// could not reconnect. A fresh session can reach a peer that returns at
+    /// the same address.
+    ReconnectFailed(String),
     /// Any close reason the transport hasn't classified further. The string
     /// is for display/logging only — do not parse it. If a caller needs to
     /// branch on a sub-case, lift it into its own variant on this enum.
@@ -433,6 +437,7 @@ impl fmt::Display for CloseReason {
             Self::UnknownSession(s) => write!(f, "stale session: {}", s),
             Self::SequenceMismatch(s) => write!(f, "sequence mismatch: {}", s),
             Self::DeliveryTimeout(s) => write!(f, "delivery timeout: {}", s),
+            Self::ReconnectFailed(s) => write!(f, "reconnect failed: {}", s),
             Self::OversizedFrame { size, max } => {
                 write!(f, "oversized frame: len={size} > max={max}")
             }
@@ -454,6 +459,7 @@ impl CloseReason {
             Self::SequenceMismatch(_)
             | Self::DeliveryTimeout(_)
             | Self::ServerClosed(_)
+            | Self::ReconnectFailed(_)
             | Self::Other(_) => SendErrorReason::Other(self.to_string()),
         }
     }

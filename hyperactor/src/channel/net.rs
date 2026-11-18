@@ -842,7 +842,7 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> super::ChannelTx<M> {
                 },
                 None => match session.connect().await {
                     Ok(s) => s,
-                    Err(_) => break 'outer CloseReason::Other("session shut down".into()),
+                    Err(_) => break 'outer CloseReason::ReconnectFailed(log_id.clone()),
                 },
             };
 
@@ -2685,6 +2685,7 @@ mod tests {
     use tokio::io::WriteHalf;
     use tokio::task::JoinHandle;
     use tokio::time::Instant;
+    use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
     use super::server;
@@ -4015,6 +4016,58 @@ mod tests {
         // message delivered successfully.
         //
         assert!(receipt.await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_idle_reconnect_failure_has_typed_close() {
+        const WAIT: Duration = Duration::from_secs(10);
+
+        let _config = hyperactor_config::global::lock();
+        let link = MockLink::<u64>::new();
+        let disconnect = link.disconnect_signal().clone();
+        let fail_connects = link.fail_connects_switch();
+        let receiver_storage = link.receiver_storage();
+        let tx = spawn::<u64>(link);
+        let mut status = tx.status().clone();
+        let receipt = tx.try_post(100);
+        let (mut reader, writer) = timeout(WAIT, take_receiver(&receiver_storage))
+            .await
+            .expect("mock peer should receive the connection");
+        timeout(WAIT, verify_message(&mut reader, (0, 100), line!()))
+            .await
+            .expect("mock peer should receive the message");
+        let _writer = timeout(
+            WAIT,
+            FrameWrite::write_frame(
+                writer,
+                serialize_response(NetRxResponse::Ack(0)).unwrap(),
+                hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                0,
+            ),
+        )
+        .await
+        .expect("mock peer should send the acknowledgment")
+        .map_err(|(_, error)| error)
+        .unwrap();
+        timeout(WAIT, receipt)
+            .await
+            .expect("transmitter should observe the acknowledgment")
+            .unwrap();
+
+        fail_connects.store(true, Ordering::Release);
+        disconnect.send(()).unwrap();
+        timeout(WAIT, status.wait_for(TxStatus::is_closed))
+            .await
+            .expect("idle reconnect failure should close the channel")
+            .unwrap();
+        assert!(
+            matches!(
+                *status.borrow(),
+                TxStatus::Closed(CloseReason::ReconnectFailed(_))
+            ),
+            "expected an idle reconnect failure, got {:?}",
+            *status.borrow()
+        );
     }
 
     async fn verify_ack_exceeded_limit(disconnect_before_ack: bool) {
