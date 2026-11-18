@@ -794,8 +794,8 @@ async def test_ensure_init_returns_handle_that_resolves_over_tcp() -> None:
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 async def test_ensure_init_succeeds_from_remote_actor() -> None:
-    """A remote actor initializes through its inherited native client-root
-    capability, without any driver-side RDMA initialization (RMB-3)."""
+    """A remote actor ensures its proc-owned RDMA managers itself, without any
+    driver-side RDMA initialization (RMB-3)."""
     from monarch.actor import this_host
 
     with configured(
@@ -814,8 +814,8 @@ async def test_ensure_init_succeeds_from_remote_actor() -> None:
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 async def test_ensure_init_succeeds_from_nested_actor_on_remote_worker() -> None:
-    """A child spawned inside a remote worker retains the capability across a
-    second gspawn/ActorSpec environment hop on that worker (RMB-3)."""
+    """A child spawned inside a remote worker ensures its proc-owned RDMA
+    managers itself, without any driver-side RDMA initialization (RMB-3)."""
     from monarch.actor import this_host
 
     with configured(
