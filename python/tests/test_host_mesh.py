@@ -2129,6 +2129,36 @@ async def test_attached_client_samples_its_own_host() -> None:
         job.kill()
 
 
+class _RdmaSingletonProbe(Actor):
+    """Creates one RDMA buffer and reports which manager served it.
+
+    The reply is (manager actor address, remote buffer id). The id comes
+    from the per-manager sequence in `RdmaManagerActor`, so consecutive
+    buffers from the same manager instance get consecutive ids, while a
+    fresh manager restarts at 0. That makes "same singleton instance"
+    observable from Python even though the manager's address (a per-proc
+    singleton name) would be identical after a hypothetical recreation on
+    the same proc.
+    """
+
+    def __init__(self) -> None:
+        self.data = bytearray(b"rdma-singleton-probe!")
+        self.buffer = None
+
+    @endpoint
+    async def create_buffer(self) -> tuple[str, int]:
+        import re
+
+        from monarch.rdma import RDMABuffer
+
+        self.buffer = RDMABuffer(memoryview(self.data))
+        # The native buffer's Debug form carries `id: N`, the manager-local
+        # registration sequence number.
+        match = re.search(r"\bid: (\d+)", repr(self.buffer._buffer))
+        assert match is not None, repr(self.buffer._buffer)
+        return (self.buffer.owner, int(match.group(1)))
+
+
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 async def test_client_attach_addr() -> None:
@@ -2385,3 +2415,50 @@ def test_client_attach_addr_this_host_spawns_locally() -> None:
         remote_pm = state.hosts.spawn_procs(per_host={"remote": 1})
         relay = remote_pm.spawn("relay", RelayActor, local_echo)
         assert relay.relay.call_one("through-remote").get() == "through-remote"
+
+
+@pytest.mark.timeout(300)
+def test_rdma_singleton_survives_requester_and_resets_with_host() -> None:
+    """The per-proc `rdma_manager` singleton is owned by the host.
+
+    The first request comes from an actor that is then stopped; the
+    singleton must persist (a second actor on the same proc is served by
+    the same manager instance, proven by its buffer-id sequence
+    continuing). Destroying the host and allocating a new one must yield a
+    new singleton (fresh id sequence at a new address).
+    """
+
+    def run_on_fresh_host() -> tuple[tuple[str, int], tuple[str, int]]:
+        with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+            pm = state.hosts.spawn_procs(per_host={"procs": 1})
+            requester = pm.spawn("rdma_singleton_first", _RdmaSingletonProbe)
+            first = requester.create_buffer.call_one().get()
+            # Stop the actor whose request created the singleton. The
+            # manager is host-owned, so it must outlive its requester.
+            requester.stop().get()
+
+            second_actor = pm.spawn("rdma_singleton_second", _RdmaSingletonProbe)
+            second = second_actor.create_buffer.call_one().get()
+            return first, second
+
+    with configured(
+        rdma_disable_ibverbs=True,
+        rdma_allow_tcp_fallback=True,
+        rdma_ibverbs_target="",
+    ):
+        (owner1, id1), (owner2, id2) = run_on_fresh_host()
+        assert owner1 == owner2, (
+            "both requesters on one host must be served by the same manager address"
+        )
+        assert id2 == id1 + 1, (
+            "the singleton must persist across its first requester's stop: "
+            f"expected the buffer-id sequence to continue, got {id1} then {id2}"
+        )
+
+        (owner3, id3), (owner4, id4) = run_on_fresh_host()
+        assert owner3 == owner4
+        assert owner3 != owner1, "a recreated host must run a new singleton"
+        assert id3 == 0 and id4 == 1, (
+            "the new host's manager must restart its buffer-id sequence, "
+            f"got {id3} then {id4}"
+        )

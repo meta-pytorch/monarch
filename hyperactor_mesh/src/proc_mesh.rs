@@ -15,6 +15,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::future;
 use hyperactor::ActorAddr;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
@@ -785,9 +786,10 @@ impl ProcMeshRef {
     /// the same actor type and parameters return the existing actor. Each
     /// rank's outcome is reported as [`Error::ServiceError`], carrying a
     /// typed [`ServiceError`](crate::service_registry::ServiceError), or as
-    /// [`Error::ServiceTimeout`] if the proc does not reply within
-    /// [`ACTOR_SPAWN_MAX_IDLE`]. A failed rank does not roll back the other
-    /// ranks.
+    /// [`Error::ServiceTimeout`] if the proc sends no update for
+    /// [`ACTOR_SPAWN_MAX_IDLE`]. The registry sends updates while a service
+    /// is in `init()`, so a slow `init()` does not time out. A failed rank
+    /// does not roll back the other ranks.
     ///
     /// Services are owned by their proc, not by the caller: each proc's
     /// [`ServiceRegistry`](crate::service_registry::ServiceRegistry) creates
@@ -846,7 +848,7 @@ impl ProcMeshRef {
                 environment
                     .set(CAST_POINT, point)
                     .map_err(|error| Error::Other(error.into()))?;
-                let (reply, reply_rx) = cx.mailbox().open_once_port::<EnsureServiceReply>();
+                let (reply, reply_rx) = cx.mailbox().open_port::<EnsureServiceReply>();
                 let mut port = proc_ref.service_registry().port();
                 port.return_undeliverable(false);
                 port.post(
@@ -863,21 +865,33 @@ impl ProcMeshRef {
             })
             .collect::<crate::Result<Vec<_>>>()?;
 
+        // Each rank has its own idle timeout, reset by every update (SVC-4).
         let timeout = hyperactor_config::global::get(ACTOR_SPAWN_MAX_IDLE);
-        let deadline = tokio::time::Instant::now() + timeout;
-        let mut members = Vec::with_capacity(replies.len());
-        for (rank, reply_rx) in replies.into_iter().enumerate() {
-            let EnsureServiceReply(result) = tokio::time::timeout_at(deadline, reply_rx.recv())
-                .await
-                .map_err(|_| Error::ServiceTimeout {
-                    name: label.clone(),
-                    rank,
-                    timeout,
-                })?
-                .map_err(|error| Error::Other(error.into()))?;
-            let addr = result.map_err(|error| Error::ServiceError { rank, error })?;
-            members.push(ActorRef::attest(addr));
-        }
+        let members =
+            future::try_join_all(replies.into_iter().enumerate().map(|(rank, mut reply_rx)| {
+                let label = label.clone();
+                async move {
+                    loop {
+                        let reply = tokio::time::timeout(timeout, reply_rx.recv())
+                            .await
+                            .map_err(|_| Error::ServiceTimeout {
+                                name: label.clone(),
+                                rank,
+                                timeout,
+                            })?
+                            .map_err(|error| Error::Other(error.into()))?;
+                        match reply {
+                            EnsureServiceReply::Initializing => continue,
+                            EnsureServiceReply::Done(result) => {
+                                return result
+                                    .map(ActorRef::attest)
+                                    .map_err(|error| Error::ServiceError { rank, error });
+                            }
+                        }
+                    }
+                }
+            }))
+            .await?;
 
         let mesh_ref = ActorMeshRef::try_new_data(id.clone(), region, members)?;
         self.notify_actor_mesh_created(

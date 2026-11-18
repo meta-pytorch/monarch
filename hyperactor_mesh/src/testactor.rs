@@ -31,6 +31,7 @@ use hyperactor::Instance;
 use hyperactor::RefClient;
 #[cfg(test)]
 use hyperactor::context;
+use hyperactor::context::Mailbox as _;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
 use hyperactor::supervision::ActorSupervisionEvent;
@@ -287,6 +288,36 @@ impl hyperactor::RemoteSpawn for FailingCreateTestActor {
         Err(anyhow::anyhow!("test failure"))
     }
 }
+
+/// An actor whose `init()` blocks until released. At the start of
+/// `init()` it posts a release port to its params port, then waits for a
+/// message on that release port.
+#[derive(Debug)]
+#[hyperactor::export(handlers = [])]
+pub struct GatedInitActor {
+    started: hyperactor::PortRef<hyperactor::PortRef<()>>,
+}
+
+#[async_trait]
+impl Actor for GatedInitActor {
+    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        let (release, mut released) = this.mailbox().open_port::<()>();
+        self.started.post(this, release.bind());
+        released.recv().await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl hyperactor::RemoteSpawn for GatedInitActor {
+    type Params = hyperactor::PortRef<hyperactor::PortRef<()>>;
+
+    async fn new(started: Self::Params, _environment: &ActorEnvironment) -> anyhow::Result<Self> {
+        Ok(Self { started })
+    }
+}
+
+hyperactor::register_spawnable!(GatedInitActor);
 
 /// Spawn params for [`SerializeCountingActor`] that count, process-wide, how
 /// many times they have been serialized.
