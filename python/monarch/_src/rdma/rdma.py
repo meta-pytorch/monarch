@@ -167,8 +167,8 @@ _rdma_manager_init_cache_lock = threading.Lock()
 
 
 def _ensure_init_rdma_manager_on_mesh(proc_mesh: ProcMesh) -> Handle[None]:
-    """Ensure ``proc_mesh``'s per-proc RDMA managers are initialized through the
-    Rust owner, returning an observe-only ``Handle[None]`` for that exact mesh."""
+    """Ensure ``proc_mesh``'s per-proc RDMA managers are initialized, returning
+    an observe-only ``Handle[None]`` for that exact mesh."""
     with _rdma_manager_init_cache_lock:
         cached = _rdma_manager_init_cache.get(proc_mesh)
         if cached is not None:
@@ -414,7 +414,7 @@ class RDMABuffer:
                 stacklevel=2,
             )
         # RDC-7: build and validate the local handle before eager init, so invalid
-        # input never starts an owner request.
+        # input never starts a manager ensure.
         handle = _make_local_memory_handle(data)
         if handle.size == 0:
             raise ValueError("Cannot create RDMABuffer with size 0.")

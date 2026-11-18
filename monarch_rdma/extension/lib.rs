@@ -10,8 +10,7 @@
 //!
 //! Most of this module wraps RDMA buffers, local-memory handles, and batched
 //! actions. `PyRdmaManager::ensure_init_rdma_manager_nonblocking` is the manager
-//! initialization boundary; its invariants (`RMB-*`) live at the boundary, not in
-//! the owner's `RMO-*` state machine:
+//! initialization boundary; its invariants (`RMB-*`) are:
 //!
 //! - **RMB-1** (one readiness surface): the method eagerly returns exactly one
 //!   observe-only `Handle[None]`; it creates no other readiness signal.
@@ -19,37 +18,35 @@
 //!   and resolved; the Handle keepalive is released immediately after resolution,
 //!   then the resolved mesh is downcast to `PyProcMesh` and cloned to a
 //!   `ProcMeshRef`. No ambient/default proc mesh participates.
-//! - **RMB-3** (stable-root ownership): the owner is obtained only through the
-//!   supplied instance's inherited `ClientRootRef` and the statically declared
-//!   `ClientRootService<RdmaManagerOwnerActor>`; the passed instance supplies the
-//!   request/reply endpoint, not the owner's lifetime.
+//! - **RMB-3** (proc-owned managers): the managers are singleton services owned
+//!   by their procs' `ServiceRegistry`, ensured with `spawn_service`. The passed
+//!   instance supplies only the request/reply endpoint; its lifetime does not
+//!   affect the managers.
 //! - **RMB-4** (full-barrier flattening): success requires shared resolution, mesh
-//!   extraction, client-root lookup, service ensure, request post, reply
-//!   reception, and the owner's inner `Ok(())`.
-//! - **RMB-5** (typed failure boundary): an owner `RdmaInitError` becomes the
-//!   catchable native `RdmaInitError` with its cause text preserved. A wrong-typed
-//!   `Handle` surfaces the native PyO3 `TypeError` from the downcast (preserved,
-//!   not remapped); missing-capability, service-ensure, and reply-channel failures
-//!   stay `PyRuntimeError`.
+//!   extraction, and `spawn_service` success on every rank, which certifies that
+//!   every manager has finished `init()`.
+//! - **RMB-5** (typed failure boundary): a manager that failed to construct or
+//!   initialize (a terminal service) becomes the catchable native `RdmaInitError`
+//!   with its cause text preserved. A wrong-typed `Handle` surfaces the native PyO3
+//!   `TypeError` from the downcast (preserved, not remapped); any other ensure
+//!   failure stays `PyRuntimeError`.
 //! - **RMB-6** (observation does not control init): dropping or cancelling the
-//!   returned `Handle` does not abort the producer or the owner request, and the
-//!   binding adds no timeout or local capability gate.
-//! - **RMB-7** (non-returning owner request): `EnsureRdmaManager` is posted through
-//!   the owner's typed port with `return_undeliverable(false)`, so an invalid owner
-//!   reference cannot bounce back and fail the caller; with no reply the `Handle`
-//!   stays pending (RMO-9).
+//!   returned `Handle` does not abort the producer. The binding adds no timeout or
+//!   local capability gate beyond `spawn_service`'s bounded wait.
+//! - **RMB-7** (non-returning requests): `spawn_service` posts each registry
+//!   request with `return_undeliverable(false)`, so an unreachable proc cannot
+//!   bounce a request back and fail the caller; it surfaces as a timeout.
 //! - **RMB-8** (producer retained state): RMB-8 governs only the *producer's*
 //!   retained state — the `PyInstance` is consumed to its native `Instance` before
 //!   the producer spawns and the `PyHandle` is released after mesh resolution, so
-//!   an unbounded owner wait retains native actor/mesh references, not the caller's
-//!   Python object graph.
+//!   the ensure wait retains native actor/mesh references, not the caller's Python
+//!   object graph.
 //!
 //! Accepted cost: a *cancelled* awaiter of the returned `Handle` keeps its
 //! `asyncio` observer — and thus its `Future` and event loop — alive until the
-//! producer resolves; under the no-timeout boundary (RMO-9) a never-resolving
-//! owner can retain those indefinitely. This is inherited `Handle` observer
-//! behavior, not specific to this binding, and is left unaddressed here rather
-//! than expanding scope to generic observer cancellation.
+//! producer resolves. This is inherited `Handle` observer behavior, not specific
+//! to this binding, and is left unaddressed here rather than expanding scope to
+//! generic observer cancellation.
 //!
 //! `create_rdma_buffer_blocking`, `_RdmaBuffer::drop`, and `_RdmaAction::submit`
 //! accept a readiness `Handle[None]` (`rdma_manager_init`); production Python
@@ -57,9 +54,10 @@
 //! invariants (`RDC-*`) are:
 //!
 //! - **RDC-1** (single production readiness authority): production Python gates
-//!   every manager-dependent entry point with the terminal result cached by
-//!   `RdmaManagerOwnerActor` for its `ProcMesh`. The native methods treat the
-//!   supplied Handle as a readiness capability; they do not prove its provenance.
+//!   every manager-dependent entry point with the `Handle` returned by
+//!   `ensure_init_rdma_manager_nonblocking` for its `ProcMesh`. The native methods
+//!   treat the supplied Handle as a readiness capability; they do not prove its
+//!   provenance.
 //! - **RDC-2** (exact mesh and cache boundary): the Python explicit helper forwards
 //!   its argument's exact `Handle` and weakly caches by `ProcMesh` identity; the
 //!   no-argument helper supplies the current context's mesh (enforced in `rdma.py`).
@@ -85,10 +83,8 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hyperactor::Endpoint;
 use hyperactor_mesh::ProcMeshRef;
-use hyperactor_mesh::client_root::ClientRootRef;
-use hyperactor_mesh::client_root::ClientRootService;
+use hyperactor_mesh::service_registry::ServiceError;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::handle::PyHandle;
 use monarch_hyperactor::handle::after_ready;
@@ -97,13 +93,9 @@ use monarch_hyperactor::runtime::GilSite;
 use monarch_hyperactor::runtime::monarch_with_gil;
 use monarch_hyperactor::runtime::monarch_with_gil_blocking;
 use monarch_hyperactor::runtime::signal_safe_block_on;
-use monarch_rdma::EnsureRdmaManager;
-use monarch_rdma::RDMA_MANAGER_OWNER_ACTOR_NAME;
 use monarch_rdma::RdmaAction;
-use monarch_rdma::RdmaInitError as RdmaInitWireError;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
-use monarch_rdma::RdmaManagerOwnerActor;
 use monarch_rdma::RdmaRemoteBuffer;
 use monarch_rdma::ScannedSegment;
 use monarch_rdma::ibverbs_supported;
@@ -126,9 +118,6 @@ use pyo3::types::PyMemoryView;
 use pyo3::types::PyTuple;
 use pyo3::types::PyType;
 use typeuri::Named;
-
-const RDMA_MANAGER_OWNER_SERVICE: ClientRootService<RdmaManagerOwnerActor> =
-    ClientRootService::declare(RDMA_MANAGER_OWNER_ACTOR_NAME);
 
 /// CUDA segment scanner backed by PyTorch's memory snapshot API.
 ///
@@ -772,49 +761,44 @@ impl PyRdmaBuffer {
 }
 
 // Catchable Python exception for a typed RDMA manager initialization failure.
-//
-// The wire enum `monarch_rdma::RdmaInitError` (imported as `RdmaInitWireError`)
-// is a serialization payload, not a Python exception; this is the native
-// exception the binding raises so Python callers have one stable category to
-// `except`. Exposed as `monarch._rust_bindings.rdma.RdmaInitError`.
+// Exposed as `monarch._rust_bindings.rdma.RdmaInitError`.
 pyo3::create_exception!(
     rdma,
     RdmaInitError,
     PyException,
-    "Raised when the RDMA manager owner reports a typed initialization failure"
+    "Raised when an RDMA manager fails to construct or initialize"
 );
 
-/// Map the owner's typed wire error to the catchable native `RdmaInitError`,
-/// preserving the exact cause string (RMB-5). Other failures are handled at their
-/// own sites, not here: each either retains its native PyO3 error (e.g. the
-/// wrong-typed `Handle` downcast's `TypeError`) or is mapped to `PyRuntimeError`.
-fn map_rdma_init_error(err: RdmaInitWireError) -> PyErr {
-    let cause = match err {
-        RdmaInitWireError::InitFailed(cause)
-        | RdmaInitWireError::SpawnFailed(cause)
-        | RdmaInitWireError::Supervision(cause) => cause,
-    };
-    RdmaInitError::new_err(cause)
+/// Map a manager ensure failure to Python (RMB-5): a terminal manager becomes
+/// the catchable native `RdmaInitError`, preserving its status text; any other
+/// failure becomes `PyRuntimeError`.
+fn map_ensure_error(err: hyperactor_mesh::Error) -> PyErr {
+    match err {
+        hyperactor_mesh::Error::ServiceError {
+            error: ServiceError::Terminal { status, .. },
+            ..
+        } => RdmaInitError::new_err(status.to_string()),
+        other => PyRuntimeError::new_err(format!("failed to ensure the RDMA managers: {other}")),
+    }
 }
 
-// `_RdmaManager` is the classmethod namespace for the owner-backed init boundary;
-// it holds no instance state and is never constructed from Python.
+// `_RdmaManager` is the classmethod namespace for the manager init boundary; it
+// holds no instance state and is never constructed from Python.
 #[pyclass(name = "_RdmaManager", module = "monarch._rust_bindings.rdma")]
 pub struct PyRdmaManager;
 
 #[pymethods]
 impl PyRdmaManager {
-    /// Ensure a proc mesh's per-proc RDMA managers are initialized through the
-    /// Rust owner, returning an observe-only `Handle[None]`.
+    /// Ensure a proc mesh's per-proc RDMA managers are initialized, returning an
+    /// observe-only `Handle[None]`.
     ///
     /// Takes the `Handle[ProcMesh]` a Python `ProcMesh` already holds (not a
-    /// resolved mesh) plus the caller instance. It resolves the mesh, routes one
-    /// `EnsureRdmaManager` request to the root-owned `RdmaManagerOwnerActor`, and
-    /// resolves the handle when the owner's full post-`init()` barrier completes.
-    /// A typed owner failure surfaces as the catchable native `RdmaInitError`
-    /// (RMB-5); a wrong-typed `Handle` surfaces the native `TypeError` from the
-    /// downcast; missing-capability, service-ensure, and reply-channel failures
-    /// stay `PyRuntimeError`.
+    /// resolved mesh) plus the caller instance. It resolves the mesh, ensures the
+    /// proc-owned `rdma_manager` service on every proc, and resolves the handle
+    /// once every manager has finished `init()`. A manager initialization
+    /// failure surfaces as the catchable native `RdmaInitError` (RMB-5); a
+    /// wrong-typed `Handle` surfaces the native `TypeError` from the downcast;
+    /// other ensure failures stay `PyRuntimeError`.
     #[classmethod]
     fn ensure_init_rdma_manager_nonblocking(
         _cls: &Bound<'_, PyType>,
@@ -825,8 +809,8 @@ impl PyRdmaManager {
         // Observe the supplied Handle's completion (Send + 'static; borrows
         // nothing across the await). RMB-2: the exact argument is observed.
         let handle_observer = proc_mesh_handle.borrow(py).wait_future();
-        // RMB-8: consume the PyInstance to its native Instance so an unbounded
-        // owner wait does not pin the caller's Python object graph.
+        // RMB-8: consume the PyInstance to its native Instance so the ensure
+        // wait does not pin the caller's Python object graph.
         let caller = caller.into_instance();
         Ok(PyHandle::spawn(async move {
             // Resolve the proc mesh, then release the Handle keepalive (RMB-2).
@@ -837,45 +821,12 @@ impl PyRdmaManager {
                 mesh_obj.bind(py).cast::<PyProcMesh>()?.borrow().mesh_ref()
             })
             .await?;
-            // RMB-3: the inherited capability routes this request to the program
-            // root; the caller supplies the mailbox, not owner lifetime.
-            let client_root = ClientRootRef::from_env(caller.actor_environment()).map_err(|e| {
-                PyRuntimeError::new_err(format!(
-                    "failed to read the client-root capability from the caller: {e}"
-                ))
-            })?;
-            let owner = RDMA_MANAGER_OWNER_SERVICE
-                .ensure(&caller, &client_root, ())
+            // RMB-3: the managers are proc-owned services; the caller supplies
+            // only the request/reply endpoint.
+            proc_mesh
+                .spawn_service::<RdmaManagerActor, _>(&caller, "rdma_manager", &None)
                 .await
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!(
-                        "failed to create or reuse the root-owned RDMA manager owner: {e}"
-                    ))
-                })?;
-            // Post one EnsureRdmaManager through the owner's typed port. RMB-7: the
-            // request is non-returning, so an invalid owner reference cannot bounce
-            // back and fail this caller.
-            let (reply, rx) = caller.open_once_port::<Result<(), RdmaInitWireError>>();
-            let mut request = owner.port::<EnsureRdmaManager>();
-            request.return_undeliverable(false);
-            request.post(
-                &caller,
-                EnsureRdmaManager {
-                    proc_mesh,
-                    reply: reply.bind(),
-                },
-            );
-            // RMB-4: readiness requires the inner Ok(()). A closed reply channel is
-            // a distinct infrastructure failure; a typed owner error becomes the
-            // catchable native RdmaInitError (RMB-5).
-            rx.recv()
-                .await
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!(
-                        "the RDMA manager owner reply channel closed before readiness: {e}"
-                    ))
-                })?
-                .map_err(map_rdma_init_error)?;
+                .map_err(map_ensure_error)?;
             // Resolve to Python `None`. `Ok(())` would convert to an empty tuple,
             // not `None` (pyo3 maps the unit type to an empty `PyTuple`);
             // `Option::None` converts to `None`, matching the `Handle[None]` contract.

@@ -838,20 +838,20 @@ pub struct PythonClientRoot {
 }
 
 impl PythonClientRoot {
-    /// Spawn a controllerless owner actor on the client root's proc mesh,
-    /// using the root's own stable client instance as the caller context, and
-    /// return its typed [`ActorRef<A>`](hyperactor::ActorRef).
+    /// Ensure a proc-owned singleton owner actor on the client root's proc
+    /// mesh, using the root's own stable client instance as the caller
+    /// context, and return its typed [`ActorRef<A>`](hyperactor::ActorRef).
     ///
     /// The Python client-root proc mesh is a singleton (one proc), so the
-    /// spawned mesh has exactly one rank. This validates that invariant and
-    /// returns rank 0's actor reference, encoding the single-owner contract in
-    /// the return type and letting callers use the generated `RefClient`
-    /// methods. The intermediate `ActorMesh` is dropped once the ref is
-    /// extracted; its `Drop` is inert, so this does not tear the owner down.
+    /// service mesh has exactly one rank. This validates that invariant and
+    /// returns rank 0's actor reference, encoding the single-owner contract
+    /// in the return type and letting callers use the generated `RefClient`
+    /// methods. The returned mesh ref is non-owning and is dropped once the
+    /// actor ref is extracted; the singleton's lifetime belongs to its proc.
     ///
-    /// Method-only by design: the owner must be spawned with the long-lived
-    /// root `cx`, never an arbitrary (possibly short-lived) caller context.
-    pub async fn spawn_controllerless_owner<A: hyperactor::RemoteSpawn>(
+    /// Method-only by design: the owner is ensured with the root's own `cx`,
+    /// so a newly created owner inherits the root's environment.
+    pub async fn ensure_owner<A: hyperactor::RemoteSpawn>(
         &self,
         name: &str,
         params: &A::Params,
@@ -859,20 +859,17 @@ impl PythonClientRoot {
     where
         A::Params: hyperactor::RemoteMessage,
     {
-        let mesh = self
-            .proc_mesh
-            .spawn_controllerless_service(self.cx, name, params)
-            .await?;
+        let mesh = self.proc_mesh.spawn_service(self.cx, name, params).await?;
         // `Ranked` is not imported at module scope: it would make the existing
         // `.region()` calls in this file ambiguous with `View::region`.
-        let actual = ndslice::view::Ranked::region(&*mesh).num_ranks();
+        let actual = ndslice::view::Ranked::region(&mesh).num_ranks();
         if actual != 1 {
             return Err(hyperactor_mesh::Error::InvalidRankCardinality {
                 expected: 1,
                 actual,
             });
         }
-        Ok(ndslice::view::Ranked::get(&*mesh, 0)
+        Ok(ndslice::view::Ranked::get(&mesh, 0)
             .expect("singleton owner mesh must contain rank 0")
             .clone())
     }

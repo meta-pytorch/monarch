@@ -79,6 +79,10 @@ use crate::proc_agent::ProcAgent;
 use crate::resource;
 use crate::resource::GetRankStatus;
 use crate::resource::Status;
+use crate::service_registry::EnsureService;
+use crate::service_registry::EnsureServiceReply;
+use crate::service_registry::ServiceRegistry;
+use crate::service_registry::service_registry_ref;
 use crate::supervision::MeshFailure;
 
 declare_attrs! {
@@ -166,6 +170,12 @@ impl ProcRef {
     /// Return the actor spawner hosted by this proc.
     pub(crate) fn spawner(&self) -> ActorRef<ActorSpawner> {
         ActorRef::attest(self.proc_id.actor_addr_uid(actor_spawner_uid()))
+    }
+
+    /// Return the registry that creates and owns this proc's singleton
+    /// services.
+    pub(crate) fn service_registry(&self) -> ActorRef<ServiceRegistry> {
+        service_registry_ref(&self.proc_id)
     }
 }
 
@@ -766,76 +776,117 @@ impl ProcMeshRef {
         self.spawn_with_name(cx, id, params, None, false).await
     }
 
-    /// Spawn a 'service' actor. Service actors are *singletons*, using
-    /// reserved names. The provided name is used verbatim as the actor's
-    /// name, and thus it may be persistently looked up by constructing
-    /// the appropriate name.
+    /// Ensure a 'service' actor on every proc in this mesh. Service actors
+    /// are *singletons* per proc, using reserved names. The provided name
+    /// is used verbatim as the actor's singleton uid, and thus it may be
+    /// persistently looked up by constructing the appropriate name.
     ///
-    /// Note: avoid using service actors if possible; the mechanism will
-    /// be replaced by an actor registry.
-    pub async fn spawn_service<A: RemoteSpawn, C: context::Actor>(
-        &self,
-        cx: &C,
-        name: &str,
-        params: &A::Params,
-    ) -> crate::Result<ActorMesh<A>>
-    where
-        A::Params: RemoteMessage,
-        C::A: Handler<MeshFailure>,
-    {
-        let id = ActorMeshId::singleton(Label::strip(name));
-        self.spawn_with_name(cx, id, params, None, false).await
-    }
-
-    /// Spawn a controllerless 'service' actor.
+    /// The first call for a (proc, name) creates the actor; later calls with
+    /// the same actor type and parameters return the existing actor. Each
+    /// rank's outcome is reported as [`Error::ServiceError`], carrying a
+    /// typed [`ServiceError`](crate::service_registry::ServiceError), or as
+    /// [`Error::ServiceTimeout`] if the proc does not reply within
+    /// [`ACTOR_SPAWN_MAX_IDLE`]. A failed rank does not roll back the other
+    /// ranks.
     ///
-    /// Like [`spawn_service`](Self::spawn_service), this spawns a singleton
-    /// service actor (a reserved name, deduped to one). Unlike `spawn_service`,
-    /// the resulting mesh has **no** `ActorMeshController`: no per-caller
-    /// controller actor is spawned, and the caller `C` is therefore **not**
-    /// required to implement `Handler<MeshFailure>`.
+    /// Services are owned by their proc, not by the caller: each proc's
+    /// [`ServiceRegistry`](crate::service_registry::ServiceRegistry) creates
+    /// its services as local children and replies once they have finished
+    /// `init()`. The returned [`ActorMeshRef`] is a non-owning cast/address
+    /// surface: it cannot stop the services, stopping the caller does not
+    /// stop them, and they stop with their proc. A service that stops or
+    /// fails is terminal and is not recreated.
     ///
-    /// This is for coordinators that own their own supervision — e.g. a
-    /// controllerless singleton that itself spawns controller-ful children —
-    /// where a per-caller controller would be redundant.
+    /// Ownership, not naming, is what distinguishes a service. To give an
+    /// actor a singleton uid while keeping it owned by the caller, use
+    /// [`spawn_with_name`](Self::spawn_with_name) with
+    /// [`ActorMeshId::singleton`]: the caller owns the returned [`ActorMesh`]
+    /// and can stop it.
     #[hyperactor::instrument(fields(
         host_mesh=self.host_mesh_id().map(|id| id.to_string()),
         proc_mesh=self.id.to_string(),
         actor_name=name.to_string(),
     ))]
-    pub async fn spawn_controllerless_service<A: RemoteSpawn, C: context::Actor>(
+    pub async fn spawn_service<A: RemoteSpawn, C: context::Actor>(
         &self,
         cx: &C,
         name: &str,
         params: &A::Params,
-    ) -> crate::Result<ActorMesh<A>>
+    ) -> crate::Result<ActorMeshRef<A>>
     where
         A::Params: RemoteMessage,
     {
-        tracing::info!(
-            name = "ProcMeshStatus",
-            status = "ActorMesh::Spawn::Attempt",
-        );
-        tracing::info!(name = "ActorMeshStatus", status = "Spawn::Attempt");
-        let id = ActorMeshId::singleton(Label::strip(name));
-        let result = self
-            .spawn_managed_mesh_inner(cx, id, params, None)
-            .await
-            .map(|(mesh, _statuses)| mesh);
-        match &result {
-            Ok(_) => {
-                tracing::info!(
-                    name = "ProcMeshStatus",
-                    status = "ActorMesh::Spawn::Success",
-                );
-                tracing::info!(name = "ActorMeshStatus", status = "Spawn::Success");
-            }
-            Err(error) => {
-                tracing::error!(name = "ProcMeshStatus", status = "ActorMesh::Spawn::Failed", %error);
-                tracing::error!(name = "ActorMeshStatus", status = "Spawn::Failed", %error);
-            }
+        if self.ranks.is_empty() {
+            return Err(Error::ConfigurationError(anyhow::anyhow!(
+                "cannot spawn an empty actor mesh"
+            )));
         }
-        result
+        let label = Label::strip(name);
+        let id = ActorMeshId::singleton(label.clone());
+        let region = self.region().clone();
+        let actor_type = Remote::collect()
+            .name_of::<A>()
+            .ok_or(Error::ActorTypeNotRegistered(type_name::<A>().to_string()))?
+            .to_string();
+        let serialized_params = bincode::serde::encode_to_vec(params, bincode::config::legacy())?;
+
+        // Post one ensure per rank to that proc's service registry, then
+        // gather the replies. Each registry creates its service once (SVC-1)
+        // and replies after the service's `init()` (SVC-4).
+        let replies = self
+            .ranks
+            .iter()
+            .enumerate()
+            .map(|(rank, proc_ref)| {
+                let point = region
+                    .extent()
+                    .point_of_rank(rank)
+                    .expect("proc mesh rank must have a point");
+                let mut environment = cx.instance().actor_environment().clone();
+                environment
+                    .set(CAST_POINT, point)
+                    .map_err(|error| Error::Other(error.into()))?;
+                let (reply, reply_rx) = cx.mailbox().open_once_port::<EnsureServiceReply>();
+                let mut port = proc_ref.service_registry().port();
+                port.return_undeliverable(false);
+                port.post(
+                    cx,
+                    EnsureService {
+                        name: label.clone(),
+                        actor_type: actor_type.clone(),
+                        params: serialized_params.clone(),
+                        environment,
+                        reply: reply.bind(),
+                    },
+                );
+                Ok(reply_rx)
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
+
+        let timeout = hyperactor_config::global::get(ACTOR_SPAWN_MAX_IDLE);
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut members = Vec::with_capacity(replies.len());
+        for (rank, reply_rx) in replies.into_iter().enumerate() {
+            let EnsureServiceReply(result) = tokio::time::timeout_at(deadline, reply_rx.recv())
+                .await
+                .map_err(|_| Error::ServiceTimeout {
+                    name: label.clone(),
+                    rank,
+                    timeout,
+                })?
+                .map_err(|error| Error::Other(error.into()))?;
+            let addr = result.map_err(|error| Error::ServiceError { rank, error })?;
+            members.push(ActorRef::attest(addr));
+        }
+
+        let mesh_ref = ActorMeshRef::try_new_data(id.clone(), region, members)?;
+        self.notify_actor_mesh_created(
+            telemetry_data_actor_mesh_id(id.uid()),
+            &id,
+            actor_type,
+            None,
+        );
+        Ok(mesh_ref)
     }
 
     /// Spawn an actor on all procs in this mesh using the new data-only mesh API.
@@ -1452,7 +1503,7 @@ const DATA_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 /// [`DATA_KEEPALIVE_INTERVAL`], or every half of the shorter timeout if that
 /// is shorter, so that each keepalive supersedes the supervisor's deadline
 /// before it expires.
-fn data_mesh_supervision() -> (KeepaliveLink, SupervisionOptions) {
+pub(crate) fn data_mesh_supervision() -> (KeepaliveLink, SupervisionOptions) {
     let orphan_timeout = hyperactor_config::global::get(MESH_ORPHAN_TIMEOUT);
     let supervision_timeout = hyperactor_config::global::get(DATA_SUPERVISION_TIMEOUT);
     let options = SupervisionOptions {
@@ -1521,8 +1572,6 @@ mod tests {
     #[cfg(fbcode_build)]
     use hyperactor::StatusMessage;
     #[cfg(fbcode_build)]
-    use hyperactor::accum::IdleFlushReducerOpts;
-    #[cfg(fbcode_build)]
     use hyperactor::actor::ActorStatus;
     #[cfg(fbcode_build)]
     use hyperactor::channel::BindSpec;
@@ -1535,8 +1584,6 @@ mod tests {
     use hyperactor::monitor::MonitorFailure;
     #[cfg(fbcode_build)]
     use hyperactor_config::Flattrs;
-    #[cfg(fbcode_build)]
-    use hyperactor_config::NonZeroUsize;
     use hyperactor_remote::KeepaliveLink;
     use hyperactor_remote::OrphanPolicy;
     use hyperactor_remote::SupervisionOptions;
@@ -1563,8 +1610,6 @@ mod tests {
     #[cfg(fbcode_build)]
     use uuid::Uuid;
 
-    #[cfg(fbcode_build)]
-    use super::ACTOR_SPAWN_MAX_IDLE;
     use super::DATA_SUPERVISION_TIMEOUT;
     #[cfg(fbcode_build)]
     use super::ProcMeshRef;
@@ -1602,6 +1647,8 @@ mod tests {
     use crate::resource::RankedValues;
     #[cfg(fbcode_build)]
     use crate::resource::Status;
+    #[cfg(fbcode_build)]
+    use crate::service_registry::ServiceError;
     #[cfg(fbcode_build)]
     use crate::testactor;
     #[cfg(fbcode_build)]
@@ -2159,7 +2206,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 300)]
     #[cfg(fbcode_build)]
-    async fn spawn_uses_direct_path_when_configured_but_services_remain_managed() {
+    async fn spawn_uses_direct_path_when_configured_and_services_return_data_refs() {
         let config = hyperactor_config::global::lock();
         let _mode = config.override_key(USE_DIRECT_SPAWN, true);
         let instance = testing::instance();
@@ -2196,13 +2243,13 @@ mod tests {
             "spawn should preserve the requested actor label"
         );
 
-        let service: ActorMesh<testactor::TestActor> = proc_mesh
-            .spawn_service(instance, "configured_managed_service", &())
+        let service: ActorMeshRef<testactor::TestActor> = proc_mesh
+            .spawn_service(instance, "configured_service", &())
             .await
-            .expect("spawn managed service");
+            .expect("spawn service");
         assert!(
-            service.as_managed().is_some(),
-            "service spawn should ignore the data mesh flag"
+            service.as_managed().is_none(),
+            "service spawn should return a non-owning data ref"
         );
 
         let mut system_actor: ActorMesh<testactor::TestActor> = proc_mesh
@@ -2416,7 +2463,7 @@ mod tests {
             .instance
             .open_port::<testactor::ActorEnvironmentObservation>();
         first_hop
-            .spawn_controllerless_service::<testactor::ActorEnvironmentProbe, _>(
+            .spawn_service::<testactor::ActorEnvironmentProbe, _>(
                 &root.instance,
                 "actor_environment_hop_1",
                 &testactor::ActorEnvironmentProbeParams {
@@ -2730,18 +2777,12 @@ mod tests {
     /// `spawn_service` creates one deduped actor per proc, so the slice must
     /// keep the whole's actor on the shared proc.
     ///
-    /// One `host_mesh(1)` fixture drives three uniquely-named scenarios to keep
+    /// One `host_mesh(1)` fixture drives two uniquely-named scenarios to keep
     /// the harness footprint minimal (one Tokio runtime, one host process, no
-    /// process-global config override): reuse whole-then-slice, reuse
-    /// slice-then-whole, and a deferred `WaitRankStatus` over the slice. Each
-    /// spawn must resolve (a reused spawn positions its readiness overlay at the
-    /// consuming-view rank, so the accumulator completes), the slice must
-    /// reference the whole's shared actor with no new actors, and a Stopped-waiter
-    /// registered while the service runs must flush at slice-local ranks.
-    /// The assertions exercise the ProcAgent readiness path; the per-view
-    /// controllers remain idle because this test does not trigger supervision.
-    /// Snapshot assertions also verify that both reuse orders return actor state
-    /// in the queried view's rank order.
+    /// process-global config override): reuse whole-then-slice and reuse
+    /// slice-then-whole. Each proc's registry dedups by name, so a
+    /// renumbered slice returns the whole's actor on the shared proc with no
+    /// new actors, in either creation order.
     #[async_timed_test(timeout_secs = 120)]
     #[cfg(fbcode_build)]
     async fn test_singleton_service_reuse_over_overlapping_views() {
@@ -2756,8 +2797,8 @@ mod tests {
 
         // The slice reuses the whole's actor on the shared proc; no new actors.
         fn assert_shared(
-            whole_mesh: &ActorMesh<testactor::TestActor>,
-            slice_mesh: &ActorMesh<testactor::TestActor>,
+            whole_mesh: &ActorMeshRef<testactor::TestActor>,
+            slice_mesh: &ActorMeshRef<testactor::TestActor>,
         ) {
             let whole_ids: HashSet<_> = whole_mesh
                 .values()
@@ -2790,17 +2831,7 @@ mod tests {
             .await
             .unwrap();
         assert_shared(&w1, &s1);
-        let s1_states = slice.actor_states(instance, s1.id().clone()).await.unwrap();
-        for rank in 0..slice.region().num_ranks() {
-            assert_eq!(
-                s1_states
-                    .get(rank)
-                    .and_then(|state| state.state.as_ref())
-                    .map(|state| &state.actor_id),
-                s1.get(rank).map(|actor| actor.actor_addr()),
-                "whole-first state is positioned at slice rank {rank}",
-            );
-        }
+        testactor::assert_casting_correctness(&s1, instance, None).await;
 
         // Scenario 2: spawn over the slice first, then reuse over the whole.
         let s2 = slice
@@ -2812,77 +2843,7 @@ mod tests {
             .await
             .unwrap();
         assert_shared(&w2, &s2);
-        let w2_states = whole.actor_states(instance, w2.id().clone()).await.unwrap();
-        for rank in 0..whole.region().num_ranks() {
-            assert_eq!(
-                w2_states
-                    .get(rank)
-                    .and_then(|state| state.state.as_ref())
-                    .map(|state| &state.actor_id),
-                w2.get(rank).map(|actor| actor.actor_addr()),
-                "slice-first state is positioned at whole-view rank {rank}",
-            );
-        }
-
-        // Scenario 3: a `WaitRankStatus{Stopped}` registered over the renumbered
-        // slice while the service runs is deferred and flushed on stop. The
-        // flushed overlays land at slice-local ranks, within the slice region the
-        // accumulator was opened over, so the wait completes. Registering before
-        // the stop makes the deferred branch deterministic.
-        whole
-            .spawn_service::<testactor::TestActor, _>(instance, "svc_wait", &())
-            .await
-            .unwrap();
-        let sw = slice
-            .spawn_service::<testactor::TestActor, _>(instance, "svc_wait", &())
-            .await
-            .unwrap();
-        let id = sw.id().resource_id().clone();
-        let region = slice.region().clone();
-        let num_ranks = region.num_ranks();
-        let (port, rx) = instance.mailbox().open_idle_flush_accum_port(
-            crate::StatusMesh::from_single(region.clone(), Status::NotExist),
-            IdleFlushReducerOpts {
-                idle_timeout: Duration::from_millis(50),
-                abandon_timeout: Duration::from_secs(30),
-                expected_updates_per_destination: NonZeroUsize::MIN,
-            },
-        );
-        slice
-            .agent_mesh()
-            .cast(
-                instance,
-                crate::resource::WaitRankStatus {
-                    id: id.clone(),
-                    // Filled by the cast layer with this recipient's dense view rank.
-                    rank: Default::default(),
-                    min_status: Status::Stopped,
-                    reply: port.bind(),
-                },
-            )
-            .unwrap();
-        slice
-            .agent_mesh()
-            .cast(
-                instance,
-                crate::resource::Stop {
-                    id: id.clone(),
-                    reason: "test".to_string(),
-                },
-            )
-            .unwrap();
-        let statuses = crate::resource::GetRankStatus::wait(
-            rx,
-            num_ranks,
-            hyperactor_config::global::get(ACTOR_SPAWN_MAX_IDLE),
-            region,
-        )
-        .await
-        .unwrap();
-        assert!(
-            statuses.values().all(|s| s.is_terminating()),
-            "deferred waiters flushed at slice-local ranks: {statuses:?}",
-        );
+        testactor::assert_casting_correctness(&w2, instance, None).await;
 
         hm.shutdown(instance)
             .await
@@ -2933,11 +2894,15 @@ mod tests {
         )
         .unwrap();
 
+        // A system actor spawn: ProcAgent-tracked (so `actor_states` can
+        // report it) without a per-caller controller.
         let actor_mesh = controller_view
-            .spawn_controllerless_service::<testactor::TestActor, _>(
+            .spawn_with_name::<testactor::TestActor, _>(
                 instance,
-                "location_mismatch_actor",
+                ActorMeshId::singleton(Label::strip("location_mismatch_actor")),
                 &(),
+                None,
+                true,
             )
             .await
             .unwrap();
@@ -3218,7 +3183,7 @@ mod tests {
     #[cfg(fbcode_build)]
     #[assert_no_process_leak]
     #[tokio::test]
-    async fn test_failing_spawn_controllerless() {
+    async fn test_failing_spawn_service() {
         hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
         let config = hyperactor_config::global::lock();
@@ -3235,22 +3200,29 @@ mod tests {
             .spawn(&instance, "test", extent!(gpus = 1), None, None)
             .await
             .unwrap();
-        // The controllerless path shares spawn_managed_mesh_inner, so it must still run
-        // the bounded spawn wait and surface the same ActorSpawnError shape on a
-        // terminal init failure — identical to spawn/spawn_service.
-        let err = proc_mesh
-            .spawn_controllerless_service::<testactor::FailingCreateTestActor, _>(
-                instance,
-                "testfail_controllerless",
-                &(),
-            )
-            .await
-            .unwrap_err();
-        let statuses = err.into_actor_spawn_error().unwrap();
-        assert_eq!(
-            statuses,
-            RankedValues::from((0..1, Status::Failed("test failure".to_string()))),
-        );
+        // A service whose construction fails surfaces as a typed terminal
+        // error, and the registry caches it: a second ensure fails the same
+        // way instead of respawning (SVC-3).
+        for attempt in ["first", "second"] {
+            let err = proc_mesh
+                .spawn_service::<testactor::FailingCreateTestActor, _>(
+                    instance,
+                    "testfail_service",
+                    &(),
+                )
+                .await
+                .unwrap_err();
+            match err {
+                crate::Error::ServiceError {
+                    rank: 0,
+                    error: ServiceError::Terminal { status, .. },
+                } => assert!(
+                    status.is_failed() && status.to_string().contains("test failure"),
+                    "{attempt} ensure should report the construction failure: {status}"
+                ),
+                other => panic!("{attempt} ensure: expected a terminal service error, got {other}"),
+            }
+        }
 
         let _ = hm.shutdown(instance).await;
     }
@@ -3401,30 +3373,29 @@ mod tests {
         );
     }
 
-    // Compile-only proof that `spawn_controllerless_service` does NOT require
-    // `C::A: Handler<MeshFailure>` — the whole point of the controllerless
-    // path. This generic wrapper omits that bound and still type-checks; the
-    // identical wrapper over `spawn_service` would fail to compile. (Generic
-    // fn bodies are type-checked at definition, so this holds without ever
-    // being called.)
+    // Compile-only proof that `spawn_service` does NOT require
+    // `C::A: Handler<MeshFailure>`: services are supervised by the host
+    // owner, not the caller, so no per-caller controller (and thus no owner
+    // sink) exists. This generic wrapper omits that bound and still
+    // type-checks. (Generic fn bodies are type-checked at definition, so
+    // this holds without ever being called.)
     #[allow(dead_code)]
-    async fn _spawn_controllerless_needs_no_mesh_failure_handler<A, C>(
+    async fn _spawn_service_needs_no_mesh_failure_handler<A, C>(
         pm: &super::ProcMeshRef,
         cx: &C,
         name: &str,
         params: &A::Params,
-    ) -> crate::Result<crate::ActorMesh<A>>
+    ) -> crate::Result<crate::ActorMeshRef<A>>
     where
         A: hyperactor::RemoteSpawn,
         A::Params: hyperactor::RemoteMessage,
         C: hyperactor::context::Actor,
     {
-        pm.spawn_controllerless_service::<A, C>(cx, name, params)
-            .await
+        pm.spawn_service::<A, C>(cx, name, params).await
     }
 
     #[cfg(fbcode_build)]
-    async fn execute_spawn_controllerless() {
+    async fn execute_spawn_service() {
         hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
         let instance = testing::instance();
@@ -3435,50 +3406,276 @@ mod tests {
             .await
             .unwrap();
 
-        // A controllerless service mesh has no ActorMeshController...
-        let controllerless = proc_mesh
-            .spawn_controllerless_service::<testactor::TestActor, _>(
-                instance,
-                "svc_controllerless",
-                &(),
-            )
+        // A service mesh is a non-owning data ref: no controller, no stop
+        // authority. Concurrent ensures with the same name and spec join one
+        // creation (SVC-1), and a later ensure returns the same actors.
+        let (service, concurrent) = tokio::join!(
+            proc_mesh.spawn_service::<testactor::TestActor, _>(instance, "svc_proc_owned", &()),
+            proc_mesh.spawn_service::<testactor::TestActor, _>(instance, "svc_proc_owned", &()),
+        );
+        let (service, concurrent) = (service.unwrap(), concurrent.unwrap());
+        assert!(
+            service.as_managed().is_none(),
+            "spawn_service must return a data (non-owning) ref",
+        );
+        let again = proc_mesh
+            .spawn_service::<testactor::TestActor, _>(instance, "svc_proc_owned", &())
             .await
             .unwrap();
-        assert!(
-            controllerless
-                .as_managed()
-                .expect("controllerless service mesh should be managed")
-                .controller()
-                .is_none(),
-            "spawn_controllerless_service must not create a controller",
+        let addrs = |mesh: &ActorMeshRef<testactor::TestActor>| {
+            mesh.values()
+                .map(|actor| actor.actor_addr().clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            addrs(&service),
+            addrs(&concurrent),
+            "concurrent ensures share the same per-proc actors",
         );
-
-        // ...whereas an ordinary service mesh does (contrast).
-        let with_controller = proc_mesh
-            .spawn_service::<testactor::TestActor, _>(instance, "svc_with_controller", &())
-            .await
-            .unwrap();
-        assert!(
-            with_controller
-                .as_managed()
-                .expect("service mesh should be managed")
-                .controller()
-                .is_some(),
-            "spawn_service must create a controller",
+        assert_eq!(
+            addrs(&service),
+            addrs(&again),
+            "a later ensure reuses the same per-proc actors",
         );
+        testactor::assert_casting_correctness(&service, instance, None).await;
 
         let _ = hm.shutdown(instance).await;
     }
 
     #[async_timed_test(timeout_secs = 120)]
     #[cfg(fbcode_build)]
-    async fn test_spawn_controllerless_service() {
+    async fn test_spawn_service_returns_non_owning_ref() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
         let _guard2 = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_secs(120),
         );
-        execute_spawn_controllerless().await;
+        execute_spawn_service().await;
+    }
+    /// The first request for a singleton comes from an actor (an
+    /// `ActorEnvironmentProbe` whose `init` ensures the service on the same
+    /// proc mesh). Stopping that requester must not stop the singleton: a
+    /// later ensure from the client returns the same actor, and no new
+    /// service actor is created (creation would post a fresh observation
+    /// from its `init`).
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn test_spawn_service_survives_first_requester_stop() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
+            .await
+            .unwrap();
+        let proc_mesh_ref = proc_mesh.deref().clone();
+
+        let (reply, mut replies) = instance
+            .mailbox()
+            .open_port::<testactor::ActorEnvironmentObservation>();
+        let service_params = testactor::ActorEnvironmentProbeParams {
+            label: "service".to_string(),
+            reply: reply.bind(),
+            nested: None,
+        };
+        let mut requester = proc_mesh
+            .spawn::<testactor::ActorEnvironmentProbe, _>(
+                &instance,
+                "service_first_requester",
+                &testactor::ActorEnvironmentProbeParams {
+                    label: "requester".to_string(),
+                    reply: reply.bind(),
+                    nested: Some((
+                        proc_mesh_ref.clone(),
+                        "svc_requester_stops".to_string(),
+                        "service".to_string(),
+                    )),
+                },
+            )
+            .await
+            .unwrap();
+
+        // The requester's own observation, then the singleton's (posted by
+        // its `init` when the requester's nested ensure creates it).
+        let mut labels = Vec::new();
+        for _ in 0..2 {
+            let observed = tokio::time::timeout(Duration::from_secs(30), replies.recv())
+                .await
+                .expect("probe observation timed out")
+                .unwrap();
+            labels.push(observed.label);
+        }
+        labels.sort();
+        assert_eq!(labels, vec!["requester".to_string(), "service".to_string()]);
+
+        // Stop the first requester. The singleton it created is owned by
+        // its proc and must persist.
+        requester
+            .stop(&instance, "requester done".to_string())
+            .unwrap();
+        requester.wait_for_terminal(&instance).await.unwrap();
+
+        let service = proc_mesh
+            .spawn_service::<testactor::ActorEnvironmentProbe, _>(
+                &instance,
+                "svc_requester_stops",
+                &service_params,
+            )
+            .await
+            .unwrap();
+        let expected = proc_mesh
+            .get(0)
+            .unwrap()
+            .proc_addr()
+            .actor_addr("svc_requester_stops");
+        assert_eq!(
+            service
+                .values()
+                .map(|actor| actor.actor_addr().clone())
+                .collect::<Vec<_>>(),
+            vec![expected],
+            "the singleton keeps its reserved address after its requester stops",
+        );
+        // No recreation: a fresh service actor would post another
+        // observation from `init`.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), replies.recv())
+                .await
+                .is_err(),
+            "the singleton must not be recreated after its requester stops",
+        );
+
+        let _ = hm.shutdown(&instance).await;
+    }
+
+    /// A second ensure for the same (proc, name) with a different actor
+    /// type is a typed conflict (SVC-2), not a silent reuse of the first
+    /// caller's actor.
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn test_spawn_service_conflicting_spec() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
+            .await
+            .unwrap();
+
+        proc_mesh
+            .spawn_service::<testactor::TestActor, _>(&instance, "svc_conflict", &())
+            .await
+            .unwrap();
+        let err = proc_mesh
+            .spawn_service::<testactor::FailingCreateTestActor, _>(&instance, "svc_conflict", &())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::Error::ServiceError {
+                    rank: 0,
+                    error: ServiceError::ConflictingSpec { .. },
+                }
+            ),
+            "a different actor type for the same name must conflict: {err}",
+        );
+
+        let _ = hm.shutdown(&instance).await;
+    }
+
+    /// A running service that fails becomes terminal (SVC-3): later ensures
+    /// return its terminal status instead of a dead address or a respawn.
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn test_spawn_service_failed_service_is_terminal() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
+            .await
+            .unwrap();
+
+        let service = proc_mesh
+            .spawn_service::<testactor::TestActor, _>(&instance, "svc_fails", &())
+            .await
+            .unwrap();
+        service
+            .cast(
+                &instance,
+                testactor::CauseSupervisionEvent {
+                    kind: testactor::SupervisionEventType::Panic,
+                    send_to_children: false,
+                },
+            )
+            .unwrap();
+
+        // The failure reaches the registry asynchronously; ensure until it
+        // has been recorded.
+        let status = loop {
+            match proc_mesh
+                .spawn_service::<testactor::TestActor, _>(&instance, "svc_fails", &())
+                .await
+            {
+                Ok(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+                Err(crate::Error::ServiceError {
+                    error: ServiceError::Terminal { status, .. },
+                    ..
+                }) => break status,
+                Err(other) => panic!("expected a terminal service error, got {other}"),
+            }
+        };
+        assert!(
+            status.is_failed(),
+            "a panicked service is terminal as failed: {status}"
+        );
+
+        let _ = hm.shutdown(&instance).await;
+    }
+
+    /// Destroying and recreating the host yields a new singleton: the
+    /// service on the recreated host has a different address (its procs are
+    /// new) and is created fresh by the new proc's registry.
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn test_spawn_service_host_recreate_new_singleton() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+        let instance = testing::instance();
+
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
+            .await
+            .unwrap();
+        let first = proc_mesh
+            .spawn_service::<testactor::TestActor, _>(&instance, "svc_recreate", &())
+            .await
+            .unwrap();
+        let first_addr = first.values().next().unwrap().actor_addr().clone();
+        hm.shutdown(&instance).await.unwrap();
+
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
+            .await
+            .unwrap();
+        let second = proc_mesh
+            .spawn_service::<testactor::TestActor, _>(&instance, "svc_recreate", &())
+            .await
+            .unwrap();
+        let second_addr = second.values().next().unwrap().actor_addr().clone();
+        assert_ne!(
+            first_addr, second_addr,
+            "a recreated host must produce a new singleton, not resurrect the old one",
+        );
+        testactor::assert_casting_correctness(&second, &instance, None).await;
+
+        let _ = hm.shutdown(&instance).await;
     }
 }

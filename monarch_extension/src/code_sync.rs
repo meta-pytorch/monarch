@@ -279,12 +279,12 @@ impl CodeSyncMeshClient {
                 .cast(
                     &*client,
                     SetActorMeshMessage {
-                        actor_mesh: (*actor_mesh).clone(),
+                        actor_mesh: actor_mesh.clone(),
                     },
                 )
                 .map_err(|err| PyException::new_err(err.to_string()))?;
             Ok(Self {
-                actor_mesh: (*actor_mesh).clone(),
+                actor_mesh: actor_mesh.clone(),
             })
         })?
     }

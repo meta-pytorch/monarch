@@ -8,7 +8,7 @@
 """
 Tests for RDMA initialization, readiness, and public operation boundaries.
 
-These tests cover the owner-backed binding from local and remote actors,
+These tests cover the manager-init binding from local and remote actors,
 production readiness caching and validation, public buffer operations, when
 submit and drop take effect, and backend configuration errors.
 """
@@ -749,15 +749,15 @@ async def test_submit_wraps_post_readiness_operation_failure() -> None:
             await proc.stop()
 
 
-# The tests below cover the owner-driven binding
+# The tests below cover the binding
 # `_RdmaManager.ensure_init_rdma_manager_nonblocking`, which returns a `Handle`
-# and surfaces a typed owner failure as a catchable `RdmaInitError`.
+# and surfaces a manager initialization failure as a catchable `RdmaInitError`.
 
 
 def _ensure_init_handle():
     """Spawn a one-proc mesh and call the Handle-returning binding, returning the
     `Handle` for the caller to await. Must be called inside a live event loop and
-    the caller's `configured(...)` context (the owner reads config during init)."""
+    the caller's `configured(...)` context (the manager reads config during init)."""
     from monarch._rust_bindings.rdma import _RdmaManager
     from monarch._src.actor.actor_mesh import context
     from monarch.actor import this_host
@@ -772,9 +772,9 @@ def _ensure_init_handle():
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 async def test_ensure_init_returns_handle_that_resolves_over_tcp() -> None:
-    """The binding resolves to None once the owner's full post-init() barrier
-    completes, driven from the raw Handle[ProcMesh] with no Python-side mesh
-    resolution (RMB-1, RMB-4). TCP fallback lets init() succeed without a NIC.
+    """The binding resolves to None once every manager has finished init(),
+    driven from the raw Handle[ProcMesh] with no Python-side mesh resolution
+    (RMB-1, RMB-4). TCP fallback lets init() succeed without a NIC.
     Observation is non-consuming, so a second await also yields None (HDL-3)."""
     from monarch._rust_bindings.monarch_hyperactor.handle import Handle
 

@@ -49,6 +49,7 @@ pub mod proc_mesh;
 pub mod pyspy;
 pub mod reference;
 pub mod resource;
+pub mod service_registry;
 pub mod shared_cell;
 pub mod shortuuid;
 pub mod supervision;
@@ -180,6 +181,19 @@ pub enum Error {
 
     #[error(transparent)]
     ClientRootError(#[from] crate::client_root::ClientRootError),
+
+    #[error("service rank {rank}: {error}")]
+    ServiceError {
+        rank: usize,
+        error: crate::service_registry::ServiceError,
+    },
+
+    #[error("service `{name}` rank {rank}: no reply within {timeout:?}")]
+    ServiceTimeout {
+        name: hyperactor::id::Label,
+        rank: usize,
+        timeout: std::time::Duration,
+    },
 
     #[error("client-root capability is absent from this actor's environment")]
     MissingClientRoot,

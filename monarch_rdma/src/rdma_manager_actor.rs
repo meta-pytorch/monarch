@@ -25,15 +25,13 @@
 //! ## Service topology and readiness
 //!
 //! `spawn_service("rdma_manager", ...)` creates or reuses one
-//! `RdmaManagerActor` on each target proc and materializes an `ActorMesh` view
-//! over them. Overlapping proc-mesh views reuse the same actor on shared procs;
-//! each view still has its own `ActorMeshController`.
-//!
-//! The owner casts [`RdmaManagerReady`] to every actor in a view. Actor
-//! messages are dispatched only after `init()` succeeds, so the resulting
-//! [`ReadyAck`](crate::ReadyAck) certifies that this proc's manager backends
-//! are initialized. If initialization fails, no acknowledgement is sent and
-//! every controller monitoring that actor reports the failure to the owner.
+//! `RdmaManagerActor` on each target proc and returns a non-owning
+//! `ActorMeshRef` view over them. Each manager is a singleton service owned
+//! by its proc's `ServiceRegistry`, so overlapping proc-mesh views reuse the
+//! same actor on shared procs, and the manager stops with its proc.
+//! `spawn_service` returns only after every manager has finished `init()`,
+//! so its success certifies that the managers' backends are initialized; an
+//! initialization failure is returned as a terminal service error.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -68,11 +66,6 @@ use crate::backend::ibverbs::primitives::IbvConfig;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::rdma_components::RdmaRemoteBuffer;
-use crate::rdma_manager_owner::EntryId;
-use crate::rdma_manager_owner::RdmaManagerOwnerActor;
-use crate::rdma_manager_owner::RdmaManagerReady;
-use crate::rdma_manager_owner::RdmaManagerReadyHandler;
-use crate::rdma_manager_owner::ReadyAckClient;
 
 // Each proc has one RDMA manager for its lifetime, so its backend handles never
 // need replacement or invalidation while they can still be used.
@@ -141,7 +134,6 @@ wirevalue::register_type!(GetTcpActorRef);
     handlers = [
         GetTcpActorRef,
         ReleaseBuffer,
-        RdmaManagerReady,
     ],
 )]
 #[hyperactor::spawnable]
@@ -329,21 +321,5 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         _cx: &Context<Self>,
     ) -> Result<Vec<RdmaBackendHandle>, anyhow::Error> {
         Ok(self.backends.get().expect("backends set in init").handles())
-    }
-}
-
-#[async_trait]
-#[hyperactor::handle(RdmaManagerReady)]
-impl RdmaManagerReadyHandler for RdmaManagerActor {
-    async fn rdma_manager_ready(
-        &mut self,
-        cx: &Context<Self>,
-        owner: ActorRef<RdmaManagerOwnerActor>,
-        entry: EntryId,
-    ) -> Result<(), anyhow::Error> {
-        // Runs strictly after `init()` (RMR-1): ack the owner so it can count
-        // this rank toward readiness.
-        owner.ready_ack(cx, entry).await?;
-        Ok(())
     }
 }
