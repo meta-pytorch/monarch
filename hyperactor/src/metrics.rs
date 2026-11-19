@@ -10,10 +10,11 @@
 //!
 //! This module contains metrics definitions for various components of hyperactor.
 
+use hyperactor_telemetry::declare_observable_gauge;
 use hyperactor_telemetry::declare_static_counter;
 use hyperactor_telemetry::declare_static_histogram;
 use hyperactor_telemetry::declare_static_timer;
-use hyperactor_telemetry::declare_static_up_down_counter;
+use hyperactor_telemetry::kv_pairs;
 
 /// Error types for channel-related errors. Only used for telemetry.
 #[derive(Debug, Clone, Copy)]
@@ -55,8 +56,24 @@ declare_static_counter!(
 );
 
 // ACTOR
-// Tracks the current size of the message queue for actors (increases when messages are queued, decreases when processed)
-declare_static_up_down_counter!(ACTOR_MESSAGE_QUEUE_SIZE, "actor.message_queue_size");
+// Message queue depth of each live actor with queued messages, read at
+// collection time. Actors with empty queues are not reported.
+//
+// Queue depth is additive, which OTel conventionally models as an up-down
+// counter. This is a gauge because the SDK exports up-down counters (sync and
+// async) cumulatively, reporting every actor ever seen on every interval,
+// while observable gauges are always delta and export only what the callback
+// reports.
+declare_observable_gauge!(
+    ACTOR_MESSAGE_QUEUE_SIZE,
+    "actor.message_queue_size",
+    u64,
+    |observer| {
+        crate::proc::report_live_queue_depths(&mut |depth, actor_id| {
+            observer.observe(depth, kv_pairs!("actor_id" => actor_id));
+        });
+    }
+);
 // Tracks the total number of messages sent by actors
 declare_static_counter!(ACTOR_MESSAGES_SENT, "actor.messages_sent");
 // Tracks the total number of messages received by actors

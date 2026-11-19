@@ -337,6 +337,7 @@ fn timestamp_to_micros(timestamp: SystemTime) -> i64 {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::Mutex;
 
     use monarch_record_batch::RecordBatchBuffer;
     use monarch_record_batch::arrow::array::Array as _;
@@ -541,5 +542,64 @@ mod tests {
         assert_eq!(attributes["ranks"], json!([1, 2]));
         assert_eq!(attributes["weights"], json!([1.5, 2.5]));
         assert_eq!(attributes["names"], json!(["first", "second"]));
+    }
+
+    #[test]
+    fn observable_gauge_exports_only_reported_series() {
+        for temporality in [Temporality::Delta, Temporality::Cumulative] {
+            let reader = Arc::new(
+                ManualReader::builder()
+                    .with_temporality(temporality)
+                    .build(),
+            );
+            let provider = SdkMeterProvider::builder()
+                .with_reader(InMemoryReader::new(Arc::clone(&reader)))
+                .build();
+            let reported: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+            let callback_reported = Arc::clone(&reported);
+            let _gauge = provider
+                .meter("test.scope")
+                .u64_observable_gauge("queue.depth")
+                .with_callback(move |observer| {
+                    for actor in callback_reported.lock().unwrap().iter() {
+                        observer.observe(3, &[KeyValue::new("actor_id", *actor)]);
+                    }
+                })
+                .build();
+            let collect = |actors: &[&'static str]| {
+                *reported.lock().unwrap() = actors.to_vec();
+                let mut metrics = ResourceMetrics::default();
+                reader.collect(&mut metrics).unwrap();
+                let MetricBuffers {
+                    mut gauges,
+                    mut sums,
+                    ..
+                } = encode_metrics(&metrics);
+                assert_eq!(
+                    sums.drain_to_record_batch().unwrap().num_rows(),
+                    0,
+                    "an observable gauge never lands in metric_sums"
+                );
+                gauges.drain_to_record_batch().unwrap()
+            };
+
+            let both = collect(&["a", "b"]);
+            assert_eq!(both.num_rows(), 2, "{temporality:?}: both reported series");
+            let values = column::<UInt64Array>(&both, "value_u64");
+            assert!(
+                (0..both.num_rows()).all(|row| values.value(row) == 3),
+                "{temporality:?}: integer values land in value_u64"
+            );
+            assert_eq!(
+                collect(&["a"]).num_rows(),
+                1,
+                "{temporality:?}: a series not reported is not exported"
+            );
+            assert_eq!(
+                collect(&[]).num_rows(),
+                0,
+                "{temporality:?}: nothing reported, nothing exported"
+            );
+        }
     }
 }

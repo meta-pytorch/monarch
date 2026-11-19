@@ -809,8 +809,30 @@ macro_rules! declare_static_gauge {
 /// // The gauge will be automatically updated when observed
 /// # }
 /// ```
+///
+/// Pass `u64` before the callback for an integer gauge:
+/// ```
+/// # #[macro_use] extern crate hyperactor_telemetry;
+///
+/// # fn main() {
+/// declare_observable_gauge!(OPEN_FILES, "open_files", u64, |observer| {
+///     observer.observe(42, &[]);
+/// });
+/// # }
+/// ```
 #[macro_export]
 macro_rules! declare_observable_gauge {
+    ($name:ident, $key:expr, u64, $cb:expr) => {
+        #[doc = "a global gauge named: "]
+        #[doc = $key]
+        pub static $name: std::sync::LazyLock<opentelemetry::metrics::ObservableGauge<u64>> =
+            std::sync::LazyLock::new(|| {
+                $crate::meter(module_path!())
+                    .u64_observable_gauge($key)
+                    .with_callback($cb)
+                    .build()
+            });
+    };
     ($name:ident, $key:expr, $cb:expr) => {
         #[doc = "a global gauge named: "]
         #[doc = $key]
