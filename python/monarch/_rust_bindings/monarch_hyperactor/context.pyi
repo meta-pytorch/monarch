@@ -6,7 +6,10 @@
 
 # pyre-strict
 
+from typing import Optional
+
 # This class is stubbed out in monarch._src.actor.actor_mesh, but
 # it's useful to have this here for type-checking in other rust
 # bindings.
-class Instance: ...
+class Instance:
+    def _inject_failure(self, reason: Optional[str] = None) -> None: ...

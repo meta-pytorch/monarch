@@ -14,6 +14,7 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::context;
 use hyperactor::proc::DEFAULT_STOP_CHILDREN_TIMEOUT;
 use hyperactor_mesh::casting::CastInfo;
+use hyperactor_mesh::supervision::injected_failure_reason;
 use ndslice::Extent;
 use ndslice::Point;
 use pyo3::exceptions::PyRuntimeError;
@@ -100,6 +101,12 @@ impl PyInstance {
     fn abort(&self, reason: Option<&str>) -> PyResult<()> {
         let reason = reason.unwrap_or("(no reason provided)");
         Ok(self.inner.abort(reason).map_err(anyhow::Error::from)?)
+    }
+
+    #[pyo3(signature = (reason = None))]
+    fn _inject_failure(&self, reason: Option<&str>) -> PyResult<()> {
+        let reason = injected_failure_reason(reason.unwrap_or("(no reason provided)"));
+        Ok(self.inner.abort(&reason).map_err(anyhow::Error::from)?)
     }
 
     #[pyo3(signature = (reason = None))]
